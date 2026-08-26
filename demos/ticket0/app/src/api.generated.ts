@@ -456,7 +456,7 @@ export interface Ticket0Client {
    *
    * `PUT /agents/me` — `ticket0/set-agent-profile`
    */
-  setAgentProfile(input: { displayName: string; avatarUrl?: string | null; signature?: string | null }): Promise<AgentProfile>;
+  setAgentProfile(input: { displayName: string; avatarUrl: string | null; signature: string | null }): Promise<AgentProfile>;
 
   /**
    * Set the price of a meter from a date

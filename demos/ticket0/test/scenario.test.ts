@@ -14,6 +14,7 @@
  *   - an agent who works the whole inbox and cannot see what any of it cost.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -563,6 +564,28 @@ describe('the attacks', () => {
     await expect(priya.invoke('ticket0/list-contacts', {})).rejects.toThrow(/permission denied/i);
   });
 
+  /**
+   * The one a repointing fix created and a review caught.
+   *
+   * `merge` moves the loser's widget sessions onto the survivor, so merging across
+   * contacts would hand one person's session token another person's thread — and
+   * `widget-thread` would serve it, because the token IS the capability it checks.
+   */
+  it('a conversation cannot be merged into a different contact’s', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
+    const mine = page.entries.find((c) => c.contact_id === world.substrat.customerContactId)!;
+    const theirs = page.entries.find((c) => c.contact_id !== world.substrat.customerContactId)!;
+
+    const admin = await at(world.substrat, 'admin');
+    await expect(
+      admin.invoke('ticket0/merge', {
+        conversationId: mine.id,
+        intoConversationId: theirs.id,
+      }),
+    ).rejects.toThrow(/different contacts/i);
+  });
+
   it('no human role holds the relay’s key — not even the desk admin', async () => {
     const admin = await at(world.substrat, 'admin');
     await expect(
@@ -736,6 +759,98 @@ describe('a signed-in customer, by contrast', () => {
 });
 
 // ---------------------------------------------------------------------------
+
+/**
+ * Every mutation announces itself, and the announcement is checked here.
+ *
+ * Not because anything in this demo consumes these events — nothing does — but
+ * because an emit is the one thing a handler can quietly stop doing without a
+ * single assertion going red. Four of these five operations had no test at all
+ * until they started emitting; the fifth is the widget, and what matters about
+ * its event is what is NOT in it.
+ */
+describe('the audit spine', () => {
+  const outbox = (desk: Desk, type: string) => {
+    const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`), { readonly: true });
+    const row = db
+      .prepare('SELECT * FROM _substrat_outbox WHERE type = ? ORDER BY id DESC LIMIT 1')
+      .get(type) as
+      | { entity_type: string; entity_id: string; pii_class: string; payload: string | null }
+      | undefined;
+    db.close();
+    return row;
+  };
+
+  it('a profile announces the principal and never the person’s name', async () => {
+    const anna = await at(world.substrat, 'agent');
+    await anna.invoke('ticket0/set-agent-profile', {
+      displayName: 'Anna Lindqvist',
+      avatarUrl: null,
+      signature: 'Anna\nSubstrat Support',
+    });
+    const evt = outbox(world.substrat, 'ticket0.agent-profile-set')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_type).toBe('agentProfile');
+    const payload = JSON.parse(evt.payload!) as Record<string, unknown>;
+    // `display_name` is erasable, and an event is the one place in a scope an
+    // erasure cannot reach — so it must not be here, ever.
+    expect(payload).toEqual({ principal: evt.entity_id });
+  });
+
+  it('a tag announces the conversation, because a tag cannot be pointed at', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
+    const target = page.entries[0]!;
+    await anna.invoke('ticket0/tag-conversation', { conversationId: target.id, tag: 'billing' });
+
+    const evt = outbox(world.substrat, 'ticket0.conversation-tagged')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_type).toBe('conversation');
+    expect(evt.entity_id).toBe(target.id);
+    expect(JSON.parse(evt.payload!)).toEqual({ conversation_id: target.id, tag: 'billing' });
+  });
+
+  it('a saved reply announces itself', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const reply = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Refund policy',
+      body: 'We refund within 30 days.',
+    })) as { id: string };
+    const evt = outbox(world.substrat, 'ticket0.saved-reply-created')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_id).toBe(reply.id);
+  });
+
+  it('a read notification announces itself', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const mine = (await anna.invoke('ticket0/my-notifications', {})) as Page<{ id: string }>;
+    // The agent was assigned a conversation in the story above, so there is one.
+    expect(mine.entries.length).toBeGreaterThan(0);
+    await anna.invoke('ticket0/mark-notification-read', { notificationId: mine.entries[0]!.id });
+
+    const evt = outbox(world.substrat, 'ticket0.notification-read')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_id).toBe(mine.entries[0]!.id);
+    expect((JSON.parse(evt.payload!) as { read_at: string | null }).read_at).not.toBeNull();
+  });
+
+  it('a widget session announces the conversation and never the token', async () => {
+    const widget = await at(world.substrat, 'widget');
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+    })) as { sessionId: string; token: string; conversationId: string };
+
+    const evt = outbox(world.substrat, 'ticket0.widget-session-started')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_id).toBe(started.conversationId);
+    const payload = JSON.parse(evt.payload!) as Record<string, unknown>;
+    // The token is the visitor's whole authority over this thread. An immutable
+    // copy of a capability cannot be revoked, so it is not in the event.
+    expect(payload.token).toBeUndefined();
+    expect(JSON.stringify(payload)).not.toContain(started.token);
+    expect(payload.verified).toBe(false);
+  });
+});
 
 describe('closing the month', () => {
   it('freezes the window into immutable lines', async () => {

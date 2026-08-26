@@ -5050,7 +5050,9 @@
                   }
                 },
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "avatarUrl",
+                  "signature"
                 ]
               }
             }

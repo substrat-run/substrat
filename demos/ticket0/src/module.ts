@@ -570,27 +570,35 @@ const operations = {
       'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
       [principal],
     )[0];
+    // The whole row, both ways. The input states every field, so there is nothing to
+    // merge with what is already there - which is the point: a merge here would be
+    // the read-modify-write the model refuses.
     if (existing) {
       ctx.sql.exec(
         'UPDATE ticket0_agent_profiles SET display_name = ?, avatar_url = ?, signature = ? WHERE principal = ?',
-        [
-          input.displayName,
-          input.avatarUrl === undefined ? existing.avatar_url : input.avatarUrl,
-          input.signature === undefined ? existing.signature : input.signature,
-          principal,
-        ],
+        [input.displayName, input.avatarUrl, input.signature, principal],
       );
     } else {
       ctx.sql.exec(
         `INSERT INTO ticket0_agent_profiles (principal, display_name, avatar_url, signature, created_at)
          VALUES (?, ?, ?, ?, ?)`,
-        [principal, input.displayName, input.avatarUrl ?? null, input.signature ?? null, ctx.now()],
+        [principal, input.displayName, input.avatarUrl, input.signature, ctx.now()],
       );
     }
-    return ctx.sql.query<AgentProfileRow>(
+    const row = ctx.sql.query<AgentProfileRow>(
       'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
       [principal],
     )[0]!;
+    // The principal alone: `display_name` is erasable, and an event is the one place
+    // in a scope an erasure cannot reach.
+    ctx.emit({
+      type: 'ticket0.agent-profile-set',
+      schemaVersion: 1,
+      entity: { entityType: 'agentProfile', entityId: row.principal },
+      piiClass: 'none',
+      payload: { principal: row.principal },
+    });
+    return row;
   },
 
   // --- Knowledge base ------------------------------------------------------
@@ -973,6 +981,27 @@ const operations = {
     // they cannot see.
     assertAllowed(await ctx.check(T0_PERM.conversationMerge, conversationRef(survivor.id)));
 
+    /**
+     * Same person, or not at all.
+     *
+     * A widget session names a conversation, and the merge below repoints it at the
+     * survivor — so folding one contact's conversation into another's would hand the
+     * first contact's session token a thread belonging to the second. `widget-thread`
+     * would then serve it, because the token is exactly the capability it checks.
+     *
+     * Merging two conversations from the same person is the real case (they wrote in
+     * twice); merging across people is the one that leaks, and there is no version of
+     * it worth supporting.
+     */
+    if (conversation.contact_id !== survivor.contact_id) {
+      throw substratError(
+        'conflict',
+        'these conversations belong to different contacts — merging them would give one ' +
+          "person's session the other's thread",
+        { reason: 'different_contacts' },
+      );
+    }
+
     ctx.sql.exec('UPDATE ticket0_conversations SET merged_into = ?, updated_at = ? WHERE id = ?', [
       survivor.id,
       ctx.now(),
@@ -1053,15 +1082,27 @@ const operations = {
       'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
       [conversation.id, input.tag],
     )[0];
+    // Already tagged is not a second tagging, so it emits nothing - a consumer
+    // counting this event is counting the tag going ON, once.
     if (existing) return existing;
     ctx.sql.exec(
       'INSERT INTO ticket0_conversation_tags (conversation_id, tag, created_at) VALUES (?, ?, ?)',
       [conversation.id, input.tag, ctx.now()],
     );
-    return ctx.sql.query<TagRow>(
+    const row = ctx.sql.query<TagRow>(
       'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
       [conversation.id, input.tag],
     )[0]!;
+    ctx.emit({
+      type: 'ticket0.conversation-tagged',
+      schemaVersion: 1,
+      // About the conversation. A tag is keyed by both its columns and cannot be
+      // pointed at, and "this conversation was tagged" is the fact anyway.
+      entity: conversationRef(row.conversation_id),
+      piiClass: 'none',
+      payload: { conversation_id: row.conversation_id, tag: row.tag },
+    });
+    return row;
   },
 
   // --- Saved replies -------------------------------------------------------
@@ -1083,9 +1124,17 @@ const operations = {
       'INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
       [id, input.title, input.body, String(ctx.principal), ctx.now()],
     );
-    return ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
+    const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
       id,
     ])[0]!;
+    ctx.emit({
+      type: 'ticket0.saved-reply-created',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReply', entityId: row.id },
+      piiClass: 'none',
+      payload: { id: row.id, title: row.title, body: row.body, created_by: row.created_by },
+    });
+    return row;
   },
 
   // --- The assistant -------------------------------------------------------
@@ -1441,6 +1490,16 @@ const operations = {
     );
     ctx.link({ entityType: 'widgetSession', entityId: id }, conversationRef(conversation.id));
 
+    ctx.emit({
+      type: 'ticket0.widget-session-started',
+      schemaVersion: 1,
+      entity: conversationRef(conversation.id),
+      piiClass: 'none',
+      // Never the token. It is the visitor's whole authority over this thread, and
+      // an immutable copy of a capability cannot be revoked.
+      payload: { sessionId: id, conversationId: conversation.id, verified },
+    });
+
     return {
       sessionId: id,
       token,
@@ -1554,9 +1613,24 @@ const operations = {
     // a thing this caller may learn the existence of.
     if (!row) throw substratError('not_found', `notification not found: ${input.notificationId}`);
     ctx.sql.exec('UPDATE ticket0_notifications SET read_at = ? WHERE id = ?', [ctx.now(), row.id]);
-    return ctx.sql.query<NotificationRow>('SELECT * FROM ticket0_notifications WHERE id = ?', [
-      row.id,
-    ])[0]!;
+    const read = ctx.sql.query<NotificationRow>(
+      'SELECT * FROM ticket0_notifications WHERE id = ?',
+      [row.id],
+    )[0]!;
+    ctx.emit({
+      type: 'ticket0.notification-read',
+      schemaVersion: 1,
+      entity: { entityType: 'notification', entityId: read.id },
+      piiClass: 'none',
+      payload: {
+        id: read.id,
+        principal: read.principal,
+        kind: read.kind,
+        conversation_id: read.conversation_id,
+        read_at: read.read_at,
+      },
+    });
+    return read;
   },
 } satisfies {
   // Derived by the platform, not restated here - `HandlerOutput` is what knows that

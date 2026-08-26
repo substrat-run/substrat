@@ -113,14 +113,22 @@ function Desk() {
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  /**
+   * Two failures, two states — deliberately not one.
+   *
+   * A load failure means there is no form to show; a save failure means the form is
+   * right there with the user's edits in it. Sharing one `failed` between them threw
+   * those edits away by unmounting the form to show the error about them.
+   */
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 
   useEffect(() => {
-    void api.getDesk().then(setDesk).catch((e: Error) => setFailed(e.message));
+    void api.getDesk().then(setDesk).catch((e: Error) => setLoadFailed(e.message));
   }, []);
   // A rejected request is not a slow one. Saying "Loading…" forever is the screen
   // lying about which of the two happened.
-  if (failed) return <Empty title="Could not load the desk" note={failed} />;
+  if (loadFailed) return <Empty title="Could not load the desk" note={loadFailed} />;
   if (!desk) return <div className="t-meta">Loading…</div>;
 
   const origins: string[] = JSON.parse(desk.allowed_origins || '[]');
@@ -408,8 +416,16 @@ const GRID = '190px 1.6fr 56px 118px 96px 56px';
 function Knowledge() {
   const [sources, setSources] = useState<KbSource[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
 
-  const load = () => void api.listKbSources().then((p) => setSources(p.entries));
+  const load = () =>
+    void api
+      .listKbSources()
+      .then((p) => {
+        setSources(p.entries);
+        setFailed(null);
+      })
+      .catch((e: Error) => setFailed(e.message));
   useEffect(load, []);
 
   if (!sources) return <div className="t-meta">Loading…</div>;
@@ -417,6 +433,11 @@ function Knowledge() {
   return (
     <>
       <Head title="Knowledge base" note="What the assistant reads before it answers." />
+      {failed ? (
+        <div className="card" style={{ padding: '10px 14px', marginBottom: 12, color: 'var(--danger)' }}>
+          <span className="t-small">{failed}</span>
+        </div>
+      ) : null}
       <div className="card" style={{ overflow: 'hidden' }}>
         <div
           className="micro-6"
@@ -465,8 +486,14 @@ function Knowledge() {
                 disabled={s.status === 'ingesting' || busy === s.id}
                 onClick={() => {
                   setBusy(s.id);
+                  setFailed(null);
                   void api
                     .ingestKbSource({ sourceId: s.id })
+                    // Both ways, because a refused ingest is exactly when the row is
+                    // most worth re-reading: the failure is recorded on the source
+                    // itself, and `.then(load)` alone would never go and fetch it,
+                    // leaving the row spinning at "ingesting" forever.
+                    .catch((e: Error) => setFailed(e.message))
                     .then(load)
                     // `finally`, or a failed re-read leaves "Re-read" disabled for
                     // the rest of the session — on the row most likely to need it.

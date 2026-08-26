@@ -488,13 +488,38 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     // principal and takes no principal from the input, so this cannot rename a
     // colleague.
     permission: 'conversation:draft',
+    /**
+     * A whole profile, not a patch — and the model is what insists on that.
+     *
+     * `{ displayName, avatarUrl?, signature? }` is a partial field-bag over the
+     * agent's own row: one field naming it and the rest optional columns, which is
+     * read-modify-write. Two tabs each change one field, each save, neither
+     * conflicts, and the second silently discards the first. The usual answer is an
+     * `If-Match`, but it cannot be given here: the row is keyed by the CALLER's
+     * principal, which is deliberately absent from the input so this can never
+     * rename a colleague, so there is no id for `concurrency` to name.
+     *
+     * So the operation states the whole row instead. `null` means "no avatar",
+     * absent is not a thing you can be, and a save carries everything it means.
+     */
     input: z.object({
       displayName: z.string().min(1),
-      avatarUrl: z.string().url().nullable().optional(),
-      signature: z.string().nullable().optional(),
+      avatarUrl: z.string().url().nullable(),
+      signature: z.string().nullable(),
     }),
     output: ticket0Entities.agentProfile.fields,
     http: { method: 'PUT', path: '/agents/me' },
+    emits: {
+      entity: 'agentProfile',
+      entityIdFrom: 'principal',
+      type: 'ticket0.agent-profile-set',
+      schemaVersion: 1,
+      piiClass: 'none',
+      // The principal and nothing else. `display_name` is the name of a real person
+      // and marked erasable, so it may not be carried — an event is the one place in
+      // a scope an erasure cannot reach. A consumer that needs the name reads it.
+      payload: ['principal'],
+    },
   },
 
   // ─── Knowledge base ──────────────────────────────────────────────────────────
@@ -872,6 +897,17 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     input: z.object({ conversationId: z.string(), tag: z.string().min(1) }),
     output: ticket0Entities.conversationTag.fields,
     http: { method: 'POST', path: '/conversations/{conversationId}/tags' },
+    emits: {
+      // About the CONVERSATION, not the tag. A tag is keyed by both its columns and
+      // so cannot be pointed at — which is right, because "this conversation was
+      // tagged" is the fact anyone downstream cares about.
+      entity: 'conversation',
+      entityIdFrom: 'conversation_id',
+      type: 'ticket0.conversation-tagged',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['conversation_id', 'tag'],
+    },
   },
 
   // ─── Saved replies ───────────────────────────────────────────────────────────
@@ -890,6 +926,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     input: z.object({ title: z.string().min(1), body: z.string().min(1) }),
     output: ticket0Entities.savedReply.fields,
     http: { method: 'POST', path: '/saved-replies' },
+    emits: {
+      entity: 'savedReply',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-created',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'title', 'body', 'created_by'],
+    },
   },
 
   // ─── The assistant ───────────────────────────────────────────────────────────
@@ -1017,6 +1061,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     }),
     output: ticket0Entities.usageRate.fields,
     http: { method: 'POST', path: '/usage/rates' },
+    // No `emits`, and this is the one place in the module where that is a decision
+    // rather than an omission. A rate is keyed by `(meter_key, effective_from)` —
+    // its values ARE its identity, which is what stops a second row silently
+    // repricing the same day. An event is about ONE entity and needs one id to
+    // point at, so emitting this would mean giving the rate a surrogate id whose
+    // only purpose is to be in an event. The price history is already append-only
+    // and readable; that is the audit trail, and it is a better one.
   },
 
   /** Freeze a month. Composes the metering engine's `closePeriod` in this
@@ -1153,6 +1204,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       verified: z.boolean(),
     }),
     http: { method: 'POST', path: '/widget/sessions' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'conversationId',
+      type: 'ticket0.widget-session-started',
+      schemaVersion: 1,
+      piiClass: 'none',
+      // Never the token. It is the visitor's whole authority over the thread, and an
+      // immutable copy of a capability cannot be revoked.
+      payload: ['sessionId', 'conversationId', 'verified'],
+    },
   },
 
   'ticket0/widget-post': {
@@ -1289,6 +1350,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     input: z.object({ notificationId: z.string() }),
     output: ticket0Entities.notification.fields,
     http: { method: 'POST', path: '/me/notifications/{notificationId}/read' },
+    emits: {
+      entity: 'notification',
+      entityIdFrom: 'id',
+      type: 'ticket0.notification-read',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'principal', 'kind', 'conversation_id', 'read_at'],
+    },
   },
 });
 
