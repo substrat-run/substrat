@@ -560,6 +560,52 @@ describe('R7 — engine errors and ctx.atomic', () => {
     expect(violations[0]!.message).toContain('ctx.atomic(() => wo.completeWorkOrder(…))');
   });
 
+  it('an optional call is the same call — `finish?.(…)`', () => {
+    // `?.()` writes the same rows and throws the same error; only the spelling
+    // differs, so it must not be a way past the rule.
+    const root = project(
+      verticalWith(`
+        import { completeWorkOrder as finish } from '@substrat-run/engine-workorder';
+        export async function complete(ctx, id) {
+          try {
+            await finish?.(ctx, { orderId: id });
+          } catch {
+            return { ok: false };
+          }
+        }
+      `),
+    );
+
+    expect(rules(lint(root))).toEqual(['R7']);
+  });
+
+  it('an optional call through a namespace, in both places `?.` can sit', () => {
+    const root = project(
+      verticalWith(`
+        import * as wo from '@substrat-run/engine-workorder';
+        export async function complete(ctx, id) {
+          try {
+            await wo.completeWorkOrder?.(ctx, { orderId: id });
+          } catch {
+            return { ok: false };
+          }
+        }
+        export async function start(ctx, id) {
+          try {
+            await wo?.createWorkOrder(ctx, { orderId: id });
+          } catch {
+            return { ok: false };
+          }
+        }
+      `),
+    );
+
+    const violations = lint(root);
+    expect(rules(violations)).toEqual(['R7', 'R7']);
+    expect(violations[0]!.message).toContain("'wo.completeWorkOrder'");
+    expect(violations[1]!.message).toContain("'wo.createWorkOrder'");
+  });
+
   it('a type-only import binds no callable — nothing to catch', () => {
     const root = project(
       verticalWith(`

@@ -618,14 +618,25 @@ function unguardedEngineCall(
     }
   };
 
+  // Optional-call syntax is the same call. `completeWorkOrder?.(ctx, x)` writes
+  // the same rows as `completeWorkOrder(ctx, x)` and throws the same error, so
+  // `?.` before the argument list — and, for a namespace, in place of the member
+  // dot — is matched rather than left as a spelling that walks past the rule.
+  //
   // Interpolated only with identifiers this file validated against
   // /^[A-Za-z_$][\w$]*$/ — no metacharacters reach the pattern, and it has no
   // nested quantifier to back off through.
   for (const name of bindings.names) {
-    push(new RegExp(`(^|[^.\\w$])(new\\s+)?${name}\\s*\\(`, 'g'), name);
+    push(new RegExp(`(^|[^.\\w$])(new\\s+)?${name}\\s*(?:\\?\\.)?\\s*\\(`, 'g'), name);
   }
   for (const ns of bindings.namespaces) {
-    push(new RegExp(`(^|[^.\\w$])(new\\s+)?${ns}\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*\\(`, 'g'), ns);
+    push(
+      new RegExp(
+        `(^|[^.\\w$])(new\\s+)?${ns}\\s*\\??\\.\\s*([A-Za-z_$][\\w$]*)\\s*(?:\\?\\.)?\\s*\\(`,
+        'g',
+      ),
+      ns,
+    );
   }
 
   hits.sort((a, b) => a.offset - b.offset);
