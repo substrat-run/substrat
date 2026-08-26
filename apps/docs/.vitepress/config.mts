@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 import { buildArtifacts, emitInto } from './llms.mjs';
-import { guideSidebar } from './sidebar.mjs';
+import { changelogSidebar, guideSidebar } from './sidebar.mjs';
 
 export default withMermaid(defineConfig({
   title: 'Substrat',
@@ -39,6 +39,7 @@ export default withMermaid(defineConfig({
       { text: 'Verticals', link: '/verticals/', activeMatch: '/verticals/' },
       { text: 'Platform', link: '/platform/', activeMatch: '/platform/' },
       { text: 'Reference', link: '/reference/contracts', activeMatch: '/reference/' },
+      { text: 'Changelog', link: '/changelog/', activeMatch: '/changelog/' },
     ],
 
     sidebar: {
@@ -49,6 +50,10 @@ export default withMermaid(defineConfig({
       '/verticals/': guideSidebar(),
       '/platform/': guideSidebar(),
       '/reference/': guideSidebar(),
+      // The one section with a sidebar of its own. The guide's is a curated
+      // reading order 60 entries long; a list of every week ever published does
+      // not belong inside it, and the weeks do not belong beneath it either.
+      '/changelog/': changelogSidebar(),
     },
 
     outline: { level: [2, 3] },
