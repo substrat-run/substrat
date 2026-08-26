@@ -170,6 +170,9 @@ interface OutboxRow {
   pii_class: string;
   subject_id: string | null;
   authorization: string | null;
+  /** K-42: the staff actor + session, when the event was raised under one. NULL is
+   *  the ordinary case, and a row written before impersonation existed. */
+  impersonation: string | null;
   payload: string | null;
 }
 
@@ -2010,14 +2013,24 @@ export function defineScopeDO(
         );
       }
       const id = platformRequestId.parse(ulid());
+      // K-42: the intent inherits the SOURCE EVENT's stamp rather than being written
+      // unstamped. Nobody is impersonating at this moment — the drain runs long after
+      // the session's invoke returned — but the intent exists BECAUSE of an event that
+      // was raised under one, and the platform drain is where an operator asks who
+      // caused an outbound effect. Read here rather than passed over the RPC: the DO
+      // owns the outbox, so a coordinator cannot claim a stamp or drop one.
+      const source = this.sql
+        .exec('SELECT impersonation FROM _substrat_outbox WHERE id = ?', eventId)
+        .toArray()[0] as { impersonation: string | null } | undefined;
       this.sql.exec(
         `INSERT INTO _substrat_platform_requests
-           (id, kind, payload, requested_by, status, attempts, requested_at)
-         VALUES (?, ?, ?, ?, 'pending', 0, ?)`,
+           (id, kind, payload, requested_by, impersonation, status, attempts, requested_at)
+         VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
         id,
         kind,
         payload,
         requestedBy,
+        source?.impersonation ?? null,
         instant.parse(new Date().toISOString()),
       );
       this.recordExecutorAttempt(eventId, deliveryId, null, null);
@@ -2480,6 +2493,11 @@ export function defineScopeDO(
         piiClass: row.pii_class,
         ...(row.subject_id ? { subjectId: row.subject_id } : {}),
         ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
+        // K-42: the stamp survives the read, so a consumer's event and an executor's
+        // are the same fact the stored row is. Absent rather than null when nobody
+        // was impersonating, because `DomainEvent.impersonation` is optional — the
+        // shape module code never sees is also the shape it cannot branch on.
+        ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
         payload: row.payload === null ? undefined : JSON.parse(row.payload),
       });
     }

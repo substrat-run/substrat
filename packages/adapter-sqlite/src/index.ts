@@ -756,6 +756,9 @@ interface OutboxRow {
   pii_class: string;
   subject_id: string | null;
   authorization: string | null;
+  /** K-42: the staff actor + session, when the event was raised under one. NULL is
+   *  the ordinary case, and a row written before impersonation existed. */
+  impersonation: string | null;
   payload: string | null;
 }
 
@@ -3541,6 +3544,11 @@ export class SqliteScopeHost implements ScopeHost {
       piiClass: row.pii_class,
       ...(row.subject_id ? { subjectId: row.subject_id } : {}),
       ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
+      // K-42: the stamp survives the read, so a consumer's event and an executor's
+      // are the same fact the stored row is. Absent rather than null when nobody
+      // was impersonating, because `DomainEvent.impersonation` is optional — the
+      // shape module code never sees is also the shape it cannot branch on.
+      ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
       payload: row.payload === null ? undefined : JSON.parse(row.payload),
     });
   }

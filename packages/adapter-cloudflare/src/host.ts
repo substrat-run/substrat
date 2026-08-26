@@ -2504,7 +2504,15 @@ export class CloudflareScopeHost implements ScopeHost {
               'been migrated',
           );
         }
-        const drained = await this.drainExecutors(tenantId, scopeId);
+        // K-42, the coordinator half of the pure adapter's post-commit guard: a
+        // read-only session's transaction was rolled back, so it added nothing to
+        // this scope's outbox — and draining anyway would run executors and
+        // connectors as a side effect of a session that may not have side effects.
+        // Whatever the outbox already held is the drain sweep's own backstop.
+        const drained =
+          session?.mode === 'read-only'
+            ? { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0, routedToPlatform: 0 }
+            : await this.drainExecutors(tenantId, scopeId);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
         // Routed connector deliveries (#574 phase 3) count too: the inline drain just

@@ -205,6 +205,29 @@ export const gateModManifest = moduleManifest.parse({
   entitlementKey: 'gate',
 });
 
+/**
+ * K-42 (#868): a CONSUMER of `perm.acted`, whose whole job is to answer the
+ * question a raw outbox read cannot — does the two-actor stamp survive the trip
+ * from the stored row back into a `DomainEvent`? An adapter that writes the column
+ * and drops it on the way out passes every assertion that reads SQL directly, and
+ * still hands its consumers an event with no administrative actor on it.
+ *
+ * Only the impersonation suite reads `imp_echo`, so it is inert everywhere else.
+ */
+export const impersonationEchoManifest = moduleManifest.parse({
+  id: '@imp/echo',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [],
+  events: {
+    emits: [],
+    consumes: [{ type: 'perm.acted', schemaVersion: 1 }],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'imp-echo',
+});
+
 export const permModManifest = moduleManifest.parse({
   id: '@perm/mod',
   version: '1.0.0',
@@ -937,6 +960,32 @@ export const billedMod: ModuleRegistration = {
   },
 };
 
+export const impersonationEchoMod: ModuleRegistration = {
+  manifest: impersonationEchoManifest,
+  migrations: [
+    {
+      version: '0001-init',
+      sql: 'CREATE TABLE imp_echo (event_id TEXT PRIMARY KEY, impersonation TEXT)',
+    },
+  ],
+  operations: {
+    'imp-echo/seen': ((ctx) =>
+      ctx.sql.query(
+        'SELECT event_id, impersonation FROM imp_echo ORDER BY event_id',
+      )) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    // The stamp as the CONSUMER received it, JSON-encoded so an absent one and a
+    // null one stay distinguishable in the assertion.
+    'perm.acted': ((ctx, event) => {
+      ctx.sql.exec('INSERT INTO imp_echo (event_id, impersonation) VALUES (?, ?)', [
+        event.id,
+        event.impersonation === undefined ? null : JSON.stringify(event.impersonation),
+      ]);
+    }) as ConsumerHandler,
+  },
+};
+
 export const permMod: ModuleRegistration = {
   manifest: permModManifest,
   operations: {
@@ -1589,6 +1638,10 @@ export const contractTestModules: ModuleRegistration[] = [
   lateMod,
   billedMod,
   permMod,
+  // K-42 (#868): the consumer that proves the two-actor stamp survives the outbox
+  // read. It consumes `perm.acted` and writes one row per delivery; nothing else
+  // in the kit reads `imp_echo`, so it is inert for every other suite.
+  impersonationEchoMod,
   connectorMod,
   scheduleMod,
   atomicMod,

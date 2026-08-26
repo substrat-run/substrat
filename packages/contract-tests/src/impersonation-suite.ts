@@ -46,7 +46,7 @@ import {
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
-import { permMod } from './modules.js';
+import { impersonationEchoMod, permMod } from './modules.js';
 
 const PERM_USE = permissionKey.parse('perm:use');
 
@@ -60,6 +60,11 @@ interface DenialRow {
   actor: string;
   permission: string;
   operation: string | null;
+  impersonation: string | null;
+}
+
+interface EchoRow {
+  event_id: string;
   impersonation: string | null;
 }
 
@@ -112,8 +117,11 @@ export function impersonationContractSuite(
       fixture = await makeFixture();
       host = fixture.host;
       host.registerModule(permMod);
+      // K-42: the read-back half of the stamp — see the test that reads `imp-echo/seen`.
+      host.registerModule(impersonationEchoMod);
       await host.admin.createTenant(staff, { id: t1, slug: 'imp-tenant', name: 'Imp Tenant' });
       await host.admin.grantEntitlement(staff, t1, 'perm');
+      await host.admin.grantEntitlement(staff, t1, 'imp-echo');
       await host.admin.defineRole(staff, t1, {
         key: 'imp-user',
         permissions: [PERM_USE],
@@ -293,6 +301,38 @@ export function impersonationContractSuite(
         await stub.invoke('perm/authorized-emit', { permission: PERM_USE });
         const outbox = await stub.invoke<OutboxRow[]>('perm/read-outbox');
         expect(outbox.find((e) => e.type === 'perm.acted')!.impersonation).toBeNull();
+      });
+
+      /**
+       * The stamp is written by `ctx.emit` and read back by whatever turns a stored
+       * outbox row into a `DomainEvent`. Those are two different pieces of code in
+       * both adapters, and the tests above only exercise the first: they read the
+       * row with SQL. An adapter that stores the column and drops it on the way out
+       * passes every one of them while handing its consumers — and its executors,
+       * which is how an outbound effect gets made — an event with no administrative
+       * actor on it at all.
+       */
+      it('keeps the stamp on the event a CONSUMER receives, not only on the row', async () => {
+        const scope = await freshScope();
+        const session = await openSession(scope, { mode: 'write' });
+        const stub = await host.getImpersonatedScope(session.id, t1, scope);
+        await stub.invoke('perm/authorized-emit', { permission: PERM_USE });
+
+        const asAnna = await host.getScope(anna, t1, scope);
+        const seen = await asAnna.invoke<EchoRow[]>('imp-echo/seen');
+        expect(seen).toHaveLength(1);
+        expect(JSON.parse(seen[0]!.impersonation!)).toEqual({ session: session.id, by: staff });
+      });
+
+      /** And the null half, on the same reasoning as `writes no stamp when nobody is
+       *  impersonating`: a stamp on the delivered event is evidence of a session. */
+      it('delivers no stamp to a consumer when nobody is impersonating', async () => {
+        const scope = await freshScope();
+        const stub = await host.getScope(anna, t1, scope);
+        await stub.invoke('perm/authorized-emit', { permission: PERM_USE });
+        const seen = await stub.invoke<EchoRow[]>('imp-echo/seen');
+        expect(seen).toHaveLength(1);
+        expect(seen[0]!.impersonation).toBeNull();
       });
 
       it('stamps a platform intent the session raised', async () => {
