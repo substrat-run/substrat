@@ -121,8 +121,10 @@ await completeWorkOrder(ctx, { orderId }).catch(() => null);   // not flagged
 
 // 3. An UNBRACED conditional rethrow as the catch's last statement.
 try { await completeWorkOrder(ctx, { orderId }); }
-catch (e) { if (rare) throw e; }                               // not flagged — reads as a rethrow
-catch (e) { if (rare) { throw e } }                            // flagged: the throw is not the last statement
+catch (e) { if (rare) throw e; }        // not flagged — the throw is the last top-level statement
+
+try { await completeWorkOrder(ctx, { orderId }); }
+catch (e) { if (rare) { throw e } }     // flagged — braced, so the throw is not that statement
 ```
 
 Widening any of these is a change to the linter with fixtures, not a change of character.
