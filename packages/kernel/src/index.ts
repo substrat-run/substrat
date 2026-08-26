@@ -176,9 +176,11 @@ export {
 } from './entity-version.js';
 export {
   assertImpersonationLive,
+  impersonationRejection,
   impersonatorLabel,
   stampImpersonation,
 } from './impersonation.js';
+export type { ImpersonationRejection } from './impersonation.js';
 export { readTimeline, readHistory } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 export {

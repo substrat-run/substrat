@@ -130,6 +130,12 @@ export const adminAction = z.enum([
   // session that reads and writes nothing would otherwise leave no trace at all. The
   // `after` carries who was acted as, the stated reason, and when the window closes.
   'impersonate',
+  // …and the same act REFUSED — an expired window, a reason that is only whitespace.
+  // Its own action rather than an `impersonate` row with a flag: a reader asking who
+  // acted as whom must not have to know that some of those rows are attempts. This is
+  // also the half a probe shows up in, so a log holding only the accepted mints would
+  // show a clean history of exactly the sessions that worked.
+  'impersonateRejected',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

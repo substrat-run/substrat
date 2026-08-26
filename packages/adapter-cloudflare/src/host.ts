@@ -125,6 +125,7 @@ import {
   attachmentBlobKey,
   entitlementDenial,
   foldMeterReading,
+  impersonationRejection,
   parseValidationRecords,
   resolveScopeRecord,
   stampImpersonation,
@@ -2209,6 +2210,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * a session that then fails to mint is still visible. A principal acting as
    * another principal is a tenant's own act and the admin log is the platform's
    * (§4.4) — attributing it there would need a platform actor it does not have.
+   *
+   * A mint the stamp REFUSES is logged too, as `impersonateRejected` — the same door
+   * behaviour as the pure adapter, for the same reason: validation runs before the
+   * accepted entry can be written, so an expired window or an empty reason would
+   * otherwise leave no trace of the attempt at all.
    */
   async getImpersonatedScope(
     session: ImpersonationRequest,
@@ -2217,7 +2223,22 @@ export class CloudflareScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
-    const stamped = stampImpersonation(session, instant.parse(new Date().toISOString()));
+    let stamped: Impersonation;
+    try {
+      stamped = stampImpersonation(session, instant.parse(new Date().toISOString()));
+    } catch (err) {
+      const rejection = impersonationRejection(session, principal, err);
+      if (rejection) {
+        await this.recordAdmin(
+          rejection.staff,
+          'impersonateRejected',
+          { tenantId, scopeId },
+          null,
+          rejection.after,
+        );
+      }
+      throw err;
+    }
     if (typeof stamped.by !== 'string') {
       await this.recordAdmin(stamped.by.staff, 'impersonate', { tenantId, scopeId }, null, {
         principal,

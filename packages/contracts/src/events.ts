@@ -93,7 +93,9 @@ export const IMPERSONATION_REASON_MAX = 200;
  * `reason` is REQUIRED and not a comment, the same discipline as the conformance
  * kit's `alsoGrant.because`: an impersonation with no stated reason is the one
  * nobody can review afterwards, and "there was a ticket" is not recoverable from
- * a row that does not hold it.
+ * a row that does not hold it. Trimmed BEFORE the length is judged, so `" "` is
+ * the empty reason it is rather than a one-character one — a required field a
+ * space satisfies is an optional field with extra steps.
  *
  * `expiresAt` is stamped by the host at mint rather than taken on trust
  * (`impersonationRequest` is the input form), so a session is a session and not a
@@ -102,7 +104,7 @@ export const IMPERSONATION_REASON_MAX = 200;
  */
 export const impersonation = z.object({
   by: impersonator,
-  reason: z.string().min(1).max(IMPERSONATION_REASON_MAX),
+  reason: z.string().trim().min(1).max(IMPERSONATION_REASON_MAX),
   /** ISO 8601. The host refuses an invoke at or after it. */
   expiresAt: instant,
 });

@@ -202,6 +202,25 @@ export function impersonationContractSuite(
       expect(forged[0]!.impersonation).toBeNull();
     });
 
+    it('ignores forged metadata INSIDE a session, keeping the kernel-stamped one', async () => {
+      const stub = await host.getImpersonatedScope(session, anna, t1, s1);
+      await stub.invoke('perm/forge-emit', { permission: PERM_USE, entityId: 'forged-in-session' });
+      const row = (await outbox()).find((r) => r.entity_id === 'forged-in-session');
+      expect(row, 'the forged emit never landed').toBeDefined();
+      const stamped = decoded(row!.impersonation);
+      // The other direction of the same property, and the one that actually matters:
+      // outside a session an adapter can pass by dropping untrusted metadata, while
+      // inside one it could just as easily let that metadata REPLACE the session —
+      // which is a module rewriting who was there and why. All three fields are the
+      // door's, none are the handler's.
+      expect(stamped?.by).toEqual({ staff: nadia });
+      expect(stamped?.reason).toBe(session.reason);
+      expect(stamped?.expiresAt).not.toBe('2099-01-01T00:00:00Z');
+      expect(Date.parse(stamped!.expiresAt)).toBeLessThanOrEqual(
+        Date.now() + IMPERSONATION_MAX_MINUTES * 60_000 + 5_000,
+      );
+    });
+
     it('records both actors on a DENIAL', async () => {
       const stub = await host.getImpersonatedScope(session, mallory, t1, s1);
       await expect(
@@ -295,6 +314,35 @@ export function impersonationContractSuite(
       // session that reads and writes nothing leaves behind at all.
       expect(entry.actor).toBe(nadia);
       expect(entry.after).toMatchObject({ principal: anna, reason: session.reason });
+    });
+
+    it('records a REFUSED staff mint as its own admin action', async () => {
+      const rejected = async (): Promise<number> =>
+        (await host.admin.auditLog(staff, { action: 'impersonateRejected' })).length;
+      const before = await rejected();
+      const past = instant.parse(new Date(Date.now() - 60_000).toISOString());
+      await expect(
+        host.getImpersonatedScope({ ...session, expiresAt: past }, anna, t1, s1),
+      ).rejects.toThrow();
+      // The attempt is the half a probe shows up in: validation runs before the
+      // accepted entry can be written, so a log holding only the mints that succeeded
+      // would show a clean history of exactly the sessions that worked.
+      expect(await rejected()).toBe(before + 1);
+      const entry = (await host.admin.auditLog(staff, { action: 'impersonateRejected' })).at(-1)!;
+      expect(entry.actor).toBe(nadia);
+      expect(entry.after).toMatchObject({ principal: anna });
+    });
+
+    it('refuses a reason that is only whitespace, and audits that attempt too', async () => {
+      const rejected = async (): Promise<number> =>
+        (await host.admin.auditLog(staff, { action: 'impersonateRejected' })).length;
+      const before = await rejected();
+      // A required field a single space satisfies is an optional field with extra
+      // steps — and `reason` is the whole reviewability of the feature.
+      await expect(
+        host.getImpersonatedScope({ by: { staff: nadia }, reason: '   ' }, anna, t1, s1),
+      ).rejects.toThrow();
+      expect(await rejected()).toBe(before + 1);
     });
 
     it('lets a PRINCIPAL act as another principal, with no admin-log entry', async () => {

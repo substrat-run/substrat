@@ -148,6 +148,7 @@ import {
   attachmentBlobKey,
   entitlementDenial,
   foldMeterReading,
+  impersonationRejection,
   parseValidationRecords,
   resolveScopeRecord,
   stampImpersonation,
@@ -2517,6 +2518,11 @@ export class SqliteScopeHost implements ScopeHost {
    * tenant's own act, and the admin log is the PLATFORM's (§4.4) — writing a
    * tenant act there would need a platform actor to attribute it to, and inventing
    * one is exactly the laundering this whole feature exists to avoid.
+   *
+   * A mint the stamp REFUSES is logged too, as `impersonateRejected`. Validation runs
+   * before the accepted entry can be written, so without this an expired window or an
+   * empty reason would leave the log showing a clean history of exactly the attempts
+   * that worked — and a probe is precisely the shape that fails.
    */
   async getImpersonatedScope(
     session: ImpersonationRequest,
@@ -2525,7 +2531,22 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub> {
-    const stamped = stampImpersonation(session, this.clock());
+    let stamped: Impersonation;
+    try {
+      stamped = stampImpersonation(session, this.clock());
+    } catch (err) {
+      const rejection = impersonationRejection(session, principal, err);
+      if (rejection) {
+        this.recordAdmin(
+          rejection.staff,
+          'impersonateRejected',
+          { tenantId, scopeId },
+          null,
+          rejection.after,
+        );
+      }
+      throw err;
+    }
     if (typeof stamped.by !== 'string') {
       this.recordAdmin(stamped.by.staff, 'impersonate', { tenantId, scopeId }, null, {
         principal,

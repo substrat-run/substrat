@@ -44,12 +44,16 @@
  */
 import {
   IMPERSONATION_MAX_MINUTES,
+  IMPERSONATION_REASON_MAX,
   impersonation as impersonationSchema,
   impersonationRequest,
+  platformActorId,
   substratError,
   type Impersonation,
   type ImpersonationRequest,
   type Instant,
+  type PlatformActorId,
+  type PrincipalId,
 } from '@substrat-run/contracts';
 
 /** The ceiling, in milliseconds — the only place the minutes become a duration. */
@@ -81,6 +85,60 @@ export function stampImpersonation(request: ImpersonationRequest, now: Instant):
       ? asked.expiresAt
       : ceiling;
   return impersonationSchema.parse({ by: asked.by, reason: asked.reason, expiresAt });
+}
+
+/** What a refused staff mint leaves in the admin log — bounded, and never the raw ask. */
+export interface ImpersonationRejection {
+  /** Who asked. The admin log needs an actor, and this is the only one there is. */
+  staff: PlatformActorId;
+  /** The `after` payload, shaped like the accepted entry's so the two read side by side. */
+  after: {
+    principal: PrincipalId;
+    reason: string | null;
+    expiresAt: string | null;
+    rejected: string;
+  };
+}
+
+/**
+ * Describe a staff mint that `stampImpersonation` REFUSED, so the attempt is
+ * audited rather than silent (#915 review).
+ *
+ * A rejection is the interesting half of the log: an expired window or an empty
+ * reason is what a probe looks like, and the accepted entries alone would show a
+ * clean history of exactly the sessions that worked. Written as its own action
+ * rather than as an `impersonate` entry with a flag — a reader filtering the log
+ * for who acted as whom must not have to know that some of those rows are attempts.
+ *
+ * Everything here comes off an input that failed validation, so nothing is trusted:
+ * `reason` and the error text are truncated to the same ceiling the schema enforces,
+ * and a `by` that names no platform actor returns `null` — a request that never said
+ * who was asking cannot be attributed to anyone, and inventing an actor to hold it is
+ * the laundering this feature exists to prevent. That case is refused before any
+ * scope work happens, and the caller still gets the throw.
+ */
+export function impersonationRejection(
+  request: ImpersonationRequest,
+  principal: PrincipalId,
+  error: unknown,
+): ImpersonationRejection | null {
+  const by: unknown = (request as { by?: unknown })?.by;
+  const staff = platformActorId.safeParse(
+    typeof by === 'object' && by !== null ? (by as { staff?: unknown }).staff : undefined,
+  );
+  if (!staff.success) return null;
+  const bounded = (value: unknown): string | null =>
+    typeof value === 'string' ? value.slice(0, IMPERSONATION_REASON_MAX) : null;
+  return {
+    staff: staff.data,
+    after: {
+      principal,
+      reason: bounded((request as { reason?: unknown })?.reason),
+      expiresAt: bounded((request as { expiresAt?: unknown })?.expiresAt),
+      rejected:
+        bounded(error instanceof Error ? error.message : String(error)) ?? 'impersonation refused',
+    },
+  };
 }
 
 /**

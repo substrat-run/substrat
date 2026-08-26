@@ -494,6 +494,16 @@ const probeOp: OperationHandler<{ permission: PermissionKey; entity?: EntityRef 
   input,
 ) => ctx.check(input.permission, input.entity);
 
+/**
+ * The two keys `@perm/mod` declares, as the operations below spend them.
+ *
+ * The guarded reads take a key of their own rather than one off the input: an
+ * operation whose gate the CALLER names is not gated, and these are the ones that
+ * hand back the audit spine.
+ */
+const PERM_READ = permissionKey.parse('perm:read');
+const PERM_USE = permissionKey.parse('perm:use');
+
 // Assert a permission, then emit — the shape a real mutating operation has. Exercises
 // K-34 (the emitted event carries the passed check as `authorization`) and, when the
 // check is refused, K-35 (assertAllowed throws → the host records a denial and rolls back).
@@ -523,17 +533,27 @@ const authorizedReadOp: OperationHandler<{ permission: PermissionKey }, number> 
   return ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM testmod_items')[0]!.n;
 };
 
-const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
-  ctx.sql.query(
+/**
+ * The kernel spine these read is audit data — who acted, what was refused, under
+ * whose session — so they are guarded like any other read of it, first line. A
+ * suite that wants the rows unguarded would be asserting on a surface no real
+ * module is allowed to have.
+ */
+const readOutboxOp: OperationHandler<undefined, unknown> = async (ctx) => {
+  assertAllowed(await ctx.check(PERM_READ));
+  return ctx.sql.query(
     'SELECT id, type, entity_id, actor, authorization, impersonation ' +
       'FROM _substrat_outbox ORDER BY id',
   );
+};
 
-const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
-  ctx.sql.query(
+const readDenialsOp: OperationHandler<undefined, unknown> = async (ctx) => {
+  assertAllowed(await ctx.check(PERM_READ));
+  return ctx.sql.query(
     'SELECT actor, permission, tenant_id, scope_id, operation, impersonation ' +
       'FROM _substrat_denials ORDER BY id',
   );
+};
 
 /**
  * K-42: what the CONTEXT says about who is acting (#868).
@@ -541,10 +561,25 @@ const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
  * `principal` is whoever is being acted as — which is also the permission subject,
  * and the pair is the assertion: the two can never be allowed to disagree.
  */
-const whoamiOp: OperationHandler<undefined, unknown> = (ctx) => ({
-  principal: ctx.principal,
-  impersonation: ctx.impersonation ?? null,
-});
+const whoamiOp: OperationHandler<undefined, unknown> = async (ctx) => {
+  assertAllowed(await ctx.check(PERM_READ));
+  return {
+    principal: ctx.principal,
+    impersonation: ctx.impersonation ?? null,
+  };
+};
+
+/**
+ * Journal a platform intent — the third record a scope keeps about who did what.
+ *
+ * Gated on the module's own `perm:use` rather than on a key named in the input,
+ * and gated BEFORE the input is touched at all: requesting platform work is the
+ * mutating half of this pair, so the check is the first line and reads nothing.
+ */
+const requestPlatformOp: OperationHandler<{ kind: string }, unknown> = async (ctx, input) => {
+  assertAllowed(await ctx.check(PERM_USE));
+  return { id: ctx.requestPlatform({ kind: input.kind, payload: {} }) };
+};
 
 /**
  * K-42's forgery attempt, as an operation: module code CLAIMING a session.
@@ -553,13 +588,20 @@ const whoamiOp: OperationHandler<undefined, unknown> = (ctx) => ({
  * exactly what a module determined to launder an act would write. The suite
  * asserts the emitted row is unaffected, i.e. that the stamp comes from the door
  * and the input is parsed against a schema that has no such field.
+ *
+ * `entityId` is an input so the suite can run this twice — once outside a session
+ * and once INSIDE one — and tell the two rows apart. The forgery has to be refused
+ * both ways round: it must not invent a session, and it must not displace one.
  */
-const forgeEmitOp: OperationHandler<{ permission: PermissionKey }, void> = async (ctx, input) => {
+const forgeEmitOp: OperationHandler<
+  { permission: PermissionKey; entityId?: string },
+  void
+> = async (ctx, input) => {
   assertAllowed(await ctx.check(input.permission));
   ctx.emit({
     type: 'perm.acted',
     schemaVersion: 1,
-    entity: { entityType: 'test-thing', entityId: 'forged' },
+    entity: { entityType: 'test-thing', entityId: input.entityId ?? 'forged' },
     piiClass: 'none',
     payload: {},
     impersonation: { by: { staff: ulid() }, reason: 'forged', expiresAt: '2099-01-01T00:00:00Z' },
@@ -950,23 +992,23 @@ export const permMod: ModuleRegistration = {
     // keeps about who did what — the platform-intent journal.
     'perm/whoami': whoamiOp as OperationHandler<never, unknown>,
     'perm/forge-emit': forgeEmitOp as OperationHandler<never, unknown>,
-    'perm/request-platform': (async (ctx, input) => {
-      const i = input as { permission: PermissionKey; kind: string };
-      assertAllowed(await ctx.check(i.permission));
-      return { id: ctx.requestPlatform({ kind: i.kind, payload: {} }) };
+    'perm/request-platform': requestPlatformOp as OperationHandler<never, unknown>,
+    'perm/read-platform-requests': (async (ctx) => {
+      assertAllowed(await ctx.check(PERM_READ));
+      return ctx.platformRequests();
     }) as OperationHandler<never, unknown>,
-    'perm/read-platform-requests': ((ctx) => ctx.platformRequests()) as OperationHandler<
-      never,
-      unknown
-    >,
     // The kernel's own timeline read (#800), so the suite can assert that what a
-    // history strip renders carries the session and not just the actor.
-    'perm/timeline': ((ctx, input: { entityType: string; entityId: string } & ListPage) =>
-      readTimeline(
+    // history strip renders carries the session and not just the actor. `readTimeline`
+    // leaves the permission posture to its caller, which makes the check here the
+    // only thing standing in front of an entity's history.
+    'perm/timeline': (async (ctx, input: { entityType: string; entityId: string } & ListPage) => {
+      assertAllowed(await ctx.check(PERM_READ));
+      return readTimeline(
         ctx,
         { entityType: input.entityType, entityId: input.entityId },
         input,
-      )) as OperationHandler<never, unknown>,
+      );
+    }) as OperationHandler<never, unknown>,
     // #304: read the request-time entitlement view — used by the scope-local (projected)
     // and CP-less path tests to prove a hosted vertical reads entitlements without a CP.
     'perm/read-entitlement': (async (ctx, key) =>

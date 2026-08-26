@@ -32,7 +32,13 @@ acting as Anna* rather than *Anna*. It is absent from `DomainEventInput` exactly
 
 Sessions are bounded (`expiresAt`, defaulted and capped at `IMPERSONATION_MAX_MINUTES`,
 enforced per INVOKE rather than at the mint — a stub is held for as long as its holder
-likes) and reason-carrying by schema.
+likes) and reason-carrying by schema — trimmed before the length is judged, so a reason
+of `" "` is the empty one it is.
+
+A staff mint the validation REFUSES is admin-logged too, as its own `impersonateRejected`
+action. The check runs before the accepted entry can be written, so without it an expired
+window or an empty reason would leave the log showing a clean history of exactly the
+sessions that worked — and an attempt is the shape a probe has.
 
 Both adapters implement it and a shared contract suite holds them to it. On the Cloudflare
 adapter the ScopeDO acknowledges that it recorded the session and the coordinator refuses
