@@ -1,4 +1,11 @@
-import { entityRef, moduleManifest, permissionKey, substratError, type OrgId } from '@substrat-run/contracts';
+import {
+  entityRef,
+  moduleManifest,
+  operationInputsOf,
+  permissionKey,
+  substratError,
+  type OrgId,
+} from '@substrat-run/contracts';
 
 /**
  * The conflict reasons this engine raises — its own vocabulary, narrowing the platform's
@@ -22,6 +29,10 @@ const conflict = (reason: InvitesConflictReason, message: string) => substratErr
 // entity-type constants its relation edges name, and the row schema to declare
 // an operation's output against without retyping this engine's shape.
 export { invitation, invitesEntities, invitationRow } from './entities.js';
+// The declared operation surface (#865): what each operation checks and takes,
+// readable by the conformance kit and by a composing vertical's routes.
+export { invitesOperations, INVITES_PERMISSIONS } from './operations.js';
+import { invitesOperations } from './operations.js';
 import {
   assertAllowed,
   ulid,
@@ -377,6 +388,8 @@ const revokeOp: OperationHandler<{ invitationId: string }, void> = async (ctx, i
 export const invitesModule: ModuleRegistration = {
   manifest: invitesManifest,
   migrations: invitesMigrations,
+  // Parse, don't trust: the HOST applies the declared schemas, on every path in.
+  operationInputs: operationInputsOf(invitesOperations),
   operations: {
     'invites/send': sendOp as unknown as OperationHandler<never, unknown>,
     'invites/accept': acceptOp as unknown as OperationHandler<never, unknown>,

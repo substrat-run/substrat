@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-manyfold
 
-no declared operation surface · 0 narrowed checks · assessed node-only
+21 operations · 0 narrowed checks · assessed node-only
 
 ## 1. Kernel-enforced properties
 
@@ -27,26 +27,30 @@ inherits them by running on the platform; nothing in the app's own code can opt 
 
 ## 2. This app's entity checks — none, and that is the assessment
 
-Twenty-five checks across `author`, `review`, `publish`, `read`, `admin` and `manage-sites`, every one at the node — the editorial model working as designed. Authority here is a ROLE over the whole workspace, and a document's lifecycle gates who may act on it by its STATE rather than by who was granted that particular document. The strong half: `ENTITY_GRANTS` is empty, so a narrowed check would resolve against nothing and deny every caller.
+Twenty-one operations, every check at the node — the editorial model working as designed. Authority here is a ROLE over the whole workspace, and a document’s lifecycle gates who may act on it by its STATE rather than by who was granted that particular document. The strong half: `ENTITY_GRANTS` is empty, so a narrowed check would resolve against nothing and deny every caller. A per-site editorial boundary is the change that breaks both halves at once — it needs a grant shape in §4 of `PERMISSIONS.md` as well as narrowed checks here.
 
-**How this is established, and how much it proves.** This package has no declared
-operation surface for the kit to read, so the claim is a tripwire over the module's own
-source: no two-argument `ctx.check(perm, entityRef)` appears in it. That is weaker than
-the driven pair by a wide margin, and the difference is stated rather than left to be
-discovered:
+**How this is established.** This package declares its operation surface, so the claim is
+read off the declaration by the same `planEntityCheckCoverage` the conformance kit uses:
+the plan is empty. That is exact rather than lexical, and the day an operation declares a
+narrowed check the plan stops being empty and CI goes red.
 
-- It proves an **absence**, never a behaviour. The kit generates a case that fails on a
-  wrong implementation; this one only notices a new call site.
-- It is **lexical**. A check assembled indirectly — a helper taking the ref, a call built
-  across lines — is invisible to it.
-- It says nothing about whether node-only is **right**. That judgement is the prose above.
+A second assertion covers the other way this could read as coverage — an operation with no
+check **at all** also produces an empty plan, so emptiness alone cannot tell "checks at the
+node" from "checks nothing".
 
-What it buys: the day someone narrows an operation here, this goes red, and the change
-has to either declare the check and wire the real kit or rewrite the assessment.
+## 3. The rest of the surface
 
-Source covered: `demos/manyfold/src/module.ts`
+Not every operation should narrow. Authority over a scope-wide act — creating a record,
+configuring the workspace — belongs at the node, and declaring an entity check there
+would be wrong rather than safer. These are counted here so that "no entity check" reads
+as an assessment rather than as silence.
 
-## 3. Not covered by this artifact
+| Kind | Count | Operations |
+| --- | --- | --- |
+| Node-level check | 21 | `manyfold/approve`, `manyfold/archive`, `manyfold/archive-site`, `manyfold/create-entry`, `manyfold/delete-type`, `manyfold/deliver`, `manyfold/get-entry`, `manyfold/list-delivery`, `manyfold/list-entries`, `manyfold/list-types`, `manyfold/publish`, `manyfold/reject`, `manyfold/request-site`, `manyfold/restore-revision`, `manyfold/review-queue`, `manyfold/save-draft`, `manyfold/save-type`, `manyfold/submit-for-review`, `manyfold/timeline`, `manyfold/unpublish`, `manyfold/whoami` |
+| Per-entity proof walk (`narrows`) | 0 | — |
+
+## 4. Not covered by this artifact
 
 - **This is a statement of what is asserted, not a record that it passed.** The assertions
   live in `test/entity-checks.test.ts` and run on every CI job; a red one blocks the merge.
