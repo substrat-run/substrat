@@ -88,3 +88,51 @@ The inbox filters narrow the read **on the server**: `state`, `assignee`, `chann
 the `WHERE` and provisions the indexes from the same operation's `filterable`. A chip
 that says "State: Open" over an unfiltered list is a promise the screen is not keeping,
 so they are wired rather than drawn. "Assigned to me" is the same mechanism.
+
+## Deploying it
+
+ticket0 is a pushable vertical: `src/worker.ts` is the deploy entry (sandbox-clean,
+control-plane-less — one `ScopeDO` per desk plus the shared per-tenant `IdentityDO`),
+and `substrat.runtimeNeeds` in package.json is the whole deploy config. There is no
+wrangler.jsonc; the CLI derives one.
+
+```sh
+substrat push                       # bundles the worker, builds app/ + widget.js as assets
+substrat promote ticket0 --channel prod --version <id> --ack-permissions --ack-migrations
+substrat hostnames bind ticket0 --surface app
+```
+
+Three things differ from `pnpm dev`, and all three live in `worker.ts`:
+
+| | dev server | hosted |
+|---|---|---|
+| which desk | the embedding origin, across two seeded desks on one node | the hostname the router resolved — one desk per install |
+| the login | `packages/dev-issuer` | whatever OIDC issuer the tenant bound (`substrat:auth`); the desk runs no credential store |
+| the assistant's turn | floated; node keeps the process alive | `executionCtx.waitUntil`, or the isolate cancels it mid-answer |
+
+Everything else is shared code: the `/api` table comes from `spec/model.ts` through
+`src/routes.ts`, and the public `/widget/*` surface is the same
+`harness/widget-surface.ts` both hosts mount.
+
+What a hosted desk does **not** get from a seed, and how it gets it instead:
+
+- **Three service accounts.** `/internal/provision` mints the desk's `widget`,
+  `assistant` and `relay` principals once and records them in the tenant's identity DO.
+  The assistant is minted SUPERVISED (`assistant` — drafts, never sends); handing it
+  `assistant-autonomous` is a decision an admin makes on purpose.
+- **Teammates and portal customers.** `POST /api/invites` — `desk-admin` / `agent` at
+  scope level, or `customer` with a `contactId`, which grants `conversation:read-own`
+  on that one contact and nothing else.
+- **A knowledge base.** A worker has no boot and a dispatch user-worker has no cron, so
+  the ingest is a button: `POST /api/kb/sources/:sourceId/refresh`, running as the
+  caller and refused unless they hold `kb:manage`.
+
+The model credentials are per-install (`CF_ACCOUNT_ID`, `CF_AI_TOKEN` in the dashboard's
+Env tab), never a deployment-wide binding — one serving script runs every desk, and a
+shared binding would bill them all to whoever set it last. A desk with neither still
+works: answers become extractive quotes, labelled `offline/extractive`.
+
+`substrat.outbound` declares the two hosts this vertical may reach — `api.cloudflare.com`
+(Workers AI) and `substrat.net` (this desk's own documentation). A desk pointed at
+somebody else's docs needs that host added to the declaration and a new version pushed;
+the egress allowlist is a fact about the version, not about the install.

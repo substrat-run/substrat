@@ -5,8 +5,9 @@
  *
  *   1. `/api/*` — the staff and portal surface, behind an ordinary OIDC login.
  *   2. `/widget/*` — the PUBLIC widget surface: unauthenticated, CORS'd, running as
- *      each desk's own widget service. This is the piece `vertical-host` does not have
- *      yet; here it is local so the design can be driven in a real browser.
+ *      each desk's own widget service. Mounted from `harness/widget-surface.ts`, which
+ *      `src/worker.ts` mounts too — it is the piece `vertical-host` does not have yet,
+ *      so this vertical's two hosts share one copy rather than keeping one each.
  *   3. Two fake customer websites on their own ports, so the widget's calls are
  *      genuinely cross-origin rather than same-origin against their own API.
  *
@@ -69,7 +70,7 @@ async function boot() {
   const port = Number(process.env.PORT ?? 8874);
   const apiOrigin = process.env.PUBLIC_ORIGIN ?? `http://localhost:${port}`;
   const desks: Desk[] = [world.substrat, world.kestrel];
-  const model = modelFromEnv();
+  const model = modelFromEnv(process.env);
 
   const app = new Hono();
   const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
@@ -106,57 +107,38 @@ async function boot() {
   const deskByOrigin = (origin: string): Desk | undefined =>
     desks.find((d) => d.origin === origin || d.devOrigins.includes(origin));
 
-  /**
-   * Origins the browser is allowed to talk from, read from the DESK rather than from
-   * the boot-time seed.
-   *
-   * There were two answers to one question: CORS consulted the seeded list while
-   * `widget-start` consulted `desk_settings.allowed_origins`, so an origin added
-   * through `configure-desk` passed the operation and was blocked by the browser, and
-   * one removed passed the browser and was refused by the operation. Cached briefly
-   * because this runs on every preflight.
-   *
-   * The union is deliberate: the seeded origins are a ROUTING fact (which desk owns
-   * which host — in production the router's job), while the desk's own list is the
-   * authorization fact. Letting a removed origin past CORS means the operation gets to
-   * refuse it with a sentence somebody can read, rather than the browser swallowing it.
-   */
-  let allowed: string[] = desks.flatMap((d) => [d.origin, ...d.devOrigins]);
-  const refreshOrigins = async () => {
-    const declared = await Promise.all(
-      desks.map(async (d) => {
-        try {
-          const admin = await host.getScope(d.admin.principal, d.tenant, d.scope);
-          const settings = await admin.invoke<{ allowed_origins: string }>('ticket0/get-desk', {});
-          return JSON.parse(settings.allowed_origins) as string[];
-        } catch {
-          return [];
-        }
-      }),
-    );
-    allowed = [
-      ...new Set([...desks.flatMap((d) => [d.origin, ...d.devOrigins]), ...declared.flat()]),
-    ];
-  };
-  void refreshOrigins();
-  // Refreshed in the background because the surface asks for this synchronously, on
-  // every preflight. A `configure-desk` change reaches CORS within five seconds.
-  setInterval(() => void refreshOrigins(), 5000).unref();
-
   mountWidgetSurface(app, {
-    allowedOrigins: () => allowed,
-    resolveDesk: async (origin) => {
+    /**
+     * One node, many desks — so here the EMBEDDING ORIGIN picks the desk. That is a
+     * dev-server fact: a hosted install has one desk per hostname and the router
+     * asserts it, which is what `src/worker.ts` resolves from instead.
+     */
+    resolveDesk: async (_c, origin) => {
       const desk = deskByOrigin(origin);
       if (!desk) return null;
       // Every widget call runs as this desk's widget service, which holds exactly one
       // key. The visitor has no principal and needs none.
       const stub = await host.getScope(desk.widget.principal, desk.tenant, desk.scope);
-      return { invoke: (op, input) => stub.invoke(op, input) as Promise<never> };
+      const invoke = <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T>;
+      /**
+       * The union is deliberate: the seeded origins are a ROUTING fact (which desk
+       * owns which host — in production the router's job), while the desk's own list
+       * is the authorization fact, read live through the desk's own widget service.
+       * Letting a removed origin past CORS means the operation gets to refuse it with
+       * a sentence somebody can read, rather than the browser swallowing it.
+       */
+      const declared = await invoke<{ origins: string[] }>('ticket0/widget-origins', {});
+      return {
+        invoke,
+        allowedOrigins: [...new Set([desk.origin, ...desk.devOrigins, ...declared.origins])],
+      };
     },
-    onCustomerMessage: ({ origin, conversationId, messageId, body }) => {
+    onCustomerMessage: (_c, { origin, conversationId, messageId, body }) => {
       const desk = deskByOrigin(origin);
       if (!desk) return;
-      // Not awaited: the model is somebody else's latency, and the widget polls.
+      // Not awaited: the model is somebody else's latency, and the widget polls. Safe
+      // to float HERE and nowhere else — node keeps the process alive; the worker has
+      // to hand the same promise to `executionCtx.waitUntil`.
       void answerFor(host, desk, { conversationId, messageId, body });
     },
   });
@@ -249,7 +231,7 @@ async function answerFor(
     const outcome = await answerConversation(
       { invoke: (op, input) => assistant.invoke(op, input) as Promise<never> },
       { conversationId: m.conversationId, messageId: m.messageId, question: m.body },
-      modelFromEnv(),
+      modelFromEnv(process.env),
     );
     process.stdout.write(
       `assistant · ${desk.origin} · ${outcome.outcome}` +
