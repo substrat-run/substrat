@@ -2,16 +2,23 @@
  * "This module narrows nowhere" — stated so it can stop being true loudly (#865).
  *
  * The conformance kit next door reads an operation's DECLARATION and drives the
- * pair that proves the handler honours it. Seven packages in this repo have no
- * declared operation surface for it to read: their operations are a map of
- * handlers, and the only description of what each one checks is the handler
- * itself. Building that surface is real work and is filed separately.
+ * pair that proves the handler honours it. This existed because seven packages
+ * in this repo had no declared operation surface for it to read: their
+ * operations were a map of handlers, and the only description of what each one
+ * checked was the handler itself.
  *
- * Meanwhile those packages carry the failure mode #865 named — **absence reading
- * as coverage**. Zero narrowed declarations is indistinguishable from nobody
- * having looked, and the packages where nobody looked are exactly the ones worth
- * looking at. So a module that genuinely checks only at the node says so here,
- * and the statement is wired to something that can go red.
+ * **No package in this repo is in that position any more.** #891 gave five of
+ * them a declared surface and #865's tail gave the last three theirs, so every
+ * module here uses `declaredNodeOnlySuite` below — the exact form — or the
+ * driven kit. This weaker instrument is kept and exported for a module that has
+ * not declared yet: a vertical mid-build, a module outside this workspace. It is
+ * a stepping stone, not a destination, and the stronger claim is one file away.
+ *
+ * What it addresses either way is the failure mode #865 named — **absence
+ * reading as coverage**. Zero narrowed declarations is indistinguishable from
+ * nobody having looked, and the packages where nobody looked are exactly the
+ * ones worth looking at. So a module that genuinely checks only at the node says
+ * so, and the statement is wired to something that can go red.
  *
  * ## What this actually checks, and what it cannot
  *
@@ -106,7 +113,10 @@ export function nodeOnlySuite(subjectName: string, options: NodeOnlyOptions): vo
  *
  * Generalised out of `engines/invoicing`, which wrote this by hand and was the
  * only package doing it — so the fleet census read it as unassessed twice, once
- * in #865's table and once while building the report that renders it.
+ * in #865's table and once while building the report that renders it. It is now
+ * what every node-only package in the repo uses: `engines/invites`,
+ * `engines/metering` and `demos/manyfold` moved here when they gained declared
+ * surfaces, which is the last of #865's checklist.
  *
  * The second assertion is the one that is easy to leave out. An operation with
  * NO check at all also produces an empty plan, so emptiness alone cannot tell

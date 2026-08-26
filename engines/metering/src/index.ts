@@ -4,6 +4,7 @@ import {
   compareDecimal,
   entityRef,
   moduleManifest,
+  operationInputsOf,
   permissionKey,
   type EntityRef,
   substratError,
@@ -51,6 +52,19 @@ import {
 // `metering.period-closed` event exactly like the timesheet hand-off. It is the
 // BILLABLE plane; platform metering stays Analytics Engine (D-A).
 // ============================================================================
+
+// The entity registry + declared operation surface (#697/#865): what is stored,
+// and what each operation checks and takes.
+export { meteringEntities, meterRow, entryRow, periodRow } from './entities.js';
+export {
+  meteringOperations,
+  METERING_PERMISSIONS,
+  meter,
+  usageEntry,
+  meteringPeriod,
+  periodLine,
+} from './operations.js';
+import { meteringOperations } from './operations.js';
 
 export const PERM = {
   read: permissionKey.parse('metering:read'),
@@ -663,6 +677,8 @@ const periodLinesOp: OperationHandler<{ periodId: string }, PeriodLine[]> = asyn
 export const meteringModule: ModuleRegistration = {
   manifest: meteringManifest,
   migrations: meteringMigrations,
+  // Parse, don't trust: the HOST applies the declared schemas, on every path in.
+  operationInputs: operationInputsOf(meteringOperations),
   operations: {
     'metering/configure-meter': configureMeterOp as OperationHandler<never, unknown>,
     'metering/list-meters': listMetersOp as OperationHandler<never, unknown>,

@@ -5,6 +5,7 @@ import {
   ARCHIVE_SCOPE_KIND,
   assertTransition,
   defineLifecycles,
+  operationInputsOf,
   substratError,
   type ListPage,
   type Page,
@@ -22,12 +23,12 @@ import {
 import {
   buildBodySchema,
   CONTENT_TYPES,
-  FIELD_TYPES,
   compileTypeToSql,
   referenceFields,
   type ContentTypeDef,
 } from './content-types.js';
 import { MF_PERM, manyfoldManifest } from './manifest.js';
+import { manyfoldOperations } from './operations.js';
 import { manyfoldMigrations } from './migrations.js';
 
 /**
@@ -51,28 +52,44 @@ const conflict = (reason: ManyfoldConflictReason, message: string) =>
 
 // ── Rows ────────────────────────────────────────────────────────────────────
 
-/**
- * The editorial statuses — **taken from the entity registry, not restated** (#844).
- * The column's `z.enum` is the one description; this reads its options.
- */
-export const ENTRY_STATUSES = manyfoldEntities['manyfold-entry'].fields.shape.status.options;
-export type EntryStatus = (typeof ENTRY_STATUSES)[number];
-
-// The operation input schemas — named and exported so the API catalog
-// (src/api.ts) documents the SAME objects the handlers parse
-// (design/api-surface.md §2.1). `body` stays `unknown` at this boundary on
-// purpose: an entry body's real schema is the CONTENT TYPE's, data-defined and
-// validated by buildBodySchema inside the operation.
-export const createEntryInput = z.object({ typeKey: z.string().min(1), body: z.unknown() });
-export const saveDraftInput = z.object({ entryId: z.string().min(1), body: z.unknown() });
-export const restoreRevisionInput = z.object({ entryId: z.string().min(1), revNo: z.number().int().positive() });
-export const entryIdInput = z.object({ entryId: z.string().min(1) });
-export const rejectInput = z.object({ entryId: z.string().min(1), note: z.string().min(1, 'a rejection needs a note') });
-export const listEntriesInput = z.object({ typeKey: z.string().min(1).optional(), status: z.enum(ENTRY_STATUSES).optional() });
-export const deliverInput = z.object({ typeKey: z.string().min(1), slug: z.string().min(1) });
-export const listDeliveryInput = z.object({ typeKey: z.string().min(1).optional() });
-export const deleteTypeInput = z.object({ key: z.string().min(1) });
-export const timelineInput = z.object({ entityType: z.string().min(1), entityId: z.string().min(1) });
+// The statuses and the operation input schemas moved to `schemas.ts` (#865): the
+// declared operation surface needs them, and this file needs the declaration for
+// `operationInputsOf`, so keeping them here would close a cycle. Re-exported so
+// every existing importer — the API catalog, the routes, the app — is unmoved.
+export {
+  ENTRY_STATUSES,
+  archiveSiteInput,
+  createEntryInput,
+  deleteTypeInput,
+  deliverInput,
+  entryIdInput,
+  listDeliveryInput,
+  listEntriesInput,
+  rejectInput,
+  requestSiteInput,
+  restoreRevisionInput,
+  saveDraftInput,
+  saveTypeInput,
+  timelineInput,
+  type EntryStatus,
+} from './schemas.js';
+import {
+  ENTRY_STATUSES,
+  archiveSiteInput,
+  createEntryInput,
+  deleteTypeInput,
+  deliverInput,
+  entryIdInput,
+  listDeliveryInput,
+  listEntriesInput,
+  rejectInput,
+  requestSiteInput,
+  restoreRevisionInput,
+  saveDraftInput,
+  saveTypeInput,
+  timelineInput,
+  type EntryStatus,
+} from './schemas.js';
 
 export interface EntryRow {
   id: string;
@@ -477,24 +494,6 @@ const listTypesOp: OperationHandler<undefined, { def: ContentTypeDef; sql: strin
 
 // ── Modelling: content types are data, authored by an admin ──────────────────
 
-const fieldDefInput = z.object({
-  type: z.enum(FIELD_TYPES),
-  required: z.boolean().optional(),
-  index: z.boolean().optional(),
-  options: z.array(z.string()).optional(),
-  target: z.string().optional(),
-  source: z.string().optional(),
-  maxLen: z.number().int().positive().optional(),
-});
-
-export const saveTypeInput = z.object({
-  key: z.string().regex(/^[a-z][a-z0-9_]*$/, 'key must be lower_snake, starting with a letter'),
-  title: z.string().min(1),
-  titleField: z.string().min(1),
-  slugField: z.string().optional(),
-  fields: z.record(z.string().regex(/^[a-z][a-zA-Z0-9]*$/, 'field names are lowerCamel'), fieldDefInput),
-});
-
 /**
  * Create or update a content type. Modelling is an ADMIN act. Every save bumps the type's
  * version (schema evolution = a new version; cms-content.md §5). The change is safe and
@@ -527,8 +526,6 @@ const saveTypeOp: OperationHandler<z.infer<typeof saveTypeInput>, ContentTypeDef
   return loadType(ctx, input.key);
 };
 
-export const requestSiteInput = z.object({ slug: z.string().min(1), name: z.string().min(1) });
-
 /**
  * Request a new SITE (multi-scope-manyfold.md M3). A tenant admin (`content:manage-sites`) asks the
  * platform to provision a sibling scope. The vertical cannot provision itself (sandbox-clean), so it
@@ -545,8 +542,6 @@ const requestSiteOp: OperationHandler<z.infer<typeof requestSiteInput>, { reques
   });
   return { requestId };
 };
-
-export const archiveSiteInput = z.object({ scopeId: z.string().min(1) });
 
 /**
  * Archive a site (multi-scope-manyfold.md). Admin-only (`content:manage-sites`). Like creation,
@@ -734,5 +729,9 @@ export const manyfoldLifecycles = defineLifecycles(
 export const manyfoldModule: ModuleRegistration = {
   manifest: manyfoldManifest,
   migrations: manyfoldMigrations,
+  // Parse, don't trust: the HOST applies the declared schemas, on every path in —
+  // the handlers' own `.parse` calls stay, and now agree with a declaration a
+  // reviewer can read (#865).
+  operationInputs: operationInputsOf(manyfoldOperations),
   operations: OPERATIONS,
 };
