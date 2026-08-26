@@ -256,6 +256,30 @@ function notify(
 
 const enc = new TextEncoder();
 
+/**
+ * Web Crypto — the same API in node, workerd and browsers, and the only crypto module
+ * code is allowed. Declared locally rather than reached through `globalThis` so this
+ * file types under BOTH lib sets: `tsconfig.json` compiles it with node's ambient
+ * types, `tsconfig.worker.json` with the Workers ones, and `typeof globalThis` does
+ * not carry `crypto` in the second. The engines' pattern.
+ */
+interface ImportedKey {
+  readonly __webCryptoKey: unique symbol;
+}
+declare const crypto: {
+  subtle: {
+    digest(algorithm: 'SHA-256', data: Uint8Array): Promise<ArrayBuffer>;
+    importKey(
+      format: 'raw',
+      keyData: Uint8Array,
+      algorithm: { name: 'HMAC'; hash: 'SHA-256' },
+      extractable: boolean,
+      usages: 'sign'[],
+    ): Promise<ImportedKey>;
+    sign(algorithm: 'HMAC', key: ImportedKey, data: Uint8Array): Promise<ArrayBuffer>;
+  };
+};
+
 function hex(buf: ArrayBuffer): string {
   return Array.from(new Uint8Array(buf))
     .map((b) => b.toString(16).padStart(2, '0'))
@@ -264,7 +288,7 @@ function hex(buf: ArrayBuffer): string {
 
 /** Web Crypto, the same API in Node, Workers and browsers. Never a hand-rolled hash. */
 async function sha256(value: string): Promise<string> {
-  return hex(await globalThis.crypto.subtle.digest('SHA-256', enc.encode(value)));
+  return hex(await crypto.subtle.digest('SHA-256', enc.encode(value)));
 }
 
 /**
@@ -281,14 +305,14 @@ async function verifyIdentity(
   externalId: string,
   signature: string,
 ): Promise<boolean> {
-  const key = await globalThis.crypto.subtle.importKey(
+  const key = await crypto.subtle.importKey(
     'raw',
     enc.encode(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
   );
-  const expected = hex(await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(externalId)));
+  const expected = hex(await crypto.subtle.sign('HMAC', key, enc.encode(externalId)));
   if (expected.length !== signature.length) return false;
   let diff = 0;
   for (let i = 0; i < expected.length; i += 1) {
@@ -1389,6 +1413,21 @@ const operations = {
   },
 
   // --- The widget ----------------------------------------------------------
+
+  /**
+   * The embedding allowlist, for the surface that has to answer a preflight.
+   *
+   * The desk's own list and nothing else — no seeded origins, no deployment default.
+   * `widget-start` refuses an unlisted origin below out of the same array, so the
+   * browser's answer and the operation's answer cannot disagree. They used to: the
+   * dev server's CORS consulted a boot-time list while this consulted the table, so
+   * an origin added through `configure-desk` passed the operation and was blocked by
+   * the browser, and one removed passed the browser and was refused here.
+   */
+  'ticket0/widget-origins': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationWidget));
+    return { origins: allowedOrigins(ctx) };
+  },
 
   'ticket0/widget-start': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationWidget));

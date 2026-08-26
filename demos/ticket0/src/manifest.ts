@@ -16,6 +16,7 @@ import {
   manifestOperations,
   moduleManifest,
   permissionKey,
+  type EnvVarSpec,
 } from '@substrat-run/contracts';
 import { ticket0Entities, ticket0Operations } from '../spec/model.js';
 
@@ -36,6 +37,83 @@ export const T0_PERM = {
   usageRead: permissionKey.parse('usage:read'),
   notificationReadOwn: permissionKey.parse('notification:read-own'),
 } as const;
+
+/**
+ * What a hosted install can be configured with — the dashboard's Env tab, and the
+ * ONLY way the worker reads any of these. A bare `env.CF_AI_TOKEN` would read the
+ * deployment-wide binding shared by every install of one serving script, so every
+ * tenant would be billed against whoever set it last (#374).
+ *
+ * Mirrored in package.json `substrat.envSpec`, which is what `substrat push` sends —
+ * the same duplication Meridian carries; no gate ties the two together yet.
+ */
+export const TICKET0_ENV: EnvVarSpec[] = [
+  {
+    key: 'AUTH_PROVIDER',
+    label: 'Auth provider',
+    description:
+      "OIDC-only: the desk runs no credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
+    placeholder: 'oidc',
+    default: 'oidc',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_ISSUER',
+    label: 'OIDC issuer',
+    description:
+      "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
+    placeholder: 'https://auth.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_AUDIENCE',
+    label: 'OIDC audience',
+    description: 'Expected `aud` claim of verified bearer tokens (optional; issuer-dependent).',
+    placeholder: 'https://api.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  /**
+   * The assistant's model. Absent, the desk still works: `modelFromEnv` falls back to
+   * the extractive model, which retrieves the best-matching section and quotes it,
+   * labelled `offline/extractive` so a turn record can never be mistaken for a
+   * generated answer. That is why neither of these is `required` — a desk with no
+   * model credential is a supported configuration, not a broken install.
+   */
+  {
+    key: 'CF_ACCOUNT_ID',
+    label: 'Cloudflare account id',
+    description:
+      'The account whose Workers AI runs the assistant. Without it (or without the token) answers are extractive quotes from the knowledge base rather than generated prose.',
+    placeholder: '0123456789abcdef0123456789abcdef',
+    required: false,
+    secret: false,
+    group: 'Assistant',
+  },
+  {
+    key: 'CF_AI_TOKEN',
+    label: 'Workers AI token',
+    description:
+      'API token with Workers AI read/run. Billed to the account above — which is why it is per-install and never a deployment-wide binding.',
+    required: false,
+    secret: true,
+    group: 'Assistant',
+  },
+  {
+    key: 'TICKET0_MODEL',
+    label: 'Model',
+    description: 'Which Workers AI model answers. Defaults to the one `workersAiModel` picks.',
+    placeholder: '@cf/meta/llama-3.1-8b-instruct',
+    required: false,
+    secret: false,
+    group: 'Assistant',
+  },
+];
 
 export const ticket0Manifest = moduleManifest.parse({
   id: '@substrat-run/demo-ticket0',
@@ -80,4 +158,12 @@ export const ticket0Manifest = moduleManifest.parse({
   }),
   lists: listsDeclaredBy(ticket0Operations, ticket0Entities),
   entitlementKey: 'ticket0',
+  envSpec: TICKET0_ENV,
+  // The desk DELEGATES sign-in (manifest `requires`, #427): at install the dashboard
+  // offers the tenant's `oidc-issuer` providers to bind — issuer from the provider's
+  // hostname, client minted by dynamic registration, delivered as `substrat:auth`.
+  // ticket0 runs no credential store at all, so this is how a hosted desk gets a
+  // login; the OIDC_* envSpec above is the hand-configured fallback for an
+  // externally-hosted issuer. Mirrored in `package.json` `substrat.requires`.
+  requires: ['oidc-issuer'],
 });

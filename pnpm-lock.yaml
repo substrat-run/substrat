@@ -1123,6 +1123,9 @@ importers:
       '@hono/node-server':
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.30)
+      '@substrat-run/adapter-cloudflare':
+        specifier: workspace:^
+        version: link:../../packages/adapter-cloudflare
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
@@ -1138,6 +1141,9 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
+      '@substrat-run/vertical-auth':
+        specifier: workspace:^
+        version: link:../../packages/vertical-auth
       '@substrat-run/vertical-host':
         specifier: workspace:^
         version: link:../../packages/vertical-host
@@ -1148,6 +1154,9 @@ importers:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 4.20260702.1
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
@@ -1169,6 +1178,9 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(tsx@4.23.1)(yaml@2.9.0)
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.123.0(@cloudflare/workers-types@4.20260702.1)
 
   demos/ticket0/app:
     dependencies:

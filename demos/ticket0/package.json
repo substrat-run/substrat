@@ -2,38 +2,45 @@
   "name": "@substrat-run/demo-ticket0",
   "version": "0.0.1",
   "private": true,
-  "description": "An AI-assisted support desk \u2014 chat widget, email relay, docs as knowledge base, tokens metered honestly",
+  "description": "An AI-assisted support desk — chat widget, email relay, docs as knowledge base, tokens metered honestly",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "server": "tsx src/server.ts",
     "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"pnpm run server\" \"pnpm --dir app dev\"",
-    "demo": "pnpm run dev"
+    "demo": "pnpm run dev",
+    "cf:dev": "wrangler dev --var ALLOW_DEV_NODE:true",
+    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker",
+    "build:assets": "pnpm --dir app build && node scripts/copy-widget.mjs"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
+    "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-metering": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/vertical-auth": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
     "hono": "^4.6.0",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/node": "catalog:",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
   },
   "substrat": {
     "slug": "ticket0",
@@ -67,6 +74,112 @@
       "out": "app/src/api.generated.ts",
       "name": "Ticket0"
     },
-    "conformance": "test/conformance.ts"
+    "conformance": "test/conformance.ts",
+    "tenant": "substrat-9yjbbn",
+    "entitlements": [
+      "ticket0"
+    ],
+    "requires": [
+      "oidc-issuer"
+    ],
+    "ownerGrants": [
+      "conversation:read",
+      "conversation:draft",
+      "conversation:reply-public",
+      "conversation:assign",
+      "conversation:resolve",
+      "conversation:merge",
+      "contact:read",
+      "kb:read",
+      "kb:manage",
+      "desk:configure",
+      "usage:read",
+      "notification:read-own"
+    ],
+    "envSpec": [
+      {
+        "key": "AUTH_PROVIDER",
+        "label": "Auth provider",
+        "description": "OIDC-only: the desk runs no credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
+        "placeholder": "oidc",
+        "default": "oidc",
+        "required": false,
+        "secret": false,
+        "group": "Auth"
+      },
+      {
+        "key": "OIDC_ISSUER",
+        "label": "OIDC issuer",
+        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
+        "placeholder": "https://auth.example.com",
+        "required": false,
+        "secret": false,
+        "group": "Auth"
+      },
+      {
+        "key": "OIDC_AUDIENCE",
+        "label": "OIDC audience",
+        "description": "Expected `aud` claim of verified bearer tokens (optional; issuer-dependent).",
+        "placeholder": "https://api.example.com",
+        "required": false,
+        "secret": false,
+        "group": "Auth"
+      },
+      {
+        "key": "CF_ACCOUNT_ID",
+        "label": "Cloudflare account id",
+        "description": "The account whose Workers AI runs the assistant. Without it (or without the token) answers are extractive quotes from the knowledge base rather than generated prose.",
+        "placeholder": "0123456789abcdef0123456789abcdef",
+        "required": false,
+        "secret": false,
+        "group": "Assistant"
+      },
+      {
+        "key": "CF_AI_TOKEN",
+        "label": "Workers AI token",
+        "description": "API token with Workers AI read/run. Billed to the account above — which is why it is per-install and never a deployment-wide binding.",
+        "required": false,
+        "secret": true,
+        "group": "Assistant"
+      },
+      {
+        "key": "TICKET0_MODEL",
+        "label": "Model",
+        "description": "Which Workers AI model answers. Defaults to the one `workersAiModel` picks.",
+        "placeholder": "@cf/meta/llama-3.1-8b-instruct",
+        "required": false,
+        "secret": false,
+        "group": "Assistant"
+      }
+    ],
+    "outbound": [
+      "api.cloudflare.com",
+      "substrat.net"
+    ],
+    "runtimeNeeds": {
+      "entry": "src/worker.ts",
+      "needsNodeCompat": true,
+      "build": "pnpm --dir app build && node scripts/copy-widget.mjs",
+      "stores": [
+        {
+          "binding": "SCOPE",
+          "class": "ScopeDO"
+        },
+        {
+          "binding": "AUTH",
+          "class": "IdentityDO"
+        }
+      ],
+      "assets": {
+        "directory": "app/dist",
+        "notFoundHandling": "single-page-application",
+        "runWorkerFirst": [
+          "/api/*",
+          "/internal/*",
+          "/openapi.json",
+          "/widget/*"
+        ]
+      }
+    }
   }
 }

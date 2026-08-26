@@ -13,5 +13,8 @@
     "harness",
     "test",
     "tools"
+  ],
+  "exclude": [
+    "src/worker.ts"
   ]
 }
