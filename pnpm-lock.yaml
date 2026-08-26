@@ -1118,6 +1118,80 @@ importers:
         specifier: ^6.0.0
         version: 6.4.3(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0)
 
+  demos/ticket0:
+    dependencies:
+      '@hono/node-server':
+        specifier: ^1.13.0
+        version: 1.19.14(hono@4.12.30)
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:^
+        version: link:../../packages/adapter-sqlite
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../../packages/contracts
+      '@substrat-run/dev-issuer':
+        specifier: workspace:^
+        version: link:../../packages/dev-issuer
+      '@substrat-run/engine-metering':
+        specifier: workspace:^
+        version: link:../../engines/metering
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../../packages/kernel
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
+      hono:
+        specifier: 4.12.30
+        version: 4.12.30
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
+      '@substrat-run/model-emit':
+        specifier: workspace:*
+        version: link:../../packages/model-emit
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.1
+      concurrently:
+        specifier: ^9.0.0
+        version: 9.2.4
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+      typescript:
+        specifier: ^7.0.0
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(tsx@4.23.1)(yaml@2.9.0)
+
+  demos/ticket0/app:
+    dependencies:
+      react:
+        specifier: ^18.3.0
+        version: 18.3.1
+      react-dom:
+        specifier: ^18.3.0
+        version: 18.3.1(react@18.3.1)
+    devDependencies:
+      '@types/react':
+        specifier: ^18.3.0
+        version: 18.3.31
+      '@types/react-dom':
+        specifier: ^18.3.0
+        version: 18.3.7(@types/react@18.3.31)
+      '@vitejs/plugin-react':
+        specifier: ^4.3.0
+        version: 4.7.0(vite@6.4.3(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0))
+      typescript:
+        specifier: ^7.0.0
+        version: 7.0.2
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.3(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0)
+
   demos/todo:
     dependencies:
       '@hono/node-server':

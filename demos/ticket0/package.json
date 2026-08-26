@@ -1,0 +1,70 @@
+{
+  "name": "@substrat-run/demo-ticket0",
+  "version": "0.0.1",
+  "private": true,
+  "description": "An AI-assisted support desk \u2014 chat widget, email relay, docs as knowledge base, tokens metered honestly",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "emit:migrations": "tsx tools/emit-migrations.mts",
+    "server": "tsx src/server.ts",
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts",
+    "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"pnpm run server\" \"pnpm --dir app dev\"",
+    "demo": "pnpm run dev"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/dev-issuer": "workspace:^",
+    "@substrat-run/engine-metering": "workspace:^",
+    "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
+    "hono": "^4.6.0",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@substrat-run/model-emit": "workspace:*",
+    "@types/node": "catalog:",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.0",
+    "vitest": "catalog:"
+  },
+  "substrat": {
+    "slug": "ticket0",
+    "name": "ticket0",
+    "permissions": "src/provision.ts",
+    "devServers": [
+      {
+        "name": "issuer",
+        "run": "issuer",
+        "portEnv": "ISSUER_PORT",
+        "portFrom": "../../packages/dev-issuer/src/cli.ts"
+      },
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts"
+      },
+      {
+        "name": "web",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
+      }
+    ],
+    "client": {
+      "model": "spec/model.ts",
+      "entities": "ticket0Entities",
+      "operations": "ticket0Operations",
+      "out": "app/src/api.generated.ts",
+      "name": "Ticket0"
+    }
+  }
+}
