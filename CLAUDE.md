@@ -144,7 +144,12 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
 
   A succeeded `atomic` is still **provisional**: if the operation later throws, its writes
   go too. Sub-transactions nest but must not interleave — starting two concurrently throws.
-  Outside `ctx.atomic`, catching an engine error stays forbidden.
+  Outside `ctx.atomic`, catching an engine error stays forbidden, and boundary-lint **R7**
+  rejects it (#786) — so this is a mechanism, not a convention. `try`/`finally` with no
+  `catch` is fine, and so is a catch that always rethrows (`catch (e) { log(e); throw e }`):
+  the operation still fails and the whole transaction rolls back. R7 has **no**
+  `boundary-lint-allow` hatch — there is no legitimate reason to swallow an engine error
+  unprotected.
 - Engine surfaces evolve **additively only**: new operation inputs are optional with
   behavior-preserving defaults; emitted event payload fields are frozen once shipped —
   rename/remove/retype means a `schemaVersion` bump (dual-emit through a deprecation

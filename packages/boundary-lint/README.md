@@ -41,6 +41,8 @@ the only thing that can tell them apart, which is why this is a linter and not a
 | **R3** no network | module code never calls `fetch()` or imports an HTTP client |
 | **R4** spine is sacred | module code never *writes* `_substrat_*` tables (reads are fine — timelines are projections) |
 | **R5** tables private | module code never references another module's tables in SQL |
+| **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
+| **R7** no bare catch | module code never catches an engine error outside `ctx.atomic` — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
 
 **Module code** is everything reachable from a `ModuleRegistration` — operations and
 consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness, and are
@@ -83,6 +85,50 @@ Otherwise, `boundary-lint.config.json` (or a `substrat.boundaryLint` key in
 }
 ```
 
+## Engine errors and `ctx.atomic` (R7)
+
+An engine in-scope function is a plain call composed inside your operation's transaction, so
+it has no boundary of its own. A bare `catch` around one leaves you holding its partial
+writes — the rows its invariants were protecting — and commits them. `ctx.atomic` is the
+boundary:
+
+```ts
+try {
+  await ctx.atomic(() => completeWorkOrder(ctx, { orderId, billable }));
+} catch {
+  // the engine's rows, events, links, grants and platform intents are all gone;
+  // your own writes survive, and it still commits once
+}
+```
+
+`try`/`finally` with no `catch` is fine, and so is a catch that always rethrows
+(`catch (e) { log(e); throw e }`): the operation still fails, so the whole transaction
+rolls back either way.
+
+### What R7 does not catch
+
+A rule that misfires on ordinary code gets suppressed wholesale, which is worse than not
+having it — so where R7 cannot be sure, it stays quiet. **A clean run is not a proof that no
+engine error is swallowed.** Three shapes it does not flag:
+
+```ts
+// 1. The call moved into a local helper — R7 reads only the calls written in the `try`.
+function finish(ctx, id) { return completeWorkOrder(ctx, { orderId: id }); }
+try { await finish(ctx, id); } catch { /* not flagged */ }
+
+// 2. The promise spelling — the rule is the `catch` CLAUSE.
+await completeWorkOrder(ctx, { orderId }).catch(() => null);   // not flagged
+
+// 3. An UNBRACED conditional rethrow as the catch's last statement.
+try { await completeWorkOrder(ctx, { orderId }); }
+catch (e) { if (rare) throw e; }        // not flagged — the throw is the last top-level statement
+
+try { await completeWorkOrder(ctx, { orderId }); }
+catch (e) { if (rare) { throw e } }     // flagged — braced, so the throw is not that statement
+```
+
+Widening any of these is a change to the linter with fixtures, not a change of character.
+
 ## The escape hatch
 
 A one-time extraction handoff (decision 27) opts out of R5 explicitly, in a block a
@@ -94,7 +140,9 @@ const legacy = ctx.sql.query('SELECT * FROM workorder_time_entries');
 // boundary-lint-end R5
 ```
 
-There is no escape hatch for R1–R4.
+R6 has the same block for code that must read the real clock. There is no escape hatch for
+R1–R4, and deliberately none for R7 — there is no legitimate reason to swallow an engine
+error unprotected, so a hatch would only ever silence the rule.
 
 ## Exit codes
 

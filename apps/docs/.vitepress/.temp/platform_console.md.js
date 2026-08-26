@@ -1,0 +1,19 @@
+import { ssrRenderAttrs } from "vue/server-renderer";
+import { useSSRContext } from "vue";
+import { _ as _export_sfc } from "./plugin-vue_export-helper.1tPrXgE0.js";
+const __pageData = JSON.parse('{"title":"Console","description":"","frontmatter":{},"headers":[],"relativePath":"platform/console.md","filePath":"platform/console.md","lastUpdated":1785339849000}');
+const _sfc_main = { name: "platform/console.md" };
+function _sfc_ssrRender(_ctx, _push, _parent, _attrs, $props, $setup, $data, $options) {
+  _push(`<div${ssrRenderAttrs(_attrs)}><h1 id="console" tabindex="-1">Console <a class="header-anchor" href="#console" aria-label="Permalink to &quot;Console&quot;">​</a></h1><p>The <strong>operator console</strong> — where Substrat staff run the fleet. It answers one question: <em>run the platform.</em> A React SPA served by the <a href="/platform/control-plane.html">control-plane</a> worker, acting through the same audited <code>HostAdmin</code> surface every other client uses, gated by staff SSO.</p><p>It is the <em>operator</em> surface, not the customer&#39;s. The <a href="/platform/dashboard.html">Dashboard</a> is the customer&#39;s home (one tenant, self-service); the Console sees <strong>all</strong> tenants and the whole fleet. Same platform, opposite audience and blast radius.</p><h2 id="what-it-shows" tabindex="-1">What it shows <a class="header-anchor" href="#what-it-shows" aria-label="Permalink to &quot;What it shows&quot;">​</a></h2><p>The views map onto the directory the control plane owns:</p><ul><li><strong>Tenants</strong> and <strong>Tenant detail</strong> — the registry, and a drill-down into one tenant&#39;s scopes, members, and lifecycle.</li><li><strong>Scopes</strong> — the fleet of provisioned scopes and their status.</li><li><strong>Verticals</strong> — the registered vertical versions, including the ones pushed by <a href="/guide/deploying.html"><code>substrat push</code></a> that are <strong>pending admission</strong>. Admitting a version here is the human gate that lets a scope bind and serve it.</li><li><strong>Create instance</strong> — the catalog → provision flow: pick a vertical, pin it to a version, provision a scope for a tenant.</li><li><strong>Domains</strong> — hostname bindings the <a href="/platform/router.html">router</a> resolves.</li><li><strong>Observability</strong> — the fleet view: per-service invocation metrics and recent logs, read over the control plane&#39;s provider-neutral observability seam. Tier-3 numbers — sampled, approximate, never money — so everything is a rate or a latency, nothing an exact count.</li><li><strong>Permissions</strong> — the permission surface (keys → roles) read back from the directory.</li><li><strong>Admin log</strong> — the append-only audit trail, every entry named to the <code>PlatformActorId</code> that caused it, with a JSON diff of what changed.</li></ul><h2 id="auth" tabindex="-1">Auth <a class="header-anchor" href="#auth" aria-label="Permalink to &quot;Auth&quot;">​</a></h2><p>Login is <a href="/concepts/identity.html#two-real-choices-made-differently">AuthHero OIDC</a> through the shared <a href="/reference/oidc-rp.html"><code>@substrat-run/oidc-rp</code></a> relying party, then a <strong>staff-roster lookup</strong> — only a <code>PlatformActorId</code> on the control plane&#39;s <code>staff_actor</code> roster gets in. The session proves who you are; the roster decides whether you may act.</p></div>`);
+}
+const _sfc_setup = _sfc_main.setup;
+_sfc_main.setup = (props, ctx) => {
+  const ssrContext = useSSRContext();
+  (ssrContext.modules || (ssrContext.modules = /* @__PURE__ */ new Set())).add("platform/console.md");
+  return _sfc_setup ? _sfc_setup(props, ctx) : void 0;
+};
+const console = /* @__PURE__ */ _export_sfc(_sfc_main, [["ssrRender", _sfc_ssrRender]]);
+export {
+  __pageData,
+  console as default
+};
