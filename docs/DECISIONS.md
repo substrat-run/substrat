@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-99 decisions · 58 plan · 41 kernel
+100 decisions · 58 plan · 42 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -111,3 +111,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-40](decisions/K-040-an-entity-s-state-machine-is-declared-in-the-model-not-w.md) | 2026-08-21 | kernel | An entity's state machine is declared in the model, not written a second time as guards | #844 |
 | [D-58](decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md) | 2026-08-22 | plan | D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable | #863, #858 |
 | [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it | #811, #129, #132 |
+| [K-42](decisions/K-042-an-impersonated-operation-carries-both-actors-and-the-.md) | 2026-08-26 | kernel | An impersonated operation carries both actors, and the permission model sees the impersonated one |  |

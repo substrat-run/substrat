@@ -135,6 +135,17 @@ const KERNEL_PROPERTIES = [
     suite: 'list-suite.ts',
     test: 'refuses a filter the declaration does not offer',
   },
+  {
+    claim: 'Support cannot act as one of your users without the trail naming them',
+    mechanism:
+      'An impersonated session evaluates permissions as the IMPERSONATED principal — so it ' +
+      'reaches exactly what that person reaches — while every record the scope writes about ' +
+      'who did what keeps both actors. The session is stamped kernel-side, so module code can ' +
+      'neither claim one nor drop the one it is in, and it expires.',
+    decision: 'K-42',
+    suite: 'impersonation-suite.ts',
+    test: 'stamps the session onto the event, beside the actor it was acting as',
+  },
 ] as const;
 
 /**
