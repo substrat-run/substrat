@@ -28,8 +28,14 @@
  * records them in the tenant's identity DO. Everything unauthenticated this worker
  * does runs as one of them, holding the keys that role holds and no others.
  *
- * Local run:  pnpm cf:dev        (real workerd, no account; ALLOW_DEV_NODE)
  * Deploy:     substrat push
+ *
+ * There is no `cf:dev` script, and that is a consequence of `runtimeNeeds` rather than
+ * an omission: `wrangler dev` wants a wrangler config, and the only one this vertical
+ * has is the one the CLI derives inside a push. Authoring a second by hand is what the
+ * declaration exists to avoid — the CLI would ignore it on the way out, and it would
+ * drift. `pnpm dev` (the node host) is the local loop; the worker is exercised by the
+ * push's own bundle step.
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -73,8 +79,8 @@ interface DeskNode {
 }
 
 // A fixed dev node (valid ULIDs). Behind the router the node comes from the resolved
-// hostname; this is ONLY the fallback for local `pnpm cf:dev`, where there is no router
-// to assert one, and is gated on ALLOW_DEV_NODE (never set in prod).
+// hostname; this is ONLY the fallback for an un-routed local `wrangler dev`, where there
+// is no router to assert one, and is gated on ALLOW_DEV_NODE (never set in prod).
 //
 // This is an ADDRESS, not an identity: it says which instance an un-routed local request
 // belongs to, and grants nobody anything. The principal still comes from a verified login.
@@ -90,7 +96,7 @@ interface Env {
   AUTH: DurableObjectNamespace<IdentityDO>;
   /** Declared in TICKET0_ENV (src/manifest.ts). Read ONLY through `instanceConfig` —
    *  a bare `env.X` read sees the deployment-wide default every install shares (#374).
-   *  Typed here so `wrangler dev --var` works. */
+   *  Typed here so a binding or a `--var` override is a compile-checked name. */
   AUTH_PROVIDER?: string;
   OIDC_ISSUER?: string;
   OIDC_AUDIENCE?: string;
@@ -107,7 +113,7 @@ interface Env {
 
 /**
  * Which desk this request is for. Behind the router: whatever the hostname resolved to
- * (signed headers). Local `wrangler dev` (ALLOW_DEV_NODE): the fixed dev node. Neither:
+ * (signed headers). An un-routed local run (ALLOW_DEV_NODE): the fixed dev node. Neither:
  * refuse — an unrouted request in a multi-tenant deployment has no defensible default,
  * and picking one would mean serving somebody else's inbox.
  */
@@ -230,18 +236,39 @@ async function servicesOf(env: Env, node: DeskNode): Promise<ServicePrincipals |
  */
 async function mintServices(env: Env, node: DeskNode): Promise<ServicePrincipals> {
   const existing = await servicesOf(env, node);
-  if (existing) return existing;
-  const host = hostFor(env);
-  const minted = Object.fromEntries(
-    SERVICE_ROLES.map((role) => [role, principalId.parse(ulid())]),
-  ) as Record<ServiceRole, PrincipalId>;
-  for (const role of SERVICE_ROLES) {
-    await host.assignScopeRole(node.scopeId, minted[role], role);
+  const services =
+    existing ??
+    servicePrincipals.parse(
+      Object.fromEntries(SERVICE_ROLES.map((role) => [role, principalId.parse(ulid())])),
+    );
+
+  /**
+   * WRITE THE IDS DOWN FIRST, then grant the roles — and note that this is the opposite
+   * of the intuitive order.
+   *
+   * These are two stores: the identity DO holds the ids, the scope DO holds the role
+   * tuples, and nothing spans them. Granting first means a failure in between leaves
+   * three principals holding `widget` / `assistant` / `relay` in a scope with no record
+   * of who they are — and the platform's retry, finding nothing recorded, mints three
+   * MORE. The orphans keep their keys forever, because the only thing that could revoke
+   * them is a record that was never written.
+   *
+   * Recording first inverts the failure into a harmless one: ids with some roles not yet
+   * granted, which the retry below repairs. `assignScopeRole` is `INSERT OR REPLACE` on
+   * one tuple, so re-granting an existing role is a no-op — which is what lets the
+   * reuse path re-run unconditionally rather than trusting that a previous call got
+   * past this loop.
+   */
+  if (!existing) {
+    await identityDo(env, node).setScopeConfig(node.scopeId, [
+      { key: SERVICES_CONFIG_KEY, value: JSON.stringify(services) },
+    ]);
   }
-  await identityDo(env, node).setScopeConfig(node.scopeId, [
-    { key: SERVICES_CONFIG_KEY, value: JSON.stringify(minted) },
-  ]);
-  return servicePrincipals.parse(minted);
+  const host = hostFor(env);
+  for (const role of SERVICE_ROLES) {
+    await host.assignScopeRole(node.scopeId, services[role], role);
+  }
+  return services;
 }
 
 /** A scope stub acting as one of the desk's service accounts. Null before provision. */
@@ -341,15 +368,22 @@ app.on(['GET', 'POST'], '/api/auth/*', async (c) =>
  */
 app.get('/api/me', async (c) => {
   const node = nodeFor(c.req.raw, c.env);
-  const principal = await principalFor(c.env, c.req.raw);
+  // One provider, resolved once. Going through `principalFor` here would build a second
+  // one for the display name — and building a provider reads the delivered config, so
+  // the cost of the convenience is a whole extra identity-DO round trip on the request
+  // every screen makes first.
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
+  const principal = subject
+    ? await identityDo(c.env, node).resolvePrincipal(node.scopeId, subject.sub)
+    : null;
   if (!principal) {
     const needsSetup = await identityDo(c.env, node).needsSetup(node.scopeId);
     return needsSetup ? c.json({ status: 'needs-setup' }) : c.json({ error: 'unauthorized' }, 401);
   }
-  const subject = await authProviderFor(c.env, c.req.raw)
-    .then((p) => p.resolve(c.req.raw.headers))
-    .catch(() => null);
-  return c.json({ principal, display: subject?.name ?? subject?.email ?? 'You' });
+  return c.json({
+    principal: principalId.parse(principal),
+    display: subject?.name ?? subject?.email ?? 'You',
+  });
 });
 
 // ── Invites — the only way a second person reaches a hosted desk ─────────────

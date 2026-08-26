@@ -14,8 +14,6 @@
     "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts",
     "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"pnpm run server\" \"pnpm --dir app dev\"",
     "demo": "pnpm run dev",
-    "cf:dev": "wrangler dev --var ALLOW_DEV_NODE:true",
-    "cf:dry-run": "wrangler deploy --dry-run --outdir dist-worker",
     "build:assets": "pnpm --dir app build && node scripts/copy-widget.mjs"
   },
   "dependencies": {
@@ -39,8 +37,7 @@
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
     "typescript": "^7.0.0",
-    "vitest": "catalog:",
-    "wrangler": "catalog:"
+    "vitest": "catalog:"
   },
   "substrat": {
     "slug": "ticket0",

@@ -80,50 +80,67 @@ export function mountWidgetSurface(
   const { resolveDesk } = options;
 
   /**
-   * CORS, and the allowlist is consulted per request rather than baked at boot: a desk
-   * that removes an origin stops being embeddable there without a redeploy, and the
-   * preflight is the first place that has to be true.
+   * The door. Every `/widget/*` request passes the desk's embedding allowlist here, and
+   * the list is consulted per request rather than baked at boot: a desk that removes an
+   * origin stops being embeddable there without a redeploy, and the preflight is the
+   * first place that has to be true.
    *
-   * A page whose origin the desk has not listed gets no `access-control-allow-origin`
-   * header, so the browser refuses the response — the request may still have reached
-   * the operation, which refuses it again on its own terms. Two refusals for one
-   * unlisted origin is the point: neither is load-bearing alone.
+   * **The check runs before the handler, not beside it.** Withholding
+   * `access-control-allow-origin` stops a browser READING the response; it does not stop
+   * the request executing. `widget-start` refuses an unlisted origin itself, but
+   * `widget-post` and `widget-thread` are confined by the session token and check the
+   * REQUEST's origin nowhere — `sessionOrThrow` re-checks the origin the session was
+   * opened at, which is a different question. So a page holding a leaked token could
+   * still post into a conversation from an origin the desk never listed: blind, because
+   * CORS hides the response, but the write would land. It is refused here instead.
+   *
+   * Thrown rather than returned, so the refusal goes through this vertical's one
+   * `onError` and comes back as problem+json with a sentence in it — the same shape
+   * every other refusal has, and readable in a log or a curl even though the browser
+   * will not show it to the embedding page.
    */
   app.use('/widget/*', async (c: Context, next: () => Promise<void>) => {
     const origin = c.req.header('origin');
     const desk = origin ? await resolveDesk(c, origin) : null;
     const allowed = !!origin && !!desk && desk.allowedOrigins.includes(origin);
-    if (desk) c.set(DESK, desk);
 
-    if (allowed) {
-      c.header('access-control-allow-origin', origin!);
-      c.header('vary', 'origin');
-    }
     if (c.req.method === 'OPTIONS') {
       // Answered here rather than by a route, because a preflight names a method that
-      // does not exist yet as far as the router is concerned.
+      // does not exist yet as far as the router is concerned. A bare status, not a
+      // problem document: no browser reads a preflight's body.
       if (!allowed) return c.body(null, 403);
+      c.header('access-control-allow-origin', origin!);
+      c.header('vary', 'origin');
       c.header('access-control-allow-methods', 'GET, POST, OPTIONS');
       c.header('access-control-allow-headers', 'content-type');
       c.header('access-control-max-age', '600');
       return c.body(null, 204);
     }
+
+    if (!origin)
+      throw substratError('permission_denied', 'this endpoint is for a browser on an embedded page');
+    if (!desk) throw substratError('permission_denied', `no desk is embedded on ${origin}`);
+    if (!allowed)
+      throw substratError('permission_denied', `this desk is not embedded on ${origin}`);
+
+    c.set(DESK, desk);
+    c.header('access-control-allow-origin', origin);
+    c.header('vary', 'origin');
     await next();
   });
 
   /**
-   * The desk this request resolved to — or a refusal.
+   * The desk this request resolved to. The middleware above has already refused every
+   * request that would not have one, so this reads what it stashed; the throw is the
+   * assertion that the two cannot drift, not a second gate.
    *
    * The refusals carry the platform's own taxonomy rather than a class of their own.
    * A bespoke error type would need a bespoke renderer, and this vertical already has
    * one `onError` that every other refusal goes through; two would mean the status a
-   * caller sees depends on which handler was registered last, which is exactly the
-   * bug this line replaced.
+   * caller sees depends on which handler was registered last.
    */
   const deskOf = (c: Context): { desk: WidgetDesk; origin: string } => {
-    const origin = c.req.header('origin');
-    if (!origin)
-      throw substratError('permission_denied', 'this endpoint is for a browser on an embedded page');
+    const origin = c.req.header('origin') ?? '';
     const desk = c.get(DESK) as WidgetDesk | undefined;
     if (!desk) throw substratError('permission_denied', `no desk is embedded on ${origin}`);
     return { desk, origin };

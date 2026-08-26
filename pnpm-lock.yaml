@@ -1178,9 +1178,6 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(tsx@4.23.1)(yaml@2.9.0)
-      wrangler:
-        specifier: 'catalog:'
-        version: 4.123.0(@cloudflare/workers-types@4.20260702.1)
 
   demos/ticket0/app:
     dependencies:
