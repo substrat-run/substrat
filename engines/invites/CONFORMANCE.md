@@ -48,7 +48,8 @@ as an assessment rather than as silence.
 | Kind | Count | Operations |
 | --- | --- | --- |
 | Node-level check | 3 | `invites/list`, `invites/revoke`, `invites/send` |
-| Per-entity proof walk (`narrows`) | 1 | `invites/accept` |
+| Per-entity proof walk (`narrows`) | 0 | — |
+| Declared no check (`narrows.unchecked`) | 1 | `invites/accept` |
 
 ## 4. Not covered by this artifact
 

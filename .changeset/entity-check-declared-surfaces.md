@@ -1,4 +1,5 @@
 ---
+'@substrat-run/contracts': minor
 '@substrat-run/engine-invites': minor
 '@substrat-run/engine-metering': minor
 '@substrat-run/contract-tests': patch
@@ -27,6 +28,13 @@ it checks, because an ungated operation produces an empty plan too. `invites/acc
 the one operation in the three that genuinely checks nothing (the invitation itself is the
 authority) and it now declares `narrows` with the reason, so the exception is written down
 rather than indistinguishable from an oversight.
+
+That exception needed one new word to state. `narrows.checks: []` already meant "no key of
+MINE is walked", which is also true of a walk over a composed engine's key — Callout's
+portal walk checks `workorder:read`, and a vertical restating another module's permissions
+is the defect the empty list exists to avoid. So a genuinely ungated operation adds
+`narrows.unchecked: true`, and the conformance receipt counts it on its own row instead of
+reporting "1 per-entity proof walk" under a header counting zero narrowed checks.
 
 Two consequences beyond the assessment: the host now parses these operations' inputs at
 the door (#893) from the same schemas the handlers already parsed, and a vertical
