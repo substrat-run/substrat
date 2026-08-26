@@ -63,6 +63,8 @@ import {
   type DenialBucketRow,
   type DenialWindowRow,
   PermissionDenied,
+  assertImpersonationWrites,
+  impersonationStampOf,
   type ConsumerHandler,
   type GuardPredicate,
   type ModuleRegistration,
@@ -106,7 +108,7 @@ import {
   type EntityVersion,
   type EntityVersionRow,
 } from '@substrat-run/kernel';
-import type { CheckSubject, ModuleId } from '@substrat-run/contracts';
+import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
@@ -190,6 +192,10 @@ const KERNEL_DDL = `
     -- K-34: the checks the emitting operation passed (JSON [{permission, grant?}]).
     -- NULL on rows written before the field existed -- honestly unrecorded, not empty.
     authorization TEXT,
+    -- K-42: the staff actor + session an impersonated operation ran under (JSON
+    -- session/by). NULL is the ordinary case -- nobody was impersonating -- and the
+    -- actor column above stays the principal the permission model answered about.
+    impersonation TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -200,6 +206,8 @@ const KERNEL_DDL = `
     kind TEXT NOT NULL,
     payload TEXT NOT NULL,
     requested_by TEXT NOT NULL,
+    -- K-42: the staff actor + session, when the intent was raised under one.
+    impersonation TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
@@ -224,6 +232,8 @@ const KERNEL_DDL = `
     tenant_id TEXT NOT NULL,
     scope_id TEXT,
     operation TEXT,
+    -- K-42: WHICH of the two actors was refused is exactly what this log is for.
+    impersonation TEXT,
     at TEXT NOT NULL,
     drained_at TEXT
   );
@@ -460,6 +470,7 @@ export interface PlatformRequestRawRow {
   kind: string;
   payload: string;
   requested_by: string;
+  impersonation: string | null;
   status: string;
   attempts: number;
   last_error: string | null;
@@ -480,6 +491,7 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     kind: r.kind,
     payload: JSON.parse(r.payload),
     requestedBy: JSON.parse(r.requested_by),
+    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
     status: r.status,
     attempts: r.attempts,
     lastError: r.last_error,
@@ -650,6 +662,13 @@ export function defineScopeDO(
         // intent settled before this column reads as "nobody classified this" rather
         // than claiming an origin the drain never decided.
         'ALTER TABLE _substrat_platform_requests ADD COLUMN last_failure TEXT',
+        // K-42: the two-actor stamp on the three spine tables that record who did
+        // what, for a scope DO created before impersonation existed. Nullable
+        // everywhere, and the null means "nobody was impersonating" rather than
+        // "unrecorded" — every one of those rows predates the possibility.
+        'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
+        'ALTER TABLE _substrat_platform_requests ADD COLUMN impersonation TEXT',
+        'ALTER TABLE _substrat_denials ADD COLUMN impersonation TEXT',
       ]) {
         try {
           this.sql.exec(alter);
@@ -1100,11 +1119,21 @@ export function defineScopeDO(
        * cannot set the acknowledgement, which is exactly how the skew is caught.
        */
       invokeOptions?: InvokeOptions,
+      /**
+       * K-42: the session this call runs under, resolved by the coordinator from
+       * the directory (which this DO cannot read) and passed WHOLE rather than as
+       * an id. The coordinator has already checked it is live, unexpired and for
+       * this scope; the DO uses it for the two-actor stamp and for the read-only
+       * bound, and nothing here can be reached without it having been minted.
+       */
+      impersonation?: ImpersonationSession,
     ): Promise<{
       result: unknown;
       platformRequests: number;
       failure?: WireFailure;
       concurrency?: { version: string | null; ifMatchChecked: boolean };
+      /** K-42: set iff this DO understood `impersonation`. See `invokeOrThrow`. */
+      impersonation?: { honoured: boolean };
     }> {
       if (!failureEnvelope) {
         // Legacy path, byte-for-byte what it was: rewrapped so a non-plain error (a
@@ -1120,6 +1149,7 @@ export function defineScopeDO(
             requiredEntitlement,
             systemModuleId,
             invokeOptions,
+            impersonation,
           );
         } catch (err) {
           throw toRpcError(err);
@@ -1136,6 +1166,7 @@ export function defineScopeDO(
           requiredEntitlement,
           systemModuleId,
           invokeOptions,
+          impersonation,
         );
       } catch (err) {
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
@@ -1156,11 +1187,23 @@ export function defineScopeDO(
       requiredEntitlement?: string,
       systemModuleId?: string,
       invokeOptions?: InvokeOptions,
+      /** K-42: the session, resolved coordinator-side. See `invoke` above. */
+      impersonation?: ImpersonationSession,
     ): Promise<{
       result: unknown;
       platformRequests: number;
       concurrency?: { version: string | null; ifMatchChecked: boolean };
       idempotency?: { keyHonoured: boolean; replayed: boolean };
+      /**
+       * K-42: the acknowledgement the coordinator's skew check reads, on the same
+       * reasoning as `concurrency.ifMatchChecked` and with a sharper failure. Every
+       * other argument added to this RPC has been safe for an old DO to ignore;
+       * this one is not. A DO that dropped it would run the operation as the
+       * impersonated principal with NO stamp on anything it wrote and NO read-only
+       * bound — a support session that looks recorded and is not, which is the one
+       * outcome this whole feature exists to prevent.
+       */
+      impersonation?: { honoured: boolean };
     }> {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
@@ -1257,6 +1300,17 @@ export function defineScopeDO(
         // The envelope return (below) is the DO↔coordinator wire for it; both sides
         // live in this package and deploy as one script, so the shape never skews.
         const signals = { platformRequests: 0 };
+        /**
+         * K-42: how a read-only session is made to BE read-only.
+         *
+         * Thrown on success, so the transaction never commits — the same
+         * mechanism `queryScope`'s console uses, for the same reason: the DO's
+         * `exec` exposes no read-only flag, so refusing to commit is the only
+         * enforcement that survives a handler writing rows with plain SQL.
+         * `ctx.emit` and the other effecting verbs refuse outright as well; that
+         * is the half a support engineer sees, this is the half that holds.
+         */
+        const rollback = new Error('read-only impersonation rollback');
         // The async transaction is the K-4 boundary: guards + handler + emits
         // commit together, or a throw (from either) rolls domain writes AND
         // emitted events back as one — verified across `await` in workerd.
@@ -1270,6 +1324,7 @@ export function defineScopeDO(
               connectionId,
               systemModuleId,
               signals,
+              impersonation,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -1325,8 +1380,35 @@ export function defineScopeDO(
               const prune = idempotencyPruneStatement(at);
               this.sql.exec(prune.sql, ...prune.params);
             }
+            if (impersonation?.mode === 'read-only') throw rollback;
           });
         } catch (err) {
+          // The read-only unwind, not a failure: `result` was assigned before the
+          // throw and is the answer, while every row the handler wrote is gone.
+          //
+          // The acknowledgements ride along unchanged, because they are about
+          // whether this DO UNDERSTOOD the arguments, not about what committed —
+          // and a coordinator that sent `If-Match` to a read-only session must not
+          // be told the host is too old to have evaluated it. The version reported
+          // is the rolled-back one, which is the honest answer: nothing moved.
+          if (err === rollback) {
+            return {
+              result,
+              platformRequests: 0,
+              impersonation: { honoured: true },
+              ...(idempotencyKey !== undefined
+                ? { idempotency: { keyHonoured: true, replayed } }
+                : {}),
+              ...(guardedRef
+                ? {
+                    concurrency: {
+                      version: committedVersion,
+                      ifMatchChecked: invokeOptions?.ifMatch !== undefined,
+                    },
+                  }
+                : {}),
+            };
+          }
           // K-35: the transaction has rolled back; record a refused check now, as its own
           // write (outside that transaction), so the denial survives the rollback.
           if (err instanceof PermissionDenied) {
@@ -1339,6 +1421,7 @@ export function defineScopeDO(
               tenantId,
               operation,
               err,
+              impersonation,
             );
           }
           // The ORIGINAL error, deliberately: `invoke` flattens it for the envelope
@@ -1354,6 +1437,7 @@ export function defineScopeDO(
         return {
           result,
           platformRequests: signals.platformRequests,
+          ...(impersonation ? { impersonation: { honoured: true } } : {}),
           // The acknowledgement the coordinator's skew check reads (#116), on the
           // same reasoning as `ifMatchChecked` below and with a sharper failure: a
           // DO too old to know about keys would EXECUTE THE OPERATION AGAIN and
@@ -2350,11 +2434,13 @@ export function defineScopeDO(
      * catch after the storage transaction has rolled back, so this write is its own and
      * survives — the whole point, since the denial is the write the operation could not make.
      */
+    /** K-42: the session a refused call ran under travels with the denial row. */
     private recordDenial(
       subject: CheckSubject,
       tenantId: TenantId,
       operation: string,
       err: PermissionDenied,
+      impersonation?: ImpersonationSession,
     ): void {
       // Only an ENFORCED denial (assertAllowed, which attaches the checked permission +
       // node) is recorded. A module's own hand-thrown `new PermissionDenied('…')` carries
@@ -2368,14 +2454,15 @@ export function defineScopeDO(
             : (subject.id as PrincipalId);
       this.sql.exec(
         `INSERT INTO _substrat_denials
-           (id, actor, permission, tenant_id, scope_id, operation, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+           (id, actor, permission, tenant_id, scope_id, operation, impersonation, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         ulid(),
         JSON.stringify(actor),
         err.permission,
         err.node.tenantId,
         err.node.scopeId ?? null,
         operation,
+        impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
         new Date().toISOString(),
       );
     }
@@ -2408,6 +2495,14 @@ export function defineScopeDO(
       systemModuleId?: string,
       /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
       signals?: { platformRequests: number },
+      /**
+       * K-42: the session this operation runs under, resolved by the coordinator
+       * from the directory and handed down. Read here and nowhere module code can
+       * reach — a vertical that could see it could branch on it, and "hide this row
+       * when support is looking" is the one behaviour this feature must make
+       * impossible.
+       */
+      impersonation?: ImpersonationSession,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -2444,6 +2539,10 @@ export function defineScopeDO(
       // invoke, so this does not leak across operations). `emit` snapshots it; a
       // system/override actor is unconditionally allowed, so its checks are not recorded.
       const passed: EventAuthorization[] = [];
+      // K-42: the two-actor stamp, computed once per operation. Every record this
+      // operation writes about who did what carries it, and module code can
+      // neither add it nor drop it.
+      const stamp = impersonation ? impersonationStampOf(impersonation) : undefined;
 
       /**
        * The scope host's half of `ctx.atomic` (#770) — everything else is the
@@ -2494,6 +2593,7 @@ export function defineScopeDO(
         sql: doScopedSql(sql),
         now: () => at,
         emit: (event: DomainEventInput) => {
+          assertImpersonationWrites(impersonation, 'ctx.emit');
           const parsed = domainEventInput.parse(event);
           const full = domainEvent.parse({
             ...parsed,
@@ -2503,12 +2603,14 @@ export function defineScopeDO(
             scopeId,
             actor: systemActor ?? derivedActor,
             ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
+            ...(stamp ? { impersonation: stamp } : {}),
           });
           sql.exec(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-                entity_type, entity_id, pii_class, subject_id, authorization, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                entity_type, entity_id, pii_class, subject_id, authorization,
+                impersonation, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -2521,10 +2623,12 @@ export function defineScopeDO(
             full.piiClass,
             full.subjectId ?? null,
             full.authorization ? JSON.stringify(full.authorization) : null,
+            full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
+          assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
           const input = platformRequestInput.parse(request);
           // Backpressure (platform-intents.md): refuse when the scope already holds too many pending
           // intents, so a stuck or runaway vertical cannot flood the platform drain.
@@ -2542,12 +2646,13 @@ export function defineScopeDO(
           const requestedBy = systemActor ?? derivedActor;
           sql.exec(
             `INSERT INTO _substrat_platform_requests
-               (id, kind, payload, requested_by, status, attempts, requested_at)
-             VALUES (?, ?, ?, ?, 'pending', 0, ?)`,
+               (id, kind, payload, requested_by, impersonation, status, attempts, requested_at)
+             VALUES (?, ?, ?, ?, ?, 'pending', 0, ?)`,
             id,
             input.kind,
             JSON.stringify(input.payload ?? null),
             JSON.stringify(requestedBy),
+            stamp ? JSON.stringify(stamp) : null,
             at,
           );
           if (signals) signals.platformRequests += 1;
@@ -2628,6 +2733,7 @@ export function defineScopeDO(
          * than elevates.
          */
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+          assertImpersonationWrites(impersonation, 'ctx.grant');
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
@@ -2643,6 +2749,7 @@ export function defineScopeDO(
           );
         },
         revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+          assertImpersonationWrites(impersonation, 'ctx.revoke');
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
@@ -2659,6 +2766,7 @@ export function defineScopeDO(
         },
         atomic: createAtomic(runSub, { passed, signals }),
         link: (child: EntityRef, parent: EntityRef) => {
+          assertImpersonationWrites(impersonation, 'ctx.link');
           const allowed = relations.get(child.entityType);
           if (!allowed?.has(parent.entityType)) {
             throw new Error(

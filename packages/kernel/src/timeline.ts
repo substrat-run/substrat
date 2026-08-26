@@ -7,6 +7,7 @@ import {
   type EventAuthorization,
   type EventId,
   type HistoryEntry,
+  type ImpersonationStamp,
   type Instant,
   type ListPage,
   type Page,
@@ -80,7 +81,7 @@ export interface TimelineReader {
 /** The envelope columns, in the order `mapTimelineRow` expects. */
 const TIMELINE_COLUMNS = 'id, type, occurred_at, actor';
 /** …plus what a history VIEW needs. See `historyEntry` for why two are nullable. */
-const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, pii_class, subject_id`;
+const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id`;
 
 interface TimelineRow {
   id: string;
@@ -92,6 +93,7 @@ interface TimelineRow {
 interface HistoryRow extends TimelineRow {
   payload: string | null;
   authorization: string | null;
+  impersonation: string | null;
   pii_class: string;
   subject_id: string | null;
 }
@@ -161,6 +163,11 @@ function mapHistoryRow(row: HistoryRow): HistoryEntry {
     payload: row.payload === null ? null : (JSON.parse(row.payload) as unknown),
     authorization:
       row.authorization === null ? null : (JSON.parse(row.authorization) as EventAuthorization[]),
+    // K-42, and its null is a THIRD kind of fact: nobody was impersonating. The
+    // ordinary case, not an absence of recording — the kernel stamps this on
+    // every event raised under a session and on no other.
+    impersonation:
+      row.impersonation === null ? null : (JSON.parse(row.impersonation) as ImpersonationStamp),
     piiClass: row.pii_class as PiiClass,
     subjectId: row.subject_id as DataSubjectId | null,
   };

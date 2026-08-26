@@ -123,6 +123,13 @@ export const adminAction = z.enum([
   // it becomes unreadable. The `after` carries the receipt (how many events, whether a key
   // existed) — an erasure that records no proof it happened is not a fulfilled DSAR.
   'shredSubject',
+  // K-42 (#868) — opening a session that acts as a principal, and closing one.
+  // The BEGIN is a mutation in its own right even though it writes no scope data:
+  // it is the moment a staff member acquired the ability to act as somebody else,
+  // and it is recorded BEFORE the session can be used, so the log entry precedes
+  // every row the session goes on to touch (K-33's failure ordering).
+  'beginImpersonation',
+  'endImpersonation',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

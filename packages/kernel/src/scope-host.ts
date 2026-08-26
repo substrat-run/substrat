@@ -73,6 +73,10 @@ import type {
   DenialFilter,
   DenialSummary,
   PermissionDenial,
+  BeginImpersonationInput,
+  ImpersonationFilter,
+  ImpersonationSession,
+  ImpersonationSessionId,
   ScopeTablePage,
   StorageShape,
   Tenant,
@@ -2051,6 +2055,52 @@ export interface HostAdmin {
     subjectId: string,
   ): Promise<SubjectShredReceipt>;
 
+  // -- impersonation (K-42, #868) --------------------------------------------
+  // The record-keeping half of acting as somebody. The EFFECTING half is
+  // `ScopeHost.getImpersonatedScope`, and the split is K-20's: the platform's
+  // authority opens the session and writes it down; the scope host is what can
+  // actually run an operation inside a scope.
+
+  /**
+   * Open a session that acts as `input.principal`, and record it.
+   *
+   * The admin-log row is written BEFORE the session is returned, so the audit
+   * entry precedes every row the session goes on to touch — K-33's failure
+   * ordering, chosen there for the same reason: a partial state has to be
+   * visible, and "the session was opened" is the state that matters here.
+   *
+   * Bounded and reason-carrying by construction: `reason` is required,
+   * `minutes` is capped at `IMPERSONATION_MAX_MINUTES` (an over-ask is refused
+   * rather than clamped), and the mode is `read-only` unless the caller said
+   * otherwise. Fails closed on a tenant/scope that does not exist or is not
+   * active — the same gate `getScope` applies, applied where the session is
+   * minted rather than only where it is used.
+   */
+  beginImpersonation(
+    actor: PlatformActorId,
+    input: BeginImpersonationInput,
+  ): Promise<ImpersonationSession>;
+
+  /**
+   * Close a session before its clock runs out. Idempotent on an already-closed
+   * one (it returns the session as it stands), because "stop that session" must
+   * not fail because somebody else already did. Never deletes the row: a session
+   * that once existed is why some rows carry the stamp they do (K-21).
+   */
+  endImpersonation(
+    actor: PlatformActorId,
+    session: ImpersonationSessionId,
+  ): Promise<ImpersonationSession>;
+
+  /**
+   * Read the session log — who acted as whom, when, why, and whether it is still
+   * open. A staff READ, so it is access-logged like every other one (K-24).
+   */
+  listImpersonations(
+    actor: PlatformActorId,
+    filter?: ImpersonationFilter,
+  ): Promise<ImpersonationSession[]>;
+
   // -- entitlements (control-plane.md §4.3) ----------------------------------
   // What finally makes `manifest.entitlementKey` mean something (D-20). An
   // entitlement is a per-tenant SKU flag; a module whose key the tenant does not
@@ -2793,6 +2843,36 @@ export interface ScopeHost {
    */
   getScope(
     principal: PrincipalId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub>;
+
+  /**
+   * Mint a stub that ACTS AS a principal, with the staff actor preserved (K-42,
+   * #868) — the supported way to see what a named person sees.
+   *
+   * A fourth door beside the principal, connection and system ones, and a door
+   * rather than a flag on `getScope` for the reason each of those is: what
+   * differs is the AUTHORITY, and an authority that arrives as an optional
+   * parameter on the ordinary path is one a caller can forget to consider.
+   *
+   * The session was opened through `HostAdmin.beginImpersonation`, which recorded
+   * it in the admin log first — so by the time a stub exists there is already a
+   * durable row saying who acquired the ability to act as whom, and why. This
+   * door re-reads the session and refuses an ended, expired or wrong-scope one
+   * (K-3's fail-closed pair check), and every `invoke` through the returned stub
+   * re-reads it again: a capability that outlived its time box is not time-boxed.
+   *
+   * Inside, the operation is ordinary. Permission checks answer about the
+   * IMPERSONATED principal against the ordinary checker — there is no override
+   * branch, exactly as there is none for `system:<moduleId>` — while the outbox,
+   * the denial log and the platform-intent journal each keep both actors. A
+   * `read-only` session additionally refuses the effecting verbs and its
+   * transaction is rolled back rather than committed.
+   */
+  getImpersonatedScope(
+    session: ImpersonationSessionId,
     tenantId: TenantId,
     scopeId: ScopeId,
     options?: ScopeStubOptions,

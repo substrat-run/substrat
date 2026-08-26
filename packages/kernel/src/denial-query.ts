@@ -4,6 +4,7 @@ import {
   type Actor,
   type DenialBucket,
   type DenialFilter,
+  type ImpersonationStamp,
   type PermissionDenial,
   type PermissionKey,
   type ScopeId,
@@ -24,7 +25,8 @@ import {
  */
 
 /** Every column of `_substrat_denials`, in the order `mapDenialRow` expects. */
-export const DENIAL_COLUMNS = 'id, actor, permission, tenant_id, scope_id, operation, at, drained_at';
+export const DENIAL_COLUMNS =
+  'id, actor, permission, tenant_id, scope_id, operation, impersonation, at, drained_at';
 
 /** The raw row shape, as either adapter hands it back. */
 export interface DenialRow {
@@ -34,6 +36,8 @@ export interface DenialRow {
   tenant_id: string;
   scope_id: string | null;
   operation: string | null;
+  /** K-42: the staff actor + session, as JSON, when the refusal was under one. */
+  impersonation: string | null;
   at: string;
   drained_at: string | null;
 }
@@ -64,6 +68,8 @@ export function mapDenialRow(row: DenialRow): PermissionDenial {
     tenantId: row.tenant_id as TenantId,
     scopeId: (row.scope_id ?? null) as ScopeId | null,
     operation: row.operation ?? null,
+    impersonation:
+      row.impersonation == null ? null : (JSON.parse(row.impersonation) as ImpersonationStamp),
     at: row.at,
     drainedAt: row.drained_at ?? null,
   };
