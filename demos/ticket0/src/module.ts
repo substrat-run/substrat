@@ -1,0 +1,1583 @@
+/**
+ * ticket0's operations — the business logic, and nothing else.
+ *
+ * Everything structural is derived from `spec/model.ts`: the migrations were emitted
+ * from the entities, the manifest is assembled from both halves of the model, the
+ * route table is derived at mount time, and the conversation's state machine is
+ * enforced from the declaration rather than written a second time as guards here.
+ *
+ * What is left is what only a person could decide: what it means for a message to be
+ * public, who a conversation belongs to, and what a token costs.
+ */
+import {
+  addDecimal,
+  assertTransition,
+  LIST_PAGE_DEFAULT,
+  mulDecimal,
+  pageOf,
+  pageVisible,
+  substratError,
+  type CountedPage,
+  type EntityRow,
+  type HandlerInput,
+  type HandlerOutput,
+} from '@substrat-run/contracts';
+import {
+  assertAllowed,
+  DEFAULT_SEARCH_LIMIT,
+  MAX_SEARCH_LIMIT,
+  ulid,
+  type ModuleRegistration,
+  type OperationContext,
+  type OperationHandler,
+} from '@substrat-run/kernel';
+import {
+  closePeriod,
+  configureMeter,
+  listEntries,
+  recordUsage,
+  usageTotal,
+} from '@substrat-run/engine-metering';
+import {
+  SEARCH_OVERFETCH,
+  ticket0Entities,
+  ticket0Lifecycles,
+  ticket0Operations,
+} from '../spec/model.js';
+import { T0_PERM, ticket0Manifest } from './manifest.js';
+import { ticket0Migrations } from './migrations.generated.js';
+
+type ContactRow = EntityRow<typeof ticket0Entities, 'contact'>;
+type AgentProfileRow = EntityRow<typeof ticket0Entities, 'agentProfile'>;
+type ConversationRow = EntityRow<typeof ticket0Entities, 'conversation'>;
+type MessageRow = EntityRow<typeof ticket0Entities, 'message'>;
+type TagRow = EntityRow<typeof ticket0Entities, 'conversationTag'>;
+type SavedReplyRow = EntityRow<typeof ticket0Entities, 'savedReply'>;
+type CsatRow = EntityRow<typeof ticket0Entities, 'csat'>;
+type SessionRow = EntityRow<typeof ticket0Entities, 'widgetSession'>;
+type DeskRow = EntityRow<typeof ticket0Entities, 'deskSettings'>;
+type KbSourceRow = EntityRow<typeof ticket0Entities, 'kbSource'>;
+type KbArticleRow = EntityRow<typeof ticket0Entities, 'kbArticle'>;
+type AiTurnRow = EntityRow<typeof ticket0Entities, 'aiTurn'>;
+type UsageRateRow = EntityRow<typeof ticket0Entities, 'usageRate'>;
+type NotificationRow = EntityRow<typeof ticket0Entities, 'notification'>;
+
+const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
+const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
+const sourceRef = (id: string) => ({ entityType: 'kbSource', entityId: id });
+
+/** The desk is a singleton per scope, and this is its id. */
+const DESK = 'desk';
+
+/**
+ * The meters this desk records against.
+ *
+ * Registered lazily rather than in a migration: meter rows are the ENGINE's tables,
+ * and writing another module's tables is what decision 28 forbids. `configureMeter`
+ * is idempotent and freezes kind/unit on first write, so calling it on the paths
+ * that need it is both safe and the only honest place for it.
+ */
+export const METERS = {
+  inputTokens: 'ai.tokens.input',
+  outputTokens: 'ai.tokens.output',
+} as const;
+
+// ---------------------------------------------------------------------------
+// Reads that refuse rather than answering emptily
+// ---------------------------------------------------------------------------
+
+function conversationOrThrow(ctx: OperationContext, id: string): ConversationRow {
+  const row = ctx.sql.query<ConversationRow>('SELECT * FROM ticket0_conversations WHERE id = ?', [
+    id,
+  ])[0];
+  if (!row) throw substratError('not_found', `conversation not found: ${id}`);
+  return row;
+}
+
+function messageOrThrow(ctx: OperationContext, id: string): MessageRow {
+  const row = ctx.sql.query<MessageRow>('SELECT * FROM ticket0_messages WHERE id = ?', [id])[0];
+  if (!row) throw substratError('not_found', `message not found: ${id}`);
+  return row;
+}
+
+function sourceOrThrow(ctx: OperationContext, id: string): KbSourceRow {
+  const row = ctx.sql.query<KbSourceRow>('SELECT * FROM ticket0_kb_sources WHERE id = ?', [id])[0];
+  if (!row) throw substratError('not_found', `documentation source not found: ${id}`);
+  return row;
+}
+
+/**
+ * The desk's settings, seeded lazily on first read.
+ *
+ * User-shaped configuration is DATA: a row with defaults, not DDL and not a constant
+ * buried in this file. The verification secret is minted here so a desk is never
+ * briefly in a state where the widget could be embedded without one.
+ */
+function desk(ctx: OperationContext): DeskRow {
+  const existing = ctx.sql.query<DeskRow>('SELECT * FROM ticket0_desk_settings WHERE id = ?', [
+    DESK,
+  ])[0];
+  if (existing) return existing;
+  const now = ctx.now();
+  ctx.sql.exec(
+    `INSERT INTO ticket0_desk_settings
+       (id, from_address, greeting, allowed_origins, verification_secret, business_hours, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [DESK, 'support@example.com', 'Hi - how can we help?', '[]', ulid(), null, now, now],
+  );
+  return ctx.sql.query<DeskRow>('SELECT * FROM ticket0_desk_settings WHERE id = ?', [DESK])[0]!;
+}
+
+/** Never hand the secret back on an ordinary read. */
+function publicDesk(row: DeskRow) {
+  const { verification_secret: _secret, ...rest } = row;
+  return rest;
+}
+
+// ---------------------------------------------------------------------------
+// The state machine - enforced from the declaration, never re-derived
+// ---------------------------------------------------------------------------
+
+/**
+ * Every operation that touches a conversation names itself here and lets the
+ * declared lifecycle answer. An `allow` entry passes and moves nothing; an `on`
+ * entry returns the next state; anything the state does not admit throws the
+ * platform's own conflict with `reason: 'invalid_transition'`.
+ */
+function step(row: ConversationRow, operation: string): string {
+  const outcome = assertTransition(
+    ticket0Lifecycles.conversation,
+    `conversation ${row.id}`,
+    row.state,
+    operation,
+  );
+  // `allowed` is not a degenerate transition: writing `state` after one would move
+  // an entity the declaration says stays put.
+  return outcome.kind === 'transition' ? outcome.to : row.state;
+}
+
+/** One place that writes `state` and `updated_at`, so they cannot disagree. */
+function moveTo(ctx: OperationContext, id: string, state: string): ConversationRow {
+  ctx.sql.exec('UPDATE ticket0_conversations SET state = ?, updated_at = ? WHERE id = ?', [
+    state,
+    ctx.now(),
+    id,
+  ]);
+  return conversationOrThrow(ctx, id);
+}
+
+function touch(ctx: OperationContext, id: string): ConversationRow {
+  ctx.sql.exec('UPDATE ticket0_conversations SET updated_at = ? WHERE id = ?', [ctx.now(), id]);
+  return conversationOrThrow(ctx, id);
+}
+
+/** Apply whatever the lifecycle decided, in one place. */
+function settle(ctx: OperationContext, row: ConversationRow, next: string): ConversationRow {
+  return next === row.state ? touch(ctx, row.id) : moveTo(ctx, row.id, next);
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+interface WriteMessage {
+  readonly conversationId: string;
+  readonly authorKind: MessageRow['author_kind'];
+  readonly authorPrincipal: string | null;
+  readonly visibility: MessageRow['visibility'];
+  readonly bodyText: string;
+  readonly bodyHtml?: string | null;
+  readonly emailMessageId?: string | null;
+  readonly emailInReplyTo?: string | null;
+  readonly citedArticleIds?: readonly string[];
+}
+
+function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
+  const id = ulid();
+  ctx.sql.exec(
+    `INSERT INTO ticket0_messages
+       (id, conversation_id, author_kind, author_principal, visibility, body_text, body_html,
+        email_message_id, email_in_reply_to, delivered_at, cited_article_ids, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+    [
+      id,
+      m.conversationId,
+      m.authorKind,
+      m.authorPrincipal,
+      m.visibility,
+      m.bodyText,
+      m.bodyHtml ?? null,
+      m.emailMessageId ?? null,
+      m.emailInReplyTo ?? null,
+      m.citedArticleIds && m.citedArticleIds.length > 0
+        ? JSON.stringify(m.citedArticleIds)
+        : null,
+      ctx.now(),
+    ],
+  );
+  ctx.link({ entityType: 'message', entityId: id }, conversationRef(m.conversationId));
+  return messageOrThrow(ctx, id);
+}
+
+/** The one shape every message event carries. Bodies are erasable and never ride. */
+function messageEvent(row: MessageRow, type: string) {
+  return {
+    type,
+    schemaVersion: 1 as const,
+    entity: { entityType: 'message', entityId: row.id },
+    piiClass: 'none' as const,
+    payload: {
+      id: row.id,
+      conversation_id: row.conversation_id,
+      author_kind: row.author_kind,
+      visibility: row.visibility,
+    },
+  };
+}
+
+function notify(
+  ctx: OperationContext,
+  principal: string,
+  kind: NotificationRow['kind'],
+  conversationId: string | null,
+): void {
+  // Never tell someone about their own act.
+  if (principal === String(ctx.principal)) return;
+  ctx.sql.exec(
+    `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, read_at, created_at)
+     VALUES (?, ?, ?, ?, NULL, ?)`,
+    [ulid(), principal, kind, conversationId, ctx.now()],
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Contacts, sessions, and the three rungs of trust
+// ---------------------------------------------------------------------------
+
+const enc = new TextEncoder();
+
+function hex(buf: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/** Web Crypto, the same API in Node, Workers and browsers. Never a hand-rolled hash. */
+async function sha256(value: string): Promise<string> {
+  return hex(await globalThis.crypto.subtle.digest('SHA-256', enc.encode(value)));
+}
+
+/**
+ * The middle rung of trust: HMAC-SHA256 over the external id, keyed by the desk's
+ * secret - the mechanism Intercom calls `user_hash` and Help Scout calls a Beacon
+ * signature. The host page's SERVER computes it; the browser only carries it, which
+ * is what makes it a claim the browser cannot forge.
+ *
+ * Both sides are hex of a fixed length, so the constant-time compare below leaks
+ * length and nothing else.
+ */
+async function verifyIdentity(
+  secret: string,
+  externalId: string,
+  signature: string,
+): Promise<boolean> {
+  const key = await globalThis.crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const expected = hex(await globalThis.crypto.subtle.sign('HMAC', key, enc.encode(externalId)));
+  if (expected.length !== signature.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i += 1) {
+    diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function contactByExternalId(ctx: OperationContext, externalId: string): ContactRow | undefined {
+  return ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE external_id = ?', [
+    externalId,
+  ])[0];
+}
+
+function contactByEmail(ctx: OperationContext, email: string): ContactRow | undefined {
+  return ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE email = ?', [email])[0];
+}
+
+function createContact(
+  ctx: OperationContext,
+  fields: {
+    external_id?: string | null;
+    email?: string | null;
+    display_name?: string | null;
+    verified_at?: string | null;
+  },
+): ContactRow {
+  const id = ulid();
+  ctx.sql.exec(
+    `INSERT INTO ticket0_contacts (id, external_id, principal, email, display_name, verified_at, created_at)
+     VALUES (?, ?, NULL, ?, ?, ?, ?)`,
+    [
+      id,
+      fields.external_id ?? null,
+      fields.email ?? null,
+      fields.display_name ?? null,
+      fields.verified_at ?? null,
+      ctx.now(),
+    ],
+  );
+  return ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [id])[0]!;
+}
+
+function openConversation(
+  ctx: OperationContext,
+  contact: ContactRow,
+  channel: ConversationRow['channel'],
+  subject: string,
+): ConversationRow {
+  const id = ulid();
+  const now = ctx.now();
+  ctx.sql.exec(
+    `INSERT INTO ticket0_conversations
+       (id, contact_id, channel, subject, state, assignee, priority, snoozed_until,
+        first_public_reply_at, resolved_at, merged_into, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'new', NULL, 'normal', NULL, NULL, NULL, NULL, ?, ?)`,
+    [id, contact.id, channel, subject, now, now],
+  );
+  // The edge the permission walk follows: a contact's grant on their own entity
+  // reaches their conversations through this, and reaches nobody else's.
+  ctx.link(conversationRef(id), contactRef(contact.id));
+  return conversationOrThrow(ctx, id);
+}
+
+function allowedOrigins(ctx: OperationContext): string[] {
+  const parsed = JSON.parse(desk(ctx).allowed_origins) as unknown;
+  return Array.isArray(parsed) ? parsed.filter((o): o is string => typeof o === 'string') : [];
+}
+
+/** The session a widget call holds, or a refusal - never a silent empty answer. */
+async function sessionOrThrow(
+  ctx: OperationContext,
+  sessionId: string,
+  token: string,
+): Promise<ConversationRow> {
+  const session = ctx.sql.query<SessionRow>('SELECT * FROM ticket0_widget_sessions WHERE id = ?', [
+    sessionId,
+  ])[0];
+  if (!session) throw substratError('not_found', `widget session not found: ${sessionId}`);
+  if (session.token_hash !== (await sha256(token)))
+    throw substratError('permission_denied', 'widget session token does not match');
+  // An origin dropped from the allowlist stops working rather than coasting on a
+  // session opened while it was still trusted.
+  if (!allowedOrigins(ctx).includes(session.origin))
+    throw substratError('permission_denied', `origin no longer embedded here: ${session.origin}`);
+  ctx.sql.exec('UPDATE ticket0_widget_sessions SET last_seen_at = ? WHERE id = ?', [
+    ctx.now(),
+    session.id,
+  ]);
+  return conversationOrThrow(ctx, session.conversation_id);
+}
+
+/**
+ * Resolve every message's cited ids to articles, in one query for the whole page.
+ *
+ * A citation exists so a human can check it, and an id is not checkable — so the join
+ * happens here rather than being left to each caller to reinvent, or to a browser to do
+ * one request at a time.
+ */
+function withCitations<T extends { cited_article_ids?: string | null }>(
+  ctx: OperationContext,
+  rows: T[],
+): (T & { citations: { id: string; title: string; url: string; headingPath: string }[] })[] {
+  const ids = [
+    ...new Set(
+      rows.flatMap((r) => (r.cited_article_ids ? (JSON.parse(r.cited_article_ids) as string[]) : [])),
+    ),
+  ];
+  const byId = new Map(
+    (ids.length
+      ? ctx.sql.query<KbArticleRow>(
+          `SELECT * FROM ticket0_kb_articles WHERE id IN (${ids.map(() => '?').join(', ')})`,
+          ids,
+        )
+      : []
+    ).map((a) => [a.id, a]),
+  );
+  return rows.map((r) => ({
+    ...r,
+    citations: (r.cited_article_ids ? (JSON.parse(r.cited_article_ids) as string[]) : [])
+      .map((id) => byId.get(id))
+      .filter((a): a is KbArticleRow => a !== undefined)
+      .map((a) => ({ id: a.id, title: a.title, url: a.url, headingPath: a.heading_path })),
+  }));
+}
+
+/**
+ * Both customer-facing reads, written once: public messages only, author id stripped.
+ *
+ * A separate path from the staff read rather than the same one with a flag, because
+ * the flag is the bug - one read whose output depends on who is asking is how an
+ * internal note reaches a customer.
+ */
+function publicThread(
+  ctx: OperationContext,
+  conversationId: string,
+  input: { limit?: number; cursor?: string },
+) {
+  const limit = input.limit ?? LIST_PAGE_DEFAULT;
+  const rows = input.cursor
+    ? ctx.sql.query<MessageRow>(
+        `SELECT * FROM ticket0_messages
+          WHERE conversation_id = ? AND visibility = 'public' AND id > ? ORDER BY id LIMIT ?`,
+        [conversationId, input.cursor, limit],
+      )
+    : ctx.sql.query<MessageRow>(
+        `SELECT * FROM ticket0_messages
+          WHERE conversation_id = ? AND visibility = 'public' ORDER BY id LIMIT ?`,
+        [conversationId, limit],
+      );
+  return pageOf(
+    withCitations(
+      ctx,
+      rows.map(({ author_principal: _hidden, ...rest }) => rest),
+    ),
+    limit,
+    (row) => row.id,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pricing - the vertical's, never the ledger's
+// ---------------------------------------------------------------------------
+
+/** One conversation's slice of a meter, from the entries that carry it as a subject. */
+function sumEntries(
+  ctx: OperationContext,
+  meter: string,
+  subject: { entityType: string; entityId: string },
+  from: string,
+  to: string,
+): { qty: string; entryCount: number } | null {
+  const entries = listEntries(ctx, { meter, subject, from, to });
+  if (entries.length === 0) return null;
+  return {
+    qty: entries.reduce((sum, e) => addDecimal(sum, e.qty), '0'),
+    entryCount: entries.length,
+  };
+}
+
+/** The rate in force for a meter at an instant: the latest one that had taken effect. */
+function rateFor(ctx: OperationContext, meterKey: string, at: string): UsageRateRow | undefined {
+  return ctx.sql.query<UsageRateRow>(
+    `SELECT * FROM ticket0_usage_rates
+      WHERE meter_key = ? AND effective_from <= ?
+      ORDER BY effective_from DESC LIMIT 1`,
+    [meterKey, at],
+  )[0];
+}
+
+/**
+ * Register the two meters this desk records against. Idempotent by construction.
+ */
+function ensureMeters(ctx: OperationContext): void {
+  configureMeter(ctx, {
+    key: METERS.inputTokens,
+    kind: 'counter',
+    unit: 'token',
+    description: 'Tokens sent to the model',
+  });
+  configureMeter(ctx, {
+    key: METERS.outputTokens,
+    kind: 'counter',
+    unit: 'token',
+    description: 'Tokens the model produced',
+  });
+}
+
+function overfetch(limit: number): number {
+  return Math.min(limit * SEARCH_OVERFETCH, MAX_SEARCH_LIMIT);
+}
+
+// ---------------------------------------------------------------------------
+// Operations
+// ---------------------------------------------------------------------------
+
+const operations = {
+  // --- The desk ------------------------------------------------------------
+
+  'ticket0/get-desk': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    return publicDesk(desk(ctx));
+  },
+
+  'ticket0/configure-desk': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    const current = desk(ctx);
+    ctx.sql.exec(
+      `UPDATE ticket0_desk_settings
+          SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?, updated_at = ?
+        WHERE id = ?`,
+      [
+        input.fromAddress ?? current.from_address,
+        input.greeting ?? current.greeting,
+        input.allowedOrigins ? JSON.stringify(input.allowedOrigins) : current.allowed_origins,
+        input.businessHours === undefined ? current.business_hours : input.businessHours,
+        ctx.now(),
+        DESK,
+      ],
+    );
+    const row = desk(ctx);
+    ctx.emit({
+      type: 'ticket0.desk-configured',
+      schemaVersion: 1,
+      entity: { entityType: 'deskSettings', entityId: row.id },
+      piiClass: 'none',
+      payload: { id: row.id, from_address: row.from_address, allowed_origins: row.allowed_origins },
+    });
+    return publicDesk(row);
+  },
+
+  'ticket0/rotate-verification-secret': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    desk(ctx);
+    const secret = `${ulid()}${ulid()}`;
+    const now = ctx.now();
+    ctx.sql.exec(
+      'UPDATE ticket0_desk_settings SET verification_secret = ?, updated_at = ? WHERE id = ?',
+      [secret, now, DESK],
+    );
+    ctx.emit({
+      type: 'ticket0.verification-secret-rotated',
+      schemaVersion: 1,
+      entity: { entityType: 'deskSettings', entityId: DESK },
+      piiClass: 'none',
+      // Deliberately not the secret: an event is immutable, and an immutable copy
+      // of a secret cannot be rotated away.
+      payload: { id: DESK },
+    });
+    return { id: DESK, secret, rotatedAt: now };
+  },
+
+  'ticket0/set-agent-profile': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    // The caller's own principal, never one from the input - this cannot rename a
+    // colleague however it is called.
+    const principal = String(ctx.principal);
+    const existing = ctx.sql.query<AgentProfileRow>(
+      'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
+      [principal],
+    )[0];
+    if (existing) {
+      ctx.sql.exec(
+        'UPDATE ticket0_agent_profiles SET display_name = ?, avatar_url = ?, signature = ? WHERE principal = ?',
+        [
+          input.displayName,
+          input.avatarUrl === undefined ? existing.avatar_url : input.avatarUrl,
+          input.signature === undefined ? existing.signature : input.signature,
+          principal,
+        ],
+      );
+    } else {
+      ctx.sql.exec(
+        `INSERT INTO ticket0_agent_profiles (principal, display_name, avatar_url, signature, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [principal, input.displayName, input.avatarUrl ?? null, input.signature ?? null, ctx.now()],
+      );
+    }
+    return ctx.sql.query<AgentProfileRow>(
+      'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
+      [principal],
+    )[0]!;
+  },
+
+  // --- Knowledge base ------------------------------------------------------
+
+  'ticket0/add-kb-source': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbManage));
+    const existing = ctx.sql.query<KbSourceRow>('SELECT * FROM ticket0_kb_sources WHERE url = ?', [
+      input.url,
+    ])[0];
+    if (existing) return existing;
+    const id = ulid();
+    ctx.sql.exec(
+      `INSERT INTO ticket0_kb_sources (id, kind, url, label, status, last_ingested_at, last_error, created_at)
+       VALUES (?, ?, ?, ?, 'idle', NULL, NULL, ?)`,
+      [id, input.kind, input.url, input.label, ctx.now()],
+    );
+    const row = sourceOrThrow(ctx, id);
+    ctx.emit({
+      type: 'ticket0.kb-source-added',
+      schemaVersion: 1,
+      entity: sourceRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, kind: row.kind, url: row.url, label: row.label },
+    });
+    return row;
+  },
+
+  'ticket0/list-kb-sources': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbRead));
+    return ctx.page<KbSourceRow>('kbSource', input);
+  },
+
+  'ticket0/ingest-kb-source': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    const row = sourceOrThrow(ctx, input.sourceId);
+    ctx.sql.exec('UPDATE ticket0_kb_sources SET status = ?, last_error = NULL WHERE id = ?', [
+      'ingesting',
+      row.id,
+    ]);
+    const updated = sourceOrThrow(ctx, row.id);
+    // The fetching happens outside this transaction, in a connector: module code has
+    // no network, and holding a scope's transaction open across someone else's docs
+    // site would be the reason why even if it did.
+    ctx.emit({
+      type: 'ticket0.kb-ingest-requested',
+      schemaVersion: 1,
+      entity: sourceRef(updated.id),
+      piiClass: 'none',
+      payload: { id: updated.id, kind: updated.kind, url: updated.url },
+    });
+    return updated;
+  },
+
+  'ticket0/record-kb-articles': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    sourceOrThrow(ctx, input.sourceId);
+    let added = 0;
+    let updated = 0;
+    let unchanged = 0;
+
+    for (const article of input.articles) {
+      const hash = await sha256(`${article.title} ${article.headingPath} ${article.body}`);
+      const existing = ctx.sql.query<KbArticleRow>(
+        'SELECT * FROM ticket0_kb_articles WHERE source_id = ? AND url = ?',
+        [input.sourceId, article.url],
+      )[0];
+      if (existing && existing.content_hash === hash) {
+        // The whole reason for the hash: a nightly re-read of an unchanged docs site
+        // writes nothing, so the audit trail stays worth reading.
+        unchanged += 1;
+        continue;
+      }
+      if (existing) {
+        ctx.sql.exec(
+          `UPDATE ticket0_kb_articles
+              SET title = ?, heading_path = ?, body = ?, content_hash = ?, ingested_at = ?
+            WHERE id = ?`,
+          [article.title, article.headingPath, article.body, hash, ctx.now(), existing.id],
+        );
+        updated += 1;
+        continue;
+      }
+      const id = ulid();
+      ctx.sql.exec(
+        `INSERT INTO ticket0_kb_articles
+           (id, source_id, url, title, heading_path, body, content_hash, ingested_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          input.sourceId,
+          article.url,
+          article.title,
+          article.headingPath,
+          article.body,
+          hash,
+          ctx.now(),
+        ],
+      );
+      ctx.link({ entityType: 'kbArticle', entityId: id }, sourceRef(input.sourceId));
+      added += 1;
+    }
+
+    ctx.sql.exec(
+      'UPDATE ticket0_kb_sources SET status = ?, last_ingested_at = ?, last_error = NULL WHERE id = ?',
+      ['idle', ctx.now(), input.sourceId],
+    );
+    const result = { sourceId: input.sourceId, added, updated, unchanged };
+    ctx.emit({
+      type: 'ticket0.kb-source-ingested',
+      schemaVersion: 1,
+      entity: sourceRef(input.sourceId),
+      piiClass: 'none',
+      payload: result,
+    });
+    return result;
+  },
+
+  'ticket0/search-kb': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbRead));
+    const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;
+    const fetch = overfetch(limit);
+    const hits = ctx.search('kbArticle', input.q, { limit: fetch });
+    if (hits.length === 0) return { results: [], limit, capped: false };
+
+    const params: string[] = hits.map((h) => h.id);
+    let sql = `SELECT * FROM ticket0_kb_articles WHERE id IN (${hits.map(() => '?').join(', ')})`;
+    if (input.sourceId) {
+      sql += ' AND source_id = ?';
+      params.push(input.sourceId);
+    }
+    const rows = ctx.sql.query<KbArticleRow>(sql, params);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    // `IN (...)` returns whatever order the table hands back, so the rank has to be
+    // put back deliberately: the best answer to a support question arriving third is
+    // a knowledge base people stop trusting.
+    const ordered = hits
+      .map((h, i) => {
+        const row = byId.get(h.id);
+        return row ? { ...row, snippet: row.body.slice(0, 240), rank: i } : undefined;
+      })
+      .filter((r): r is KbArticleRow & { snippet: string; rank: number } => r !== undefined);
+
+    return {
+      results: ordered.slice(0, limit),
+      limit,
+      capped: ordered.length > limit || hits.length === fetch,
+    };
+  },
+
+  // --- Contacts ------------------------------------------------------------
+
+  'ticket0/list-contacts': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.contactRead));
+    return ctx.page<ContactRow>('contact', input);
+  },
+
+  // --- The inbox -----------------------------------------------------------
+
+  'ticket0/list-conversations': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    // Only the filters actually asked for: an undefined column must not become a
+    // `WHERE state IS NULL` that quietly returns nothing.
+    const filters: Record<string, unknown> = {};
+    for (const key of ['state', 'assignee', 'channel', 'priority'] as const) {
+      if (input[key] !== undefined) filters[key] = input[key];
+    }
+    return ctx.page<ConversationRow>('conversation', {
+      ...input,
+      filters,
+      total: true,
+    }) as CountedPage<ConversationRow>;
+  },
+
+  'ticket0/get-conversation': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
+    return conversationOrThrow(ctx, input.conversationId);
+  },
+
+  'ticket0/list-messages': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
+    conversationOrThrow(ctx, input.conversationId);
+    // The route already narrows by conversation, so the filter is supplied rather
+    // than read off the input - a caller cannot widen it to another conversation.
+    const page = ctx.page<MessageRow>('message', {
+      ...input,
+      filters: { conversation_id: input.conversationId },
+      total: true,
+    }) as CountedPage<MessageRow>;
+    return { ...page, entries: withCitations(ctx, page.entries) };
+  },
+
+  'ticket0/post-note': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationDraft, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/post-note');
+    const row = writeMessage(ctx, {
+      conversationId: conversation.id,
+      authorKind: 'agent',
+      authorPrincipal: String(ctx.principal),
+      visibility: 'internal',
+      bodyText: input.body,
+    });
+    touch(ctx, conversation.id);
+    if (conversation.assignee) notify(ctx, conversation.assignee, 'mentioned', conversation.id);
+    ctx.emit(messageEvent(row, 'ticket0.note-posted'));
+    return row;
+  },
+
+  /**
+   * The operation the whole assistant design turns on.
+   *
+   * Nothing in this body knows whether the caller is a human or the assistant, and
+   * that is the point: the check above is the entire difference between a desk where
+   * the AI answers customers and one where it drafts for review.
+   */
+  'ticket0/post-public-reply': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationReplyPublic, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const next = step(conversation, 'ticket0/post-public-reply');
+
+    const profile = ctx.sql.query<AgentProfileRow>(
+      'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
+      [String(ctx.principal)],
+    )[0];
+    const row = writeMessage(ctx, {
+      conversationId: conversation.id,
+      authorKind: profile?.display_name === ASSISTANT_NAME ? 'assistant' : 'agent',
+      authorPrincipal: String(ctx.principal),
+      visibility: 'public',
+      bodyText: input.body,
+      bodyHtml: input.bodyHtml ?? null,
+      citedArticleIds: input.citedArticleIds,
+    });
+    if (!conversation.first_public_reply_at) {
+      ctx.sql.exec('UPDATE ticket0_conversations SET first_public_reply_at = ? WHERE id = ?', [
+        ctx.now(),
+        conversation.id,
+      ]);
+    }
+    settle(ctx, conversation, next);
+
+    // Ids only: the body is erasable, so it cannot ride an immutable event. The relay
+    // comes back for it at send time through `ticket0/read-outbound`.
+    ctx.emit(messageEvent(row, 'ticket0.reply-requested'));
+    return row;
+  },
+
+  'ticket0/assign': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const next = step(conversation, 'ticket0/assign');
+    ctx.sql.exec('UPDATE ticket0_conversations SET assignee = ? WHERE id = ?', [
+      input.assignee,
+      conversation.id,
+    ]);
+    const row = settle(ctx, conversation, next);
+    if (input.assignee) notify(ctx, input.assignee, 'assigned', conversation.id);
+    ctx.emit({
+      type: 'ticket0.conversation-assigned',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, assignee: row.assignee, state: row.state },
+    });
+    return row;
+  },
+
+  'ticket0/snooze': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const next = step(conversation, 'ticket0/snooze');
+    ctx.sql.exec('UPDATE ticket0_conversations SET snoozed_until = ? WHERE id = ?', [
+      input.until,
+      conversation.id,
+    ]);
+    const row = settle(ctx, conversation, next);
+    ctx.emit({
+      type: 'ticket0.conversation-snoozed',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, snoozed_until: row.snoozed_until },
+    });
+    return row;
+  },
+
+  'ticket0/wake': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const next = step(conversation, 'ticket0/wake');
+    ctx.sql.exec('UPDATE ticket0_conversations SET snoozed_until = NULL WHERE id = ?', [
+      conversation.id,
+    ]);
+    const row = settle(ctx, conversation, next);
+    ctx.emit({
+      type: 'ticket0.conversation-woke',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, state: row.state },
+    });
+    return row;
+  },
+
+  /**
+   * Resolve.
+   *
+   * The lifecycle says which states admit this. The other half of the rule - that a
+   * conversation may not be resolved before the customer has heard anything - is a
+   * CONDITION, which an edge deliberately cannot carry, so it lives here.
+   */
+  'ticket0/resolve': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationResolve, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const next = step(conversation, 'ticket0/resolve');
+    if (!conversation.first_public_reply_at) {
+      // `conflict`, not `precondition_failed`: this is a refusal about the state the
+      // conversation is in, exactly like the lifecycle's own. A sibling guard
+      // answering 412 where the declared machine answers 409 would make the status a
+      // fact about which line of code refused rather than about what was refused.
+      throw substratError('conflict', 'nothing has been sent to the customer yet - reply before resolving', {
+        reason: 'no_public_reply',
+      });
+    }
+    ctx.sql.exec('UPDATE ticket0_conversations SET resolved_at = ? WHERE id = ?', [
+      ctx.now(),
+      conversation.id,
+    ]);
+    const row = settle(ctx, conversation, next);
+    ctx.emit({
+      type: 'ticket0.conversation-resolved',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, resolved_at: row.resolved_at, contact_id: row.contact_id },
+    });
+    return row;
+  },
+
+  'ticket0/close': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationResolve, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const next = step(conversation, 'ticket0/close');
+    const row = settle(ctx, conversation, next);
+    ctx.emit({
+      type: 'ticket0.conversation-closed',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id },
+    });
+    return row;
+  },
+
+  'ticket0/merge': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationMerge, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/merge');
+    if (input.intoConversationId === conversation.id)
+      throw substratError('validation_failed', 'a conversation cannot be merged into itself');
+    const survivor = conversationOrThrow(ctx, input.intoConversationId);
+    // Both ends, deliberately: merging is a read of the survivor as much as a write
+    // of the loser, and one check would let a caller fold a conversation into one
+    // they cannot see.
+    assertAllowed(await ctx.check(T0_PERM.conversationMerge, conversationRef(survivor.id)));
+
+    ctx.sql.exec('UPDATE ticket0_conversations SET merged_into = ?, updated_at = ? WHERE id = ?', [
+      survivor.id,
+      ctx.now(),
+      conversation.id,
+    ]);
+    /**
+     * Everything that hangs off the loser moves with it.
+     *
+     * Repointing only the messages left the rest behind, and two of them break
+     * visibly: a `widget_session` still naming the loser resolves to a conversation
+     * whose messages have gone, so the visitor's widget empties itself; and an
+     * `ai_turn` left behind takes the assistant's draft card off the survivor, which
+     * is where the human is now looking.
+     */
+    for (const table of ['ticket0_messages', 'ticket0_ai_turns', 'ticket0_widget_sessions']) {
+      ctx.sql.exec(`UPDATE ${table} SET conversation_id = ? WHERE conversation_id = ?`, [
+        survivor.id,
+        conversation.id,
+      ]);
+    }
+    // Notifications point at whichever conversation a person should open, which is
+    // now the survivor.
+    ctx.sql.exec(
+      'UPDATE ticket0_notifications SET conversation_id = ? WHERE conversation_id = ?',
+      [survivor.id, conversation.id],
+    );
+    // A tag is keyed by (conversation_id, tag), so a blind move collides whenever
+    // both conversations carry the same one. Move what does not collide.
+    ctx.sql.exec(
+      `UPDATE ticket0_conversation_tags SET conversation_id = ? WHERE conversation_id = ?
+         AND tag NOT IN (SELECT tag FROM ticket0_conversation_tags WHERE conversation_id = ?)`,
+      [survivor.id, conversation.id, survivor.id],
+    );
+    ctx.sql.exec('DELETE FROM ticket0_conversation_tags WHERE conversation_id = ?', [
+      conversation.id,
+    ]);
+    /**
+     * `csat` deliberately stays. It is keyed by the conversation and it is a rating OF
+     * that conversation — moving it would either collide with the survivor's own
+     * rating or silently reattribute one exchange's score to another.
+     */
+
+    // The permission walk follows declared edges, so the moved rows need one to the
+    // survivor. `parents` is an allowlist the kernel accumulates, so this widens
+    // rather than rewrites — and both conversations were reachable by the caller,
+    // which is what `merge` checked on each of them.
+    const survivorRef = conversationRef(survivor.id);
+    for (const [table, entityType] of [
+      ['ticket0_messages', 'message'],
+      ['ticket0_ai_turns', 'aiTurn'],
+      ['ticket0_widget_sessions', 'widgetSession'],
+    ] as const) {
+      for (const row of ctx.sql.query<{ id: string }>(
+        `SELECT id FROM ${table} WHERE conversation_id = ?`,
+        [survivor.id],
+      )) {
+        ctx.link({ entityType, entityId: row.id }, survivorRef);
+      }
+    }
+    const row = conversationOrThrow(ctx, conversation.id);
+    ctx.emit({
+      type: 'ticket0.conversation-merged',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, merged_into: row.merged_into },
+    });
+    return row;
+  },
+
+  'ticket0/tag-conversation': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/tag-conversation');
+    const existing = ctx.sql.query<TagRow>(
+      'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
+      [conversation.id, input.tag],
+    )[0];
+    if (existing) return existing;
+    ctx.sql.exec(
+      'INSERT INTO ticket0_conversation_tags (conversation_id, tag, created_at) VALUES (?, ?, ?)',
+      [conversation.id, input.tag, ctx.now()],
+    );
+    return ctx.sql.query<TagRow>(
+      'SELECT * FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
+      [conversation.id, input.tag],
+    )[0]!;
+  },
+
+  // --- Saved replies -------------------------------------------------------
+
+  'ticket0/list-saved-replies': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    return ctx.page<SavedReplyRow>('savedReply', input);
+  },
+
+  'ticket0/create-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    const existing = ctx.sql.query<SavedReplyRow>(
+      'SELECT * FROM ticket0_saved_replies WHERE title = ?',
+      [input.title],
+    )[0];
+    if (existing) return existing;
+    const id = ulid();
+    ctx.sql.exec(
+      'INSERT INTO ticket0_saved_replies (id, title, body, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id, input.title, input.body, String(ctx.principal), ctx.now()],
+    );
+    return ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
+      id,
+    ])[0]!;
+  },
+
+  // --- The assistant -------------------------------------------------------
+
+  /**
+   * The message and the meter entries, written in one transaction.
+   *
+   * `turnId` is the ledger's dedupe key, so a retried turn returns the existing entry
+   * rather than billing twice - and because both writes are in this transaction, a
+   * turn cannot be charged for without being recorded, or recorded without being
+   * charged for.
+   *
+   * The permission is `draft`, always. Whether the answer then goes out is a separate
+   * act with a separate permission, which is the entire design.
+   */
+  'ticket0/record-answer': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationDraft, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/record-answer');
+
+    // Idempotent at this end too: the ledger dedupes by key, and so must the side
+    // table hanging off it, or a replay writes a second turn against one entry.
+    const existing = ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [
+      input.turnId,
+    ])[0];
+    if (existing) return existing;
+
+    ensureMeters(ctx);
+    const subject = conversationRef(conversation.id);
+    const inputEntry = recordUsage(ctx, {
+      meter: METERS.inputTokens,
+      qty: String(input.inputTokens),
+      subject,
+      dedupeKey: `${input.turnId}:in`,
+    });
+    recordUsage(ctx, {
+      meter: METERS.outputTokens,
+      qty: String(input.outputTokens),
+      subject,
+      dedupeKey: `${input.turnId}:out`,
+    });
+
+    // The drafted answer is an INTERNAL message. Sending it is `post-public-reply`,
+    // and that is a different permission on purpose.
+    const message = writeMessage(ctx, {
+      conversationId: conversation.id,
+      authorKind: 'assistant',
+      authorPrincipal: String(ctx.principal),
+      visibility: 'internal',
+      bodyText: input.body,
+    });
+
+    ctx.sql.exec(
+      `INSERT INTO ticket0_ai_turns
+         (id, conversation_id, message_id, model, input_tokens, output_tokens,
+          cited_article_ids, confidence, outcome, meter_entry_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.turnId,
+        conversation.id,
+        message.id,
+        input.model,
+        input.inputTokens,
+        input.outputTokens,
+        JSON.stringify(input.citedArticleIds),
+        input.confidence ?? null,
+        input.outcome,
+        inputEntry.entry.id,
+        ctx.now(),
+      ],
+    );
+    ctx.link({ entityType: 'aiTurn', entityId: input.turnId }, conversationRef(conversation.id));
+    touch(ctx, conversation.id);
+
+    const row = ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [
+      input.turnId,
+    ])[0]!;
+    if (input.outcome === 'escalated' && conversation.assignee)
+      notify(ctx, conversation.assignee, 'escalated', conversation.id);
+    ctx.emit({
+      type: 'ticket0.answer-recorded',
+      schemaVersion: 1,
+      entity: { entityType: 'aiTurn', entityId: row.id },
+      piiClass: 'none',
+      payload: {
+        id: row.id,
+        conversation_id: row.conversation_id,
+        model: row.model,
+        input_tokens: row.input_tokens,
+        output_tokens: row.output_tokens,
+        outcome: row.outcome,
+      },
+    });
+    return row;
+  },
+
+  /**
+   * What the assistant produced on this conversation — for the human deciding whether
+   * to send it, and carrying no token counts. Cost has one door and this is not it.
+   */
+  'ticket0/list-turns': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
+    conversationOrThrow(ctx, input.conversationId);
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const rows = input.cursor
+      ? ctx.sql.query<AiTurnRow>(
+          'SELECT * FROM ticket0_ai_turns WHERE conversation_id = ? AND id > ? ORDER BY id LIMIT ?',
+          [input.conversationId, input.cursor, limit],
+        )
+      : ctx.sql.query<AiTurnRow>(
+          'SELECT * FROM ticket0_ai_turns WHERE conversation_id = ? ORDER BY id LIMIT ?',
+          [input.conversationId, limit],
+        );
+
+    // One query for the whole page's citations rather than one per turn: a
+    // conversation with a dozen turns should not be a dozen round trips.
+    const ids = [...new Set(rows.flatMap((r) => JSON.parse(r.cited_article_ids) as string[]))];
+    const articles = ids.length
+      ? ctx.sql.query<KbArticleRow>(
+          `SELECT * FROM ticket0_kb_articles WHERE id IN (${ids.map(() => '?').join(', ')})`,
+          ids,
+        )
+      : [];
+    const byId = new Map(articles.map((a) => [a.id, a]));
+
+    return pageOf(
+      rows.map((r) => ({
+        id: r.id,
+        conversation_id: r.conversation_id,
+        message_id: r.message_id,
+        model: r.model,
+        confidence: r.confidence,
+        outcome: r.outcome,
+        created_at: r.created_at,
+        citations: (JSON.parse(r.cited_article_ids) as string[])
+          .map((id) => byId.get(id))
+          .filter((a): a is KbArticleRow => a !== undefined)
+          .map((a) => ({ id: a.id, title: a.title, url: a.url, headingPath: a.heading_path })),
+      })),
+      limit,
+      (row) => row.id,
+    );
+  },
+
+  // --- The money -----------------------------------------------------------
+
+  'ticket0/usage-summary': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.usageRead));
+    const to = input.to ?? ctx.now();
+    const from = input.from ?? '1970-01-01T00:00:00.000Z';
+    ensureMeters(ctx);
+    const subject = input.conversationId ? conversationRef(input.conversationId) : undefined;
+
+    let total = '0';
+    let currency = 'EUR';
+    const lines = Object.values(METERS).map((meterKey) => {
+      // Narrowed to one conversation, the engine's aggregate is the wrong tool - it
+      // sums a whole meter - so the entries carrying that subject are summed instead.
+      // Same ledger, same rows, one filter narrower.
+      const agg = subject
+        ? sumEntries(ctx, meterKey, subject, from, to)
+        : usageTotal(ctx, { meter: meterKey, from, to });
+      const qty = agg?.qty ?? '0';
+      const entryCount = agg?.entryCount ?? 0;
+      const rate = rateFor(ctx, meterKey, to);
+      const unitPrice = rate?.unit_price ?? '0';
+      if (rate) currency = rate.currency;
+      // Decimal strings through the contracts helpers, never floats - a token price
+      // has more decimal places than a float has patience for.
+      const amount = mulDecimal(qty, unitPrice);
+      total = addDecimal(total, amount);
+      return { meterKey: String(meterKey), unit: 'token', qty, unitPrice, amount, entryCount };
+    });
+
+    return { from, to, currency, total, lines };
+  },
+
+  'ticket0/set-usage-rate': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.usageRead));
+    // Re-pricing is an append keyed by the date it takes effect, so a closed month
+    // stays reproducible at the price it was closed under.
+    ctx.sql.exec(
+      `INSERT INTO ticket0_usage_rates (meter_key, unit_price, currency, effective_from)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (meter_key, effective_from)
+       DO UPDATE SET unit_price = excluded.unit_price, currency = excluded.currency`,
+      [input.meterKey, input.unitPrice, input.currency, input.effectiveFrom],
+    );
+    return ctx.sql.query<UsageRateRow>(
+      'SELECT * FROM ticket0_usage_rates WHERE meter_key = ? AND effective_from = ?',
+      [input.meterKey, input.effectiveFrom],
+    )[0]!;
+  },
+
+  'ticket0/close-usage-period': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.usageRead));
+    ensureMeters(ctx);
+    // The engine's own function, in this transaction. It freezes the window into
+    // immutable lines and advances the close horizon, so no entry can land behind it
+    // afterwards.
+    const closed = closePeriod(ctx, { from: input.from, to: input.to });
+    return {
+      periodId: closed.period.id,
+      from: closed.period.from,
+      to: closed.period.to,
+      lines: closed.lines.length,
+    };
+  },
+
+  // --- The email relay -----------------------------------------------------
+
+  'ticket0/ingest-message': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRelay));
+
+    // Idempotent on the provider's message id: mail providers redeliver, and a
+    // redelivered message must not become a second message in the thread.
+    const seen = ctx.sql.query<MessageRow>(
+      'SELECT * FROM ticket0_messages WHERE email_message_id = ?',
+      [input.emailMessageId],
+    )[0];
+    if (seen) return seen;
+
+    const contact =
+      contactByEmail(ctx, input.contactEmail) ??
+      createContact(ctx, {
+        email: input.contactEmail,
+        display_name: input.contactName ?? null,
+        verified_at: ctx.now(),
+      });
+
+    const conversation = input.conversationId
+      ? conversationOrThrow(ctx, input.conversationId)
+      : openConversation(ctx, contact, 'email', input.subject);
+
+    const next = step(conversation, 'ticket0/ingest-message');
+    const row = writeMessage(ctx, {
+      conversationId: conversation.id,
+      authorKind: 'contact',
+      authorPrincipal: null,
+      visibility: 'public',
+      bodyText: input.bodyText,
+      bodyHtml: input.bodyHtml ?? null,
+      emailMessageId: input.emailMessageId,
+      emailInReplyTo: input.emailInReplyTo ?? null,
+    });
+    settle(ctx, conversation, next);
+    if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
+    ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
+    return row;
+  },
+
+  'ticket0/read-outbound': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRelay));
+    const message = messageOrThrow(ctx, input.messageId);
+    if (message.visibility !== 'public')
+      throw substratError('permission_denied', 'internal notes are never sent to a customer');
+    const conversation = conversationOrThrow(ctx, message.conversation_id);
+    const contact = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [
+      conversation.contact_id,
+    ])[0];
+    const author = message.author_principal
+      ? ctx.sql.query<AgentProfileRow>('SELECT * FROM ticket0_agent_profiles WHERE principal = ?', [
+          message.author_principal,
+        ])[0]
+      : undefined;
+
+    return {
+      messageId: message.id,
+      conversationId: conversation.id,
+      subject: conversation.subject,
+      toEmail: contact?.email ?? null,
+      fromAddress: desk(ctx).from_address,
+      agentName: author?.display_name ?? null,
+      // Gone after an erasure - which is exactly why the event carried ids only:
+      // there is nothing left to send, and the send finds that out here.
+      bodyText: message.body_text,
+      bodyHtml: message.body_html,
+      emailInReplyTo: message.email_in_reply_to,
+    };
+  },
+
+  'ticket0/record-delivery': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRelay));
+    const message = messageOrThrow(ctx, input.messageId);
+    ctx.sql.exec('UPDATE ticket0_messages SET delivered_at = ?, email_message_id = ? WHERE id = ?', [
+      ctx.now(),
+      input.emailMessageId,
+      message.id,
+    ]);
+    const row = messageOrThrow(ctx, message.id);
+    ctx.emit({
+      type: 'ticket0.message-delivered',
+      schemaVersion: 1,
+      entity: { entityType: 'message', entityId: row.id },
+      piiClass: 'none',
+      payload: { id: row.id, conversation_id: row.conversation_id, delivered_at: row.delivered_at },
+    });
+    return row;
+  },
+
+  // --- The widget ----------------------------------------------------------
+
+  'ticket0/widget-start': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationWidget));
+    const settings = desk(ctx);
+    // Refused at the door, before a contact or a conversation exists.
+    if (!allowedOrigins(ctx).includes(input.origin))
+      throw substratError('permission_denied', `this desk is not embedded on ${input.origin}`);
+
+    let contact: ContactRow;
+    let verified = false;
+    if (input.identity) {
+      const ok = await verifyIdentity(
+        settings.verification_secret,
+        input.identity.externalId,
+        input.identity.signature,
+      );
+      if (!ok) throw substratError('permission_denied', 'identity signature does not verify');
+      verified = true;
+      contact =
+        contactByExternalId(ctx, input.identity.externalId) ??
+        createContact(ctx, {
+          external_id: input.identity.externalId,
+          email: input.identity.email ?? null,
+          display_name: input.identity.displayName ?? null,
+          verified_at: ctx.now(),
+        });
+    } else {
+      // The bottom rung: their own contact, which nothing else will ever reach.
+      contact = createContact(ctx, {});
+    }
+
+    /**
+     * No principal is minted and no grant is made, and that is the design.
+     *
+     * `contact.principal` stays null until this person signs in for real, at which
+     * point the portal's grant is made against a login that actually exists. A
+     * visitor in a chat bubble reaches their conversation by holding the token
+     * below, which is why there is nothing here to grant, revoke, or reap.
+     */
+    const conversation = openConversation(ctx, contact, 'widget', 'Chat');
+
+    const token = `${ulid()}${ulid()}`;
+    const id = ulid();
+    const now = ctx.now();
+    ctx.sql.exec(
+      `INSERT INTO ticket0_widget_sessions
+         (id, conversation_id, contact_id, origin, token_hash, started_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [id, conversation.id, contact.id, input.origin, await sha256(token), now, now],
+    );
+    ctx.link({ entityType: 'widgetSession', entityId: id }, conversationRef(conversation.id));
+
+    return {
+      sessionId: id,
+      token,
+      conversationId: conversation.id,
+      greeting: settings.greeting,
+      verified,
+    };
+  },
+
+  'ticket0/widget-post': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationWidget));
+    // The token decides WHICH conversation, and there is no conversation id in the
+    // input for a caller to substitute one.
+    const conversation = await sessionOrThrow(ctx, input.sessionId, input.token);
+    const next = step(conversation, 'ticket0/widget-post');
+    const row = writeMessage(ctx, {
+      conversationId: conversation.id,
+      authorKind: 'contact',
+      authorPrincipal: null,
+      visibility: 'public',
+      bodyText: input.body,
+    });
+    settle(ctx, conversation, next);
+    if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
+    ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
+    return row;
+  },
+
+  'ticket0/widget-thread': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationWidget));
+    const conversation = await sessionOrThrow(ctx, input.sessionId, input.token);
+    return publicThread(ctx, conversation.id, input);
+  },
+
+  // --- The portal ----------------------------------------------------------
+
+  /**
+   * Nobody holds `conversation:read-own` scope-wide, so this is a per-row proof walk
+   * rather than a `WHERE contact_id = ?`. The distinction matters: a WHERE clause is
+   * a promise the author remembered to keep; the walk is one the kernel keeps.
+   */
+  'ticket0/my-conversations': async (ctx, input) =>
+    pageVisible(
+      (p) => ctx.page<ConversationRow>('conversation', p),
+      input,
+      async (c) => (await ctx.check(T0_PERM.conversationReadOwn, conversationRef(c.id))).allowed,
+    ),
+
+  'ticket0/my-messages': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationReadOwn, conversationRef(input.conversationId)),
+    );
+    conversationOrThrow(ctx, input.conversationId);
+    return publicThread(ctx, input.conversationId, input);
+  },
+
+  'ticket0/submit-csat': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationReadOwn, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/submit-csat');
+    const existing = ctx.sql.query<CsatRow>(
+      'SELECT * FROM ticket0_csat WHERE conversation_id = ?',
+      [conversation.id],
+    )[0];
+    if (existing) throw substratError('conflict', 'this conversation has already been rated');
+    ctx.sql.exec(
+      'INSERT INTO ticket0_csat (conversation_id, score, comment, submitted_at) VALUES (?, ?, ?, ?)',
+      [conversation.id, input.score, input.comment ?? null, ctx.now()],
+    );
+    const row = ctx.sql.query<CsatRow>('SELECT * FROM ticket0_csat WHERE conversation_id = ?', [
+      conversation.id,
+    ])[0]!;
+    ctx.emit({
+      type: 'ticket0.csat-submitted',
+      schemaVersion: 1,
+      entity: conversationRef(row.conversation_id),
+      piiClass: 'none',
+      // The comment is erasable and cannot ride; a score identifies nobody.
+      payload: { conversation_id: row.conversation_id, score: row.score },
+    });
+    return row;
+  },
+
+  // --- Notifications -------------------------------------------------------
+
+  'ticket0/my-notifications': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.notificationReadOwn));
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    // Scoped to the caller's OWN principal, taken from ctx and never from input.
+    const rows = input.cursor
+      ? ctx.sql.query<NotificationRow>(
+          'SELECT * FROM ticket0_notifications WHERE principal = ? AND id > ? ORDER BY id LIMIT ?',
+          [String(ctx.principal), input.cursor, limit],
+        )
+      : ctx.sql.query<NotificationRow>(
+          'SELECT * FROM ticket0_notifications WHERE principal = ? ORDER BY id LIMIT ?',
+          [String(ctx.principal), limit],
+        );
+    return pageOf(rows, limit, (row) => row.id);
+  },
+
+  'ticket0/mark-notification-read': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.notificationReadOwn));
+    const row = ctx.sql.query<NotificationRow>(
+      'SELECT * FROM ticket0_notifications WHERE id = ? AND principal = ?',
+      [input.notificationId, String(ctx.principal)],
+    )[0];
+    // Not-found rather than denied: a notification addressed to somebody else is not
+    // a thing this caller may learn the existence of.
+    if (!row) throw substratError('not_found', `notification not found: ${input.notificationId}`);
+    ctx.sql.exec('UPDATE ticket0_notifications SET read_at = ? WHERE id = ?', [ctx.now(), row.id]);
+    return ctx.sql.query<NotificationRow>('SELECT * FROM ticket0_notifications WHERE id = ?', [
+      row.id,
+    ])[0]!;
+  },
+} satisfies {
+  // Derived by the platform, not restated here - `HandlerOutput` is what knows that
+  // a `paged` declaration means the handler returns a Page of the declared entry.
+  [K in keyof typeof ticket0Operations]: OperationHandler<
+    HandlerInput<(typeof ticket0Operations)[K]>,
+    HandlerOutput<(typeof ticket0Operations)[K]>
+  >;
+};
+
+/**
+ * The assistant's display name.
+ *
+ * It decides how a public reply is attributed, and it lives here rather than in
+ * `desk_settings` because it is not a policy anyone tunes - the assistant's
+ * AUTHORITY is a grant, and the only thing left is what to call it.
+ */
+export const ASSISTANT_NAME = 'Assistant';
+
+export const ticket0Module: ModuleRegistration = {
+  manifest: ticket0Manifest,
+  migrations: ticket0Migrations,
+  operations: operations as ModuleRegistration['operations'],
+};

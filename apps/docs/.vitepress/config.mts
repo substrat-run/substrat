@@ -2,13 +2,37 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 import { buildArtifacts, emitInto } from './llms.mjs';
-import { changelogSidebar, guideSidebar } from './sidebar.mjs';
+import { guideSidebar } from './sidebar.mjs';
 
 export default withMermaid(defineConfig({
   title: 'Substrat',
   description:
     'The hard parts, hosted. A runtime-enforced substrate for building vertical B2B SaaS.',
   lastUpdated: true,
+
+  /**
+   * The ticket0 support widget — OPT-IN, and off unless asked for.
+   *
+   * `TICKET0_WIDGET=1 pnpm --filter @substrat-run/docs dev` embeds the demo desk's
+   * chat bubble on the real documentation site, which is the whole dogfood: the widget
+   * on substrat.net answering out of substrat.net's own `llms-full.txt`.
+   *
+   * Gated on the variable rather than checked in unconditionally because this array is
+   * also what ships to production. A support widget on the live site is a decision for
+   * a person to make deliberately, not a side effect of a demo landing.
+   */
+  head: process.env.TICKET0_WIDGET
+    ? [
+        [
+          'script',
+          {
+            src: `${process.env.TICKET0_API ?? 'http://localhost:8874'}/widget.js`,
+            'data-api': process.env.TICKET0_API ?? 'http://localhost:8874',
+            defer: '',
+          },
+        ],
+      ]
+    : [],
 
   // The package's own changelog is not a docs page. It was being built and
   // served at /CHANGELOG, where nothing linked to it and nothing indexed it.
@@ -39,7 +63,6 @@ export default withMermaid(defineConfig({
       { text: 'Verticals', link: '/verticals/', activeMatch: '/verticals/' },
       { text: 'Platform', link: '/platform/', activeMatch: '/platform/' },
       { text: 'Reference', link: '/reference/contracts', activeMatch: '/reference/' },
-      { text: 'Changelog', link: '/changelog/', activeMatch: '/changelog/' },
     ],
 
     sidebar: {
@@ -50,10 +73,6 @@ export default withMermaid(defineConfig({
       '/verticals/': guideSidebar(),
       '/platform/': guideSidebar(),
       '/reference/': guideSidebar(),
-      // The one section with a sidebar of its own. The guide's is a curated
-      // reading order 60 entries long; a list of every week ever published does
-      // not belong inside it, and the weeks do not belong beneath it either.
-      '/changelog/': changelogSidebar(),
     },
 
     outline: { level: [2, 3] },

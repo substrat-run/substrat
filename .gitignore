@@ -41,3 +41,6 @@ packages/template-check/tsconfig.json
 packages/template-check/tsconfig.worker.json
 packages/template-check/vitest.config.ts
 packages/template-check/GENERATED.md
+
+# ticket0 local model credentials
+demos/*/.env
