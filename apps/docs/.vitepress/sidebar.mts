@@ -8,6 +8,10 @@
  * `--check` asserts, so the two can never disagree about what the docs contain.
  */
 
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 /**
  * The one page an agent should read before any other — the always-on rules, emitted
  * from `create-substrat`'s AGENTS.md by `pnpm lint:agent-rules`. Named here rather
@@ -29,6 +33,53 @@ export function engineSidebar(slug: string, text: string) {
       { text: 'Composing & extending', link: `/engines/${slug}/composing` },
     ],
   };
+}
+
+/** Where the weekly changelog entries live, relative to this file. */
+const CHANGELOG_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../changelog');
+
+/**
+ * The weekly changelog, read from the filesystem rather than listed by hand.
+ *
+ * Every other section of this file is a curated order — a reader who takes the
+ * pages in sequence learns the thing. The changelog is not: it is one page per
+ * week, newest first, forever. A hand-maintained list of those would be a second
+ * description of a directory listing, which is the exact failure the entries
+ * themselves keep reporting. So the directory *is* the list, and an entry added
+ * by Monday's digest reaches the nav, `llms.txt` and the markdown twins with
+ * nothing else to remember.
+ */
+export function changelogSidebar() {
+  const entries = existsSync(CHANGELOG_DIR)
+    ? readdirSync(CHANGELOG_DIR)
+        .filter((f) => f.endsWith('.md') && f !== 'index.md')
+        .sort()
+        .reverse()
+    : [];
+
+  const byYear = new Map<string, { text: string; link: string }[]>();
+  for (const file of entries) {
+    const slug = file.replace(/\.md$/, '');
+    const year = slug.slice(0, 4);
+    const raw = readFileSync(join(CHANGELOG_DIR, file), 'utf8');
+    const title = /^title:\s*(.+)$/m.exec(raw)?.[1].trim().replace(/^['"]|['"]$/g, '');
+    byYear.set(year, [
+      ...(byYear.get(year) ?? []),
+      { text: title ?? slug, link: `/changelog/${slug}` },
+    ]);
+  }
+
+  const years = [...byYear.keys()].sort().reverse();
+  return [
+    {
+      text: 'Changelog',
+      items: [
+        { text: 'What this is', link: '/changelog/' },
+        // The current year open, everything before it folded away.
+        ...years.map((year, i) => ({ text: year, collapsed: i > 0, items: byYear.get(year)! })),
+      ],
+    },
+  ];
 }
 
 export function guideSidebar() {
@@ -165,7 +216,9 @@ export function fileForLink(link: string): string {
  * name an agent needs — five pages all titled "Events" are not an index.
  */
 export function tableOfContents(): IndexedSection[] {
-  return guideSidebar().map((section) => {
+  // Every section the site publishes, not just the guide's — a page missing from
+  // here is a page missing from llms.txt, and `lint:llms --check` fails on it.
+  return [...guideSidebar(), ...changelogSidebar()].map((section) => {
     const pages: IndexedPage[] = [];
     for (const item of section.items) {
       if ('link' in item && item.link) {
