@@ -30,6 +30,8 @@ import {
   entitlementGrant,
   entitlementGrantInput,
   instant,
+  type Impersonation,
+  type ImpersonationRequest,
   meterReading,
   subjectRef,
   createConnectionInput,
@@ -124,6 +126,7 @@ import {
   foldMeterReading,
   parseValidationRecords,
   resolveScopeRecord,
+  stampImpersonation,
   ulid,
   type AccessLogFilter,
   type AuditLogFilter,
@@ -155,6 +158,7 @@ import {
   type FetchLike,
   type SecretBox,
   type HostAdmin,
+  type ImpersonatedScope,
   type ModuleRegistration,
   type OperationHandler,
   type PermissionChecker,
@@ -706,6 +710,14 @@ interface ScopeStubRpc {
      * `idempotency` below.
      */
     options?: InvokeOptions,
+    /**
+     * K-42: the staff session this invocation runs under, stamped by the coordinator and
+     * ENFORCED in the DO — the expiry check and the read-only refusals both live there,
+     * because that is where the transaction and the `ctx` are. Sent only for a stub
+     * `getImpersonatedScope` minted, and that door does not exist on a deployment whose
+     * DO predates the argument, so an old DO ignoring it cannot fail open.
+     */
+    impersonation?: Impersonation,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
@@ -2174,6 +2186,41 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * A stub that acts AS a principal on behalf of a staff actor (K-42, #868) — the port
+   * of the pure adapter's door, and the same two orderings.
+   *
+   * The session is stamped and validated BEFORE the lifecycle gate, so a bad request
+   * never opens anything; the `impersonate` admin-log entry is written BEFORE the stub
+   * is handed back, so a session that dies mid-way still left the record that it began.
+   *
+   * The session then rides the RPC to the ScopeDO as an ordinary argument, exactly as
+   * `connectionId` and `systemModuleId` do. It is deliberately NOT re-derived inside the
+   * DO: the DO is the code that ENFORCES the read-only refusals and the expiry, and code
+   * that both mints and enforces its own authority proves nothing about either.
+   */
+  async getImpersonatedScope(
+    request: ImpersonationRequest,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ImpersonatedScope> {
+    const session = stampImpersonation(request, instant.parse(new Date().toISOString()));
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    await this.recordAdmin(session.actor, 'impersonate', { tenantId, scopeId }, null, session);
+    const stub = this.buildStub(
+      tenantId,
+      scopeId,
+      session.principal,
+      undefined,
+      undefined,
+      options,
+      session,
+    );
+    return { ...stub, impersonation: session };
+  }
+
+  /**
    * A scope stub whose authority is a CONNECTION (#97).
    *
    * Three gates, all inherited from what the connection already is rather than
@@ -2299,7 +2346,7 @@ export class CloudflareScopeHost implements ScopeHost {
     return report;
   }
 
-  /** The stub body, shared by the principal, connection, and system doors. */
+  /** The stub body, shared by the principal, connection, system and impersonation doors. */
   private buildStub(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -2307,6 +2354,8 @@ export class CloudflareScopeHost implements ScopeHost {
     connectionId?: ConnectionId,
     systemModuleId?: string,
     options?: ScopeStubOptions,
+    /** K-42: set only by `getImpersonatedScope`; every other door passes nothing. */
+    impersonation?: Impersonation,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
@@ -2361,6 +2410,7 @@ export class CloudflareScopeHost implements ScopeHost {
           systemModuleId,
           true,
           invokeOptions,
+          impersonation,
         );
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
@@ -2397,7 +2447,13 @@ export class CloudflareScopeHost implements ScopeHost {
               'operation may have executed a second time. Retry once the scope has been migrated',
           );
         }
-        const drained = await this.drainExecutors(tenantId, scopeId);
+        // K-42: a read-only session committed nothing, so it has nothing to drain — and
+        // draining anyway would deliver ANOTHER operation's backlog under this
+        // invocation, which is work a support READ must not be able to trigger. The DO
+        // skips its own consumer dispatch on the same reasoning.
+        const drained = impersonation?.readOnly
+          ? { routedToPlatform: 0 }
+          : await this.drainExecutors(tenantId, scopeId);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
         // Routed connector deliveries (#574 phase 3) count too: the inline drain just

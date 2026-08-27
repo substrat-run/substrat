@@ -34,6 +34,8 @@ import type {
   EntityRef,
   IdentityLink,
   IdentityPool,
+  Impersonation,
+  ImpersonationRequest,
   Jurisdiction,
   ModuleId,
   ModuleManifest,
@@ -141,6 +143,30 @@ export interface OperationContext {
   readonly tenantId: TenantId;
   readonly scopeId: ScopeId;
   readonly principal: PrincipalId;
+  /**
+   * The staff session this invocation is running under (K-42, #868) — or `null`, which
+   * is the ordinary case and what every operation should be written for.
+   *
+   * `ctx.principal` is who the operation is acting AS, and it is what every permission
+   * check resolves against, so a handler needs to do nothing differently to be
+   * impersonatable. This is the second actor: who is really at the keyboard.
+   *
+   * **Read-only, and read-only in two senses.** Module code cannot set it (it is stamped
+   * by the door that minted the stub, like the event `actor`), and it cannot suppress it
+   * — the same record lands on every event the session writes whether the handler looks
+   * at it or not. What a vertical legitimately does with it is tell the truth on screen:
+   * a "you are viewing as Anna, as Markus" banner, or a refusal of its own on the one
+   * operation it considers off-limits even to a write-enabled session.
+   *
+   * ```ts
+   * if (ctx.impersonation) return { ...view, viewingAs: ctx.impersonation.principal };
+   * ```
+   *
+   * A read-only session (the default) has already refused `emit`, `requestPlatform`,
+   * `grant`, `revoke` and `link` before a handler could reach this, so branching on
+   * `readOnly` to decide whether to write is unnecessary — the kernel decided.
+   */
+  readonly impersonation: Impersonation | null;
   readonly sql: ScopedSql;
   /**
    * The operation's instant (#812) — the ONLY clock module code may read.
@@ -500,6 +526,20 @@ export interface ScopeStub {
     input?: I,
     options?: InvokeOptions,
   ): Promise<O>;
+}
+
+/**
+ * A stub whose authority is a principal, held by somebody who is not them (K-42, #868).
+ *
+ * An ordinary `ScopeStub` in every way that matters — same `invoke`, same serialization,
+ * same permission path — plus the session record, so the caller that opened it can show
+ * a countdown, refuse to reuse a dead one, and report what it opened. The record is the
+ * KERNEL's (`stampImpersonation`), not the caller's: `expiresAt` here is the same value
+ * `assertImpersonationLive` enforces on every invoke, so a console rendering it is
+ * rendering the truth rather than its own guess at it.
+ */
+export interface ImpersonatedScope extends ScopeStub {
+  readonly impersonation: Impersonation;
 }
 
 /**
@@ -2797,6 +2837,42 @@ export interface ScopeHost {
     scopeId: ScopeId,
     options?: ScopeStubOptions,
   ): Promise<ScopeStub>;
+
+  /**
+   * Mint a stub that ACTS AS a principal on behalf of a staff actor (K-42, #868) — the
+   * supported way to see what a customer sees, and the fourth door beside `getScope`,
+   * `getConnectorScope` and `getSystemScope`.
+   *
+   * Every gate `getScope` applies applies here first: the (tenant, scope) pair is
+   * validated against the directory, a non-active tenant or scope fails closed, pending
+   * migrations run. What this adds is the second actor.
+   *
+   * **Permission evaluation is the impersonated principal's, and only theirs.** That is
+   * the point — a session resolving the staff actor's authority would show what staff
+   * can see, which is what the customer's screenshot already showed. The narrowing that
+   * keeps this safe is not a smaller permission set, it is:
+   *
+   * - **Read-only unless the caller opted in** (`writes: true` on the request). A
+   *   read-only session refuses `ctx.emit`, `ctx.requestPlatform`, `ctx.grant`,
+   *   `ctx.revoke` and `ctx.link` outright, and rolls its transaction back regardless —
+   *   two layers, the second authoritative, the same arrangement `assertReadOnlyQuery`
+   *   uses in front of the SQL console.
+   * - **Time-boxed**, checked on EVERY invoke rather than once at the door, so a held
+   *   stub goes dead on its own rather than living as long as the process.
+   * - **Announced before it exists.** The `impersonate` admin-log entry is written
+   *   BEFORE this returns, so a session that then crashes still left the record that it
+   *   began — K-33's failure ordering, for K-33's reason.
+   *
+   * Refuses a request whose `reason` is missing or trivial, and one whose `ttlMinutes`
+   * exceeds `IMPERSONATION_MAX_TTL_MINUTES`. Neither is a formality: they are the two
+   * fields that turn a standing back door into a bounded, attributable act.
+   */
+  getImpersonatedScope(
+    request: ImpersonationRequest,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ImpersonatedScope>;
 
   /**
    * The entry scope-lifecycle transition (control-plane.md §4.2): idempotent,

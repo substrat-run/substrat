@@ -26,6 +26,7 @@ import {
   type EntitlementView,
   type EntityRef,
   type EventAuthorization,
+  type Impersonation,
   type PermissionKey,
   type PrincipalId,
   type ScopeId,
@@ -46,6 +47,8 @@ import {
 import {
   ulid,
   assertAllowed,
+  assertImpersonationLive,
+  assertImpersonationWritable,
   ConnectionSealingKeyUnavailableError,
   noSealingKeyMessage,
   sealTo,
@@ -168,8 +171,20 @@ interface OutboxRow {
   pii_class: string;
   subject_id: string | null;
   authorization: string | null;
+  impersonation: string | null;
   payload: string | null;
 }
+
+/**
+ * The throw that makes a read-only impersonated invocation roll back (K-42).
+ *
+ * A sentinel VALUE rather than an Error subclass, and thrown rather than
+ * `txn.rollback()`-ed, for two reasons: `ctx.storage.transaction` rolls back on any
+ * throw and that behaviour is verified in workerd (it is what the K-4 boundary already
+ * rests on), and an identity comparison against a module-private symbol cannot collide
+ * with anything a handler throws. It never escapes `invokeOrThrow`.
+ */
+const ROLLED_BACK = Symbol('substrat.impersonation.read-only-rollback');
 
 const KERNEL_DDL = `
   -- The ';' in this comment is a deliberate tripwire; the DDL must go through
@@ -190,6 +205,10 @@ const KERNEL_DDL = `
     -- K-34: the checks the emitting operation passed (JSON [{permission, grant?}]).
     -- NULL on rows written before the field existed -- honestly unrecorded, not empty.
     authorization TEXT,
+    -- K-42: the staff session this write happened under, as the kernel stamped it
+    -- (JSON {actor, principal, reason, startedAt, expiresAt, readOnly}). NULL is the
+    -- ordinary case: nobody was acting as anybody, so the actor column is the whole truth.
+    impersonation TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -646,6 +665,11 @@ export function defineScopeDO(
         // so legacy outbox rows read as "unrecorded". (_substrat_denials is a new table,
         // covered by KERNEL_DDL's IF NOT EXISTS with no ALTER.)
         'ALTER TABLE _substrat_outbox ADD COLUMN authorization TEXT',
+        // K-42: the same ALTER for the impersonation stamp. Nullable for the same reason
+        // and with a stronger one behind it — a NULL here is not "unrecorded", it is
+        // "nobody was impersonating", which is the truth about every row written before
+        // the door existed.
+        'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
         // #841: refusal attribution on a scope DO that predates it. Nullable, so an
         // intent settled before this column reads as "nobody classified this" rather
         // than claiming an origin the drain never decided.
@@ -1100,6 +1124,19 @@ export function defineScopeDO(
        * cannot set the acknowledgement, which is exactly how the skew is caught.
        */
       invokeOptions?: InvokeOptions,
+      /**
+       * K-42: the staff session this invocation runs under, stamped by the coordinator
+       * (`getImpersonatedScope`) and enforced HERE.
+       *
+       * Minted there and checked here on purpose — the coordinator holds the admin log
+       * and knows the platform actor, the DO holds the transaction and the `ctx` the
+       * refusals have to live on, and code that both mints and enforces its own
+       * authority proves nothing about either. An old DO that ignores this argument
+       * cannot fail open the way an ignored `If-Match` would: a coordinator running new
+       * code only ever sends it for a stub `getImpersonatedScope` minted, and that door
+       * does not exist on a deployment whose DO predates it.
+       */
+      impersonation?: Impersonation,
     ): Promise<{
       result: unknown;
       platformRequests: number;
@@ -1120,6 +1157,7 @@ export function defineScopeDO(
             requiredEntitlement,
             systemModuleId,
             invokeOptions,
+            impersonation,
           );
         } catch (err) {
           throw toRpcError(err);
@@ -1136,6 +1174,7 @@ export function defineScopeDO(
           requiredEntitlement,
           systemModuleId,
           invokeOptions,
+          impersonation,
         );
       } catch (err) {
         // The ONE place the error keeps its structure: flattened here, rebuilt by the
@@ -1156,12 +1195,18 @@ export function defineScopeDO(
       requiredEntitlement?: string,
       systemModuleId?: string,
       invokeOptions?: InvokeOptions,
+      impersonation?: Impersonation,
     ): Promise<{
       result: unknown;
       platformRequests: number;
       concurrency?: { version: string | null; ifMatchChecked: boolean };
       idempotency?: { keyHonoured: boolean; replayed: boolean };
     }> {
+      // K-42, and FIRST: the window is checked per invoke rather than once when the stub
+      // was minted, because a stub is an object a caller may hold indefinitely. Ahead of
+      // the unknown-operation check, so an expired session cannot enumerate operations.
+      if (impersonation) assertImpersonationLive(impersonation, instant.parse(new Date().toISOString()));
+      const readOnlySession = impersonation?.readOnly === true;
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
       // `not_found`, not a bare throw (#113): every vertical hand-matched this message
@@ -1270,6 +1315,7 @@ export function defineScopeDO(
               connectionId,
               systemModuleId,
               signals,
+              impersonation,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -1325,8 +1371,24 @@ export function defineScopeDO(
               const prune = idempotencyPruneStatement(at);
               this.sql.exec(prune.sql, ...prune.params);
             }
+            // K-42's read-only BACKSTOP. `ctx.emit` and friends already refused every
+            // mutation a conforming operation makes (D-5: a mutation emits), but
+            // `ctx.sql.exec` is raw and nothing routes it through a guard — so the
+            // transaction is made to fail, discarding whatever a non-conforming handler
+            // wrote along with any idempotency recording of it. The pure adapter simply
+            // issues `ROLLBACK` instead of `COMMIT`; workerd's transaction has no such
+            // verb, so the rollback is a throw and `ROLLED_BACK` is swallowed below.
+            //
+            // Two layers, the second authoritative — the same arrangement
+            // `assertReadOnlyQuery` uses in front of the SQL console, for the same
+            // reason: a false negative here writes a customer's data.
+            if (readOnlySession) throw ROLLED_BACK;
           });
         } catch (err) {
+          if (err === ROLLED_BACK) {
+            // The intended outcome, not a failure: the handler ran, `result` is already
+            // set, and every write it made is gone. Falls through to the ordinary return.
+          } else {
           // K-35: the transaction has rolled back; record a refused check now, as its own
           // write (outside that transaction), so the denial survives the rollback.
           if (err instanceof PermissionDenied) {
@@ -1345,12 +1407,17 @@ export function defineScopeDO(
           // (which keeps its code and extensions) or rewraps it for the legacy throw
           // path. Collapsing it here would lose the structure before either can look.
           throw err;
+          }
         }
         // Post-commit: drain the outbox to consumers, each delivery its own txn.
         // Skipped on a replay: nothing was written, so there is nothing this
         // invocation added to drain. Anything the ORIGINAL left undrained is the
         // outbox's own retry backstop, which is what that backstop is for.
-        if (!replayed) await this.dispatch(tenantId, scopeId);
+        //
+        // Skipped for a read-only session too, and for a sharper reason than "nothing to
+        // drain": draining would deliver ANOTHER operation's rolled-forward backlog under
+        // this invocation, which is work a support READ must not be able to trigger.
+        if (!replayed && !readOnlySession) await this.dispatch(tenantId, scopeId);
         return {
           result,
           platformRequests: signals.platformRequests,
@@ -2393,6 +2460,7 @@ export function defineScopeDO(
         piiClass: row.pii_class,
         ...(row.subject_id ? { subjectId: row.subject_id } : {}),
         ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
+        ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
         payload: row.payload === null ? undefined : JSON.parse(row.payload),
       });
     }
@@ -2408,6 +2476,8 @@ export function defineScopeDO(
       systemModuleId?: string,
       /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
       signals?: { platformRequests: number },
+      /** K-42: the staff session, when this invoke came through `getImpersonatedScope`. */
+      impersonation?: Impersonation,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -2491,9 +2561,15 @@ export function defineScopeDO(
         tenantId,
         scopeId,
         principal,
+        impersonation: impersonation ?? null,
         sql: doScopedSql(sql),
         now: () => at,
         emit: (event: DomainEventInput) => {
+          // K-42: a read-only session refuses the mutation HERE, where the operation can
+          // still be told it failed, rather than letting it "succeed" over a transaction
+          // that is going to be discarded. D-5 makes this the complete gate for any
+          // conforming module -- every mutation emits -- and the rollback covers the rest.
+          assertImpersonationWritable(impersonation ?? null, 'ctx.emit');
           const parsed = domainEventInput.parse(event);
           const full = domainEvent.parse({
             ...parsed,
@@ -2503,12 +2579,16 @@ export function defineScopeDO(
             scopeId,
             actor: systemActor ?? derivedActor,
             ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
+            // The second actor. `actor` above stays the impersonated principal -- it is
+            // who the operation acted AS -- and this says who was really at the keyboard.
+            ...(impersonation ? { impersonation } : {}),
           });
           sql.exec(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-                entity_type, entity_id, pii_class, subject_id, authorization, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                entity_type, entity_id, pii_class, subject_id, authorization,
+                impersonation, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -2521,10 +2601,15 @@ export function defineScopeDO(
             full.piiClass,
             full.subjectId ?? null,
             full.authorization ? JSON.stringify(full.authorization) : null,
+            full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
+          // A platform intent is a request for a PRIVILEGED act. Refused outright in a
+          // read-only session, and refused here rather than at the drain: the intent must
+          // not exist even provisionally.
+          assertImpersonationWritable(impersonation ?? null, 'ctx.requestPlatform');
           const input = platformRequestInput.parse(request);
           // Backpressure (platform-intents.md): refuse when the scope already holds too many pending
           // intents, so a stuck or runaway vertical cannot flood the platform drain.
@@ -2628,6 +2713,9 @@ export function defineScopeDO(
          * than elevates.
          */
         grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+          // K-42: sharing mutates the permission model itself -- the last thing a
+          // read-only support session should leave behind, since it outlives the window.
+          assertImpersonationWritable(impersonation ?? null, 'ctx.grant');
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
@@ -2643,6 +2731,7 @@ export function defineScopeDO(
           );
         },
         revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+          assertImpersonationWritable(impersonation ?? null, 'ctx.revoke');
           const held = await runCheck(permission, entity);
           if (!held.allowed) {
             throw new PermissionDenied(
@@ -2659,6 +2748,9 @@ export function defineScopeDO(
         },
         atomic: createAtomic(runSub, { passed, signals }),
         link: (child: EntityRef, parent: EntityRef) => {
+          // A parent edge is what the entity-narrowed permission walk reads (§4.2 rule
+          // 3), so writing one widens what somebody can see. Same class as `grant`.
+          assertImpersonationWritable(impersonation ?? null, 'ctx.link');
           const allowed = relations.get(child.entityType);
           if (!allowed?.has(parent.entityType)) {
             throw new Error(

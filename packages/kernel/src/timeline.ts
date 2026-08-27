@@ -7,6 +7,7 @@ import {
   type EventAuthorization,
   type EventId,
   type HistoryEntry,
+  type Impersonation,
   type Instant,
   type ListPage,
   type Page,
@@ -79,8 +80,8 @@ export interface TimelineReader {
 
 /** The envelope columns, in the order `mapTimelineRow` expects. */
 const TIMELINE_COLUMNS = 'id, type, occurred_at, actor';
-/** …plus what a history VIEW needs. See `historyEntry` for why two are nullable. */
-const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, pii_class, subject_id`;
+/** …plus what a history VIEW needs. See `historyEntry` for why three are nullable. */
+const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id`;
 
 interface TimelineRow {
   id: string;
@@ -92,6 +93,7 @@ interface TimelineRow {
 interface HistoryRow extends TimelineRow {
   payload: string | null;
   authorization: string | null;
+  impersonation: string | null;
   pii_class: string;
   subject_id: string | null;
 }
@@ -155,12 +157,16 @@ function mapTimelineRow(row: TimelineRow): TimelineEntry {
 function mapHistoryRow(row: HistoryRow): HistoryEntry {
   return {
     ...mapTimelineRow(row),
-    // Null is a FACT here, twice over, and the two are different facts: a null
-    // payload is an erasure (§5.3 kept the envelope and destroyed what was
-    // said), a null authorization is a row written before K-34 recorded it.
+    // Null is a FACT here, three times over, and the three are different facts: a
+    // null payload is an erasure (§5.3 kept the envelope and destroyed what was
+    // said), a null authorization is a row written before K-34 recorded it, and a
+    // null impersonation is nobody having been acting as anybody (K-42) — the
+    // ordinary case, not a gap.
     payload: row.payload === null ? null : (JSON.parse(row.payload) as unknown),
     authorization:
       row.authorization === null ? null : (JSON.parse(row.authorization) as EventAuthorization[]),
+    impersonation:
+      row.impersonation === null ? null : (JSON.parse(row.impersonation) as Impersonation),
     piiClass: row.pii_class as PiiClass,
     subjectId: row.subject_id as DataSubjectId | null,
   };
@@ -202,6 +208,9 @@ export function readTimeline(
  * - **`authorization`** (K-34) — the checks the emitting operation passed, and
  *   which grant allowed each. Not just who changed it but under what authority,
  *   which most systems cannot answer at all and this one gets for free.
+ * - **`impersonation`** (K-42) — the staff actor really at the keyboard, when the
+ *   write happened under a support session. Non-null means `actor` alone is a
+ *   misleading thing to render: the customer named there did not do this.
  * - **`piiClass` / `subjectId`** — so the caller can decide what is safe to
  *   render before it renders it.
  *

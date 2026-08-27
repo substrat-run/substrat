@@ -20,6 +20,7 @@ export type {
   FetchLike,
   GuardPredicate,
   HostAdmin,
+  ImpersonatedScope,
   MigrateScopeOutcome,
   MigrationFrontier,
   ModuleRegistration,
@@ -90,6 +91,13 @@ export {
 } from './permission-checker.js';
 export { asPrincipal } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
+export {
+  assertImpersonationLive,
+  assertImpersonationWritable,
+  ImpersonationExpired,
+  ImpersonationReadOnly,
+  stampImpersonation,
+} from './impersonation.js';
 export { createAtomic } from './sub-transaction.js';
 export type { RunSub, AtomicMarks } from './sub-transaction.js';
 export {

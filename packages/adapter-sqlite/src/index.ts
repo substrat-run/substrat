@@ -92,6 +92,8 @@ import {
   type CreateOrgInput,
   type IdentityLink,
   type IdentityPool,
+  type Impersonation,
+  type ImpersonationRequest,
   type Node,
   type Org,
   type OrgId,
@@ -141,12 +143,15 @@ import {
 import {
   asPrincipal,
   assertAllowed,
+  assertImpersonationLive,
+  assertImpersonationWritable,
   assertReadOnlyQuery,
   attachmentBlobKey,
   entitlementDenial,
   foldMeterReading,
   parseValidationRecords,
   resolveScopeRecord,
+  stampImpersonation,
   ulid,
   OPS_FAILURE_RETENTION_DAYS,
   type AccessLogFilter,
@@ -162,6 +167,7 @@ import {
   type ConsumerHandler,
   type ExecutorDeadLetter,
   type ExecutorDrainReport,
+  type ImpersonatedScope,
   type MigrateScopeOutcome,
   type MigrationFrontier,
   type ExecutorHandler,
@@ -339,6 +345,10 @@ const KERNEL_DDL = `
     -- K-34: the checks the emitting operation passed (JSON [{permission, grant?}]).
     -- NULL on rows written before the field existed — honestly unrecorded, not empty.
     authorization TEXT,
+    -- K-42: the staff session this write happened under, as the kernel stamped it
+    -- (JSON {actor, principal, reason, startedAt, expiresAt, readOnly}). NULL is the
+    -- ordinary case: nobody was acting as anybody, so the actor column is the whole truth.
+    impersonation TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -732,6 +742,7 @@ interface OutboxRow {
   pii_class: string;
   subject_id: string | null;
   authorization: string | null;
+  impersonation: string | null;
   payload: string | null;
 }
 
@@ -2525,6 +2536,50 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * A scope stub that acts AS a principal on behalf of a staff actor (K-42, #868).
+   *
+   * Deliberately routed through `getScope` rather than re-deriving its gates: the
+   * (tenant, scope) validation, the lifecycle refusals and the lazy migration retry are
+   * the same three things, and a fourth door that grew its own copy of them is a fourth
+   * chance for one of them to drift. What is added here is the second actor and nothing
+   * else — which is what makes "an impersonated session sees exactly what the principal
+   * sees" true by construction rather than by inspection.
+   *
+   * Order matters twice over, and both orderings are load-bearing:
+   *
+   * 1. **Session stamped before the gates run.** `stampImpersonation` parses the request,
+   *    so a missing reason or an over-long window is refused before anything is opened —
+   *    and before an admin-log entry claims a session that never existed.
+   * 2. **Admin log written before the stub is handed back.** A session that crashes,
+   *    hangs, or is killed mid-way still left the record that it began. This is K-33's
+   *    failure ordering: every partial state is visible, and the audit entry precedes the
+   *    dangerous act rather than being its receipt.
+   */
+  async getImpersonatedScope(
+    request: ImpersonationRequest,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ImpersonatedScope> {
+    const session = stampImpersonation(request, this.clock());
+    // The gates, unmodified — a suspended scope refuses a support session exactly as it
+    // refuses its own users. The stub it returns is discarded for the one below; what is
+    // wanted from the call is the refusals and the migration it ran on the way.
+    await this.getScope(session.principal, tenantId, scopeId);
+    const rt = this.runtime(tenantId, scopeId);
+    this.recordAdmin(session.actor, 'impersonate', { tenantId, scopeId }, null, session);
+    const stub = this.buildStub(
+      tenantId,
+      scopeId,
+      rt,
+      asPrincipal(session.principal),
+      options,
+      session,
+    );
+    return { ...stub, impersonation: session };
+  }
+
+  /**
    * A scope stub whose authority is a CONNECTION (#97).
    *
    * Three gates, all inherited from what the connection already is rather than
@@ -2717,15 +2772,18 @@ export class SqliteScopeHost implements ScopeHost {
     return report;
   }
 
-  /** The stub body, shared by the principal and connection doors. */
+  /** The stub body, shared by the principal, connection and impersonation doors. */
   private buildStub(
     tenantId: TenantId,
     scopeId: ScopeId,
     rt: ScopeRuntime,
     subject: CheckSubject,
     options?: ScopeStubOptions,
+    /** K-42: set only by `getImpersonatedScope`; every other door passes nothing. */
+    impersonation?: Impersonation,
   ): ScopeStub {
     const operations = this.operations;
+    const readOnlySession = impersonation?.readOnly === true;
 
     return {
       tenantId,
@@ -2735,6 +2793,17 @@ export class SqliteScopeHost implements ScopeHost {
         input?: I,
         invokeOptions?: InvokeOptions,
       ): Promise<O> => {
+        // K-42, and FIRST: the window is checked per invoke, not once when the stub was
+        // minted, because a stub is an ordinary object a caller can hold indefinitely.
+        // Ahead of the unknown-operation check so an expired session cannot be used to
+        // enumerate what operations exist.
+        if (impersonation) {
+          try {
+            assertImpersonationLive(impersonation, this.clock());
+          } catch (err) {
+            return Promise.reject(err);
+          }
+        }
         const handler = operations.get(operation);
         // `not_found`, not a bare throw (#113) — the same code `adapter-cloudflare`
         // gives it, so a demo and a hosted vertical answer 404 for the same reason.
@@ -2794,7 +2863,7 @@ export class SqliteScopeHost implements ScopeHost {
         const invoked = await rt.actor.enqueue(async () => {
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
-          const ctx = this.operationContext(rt, subject, undefined, signals);
+          const ctx = this.operationContext(rt, subject, undefined, signals, impersonation);
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
           // declaration. BEFORE `BEGIN`, so a malformed call never opens a
@@ -2895,7 +2964,16 @@ export class SqliteScopeHost implements ScopeHost {
               const prune = idempotencyPruneStatement(at);
               rt.db.prepare(prune.sql).run(...prune.params);
             }
-            rt.db.exec('COMMIT');
+            // K-42's read-only BACKSTOP, and the reason a read-only session is safe
+            // rather than merely discouraged. `ctx.emit` and friends already refused
+            // every mutation a conforming operation makes (D-5: a mutation emits), but
+            // `ctx.sql.exec` is raw and nothing routes it through a guard. So the
+            // transaction simply never commits: whatever a non-conforming handler wrote
+            // is discarded, along with any idempotency recording of it. Same two-layer
+            // arrangement `assertReadOnlyQuery` uses in front of the SQL console — a
+            // shared refusal in the common path, an adapter-authoritative backstop under
+            // it — and the same reason: a false negative here writes a customer's data.
+            rt.db.exec(readOnlySession ? 'ROLLBACK' : 'COMMIT');
           } catch (err) {
             rt.db.exec('ROLLBACK');
             // K-35: a refused check rolled the operation back. Record it now — a fresh
@@ -2907,8 +2985,15 @@ export class SqliteScopeHost implements ScopeHost {
           // then → executors. Prompt dispatch (K-22 §4.2): the common case
           // completes inside this request, with the outbox as the retry backstop
           // if it does not.
-          await this.dispatch(rt);
-          await this.dispatchExecutors(rt);
+          //
+          // Skipped for a read-only session: nothing committed, so there is nothing in
+          // the outbox to dispatch and no executor to wake. Draining anyway would
+          // deliver ANOTHER operation's rolled-forward backlog under this invocation,
+          // which is work a support read must not be able to trigger.
+          if (!readOnlySession) {
+            await this.dispatch(rt);
+            await this.dispatchExecutors(rt);
+          }
           return structuredClone(result);
         });
         if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
@@ -3438,6 +3523,7 @@ export class SqliteScopeHost implements ScopeHost {
       piiClass: row.pii_class,
       ...(row.subject_id ? { subjectId: row.subject_id } : {}),
       ...(row.authorization ? { authorization: JSON.parse(row.authorization) } : {}),
+      ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
       payload: row.payload === null ? undefined : JSON.parse(row.payload),
     });
   }
@@ -6823,6 +6909,8 @@ export class SqliteScopeHost implements ScopeHost {
     overrideActor?: { system: string },
     /** #458: per-invoke tally of `ctx.requestPlatform` calls; absent for consumer dispatch. */
     signals?: { platformRequests: number },
+    /** K-42: the staff session, when this invoke came through `getImpersonatedScope`. */
+    impersonation?: Impersonation,
   ): OperationContext {
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
@@ -6916,9 +7004,16 @@ export class SqliteScopeHost implements ScopeHost {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
       principal,
+      impersonation: impersonation ?? null,
       sql: scopedSql(rt.db),
       now: () => at,
       emit: (event: DomainEventInput) => {
+        // K-42: a read-only session refuses the mutation HERE, where the operation can
+        // still be told it failed, rather than letting it "succeed" over a transaction
+        // that is going to be discarded. D-5 makes this the complete gate for any
+        // conforming module — every mutation emits — and the rollback under it covers
+        // the rest.
+        assertImpersonationWritable(impersonation ?? null, 'ctx.emit');
         const input = domainEventInput.parse(event);
         const full = domainEvent.parse({
           ...input,
@@ -6934,13 +7029,17 @@ export class SqliteScopeHost implements ScopeHost {
                 ? { connection: subject.id }
                 : principal),
           ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
+          // The second actor. `actor` above stays the impersonated principal — it is who
+          // the operation acted AS — and this says who was really at the keyboard.
+          ...(impersonation ? { impersonation } : {}),
         });
         rt.db
           .prepare(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
-                entity_type, entity_id, pii_class, subject_id, authorization, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                entity_type, entity_id, pii_class, subject_id, authorization,
+                impersonation, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             full.id,
@@ -6955,10 +7054,15 @@ export class SqliteScopeHost implements ScopeHost {
             full.piiClass,
             full.subjectId ?? null,
             full.authorization ? JSON.stringify(full.authorization) : null,
+            full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
       requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
+        // A platform intent is a request for a PRIVILEGED act — provisioning a scope,
+        // dispatching a document. Refused outright in a read-only session, and refused
+        // here rather than at the drain: the intent must not exist even provisionally.
+        assertImpersonationWritable(impersonation ?? null, 'ctx.requestPlatform');
         const input = platformRequestInput.parse(request);
         // Backpressure (platform-intents.md): refuse when the scope already holds too many pending
         // intents, so a stuck or runaway vertical cannot flood the platform drain.
@@ -7086,6 +7190,10 @@ export class SqliteScopeHost implements ScopeHost {
        * guardrail 2 the same way its `check` does.
        */
       grant: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+        // K-42: sharing is a mutation of the permission model itself — the last thing a
+        // read-only support session should be able to leave behind, since it outlives
+        // the session's own window.
+        assertImpersonationWritable(impersonation ?? null, 'ctx.grant');
         const held = await runCheck(permission, entity);
         if (!held.allowed) {
           throw new PermissionDenied(
@@ -7106,6 +7214,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       /** Withdraw a grant this caller could have made. Same guardrails, same reason. */
       revoke: async (principal: PrincipalId, permission: PermissionKey, entity: EntityRef) => {
+        assertImpersonationWritable(impersonation ?? null, 'ctx.revoke');
         const held = await runCheck(permission, entity);
         if (!held.allowed) {
           throw new PermissionDenied(
@@ -7125,6 +7234,9 @@ export class SqliteScopeHost implements ScopeHost {
       },
       atomic: createAtomic(runSub, { passed, signals }),
       link: (child: EntityRef, parent: EntityRef) => {
+        // A parent edge is what the entity-narrowed permission walk reads (§4.2 rule 3),
+        // so writing one widens what somebody can see. Same class as `grant`.
+        assertImpersonationWritable(impersonation ?? null, 'ctx.link');
         const allowed = relations.get(child.entityType);
         if (!allowed?.has(parent.entityType)) {
           throw new Error(
@@ -7331,6 +7443,10 @@ export class SqliteScopeHost implements ScopeHost {
     // so legacy outbox rows read as "unrecorded" — the honest value. (_substrat_denials
     // is a whole new table, so KERNEL_DDL's IF NOT EXISTS covers it with no ALTER.)
     this.ensureColumn(db, '_substrat_outbox', 'authorization', 'authorization TEXT');
+    // K-42: the same ALTER for the impersonation stamp. Nullable for the same reason and
+    // with a stronger one behind it — a NULL here is not "unrecorded", it is "nobody was
+    // impersonating", which is the truth about every row written before the door existed.
+    this.ensureColumn(db, '_substrat_outbox', 'impersonation', 'impersonation TEXT');
     // #841: refusal attribution on a scope DB that predates it. Nullable, so every row
     // already settled reads as "nobody classified this" rather than claiming an origin
     // the drain never actually decided.

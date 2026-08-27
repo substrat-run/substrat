@@ -123,6 +123,14 @@ export const adminAction = z.enum([
   // it becomes unreadable. The `after` carries the receipt (how many events, whether a key
   // existed) — an erasure that records no proof it happened is not a fulfilled DSAR.
   'shredSubject',
+  // K-42 (#868) — a staff actor opened a session acting AS a principal. Recorded
+  // BEFORE the stub is handed over, so a session that crashes, hangs or is killed
+  // mid-way still left the entry that says it started (K-33's failure ordering). The
+  // `after` carries the stamped session: who acted as whom, why, until when, and
+  // whether writes were on. This is the one admin action that authorizes nothing by
+  // itself — what the session may then DO is an ordinary permission check as the
+  // impersonated principal, and every event it writes carries the same record again.
+  'impersonate',
 ]);
 export type AdminAction = z.infer<typeof adminAction>;
 

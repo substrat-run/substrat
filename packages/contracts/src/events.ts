@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { impersonation } from './impersonation.js';
 import {
   dataSubjectId,
   eventId,
@@ -104,6 +105,12 @@ export const domainEvent = z
     // K-34: the checks the emitting operation passed — stamped kernel-side, absent on
     // events written before the field existed (honestly unrecorded, not empty).
     authorization: z.array(eventAuthorization).optional(),
+    // K-42: the staff actor really acting, when this write happened under an
+    // impersonated session. Stamped kernel-side on the same argument as
+    // `authorization` — absent from `DomainEventInput`, so module code can neither
+    // supply it nor suppress it. Absent here means nobody was impersonating: `actor`
+    // is then the whole truth about who acted, which is the ordinary case.
+    impersonation: impersonation.optional(),
     payload: z.unknown(),
   })
   .superRefine(piiInvariant);
@@ -156,6 +163,11 @@ export type TimelineEntry = z.infer<typeof timelineEntry>;
  *   added the column — which is a different fact from an empty list (checked
  *   nothing). Keeping them distinct is the whole reason the column is nullable
  *   in the DDL.
+ * - **`impersonation` is null in the ordinary case** (K-42) — nobody was acting as
+ *   anybody, so `actor` is the whole truth. Non-null means a staff actor was really
+ *   at the keyboard, and a history strip that renders `actor` alone is then telling
+ *   a reader something false. There is no pre-K-42/unrecorded ambiguity to preserve
+ *   here: a session that could write did not exist before the column did.
  *
  * Field-level "X → Y" is reconstructed by diffing consecutive payloads: nothing
  * stores a before-state. For the few fields a history strip actually shows
@@ -165,6 +177,7 @@ export type TimelineEntry = z.infer<typeof timelineEntry>;
 export const historyEntry = timelineEntry.extend({
   payload: z.unknown(),
   authorization: z.array(eventAuthorization).nullable(),
+  impersonation: impersonation.nullable(),
   piiClass,
   subjectId: dataSubjectId.nullable(),
 });
