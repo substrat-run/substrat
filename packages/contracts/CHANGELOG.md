@@ -1,5 +1,11 @@
 # @substrat-run/contracts
 
+## 0.90.1
+
+### Patch Changes
+
+- 7b50231: The generated deploy workflow builds a monorepo vertical's workspace dependencies before pushing. `pnpm install` only links a sibling package, and its `exports` point at a `dist/` a fresh checkout does not have — so the first hosted push of an in-repo vertical died in wrangler's bundle with `Could not resolve "@substrat-run/contracts"`. A monorepo workflow (`--path`) now carries a `Build workspace dependencies` step in both jobs: pnpm builds exactly the closure the package imports (`--filter "{dir}^..."`), yarn/npm build every workspace with a build script. A single-package repo is unchanged — it depends on published packages.
+
 ## 0.90.0
 
 ### Minor Changes
@@ -690,13 +696,14 @@ registry>'`, and absence narrows to Meridian's `employee`, which appears in no r
     that beside a parsed `errors` array publishes the same thing twice, in exactly the shape
     this change exists to stop clients re-parsing.
 
-        **Scoped to parse failures, and the `errors` list is what identifies one.**
-        `validation_failed` is also raised semantically — `endDate precedes startDate`
-        (`engines/absence`), `invalid interval` (`engines/booking`), `at most one party may
+            **Scoped to parse failures, and the `errors` list is what identifies one.**
+            `validation_failed` is also raised semantically — `endDate precedes startDate`
+            (`engines/absence`), `invalid interval` (`engines/booking`), `at most one party may
 
-    sign as primary` (`engines/protocol`) — where the sentence _is_ the information and no
-field list exists to put in its place. Those keep their own message, unchanged, and a
-test pins it: a canonical detail applied to all of `validation_failed` would have
+        sign as primary` (`engines/protocol`) — where the sentence _is_ the information and no
+
+    field list exists to put in its place. Those keep their own message, unchanged, and a
+    test pins it: a canonical detail applied to all of `validation_failed` would have
     deleted seventeen useful messages across four engines to standardise a body that had
     nothing else to say.
 
@@ -4363,7 +4370,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
