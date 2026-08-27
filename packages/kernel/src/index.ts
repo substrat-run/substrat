@@ -174,6 +174,20 @@ export {
   type EntityVersion,
   type EntityVersionRow,
 } from './entity-version.js';
+export {
+  IMPERSONATION_COLUMNS,
+  IMPERSONATION_DDL,
+  ImpersonationRefused,
+  assertImpersonationWrites,
+  assertSessionUsable,
+  impersonationByIdQuery,
+  impersonationListQuery,
+  impersonationRowValues,
+  impersonationStampOf,
+  mapImpersonationRow,
+  newImpersonationSession,
+  type ImpersonationRow,
+} from './impersonation.js';
 export { readTimeline, readHistory } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 export {

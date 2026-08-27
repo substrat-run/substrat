@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
+  impersonationContractSuite,
   connectorTestFetch,
   permissionContractSuite,
   scheduleContractSuite,
@@ -74,6 +75,26 @@ scheduleContractSuite('adapter-sqlite', async () => {
 // `ctx.check` recording an authorization, which an allow-all never does.
 atomicContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-atomic-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// K-42 (#868): acting as a principal with the real actor preserved. The DEFAULT
+// tuple checker, not allow-all — half of what this suite pins is that the door
+// grants no authority of its own, and an allow-all checker would make the one
+// test that proves it (a session against a principal who holds nothing) pass for
+// the wrong reason.
+impersonationContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-imp-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
