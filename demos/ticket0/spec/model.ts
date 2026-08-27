@@ -108,7 +108,9 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
     }),
     primaryKey: ['principal'],
-    erasable: ['display_name'],
+    // All three are the person: the name outright, a picture of them by reference,
+    // and a signature that in practice is the name again with a title under it.
+    erasable: ['display_name', 'avatar_url', 'signature'],
   },
 
   /**
@@ -515,10 +517,11 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.agent-profile-set',
       schemaVersion: 1,
       piiClass: 'none',
-      // The principal and nothing else. `display_name` is the name of a real person
-      // and marked erasable, so it may not be carried — an event is the one place in
-      // a scope an erasure cannot reach. A consumer that needs the name reads it.
-      payload: ['principal'],
+      // The principal and when the profile was first made, and nothing else. The
+      // name, the avatar and the signature are all the person and all erasable, so
+      // none may be carried — an event is the one place in a scope an erasure
+      // cannot reach. A consumer that needs the name reads it.
+      payload: ['principal', 'created_at'],
     },
   },
 
@@ -906,7 +909,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.conversation-tagged',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['conversation_id', 'tag'],
+      payload: ['conversation_id', 'tag', 'created_at'],
     },
   },
 
@@ -932,7 +935,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.saved-reply-created',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'title', 'body', 'created_by'],
+      payload: ['id', 'title', 'body', 'created_by', 'created_at'],
     },
   },
 
@@ -1202,6 +1205,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       conversationId: z.string(),
       greeting: z.string(),
       verified: z.boolean(),
+      origin: z.string(),
+      startedAt: z.string(),
     }),
     http: { method: 'POST', path: '/widget/sessions' },
     emits: {
@@ -1211,8 +1216,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       schemaVersion: 1,
       piiClass: 'none',
       // Never the token. It is the visitor's whole authority over the thread, and an
-      // immutable copy of a capability cannot be revoked.
-      payload: ['sessionId', 'conversationId', 'verified'],
+      // immutable copy of a capability cannot be revoked. Everything else about the
+      // session rides, so a consumer never has to come back and ask.
+      payload: ['sessionId', 'conversationId', 'verified', 'origin', 'startedAt'],
     },
   },
 
@@ -1356,7 +1362,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.notification-read',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'principal', 'kind', 'conversation_id', 'read_at'],
+      payload: ['id', 'principal', 'kind', 'conversation_id', 'read_at', 'created_at'],
     },
   },
 });

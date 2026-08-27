@@ -416,28 +416,46 @@ const GRID = '190px 1.6fr 56px 118px 96px 56px';
 function Knowledge() {
   const [sources, setSources] = useState<KbSource[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [failed, setFailed] = useState<string | null>(null);
+  // Two failures, two states. The list not loading is a page-level problem that the
+  // loading fallback must not hide; an ingest being refused is news about ONE source,
+  // and the successful re-read that follows it must not wipe that news.
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+  const [ingestFailed, setIngestFailed] = useState<string | null>(null);
 
   const load = () =>
     void api
       .listKbSources()
       .then((p) => {
         setSources(p.entries);
-        setFailed(null);
+        setLoadFailed(null);
       })
-      .catch((e: Error) => setFailed(e.message));
+      .catch((e: Error) => setLoadFailed(e.message));
   useEffect(load, []);
 
-  if (!sources) return <div className="t-meta">Loading…</div>;
+  const failures = [loadFailed, ingestFailed].filter((f): f is string => f !== null);
+  const failureCards = failures.map((f) => (
+    <div key={f} className="card" style={{ padding: '10px 14px', marginBottom: 12, color: 'var(--danger)' }}>
+      <span className="t-small">{f}</span>
+    </div>
+  ));
+
+  // The error before the fallback, or a list that never loads reads as one that
+  // is still loading.
+  if (!sources) {
+    return loadFailed ? (
+      <>
+        <Head title="Knowledge base" note="What the assistant reads before it answers." />
+        {failureCards}
+      </>
+    ) : (
+      <div className="t-meta">Loading…</div>
+    );
+  }
 
   return (
     <>
       <Head title="Knowledge base" note="What the assistant reads before it answers." />
-      {failed ? (
-        <div className="card" style={{ padding: '10px 14px', marginBottom: 12, color: 'var(--danger)' }}>
-          <span className="t-small">{failed}</span>
-        </div>
-      ) : null}
+      {failureCards}
       <div className="card" style={{ overflow: 'hidden' }}>
         <div
           className="micro-6"
@@ -486,14 +504,14 @@ function Knowledge() {
                 disabled={s.status === 'ingesting' || busy === s.id}
                 onClick={() => {
                   setBusy(s.id);
-                  setFailed(null);
+                  setIngestFailed(null);
                   void api
                     .ingestKbSource({ sourceId: s.id })
                     // Both ways, because a refused ingest is exactly when the row is
                     // most worth re-reading: the failure is recorded on the source
                     // itself, and `.then(load)` alone would never go and fetch it,
                     // leaving the row spinning at "ingesting" forever.
-                    .catch((e: Error) => setFailed(e.message))
+                    .catch((e: Error) => setIngestFailed(e.message))
                     .then(load)
                     // `finally`, or a failed re-read leaves "Re-read" disabled for
                     // the rest of the session — on the row most likely to need it.

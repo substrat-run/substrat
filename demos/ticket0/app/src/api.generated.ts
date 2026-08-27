@@ -512,7 +512,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions` — `ticket0/widget-start`
    */
-  widgetStart(input: { origin: string; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; conversationId: string; greeting: string; verified: boolean }>;
+  widgetStart(input: { origin: string; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; conversationId: string; greeting: string; verified: boolean; origin: string; startedAt: string }>;
 
   /**
    * The public messages in this session’s conversation

@@ -589,14 +589,15 @@ const operations = {
       'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
       [principal],
     )[0]!;
-    // The principal alone: `display_name` is erasable, and an event is the one place
-    // in a scope an erasure cannot reach.
+    // The principal and the row's birth, nothing personal: the name, the avatar and
+    // the signature are all erasable, and an event is the one place in a scope an
+    // erasure cannot reach.
     ctx.emit({
       type: 'ticket0.agent-profile-set',
       schemaVersion: 1,
       entity: { entityType: 'agentProfile', entityId: row.principal },
       piiClass: 'none',
-      payload: { principal: row.principal },
+      payload: { principal: row.principal, created_at: row.created_at },
     });
     return row;
   },
@@ -1100,7 +1101,7 @@ const operations = {
       // pointed at, and "this conversation was tagged" is the fact anyway.
       entity: conversationRef(row.conversation_id),
       piiClass: 'none',
-      payload: { conversation_id: row.conversation_id, tag: row.tag },
+      payload: { conversation_id: row.conversation_id, tag: row.tag, created_at: row.created_at },
     });
     return row;
   },
@@ -1132,7 +1133,13 @@ const operations = {
       schemaVersion: 1,
       entity: { entityType: 'savedReply', entityId: row.id },
       piiClass: 'none',
-      payload: { id: row.id, title: row.title, body: row.body, created_by: row.created_by },
+      payload: {
+        id: row.id,
+        title: row.title,
+        body: row.body,
+        created_by: row.created_by,
+        created_at: row.created_at,
+      },
     });
     return row;
   },
@@ -1497,7 +1504,13 @@ const operations = {
       piiClass: 'none',
       // Never the token. It is the visitor's whole authority over this thread, and
       // an immutable copy of a capability cannot be revoked.
-      payload: { sessionId: id, conversationId: conversation.id, verified },
+      payload: {
+        sessionId: id,
+        conversationId: conversation.id,
+        verified,
+        origin: input.origin,
+        startedAt: now,
+      },
     });
 
     return {
@@ -1506,6 +1519,8 @@ const operations = {
       conversationId: conversation.id,
       greeting: settings.greeting,
       verified,
+      origin: input.origin,
+      startedAt: now,
     };
   },
 
@@ -1628,6 +1643,7 @@ const operations = {
         kind: read.kind,
         conversation_id: read.conversation_id,
         read_at: read.read_at,
+        created_at: read.created_at,
       },
     });
     return read;

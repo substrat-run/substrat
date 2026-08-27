@@ -48,7 +48,9 @@
         "principal"
       ],
       "erasable": [
-        "display_name"
+        "avatar_url",
+        "display_name",
+        "signature"
       ]
     },
     "aiTurn": {

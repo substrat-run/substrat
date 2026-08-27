@@ -792,9 +792,10 @@ describe('the audit spine', () => {
     expect(evt).toBeDefined();
     expect(evt.entity_type).toBe('agentProfile');
     const payload = JSON.parse(evt.payload!) as Record<string, unknown>;
-    // `display_name` is erasable, and an event is the one place in a scope an
-    // erasure cannot reach — so it must not be here, ever.
-    expect(payload).toEqual({ principal: evt.entity_id });
+    // The name, the avatar and the signature are all erasable, and an event is the
+    // one place in a scope an erasure cannot reach — so none of them is here, ever.
+    expect(payload).toEqual({ principal: evt.entity_id, created_at: expect.any(String) });
+    expect(JSON.stringify(payload)).not.toContain('Anna');
   });
 
   it('a tag announces the conversation, because a tag cannot be pointed at', async () => {
@@ -807,7 +808,11 @@ describe('the audit spine', () => {
     expect(evt).toBeDefined();
     expect(evt.entity_type).toBe('conversation');
     expect(evt.entity_id).toBe(target.id);
-    expect(JSON.parse(evt.payload!)).toEqual({ conversation_id: target.id, tag: 'billing' });
+    expect(JSON.parse(evt.payload!)).toEqual({
+      conversation_id: target.id,
+      tag: 'billing',
+      created_at: expect.any(String),
+    });
   });
 
   it('a saved reply announces itself', async () => {
@@ -815,30 +820,53 @@ describe('the audit spine', () => {
     const reply = (await anna.invoke('ticket0/create-saved-reply', {
       title: 'Refund policy',
       body: 'We refund within 30 days.',
-    })) as { id: string };
+    })) as { id: string; created_by: string; created_at: string };
     const evt = outbox(world.substrat, 'ticket0.saved-reply-created')!;
     expect(evt).toBeDefined();
     expect(evt.entity_id).toBe(reply.id);
+    // The whole row: a consumer must never need to come back and read it.
+    expect(JSON.parse(evt.payload!)).toEqual({
+      id: reply.id,
+      title: 'Refund policy',
+      body: 'We refund within 30 days.',
+      created_by: reply.created_by,
+      created_at: reply.created_at,
+    });
   });
 
   it('a read notification announces itself', async () => {
     const anna = await at(world.substrat, 'agent');
-    const mine = (await anna.invoke('ticket0/my-notifications', {})) as Page<{ id: string }>;
+    const mine = (await anna.invoke('ticket0/my-notifications', {})) as Page<{
+      id: string;
+      principal: string;
+      kind: string;
+      conversation_id: string | null;
+      created_at: string;
+    }>;
     // The agent was assigned a conversation in the story above, so there is one.
     expect(mine.entries.length).toBeGreaterThan(0);
-    await anna.invoke('ticket0/mark-notification-read', { notificationId: mine.entries[0]!.id });
+    const note = mine.entries[0]!;
+    await anna.invoke('ticket0/mark-notification-read', { notificationId: note.id });
 
     const evt = outbox(world.substrat, 'ticket0.notification-read')!;
     expect(evt).toBeDefined();
-    expect(evt.entity_id).toBe(mine.entries[0]!.id);
-    expect((JSON.parse(evt.payload!) as { read_at: string | null }).read_at).not.toBeNull();
+    expect(evt.entity_id).toBe(note.id);
+    // The whole notification, read: everything a consumer could want is on it.
+    expect(JSON.parse(evt.payload!)).toEqual({
+      id: note.id,
+      principal: note.principal,
+      kind: note.kind,
+      conversation_id: note.conversation_id,
+      created_at: note.created_at,
+      read_at: expect.any(String),
+    });
   });
 
   it('a widget session announces the conversation and never the token', async () => {
     const widget = await at(world.substrat, 'widget');
     const started = (await widget.invoke('ticket0/widget-start', {
       origin: world.substrat.origin,
-    })) as { sessionId: string; token: string; conversationId: string };
+    })) as { sessionId: string; token: string; conversationId: string; startedAt: string };
 
     const evt = outbox(world.substrat, 'ticket0.widget-session-started')!;
     expect(evt).toBeDefined();
@@ -848,7 +876,14 @@ describe('the audit spine', () => {
     // copy of a capability cannot be revoked, so it is not in the event.
     expect(payload.token).toBeUndefined();
     expect(JSON.stringify(payload)).not.toContain(started.token);
-    expect(payload.verified).toBe(false);
+    // And everything else about the session is — exactly this, and no more.
+    expect(payload).toEqual({
+      sessionId: started.sessionId,
+      conversationId: started.conversationId,
+      verified: false,
+      origin: world.substrat.origin,
+      startedAt: started.startedAt,
+    });
   });
 });
 
