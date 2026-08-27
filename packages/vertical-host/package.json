@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/vertical-host",
-  "version": "0.89.0",
+  "version": "0.90.0",
   "description": "The platform's /internal/* surface + error envelope, authored once — mount it in a vertical worker instead of re-copying the control-plane contract",
   "license": "AGPL-3.0-only",
   "repository": {
