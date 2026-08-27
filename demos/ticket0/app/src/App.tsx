@@ -9,7 +9,7 @@
  * two cannot disagree.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api, auth, me, type Session } from './api.js';
+import { ApiError, api, auth, me, type Identity, type Session } from './api.js';
 import { Avatar } from './ui.js';
 import { Notifications } from './Notifications.js';
 import { Inbox } from './views/Inbox.js';
@@ -90,7 +90,7 @@ async function probe(): Promise<Capabilities> {
 }
 
 export function App() {
-  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  const [session, setSession] = useState<Identity | undefined>(undefined);
   const [caps, setCaps] = useState<Capabilities | null>(null);
   const [view, navigate] = useHashRoute();
 
@@ -101,7 +101,7 @@ export function App() {
       .catch(() => null)
       .then(async (s) => {
         setSession(s);
-        if (s) {
+        if (s && s !== 'needs-setup') {
           setCaps(await probe().catch(() => ({ money: false, configure: false, inbox: false })));
         }
       });
@@ -110,14 +110,16 @@ export function App() {
   const go = useCallback((v: View) => navigate(v), [navigate]);
 
   if (session === undefined) return <Splash>Loading…</Splash>;
-  if (session === null)
+  if (session === null || session === 'needs-setup')
     return (
       <Splash>
         <div className="t-title" style={{ marginBottom: 10 }}>
           ticket0
         </div>
         <div className="t-meta" style={{ marginBottom: 18 }}>
-          Sign in to work the desk.
+          {session === 'needs-setup'
+            ? 'This desk has no owner yet. Sign in to claim it.'
+            : 'Sign in to work the desk.'}
         </div>
         <button className="btn btn-primary" onClick={() => auth.login(location.hash || '/')}>
           Sign in

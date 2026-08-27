@@ -29,9 +29,19 @@ export interface Session {
   display: string;
 }
 
-export async function me(): Promise<Session | null> {
+/**
+ * A desk whose owner seat is unclaimed answers **200** `{ status: 'needs-setup' }`
+ * rather than a bare 401 — so it is a distinct third answer here, not a session.
+ * Reading it as one is how a fresh hosted desk came up showing the signed-in shell
+ * with nobody signed in, and no way to reach the login at all.
+ */
+export type Identity = Session | 'needs-setup' | null;
+
+export async function me(): Promise<Identity> {
   const res = await fetch('/api/me', { credentials: 'same-origin' });
-  return res.ok ? ((await res.json()) as Session) : null;
+  if (!res.ok) return null;
+  const body = (await res.json()) as Session | { status: 'needs-setup' };
+  return 'principal' in body ? body : 'needs-setup';
 }
 
 export const auth = {
