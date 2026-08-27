@@ -26,13 +26,19 @@
  *
  * ## `invites/accept` checks nothing, and says so
  *
- * Declared with `narrows` and an empty `checks`, which is the reviewable way to
- * state an exception rather than leave a gap. The recipient is not a member of
- * anything yet, so there is no grant they could hold: the INVITATION is the
- * authority, proven by re-hashing the identifier they present. An operation with
- * no `permission` and no `narrows` would be indistinguishable from one somebody
- * forgot to gate — which is exactly what `declaredNodeOnlySuite`'s third
- * assertion refuses to let happen.
+ * Declared with `narrows`, `unchecked` and an empty `checks`, which is the
+ * reviewable way to state an exception rather than leave a gap. The recipient is
+ * not a member of anything yet, so there is no grant they could hold: the
+ * INVITATION is the authority, proven by re-hashing the identifier they present.
+ * An operation with no `permission` and no `narrows` would be indistinguishable
+ * from one somebody forgot to gate — which is exactly what
+ * `declaredNodeOnlySuite`'s third assertion refuses to let happen.
+ *
+ * `unchecked` is what keeps the conformance receipt honest. An empty `checks` on
+ * its own also describes a walk over a COMPOSED engine's key (the engine declares
+ * those, so a caller must not restate them), so without the flag this operation
+ * was counted as one per-entity proof walk directly under a header reporting zero
+ * narrowed checks.
  *
  * No `http`: an engine owns no URL shape. The path is the composing vertical's
  * decision, declared with `defineEngineRoutes` against these names.
@@ -79,6 +85,10 @@ export const invitesOperations = defineOperations(invitesEntities, INVITES_PERMI
         'the identifier presented. Stated here so an ungated operation cannot pass for an ' +
         'oversight.',
       checks: [],
+      // Nothing is checked here OR in a composed module — which an empty `checks`
+      // alone cannot say, since that is also how a walk over an engine's own key
+      // reads. The receipt counts this row separately because of this flag.
+      unchecked: true,
     },
     summary: 'Accept an invitation by presenting the identifier it was sent to',
     input: invitationId.extend({ identifier: z.string().min(1) }),

@@ -199,22 +199,40 @@ interface DeclaredCheck {
 /**
  * Every operation's authority, partitioned the way a reader needs it.
  *
- * The three-way split matters more than it looks. An operation checking at the
- * node is not a gap — it is the right answer wherever authority is scope-wide,
- * and #865's whole finding was that absence reads as coverage when the two are
- * not told apart. So node checks are COUNTED here rather than omitted, and a
- * walk (`narrows`) is counted as its own third thing.
+ * The split matters more than it looks. An operation checking at the node is not
+ * a gap — it is the right answer wherever authority is scope-wide, and #865's
+ * whole finding was that absence reads as coverage when the two are not told
+ * apart. So node checks are COUNTED here rather than omitted, and a walk
+ * (`narrows`) is counted as its own thing.
+ *
+ * `narrows` with `unchecked` is a fourth thing again, and reporting it as a walk
+ * was the same conflation one level down: `invites/accept` checks nothing at all —
+ * the recipient holds nothing yet and the invitation is the authority — and the
+ * receipt read "1 per-entity proof walk" directly under a header counting zero
+ * narrowed checks. It is not ungated either; the declaration states a reason, which
+ * is precisely what distinguishes it from an oversight. So it gets its own row.
+ *
+ * Read off the flag rather than off an empty `checks`, because empty is ALSO what a
+ * walk over a composed engine's key looks like (Callout's portal walk checks
+ * `workorder:read`, which the engine declares and a vertical must not restate).
+ * Those really are walks, and counting them as unchecked would trade this bug for
+ * a worse one.
  */
 function surveyOperations(operations: Readonly<Record<string, object>>) {
   const node: string[] = [];
   const walks: string[] = [];
+  const declaredNoCheck: string[] = [];
   const narrowed: { name: string; check: DeclaredCheck }[] = [];
   let ungated: string[] = [];
 
   for (const [name, raw] of Object.entries(operations)) {
-    const op = raw as { permission?: string | DeclaredCheck; narrows?: unknown };
+    const op = raw as {
+      permission?: string | DeclaredCheck;
+      narrows?: { unchecked?: boolean };
+    };
     if (op.narrows) {
-      walks.push(name);
+      if (op.narrows.unchecked) declaredNoCheck.push(name);
+      else walks.push(name);
       continue;
     }
     const permission = op.permission;
@@ -233,7 +251,13 @@ function surveyOperations(operations: Readonly<Record<string, object>>) {
     }
   }
   ungated = ungated.sort();
-  return { node: node.sort(), walks: walks.sort(), narrowed, ungated };
+  return {
+    node: node.sort(),
+    walks: walks.sort(),
+    declaredNoCheck: declaredNoCheck.sort(),
+    narrowed,
+    ungated,
+  };
 }
 
 /** How a narrowed check names its target — the phrase the report prints. */
@@ -393,8 +417,16 @@ function renderRestOfSurface(survey: ReturnType<typeof surveyOperations>, sectio
     `| --- | --- | --- |`,
     `| Node-level check | ${survey.node.length} | ${survey.node.map(code).join(', ') || '—'} |`,
     `| Per-entity proof walk (\`narrows\`) | ${survey.walks.length} | ${survey.walks.map(code).join(', ') || '—'} |`,
-    ``,
   ];
+  // Only when there is one: an empty row here would read as a category the package
+  // was measured against and found wanting, and checking nothing is not a default
+  // anything falls into — it has to be declared, with a reason.
+  if (survey.declaredNoCheck.length) {
+    out.push(
+      `| Declared no check (\`narrows.unchecked\`) | ${survey.declaredNoCheck.length} | ${survey.declaredNoCheck.map(code).join(', ')} |`,
+    );
+  }
+  out.push(``);
   if (survey.ungated.length) {
     out.push(
       `> **${survey.ungated.length} operation(s) declare no permission at all:**`,

@@ -37,6 +37,7 @@
  */
 import { defineOperations, entityRef, z } from '@substrat-run/contracts';
 import { meteringEntities } from './entities.js';
+import { isoInstantIn, signedDecimal } from './formats.js';
 
 /** The keys these operations check. Mirrors `PERM` in index.ts. */
 export const METERING_PERMISSIONS = [
@@ -47,7 +48,7 @@ export const METERING_PERMISSIONS = [
 ] as const;
 
 /** A quantity, always a decimal STRING — never a float (D-E, contracts' money rule). */
-const qty = z.string();
+const qty = signedDecimal;
 
 /** What `configureMeter`/`listMeters` return: the meter, projected. */
 export const meter = z.object({
@@ -93,13 +94,18 @@ export const periodLine = z.object({
 /**
  * An instant as the operations accept one.
  *
- * Deliberately a plain string here rather than `index.ts`'s `isoInstant`, which
- * TRANSFORMS (it normalises to millisecond precision). A transforming schema at
- * the door would hand the handler a value the in-scope function then re-parses,
- * and the declared input is meant to describe what a caller may send — the
- * normalisation stays where the storage decision is.
+ * The VALIDATING half of the storage schema, shared through `formats.ts` — the
+ * same strings, without the transform that normalises to millisecond precision.
+ * Non-transforming on purpose: a transforming schema at the door would hand the
+ * handler a value the in-scope function then re-parses, and a declared input
+ * describes what a caller may send rather than what will be stored.
+ *
+ * What it must NOT be is looser than the handler. It was `z.string().min(1)`,
+ * so `"not-a-date"` passed the boundary parse the host applies and was refused
+ * by `isoInstant.parse` inside — a contract saying a value is valid and a
+ * handler disagreeing after the guards ran.
  */
-const instantIn = z.string().min(1);
+const instantIn = isoInstantIn;
 
 export const meteringOperations = defineOperations(meteringEntities, METERING_PERMISSIONS)({
   'metering/configure-meter': {
@@ -131,9 +137,10 @@ export const meteringOperations = defineOperations(meteringEntities, METERING_PE
        * an edit); gauges take non-negative level samples. The per-kind half is
        * enforced by the handler, which knows the meter — a declared input cannot,
        * and claiming otherwise here would be a schema that reads stricter than it
-       * is.
+       * is. The DECIMAL half is not per-kind and belongs here: `"-"` used to reach
+       * a handler that then refused it.
        */
-      qty: z.string().min(1),
+      qty: signedDecimal,
       subject: entityRef.optional(),
       occurredAt: instantIn.optional(),
       dedupeKey: z.string().min(1),

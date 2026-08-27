@@ -623,7 +623,10 @@ const listDeliveryOp: OperationHandler<z.infer<typeof listDeliveryInput> | undef
 };
 
 /** Self-introspection: who am I in THIS site, and what may I do — the app gates its chrome on this. */
-const whoamiOp: OperationHandler<undefined, { principal: string; can: Record<string, boolean> }> = async (ctx) => {
+const whoamiOp: OperationHandler<
+  undefined,
+  { principal: string; can: Record<keyof typeof MF_PERM, boolean> }
+> = async (ctx) => {
   assertAllowed(await ctx.check(MF_PERM.read));
   return {
     principal: ctx.principal,
@@ -633,6 +636,10 @@ const whoamiOp: OperationHandler<undefined, { principal: string; can: Record<str
       review: (await ctx.check(MF_PERM.review)).allowed,
       publish: (await ctx.check(MF_PERM.publish)).allowed,
       admin: (await ctx.check(MF_PERM.admin)).allowed,
+      // Its own key rather than folded into `admin` (manifest.ts says why), so the
+      // chrome that offers "new site" has to ask for it by name. Omitted, a site
+      // manager could hold the key and never be shown the action it unlocks.
+      manageSites: (await ctx.check(MF_PERM.manageSites)).allowed,
     },
   };
 };

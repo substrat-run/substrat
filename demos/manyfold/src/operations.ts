@@ -271,7 +271,23 @@ export const manyfoldOperations = defineOperations(manyfoldEntities, MANYFOLD_PE
     // The app gates its chrome on this: every key is present, `read` is `true`
     // by construction (the operation itself checked it), and the rest are the
     // decisions `ctx.check` gave — never a role name the client has to interpret.
-    output: z.object({ principal: z.string(), can: z.record(z.string(), z.boolean()) }),
+    //
+    // Named one by one rather than as a `record`, because "every key is present"
+    // is the whole contract and a record cannot state it: a key silently missing
+    // from the map reads as `undefined` → falsy → the action is hidden, which is a
+    // permission the holder never sees. Spelled out, the generated client types it
+    // and a forgotten key is a compile error instead of absent chrome.
+    output: z.object({
+      principal: z.string(),
+      can: z.object({
+        read: z.boolean(),
+        author: z.boolean(),
+        review: z.boolean(),
+        publish: z.boolean(),
+        admin: z.boolean(),
+        manageSites: z.boolean(),
+      }),
+    }),
   },
 
   'manyfold/timeline': {
