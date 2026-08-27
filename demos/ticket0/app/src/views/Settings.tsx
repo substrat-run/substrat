@@ -422,15 +422,20 @@ function Knowledge() {
   const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [ingestFailed, setIngestFailed] = useState<string | null>(null);
 
+  // Returns the request, not `void`: the Re-read handler chains `.then(load)` and
+  // clears `busy` in a `finally` — and a `load` that returned nothing would settle
+  // that `finally` at once, re-enabling the button over a row it had not re-read yet.
   const load = () =>
-    void api
+    api
       .listKbSources()
       .then((p) => {
         setSources(p.entries);
         setLoadFailed(null);
       })
       .catch((e: Error) => setLoadFailed(e.message));
-  useEffect(load, []);
+  useEffect(() => {
+    void load();
+  }, []);
 
   const failures = [loadFailed, ingestFailed].filter((f): f is string => f !== null);
   const failureCards = failures.map((f) => (
