@@ -357,13 +357,28 @@ describe('GitHub App client', () => {
       expect(yaml).toContain("- 'demos/auth-server/**'");
       // Install stays at the repo root: a workspace monorepo's lockfile lives there…
       expect(yaml).toContain('if [ -f pnpm-lock.yaml ]');
-      // …and the workspace packages the vertical imports are BUILT before the push, in
-      // both jobs: install only links a sibling, whose exports point at a dist/ a fresh
-      // checkout lacks, so the first bundle otherwise dies with `Could not resolve`.
-      // pnpm builds the closure and not the package itself (push runs its build).
-      expect(yaml.split('- name: Build workspace dependencies')).toHaveLength(3);
+      // …and the workspace packages the vertical imports are BUILT before the push, once
+      // per job and strictly between install and the push/preview: install only links a
+      // sibling, whose exports point at a dist/ a fresh checkout lacks, so the first bundle
+      // otherwise dies with `Could not resolve`. The cleanup job builds nothing.
+      const BUILD = '- name: Build workspace dependencies';
+      const [deployJob = '', previewJobs = ''] = yaml.split('\n  preview:\n');
+      for (const [job, cmd] of [
+        [deployJob, 'push demos/auth-server --slug auth-server --promote prod'],
+        [previewJobs, 'preview create demos/auth-server --slug auth-server --tag'],
+      ] as const) {
+        expect(job.split(BUILD)).toHaveLength(2);
+        const install = job.indexOf('- name: Install dependencies');
+        const build = job.indexOf(BUILD);
+        expect(install).toBeGreaterThan(-1);
+        expect(build).toBeGreaterThan(install);
+        expect(job.indexOf(cmd)).toBeGreaterThan(build);
+      }
+      // pnpm builds the closure and not the package itself (push runs its build); Yarn is
+      // told apart by major at run time — Classic has no `foreach`.
       expect(yaml).toContain('pnpm --filter "{demos/auth-server}^..." run --if-present build');
-      expect(yaml).toContain("--exclude 'demos/auth-server' run build");
+      expect(yaml).toContain("! yarn --version | grep -q '^1\\.'; then yarn workspaces foreach --all --topological-dev --exclude 'demos/auth-server' run build");
+      expect(yaml).toContain('elif [ -f yarn.lock ]; then yarn workspaces run build');
       // A single-package repo depends on published packages — nothing to build.
       expect(deployWorkflowYaml(base)).not.toContain('Build workspace dependencies');
       // The changesets gate diffs the PACKAGE's manifest against the previous commit.

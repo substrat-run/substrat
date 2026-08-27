@@ -185,19 +185,26 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   // A workspace package reaches its siblings through their package.json `exports`, and those
   // point at dist/ — which install links but never builds. Build the vertical's dependency
   // closure and nothing else: pnpm's `^...` selector is "the dependencies of, not the package
-  // itself" (push runs ITS build); yarn (Berry) and npm have no such selector, so they build
-  // every workspace that declares a `build` script. Rendered only for a monorepo — a
-  // single-package repo depends on published packages, which install already resolved.
+  // itself" (push runs ITS build), and a filtered `run` is in dependency order. Yarn Berry's
+  // `foreach --topological-dev` is the same shape minus the selector; Yarn Classic has neither
+  // `foreach` nor an order (a lockfile does not say which yarn it is, so the major is read at
+  // run time), and npm runs workspaces in the order package.json lists them. Rendered only
+  // for a monorepo — a single-package repo depends on published packages, which install
+  // already resolved.
   const buildDeps = path
     ? `
       - name: Build workspace dependencies
         # Sibling packages resolve through their package.json exports, which point at dist/ —
-        # a fresh checkout has none, and install links without building. pnpm builds only the
-        # closure this package imports; yarn/npm build every workspace with a build script.
+        # a fresh checkout has none, and install links without building. pnpm and Yarn Berry
+        # build in dependency order and skip packages without a build script (pnpm only the
+        # closure this package imports). Yarn Classic and npm have no dependency order: Classic
+        # runs every workspace's build and fails on one that has none; npm follows the order
+        # package.json lists workspaces in, so list dependencies before dependents.
         # Delete this step if the package imports no workspace packages.
         run: |
           if [ -f pnpm-lock.yaml ]; then pnpm --filter "{${path}}^..." run --if-present build
-          elif [ -f yarn.lock ]; then yarn workspaces foreach --all --topological-dev --exclude '${path}' run build
+          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\\.'; then yarn workspaces foreach --all --topological-dev --exclude '${path}' run build
+          elif [ -f yarn.lock ]; then yarn workspaces run build
           else npm run build --workspaces --if-present
           fi`
     : '';
