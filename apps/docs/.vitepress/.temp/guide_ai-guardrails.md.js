@@ -1,7 +1,7 @@
 import { resolveComponent, useSSRContext } from "vue";
 import { ssrRenderAttrs, ssrRenderComponent } from "vue/server-renderer";
 import { _ as _export_sfc } from "./plugin-vue_export-helper.1tPrXgE0.js";
-const __pageData = JSON.parse('{"title":"Where AI mistakes stop","description":"Nothing here claims an agent cannot write a bug — only that one class of bug is unreachable rather than discouraged. The six guards a change passes through, in the order they fire.","frontmatter":{"description":"Nothing here claims an agent cannot write a bug — only that one class of bug is unreachable rather than discouraged. The six guards a change passes through, in the order they fire."},"headers":[],"relativePath":"guide/ai-guardrails.md","filePath":"guide/ai-guardrails.md","lastUpdated":1787679261000}');
+const __pageData = JSON.parse('{"title":"Where AI mistakes stop","description":"Nothing here claims an agent cannot write a bug — only that one class of bug is unreachable rather than discouraged. The six guards a change passes through, in the order they fire.","frontmatter":{"description":"Nothing here claims an agent cannot write a bug — only that one class of bug is unreachable rather than discouraged. The six guards a change passes through, in the order they fire."},"headers":[],"relativePath":"guide/ai-guardrails.md","filePath":"guide/ai-guardrails.md","lastUpdated":1787723626000}');
 const _sfc_main = { name: "guide/ai-guardrails.md" };
 function _sfc_ssrRender(_ctx, _push, _parent, _attrs, $props, $setup, $data, $options) {
   const _component_BlastRadius = resolveComponent("BlastRadius");

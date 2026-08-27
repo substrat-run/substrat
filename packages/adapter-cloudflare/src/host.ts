@@ -44,6 +44,11 @@ import {
   tenant as tenantSchema,
   tenantRole,
   type AdminAction,
+  type Instant,
+  type BeginImpersonationInput,
+  type ImpersonationFilter,
+  type ImpersonationSession,
+  type ImpersonationSessionId,
   type Connection,
   type ConnectionFilter,
   type ConnectionGrant,
@@ -148,6 +153,12 @@ import {
   createSubjectKeys,
   generateSealingKeyPair,
   openSealed,
+  ImpersonationRefused,
+  assertSessionUsable,
+  impersonationRowValues,
+  mapImpersonationRow,
+  newImpersonationSession,
+  type ImpersonationRow,
   type SubjectKeys,
   type ConnectorContext,
   type ConnectorHandler,
@@ -550,6 +561,13 @@ interface ControlPlaneStub {
     provider: string,
     externalId: string,
   ): Promise<{ principal: string; scopeId: string | null } | undefined>;
+  // K-42 (#868): the impersonation session store lives in the directory, beside
+  // the admin log and for the same reason — it is a platform record about a
+  // tenant, not tenant data, and a scope DO must not be able to mint one.
+  writeImpersonation(values: (string | null)[]): Promise<void>;
+  readImpersonation(id: string): Promise<ImpersonationRow | undefined>;
+  endImpersonation(id: string, endedAt: string): Promise<void>;
+  listImpersonations(filter: unknown, now: string): Promise<ImpersonationRow[]>;
   recordAccess(entry: {
     id: string;
     actor: string;
@@ -617,6 +635,7 @@ interface PlatformRequestRawRow {
   kind: string;
   payload: string;
   requested_by: string;
+  impersonation: string | null;
   status: string;
   attempts: number;
   last_error: string | null;
@@ -633,6 +652,7 @@ function rowToPlatformRequest(r: PlatformRequestRawRow): PlatformRequest {
     kind: r.kind,
     payload: JSON.parse(r.payload),
     requestedBy: JSON.parse(r.requested_by),
+    impersonation: r.impersonation == null ? null : JSON.parse(r.impersonation),
     status: r.status,
     attempts: r.attempts,
     lastError: r.last_error,
@@ -706,12 +726,29 @@ interface ScopeStubRpc {
      * `idempotency` below.
      */
     options?: InvokeOptions,
+    /**
+     * K-42 (#868): the impersonation session, resolved by the coordinator against
+     * the directory and passed WHOLE. The DO cannot read the directory, and the
+     * alternative — sending an id and having the DO trust it — would make a
+     * session forgeable by anyone who can call the RPC. An older DO ignores the
+     * argument, which is the SAFE direction here: it would run the operation as
+     * the impersonated principal with no stamp, and the coordinator refuses that
+     * outcome rather than accepting an unrecorded one (see `getImpersonatedScope`).
+     */
+    impersonation?: ImpersonationSession,
   ): Promise<{
     result: unknown;
     /** #458: platform intents this invoke enqueued — the coordinator's drain-hint feed. */
     platformRequests: number;
     /** Present iff the operation failed and the DO understood `failureEnvelope`. */
     failure?: WireFailure;
+    /**
+     * K-42: present iff the DO understood `impersonation` — the acknowledgement the
+     * coordinator refuses a success without. Unlike every other argument on this
+     * RPC, one an old DO silently drops fails OPEN: the operation would run as the
+     * impersonated principal with nothing stamped and no read-only bound.
+     */
+    impersonation?: { honoured: boolean };
     /**
      * Present iff the DO understood `preconditions` and the operation declares
      * `concurrency` (#129).
@@ -2223,6 +2260,51 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Read a session and hold it to its own rules — the lookup behind both the door
+   * and every invoke through it. Kept in one place so the two can never disagree
+   * about what "still usable" means.
+   */
+  private async resolveImpersonation(
+    session: ImpersonationSessionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<ImpersonationSession> {
+    const row = await this.cp.readImpersonation(String(session));
+    if (!row) throw new ImpersonationRefused(`unknown impersonation session: ${session}`);
+    const record = mapImpersonationRow(row);
+    assertSessionUsable(record, new Date().toISOString() as Instant, { tenantId, scopeId });
+    return record;
+  }
+
+  /**
+   * The impersonation door (K-42, #868) — mirror of `getConnectorScope` and
+   * `getSystemScope`. The session is the authority and it is read from the
+   * directory, never described by the caller: a stub can only be minted by naming
+   * a session somebody opened and the admin log already recorded.
+   */
+  async getImpersonatedScope(
+    session: ImpersonationSessionId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    options?: ScopeStubOptions,
+  ): Promise<ScopeStub> {
+    const record = await this.resolveImpersonation(session, tenantId, scopeId);
+    // The same lifecycle gate the principal door applies: a suspended tenant
+    // refuses a support session exactly as it refuses a user.
+    await this.cp.validateScopeAccess(tenantId, scopeId);
+    await this.migrateAndRecord(scopeId);
+    return this.buildStub(
+      tenantId,
+      scopeId,
+      record.principal,
+      undefined,
+      undefined,
+      options,
+      record.id,
+    );
+  }
+
+  /**
    * A scope stub whose authority is a MODULE on a timer (#383) — the scheduler's
    * door, mirror of `getConnectorScope`. The module must be registered on this host
    * and the scope must pass the ordinary lifecycle gate; authority is then a check
@@ -2299,7 +2381,7 @@ export class CloudflareScopeHost implements ScopeHost {
     return report;
   }
 
-  /** The stub body, shared by the principal, connection, and system doors. */
+  /** The stub body, shared by the principal, connection, system and impersonation doors. */
   private buildStub(
     tenantId: TenantId,
     scopeId: ScopeId,
@@ -2307,6 +2389,14 @@ export class CloudflareScopeHost implements ScopeHost {
     connectionId?: ConnectionId,
     systemModuleId?: string,
     options?: ScopeStubOptions,
+    /**
+     * K-42: the session this stub acts under. Re-read from the directory on
+     * EVERY invoke rather than captured here — a stub is a capability and
+     * nothing takes it away, so a session checked only at the door would be a
+     * time box that never runs out for the one caller holding it, and
+     * `endImpersonation` would stop nothing.
+     */
+    sessionId?: ImpersonationSessionId,
   ): ScopeStub {
     const stub = this.scopeStub(scopeId);
     const cp = this.cp;
@@ -2350,6 +2440,9 @@ export class CloudflareScopeHost implements ScopeHost {
             ),
           );
         }
+        // K-42: resolved per invoke, so expiry and `endImpersonation` both bite.
+        const session =
+          sessionId === undefined ? undefined : await this.resolveImpersonation(sessionId, tenantId, scopeId);
         const envelope = await stub.invoke(
           operation,
           input,
@@ -2361,6 +2454,7 @@ export class CloudflareScopeHost implements ScopeHost {
           systemModuleId,
           true,
           invokeOptions,
+          session,
         );
         // The operation failed and the DO handed the error back as DATA — so it still
         // has its code and extensions, which a throw across this boundary would have
@@ -2397,7 +2491,28 @@ export class CloudflareScopeHost implements ScopeHost {
               'operation may have executed a second time. Retry once the scope has been migrated',
           );
         }
-        const drained = await this.drainExecutors(tenantId, scopeId);
+        // K-42, and the same shape as the two skew refusals above with a sharper
+        // reason: a DO too old to know about sessions ran this as the impersonated
+        // principal with nothing stamped and no read-only bound. The write has
+        // committed; what this refuses is the SUCCESS, because a support session
+        // believed to be recorded and bounded is worse than no support session.
+        if (session !== undefined && envelope.impersonation?.honoured !== true) {
+          throw substratError(
+            'unavailable',
+            `${operation} ran on a scope host that did not understand impersonation — the ` +
+              'operation may have run unrecorded and unbounded. Retry once the scope has ' +
+              'been migrated',
+          );
+        }
+        // K-42, the coordinator half of the pure adapter's post-commit guard: a
+        // read-only session's transaction was rolled back, so it added nothing to
+        // this scope's outbox — and draining anyway would run executors and
+        // connectors as a side effect of a session that may not have side effects.
+        // Whatever the outbox already held is the drain sweep's own backstop.
+        const drained =
+          session?.mode === 'read-only'
+            ? { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0, routedToPlatform: 0 }
+            : await this.drainExecutors(tenantId, scopeId);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
         // Routed connector deliveries (#574 phase 3) count too: the inline drain just
@@ -3751,6 +3866,77 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
         await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId }, eventsRedacted);
         return receipt;
+      },
+
+      // -- impersonation (K-42, #868) ----------------------------------------
+
+      beginImpersonation: async (
+        actor: PlatformActorId,
+        input: BeginImpersonationInput,
+      ): Promise<ImpersonationSession> => {
+        // Fail closed on the scope before minting anything: a session naming a
+        // scope that is not there is a credential for nothing, and issuing one
+        // anyway leaves the admin log recording an access that could not happen.
+        await this.assertScope(input.tenantId, input.scopeId);
+        const session = newImpersonationSession(
+          ulid(),
+          actor,
+          input,
+          new Date().toISOString() as Instant,
+        );
+        await this.cp.writeImpersonation(impersonationRowValues(session));
+        // BEFORE the session is usable, so the log entry precedes every row it
+        // will ever touch. The reason rides in `after`: it is what a review reads
+        // first, and a log saying a session opened but not why is half a record.
+        await this.recordAdmin(
+          actor,
+          'beginImpersonation',
+          { tenantId: session.tenantId, scopeId: session.scopeId },
+          null,
+          session,
+        );
+        return session;
+      },
+
+      endImpersonation: async (
+        actor: PlatformActorId,
+        id: ImpersonationSessionId,
+      ): Promise<ImpersonationSession> => {
+        const row = await this.cp.readImpersonation(String(id));
+        if (!row) throw new ImpersonationRefused(`unknown impersonation session: ${id}`);
+        const before = mapImpersonationRow(row);
+        // Idempotent: "stop that session" must not fail because somebody else
+        // already stopped it.
+        if (before.endedAt !== null) return before;
+        await this.cp.endImpersonation(String(id), new Date().toISOString());
+        const after = mapImpersonationRow((await this.cp.readImpersonation(String(id)))!);
+        await this.recordAdmin(
+          actor,
+          'endImpersonation',
+          { tenantId: after.tenantId, scopeId: after.scopeId },
+          before,
+          after,
+        );
+        return after;
+      },
+
+      listImpersonations: async (
+        actor: PlatformActorId,
+        filter?: ImpersonationFilter,
+      ): Promise<ImpersonationSession[]> => {
+        const rows = await this.cp.listImpersonations(filter ?? {}, new Date().toISOString());
+        const sessions = rows.map(mapImpersonationRow);
+        // A staff READ, logged like every other one (K-24) — `result_count`
+        // included, which is what separates "checked one session" from
+        // "enumerated every support session on the platform".
+        await this.recordAccess(
+          actor,
+          'listImpersonations',
+          { tenantId: (filter?.tenantId ?? null) as TenantId | null },
+          filter ?? null,
+          sessions.length,
+        );
+        return sessions;
       },
       grantEntitlement: async (actor, tenantId, entitlementKey, plan?) => {
         const input = entitlementGrantInput.parse(plan ?? {});

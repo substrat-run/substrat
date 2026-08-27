@@ -4,8 +4,9 @@ name: Deploy to Substrat
 # channel, previews as the only non-prod environment — is documented at
 # https://substrat.net/guide/environments-and-previews
 #
-# Monorepo: this deploys the 'auth-server' vertical from demos/auth-server/ (dependencies still
-# install at the repo root — the workspace lockfile lives there).
+# Monorepo: this deploys the 'ticket0' vertical from demos/ticket0/. Dependencies still install
+# at the repo root (the workspace lockfile lives there), and the workspace packages this
+# vertical imports are built before every push — a sibling resolves through its dist/.
 #
 # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
@@ -14,11 +15,11 @@ name: Deploy to Substrat
 on:
   push:
     branches: [main]
-    # Only changes that can affect demos/auth-server deploy it. If this package depends on other
+    # Only changes that can affect demos/ticket0 deploy it. If this package depends on other
     # directories of the repo (workspace packages, shared config), add their paths here —
     # or remove the filter to build on every merge.
     paths:
-      - 'demos/auth-server/**'
+      - 'demos/ticket0/**'
       - '.github/workflows/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -28,11 +29,11 @@ on:
   # FORK of prod on its own URL; close the PR → it is reaped (the TTL is the GC backstop).
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    # Only changes that can affect demos/auth-server deploy it. If this package depends on other
+    # Only changes that can affect demos/ticket0 deploy it. If this package depends on other
     # directories of the repo (workspace packages, shared config), add their paths here —
     # or remove the filter to build on every merge.
     paths:
-      - 'demos/auth-server/**'
+      - 'demos/ticket0/**'
       - '.github/workflows/**'
       - 'package.json'
       - 'pnpm-lock.yaml'
@@ -61,13 +62,27 @@ jobs:
           elif [ -f package-lock.json ]; then npm ci
           else npm install
           fi
+      - name: Build workspace dependencies
+        # Sibling packages resolve through their package.json exports, which point at dist/ —
+        # a fresh checkout has none, and install links without building. pnpm and Yarn Berry
+        # build in dependency order and skip packages without a build script (pnpm only the
+        # closure this package imports). Yarn Classic and npm have no dependency order: Classic
+        # runs every workspace's build and fails on one that has none; npm follows the order
+        # package.json lists workspaces in, so list dependencies before dependents.
+        # Delete this step if the package imports no workspace packages.
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{demos/ticket0}^..." run --if-present build
+          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\.'; then yarn workspaces foreach --all --topological-dev --exclude 'demos/ticket0' run build
+          elif [ -f yarn.lock ]; then yarn workspaces run build
+          else npm run build --workspaces --if-present
+          fi
       - name: Release to prod
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli push demos/auth-server --slug auth-server --promote prod
+          npx @substrat-run/cli push demos/ticket0 --slug ticket0 --promote prod
       - name: Update the test environment
         if: vars.SUBSTRAT_TEST_SCOPE_ID != ''
         env:
@@ -75,8 +90,8 @@ jobs:
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          BASE=$(node -p "require('./demos/auth-server/package.json').version")
-          npx @substrat-run/cli push demos/auth-server --slug auth-server --version "$BASE-test.${{ github.run_number }}" | tee push.out
+          BASE=$(node -p "require('./demos/ticket0/package.json').version")
+          npx @substrat-run/cli push demos/ticket0 --slug ticket0 --version "$BASE-test.${{ github.run_number }}" | tee push.out
           # '|| true' so an unmatched grep does not trip pipefail before the message below —
           # "could not read the pushed version id" beats a bare exit 1 from grep.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
@@ -107,13 +122,27 @@ jobs:
           elif [ -f package-lock.json ]; then npm ci
           else npm install
           fi
+      - name: Build workspace dependencies
+        # Sibling packages resolve through their package.json exports, which point at dist/ —
+        # a fresh checkout has none, and install links without building. pnpm and Yarn Berry
+        # build in dependency order and skip packages without a build script (pnpm only the
+        # closure this package imports). Yarn Classic and npm have no dependency order: Classic
+        # runs every workspace's build and fails on one that has none; npm follows the order
+        # package.json lists workspaces in, so list dependencies before dependents.
+        # Delete this step if the package imports no workspace packages.
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{demos/ticket0}^..." run --if-present build
+          elif [ -f yarn.lock ] && ! yarn --version | grep -q '^1\.'; then yarn workspaces foreach --all --topological-dev --exclude 'demos/ticket0' run build
+          elif [ -f yarn.lock ]; then yarn workspaces run build
+          else npm run build --workspaces --if-present
+          fi
       - name: Create/update the preview
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
         run: |
           set -euo pipefail
-          npx @substrat-run/cli preview create demos/auth-server --slug auth-server --tag pr-${{ github.event.number }} | tee preview.out
+          npx @substrat-run/cli preview create demos/ticket0 --slug ticket0 --tag pr-${{ github.event.number }} | tee preview.out
           # Take the URL from the CLI success line (the ✓ marker) only — the push it runs
           # first also prints an https:// *deploy endpoint* we must never mistake for a preview.
           grep -F '✓ preview' preview.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > preview.url || true
@@ -127,7 +156,7 @@ jobs:
           # A FRESH scope, bound once and never rebound, so this URL is frozen to this build
           # forever. Clean-room (--empty) rather than a fork: a throwaway per build should not
           # copy prod data every push. Short TTL — the sticky preview is the one that lives.
-          npx @substrat-run/cli preview create demos/auth-server --slug auth-server \
+          npx @substrat-run/cli preview create demos/ticket0 --slug ticket0 \
             --tag pr-${{ github.event.number }}-${{ github.run_id }} --empty --ttl 24h | tee build.out
           grep -F '✓ preview' build.out | grep -oE 'https://[a-zA-Z0-9.:/_-]+' | tail -1 > build.url || true
       - name: Comment the preview URLs
@@ -165,4 +194,4 @@ jobs:
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
           SUBSTRAT_CP_URL: https://console.substrat.net/api
-        run: npx @substrat-run/cli preview delete --slug auth-server --tag pr-${{ github.event.number }}
+        run: npx @substrat-run/cli preview delete --slug ticket0 --tag pr-${{ github.event.number }}

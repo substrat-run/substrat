@@ -161,8 +161,15 @@ export function extractiveModel(): Model {
   };
 }
 
-/** Whichever the environment can actually run. Never throws for want of a credential. */
-export function modelFromEnv(env: Record<string, string | undefined> = process.env): Model {
+/**
+ * Whichever the environment can actually run. Never throws for want of a credential.
+ *
+ * The map is a REQUIRED argument rather than a `process.env` default, because there
+ * are now two hosts and only one of them has a `process`: the worker resolves these
+ * per install through `resolveScopedEnvSpec`, so the credential a desk is billed
+ * against is that desk's, not whatever the deployment-wide binding happened to hold.
+ */
+export function modelFromEnv(env: Record<string, string | undefined>): Model {
   const accountId = env.CF_ACCOUNT_ID ?? env.CLOUDFLARE_ACCOUNT_ID;
   const apiToken = env.CF_AI_TOKEN ?? env.CLOUDFLARE_API_TOKEN;
   if (accountId && apiToken) {

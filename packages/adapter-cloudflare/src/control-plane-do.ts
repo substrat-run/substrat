@@ -1,5 +1,13 @@
 import { DurableObject } from 'cloudflare:workers';
-import { OPS_FAILURE_RETENTION_DAYS } from '@substrat-run/kernel';
+import {
+  IMPERSONATION_COLUMNS,
+  IMPERSONATION_DDL,
+  impersonationByIdQuery,
+  impersonationListQuery,
+  impersonationRowValues,
+  OPS_FAILURE_RETENTION_DAYS,
+  type ImpersonationRow,
+} from '@substrat-run/kernel';
 import { splitSqlStatements } from './scope-do.js';
 import type {
   AdminLogEntry,
@@ -670,6 +678,7 @@ const DIRECTORY_DDL = `
     shredded_at  TEXT,
     PRIMARY KEY (scope_id, subject_id)
   );
+  ${IMPERSONATION_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_admin_log (
     id TEXT PRIMARY KEY,
     actor TEXT NOT NULL,
@@ -2953,6 +2962,41 @@ export class ControlPlaneDO extends DurableObject {
       input.at,
     );
     return { existed: existing?.wrapped_dek != null };
+  }
+
+  // -- impersonation sessions (K-42, #868) ------------------------------------
+  // The directory is where a session lives, for the same reason the admin log is
+  // here: it is a platform record about a tenant, not tenant data. A scope DO
+  // never reads these — the coordinator resolves the session and hands the DO the
+  // two actors, which keeps the DO's invoke free of a directory round-trip.
+
+  /** Insert a session the coordinator minted. Returns nothing; the caller holds it. */
+  writeImpersonation(values: (string | null)[]): void {
+    this.sql.exec(
+      `INSERT INTO _substrat_impersonations (${IMPERSONATION_COLUMNS})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ...values,
+    );
+  }
+
+  /** One session by id, or undefined. The door's lookup and every invoke's re-read. */
+  readImpersonation(id: string): ImpersonationRow | undefined {
+    const q = impersonationByIdQuery(id);
+    return this.sql.exec(q.sql, ...q.params).toArray()[0] as ImpersonationRow | undefined;
+  }
+
+  /** Close a session. Idempotent — a row already ended keeps its first `ended_at`. */
+  endImpersonation(id: string, endedAt: string): void {
+    this.sql.exec(
+      'UPDATE _substrat_impersonations SET ended_at = ? WHERE id = ? AND ended_at IS NULL',
+      endedAt,
+      id,
+    );
+  }
+
+  listImpersonations(filter: unknown, now: string): ImpersonationRow[] {
+    const q = impersonationListQuery(filter as never, now as never);
+    return this.sql.exec(q.sql, ...q.params).toArray() as unknown as ImpersonationRow[];
   }
 
   recordAdmin(entry: AdminEntryInput): void {

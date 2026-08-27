@@ -4,6 +4,7 @@ import {
   compareDecimal,
   entityRef,
   moduleManifest,
+  operationInputsOf,
   permissionKey,
   type EntityRef,
   substratError,
@@ -51,6 +52,22 @@ import {
 // `metering.period-closed` event exactly like the timesheet hand-off. It is the
 // BILLABLE plane; platform metering stays Analytics Engine (D-A).
 // ============================================================================
+
+// The entity registry + declared operation surface (#697/#865): what is stored,
+// and what each operation checks and takes.
+export { meteringEntities, meterRow, entryRow, periodRow } from './entities.js';
+export {
+  meteringOperations,
+  METERING_PERMISSIONS,
+  meter,
+  usageEntry,
+  meteringPeriod,
+  periodLine,
+} from './operations.js';
+import { meteringOperations } from './operations.js';
+// The value formats, shared with the declared surface above so a caller cannot be
+// told a value is acceptable and then have the handler refuse it.
+import { isoInstant, nonNegDecimal, signedDecimal } from './formats.js';
 
 export const PERM = {
   read: permissionKey.parse('metering:read'),
@@ -137,18 +154,9 @@ export const meteringMigrations = [
 // Schemas & shapes
 // ---------------------------------------------------------------------------
 
-/**
- * Instants are UTC ISO-8601, normalized to millisecond precision so
- * lexicographic order IS chronological order — mixed precision would break
- * every string comparison below ('…T00:00:00Z' sorts AFTER '…T00:00:00.000Z').
- */
-const isoInstant = z
-  .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/, 'must be a UTC ISO-8601 instant (…Z)')
-  .transform((s) => new Date(s).toISOString());
-
-const nonNegDecimal = z.string().regex(/^\d+(\.\d{1,6})?$/, 'must be a non-negative decimal');
-const signedDecimal = z.string().regex(/^-?\d+(\.\d{1,6})?$/, 'must be a decimal');
+// `isoInstant`, `nonNegDecimal` and `signedDecimal` are imported from `formats.ts`
+// above — the same rules the declared inputs enforce, so a value the operation
+// contract accepts is one these handlers can also parse.
 
 export type MeterKind = 'counter' | 'gauge';
 
@@ -663,6 +671,8 @@ const periodLinesOp: OperationHandler<{ periodId: string }, PeriodLine[]> = asyn
 export const meteringModule: ModuleRegistration = {
   manifest: meteringManifest,
   migrations: meteringMigrations,
+  // Parse, don't trust: the HOST applies the declared schemas, on every path in.
+  operationInputs: operationInputsOf(meteringOperations),
   operations: {
     'metering/configure-meter': configureMeterOp as OperationHandler<never, unknown>,
     'metering/list-meters': listMetersOp as OperationHandler<never, unknown>,

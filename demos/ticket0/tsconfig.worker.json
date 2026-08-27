@@ -1,0 +1,27 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "declaration": false,
+    "declarationMap": false,
+    "rootDir": ".",
+    // Workers types ONLY — no "node". That is the point of a second project: the
+    // worker's import graph is compiled without node's ambient types, so a `node:fs`
+    // or a `process.env` that slipped into `module.ts`, `provision.ts` or one of the
+    // two harness files the worker now shares is a compile error here rather than a
+    // runtime one in workerd.
+    "types": ["@cloudflare/workers-types"]
+  },
+  "include": [
+    "src/worker.ts",
+    "src/provision.ts",
+    "src/module.ts",
+    "src/manifest.ts",
+    "src/routes.ts",
+    "src/api.ts",
+    "spec/model.ts",
+    "harness/assistant.ts",
+    "harness/kb-ingest.ts",
+    "harness/widget-surface.ts"
+  ]
+}

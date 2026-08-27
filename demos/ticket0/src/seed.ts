@@ -16,109 +16,16 @@
  * customers and one where it drafts for review is which of them its account holds.
  */
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import {
-  principalId,
-  platformActorId,
-  scopeId,
-  tenantId,
-  type RoleDefinition,
-} from '@substrat-run/contracts';
+import { principalId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
-import { ASSISTANT_NAME, ticket0Module } from './module.js';
+import { ASSISTANT_NAME } from './module.js';
+// The module set and the role table live in `provision.ts` — the ONE place both this
+// node host and the deployed worker read them from. See the note at its head.
+import { MODULES, ROLES } from './provision.js';
 import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
-export const MODULES = [meteringModule, ticket0Module];
-
-/**
- * Support staff. `conversation:read` is desk-wide here and nowhere else — an agent
- * sees the whole inbox, which is what makes the customer-side keys interesting.
- */
-const AGENT_PERMISSIONS = [
-  T0_PERM.conversationRead,
-  T0_PERM.conversationDraft,
-  T0_PERM.conversationReplyPublic,
-  T0_PERM.conversationAssign,
-  T0_PERM.conversationResolve,
-  T0_PERM.contactRead,
-  T0_PERM.kbRead,
-  T0_PERM.notificationReadOwn,
-];
-
-export const ROLES: RoleDefinition[] = [
-  {
-    key: 'desk-admin',
-    permissions: [
-      ...AGENT_PERMISSIONS,
-      T0_PERM.conversationMerge,
-      T0_PERM.kbManage,
-      T0_PERM.deskConfigure,
-      // The money. Held here and in no other role.
-      T0_PERM.usageRead,
-      METERING_PERM.read,
-      METERING_PERM.close,
-      METERING_PERM.configure,
-      METERING_PERM.record,
-    ],
-    source: 'vertical',
-  },
-  { key: 'agent', permissions: AGENT_PERMISSIONS, source: 'vertical' },
-  /**
-   * The supervised assistant. It may read the knowledge base and write a draft;
-   * the draft is an internal message and cannot leave the building.
-   */
-  {
-    key: 'assistant',
-    permissions: [
-      T0_PERM.conversationRead,
-      T0_PERM.conversationDraft,
-      T0_PERM.kbRead,
-      METERING_PERM.record,
-      METERING_PERM.configure,
-    ],
-    source: 'vertical',
-  },
-  /**
-   * The same assistant, trusted to answer. One key more, and it is the one that
-   * decides whether a customer ever hears from it directly.
-   */
-  {
-    key: 'assistant-autonomous',
-    permissions: [
-      T0_PERM.conversationRead,
-      T0_PERM.conversationDraft,
-      T0_PERM.conversationReplyPublic,
-      T0_PERM.kbRead,
-      METERING_PERM.record,
-      METERING_PERM.configure,
-    ],
-    source: 'vertical',
-  },
-  /**
-   * A signed-in customer, in the portal. Almost nothing is held scope-wide: what
-   * they can reach is a grant on their OWN contact, made once when they sign in.
-   */
-  {
-    key: 'customer',
-    permissions: [T0_PERM.notificationReadOwn],
-    source: 'vertical',
-  },
-  /**
-   * The desk's widget service — the principal the embedded chat runs as.
-   *
-   * ONE key, and it is deliberately not a skeleton key: it opens conversations and
-   * serves the widget, and it reaches no inbox, no contact list and no money. A
-   * visitor is confined by their session token rather than by anything here, so this
-   * principal being on a public surface costs exactly what this row says it does.
-   */
-  { key: 'widget', permissions: [T0_PERM.conversationWidget], source: 'vertical' },
-  /**
-   * The email relay. Held by no human — a connection acts as itself, the same way
-   * the Scrive connector records a signature back into a scope.
-   */
-  { key: 'relay', permissions: [T0_PERM.conversationRelay], source: 'vertical' },
-];
+export { MODULES, ROLES };
 
 export interface Person {
   readonly name: string;

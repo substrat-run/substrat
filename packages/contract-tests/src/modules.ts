@@ -205,6 +205,29 @@ export const gateModManifest = moduleManifest.parse({
   entitlementKey: 'gate',
 });
 
+/**
+ * K-42 (#868): a CONSUMER of `perm.acted`, whose whole job is to answer the
+ * question a raw outbox read cannot — does the two-actor stamp survive the trip
+ * from the stored row back into a `DomainEvent`? An adapter that writes the column
+ * and drops it on the way out passes every assertion that reads SQL directly, and
+ * still hands its consumers an event with no administrative actor on it.
+ *
+ * Only the impersonation suite reads `imp_echo`, so it is inert everywhere else.
+ */
+export const impersonationEchoManifest = moduleManifest.parse({
+  id: '@imp/echo',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [],
+  events: {
+    emits: [],
+    consumes: [{ type: 'perm.acted', schemaVersion: 1 }],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'imp-echo',
+});
+
 export const permModManifest = moduleManifest.parse({
   id: '@perm/mod',
   version: '1.0.0',
@@ -524,12 +547,48 @@ const authorizedReadOp: OperationHandler<{ permission: PermissionKey }, number> 
 };
 
 const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
-  ctx.sql.query('SELECT id, type, authorization FROM _substrat_outbox ORDER BY id');
+  ctx.sql.query('SELECT id, type, authorization, impersonation FROM _substrat_outbox ORDER BY id');
 
 const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
-    'SELECT actor, permission, tenant_id, scope_id, operation FROM _substrat_denials ORDER BY id',
+    `SELECT actor, permission, tenant_id, scope_id, operation, impersonation
+       FROM _substrat_denials ORDER BY id`,
   );
+
+// -- K-42 fixtures (#868) ----------------------------------------------------
+// A read, a bare-SQL write, and an intent. The bare-SQL write is the one that
+// matters: it goes through NO effecting verb, so a read-only session that only
+// refused `ctx.emit` would let it commit. Its table is created in the handler
+// rather than in a migration deliberately — this module has none, and a DDL
+// statement is a write like any other, so a rolled-back session leaves no table
+// behind either.
+
+const noteWriteOp: OperationHandler<{ note: string }, { wrote: string }> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('perm:use')));
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS perm_notes (note TEXT NOT NULL)');
+  ctx.sql.exec('INSERT INTO perm_notes (note) VALUES (?)', [input.note]);
+  return { wrote: input.note };
+};
+
+const noteReadOp: OperationHandler<undefined, string[]> = (ctx) => {
+  ctx.sql.exec('CREATE TABLE IF NOT EXISTS perm_notes (note TEXT NOT NULL)');
+  return ctx.sql.query<{ note: string }>('SELECT note FROM perm_notes ORDER BY note').map(
+    (r) => r.note,
+  );
+};
+
+const requestIntentOp: OperationHandler<{ kind: string }, string> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('perm:use')));
+  return ctx.requestPlatform({ kind: input.kind, payload: {} });
+};
+
+const readIntentsOp: OperationHandler<undefined, unknown> = (ctx) =>
+  ctx.sql.query(
+    'SELECT kind, requested_by, impersonation FROM _substrat_platform_requests ORDER BY id',
+  );
+
+/** The identity a caller is running as, as `ctx` reports it — never the staff actor. */
+const whoAmIOp: OperationHandler<undefined, string> = (ctx) => ctx.principal;
 
 // -- #770 sub-transaction handlers -------------------------------------------
 // Every write a sub-transaction can make is exercised in one place: a row, an
@@ -901,6 +960,32 @@ export const billedMod: ModuleRegistration = {
   },
 };
 
+export const impersonationEchoMod: ModuleRegistration = {
+  manifest: impersonationEchoManifest,
+  migrations: [
+    {
+      version: '0001-init',
+      sql: 'CREATE TABLE imp_echo (event_id TEXT PRIMARY KEY, impersonation TEXT)',
+    },
+  ],
+  operations: {
+    'imp-echo/seen': ((ctx) =>
+      ctx.sql.query(
+        'SELECT event_id, impersonation FROM imp_echo ORDER BY event_id',
+      )) as OperationHandler<never, unknown>,
+  },
+  consumers: {
+    // The stamp as the CONSUMER received it, JSON-encoded so an absent one and a
+    // null one stay distinguishable in the assertion.
+    'perm.acted': ((ctx, event) => {
+      ctx.sql.exec('INSERT INTO imp_echo (event_id, impersonation) VALUES (?, ?)', [
+        event.id,
+        event.impersonation === undefined ? null : JSON.stringify(event.impersonation),
+      ]);
+    }) as ConsumerHandler,
+  },
+};
+
 export const permMod: ModuleRegistration = {
   manifest: permModManifest,
   operations: {
@@ -910,6 +995,12 @@ export const permMod: ModuleRegistration = {
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
     'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+    // K-42 (#868)
+    'perm/write-note': noteWriteOp as OperationHandler<never, unknown>,
+    'perm/read-notes': noteReadOp as OperationHandler<never, unknown>,
+    'perm/request-intent': requestIntentOp as OperationHandler<never, unknown>,
+    'perm/read-intents': readIntentsOp as OperationHandler<never, unknown>,
+    'perm/whoami': whoAmIOp as OperationHandler<never, unknown>,
     // #304: read the request-time entitlement view — used by the scope-local (projected)
     // and CP-less path tests to prove a hosted vertical reads entitlements without a CP.
     'perm/read-entitlement': (async (ctx, key) =>
@@ -1547,6 +1638,10 @@ export const contractTestModules: ModuleRegistration[] = [
   lateMod,
   billedMod,
   permMod,
+  // K-42 (#868): the consumer that proves the two-actor stamp survives the outbox
+  // read. It consumes `perm.acted` and writes one row per delivery; nothing else
+  // in the kit reads `imp_echo`, so it is inert for every other suite.
+  impersonationEchoMod,
   connectorMod,
   scheduleMod,
   atomicMod,

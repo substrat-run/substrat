@@ -501,6 +501,13 @@ export interface Ticket0Client {
   wake(input: { conversationId: string }): Promise<Conversation>;
 
   /**
+   * The origins this desk may be embedded on
+   *
+   * `GET /widget/origins` — `ticket0/widget-origins`
+   */
+  widgetOrigins(): Promise<{ origins: string[] }>;
+
+  /**
    * Say something in the widget
    *
    * `POST /widget/sessions/{sessionId}/messages` — `ticket0/widget-post`
@@ -697,6 +704,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/usage", "GET", undefined, input),
     wake: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/wake`, "POST", omit(input, ["conversationId"]), undefined),
+    widgetOrigins: () =>
+      send("/widget/origins", "GET", undefined, undefined),
     widgetPost: (input: Args) =>
       send(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/messages`, "POST", omit(input, ["sessionId"]), undefined),
     widgetStart: (input: Args) =>

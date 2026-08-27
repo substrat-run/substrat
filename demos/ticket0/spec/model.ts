@@ -1169,9 +1169,31 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
 
   // ─── The widget ──────────────────────────────────────────────────────────────
   //
-  // The bottom rung of trust. These three narrow rather than checking a key,
-  // because what a visitor may see is decided by the session they hold, not by a
-  // role anybody granted them.
+  // The bottom rung of trust. These narrow rather than checking a key, because what
+  // a visitor may see is decided by the session they hold, not by a role anybody
+  // granted them.
+
+  /**
+   * Where this desk is embeddable — what the widget surface asks the desk BEFORE
+   * deciding whether to let a page talk to it at all.
+   *
+   * It reads the same `desk_settings.allowed_origins` array that `widget-start`
+   * refuses out of, which is the point: the browser's answer and the operation's
+   * answer come from one row, so a preflight cannot say yes to an origin the
+   * operation then refuses. They used to disagree, because the dev server's CORS
+   * consulted a boot-time list.
+   *
+   * Note where it sits on the surface. The route is under `/api` — authenticated,
+   * behind `conversation:widget`, a key no human role holds — while the public
+   * `/widget/*` surface reaches it by INVOKING it as the desk's own widget service.
+   * A visitor can neither call it nor enumerate a desk's origins with it.
+   */
+  'ticket0/widget-origins': {
+    summary: 'The origins this desk may be embedded on',
+    permission: 'conversation:widget',
+    output: z.object({ origins: z.array(z.string()) }),
+    http: { method: 'GET', path: '/widget/origins' },
+  },
 
   /**
    * Open a widget session.

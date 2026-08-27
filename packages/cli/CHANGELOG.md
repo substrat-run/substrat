@@ -1,5 +1,43 @@
 # @substrat-run/cli
 
+## 0.25.11
+
+### Patch Changes
+
+- 7b50231: The generated deploy workflow builds a monorepo vertical's workspace dependencies before pushing. `pnpm install` only links a sibling package, and its `exports` point at a `dist/` a fresh checkout does not have — so the first hosted push of an in-repo vertical died in wrangler's bundle with `Could not resolve "@substrat-run/contracts"`. A monorepo workflow (`--path`) now carries a `Build workspace dependencies` step in both jobs: pnpm builds exactly the closure the package imports (`--filter "{dir}^..."`), yarn/npm build every workspace with a build script. A single-package repo is unchanged — it depends on published packages.
+- Updated dependencies [7b50231]
+  - @substrat-run/contracts@0.90.1
+
+## 0.25.10
+
+### Patch Changes
+
+- 87a6571: `substrat push <dir>` builds again, instead of asking wrangler for a doubled path
+
+  The derived wrangler config was written at a path built with `join(opts.dir, …)` and
+  handed to `wrangler deploy --dry-run` as `--config`. But wrangler is spawned with `cwd`
+  set to that same directory, and `dir` arrives from argv unresolved — so a relative
+  `--config` was resolved a second time against the cwd:
+
+  ```
+  ✘ [ERROR] Could not read file: demos/ticket0/.wrangler.substrat.json
+    ENOENT: … open '/home/runner/work/substrat/substrat/demos/ticket0/demos/ticket0/.wrangler.substrat.json'
+  ```
+
+  This is why it never showed up in a local push. Running from inside the package makes
+  `dir` `'.'`, where joining twice is a no-op; only a push that NAMES a directory — which
+  is every push CI makes — could double it. So the CLI worked everywhere it was tried by
+  hand and failed on the one path nobody drives interactively.
+
+  The path is now `resolve`d, via an exported `generatedConfigPath` so the invariant is
+  pinned by a test rather than by the one line spelling it. The test asserts the property
+  that actually matters — the path is absolute, so resolving it again against the push
+  directory returns it unchanged — and goes red against the old `join`.
+
+- Updated dependencies [ec1f8e8]
+- Updated dependencies [3561f7f]
+  - @substrat-run/contracts@0.90.0
+
 ## 0.25.9
 
 ### Patch Changes

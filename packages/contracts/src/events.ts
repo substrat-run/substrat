@@ -9,6 +9,7 @@ import {
   scopeId,
   tenantId,
 } from './ids.js';
+import { impersonationStamp } from './impersonation.js';
 
 // Opaque ref — the kernel owns no entities (D-1); attachment contracts bind here.
 export const entityRef = z.object({
@@ -104,6 +105,13 @@ export const domainEvent = z
     // K-34: the checks the emitting operation passed — stamped kernel-side, absent on
     // events written before the field existed (honestly unrecorded, not empty).
     authorization: z.array(eventAuthorization).optional(),
+    // K-42: the staff actor and session this ran under, when it ran under one.
+    // `actor` above stays the IMPERSONATED principal — the permission model
+    // answered about them and the domain fact is theirs; this says who was
+    // holding the keyboard. Stamped kernel-side on K-34's pattern: absent from
+    // `DomainEventInput`, so module code can neither claim a session nor drop one.
+    // Absent (not empty) on every ordinary event, which is the honest reading.
+    impersonation: impersonationStamp.optional(),
     payload: z.unknown(),
   })
   .superRefine(piiInvariant);
@@ -165,6 +173,13 @@ export type TimelineEntry = z.infer<typeof timelineEntry>;
 export const historyEntry = timelineEntry.extend({
   payload: z.unknown(),
   authorization: z.array(eventAuthorization).nullable(),
+  /**
+   * The staff actor behind this entry (K-42), or null — which here means
+   * "nobody was impersonating", the ordinary case, rather than "unrecorded".
+   * A history strip that cannot show this shows a customer's own name against a
+   * change their support engineer made.
+   */
+  impersonation: impersonationStamp.nullable(),
   piiClass,
   subjectId: dataSubjectId.nullable(),
 });

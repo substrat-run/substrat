@@ -269,6 +269,24 @@ type OpAuthority<O, Entities, Engines, PermKey extends string> = O extends { nar
          * to prevent.
          */
         readonly checks: readonly PermKey[];
+        /**
+         * This operation checks NOTHING — not here, not in a composed module.
+         *
+         * Needed because `checks: []` alone means two different things and the
+         * conformance receipt counted both as a proof walk: Callout's portal walk
+         * lists nothing because the key it walks (`workorder:read`) belongs to the
+         * engine that declares it, while `invites/accept` lists nothing because the
+         * recipient holds nothing yet and the invitation itself is the authority.
+         * The first is a per-entity walk, the second is an ungated operation with a
+         * stated reason — and a receipt reporting "1 per-entity proof walk" under a
+         * header counting zero narrowed checks is the second one wearing the first
+         * one's clothes.
+         *
+         * Deliberately opt-in: an operation that forgets the flag is reported as a
+         * walk, which is the claim that gets scrutinised. The reason field is what
+         * separates this from an oversight either way.
+         */
+        readonly unchecked?: true;
       };
       readonly permission?: never;
     }

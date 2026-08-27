@@ -1,5 +1,13 @@
 # @substrat-run/dashboard-web
 
+## 0.12.26
+
+### Patch Changes
+
+- Updated dependencies [ec1f8e8]
+- Updated dependencies [3561f7f]
+  - @substrat-run/contracts@0.90.0
+
 ## 0.12.25
 
 ### Patch Changes

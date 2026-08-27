@@ -1,5 +1,102 @@
 # @substrat-run/contracts
 
+## 0.90.1
+
+### Patch Changes
+
+- 7b50231: The generated deploy workflow builds a monorepo vertical's workspace dependencies before pushing. `pnpm install` only links a sibling package, and its `exports` point at a `dist/` a fresh checkout does not have — so the first hosted push of an in-repo vertical died in wrangler's bundle with `Could not resolve "@substrat-run/contracts"`. A monorepo workflow (`--path`) now carries a `Build workspace dependencies` step in both jobs: pnpm builds exactly the closure the package imports (`--filter "{dir}^..."`), yarn/npm build every workspace with a build script. A single-package repo is unchanged — it depends on published packages.
+
+## 0.90.0
+
+### Minor Changes
+
+- ec1f8e8: The last three packages declare their operation surface, so no entity-check claim is a grep
+
+  #865 asked for the entity-check conformance kit to reach fourteen packages, and #891 split
+  out the half where the recipe did not apply: a package with no declared operation registry
+  has nothing to convert. #891 closed five of them. These are the last three.
+
+  `engines/invites`, `engines/metering` and `demos/manyfold` each gain a declared operation
+  surface (`src/operations.ts`, plus an entity registry for metering and a `schemas.ts` for
+  manyfold), and their node-only assessment moves from `nodeOnlySuite` to
+  `declaredNodeOnlySuite`. The difference is what the claim is made OF:
+
+  - **Before:** a tripwire over the module's own source — no two-argument `ctx.check(perm,
+ref)` appears in it. Lexical. It proves an absence rather than a behaviour, and a check
+    assembled through a helper or across lines is invisible to it.
+  - **After:** `planEntityCheckCoverage` reads the declaration the same way the conformance
+    kit does, and the claim is that the plan is empty. Exact. It goes red when an operation
+    DECLARES a narrowed check, not when someone happens to spell one on one line.
+
+  Each also gains the assertion that is easy to leave out — every operation still says what
+  it checks, because an ungated operation produces an empty plan too. `invites/accept` is
+  the one operation in the three that genuinely checks nothing (the invitation itself is the
+  authority) and it now declares `narrows` with the reason, so the exception is written down
+  rather than indistinguishable from an oversight.
+
+  That exception needed one new word to state. `narrows.checks: []` already meant "no key of
+  MINE is walked", which is also true of a walk over a composed engine's key — Callout's
+  portal walk checks `workorder:read`, and a vertical restating another module's permissions
+  is the defect the empty list exists to avoid. So a genuinely ungated operation adds
+  `narrows.unchecked: true`, and the conformance receipt counts it on its own row instead of
+  reporting "1 per-entity proof walk" under a header counting zero narrowed checks.
+
+  Two consequences beyond the assessment: the host now parses these operations' inputs at
+  the door (#893) from the same schemas the handlers already parsed, and a vertical
+  composing invites or metering can declare an operation returning their shapes without
+  transcribing them.
+
+  `nodeOnlySuite` stays exported for a module that has not declared yet — a vertical
+  mid-build, a module outside this workspace — with its header corrected: no package in this
+  repo needs it any more.
+
+- 3561f7f: Act as a principal with the real actor preserved (K-42)
+
+  Supporting a customer's live vertical meant asking them to screenshot things: there was
+  no supported way to see what a named principal sees, and the only impersonation in the
+  tree was the `ALLOW_DEV_HEADER` dev bypass. Every platform grows this surface eventually,
+  and the version that grows by itself is a session swap that loses the real actor — which
+  is exactly the version that fails an audit.
+
+  An impersonated operation now carries **two** actors:
+
+  ```ts
+  const session = await host.admin.beginImpersonation(staff, {
+    tenantId,
+    scopeId,
+    principal: anna,
+    reason: "ticket #4182 — the invoice screen is empty",
+    // minutes: 15 by default, capped at IMPERSONATION_MAX_MINUTES
+    // mode: 'read-only' by default
+  });
+  const stub = await host.getImpersonatedScope(session.id, tenantId, scopeId);
+  await stub.invoke("callout/list-orders"); // answers as Anna
+  ```
+
+  The permission model answers about the **impersonated** principal, through the ordinary
+  checker with no override branch — so a session against a principal who holds nothing is
+  refused precisely where that principal would be. The staff actor rides beside it as a
+  kernel-stamped `impersonation` on the outbox envelope, the denial row and the
+  platform-intent journal, on K-34's pattern: absent from `DomainEventInput`, so module
+  code can neither claim a session nor drop one. It is absent from `ctx` too — a vertical
+  that could read the session could hide rows from it.
+
+  **`read-only` is the default, and it is a mechanism rather than a promise.** The
+  effecting verbs (`emit`, `requestPlatform`, `grant`, `revoke`, `link`) refuse by name,
+  and the transaction is rolled back instead of committed — which is what holds when a
+  handler writes a row with plain `ctx.sql.exec` and calls none of them. The operation
+  still runs and still answers; only the writes do not survive.
+
+  Sessions are bounded and reason-carrying, admin-logged **before** they can be used
+  (K-33's failure ordering), and re-read on every invoke rather than once at the door — a
+  stub is a capability, so a session checked only when it was minted would expire for
+  everybody except the one caller holding it. `endImpersonation` closes one early;
+  `listImpersonations` reads the log and is access-logged like every other staff read.
+
+  Both adapters, held to one shared `impersonationContractSuite`. Additive throughout: the
+  new envelope, denial and intent fields are optional, and a null means "nobody was
+  impersonating" rather than "unrecorded".
+
 ## 0.89.0
 
 ### Minor Changes
@@ -599,11 +696,12 @@ registry>'`, and absence narrows to Meridian's `employee`, which appears in no r
     that beside a parsed `errors` array publishes the same thing twice, in exactly the shape
     this change exists to stop clients re-parsing.
 
-        **Scoped to parse failures, and the `errors` list is what identifies one.**
-        `validation_failed` is also raised semantically — `endDate precedes startDate`
-        (`engines/absence`), `invalid interval` (`engines/booking`), `at most one party may
+            **Scoped to parse failures, and the `errors` list is what identifies one.**
+            `validation_failed` is also raised semantically — `endDate precedes startDate`
+            (`engines/absence`), `invalid interval` (`engines/booking`), `at most one party may
 
-    sign as primary` (`engines/protocol`) — where the sentence _is_ the information and no
+        sign as primary` (`engines/protocol`) — where the sentence _is_ the information and no
+
     field list exists to put in its place. Those keep their own message, unchanged, and a
     test pins it: a canonical detail applied to all of `validation_failed` would have
     deleted seventeen useful messages across four engines to standardise a body that had
@@ -4272,7 +4370,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
