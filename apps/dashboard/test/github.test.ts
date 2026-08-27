@@ -355,8 +355,17 @@ describe('GitHub App client', () => {
       expect(yaml).toContain("require('./demos/auth-server/package.json').version");
       // …and both triggers gain a paths filter so an unrelated merge does not deploy it.
       expect(yaml).toContain("- 'demos/auth-server/**'");
-      // Install stays at the repo root: a workspace monorepo's lockfile lives there.
+      // Install stays at the repo root: a workspace monorepo's lockfile lives there…
       expect(yaml).toContain('if [ -f pnpm-lock.yaml ]');
+      // …and the workspace packages the vertical imports are BUILT before the push, in
+      // both jobs: install only links a sibling, whose exports point at a dist/ a fresh
+      // checkout lacks, so the first bundle otherwise dies with `Could not resolve`.
+      // pnpm builds the closure and not the package itself (push runs its build).
+      expect(yaml.split('- name: Build workspace dependencies')).toHaveLength(3);
+      expect(yaml).toContain('pnpm --filter "{demos/auth-server}^..." run --if-present build');
+      expect(yaml).toContain("--exclude 'demos/auth-server' run build");
+      // A single-package repo depends on published packages — nothing to build.
+      expect(deployWorkflowYaml(base)).not.toContain('Build workspace dependencies');
       // The changesets gate diffs the PACKAGE's manifest against the previous commit.
       const cs = deployWorkflowYaml({ ...base, release: 'changesets' as const, path: 'demos/auth-server' });
       expect(cs).toContain('git show HEAD^:demos/auth-server/package.json');

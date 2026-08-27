@@ -158,6 +158,10 @@ const printfFormat = (body: string): string => body.replace(/\n/g, '\\n');
  * reusable-workflow indirection to chase. The install step is load-bearing — `substrat
  * push`/`preview` runs the repo's OWN build (a wrangler custom build), which needs the
  * repo's devDependencies on disk; corepack picks the package manager from the lockfile.
+ * In a monorepo (`path`) a second step builds the workspace packages the vertical imports:
+ * install only *links* a sibling, and its `exports` point at a `dist/` a fresh checkout
+ * does not have, so without it the very first bundle dies with `Could not resolve
+ * "@scope/pkg"` — which is exactly how the first hosted push of an in-repo demo failed.
  *
  * Two behaviours are opt-in through **repository variables**, so one generated file serves
  * every project and enabling them never means regenerating it:
@@ -178,6 +182,26 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   const dir = path ?? '.';
   const pkgRef = path ? `./${path}/package.json` : './package.json';
 
+  // A workspace package reaches its siblings through their package.json `exports`, and those
+  // point at dist/ — which install links but never builds. Build the vertical's dependency
+  // closure and nothing else: pnpm's `^...` selector is "the dependencies of, not the package
+  // itself" (push runs ITS build); yarn (Berry) and npm have no such selector, so they build
+  // every workspace that declares a `build` script. Rendered only for a monorepo — a
+  // single-package repo depends on published packages, which install already resolved.
+  const buildDeps = path
+    ? `
+      - name: Build workspace dependencies
+        # Sibling packages resolve through their package.json exports, which point at dist/ —
+        # a fresh checkout has none, and install links without building. pnpm builds only the
+        # closure this package imports; yarn/npm build every workspace with a build script.
+        # Delete this step if the package imports no workspace packages.
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{${path}}^..." run --if-present build
+          elif [ -f yarn.lock ]; then yarn workspaces foreach --all --topological-dev --exclude '${path}' run build
+          else npm run build --workspaces --if-present
+          fi`
+    : '';
+
   // The install block repeats across jobs (self-contained file, see above). `fetch-depth: 2`
   // is what lets the changesets release gate diff package.json against the previous commit.
   const setup = (fetchDepth?: number): string => `      - uses: actions/checkout@v4${
@@ -196,7 +220,7 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
           elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile
           elif [ -f package-lock.json ]; then npm ci
           else npm install
-          fi`;
+          fi${buildDeps}`;
 
   const cpEnv = `        env:
           SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
@@ -343,7 +367,7 @@ ${cpEnv}
 # channel, previews as the only non-prod environment — is documented at
 # https://substrat.net/guide/environments-and-previews${
     path
-      ? `\n#\n# Monorepo: this deploys the '${slug}' vertical from ${path}/ (dependencies still\n# install at the repo root — the workspace lockfile lives there).`
+      ? `\n#\n# Monorepo: this deploys the '${slug}' vertical from ${path}/. Dependencies still install\n# at the repo root (the workspace lockfile lives there), and the workspace packages this\n# vertical imports are built before every push — a sibling resolves through its dist/.`
       : ''
   }
 #

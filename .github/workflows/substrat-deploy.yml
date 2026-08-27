@@ -4,8 +4,9 @@ name: Deploy to Substrat
 # channel, previews as the only non-prod environment — is documented at
 # https://substrat.net/guide/environments-and-previews
 #
-# Monorepo: this deploys the 'ticket0' vertical from demos/ticket0/ (dependencies still
-# install at the repo root — the workspace lockfile lives there).
+# Monorepo: this deploys the 'ticket0' vertical from demos/ticket0/. Dependencies still install
+# at the repo root (the workspace lockfile lives there), and the workspace packages this
+# vertical imports are built before every push — a sibling resolves through its dist/.
 #
 # Optional repository variables (Settings → Secrets and variables → Actions → Variables):
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
@@ -61,6 +62,16 @@ jobs:
           elif [ -f package-lock.json ]; then npm ci
           else npm install
           fi
+      - name: Build workspace dependencies
+        # Sibling packages resolve through their package.json exports, which point at dist/ —
+        # a fresh checkout has none, and install links without building. pnpm builds only the
+        # closure this package imports; yarn/npm build every workspace with a build script.
+        # Delete this step if the package imports no workspace packages.
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{demos/ticket0}^..." run --if-present build
+          elif [ -f yarn.lock ]; then yarn workspaces foreach --all --topological-dev --exclude 'demos/ticket0' run build
+          else npm run build --workspaces --if-present
+          fi
       - name: Release to prod
         env:
           SUBSTRAT_SERVICE_TOKEN: ${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
@@ -106,6 +117,16 @@ jobs:
           elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile
           elif [ -f package-lock.json ]; then npm ci
           else npm install
+          fi
+      - name: Build workspace dependencies
+        # Sibling packages resolve through their package.json exports, which point at dist/ —
+        # a fresh checkout has none, and install links without building. pnpm builds only the
+        # closure this package imports; yarn/npm build every workspace with a build script.
+        # Delete this step if the package imports no workspace packages.
+        run: |
+          if [ -f pnpm-lock.yaml ]; then pnpm --filter "{demos/ticket0}^..." run --if-present build
+          elif [ -f yarn.lock ]; then yarn workspaces foreach --all --topological-dev --exclude 'demos/ticket0' run build
+          else npm run build --workspaces --if-present
           fi
       - name: Create/update the preview
         env:

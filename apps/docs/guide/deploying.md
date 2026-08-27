@@ -405,7 +405,9 @@ view has a **one-click CI setup**: connect the GitHub App, pick a repository and
 3. commits `.github/workflows/substrat-deploy.yml` — which triggers that first run immediately.
 
 The committed workflow is the whole loop from this page: a push to the chosen branch installs
-dependencies (your lockfile picks the package manager) and runs
+dependencies (your lockfile picks the package manager), builds the workspace packages the
+vertical imports when it lives in a monorepo (install only *links* a sibling; its `dist/` is
+what the bundle resolves), and runs
 `substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; opening
 or updating a PR creates its [preview](#preview-a-pull-request-—-substrat-preview) and comments the URL; closing
 the PR reaps it. A manual copy-paste path shows the same file if you'd rather commit it yourself.
