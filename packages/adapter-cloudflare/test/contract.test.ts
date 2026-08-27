@@ -20,6 +20,7 @@ import {
   atomicContractSuite,
   billedMod,
   connectorTestFetch,
+  impersonationContractSuite,
   permissionContractSuite,
   scheduleContractSuite,
   scheduleMod,
@@ -84,6 +85,20 @@ atomicContractSuite('adapter-cloudflare', async () => {
 // The schedule suite (#383) also runs against the default tuple checker — it must
 // resolve the projected system grant, not an allow-all.
 scheduleContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// K-42 (#868): impersonation, on the default tuple checker. The read-only ROLLBACK is
+// what this run proves and the pure adapter's cannot: workerd has no `ROLLBACK` verb, so
+// the DO discards a read-only invocation by failing its `ctx.storage.transaction` — a
+// different mechanism reaching the same guarantee, which is exactly the kind of thing a
+// shared suite exists to hold together.
+impersonationContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

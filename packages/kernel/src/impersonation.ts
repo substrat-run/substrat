@@ -8,15 +8,17 @@
  * `stampImpersonation` at the door and `assertImpersonationLive` on every invoke; the
  * only thing either writes for itself is the SQL.
  *
- * Every function here is pure and clock-injected. Nothing reads a wall clock — the
- * adapter passes its own (`this.clock()` on the pure adapter, the DO's instant on the
- * hosted one), which is what lets a frozen-clock test drive a session past its own
- * expiry without sleeping four hours.
+ * Every function here is pure and clock-injected. Nothing here reads a wall clock — the
+ * adapter passes its own (`this.clock()` on the pure adapter, the DO's own instant on the
+ * hosted one, which workerd constructs and gives no seam to inject through). That split
+ * is why `ttlSeconds` is expressed in seconds: on the pure adapter a frozen clock drives
+ * a session past its expiry instantly, and on the hosted one the only thing that CAN is
+ * asking for a session short enough to outlive in a test.
  */
 
 import {
   impersonationRequest,
-  IMPERSONATION_DEFAULT_TTL_MINUTES,
+  IMPERSONATION_DEFAULT_TTL_SECONDS,
   SubstratError,
   type Impersonation,
   type ImpersonationRequest,
@@ -76,9 +78,9 @@ export class ImpersonationReadOnly extends SubstratError {
  */
 export function stampImpersonation(request: ImpersonationRequest, now: Instant): Impersonation {
   const parsed = impersonationRequest.parse(request);
-  const ttl = parsed.ttlMinutes ?? IMPERSONATION_DEFAULT_TTL_MINUTES;
+  const ttl = parsed.ttlSeconds ?? IMPERSONATION_DEFAULT_TTL_SECONDS;
   const startedAt = now;
-  const expiresAt = new Date(Date.parse(startedAt) + ttl * 60_000).toISOString() as Instant;
+  const expiresAt = new Date(Date.parse(startedAt) + ttl * 1000).toISOString() as Instant;
   return {
     actor: parsed.actor,
     principal: parsed.principal,

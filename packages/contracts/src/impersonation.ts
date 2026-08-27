@@ -45,14 +45,14 @@ import { instant, platformActorId, principalId } from './ids.js';
  *   carries the column at all.
  */
 
-/** How long an impersonated session lasts when the caller names no window. */
-export const IMPERSONATION_DEFAULT_TTL_MINUTES = 30;
+/** How long an impersonated session lasts when the caller names no window — 30 minutes. */
+export const IMPERSONATION_DEFAULT_TTL_SECONDS = 30 * 60;
 /**
  * The ceiling on one. Four hours is a long support call and a short standing
  * credential; anything past it should be a second session with a second reason, which
  * is a second admin-log entry a reviewer can see.
  */
-export const IMPERSONATION_MAX_TTL_MINUTES = 240;
+export const IMPERSONATION_MAX_TTL_SECONDS = 4 * 60 * 60;
 
 /**
  * What a caller ASKS for. The three fields it may not choose — when the window opened,
@@ -70,8 +70,16 @@ export const impersonationRequest = z.object({
    * reconstruct from the rest.
    */
   reason: z.string().trim().min(8).max(500),
-  /** Minutes the session stays live. Defaults to `IMPERSONATION_DEFAULT_TTL_MINUTES`. */
-  ttlMinutes: z.number().int().positive().max(IMPERSONATION_MAX_TTL_MINUTES).optional(),
+  /**
+   * Seconds the session stays live. Defaults to `IMPERSONATION_DEFAULT_TTL_SECONDS`.
+   *
+   * Seconds rather than minutes, matching every other TTL a web stack expresses (a JWT
+   * `exp`, a cookie `Max-Age`) — and, not incidentally, the reason the expiry contract is
+   * testable on BOTH adapters: the pure host takes an injectable `clock`, the ScopeDO
+   * (constructed by workerd) does not, so a suite that must prove a session dies has to
+   * be able to ask for one that dies in about a second.
+   */
+  ttlSeconds: z.number().int().positive().max(IMPERSONATION_MAX_TTL_SECONDS).optional(),
   /**
    * Opt IN to writes. Absent or false is a read-only session, which is the default
    * because the alternative default is "our support engineer approved an invoice".

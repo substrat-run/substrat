@@ -520,11 +520,44 @@ const authorizedReadOp: OperationHandler<{ permission: PermissionKey }, number> 
   input,
 ) => {
   assertAllowed(await ctx.check(input.permission));
-  return ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM testmod_items')[0]!.n;
+  // `perm_items`, not `@test/mod`'s table: decision 28 says another module's tables are
+  // private, and reaching across meant this read only ever worked in a suite that
+  // happened to register both. Every caller was on the DENIED path, so nothing noticed.
+  return ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM perm_items')[0]!.n;
 };
 
 const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query('SELECT id, type, authorization FROM _substrat_outbox ORDER BY id');
+
+// -- K-42 impersonation fixtures ---------------------------------------------
+
+/**
+ * What the handler was told about who is running it. A vertical rendering a
+ * "viewing as" banner reads exactly these two, so the suite asserts exactly these two.
+ */
+const whoamiOp: OperationHandler<undefined, unknown> = (ctx) => ({
+  principal: ctx.principal,
+  impersonation: ctx.impersonation,
+});
+
+/** The spine as a support reviewer would read it: who acted, and who was really acting. */
+const readImpersonationOp: OperationHandler<undefined, unknown> = (ctx) =>
+  ctx.sql.query('SELECT id, type, actor, impersonation FROM _substrat_outbox ORDER BY id');
+
+/**
+ * The NON-CONFORMING handler — a write with no `ctx.emit` behind it, which D-5 forbids
+ * and nothing mechanically prevents. It exists so the read-only backstop is tested for
+ * what it actually protects against: `ctx.emit` refuses every conforming mutation, and
+ * this is the one that would otherwise slip past it into a customer's table.
+ */
+const rawWriteOp: OperationHandler<{ id: string }, unknown> = (ctx, input) => {
+  ctx.sql.exec('INSERT INTO perm_items (id) VALUES (?)', [input.id]);
+  return { wrote: input.id };
+};
+
+/** Count the rows `perm/raw-write` would have left, read through an ordinary session. */
+const countItemsOp: OperationHandler<undefined, number> = (ctx) =>
+  ctx.sql.query<{ n: number }>('SELECT COUNT(*) AS n FROM perm_items')[0]!.n;
 
 const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
@@ -903,6 +936,11 @@ export const billedMod: ModuleRegistration = {
 
 export const permMod: ModuleRegistration = {
   manifest: permModManifest,
+  migrations: [
+    // The module's OWN table, so `perm/authorized-read` and the K-42 fixtures below do
+    // not reach into `@test/mod`'s (decision 28).
+    { version: '0001-init', sql: 'CREATE TABLE perm_items (id TEXT PRIMARY KEY)' },
+  ],
   operations: {
     'perm/link': linkOp as OperationHandler<never, unknown>,
     'perm/probe': probeOp as OperationHandler<never, unknown>,
@@ -910,6 +948,13 @@ export const permMod: ModuleRegistration = {
     'perm/authorized-read': authorizedReadOp as OperationHandler<never, unknown>,
     'perm/read-outbox': readOutboxOp as OperationHandler<never, unknown>,
     'perm/read-denials': readDenialsOp as OperationHandler<never, unknown>,
+    // K-42 (#868). `perm/whoami` and `perm/count-items` are pure reads, so a read-only
+    // session may run them; `perm/raw-write` is the deliberate rule-breaker the
+    // rollback backstop exists for.
+    'perm/whoami': whoamiOp as OperationHandler<never, unknown>,
+    'perm/read-impersonation': readImpersonationOp as OperationHandler<never, unknown>,
+    'perm/raw-write': rawWriteOp as OperationHandler<never, unknown>,
+    'perm/count-items': countItemsOp as OperationHandler<never, unknown>,
     // #304: read the request-time entitlement view — used by the scope-local (projected)
     // and CP-less path tests to prove a hosted vertical reads entitlements without a CP.
     'perm/read-entitlement': (async (ctx, key) =>

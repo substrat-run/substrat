@@ -1,6 +1,7 @@
 export { scopeHostContractSuite } from './scope-host-suite.js';
 export type { ScopeHostFixture, ScopeHostSuiteOptions } from './scope-host-suite.js';
 export { permissionContractSuite } from './permission-suite.js';
+export { impersonationContractSuite } from './impersonation-suite.js';
 export { atomicContractSuite } from './atomic-suite.js';
 export { searchContractSuite } from './search-suite.js';
 export { entityVersionContractSuite } from './entity-version-suite.js';

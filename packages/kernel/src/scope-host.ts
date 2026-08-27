@@ -2863,8 +2863,8 @@ export interface ScopeHost {
    *   BEFORE this returns, so a session that then crashes still left the record that it
    *   began — K-33's failure ordering, for K-33's reason.
    *
-   * Refuses a request whose `reason` is missing or trivial, and one whose `ttlMinutes`
-   * exceeds `IMPERSONATION_MAX_TTL_MINUTES`. Neither is a formality: they are the two
+   * Refuses a request whose `reason` is missing or trivial, and one whose `ttlSeconds`
+   * exceeds `IMPERSONATION_MAX_TTL_SECONDS`. Neither is a formality: they are the two
    * fields that turn a standing back door into a bounded, attributable act.
    */
   getImpersonatedScope(

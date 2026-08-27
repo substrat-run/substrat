@@ -5,6 +5,7 @@ import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel
 import {
   atomicContractSuite,
   connectorTestFetch,
+  impersonationContractSuite,
   permissionContractSuite,
   scheduleContractSuite,
   scopeHostContractSuite,
@@ -57,6 +58,23 @@ permissionContractSuite('adapter-sqlite', async () => {
 // system grant resolves through the real tuple engine, not an allow-all.
 scheduleContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-sched-'));
+  const host = new SqliteScopeHost({
+    dir,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// K-42 (#868): impersonation. The DEFAULT checker — the subject of the suite is WHOSE
+// authority resolves inside an impersonated session, and an allow-all cannot answer it.
+impersonationContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-imp-'));
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
