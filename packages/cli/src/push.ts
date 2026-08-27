@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, basename, extname, relative } from 'node:path';
+import { join, basename, extname, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
@@ -509,6 +509,20 @@ export function resolveWranglerConfig(
     : { cfg: readJsonc(join(dir, 'wrangler.jsonc')), needs: undefined };
 }
 
+/**
+ * Where the derived wrangler config is written for the build.
+ *
+ * ABSOLUTE, and that is the whole point: `wrangler` is spawned with `cwd` set to this
+ * same directory, and `dir` arrives from argv unresolved (`cli.ts`). A relative
+ * `--config demos/ticket0/.wrangler.substrat.json` is then resolved a SECOND time
+ * against that cwd — `demos/ticket0/demos/ticket0/…`, which exists nowhere. It is why
+ * this only ever broke when the push named a directory (CI) and never when it ran from
+ * inside one, where `dir` is '.' and joining twice is a no-op.
+ */
+export function generatedConfigPath(dir: string): string {
+  return resolve(dir, '.wrangler.substrat.json');
+}
+
 export async function push(
   opts: PushOptions,
 ): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
@@ -550,7 +564,7 @@ export async function push(
   // Build the bundle (runs the vertical's own build command first).
   const out = mkdtempSync(join(tmpdir(), 'substrat-build-'));
   console.log(`building ${opts.slug}@${opts.version} …`);
-  const generated = needs ? join(opts.dir, '.wrangler.substrat.json') : undefined;
+  const generated = needs ? generatedConfigPath(opts.dir) : undefined;
   if (generated) writeFileSync(generated, JSON.stringify(cfg, null, 2) + '\n');
   try {
     execFileSync(

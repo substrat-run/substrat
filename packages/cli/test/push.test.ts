@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { dirname, join } from 'node:path';
+import { dirname, join, isAbsolute, resolve } from 'node:path';
 import {
   buildPermissionRegistry,
   definePermissions,
@@ -12,7 +12,7 @@ import {
   matchesOutboundHost,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -516,5 +516,26 @@ describe('readAssetsNeed — one shape from either vocabulary (#340)', () => {
   it('a vertical declaring no assets is undefined on both paths', () => {
     expect(readAssetsNeed({}, undefined)).toBeUndefined();
     expect(readAssetsNeed({}, runtimeNeeds.parse({ entry: 'src/worker.ts' }))).toBeUndefined();
+  });
+});
+
+describe('generatedConfigPath — the derived config wrangler is pointed at', () => {
+  /**
+   * The bug this pins: `wrangler` is spawned with `cwd` set to the push directory, so a
+   * RELATIVE `--config` is resolved against it a second time. `substrat push demos/ticket0`
+   * from a repo root asked wrangler for `demos/ticket0/demos/ticket0/.wrangler.substrat.json`
+   * and the CI build died on ENOENT, while every local push — run from inside the package,
+   * where the directory is '.' — was fine.
+   */
+  it('is absolute, so a cwd-relative second resolve cannot double it', () => {
+    const generated = generatedConfigPath('demos/ticket0');
+    expect(isAbsolute(generated)).toBe(true);
+    // The doubling, stated as the thing that must not happen.
+    expect(resolve('demos/ticket0', generated)).toBe(generated);
+    expect(generated.endsWith(join('demos', 'ticket0', '.wrangler.substrat.json'))).toBe(true);
+  });
+
+  it('names the same file whether the push addressed the directory or ran inside it', () => {
+    expect(generatedConfigPath(resolve('demos/ticket0'))).toBe(generatedConfigPath('demos/ticket0'));
   });
 });
