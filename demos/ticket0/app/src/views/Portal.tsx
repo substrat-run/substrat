@@ -134,6 +134,8 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
    * the customer looking at an error page instead of the exchange they were rating.
    */
   const [ratingError, setRatingError] = useState<string | null>(null);
+  /** In flight. Without it, an impatient second click submits a second rating. */
+  const [rating, setRating] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -215,6 +217,7 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
             <EventDivider tone="resolved" label={conv.state} />
             <RatingCard
               rated={rated}
+              busy={rating}
               error={ratingError}
               score={score}
               comment={comment}
@@ -223,10 +226,12 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
               onSubmit={() => {
                 if (score === null) return;
                 setRatingError(null);
+                setRating(true);
                 void api
                   .submitCsat({ conversationId: id, score, comment: comment || null })
                   .then(() => setRated(true))
-                  .catch((e: Error) => setRatingError(e.message));
+                  .catch((e: Error) => setRatingError(e.message))
+                  .finally(() => setRating(false));
               }}
             />
           </>
@@ -248,6 +253,7 @@ function One({ id, go }: { id: string; go: (v: View) => void }) {
 
 function RatingCard({
   rated,
+  busy,
   error,
   score,
   comment,
@@ -256,6 +262,7 @@ function RatingCard({
   onSubmit,
 }: {
   rated: boolean;
+  busy: boolean;
   error: string | null;
   score: number | null;
   comment: string;
@@ -305,8 +312,8 @@ function RatingCard({
         onChange={(e) => setComment(e.target.value)}
         style={{ marginBottom: 10 }}
       />
-      <button className="btn btn-primary" disabled={score === null} onClick={onSubmit}>
-        Send rating
+      <button className="btn btn-primary" disabled={score === null || busy} onClick={onSubmit}>
+        {busy ? 'Sending…' : 'Send rating'}
       </button>
       {error ? (
         <div className="t-small" style={{ marginTop: 8, color: 'var(--danger-2)' }}>

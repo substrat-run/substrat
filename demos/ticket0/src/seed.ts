@@ -301,10 +301,15 @@ async function seedDesk(
   const agentStub = await host.getScope(spec.agent.principal, tenant, scope);
   await agentStub.invoke('ticket0/set-agent-profile', {
     displayName: spec.agent.name,
+    avatarUrl: null,
     signature: `${spec.agent.name}\n${spec.name} Support`,
   });
   const assistantStub = await host.getScope(spec.assistant.principal, tenant, scope);
-  await assistantStub.invoke('ticket0/set-agent-profile', { displayName: ASSISTANT_NAME });
+  await assistantStub.invoke('ticket0/set-agent-profile', {
+    displayName: ASSISTANT_NAME,
+    avatarUrl: null,
+    signature: null,
+  });
 
   // --- The customer appears, vouched for by their own site -------------------
   // Opened by the WIDGET service, the way an embedded chat would: the customer's own
