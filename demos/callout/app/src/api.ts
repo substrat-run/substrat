@@ -125,9 +125,49 @@ export interface Session {
 export async function me(): Promise<Session | null> {
   try {
     const res = await fetch('/api/me', { credentials: 'same-origin' });
-    return res.ok ? ((await res.json()) as Session) : null;
+    if (!res.ok) return null;
+    const body = (await res.json()) as Session | NeedsSetup;
+    // An unclaimed owner seat is a 200 that is not a session (#925) — `whoAmI` below reads it.
+    return 'principal' in body ? body : null;
   } catch {
     return null;
+  }
+}
+
+/** A freshly-provisioned instance whose owner seat nobody has claimed yet (#925). */
+export interface NeedsSetup {
+  status: 'needs-setup';
+  /** Whether a plain sign-in still claims the seat — it closes on a window after provision;
+   *  after that only a claim link from the dashboard binds the owner. */
+  firstSignInOpen: boolean;
+}
+
+/** `/api/me` as a three-way answer: a session, an unclaimed seat, or nobody. */
+export async function whoAmI(): Promise<Session | NeedsSetup | null> {
+  try {
+    const res = await fetch('/api/me', { credentials: 'same-origin' });
+    if (!res.ok) return null;
+    const body = (await res.json()) as Session | NeedsSetup;
+    return 'principal' in body ? body : { status: 'needs-setup', firstSignInOpen: body.firstSignInOpen === true };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Claim the owner seat with the token from a dashboard-minted claim link (#925). Throws with
+ * the status so the screen can tell "sign in first" (401) from a dead link (400).
+ */
+export async function claimOwner(token: string): Promise<void> {
+  const res = await fetch('/api/claim-owner', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw Object.assign(new Error(body?.error ?? `${res.status}`), { status: res.status });
   }
 }
 

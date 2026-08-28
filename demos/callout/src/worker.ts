@@ -45,8 +45,10 @@ import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
 import {
   IdentityDO,
+  mintOwnerClaimLink,
   oidcAuthProvider,
   oidcRpAuthProvider,
+  sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 
@@ -152,13 +154,6 @@ function hostFor(env: Env): CloudflareScopeHost {
 
 /** The request's own origin — used to build absolute invite-accept links. */
 const originOf = (req: Request): string => new URL(req.url).origin;
-
-/** SHA-256 hex of a string (Web Crypto — same in workerd, Node, browsers). Invite tokens are
- *  stored + compared only as hashes, so a DB read never yields a usable token. */
-async function sha256Hex(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 /** The tenant's identity DO stub — the sub→principal directory + owner-of-record + invites. */
 function identityDo(env: Env, node: DemoNode) {
@@ -363,6 +358,44 @@ app.post('/internal/configure', async (c) => {
 });
 
 /**
+ * The owner seat (#925), on the platform's instruction: what state it is in, and a claim
+ * link for one that sits empty after the first-sign-in window. Callout mounts its
+ * `/internal` surface by hand (it predates @substrat-run/vertical-host), so these are the
+ * two routes `mountPlatformSurface` would have installed — same gate, same shapes.
+ */
+app.get('/internal/owner-seat', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const ref = { tenantId: tenantId.parse(c.req.query('tenantId')), scopeId: scopeId.parse(c.req.query('scopeId')) };
+  return c.json(await identityDo(c.env, ref).ownerSeat(ref.scopeId));
+});
+
+app.post('/internal/owner-claim', async (c) => {
+  try {
+    assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+  } catch (e) {
+    if (e instanceof PlatformCallError) throw new HTTPException(403, { message: e.message });
+    throw e;
+  }
+  const body = z.object({ tenantId, scopeId, origin: z.string().url() }).parse(await c.req.json());
+  const link = await mintOwnerClaimLink(
+    identityDo(c.env, { tenantId: body.tenantId, scopeId: body.scopeId }),
+    body.scopeId,
+    body.origin,
+  );
+  if (!link) {
+    throw new HTTPException(409, {
+      message: `the owner seat of scope ${body.scopeId} is already claimed — nothing to mint a claim link for`,
+    });
+  }
+  return c.json(link, 201);
+});
+
+/**
  * Read-only introspection of a scope's OWN database on the platform's instruction
  * (kernel-design §5.4's admin-query RPC) — the console/dashboard "Data" view. The
  * scope's data DO lives HERE (K-31), so the control plane delegates to the vertical;
@@ -494,7 +527,15 @@ async function requireAdmin(c: { env: Env; req: { raw: Request } }) {
 app.get('/api/me', async (c) => {
   const node = nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
-  if (!principal) return c.json({ error: 'unauthorized' }, 401);
+  if (!principal) {
+    // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the first-sign-in
+    // window is open; by a claim link from the dashboard once it has closed. The SPA's copy
+    // depends on which, and it must not offer a sign-in that binds nobody.
+    const seat = await identityDo(c.env, node).ownerSeat(node.scopeId);
+    return seat.state === 'unclaimed'
+      ? c.json({ status: 'needs-setup', firstSignInOpen: seat.firstSignIn?.open ?? false })
+      : c.json({ error: 'unauthorized' }, 401);
+  }
   const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
   const who = (await scope.invoke('callout/whoami', undefined)) as { role: string };
   // The display name the issuer asserted — cheap to re-resolve, and it keeps the SPA's shape
@@ -560,6 +601,22 @@ app.post('/api/accept-invite', async (c) => {
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const principal = await identityDo(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
   if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
+  return c.json({ ok: true, principal });
+});
+
+/**
+ * Claim the owner seat by link (#925): the installer signed in at the issuer and now presents
+ * the token the dashboard minted for this workspace. Binds their subject → the owner principal,
+ * which already holds `office-admin` from provision. One answer for every way it can fail, so a
+ * probe learns nothing about which.
+ */
+app.post('/api/claim-owner', async (c) => {
+  const node = nodeFor(c.req.raw, c.env);
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
+  if (!subject) throw new HTTPException(401, { message: 'sign in before claiming this workspace' });
+  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
+  const principal = await identityDo(c.env, node).claimOwner(node.scopeId, subject.sub, await sha256Hex(token));
+  if (!principal) throw new HTTPException(400, { message: 'this claim link is invalid, expired, or already used' });
   return c.json({ ok: true, principal });
 });
 

@@ -487,6 +487,64 @@ describe('control-plane API', () => {
     expect(((await res.json()) as { error: string }).error).toContain('does not implement');
   });
 
+  it('reads the owner seat through the vertical and mints a claim link on its canonical hostname (#925)', async () => {
+    const sO = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sO, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sO);
+    // Two hostnames: an alias and the canonical `app` one — the link must open on the latter.
+    await host.admin.bindHostname(staff, {
+      hostname: 'desk-alias.global.substrat.run', tenantId: t1, scopeId: sO, surface: 'app', region: null, canonical: false,
+    });
+    await host.admin.bindHostname(staff, {
+      hostname: 'desk.global.substrat.run', tenantId: t1, scopeId: sO, surface: 'app', region: null, canonical: true,
+    });
+    const owner = principalId.parse(ulid());
+    const seat = { state: 'unclaimed', owner, firstSignIn: { open: false, until: '2026-08-28T12:15:00.000Z' }, claimLink: null };
+    const minted: { origin: string }[] = [];
+    const fakeVertical = {
+      ownerSeat: async () => seat,
+      mintOwnerClaim: async (input: { origin: string }) => {
+        minted.push(input);
+        return { claimUrl: `${input.origin}/?claim=tok`, expiresAt: '2026-08-28T12:30:00.000Z' };
+      },
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { 'demo-vert': fakeVertical } });
+
+    const seatRes = await delegated.request(`/tenants/${t1}/scopes/${sO}/owner-seat`, { headers: auth });
+    expect(seatRes.status).toBe(200);
+    expect(await seatRes.json()).toEqual(seat);
+
+    const claimRes = await delegated.request(`/tenants/${t1}/scopes/${sO}/owner-claim`, { method: 'POST', headers: auth });
+    expect(claimRes.status).toBe(201);
+    expect(await claimRes.json()).toEqual({ claimUrl: 'https://desk.global.substrat.run/?claim=tok', expiresAt: '2026-08-28T12:30:00.000Z' });
+    // The origin came from the platform's own hostname directory, canonical first — never a body.
+    expect(minted.map((m) => m.origin)).toEqual(['https://desk.global.substrat.run']);
+
+    // Cross-tenant fails closed (K-3): another tenant's pair reads as absent.
+    expect((await delegated.request(`/tenants/${t2}/scopes/${sO}/owner-seat`, { headers: auth })).status).toBe(404);
+    expect((await delegated.request(`/tenants/${t2}/scopes/${sO}/owner-claim`, { method: 'POST', headers: auth })).status).toBe(404);
+
+    // The vertical's own refusal (a claimed seat is its 409) is relayed verbatim, not flattened.
+    const claimed = {
+      mintOwnerClaim: async () => { throw new ControlPlaneError(409, 'the owner seat is already claimed'); },
+    } as unknown as VerticalClient;
+    const claimedApi = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth(), verticals: { 'demo-vert': claimed } });
+    const conflict = await claimedApi.request(`/tenants/${t1}/scopes/${sO}/owner-claim`, { method: 'POST', headers: auth });
+    expect(conflict.status).toBe(409);
+    expect(((await conflict.json()) as { error: string }).error).toContain('already claimed');
+
+    // A scope with no hostname has nowhere for a link to open: 409 before the vertical is asked.
+    const sN = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sN, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sN);
+    const noHost = await delegated.request(`/tenants/${t1}/scopes/${sN}/owner-claim`, { method: 'POST', headers: auth });
+    expect(noHost.status).toBe(409);
+    expect(minted).toHaveLength(1);
+
+    // A co-located scope (no vertical client) has no seat to ask about — 501, not a fabricated answer.
+    expect((await req(`/tenants/${t1}/scopes/${s1}/owner-seat`)).status).toBe(501);
+  });
+
   it('gathers the tenant entitlements itself and delivers them WITH provisioning (#310)', async () => {
     const sE = scopeId.parse(ulid());
     const owner = principalId.parse(ulid());

@@ -9,7 +9,7 @@
  * two cannot disagree.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api, auth, me, type Identity, type Session } from './api.js';
+import { ApiError, api, auth, claimOwner, me, type Identity, type Session } from './api.js';
 import { Avatar } from './ui.js';
 import { Notifications } from './Notifications.js';
 import { Inbox } from './views/Inbox.js';
@@ -89,6 +89,58 @@ async function probe(): Promise<Capabilities> {
   return { money, configure, inbox };
 }
 
+/** A claim token in the URL (`?claim=<token>`) — the installer arrived by a dashboard-minted claim link (#925). */
+const CLAIM_TOKEN = new URLSearchParams(location.search).get('claim');
+
+/**
+ * Claim the owner seat. The token rides the sign-in round-trip: try the claim at once (a
+ * session may already exist), and on 401 send them to the issuer, returning here with the
+ * token still in the URL. On success the token leaves the URL and `/api/me` resolves the owner.
+ */
+function ClaimOwner({ token }: { token: string }) {
+  const [state, setState] = useState<'trying' | 'needs-login' | 'error'>('trying');
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    claimOwner(token).then(
+      () => {
+        history.replaceState({}, '', location.pathname + location.hash);
+        location.reload();
+      },
+      (e: Error & { status?: number }) => {
+        if (!alive) return;
+        if (e.status === 401) setState('needs-login');
+        else {
+          setErr(e.message);
+          setState('error');
+        }
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [token]);
+  return (
+    <Splash>
+      <div className="t-title" style={{ marginBottom: 10 }}>
+        ticket0
+      </div>
+      <div className="t-meta" style={{ marginBottom: 18 }}>
+        {state === 'trying'
+          ? 'Checking your claim link…'
+          : state === 'error'
+            ? (err ?? 'This claim link no longer works.')
+            : 'Sign in to claim this desk as its owner.'}
+      </div>
+      {state === 'needs-login' && (
+        <button className="btn btn-primary" onClick={() => auth.login(`/?claim=${encodeURIComponent(token)}`)}>
+          Sign in
+        </button>
+      )}
+    </Splash>
+  );
+}
+
 export function App() {
   const [session, setSession] = useState<Identity | undefined>(undefined);
   const [caps, setCaps] = useState<Capabilities | null>(null);
@@ -101,7 +153,7 @@ export function App() {
       .catch(() => null)
       .then(async (s) => {
         setSession(s);
-        if (s && s !== 'needs-setup') {
+        if (s && 'principal' in s) {
           setCaps(await probe().catch(() => ({ money: false, configure: false, inbox: false })));
         }
       });
@@ -110,20 +162,27 @@ export function App() {
   const go = useCallback((v: View) => navigate(v), [navigate]);
 
   if (session === undefined) return <Splash>Loading…</Splash>;
-  if (session === null || session === 'needs-setup')
+  // Arrived by a claim link (#925): bind this login to the owner seat, whether or not a
+  // session (or even another principal) already exists. Takes priority over everything.
+  if (CLAIM_TOKEN) return <ClaimOwner token={CLAIM_TOKEN} />;
+  if (session === null || 'status' in session)
     return (
       <Splash>
         <div className="t-title" style={{ marginBottom: 10 }}>
           ticket0
         </div>
         <div className="t-meta" style={{ marginBottom: 18 }}>
-          {session === 'needs-setup'
-            ? 'This desk has no owner yet. Sign in to claim it.'
-            : 'Sign in to work the desk.'}
+          {session === null
+            ? 'Sign in to work the desk.'
+            : session.firstSignInOpen
+              ? 'This desk has no owner yet. Sign in to claim it.'
+              : 'This desk has no owner yet, and the window for claiming it by signing in has closed. Ask whoever installed it for a claim link from the dashboard.'}
         </div>
-        <button className="btn btn-primary" onClick={() => auth.login(location.hash || '/')}>
-          Sign in
-        </button>
+        {(session === null || session.firstSignInOpen) && (
+          <button className="btn btn-primary" onClick={() => auth.login(location.hash || '/')}>
+            Sign in
+          </button>
+        )}
       </Splash>
     );
 

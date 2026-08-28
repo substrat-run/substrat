@@ -48,8 +48,22 @@ leak across tenants. It holds the provider-agnostic `sub → principal` mapping,
 `setPendingOwner` / `resolvePrincipal` are used under **every** provider, including the two
 OIDC ones where Better Auth stays dormant.
 
-That mapping is what makes first-run ownership work: the first authenticated subject claims
-the pending owner slot, and access is invite-only afterwards.
+That mapping is what makes first-run ownership work. The owner seat is minted **empty** at
+provision (the platform knows the principal it minted, not the login the tenant's issuer will
+emit), and bound later by a verified subject — two ways:
+
+- **First sign-in, inside a window.** For `FIRST_SIGN_IN_WINDOW_MS` (15 minutes) after provision,
+  the first authenticated subject claims the seat — the install flow, where the installer opens
+  the app seconds later. After that a plain sign-in binds nobody: an instance nobody opened (a CI
+  deploy, an issuer with open sign-up) is no longer a seat anyone can take, indefinitely.
+- **A claim link.** The platform asks `mintOwnerClaim` under its secret and the dashboard hands
+  the installer a short-lived `/?claim=<token>` link; `claimOwner` binds the subject that
+  presents it. Only the token's hash is stored, and minting again retires the earlier link.
+  `mintOwnerClaimLink` does the token + hash + URL once, so a vertical's hook is a one-liner.
+
+A closed window is not a lost desk: the seat stays pending (`needsSetup` keeps saying so, and
+`ownerSeat` says *why* — open, closed, or already claimed) until a claim binds it. A re-provision
+keeps the window it has and never re-opens a claimed seat. Access is invite-only afterwards.
 
 Also exported: `resolveCookieDomain`, which refuses to set a session cookie on a public suffix
 (guarded by [`@substrat-run/psl`](https://npmjs.com/package/@substrat-run/psl)).

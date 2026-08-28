@@ -22,6 +22,8 @@ import type {
   ScopeTablePage,
   TenantId,
   VersionOrigin,
+  OwnerSeat,
+  OwnerClaimLink,
 } from '@substrat-run/contracts';
 import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 
@@ -260,6 +262,24 @@ export class TenantNarrowedControlPlane {
    */
   configureInstance(scopeId: ScopeId, entries: Array<{ key: string; value: string }>): Promise<void> {
     return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/configure`, { entries });
+  }
+
+  /**
+   * The app's OWNER SEAT (#925) — claimed, or still empty (and whether a plain first sign-in
+   * can still take it). Read from the vertical through the platform; 501 means the app's
+   * deployment keeps no seat the platform can ask about.
+   */
+  ownerSeat(scopeId: ScopeId): Promise<OwnerSeat> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/owner-seat`);
+  }
+
+  /**
+   * Mint a short-lived claim link for an unclaimed owner seat (#925). The answer is shown to
+   * the installer ONCE and stored nowhere — the platform composed the URL on the app's own
+   * hostname and the vertical holds only the token's hash.
+   */
+  mintOwnerClaim(scopeId: ScopeId): Promise<OwnerClaimLink> {
+    return this.post(`/tenants/${this.tenantId}/scopes/${scopeId}/owner-claim`);
   }
 
   /**

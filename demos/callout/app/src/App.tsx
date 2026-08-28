@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { api, extra, loginAt, me, signOut, type Session } from './api';
+import { api, extra, loginAt, signOut, whoAmI, claimOwner, type NeedsSetup, type Session } from './api';
 import { OrdersView } from './views/Orders';
 import { OrderDetailView } from './views/OrderDetail';
 import { InvoicingView } from './views/Invoicing';
@@ -26,13 +26,22 @@ function useHashRoute(): string {
  * deployment ran, and therefore one no amount of local use could exercise. The picker still
  * exists; it moved to the dev issuer, on the other side of a real OIDC redirect.
  */
-type AuthState = { kind: 'loading' } | { kind: 'ready'; session: Session | null };
+type AuthState = { kind: 'loading' } | { kind: 'ready'; session: Session | null; setup: NeedsSetup | null };
+
+/** A claim token in the URL (`?claim=<token>`) — arrived by a dashboard-minted owner-claim link (#925). */
+const CLAIM_TOKEN = new URLSearchParams(window.location.search).get('claim');
 
 export default function App() {
   const [auth, setAuth] = useState<AuthState>({ kind: 'loading' });
 
   useEffect(() => {
-    void me().then((session) => setAuth({ kind: 'ready', session }));
+    void whoAmI().then((who) =>
+      setAuth(
+        who && 'principal' in who
+          ? { kind: 'ready', session: who, setup: null }
+          : { kind: 'ready', session: null, setup: who },
+      ),
+    );
   }, []);
 
   if (auth.kind === 'loading') {
@@ -42,7 +51,11 @@ export default function App() {
       </main>
     );
   }
-  if (!auth.session) return <LoginScreen />;
+  // Arrived by a claim link (#925): claim first, whether or not a session (or even another
+  // principal) already exists — the token in the URL is the intent, and ignoring it would
+  // show the app as if nothing happened.
+  if (CLAIM_TOKEN) return <ClaimOwnerScreen token={CLAIM_TOKEN} />;
+  if (!auth.session) return <LoginScreen setup={auth.setup} />;
   return <AuthedApp session={auth.session} onSignOut={() => signOut()} />;
 }
 
@@ -131,7 +144,13 @@ function AuthedApp({ session, onSignOut }: { session: Session; onSignOut: () => 
  * sign-in also claims the owner seat (→ office-admin) via the provider-agnostic sub→principal
  * binding.
  */
-function LoginScreen() {
+/**
+ * The sign-in screen — and, on a fresh instance, the first-run one. Signing in claims the owner
+ * seat for a window after provision (#925); once it has closed, only a claim link from the
+ * dashboard does, and a sign-in button that binds nobody would only look like a failed login.
+ */
+function LoginScreen({ setup }: { setup: NeedsSetup | null }) {
+  const closed = setup !== null && !setup.firstSignInOpen;
   return (
     <>
       <header className="topbar">
@@ -141,13 +160,74 @@ function LoginScreen() {
       </header>
       <main className="page">
         <div className="card" style={{ maxWidth: 380, margin: '48px auto' }}>
-          <h2>Logga in</h2>
+          <h2>{setup ? 'Ta över arbetsytan' : 'Logga in'}</h2>
           <p className="muted" style={{ marginBottom: 16 }}>
-            Logga in med din identitetsleverantör för att komma åt din arbetsyta.
+            {closed
+              ? 'Arbetsytan har ingen ägare ännu, och tiden för att ta över den genom att logga in har gått ut. Be den som installerade appen om en länk för att ta över den från dashboarden.'
+              : setup
+                ? 'Arbetsytan har ingen ägare ännu. Logga in med din identitetsleverantör för att bli dess ägare.'
+                : 'Logga in med din identitetsleverantör för att komma åt din arbetsyta.'}
           </p>
-          <button className="btn primary" onClick={() => loginAt('/')}>
-            Fortsätt till inloggning
-          </button>
+          {!closed && (
+            <button className="btn primary" onClick={() => loginAt('/')}>
+              Fortsätt till inloggning
+            </button>
+          )}
+        </div>
+      </main>
+    </>
+  );
+}
+
+/**
+ * Claim the owner seat by link (#925): try at once (a session may already exist from the
+ * redirect back), and on 401 send them to the issuer with the token riding the round-trip.
+ */
+function ClaimOwnerScreen({ token }: { token: string }) {
+  const [state, setState] = useState<'trying' | 'needs-login' | 'error'>('trying');
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    claimOwner(token).then(
+      () => {
+        window.history.replaceState({}, '', window.location.pathname + window.location.hash);
+        window.location.reload();
+      },
+      (e: Error & { status?: number }) => {
+        if (!alive) return;
+        if (e.status === 401) setState('needs-login');
+        else {
+          setErr(e.message);
+          setState('error');
+        }
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [token]);
+  return (
+    <>
+      <header className="topbar">
+        <div className="brand">
+          Service<span>Co</span> <span className="muted" style={{ fontSize: 11 }}>on Substrat</span>
+        </div>
+      </header>
+      <main className="page">
+        <div className="card" style={{ maxWidth: 380, margin: '48px auto' }}>
+          <h2>Ta över arbetsytan</h2>
+          <p className="muted" style={{ marginBottom: 16 }}>
+            {state === 'trying'
+              ? 'Kontrollerar din länk…'
+              : state === 'error'
+                ? (err ?? 'Länken fungerar inte längre.')
+                : 'Logga in med din identitetsleverantör för att bli arbetsytans ägare.'}
+          </p>
+          {state === 'needs-login' && (
+            <button className="btn primary" onClick={() => loginAt(`/?claim=${encodeURIComponent(token)}`)}>
+              Fortsätt till inloggning
+            </button>
+          )}
         </div>
       </main>
     </>

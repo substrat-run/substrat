@@ -29,6 +29,24 @@ export function relativeTime(iso: string, now = Date.now()): string {
   return new Date(then).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+/**
+ * A deadline label from an ISO timestamp — the future-facing twin of `relativeTime`, which
+ * clamps to the past and would call any deadline "just now". "in 14m" / "in 2h" / "until
+ * Sep 3" while it lies ahead; once passed, it says so rather than counting further.
+ */
+export function untilTime(iso: string, now = Date.now()): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return iso;
+  const s = Math.round((then - now) / 1000);
+  if (s <= 0) return `expired ${relativeTime(iso, now)}`;
+  if (s < 60) return 'in under a minute';
+  const m = Math.round(s / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `in ${h}h`;
+  return `until ${new Date(then).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
+}
+
 /** A friendly "Jul 14, 2026" date from an ISO timestamp. */
 export function shortDate(iso: string): string {
   const t = Date.parse(iso);

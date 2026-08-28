@@ -67,8 +67,15 @@ async function get<T>(path: string): Promise<T> {
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: headers(), body: JSON.stringify(body) });
   const text = await res.text();
-  const parsed = (text ? JSON.parse(text) : undefined) as (T & { error?: string }) | undefined;
-  if (!res.ok) throw new ApiError(parsed?.error ?? `${res.status}`, res.status);
+  let parsed: (T & { error?: string; detail?: string }) | undefined;
+  try {
+    parsed = text ? JSON.parse(text) : undefined;
+  } catch {
+    // A non-JSON body (a proxy page, a cold start) still carries a status worth acting on.
+    if (!res.ok) throw new ApiError(`${res.status}`, res.status);
+    throw new ApiError('unexpected non-JSON response', res.status);
+  }
+  if (!res.ok) throw new ApiError(parsed?.detail ?? parsed?.error ?? `${res.status}`, res.status);
   return parsed as T;
 }
 
@@ -186,6 +193,9 @@ export interface OnboardingSummary {
 /** A freshly-provisioned instance with no admin yet — the SPA shows first-run setup. */
 export interface NeedsSetup {
   status: 'needs-setup';
+  /** Whether a plain sign-in still claims the seat (#925) — it closes on a window after
+   *  provision; after that only a claim link from the dashboard binds the owner. */
+  firstSignInOpen?: boolean;
 }
 /** Narrow `/api/me` to the first-run setup state (no admin has claimed the workspace yet). */
 export function isNeedsSetup(m: Me | NeedsSetup): m is NeedsSetup {
@@ -202,6 +212,8 @@ export const api = {
   revokeInvite: (principal: string) => postJson<void>(`/api/invites/${encodeURIComponent(principal)}/revoke`, {}),
   /** Claim an invite while signed in — binds this login to the invited member principal. */
   acceptInvite: (token: string) => postJson<{ ok: true }>('/api/accept-invite', { token }),
+  /** Claim the owner seat with a dashboard-minted claim link's token (#925). */
+  claimOwner: (token: string) => postJson<{ ok: true }>('/api/claim-owner', { token }),
 
   leaveTypes: (employeeId?: string) => invoke<LeaveType[]>('hr/list-leave-types', employeeId ? { employeeId } : undefined),
   balance: (employeeId: string) => invoke<Balance>('hr/balance', { employeeId }),

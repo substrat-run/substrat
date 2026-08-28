@@ -41,6 +41,8 @@ export interface Loaded {
   unauthorized: boolean;
   /** A freshly-provisioned instance with no admin yet — show first-run setup, not sign-in. */
   needsSetup: boolean;
+  /** While `needsSetup`: whether signing in still claims the seat, or only a claim link does (#925). */
+  firstSignInOpen: boolean;
   reload: () => void;
 }
 
@@ -51,6 +53,7 @@ export function useAppData(personaKey: string): Loaded {
   const [error, setError] = useState<string | null>(null);
   const [unauthorized, setUnauthorized] = useState(false);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [firstSignInOpen, setFirstSignInOpen] = useState(false);
 
   const reload = useCallback(() => {
     let cancelled = false;
@@ -65,6 +68,7 @@ export function useAppData(personaKey: string): Loaded {
         if (isNeedsSetup(me)) {
           if (!cancelled) {
             setNeedsSetup(true);
+            setFirstSignInOpen(me.firstSignInOpen === true);
             setLoading(false);
           }
           return;
@@ -122,7 +126,7 @@ export function useAppData(personaKey: string): Loaded {
 
   useEffect(() => reload(), [reload]);
 
-  return { data, loading, error, unauthorized, needsSetup, reload };
+  return { data, loading, error, unauthorized, needsSetup, firstSignInOpen, reload };
 }
 
 export interface ManagerData {

@@ -1936,6 +1936,66 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     );
   });
 
+  // The owner seat (#925). Both reads go to the VERTICAL — the seat lives in its identity
+  // directory, in its deployment — after the same K-3 cross-check every scope-addressed read
+  // here makes. A co-located scope (contract-test host, self-host running no vertical code)
+  // has no seat to ask about, so that is a 501 with the diagnosis rather than a fabricated
+  // "claimed". The claim route additionally needs the instance's public origin, which the
+  // platform — owner of the hostname directory — supplies rather than trusting a body: the
+  // scope's canonical `app` hostname, or the first active one bound to it.
+  app.get('/tenants/:tenantId/scopes/:scopeId/owner-seat', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const principal = c.get('principal');
+    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return c.json({ error: await diagnoseUnboundScope(c.get('actor'), scope) }, 501);
+    try {
+      return c.json(await vertical.ownerSeat(tenantId, scopeId));
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      throw e;
+    }
+  });
+
+  app.post('/tenants/:tenantId/scopes/:scopeId/owner-claim', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const principal = c.get('principal');
+    if (principal.kind === 'builder' && principal.tenantId !== tenantId) {
+      return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    }
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    if (!vertical) return c.json({ error: await diagnoseUnboundScope(actor, scope) }, 501);
+    // The address the link opens on: the scope's canonical `app` hostname, preferring one
+    // the platform has activated but not requiring it — a platform hostname is bound
+    // `pending` and activated a step later, and that step can fail while the app is fully
+    // reachable (#294). `failed` is the one state that never routes, so only it is skipped.
+    const bound = (await admin.listHostnames(actor, { scopeId })).filter((h) => h.status !== 'failed');
+    const pick = (hs: typeof bound) =>
+      hs.find((h) => h.surface === 'app' && h.canonical) ?? hs.find((h) => h.surface === 'app') ?? hs[0];
+    const host = pick(bound.filter((h) => h.status === 'active')) ?? pick(bound);
+    if (!host) {
+      return c.json(
+        { error: `scope ${scopeId} has no hostname bound — a claim link needs an address to open on` },
+        409,
+      );
+    }
+    try {
+      return c.json(await vertical.mintOwnerClaim({ tenantId, scopeId, origin: `https://${host.hostname}` }), 201);
+    } catch (e) {
+      if (e instanceof ControlPlaneError) return c.json({ error: e.message }, e.status as ContentfulStatusCode);
+      throw e;
+    }
+  });
+
   // Deliver per-instance CONFIG to the scope's own storage (vertical-auth-detach.md
   // §2.2) — the missing "delivery" step behind the dashboard's Env tab. Same K-3
   // addressing + bound-version resolution as introspection: the scope's DO lives in the

@@ -37,8 +37,10 @@ import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
 import {
   IdentityDO,
+  mintOwnerClaimLink,
   oidcAuthProvider,
   oidcRpAuthProvider,
+  sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 
@@ -134,13 +136,6 @@ function hostFor(env: Env): CloudflareScopeHost {
 }
 
 const originOf = (req: Request): string => new URL(req.url).origin;
-
-/** SHA-256 hex of a string (Web Crypto — same in workerd, Node, browsers). Invite tokens are
- *  stored + compared only as hashes, so a DB read never yields a usable token. */
-async function sha256Hex(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 /** The tenant's identity DO stub — the sub→principal directory (and Better Auth, if chosen). */
 function identityDo(env: Env, node: CompanyNode) {
@@ -282,6 +277,11 @@ mountPlatformSurface<Env>(app, {
   },
   onConfigure: (env, b) =>
     identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
+  // The owner seat as the platform may see it, and the claim link it may mint for one that
+  // sits empty after the first-sign-in window (#925). Both read the same directory the
+  // provision hook above writes.
+  ownerSeat: (env, ref) => identityDo(env, ref).ownerSeat(ref.scopeId),
+  mintOwnerClaim: (env, ref, input) => mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
 });
 
 // Any OTHER platform verb is honestly unimplemented: JSON 501, never the SPA fallback —
@@ -339,8 +339,13 @@ app.get('/api/me', async (c) => {
   if (!principal) {
     // No principal yet. If the owner seat is unclaimed, this instance is awaiting first-run
     // setup — tell the SPA to show "create the admin account", not a bare sign-in.
-    const needsSetup = await identityDo(c.env, node).needsSetup(node.scopeId);
-    return needsSetup ? c.json({ status: 'needs-setup' }) : c.json({ error: 'unauthorized' }, 401);
+    // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the first-sign-in
+    // window is open; by a claim link from the dashboard once it has closed. The SPA's copy
+    // depends on which, and it must not offer a sign-in that binds nobody.
+    const seat = await identityDo(c.env, node).ownerSeat(node.scopeId);
+    return seat.state === 'unclaimed'
+      ? c.json({ status: 'needs-setup', firstSignInOpen: seat.firstSignIn?.open ?? false })
+      : c.json({ error: 'unauthorized' }, 401);
   }
   const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
   const who = (await scope.invoke('hr/whoami', undefined)) as {
@@ -407,6 +412,22 @@ app.post('/api/accept-invite', async (c) => {
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const principal = await identityDo(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
   if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
+  return c.json({ ok: true, principal });
+});
+
+/**
+ * Claim the owner seat by link (#925): the installer signed in at the issuer and now presents
+ * the token the dashboard minted for this workspace. Binds their subject → the owner principal,
+ * which already holds `hr-admin` from provision. One answer for every way it can fail, so a
+ * probe learns nothing about which.
+ */
+app.post('/api/claim-owner', async (c) => {
+  const node = await nodeFor(c.req.raw, c.env);
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
+  if (!subject) throw new HTTPException(401, { message: 'sign in before claiming this workspace' });
+  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
+  const principal = await identityDo(c.env, node).claimOwner(node.scopeId, subject.sub, await sha256Hex(token));
+  if (!principal) throw new HTTPException(400, { message: 'this claim link is invalid, expired, or already used' });
   return c.json({ ok: true, principal });
 });
 

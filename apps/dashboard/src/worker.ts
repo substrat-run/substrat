@@ -2410,6 +2410,43 @@ app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
  * builtin sign-in. The callback URL rides along so a user registering the client at an
  * external issuer can copy it from the same card.
  */
+/**
+ * The app's OWNER SEAT (#925): whether anyone has signed in to claim the instance, and
+ * whether the plain first sign-in can still do so. This is the fact that used to be
+ * invisible — a provisioned app with an empty seat reachable by whoever signed in first,
+ * and nothing anywhere saying so. Connected mode only: the seat lives in the app's own
+ * identity directory, which only its deployment can read; embedded mode runs no vertical
+ * code, so it has nothing to answer (501, and the UI says "not available").
+ */
+app.get('/api/apps/:scopeId/owner-seat', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'the owner seat is only readable for a hosted app' });
+  return c.json(await cp.ownerSeat(scope));
+});
+
+/**
+ * Mint a claim link for the app's unclaimed owner seat (#925) — what the installer uses once
+ * the first-sign-in window has closed. Shown once; never stored here or on the platform.
+ * Authorized exactly like every other app-scoped route: the app must be the caller's own.
+ */
+app.post('/api/apps/:scopeId/owner-claim', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  if (!cp) throw new HTTPException(501, { message: 'a claim link can only be minted for a hosted app' });
+  return c.json(await cp.mintOwnerClaim(scope), 201);
+});
+
 app.get('/api/apps/:scopeId/auth', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
