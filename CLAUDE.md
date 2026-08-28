@@ -41,9 +41,12 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   each entry accounts for its merges in a coverage-ledger HTML comment at the end.
   The prose is authored, not generated, and deliberately carries none of the three marks
   below — no producer could re-emit a digest. What rots invisibly is coverage, and
-  that is what the gate holds. Written each Monday by the `weekly-changelog` skill,
-  which opens a PR and never merges it. Needs real history, so the CI checkout is
-  `fetch-depth: 0` and the check refuses to run on a shallow clone.
+  that is what the gate holds. Written each Monday by the **Weekly changelog** Scape
+  playbook (Substrat project) — the authoring rules live in its writing step, not in
+  this repo — which opens a PR and never merges it. **Never merge an entry before its
+  week has ended**: the gate reddens on the first later merge the entry does not name,
+  and the Monday run's refresh is what turns it green again. Needs real history, so
+  the CI checkout is `fetch-depth: 0` and the check refuses to run on a shallow clone.
 - `pnpm lint:scaffold` — the scaffold checkpoint (#797): `npm create substrat` at the
   published version, `npm install` from the registry with no workspace links, then the
   three gates a scaffolded project ships with. `packages/create-substrat/template` is
