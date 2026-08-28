@@ -96,6 +96,42 @@ export const api = createClient({
  * so the row is worth re-reading whichever way it went. `ingestKbSource` alone only
  * records the intent, which is how "Re-read" used to leave a row spinning for good.
  */
+/** `GET /api/assistant/status` — the model this install runs, beside its failed turns. */
+export interface AssistantStatus {
+  /** As a turn records it: `workers-ai/…`, or `offline/extractive` when there is no credential. */
+  model: string;
+  /** False when the desk is quoting the documentation rather than generating. */
+  generative: boolean;
+  health: {
+    since: string;
+    turns: number;
+    failed: number;
+    recent: {
+      id: string;
+      conversation_id: string;
+      subject: string;
+      model: string;
+      error: string | null;
+      created_at: string;
+    }[];
+  };
+}
+
+/**
+ * Is the assistant working? The other request here that is not in the model, and for
+ * the same reason as the one below: which model an install would answer with is a
+ * fact about the host's environment, which module code cannot read. The host mounts
+ * `harness/assistant-status.ts`, which invokes the declared `assistant-health` — so
+ * `desk:configure` is what authorises this, exactly as for the failures it wraps.
+ */
+export async function assistantStatus(): Promise<AssistantStatus> {
+  const res = await fetch('/api/assistant/status', { credentials: 'same-origin' });
+  const text = await res.text();
+  const body: unknown = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new ApiError(res.status, problemDetail(body) ?? res.statusText, body);
+  return body as AssistantStatus;
+}
+
 export async function refreshKbSource(
   sourceId: string,
 ): Promise<{ added: number; updated: number; unchanged: number }> {

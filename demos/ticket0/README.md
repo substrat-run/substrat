@@ -115,6 +115,33 @@ host one way to take it down, poll and all. For the hosted desk to answer there,
 `https://substrat.net` must be on its origin allowlist (Settings → Widget origins), and
 `http://localhost:5173` for the docs dev server.
 
+## When the assistant does not answer
+
+Nothing the assistant does is allowed to fail silently — a customer message with no
+turn against it looks exactly like a slow assistant, and it used to be the only trace
+a broken one left. Three things now happen, in this order:
+
+1. **The reason is on the turn.** A `failed` turn carries `error` — the provider's
+   status line, the refused permission, whatever threw — and the conversation draws it
+   as a *could not answer* card. A model that threw and an index that refused are
+   recorded the same way, by the assistant, through `record-answer`, with nothing
+   billed.
+2. **When the assistant itself cannot act** — its service principal was never minted,
+   its role never assigned, its first call refused — the host's `catch` records the
+   failure through the **widget**, the principal that just accepted the message
+   (`ticket0/record-assistant-failure`). Same row, same card, and an internal system
+   note the customer never sees. Both hosts do this; the worker also logs it, so the
+   platform's observability tail has the reason too.
+3. **Settings → Assistant** shows which model this install would answer with — and
+   says plainly when it is `offline/extractive`, i.e. quoting the docs because no
+   `CF_ACCOUNT_ID`/`CF_AI_TOKEN` is set — beside the last day's turn and failure counts
+   and the newest failures, each linked to its conversation. That read is
+   `GET /api/assistant/status` (`harness/assistant-status.ts`), which wraps the declared
+   `ticket0/assistant-health` and adds the one fact module code cannot know.
+
+So "I can't get answers" has an answer of its own: open the conversation and read the
+card, or open Settings → Assistant and read the list.
+
 ## The knowledge base is the real Substrat docs
 
 On first boot the desk ingests `https://substrat.net/llms-full.txt` and turns it into

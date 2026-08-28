@@ -15,6 +15,8 @@
  * desk sends; Kestrel's does not; same code, same call, different grant.
  */
 
+import { ASSISTANT_ERROR_MAX } from '../spec/model.js';
+
 export interface ModelAnswer {
   readonly text: string;
   readonly inputTokens: number;
@@ -190,6 +192,43 @@ export interface AnswerOutcome {
   readonly detail?: string;
 }
 
+/** What the customer is told when the assistant could not answer. One sentence, one place. */
+export const COULD_NOT_ANSWER =
+  'I could not answer this one \u2014 I have passed it to a person, who will pick it up from here.';
+
+/**
+ * A thrown thing as a reason a turn can carry: the message, cut to what the model
+ * will accept. Cut here and not in the operation, because a reason the operation
+ * refused for length would turn a recorded failure back into an unrecorded one.
+ */
+export function errorText(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err);
+  const line = text.trim() || 'failed without a message';
+  return line.length > ASSISTANT_ERROR_MAX ? `${line.slice(0, ASSISTANT_ERROR_MAX - 1)}\u2026` : line;
+}
+
+/**
+ * The host's last resort: the assistant could not act, so the WIDGET records that.
+ *
+ * `answerConversation` records the failures it can — a model that threw, an index
+ * that refused — through the assistant's own `record-answer`. What it cannot record
+ * is the assistant failing to exist: no service principal, no role, its first call
+ * refused. The host sees that in its `catch`, and this writes the turn through the
+ * principal that just accepted the customer's message. Best effort — if THIS refuses
+ * too, the desk's storage is the problem, and the caller logs both.
+ */
+export async function recordAssistantFailure(
+  widget: AssistantTarget,
+  input: { conversationId: string; messageId: string; model: string; error: unknown },
+): Promise<void> {
+  await widget.invoke('ticket0/record-assistant-failure', {
+    conversationId: input.conversationId,
+    turnId: input.messageId,
+    model: input.model,
+    error: errorText(input.error),
+  });
+}
+
 /**
  * Answer one customer message: retrieve, generate, record, and try to send.
  *
@@ -255,39 +294,42 @@ export async function answerConversation(
   }
 
   let context: RetrievedArticle[] = [];
-  for (const q of searchQueriesOf(input.question)) {
-    const found = await assistant.invoke<{
-      results: { id: string; title: string; url: string; body: string }[];
-    }>('ticket0/search-kb', { q, limit: topK });
-    if (found.results.length === 0) continue;
-    context = distinctDocuments(found.results);
-    break;
-  }
-
   let answer: ModelAnswer;
   try {
+    for (const q of searchQueriesOf(input.question)) {
+      const found = await assistant.invoke<{
+        results: { id: string; title: string; url: string; body: string }[];
+      }>('ticket0/search-kb', { q, limit: topK });
+      if (found.results.length === 0) continue;
+      context = distinctDocuments(found.results);
+      break;
+    }
     answer = await model.answer({ question: input.question, context });
   } catch (err) {
-    // A model outage is not a lost ticket. Record the failure so the turn exists and a
-    // human sees the conversation needs them; charge nothing, because nothing ran.
+    // A model outage is not a lost ticket — and neither is an index that refused.
+    // Record the failure WITH its reason, so the turn exists, a human sees the
+    // conversation needs them, and the card says why; charge nothing, because nothing
+    // ran. The reason used to go to stdout only, which a worker does not have.
+    const reason = errorText(err);
     await assistant.invoke('ticket0/record-answer', {
       conversationId: input.conversationId,
       turnId: input.messageId,
       model: model.label,
-      body: 'I could not answer this one \u2014 I have passed it to a person, who will pick it up from here.',
+      body: COULD_NOT_ANSWER,
       inputTokens: 0,
       outputTokens: 0,
       citedArticleIds: [],
       outcome: 'failed',
+      error: reason,
     });
     // The customer is owed a sentence even when the model is down.
-    await send('I could not answer this one \u2014 I have passed it to a person, who will pick it up from here.', []);
+    await send(COULD_NOT_ANSWER, []);
     return {
       outcome: 'failed',
       turnId: input.messageId,
       model: model.label,
       citations: 0,
-      detail: err instanceof Error ? err.message : String(err),
+      detail: reason,
     };
   }
 

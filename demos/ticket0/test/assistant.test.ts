@@ -14,7 +14,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Page } from '@substrat-run/contracts';
 import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
-import { answerConversation, searchQueriesOf, type Model } from '../harness/assistant.js';
+import {
+  answerConversation,
+  errorText,
+  recordAssistantFailure,
+  searchQueriesOf,
+  type Model,
+} from '../harness/assistant.js';
+import { mountAssistantStatus } from '../harness/assistant-status.js';
+import { ASSISTANT_ERROR_MAX } from '../spec/model.js';
 import { Hono } from 'hono';
 import { fetchArticles, parseLlmsFull, parseLlmsIndex, runIngest } from '../harness/kb-ingest.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
@@ -367,5 +375,170 @@ describe('answering a customer', () => {
     // Nothing ran, so nothing is owed. A failed turn that still billed would be the
     // worst possible bug in a metered product.
     expect(after.total).toBe(before.total);
+
+    // And the turn says WHY, where an agent reading the conversation can see it. The
+    // reason used to reach the dev server's stdout and nowhere else.
+    const turns = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-turns', {
+      conversationId: r.conversationId,
+    })) as Page<{ id: string; outcome: string; error: string | null; model: string }>;
+    const failed = turns.entries.find((t) => t.id === r.turnId);
+    expect(failed?.outcome).toBe('failed');
+    expect(failed?.error).toBe('upstream 503');
+    expect(failed?.model).toBe('test/broken');
+  });
+
+  /** A customer message through the widget, so the assistant has something to answer. */
+  async function posted(desk: Desk, body: string) {
+    const widget = await at(desk, 'widget');
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: desk.origin,
+      identity: {
+        externalId: desk.customer.email,
+        signature: await signIdentity(desk.verificationSecret, desk.customer.email),
+      },
+    })) as { sessionId: string; token: string; conversationId: string };
+    const message = (await widget.invoke('ticket0/widget-post', {
+      sessionId: started.sessionId,
+      token: started.token,
+      body,
+    })) as { id: string };
+    return { widget, started, message };
+  }
+
+  it('an index that refuses is recorded the same way, with its reason, and bills nothing', async () => {
+    const { widget, started, message } = await posted(
+      world.substrat,
+      'How do I run a migration against a live scope?',
+    );
+
+    // The assistant can write but cannot read: retrieval throws before any model runs.
+    // Before this the throw left `answerConversation` — and the host's catch — holding
+    // the only copy of the reason.
+    const assistant = await at(world.substrat, 'assistant');
+    const halfBroken = {
+      invoke: <T,>(op: string, input: unknown) =>
+        op === 'ticket0/search-kb'
+          ? Promise.reject(new Error('fts index unavailable'))
+          : (assistant.invoke(op, input) as Promise<T>),
+    };
+    const r = await answerConversation(
+      halfBroken,
+      { conversationId: started.conversationId, messageId: message.id, question: 'How do I run a migration?' },
+      fakeModel(),
+    );
+    expect(r.outcome).toBe('failed');
+    expect(r.detail).toBe('fts index unavailable');
+
+    const turns = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-turns', {
+      conversationId: started.conversationId,
+    })) as Page<{ id: string; outcome: string; error: string | null }>;
+    expect(turns.entries.find((t) => t.id === message.id)).toMatchObject({
+      outcome: 'failed',
+      error: 'fts index unavailable',
+    });
+    // The customer still got a sentence — a public one, from the assistant.
+    const thread = (await widget.invoke('ticket0/widget-thread', {
+      sessionId: started.sessionId,
+      token: started.token,
+    })) as Page<{ author_kind: string; body_text: string }>;
+    expect(
+      thread.entries.some((m) => m.author_kind === 'assistant' && /passed it to a person/.test(m.body_text)),
+    ).toBe(true);
+  });
+
+  it('when the assistant itself cannot act, the widget records that — and the customer never sees it', async () => {
+    const { widget, started, message } = await posted(world.substrat, 'Is anybody there?');
+
+    // What the host does in its catch: the assistant principal is missing, so the
+    // widget — the principal that just accepted the message — writes the turn.
+    await recordAssistantFailure(asTarget(widget), {
+      conversationId: started.conversationId,
+      messageId: message.id,
+      model: 'offline/extractive',
+      error: new Error('this desk has no assistant service principal'),
+    });
+
+    const agent = await at(world.substrat, 'agent');
+    const turns = (await agent.invoke('ticket0/list-turns', {
+      conversationId: started.conversationId,
+    })) as Page<{ id: string; outcome: string; error: string | null; model: string; message_id: string | null }>;
+    const turn = turns.entries.find((t) => t.id === message.id);
+    expect(turn).toMatchObject({
+      outcome: 'failed',
+      model: 'offline/extractive',
+      error: 'this desk has no assistant service principal',
+    });
+    expect(turn?.message_id).toBeTruthy();
+
+    // The desk sees a system note, internal. The widget's thread carries only what the
+    // customer said — the failure is the desk's to read, not the visitor's.
+    const staffThread = (await agent.invoke('ticket0/list-messages', {
+      conversationId: started.conversationId,
+    })) as Page<{ id: string; author_kind: string; visibility: string }>;
+    expect(staffThread.entries.find((m) => m.id === turn?.message_id)).toMatchObject({
+      author_kind: 'system',
+      visibility: 'internal',
+    });
+    const customerThread = (await widget.invoke('ticket0/widget-thread', {
+      sessionId: started.sessionId,
+      token: started.token,
+    })) as Page<{ author_kind: string }>;
+    expect(customerThread.entries.every((m) => m.author_kind === 'contact')).toBe(true);
+
+    // Idempotent on the message: an assistant that comes back and retries the job
+    // finds the turn already recorded, and records nothing on top of it.
+    const assistant = await at(world.substrat, 'assistant');
+    const again = (await assistant.invoke('ticket0/record-answer', {
+      conversationId: started.conversationId,
+      turnId: message.id,
+      model: 'test/fake',
+      body: 'A late answer',
+      inputTokens: 5,
+      outputTokens: 5,
+      citedArticleIds: [],
+      outcome: 'drafted',
+    })) as { outcome: string; model: string };
+    expect(again).toMatchObject({ outcome: 'failed', model: 'offline/extractive' });
+  });
+
+  it('the failures roll up for the admin, beside the model the host would run', async () => {
+    const admin = await at(world.substrat, 'admin');
+    const health = (await admin.invoke('ticket0/assistant-health', {})) as {
+      turns: number;
+      failed: number;
+      recent: { id: string; subject: string; error: string | null }[];
+    };
+    expect(health.failed).toBeGreaterThanOrEqual(3);
+    expect(health.turns).toBeGreaterThanOrEqual(health.failed);
+    // Newest first, each naming its conversation and carrying its reason.
+    expect(health.recent[0]?.subject).toBeTruthy();
+    expect(health.recent.map((f) => f.error)).toContain('this desk has no assistant service principal');
+
+    // The route both hosts mount: the same numbers, plus the one fact the module
+    // cannot know — which model, and whether it is one.
+    const app = new Hono();
+    mountApi(app, async () => admin);
+    mountAssistantStatus(app, async () => admin, () => fakeModel());
+    const res = await app.request('/api/assistant/status');
+    expect(res.status).toBe(200);
+    const status = (await res.json()) as { model: string; generative: boolean; health: { failed: number } };
+    expect(status.model).toBe('test/fake');
+    expect(status.generative).toBe(true);
+    expect(status.health.failed).toBe(health.failed);
+
+    // And it is the admin's. An agent holds no `desk:configure`, and the route
+    // authorises by invoking the declared operation, so it refuses the same way.
+    const agent = await at(world.substrat, 'agent');
+    const asAgent = new Hono();
+    mountApi(asAgent, async () => agent);
+    mountAssistantStatus(asAgent, async () => agent, () => fakeModel());
+    expect((await asAgent.request('/api/assistant/status')).status).toBe(403);
+    await expect(agent.invoke('ticket0/assistant-health', {})).rejects.toThrow(/permission denied/i);
+  });
+
+  it('a reason is cut to what a turn will hold, and never empty', () => {
+    expect(errorText(new Error('x'.repeat(ASSISTANT_ERROR_MAX * 3)))).toHaveLength(ASSISTANT_ERROR_MAX);
+    expect(errorText(new Error('   '))).toBe('failed without a message');
+    expect(errorText('a string, not an Error')).toBe('a string, not an Error');
   });
 });

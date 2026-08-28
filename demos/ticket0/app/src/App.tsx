@@ -20,7 +20,7 @@ import { Portal } from './views/Portal.js';
 export type View =
   | { name: 'inbox' }
   | { name: 'conversation'; id: string }
-  | { name: 'settings'; tab: 'desk' | 'identity' | 'knowledge' | 'usage' }
+  | { name: 'settings'; tab: 'desk' | 'identity' | 'knowledge' | 'assistant' | 'usage' }
   | { name: 'portal' }
   | { name: 'portal-conversation'; id: string };
 

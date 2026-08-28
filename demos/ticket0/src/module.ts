@@ -1270,8 +1270,8 @@ const operations = {
     ctx.sql.exec(
       `INSERT INTO ticket0_ai_turns
          (id, conversation_id, message_id, model, input_tokens, output_tokens,
-          cited_article_ids, confidence, outcome, meter_entry_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          cited_article_ids, confidence, outcome, meter_entry_id, error, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         input.turnId,
         conversation.id,
@@ -1283,6 +1283,9 @@ const operations = {
         input.confidence ?? null,
         input.outcome,
         inputEntry.entry.id,
+        // The reason belongs to a failure. A caller that sends one on a drafted turn
+        // is confused, and keeping it would make the card say two things at once.
+        input.outcome === 'failed' ? (input.error ?? null) : null,
         ctx.now(),
       ],
     );
@@ -1292,7 +1295,9 @@ const operations = {
     const row = ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [
       input.turnId,
     ])[0]!;
-    if (input.outcome === 'escalated' && conversation.assignee)
+    // Both are the assistant handing the conversation to a person — one because the
+    // documentation had nothing, one because the assistant itself did not run.
+    if ((input.outcome === 'escalated' || input.outcome === 'failed') && conversation.assignee)
       notify(ctx, conversation.assignee, 'escalated', conversation.id);
     ctx.emit({
       type: 'ticket0.answer-recorded',
@@ -1309,6 +1314,104 @@ const operations = {
       },
     });
     return row;
+  },
+
+  /**
+   * The assistant never got to run, and the widget — the principal that accepted the
+   * message — writes that down. Same row shape as `record-answer`'s failure, minus
+   * the meter entries: nothing ran, so there is nothing to charge for, and a turn
+   * with no cost has no entry to hang off.
+   *
+   * Idempotent on `turnId` for the same reason `record-answer` is: a host that retries
+   * the job after fixing the assistant finds the turn already there. That is the
+   * intended reading — the message got its answer, and it was "no".
+   */
+  'ticket0/record-assistant-failure': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationWidget, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/record-assistant-failure');
+
+    const existing = ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [
+      input.turnId,
+    ])[0];
+    if (existing) return existing;
+
+    // A system note, INTERNAL: the customer's thread never carries it (`publicThread`
+    // filters on visibility), and the desk draws the failure card where the note sits.
+    const message = writeMessage(ctx, {
+      conversationId: conversation.id,
+      authorKind: 'system',
+      authorPrincipal: String(ctx.principal),
+      visibility: 'internal',
+      bodyText: 'The assistant could not act on this message. It is waiting for a person.',
+    });
+    ctx.sql.exec(
+      `INSERT INTO ticket0_ai_turns
+         (id, conversation_id, message_id, model, input_tokens, output_tokens,
+          cited_article_ids, confidence, outcome, meter_entry_id, error, created_at)
+       VALUES (?, ?, ?, ?, 0, 0, '[]', NULL, 'failed', NULL, ?, ?)`,
+      [input.turnId, conversation.id, message.id, input.model, input.error, ctx.now()],
+    );
+    ctx.link({ entityType: 'aiTurn', entityId: input.turnId }, conversationRef(conversation.id));
+    touch(ctx, conversation.id);
+
+    const row = ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [
+      input.turnId,
+    ])[0]!;
+    if (conversation.assignee) notify(ctx, conversation.assignee, 'escalated', conversation.id);
+    ctx.emit({
+      type: 'ticket0.assistant-failed',
+      schemaVersion: 1,
+      entity: { entityType: 'aiTurn', entityId: row.id },
+      piiClass: 'none',
+      payload: {
+        id: row.id,
+        conversation_id: row.conversation_id,
+        model: row.model,
+        error: row.error,
+      },
+    });
+    return row;
+  },
+
+  /**
+   * Is the assistant working? Counted over the last day, and the newest failures by
+   * name. Both tables are this module's own, so the join is not a boundary crossing.
+   */
+  'ticket0/assistant-health': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.deskConfigure));
+    const since = new Date(new Date(ctx.now()).getTime() - HEALTH_WINDOW_MS).toISOString();
+    const counts = ctx.sql.query<{ turns: number; failed: number | null }>(
+      `SELECT COUNT(*) AS turns,
+              SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed
+         FROM ticket0_ai_turns
+        WHERE created_at >= ?`,
+      [since],
+    )[0];
+    const recent = ctx.sql.query<{
+      id: string;
+      conversation_id: string;
+      subject: string;
+      model: string;
+      error: string | null;
+      created_at: string;
+    }>(
+      `SELECT t.id, t.conversation_id, c.subject, t.model, t.error, t.created_at
+         FROM ticket0_ai_turns t
+         JOIN ticket0_conversations c ON c.id = t.conversation_id
+        WHERE t.outcome = 'failed'
+        ORDER BY t.created_at DESC, t.id DESC
+        LIMIT ?`,
+      [HEALTH_RECENT],
+    );
+    return {
+      since,
+      turns: counts?.turns ?? 0,
+      failed: Number(counts?.failed ?? 0),
+      recent,
+    };
   },
 
   /**
@@ -1348,6 +1451,7 @@ const operations = {
         model: r.model,
         confidence: r.confidence,
         outcome: r.outcome,
+        error: r.error,
         created_at: r.created_at,
         citations: (JSON.parse(r.cited_article_ids) as string[])
           .map((id) => byId.get(id))
@@ -1751,6 +1855,11 @@ const operations = {
  * AUTHORITY is a grant, and the only thing left is what to call it.
  */
 export const ASSISTANT_NAME = 'Assistant';
+
+/** `assistant-health` counts over this window — a day, which is how often somebody looks. */
+const HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** And names this many of the newest failures. Enough to see a pattern; not a log. */
+const HEALTH_RECENT = 10;
 
 export const ticket0Module: ModuleRegistration = {
   manifest: ticket0Manifest,

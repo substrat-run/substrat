@@ -25,7 +25,13 @@ import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { API_DOCUMENT } from './api.js';
-import { answerConversation, modelFromEnv } from '../harness/assistant.js';
+import {
+  answerConversation,
+  errorText,
+  modelFromEnv,
+  recordAssistantFailure,
+} from '../harness/assistant.js';
+import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { buildHost, linkDevPersonas, seed, type Desk, type World } from './seed.js';
 import { DEV_PROVIDER } from './personas.js';
@@ -94,6 +100,9 @@ async function boot() {
   mountApi(app, staffStub);
   // "Re-read" and "Add a source" in the desk — the same route the worker mounts.
   mountKbRefresh(app, staffStub);
+  // Settings → Assistant: the model this process would answer with, beside the failed
+  // turns. One model for both desks here, since one process serves both.
+  mountAssistantStatus(app, staffStub, () => model);
 
   // ── The public widget surface ────────────────────────────────────────────
   const widgetJs = readFileSync(WIDGET_JS, 'utf8');
@@ -241,9 +250,27 @@ async function answerFor(
         '\n',
     );
   } catch (err) {
-    process.stdout.write(
-      `assistant · ${desk.origin} · errored — ${err instanceof Error ? err.message : String(err)}\n`,
-    );
+    process.stdout.write(`assistant · ${desk.origin} · errored — ${errorText(err)}\n`);
+    // The same last resort the worker has: the widget records the failure on the
+    // conversation, so the desk shows it and not only this console. Here it is
+    // mostly a rehearsal — the dev server's stdout is right in front of you — but
+    // the two hosts should fail the same way, or only one of them is tested.
+    try {
+      const widget = await host.getScope(desk.widget.principal, desk.tenant, desk.scope);
+      await recordAssistantFailure(
+        { invoke: (op, input) => widget.invoke(op, input) as Promise<never> },
+        {
+          conversationId: m.conversationId,
+          messageId: m.messageId,
+          model: modelFromEnv(process.env).label,
+          error: err,
+        },
+      );
+    } catch (recordErr) {
+      process.stdout.write(
+        `assistant · ${desk.origin} · could not record the failure either — ${errorText(recordErr)}\n`,
+      );
+    }
   }
 }
 

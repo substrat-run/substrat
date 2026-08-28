@@ -200,6 +200,7 @@ export interface AiTurn {
   confidence: number | null;
   outcome: "drafted" | "answered" | "escalated" | "failed";
   meter_entry_id: string | null;
+  error: string | null;
   created_at: string;
 }
 
@@ -236,6 +237,13 @@ export interface Ticket0Client {
    * `POST /conversations/{conversationId}/assignee` — `ticket0/assign`
    */
   assign(input: { conversationId: string; assignee: string | null }): Promise<Conversation>;
+
+  /**
+   * Recent assistant failures, for the admin deciding whether it is working
+   *
+   * `GET /assistant/health` — `ticket0/assistant-health`
+   */
+  assistantHealth(): Promise<{ since: string; turns: number; failed: number; recent: ({ id: string; conversation_id: string; subject: string; model: string; error: string | null; created_at: string })[] }>;
 
   /**
    * Close a resolved conversation for good
@@ -345,7 +353,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listTurns(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; message_id: string | null; model: string; confidence: number | null; outcome: "drafted" | "answered" | "escalated" | "failed"; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+  listTurns(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; message_id: string | null; model: string; confidence: number | null; outcome: "drafted" | "answered" | "escalated" | "failed"; error: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
    * Mark a notification read
@@ -414,7 +422,14 @@ export interface Ticket0Client {
    *
    * `POST /conversations/{conversationId}/answers` — `ticket0/record-answer`
    */
-  recordAnswer(input: { conversationId: string; turnId: string; model: string; body: string; inputTokens: number; outputTokens: number; citedArticleIds: string[]; confidence?: number | null; outcome: "drafted" | "answered" | "escalated" | "failed" }): Promise<AiTurn>;
+  recordAnswer(input: { conversationId: string; turnId: string; model: string; body: string; inputTokens: number; outputTokens: number; citedArticleIds: string[]; confidence?: number | null; outcome: "drafted" | "answered" | "escalated" | "failed"; error?: string }): Promise<AiTurn>;
+
+  /**
+   * Record that the assistant could not act on a message
+   *
+   * `POST /conversations/{conversationId}/assistant-failures` — `ticket0/record-assistant-failure`
+   */
+  recordAssistantFailure(input: { conversationId: string; turnId: string; model: string; error: string }): Promise<AiTurn>;
 
   /**
    * Record that the relay delivered a message
@@ -641,6 +656,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/kb/sources", "POST", input, undefined),
     assign: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/assignee`, "POST", omit(input, ["conversationId"]), undefined),
+    assistantHealth: () =>
+      send("/assistant/health", "GET", undefined, undefined),
     close: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/close`, "POST", omit(input, ["conversationId"]), undefined),
     closeUsagePeriod: (input: Args) =>
@@ -687,6 +704,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/relay/outbound/${encodeURIComponent(String(input.messageId))}`, "GET", undefined, omit(input, ["messageId"])),
     recordAnswer: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/answers`, "POST", omit(input, ["conversationId"]), undefined),
+    recordAssistantFailure: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/assistant-failures`, "POST", omit(input, ["conversationId"]), undefined),
     recordDelivery: (input: Args) =>
       send(`/relay/outbound/${encodeURIComponent(String(input.messageId))}/delivered`, "POST", omit(input, ["messageId"]), undefined),
     recordKbArticles: (input: Args) =>

@@ -167,4 +167,11 @@ export const ticket0Migrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-ticket0_ai_turns-error
+    version: '0002',
+    sql: `
+      ALTER TABLE ticket0_ai_turns ADD COLUMN error TEXT;
+    `,
+  },
 ];
