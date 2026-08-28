@@ -261,6 +261,34 @@ per-entity checks: the checker tries node-level first (staff see everything in t
 scope), then walks the declared parent edges against entity-narrowed grants (portal
 users see their own things).
 
+## Sharing at runtime: `ctx.grant` and `ctx.revoke`
+
+Entity-narrowed grants are minted at seed time by a platform actor (`HostAdmin.grant`).
+When a **user** shares their own record with another person — and takes them off it
+again — the operation does it itself, on `OperationContext`:
+
+```ts
+await ctx.grant(principal, PERM.listContribute, listRef(listId));   // share
+await ctx.revoke(principal, PERM.listContribute, listRef(listId));  // un-share
+```
+
+Three guardrails make this non-escalating by construction:
+
+- **Entity-required** — module code can never write a scope- or tenant-wide grant, only
+  narrow one onto a thing.
+- **Delegating** — the caller's own decision on that entity is re-checked, so an operation
+  can only hand out what it was itself given. Delegation, never elevation.
+- **Transactional** — a grant made by an operation that then throws never happened, the
+  same as its rows and its events.
+
+Every later `ctx.check` reads the grant, so nothing else in the app has to remember who
+may touch what. Neither alternative is this: a `ctx.link` parent edge is **not revocable
+at all** — it is permanent — and org membership is revocable but coarse-grained (a whole
+org, not one record). The mistake this section exists to prevent is minting an org per domain row — or keeping a
+membership table consulted by hand in every handler — to get a revoke the kernel already
+has. The [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)
+(`src/module.ts`, `todo/share-list` and `todo/revoke-share`) is the two-line reference.
+
 ## Defaults
 
 - `denyAllChecker` — the secure default. A host without an explicit checker allows

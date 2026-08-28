@@ -71,7 +71,13 @@ Every vertical gets this whether or not it uses a single engine:
 - **Tenancy** — tenants and scopes, isolated at the database level. A scope is one
   SQLite/DO database. Cross-tenant access is not a bug you avoid; there is no API for it.
 - **Permissions** — roles, grants, entity-narrowed grants, and every decision carries a
-  proof path (why it was allowed).
+  proof path (why it was allowed). **Sharing is a kernel verb, not a table you design**:
+  an operation narrows a permission it already holds onto one entity, and withdraws it,
+  with `ctx.grant(principal, perm, entityRef)` / `ctx.revoke(principal, perm, entityRef)`
+  — entity-required, delegating (re-checks the caller's own decision), transactional with
+  the operation. Neither alternative is this: a `ctx.link` edge is permanent (not
+  revocable at all), and org membership is revocable but coarse-grained. Never mint an
+  org per domain row to get a revoke.
 - **Events + audit** — every mutation emits a kernel-stamped event. Origin fields (tenant,
   scope, actor, time) are stamped by the kernel; your code cannot mislabel one.
 - **Migrations** — journaled per module, applied lazily per scope.
@@ -392,7 +398,10 @@ await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, jurisdictio
 
 Define roles **per tenant** from the engines' `PERM` + your keys, assign them, create seed
 entities via `stub.invoke` (**never raw SQL**), give portal principals entity-narrowed
-grants. Make it idempotent.
+grants. Make it idempotent. Seed-time grants are the platform actor's verb; sharing a
+**user** initiates at runtime is `ctx.grant` / `ctx.revoke` inside an operation (see the
+`AGENTS.md` section on sharing, and the [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)'s
+`src/module.ts` for the two calls in place).
 
 ### `test/scenario.test.ts`
 

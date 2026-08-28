@@ -94,7 +94,14 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 ## The three-layer rule (never violated)
 
 1. **Kernel owns no domain entities.** It provides `OperationContext` (`ctx.sql`,
-   `ctx.emit`, `ctx.check`, `ctx.link`), scope provisioning, roles/grants, migrations.
+   `ctx.emit`, `ctx.check`, `ctx.link`, `ctx.grant`/`ctx.revoke`), scope provisioning,
+   roles/grants, migrations. **User-initiated sharing is `ctx.grant(principal, perm,
+   entityRef)` and `ctx.revoke(principal, perm, entityRef)`** — entity-required and
+   delegating (the caller's own decision on that entity is re-checked), transactional with
+   the operation. Neither alternative is this: a `ctx.link` edge is permanent (not
+   revocable at all), and org membership is revocable but coarse — a whole org, not one
+   record. Never mint an org per domain row to get a revoke (#798);
+   `demos/todo/src/module.ts` is the two-line reference.
 2. **Engines own invariants**: state machines that can't skip states, append-only
    entries, immutable-after-export, every mutation emits an event, every operation
    checks a permission. Engines never import other engines (**star topology**) —
@@ -250,10 +257,16 @@ Two phases, in order. **Design** with the **substrat** skill
 (`.claude/skills/substrat/SKILL.md`): interview the user, map the domain onto the engines,
 and land a reviewable `spec/concept.md` the user approves *before any code*.
 Then **build** with the **new-vertical** skill (`.claude/skills/new-vertical/SKILL.md`),
-which turns that approved design into a working vertical. Reference implementation:
-`demos/callout` (spec in `demos/callout/spec/`, **declared model in `src/entities.ts` +
-`src/operations.ts`**, module in `src/module.ts`, world in `src/seed.ts`, scenario test in
-`test/scenario.test.ts`).
+which turns that approved design into a working vertical. Two reference implementations,
+each for a different shape of app:
+
+- `demos/callout` — an **engine-composing workflow** (spec in `demos/callout/spec/`,
+  **declared model in `src/entities.ts` + `src/operations.ts`**, module in `src/module.ts`,
+  world in `src/seed.ts`, scenario test in `test/scenario.test.ts`).
+- `demos/todo` — a **record app with user-initiated sharing and no engine**: shared lists,
+  per-list sharing by email, revoke, and a React app that tells a 403 wall from an empty
+  list. Its `src/module.ts` is where `ctx.grant`/`ctx.revoke` are shown doing that in one
+  line each — read it before designing any "share this with a person" feature.
 
 A vertical declares **what exists** — entities, operations, permissions — in one typed
 module, and the compiler checks the joins between them: a parent naming no entity, an
