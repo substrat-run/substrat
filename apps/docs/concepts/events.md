@@ -32,6 +32,7 @@ type DomainEvent = {
   piiClass: 'none' | 'pseudonymous' | 'direct';
   subjectId?: DataSubjectId;
   authorization?: EventAuthorization[]; // K-34 — stamped kernel-side (see below)
+  impersonation?: { session: ImpersonationSessionId; by: PlatformActorId }; // K-42 — stamped kernel-side (see below)
   payload: unknown;
 };
 ```
@@ -56,6 +57,45 @@ that pointer is what the envelope keeps.
 A vertical cannot mislabel an event's origin, backdate it, attribute it to someone else,
 or skip emitting where an engine emits — because the fields aren't parameters and the
 emit sits inside the engine's operation, below anything the calling code controls.
+
+## Impersonation: two actors on one record {#impersonation}
+
+Supporting a customer's live vertical means seeing what a named person sees. The version
+of that which grows by itself is a session swap — the staff member *becomes* the user, and
+the trail says the user did it — and that is the version an audit fails. So an operation
+run under an impersonation session (K-42) carries **two** actors, and every record the
+scope writes about who did what keeps both:
+
+- **`actor` stays the impersonated principal.** The permission model answered about them,
+  through the same checker with no override branch, and the domain fact is theirs. A
+  session against somebody who holds nothing is refused precisely where they would be.
+- **`impersonation: { session, by }` says who was holding the keyboard** — the session's
+  id and the `PlatformActorId` of the staff member who opened it. It is `by` rather than a
+  second `actor` because that is a different question with a different answer.
+
+Stamped kernel-side on the `authorization` pattern: it is not on `DomainEventInput`, so
+module code can neither claim a session it is not in nor drop the one it is — and it
+cannot *read* it either, which `authorization` did not need: a vertical that could see the
+session could hide rows from it. It is **absent** on every ordinary event. That absence is
+the honest reading — nobody was impersonating — not an unrecorded field, and reads that
+decode the envelope (`readHistory`, the denial log) return it as `null` for the same reason.
+
+A session is what bounds it. `HostAdmin.beginImpersonation(actor, { tenantId, scopeId,
+principal, reason, minutes?, mode? })` mints one and writes the admin-log row *before* it
+returns, so a durable record exists before any operation can run under it; `endImpersonation`
+closes one early. Its `reason` is required, its `expiresAt` is capped
+(`IMPERSONATION_MAX_MINUTES`, sixty) and re-read on **every** invoke, and its `mode` is
+`read-only` unless someone wrote down why not. Read-only is a mechanism, not a convention:
+the effecting verbs (`emit`, `requestPlatform`, `grant`, `revoke`, `link`) refuse by name,
+and the transaction is **rolled back rather than committed** — so a handler that writes a row
+with plain `ctx.sql.exec` and calls none of them still leaves nothing behind. The operation
+runs and answers; only its writes do not survive. Sessions are never deleted — one that
+existed is why some rows carry the stamp they do — and an expired session is a different fact
+from an ended one.
+
+This is not the [dev issuer's](/reference/dev-issuer) `/dev/token`, which mints a *login*
+as a persona for local scripts and stamps nothing: that is a development shortcut in the
+issuer, this is a production trail in the kernel.
 
 ## PII classification is mandatory
 
@@ -188,11 +228,16 @@ so every event one operation emits carries the *identical* instant — a cursor 
 `occurred_at > ?` silently drops the rest of the burst it lands in.
 
 `readHistory` is the same walk with `payload`, `authorization` (which permission and
-which grant allowed the change) and `piiClass`/`subjectId`. Two nullables there are
-facts rather than gaps: `payload` is **null after an erasure** — the envelope survives a
-shred, so a history correctly degrades to "someone changed this, then" — and
-`authorization` is null when the row predates it being recorded, which is not the same
-as having checked nothing.
+which grant allowed the change), `impersonation` (the staff actor behind the change, when
+there was one — see [Impersonation](#impersonation)) and `piiClass`/`subjectId`. Three
+nullables there are facts rather than gaps, and they are three *different* facts: `payload`
+is **null after an erasure** — the envelope survives a shred, so a history correctly
+degrades to "someone changed this, then"; `authorization` is null when the row predates it
+being recorded, which is not the same as having checked nothing; and `impersonation` is
+null when **nobody was impersonating** — the ordinary case, not an absence of recording,
+because the kernel stamps it on every event raised under a session and on no other. A
+history strip that cannot show this shows a customer's own name against a change their
+support engineer made.
 
 Field-level "X → Y" comes from diffing consecutive payloads; nothing stores a
 before-state. For the few fields a history strip actually shows — status, owner, value —
