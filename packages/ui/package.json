@@ -11,13 +11,15 @@
     "./tokens/*": "./src/tokens/*"
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "react": "^18.3.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.0",
-    "typescript": "^7.0.0"
+    "typescript": "^7.0.0",
+    "vitest": "catalog:"
   }
 }

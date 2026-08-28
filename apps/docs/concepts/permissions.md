@@ -289,6 +289,24 @@ membership table consulted by hand in every handler — to get a revoke the kern
 has. The [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)
 (`src/module.ts`, `todo/share-list` and `todo/revoke-share`) is the two-line reference.
 
+### The screen outlives the grant
+
+A revoke has a client-side half. The app follows three rules, and the first two are the
+ones every vertical here already keeps: it **never filters for access** — a list nobody
+shared is not hidden, it never comes back from the server at all — and it **renders what
+the server returned**, so a 403 is a wall with the server's own message, never an empty
+list. The third is the one a permission-centric app cannot skip: it **re-asks**. Someone
+sitting on a list they were just removed from keeps seeing it until something refetches.
+Nothing leaks — the server refuses every subsequent action — but they are looking at data
+they no longer have access to, and for an app whose pitch is "you see only what you may",
+that is the worst-looking failure available, and exactly what a revocation demo shows on
+stage. So a view revalidates on focus, on visibility and on a slow poll
+(`useAutoRefresh(load)` from `@substrat-run/ui`), a click on the nav item already selected
+refetches instead of being a no-op same-route link, and a revalidation that comes back 403
+**replaces** the content with the wall rather than leaving it underneath.
+`demos/todo/app/src/App.tsx` (`ListView`) and `demos/shop/app/src/App.tsx` (the nav tabs)
+are the reference.
+
 ## Defaults
 
 - `denyAllChecker` — the secure default. A host without an explicit checker allows

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useAutoRefresh } from '@substrat-run/ui';
 import { api, kr, type CatalogProduct } from '../api';
 import { Bag, RoastDots, StockChip, cheapestVariant } from '../components';
 
@@ -12,13 +13,21 @@ export function Storefront({
   const [products, setProducts] = useState<CatalogProduct[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const load = useCallback(async () => {
+    try {
+      setProducts(await api.catalog());
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, []);
+  // `reloadKey` is the app's "something changed" counter — a cart move that drops
+  // availability, a login, a click on the tab already open.
   useEffect(() => {
-    setError(null);
-    void api
-      .catalog()
-      .then(setProducts)
-      .catch((e: Error) => setError(e.message));
-  }, [reloadKey]);
+    void load();
+  }, [load, reloadKey]);
+  // Stock sells out under a tab left open; focus, visibility and a slow poll re-ask.
+  useAutoRefresh(load);
 
   if (error) return <div className="notice deny">{error}</div>;
   if (!products) return <div className="notice">Laddar sortiment…</div>;

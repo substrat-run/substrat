@@ -191,12 +191,22 @@ export default function App() {
   let view = <Storefront onAdd={addToCart} reloadKey={reload} />;
   if (route.startsWith('/portal')) view = <Portal reloadKey={reload} />;
 
-  const tab = (to: string, label: string, on: boolean) =>
-    on ? (
-      <a href={`#${to}`} className={route === to || (to !== '/' && route.startsWith(to)) ? 'active' : ''}>
+  const tab = (to: string, label: string, on: boolean) => {
+    if (!on) return null;
+    const active = route === to || (to !== '/' && route.startsWith(to));
+    return (
+      <a
+        href={`#${to}`}
+        className={active ? 'active' : ''}
+        // A click on the tab already open is the one someone makes when they suspect
+        // the screen is stale — and it changes no hash, so nothing else would refetch.
+        // Re-ask the server instead of doing nothing (#801).
+        onClick={active ? () => setReload((n) => n + 1) : undefined}
+      >
         {label}
       </a>
-    ) : null;
+    );
+  };
 
   return (
     <>

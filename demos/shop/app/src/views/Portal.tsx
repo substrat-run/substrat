@@ -1,5 +1,6 @@
-import { Fragment, useEffect, useState } from 'react';
-import { api, kr, type OrderRow, type OrderLineRow } from '../api';
+import { Fragment, useCallback, useEffect, useState } from 'react';
+import { useAutoRefresh } from '@substrat-run/ui';
+import { api, ApiError, kr, type OrderRow, type OrderLineRow } from '../api';
 
 export function Portal({ reloadKey }: { reloadKey: number }) {
   const [orders, setOrders] = useState<OrderRow[] | null>(null);
@@ -7,13 +8,24 @@ export function Portal({ reloadKey }: { reloadKey: number }) {
   const [open, setOpen] = useState<string | null>(null);
   const [lines, setLines] = useState<OrderLineRow[]>([]);
 
+  const load = useCallback(async () => {
+    try {
+      setOrders(await api.portalOrders());
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+      // Revalidate-and-deny: an answer the server just refused does not stay on
+      // the screen under the notice — the wall replaces it (#801).
+      if (e instanceof ApiError && e.status === 403) setOrders(null);
+    }
+  }, []);
+  // `reloadKey` is the app's "something changed" counter — a checkout, a login, a
+  // click on the tab already open.
   useEffect(() => {
-    setError(null);
-    void api
-      .portalOrders()
-      .then(setOrders)
-      .catch((e: Error) => setError(e.message));
-  }, [reloadKey]);
+    void load();
+  }, [load, reloadKey]);
+  // The screen outlives the grant: focus, visibility and a slow poll re-ask.
+  useAutoRefresh(load);
 
   const expand = async (id: string) => {
     if (open === id) { setOpen(null); return; }

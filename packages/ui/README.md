@@ -12,7 +12,10 @@ Substrat design-system primitives — the shared React component library + token
 - **Components** — `Button`, `IconButton`, `Input`, `Select`, `Checkbox`, `RadioGroup`,
   `Switch`, `Card`, `Table`, `Tabs`, `Dialog`, `Toast`, `Tooltip`, `Badge`, `Tag`,
   `Breadcrumbs`, `SideNav`, `KeyValue`, `EmptyState`, and an `icons` set.
-- **Hooks** — `useAutoRefresh`, the shared polling helper for live control-plane views.
+- **Hooks** — `useAutoRefresh`, the shared revalidation helper: refetch on focus and
+  visibility, a slow poll, and an explicit `revalidate()` for a re-click of the current
+  selection. Its header states the revalidate-and-deny contract a vertical's `load()`
+  keeps (#801); `startAutoRefresh` is the DOM-free scheduling underneath it.
 - **Tokens** — `colors`, `spacing`, `typography`, `effects`, `fonts` as plain CSS custom
   properties.
 
