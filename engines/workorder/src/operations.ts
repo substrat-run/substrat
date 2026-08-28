@@ -77,7 +77,11 @@ export const workorderOperations = defineOperations(workorderEntities, WORKORDER
 
   'workorder/start': {
     summary: 'Start the work',
-    permission: 'workorder:assign',
+    // `workorder:report`, not `workorder:assign` (#960): the handler checks
+    // `PERM.report` and the manifest describes that key as "Start work, report
+    // time and material". `test/permissions.test.ts` holds every declaration
+    // here to the key its handler actually checks.
+    permission: 'workorder:report',
     input: orderId,
     output: workOrder,
   },
