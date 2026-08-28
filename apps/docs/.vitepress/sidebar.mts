@@ -101,6 +101,7 @@ export function guideSidebar() {
         { text: 'Environments & previews', link: '/guide/environments-and-previews' },
         { text: 'Building for AI agents', link: '/guide/ai-agents' },
         { text: 'Where AI mistakes stop', link: '/guide/ai-guardrails' },
+        { text: 'Ask the docs', link: '/guide/support' },
       ],
     },
     {

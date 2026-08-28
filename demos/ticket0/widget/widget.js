@@ -25,6 +25,22 @@
   var SIGNATURE = script && script.dataset.signature;
   var STORE = 'ticket0:' + API;
 
+  /**
+   * One widget per page, and a way to take it down.
+   *
+   * A page with a client-side router — the documentation site is one — can run this
+   * script more than once without ever reloading: the router adds the tag on the way
+   * into a page and removes it on the way out, and removing a <script> undoes nothing
+   * it did. Left alone that is two bubbles after one round trip, and a poll that
+   * outlives the page it was polling for. So a second run replaces the first, and the
+   * host page gets one verb, `window.ticket0.unmount()`, for the way out.
+   */
+  if (window.ticket0 && typeof window.ticket0.unmount === 'function') window.ticket0.unmount();
+  /** Set by `unmount`. A refresh already in flight must not reschedule the poll. */
+  var dead = false;
+  /** Cancels whatever is in flight when `unmount` runs. */
+  var aborter = new AbortController();
+
   var session = null;
   try {
     session = JSON.parse(localStorage.getItem(STORE) || 'null');
@@ -160,12 +176,26 @@
   else attach();
 
   // ── transport ─────────────────────────────────────────────────────────────
+  /**
+   * A promise that never settles. After `unmount`, every continuation hanging off a
+   * request — the retry in `recover`, the refresh after a post, the schedule after a
+   * start — would either touch state the page no longer shows or make a request the
+   * page no longer wants. Rather than guard each one, the request they hang off
+   * stops resolving: nothing downstream runs, and nothing is left to reason about.
+   */
+  function never() {
+    return new Promise(function () {});
+  }
+
   function call(method, path, body) {
+    if (dead) return never();
     return fetch(API + path, {
       method: method,
       headers: body ? { 'content-type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
+      signal: aborter.signal,
     }).then(function (r) {
+      if (dead) return never();
       // Text first. A 502 from a proxy, a 204, or a CORS-stripped body is not JSON,
       // and `r.json()` on one throws a SyntaxError carrying no status — which is
       // exactly what `staleSession` needs to see a 404 or 403 and recover.
@@ -185,6 +215,11 @@
         }
         return j;
       });
+    }, function (e) {
+      // The abort from `unmount` arrives here as a rejection. It is not an error the
+      // visitor can see, so it must not become one.
+      if (dead) return never();
+      throw e;
     });
   }
 
@@ -242,16 +277,31 @@
     // replies that arrive while it is shut, and a widget that stops looking has
     // nothing to count. A hidden tab stops entirely, and a session that does not
     // exist yet has nothing to poll for.
-    if (document.hidden || !session) return;
+    if (dead || document.hidden || !session) return;
     poll = setInterval(refresh, open && waiting ? FAST : IDLE);
   }
 
-  document.addEventListener('visibilitychange', function () {
+  function onVisibility() {
     if (!open) return;
     // Coming back is the one moment a poll is certainly worth making.
     if (!document.hidden) void refresh();
     schedule();
-  });
+  }
+  document.addEventListener('visibilitychange', onVisibility);
+
+  var api = {
+    unmount: function () {
+      dead = true;
+      aborter.abort();
+      clearInterval(poll);
+      poll = null;
+      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('DOMContentLoaded', attach);
+      host.remove();
+      if (window.ticket0 === api) delete window.ticket0;
+    },
+  };
+  window.ticket0 = api;
 
   function recover(e, retry) {
     if (recovering || !staleSession(e)) return false;
