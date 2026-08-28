@@ -44,7 +44,8 @@ import { transportFor, senderFor, teamInviteEmail } from './email.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
-import { b64url, b64urlToBytes } from './b64.js';
+import { b64urlToBytes } from './b64.js';
+import { signClaim, verifyClaim, INVITE_TOKEN_PURPOSE, GITHUB_STATE_PURPOSE } from './signed-token.js';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 
 /** The identity provider: the platform's AuthHero instance, via the identity pool. */
@@ -366,11 +367,16 @@ function teamSlug(name: string, tenantId: string): string {
 
 // -- signed invite token -----------------------------------------------------
 // The invite link carries WHERE to accept (which tenant/scope/invitation) in an
-// HMAC-signed token (Web Crypto, SESSION_SECRET — the same secret oidc-rp signs
-// with). The token is routing, not the secret: the real gate is the invites
-// engine re-hashing the recipient's verified email at accept, so a tampered or
-// leaked token can only ever accept an invitation sent to the holder's own email.
-// Signing just stops the tenant/scope fields being forged to probe other scopes.
+// HMAC-signed token (Web Crypto). The key is NOT the raw SESSION_SECRET oidc-rp
+// signs the session cookie with: it is derived from it per purpose (HKDF, see
+// signed-token.ts), so an invite signature and a cookie/OAuth-state signature are
+// in unrelated MAC families while the operator still rotates one secret (#968).
+// Rotating SESSION_SECRET invalidates every outstanding invite link; a pending
+// invite is re-mintable via resend. The token is routing, not the secret: the
+// real gate is the invites engine re-hashing the recipient's verified email at
+// accept, so a tampered or leaked token can only ever accept an invitation sent
+// to the holder's own email. Signing just stops the tenant/scope fields being
+// forged to probe other scopes.
 
 interface InviteClaim {
   tenantId: string;
@@ -379,41 +385,13 @@ interface InviteClaim {
   exp: number;
 }
 
-function hmacKey(secret: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign', 'verify'],
-  );
-}
-
-async function signInviteToken(env: Env, claim: Omit<InviteClaim, 'exp'>): Promise<string> {
+function signInviteToken(env: Env, claim: Omit<InviteClaim, 'exp'>): Promise<string> {
   const payload: InviteClaim = { ...claim, exp: Date.now() + 14 * 24 * 60 * 60 * 1000 };
-  const body = b64url(new TextEncoder().encode(JSON.stringify(payload)));
-  const sig = new Uint8Array(
-    await crypto.subtle.sign('HMAC', await hmacKey(env.SESSION_SECRET), new TextEncoder().encode(body)),
-  );
-  return `${body}.${b64url(sig)}`;
+  return signClaim(env.SESSION_SECRET, INVITE_TOKEN_PURPOSE, payload);
 }
 
-async function verifyInviteToken(env: Env, token: string): Promise<InviteClaim | null> {
-  const [body, sig] = token.split('.');
-  if (!body || !sig) return null;
-  const ok = await crypto.subtle.verify(
-    'HMAC',
-    await hmacKey(env.SESSION_SECRET),
-    b64urlToBytes(sig),
-    new TextEncoder().encode(body),
-  );
-  if (!ok) return null;
-  try {
-    const claim = JSON.parse(new TextDecoder().decode(b64urlToBytes(body))) as InviteClaim;
-    return claim.exp > Date.now() ? claim : null;
-  } catch {
-    return null;
-  }
+function verifyInviteToken(env: Env, token: string): Promise<InviteClaim | null> {
+  return verifyClaim<InviteClaim>(env.SESSION_SECRET, INVITE_TOKEN_PURPOSE, token, Date.now());
 }
 
 // -- signed OAuth state (connections.md §3.5.1) ------------------------------
@@ -433,31 +411,13 @@ interface GithubStateClaim {
   exp: number;
 }
 
-async function signGithubState(env: Env, claim: Omit<GithubStateClaim, 'exp' | 'nonce'>): Promise<string> {
+function signGithubState(env: Env, claim: Omit<GithubStateClaim, 'exp' | 'nonce'>): Promise<string> {
   const payload: GithubStateClaim = { ...claim, nonce: crypto.randomUUID(), exp: Date.now() + 10 * 60 * 1000 };
-  const body = b64url(new TextEncoder().encode(JSON.stringify(payload)));
-  const sig = new Uint8Array(
-    await crypto.subtle.sign('HMAC', await hmacKey(env.SESSION_SECRET), new TextEncoder().encode(body)),
-  );
-  return `${body}.${b64url(sig)}`;
+  return signClaim(env.SESSION_SECRET, GITHUB_STATE_PURPOSE, payload);
 }
 
-async function verifyGithubState(env: Env, token: string): Promise<GithubStateClaim | null> {
-  const [body, sig] = token.split('.');
-  if (!body || !sig) return null;
-  const ok = await crypto.subtle.verify(
-    'HMAC',
-    await hmacKey(env.SESSION_SECRET),
-    b64urlToBytes(sig),
-    new TextEncoder().encode(body),
-  );
-  if (!ok) return null;
-  try {
-    const claim = JSON.parse(new TextDecoder().decode(b64urlToBytes(body))) as GithubStateClaim;
-    return claim.exp > Date.now() ? claim : null;
-  } catch {
-    return null;
-  }
+function verifyGithubState(env: Env, token: string): Promise<GithubStateClaim | null> {
+  return verifyClaim<GithubStateClaim>(env.SESSION_SECRET, GITHUB_STATE_PURPOSE, token, Date.now());
 }
 
 /** One team the signed-in user belongs to — a tenant, named for the switcher. */

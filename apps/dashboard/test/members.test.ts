@@ -7,6 +7,8 @@ import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { MODULES, provisionDashboard, reconcileRoles, ensureRosterSeeded, type DashboardNode } from '../src/index.js';
 import type { DashboardMemberRow } from '../src/module.js';
+import { b64url } from '../src/b64.js';
+import { GITHUB_STATE_PURPOSE, INVITE_TOKEN_PURPOSE, signClaim, verifyClaim } from '../src/signed-token.js';
 
 /**
  * Phase 3 — team membership. An invite composes the invites engine (hashed,
@@ -342,5 +344,48 @@ describe('Dashboard teams — invite + accept', () => {
     const perms = (await owner()).permissions;
     expect(perms).toContain('dashboard:manage-integrations'); // the new key is back
     expect(perms).toContain('dashboard:manage-members'); // and the rest of owner's set
+  });
+});
+
+/**
+ * The invite link's signature (#968). SESSION_SECRET is the one signing secret the
+ * worker holds and oidc-rp signs the session cookie with it raw, so the invite key
+ * must be DERIVED from it (HKDF, per-purpose label) rather than be it: a MAC minted
+ * for one purpose then verifies as `null` under another, exactly like a forgery.
+ */
+describe('Dashboard invite token — per-purpose derived key', () => {
+  const secret = 'test-session-secret-that-is-long-enough-to-matter';
+  const now = 1_700_000_000_000;
+  const claim = { tenantId: 'T1', scopeId: 'S1', invitationId: 'I1', exp: now + 60_000 };
+
+  it('a freshly minted invite token round-trips', async () => {
+    const token = await signClaim(secret, INVITE_TOKEN_PURPOSE, claim);
+    await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, token, now)).resolves.toEqual(claim);
+  });
+
+  it('a token signed with the raw SESSION_SECRET (the old scheme, and the cookie key) is rejected', async () => {
+    const enc = new TextEncoder();
+    const rawKey = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const body = b64url(enc.encode(JSON.stringify(claim)));
+    const sig = new Uint8Array(await crypto.subtle.sign('HMAC', rawKey, enc.encode(body)));
+    const rawSigned = `${body}.${b64url(sig)}`;
+    await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, rawSigned, now)).resolves.toBeNull();
+  });
+
+  it('a token minted for another purpose (OAuth state) is rejected as an invite, and vice versa', async () => {
+    const asState = await signClaim(secret, GITHUB_STATE_PURPOSE, claim);
+    await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, asState, now)).resolves.toBeNull();
+    const asInvite = await signClaim(secret, INVITE_TOKEN_PURPOSE, claim);
+    await expect(verifyClaim(secret, GITHUB_STATE_PURPOSE, asInvite, now)).resolves.toBeNull();
+  });
+
+  it('an expired, tampered or malformed token is rejected', async () => {
+    const token = await signClaim(secret, INVITE_TOKEN_PURPOSE, claim);
+    await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, token, claim.exp)).resolves.toBeNull();
+    const [body, sig] = token.split('.');
+    const forgedBody = b64url(new TextEncoder().encode(JSON.stringify({ ...claim, scopeId: 'S2' })));
+    await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, `${forgedBody}.${sig}`, now)).resolves.toBeNull();
+    await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, body!, now)).resolves.toBeNull();
+    await expect(verifyClaim('other-secret', INVITE_TOKEN_PURPOSE, token, now)).resolves.toBeNull();
   });
 });
