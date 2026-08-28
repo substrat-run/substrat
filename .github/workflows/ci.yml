@@ -173,8 +173,12 @@ jobs:
       # package's files by relative path would be the same hole; today none does.
       - id: scope
         if: github.event_name == 'pull_request'
+        env:
+          # Through the environment, not interpolated into the script: a `${{ }}`
+          # inside `run:` is pasted into Bash source before it runs.
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          base="origin/${{ github.base_ref }}"
+          base="origin/$BASE_REF"
           members='^(packages|engines|connectors|demos|apps)/'
           inert='^(docs/|\.changeset/|\.claude/|\.githooks/|\.vscode/|[^/]+\.md$|LICENSE|\.gitignore$|\.editorconfig$)'
           changed=$(git diff --name-only "$base" HEAD)
@@ -204,13 +208,17 @@ jobs:
       # its own gates. This asks the question a PR CAN answer — does the template's
       # source still match the surface we are about to ship — while scaffold.yml keeps
       # asking the post-release one: does a real npm install work.
-      - run: pnpm -r ${{ steps.scope.outputs.filter }} typecheck
+      - run: pnpm -r ${SCOPE_FILTER:+"$SCOPE_FILTER"} typecheck
+        env:
+          SCOPE_FILTER: ${{ steps.scope.outputs.filter }}
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM
       # demo's nine-step scenario — and the TEMPLATE's own nine-step scenario,
       # via packages/template-check (#878), which is how a surface that still
       # typechecks but no longer behaves gets caught before it is published.
-      - run: pnpm -r ${{ steps.scope.outputs.filter }} test
+      - run: pnpm -r ${SCOPE_FILTER:+"$SCOPE_FILTER"} test
+        env:
+          SCOPE_FILTER: ${{ steps.scope.outputs.filter }}
 
   # Deploy the prod apps to the shared TEST environment on every green push to
   # main. Prod itself is deployed separately, only on an actual changeset
