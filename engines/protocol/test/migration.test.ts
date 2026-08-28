@@ -38,9 +38,13 @@ import {
  * engine wrote them, and then bringing the real migration list to it. That is
  * what a deployed scope does on wake, so it is what this tests.
  *
- * Phase 1 writes the signature through the probe's raw SQL rather than through
- * `signProtocol`, because today's `signProtocol` writes columns 0002 adds — a
- * scope still on 0001 was, by definition, running the code that predates them.
+ * Phase 1 writes the instance, its response and the signature through the
+ * probe's raw SQL rather than through the handlers, because today's engine
+ * writes AND READS columns 0002 adds (#771: every read names the published
+ * columns, so `instantiate` on a 0001 table is a SQL error naming
+ * `content_ref_type`) — a scope still on 0001 was, by definition, running the
+ * code that predates them. The template is the one row today's code can still
+ * write there, since 0002 leaves `protocol_templates` untouched.
  */
 
 const V1_ONLY: ModuleRegistration = {
@@ -135,12 +139,21 @@ describe('engine-protocol migration 0002 (upgrade path)', () => {
       title: 'Self-inspection',
       content: CONTENT,
     });
-    const inst = await v1.invoke<ProtocolInstanceRow>('protocol/instantiate', {
-      templateKey: 'self-inspection',
-      entityType: ORDER.entityType,
-      entityId: ORDER.entityId,
+    // Instantiate and fill it the way the 0001-era engine did: the 0001 column
+    // list, and nothing 0002 added.
+    const instId = ulid();
+    await v1.invoke('probe/exec', {
+      sql: `INSERT INTO protocol_instances
+              (id, template_key, template_version, entity_type, entity_id, status, created_by, created_at)
+            VALUES (?, 'self-inspection', 1, ?, ?, 'open', ?, ?)`,
+      params: [instId, ORDER.entityType, ORDER.entityId, principal, '2026-01-15T09:00:00.000Z'],
     });
-    await v1.invoke('protocol/fill', { instanceId: inst.id, itemKey: 'front-brake', value: true });
+    await v1.invoke('probe/exec', {
+      sql: `INSERT INTO protocol_responses
+              (id, instance_id, item_key, value_json, note, responded_by, responded_at)
+            VALUES (?, ?, 'front-brake', 'true', NULL, ?, ?)`,
+      params: [ulid(), instId, principal, '2026-01-15T09:10:00.000Z'],
+    });
 
     // Sign it the way the 0001-era engine did: no request_id, no signatory_kind,
     // and the freeze recorded only on the signature row.
@@ -150,7 +163,7 @@ describe('engine-protocol migration 0002 (upgrade path)', () => {
     });
     const responses = await v1.invoke<ProtocolResponseRow[]>('probe/query', {
       sql: 'SELECT * FROM protocol_responses WHERE instance_id = ? ORDER BY rowid',
-      params: [inst.id],
+      params: [instId],
     });
     const legacyHash = await protocolContentHash(template!, { 'front-brake': responses[0]! });
     const legacySignedAt = '2026-01-15T09:30:00.000Z';
@@ -159,11 +172,11 @@ describe('engine-protocol migration 0002 (upgrade path)', () => {
       sql: `INSERT INTO protocol_signatures
               (id, instance_id, signed_by, kind, method, content_hash, evidence_ref, signed_at)
             VALUES (?, ?, ?, 'primary', 'in-app', ?, NULL, ?)`,
-      params: [legacySignatureId, inst.id, principal, legacyHash, legacySignedAt],
+      params: [legacySignatureId, instId, principal, legacyHash, legacySignedAt],
     });
     await v1.invoke('probe/exec', {
       sql: `UPDATE protocol_instances SET status = 'signed' WHERE id = ?`,
-      params: [inst.id],
+      params: [instId],
     });
 
     // -- phase 2: the same scope, woken by an engine carrying 0002 ----------
@@ -176,10 +189,10 @@ describe('engine-protocol migration 0002 (upgrade path)', () => {
       instance: ProtocolInstanceRow;
       signatures: ProtocolSignatureRow[];
       requests: unknown[];
-    }>('protocol/get', { instanceId: inst.id });
+    }>('protocol/get', { instanceId: instId });
 
     // The row survived the rebuild with its identity and status intact...
-    expect(detail.instance.id).toBe(inst.id);
+    expect(detail.instance.id).toBe(instId);
     expect(detail.instance.status).toBe('signed');
     expect(detail.instance.template_version).toBe(1);
     // ...the signature came across and still carries the hash it was made with...
@@ -198,7 +211,7 @@ describe('engine-protocol migration 0002 (upgrade path)', () => {
     // The response history came across too — it is what the hash is replayed from.
     const carried = await v2.invoke<ProtocolResponseRow[]>('probe/query', {
       sql: 'SELECT * FROM protocol_responses WHERE instance_id = ?',
-      params: [inst.id],
+      params: [instId],
     });
     expect(carried).toHaveLength(1);
 
@@ -219,7 +232,7 @@ describe('engine-protocol migration 0002 (upgrade path)', () => {
     const counterStub = await after.getScope(other, t, s);
     const counter = await counterStub.invoke<{ signature: ProtocolSignatureRow }>(
       'protocol/countersign',
-      { instanceId: inst.id },
+      { instanceId: instId },
     );
     expect(counter.signature.content_hash).toBe(legacyHash);
   });
