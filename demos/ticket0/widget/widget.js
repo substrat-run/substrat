@@ -38,6 +38,8 @@
   if (window.ticket0 && typeof window.ticket0.unmount === 'function') window.ticket0.unmount();
   /** Set by `unmount`. A refresh already in flight must not reschedule the poll. */
   var dead = false;
+  /** Cancels whatever is in flight when `unmount` runs. */
+  var aborter = new AbortController();
 
   var session = null;
   try {
@@ -174,12 +176,26 @@
   else attach();
 
   // ── transport ─────────────────────────────────────────────────────────────
+  /**
+   * A promise that never settles. After `unmount`, every continuation hanging off a
+   * request — the retry in `recover`, the refresh after a post, the schedule after a
+   * start — would either touch state the page no longer shows or make a request the
+   * page no longer wants. Rather than guard each one, the request they hang off
+   * stops resolving: nothing downstream runs, and nothing is left to reason about.
+   */
+  function never() {
+    return new Promise(function () {});
+  }
+
   function call(method, path, body) {
+    if (dead) return never();
     return fetch(API + path, {
       method: method,
       headers: body ? { 'content-type': 'application/json' } : undefined,
       body: body ? JSON.stringify(body) : undefined,
+      signal: aborter.signal,
     }).then(function (r) {
+      if (dead) return never();
       // Text first. A 502 from a proxy, a 204, or a CORS-stripped body is not JSON,
       // and `r.json()` on one throws a SyntaxError carrying no status — which is
       // exactly what `staleSession` needs to see a 404 or 403 and recover.
@@ -199,6 +215,11 @@
         }
         return j;
       });
+    }, function (e) {
+      // The abort from `unmount` arrives here as a rejection. It is not an error the
+      // visitor can see, so it must not become one.
+      if (dead) return never();
+      throw e;
     });
   }
 
@@ -271,6 +292,7 @@
   var api = {
     unmount: function () {
       dead = true;
+      aborter.abort();
       clearInterval(poll);
       poll = null;
       document.removeEventListener('visibilitychange', onVisibility);

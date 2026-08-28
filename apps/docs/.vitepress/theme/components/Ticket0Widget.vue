@@ -25,15 +25,24 @@ declare global {
 }
 
 let tag: HTMLScriptElement | undefined;
+/** Set on the way out. The script can still be in flight at that point. */
+let disposed = false;
 
 onMounted(() => {
   tag = document.createElement('script');
   tag.src = `${props.desk.replace(/\/+$/, '')}/widget.js`;
   tag.defer = true;
+  // A fast click on a slow network: the page is gone before the script has run, so
+  // the unmount below found nothing to unmount, and removing the tag does not cancel
+  // a load already started. When the script does run, take its widget down at once.
+  tag.addEventListener('load', () => {
+    if (disposed) window.ticket0?.unmount();
+  });
   document.body.appendChild(tag);
 });
 
 onBeforeUnmount(() => {
+  disposed = true;
   window.ticket0?.unmount();
   tag?.remove();
   tag = undefined;
