@@ -101,7 +101,7 @@ The server tries its mounted adapters in order; the first to recognise the reque
 and the resolved principal is handed to `getScope`. Which adapters a vertical mounts is the
 vertical's decision, and the two shapes in the repo make it differently:
 
-```
+```text
 # demos/shop — a Better Auth session wins, else an anonymous browse-only fallback
 AUTH=better-auth,public      # the default; AUTH=public alone runs the storefront read-only
 
@@ -139,9 +139,12 @@ The neutral seam is not hypothetical — the codebase exercises both ends of it 
   Hosted, that issuer is whatever the tenant configured — the
   [`auth-server`](https://github.com/substrat-run/substrat/tree/main/demos/auth-server) demo
   is the full Better Auth issuer for exercising real accounts. Locally it is
-  [`@substrat-run/dev-issuer`](/reference/dev-issuer), a real provider whose only shortcut
-  is that `/authorize` lists the vertical's personas instead of asking for a password —
-  so the dev login *is* the production round-trip, changing issuer is a change of
+  [`@substrat-run/dev-issuer`](/reference/dev-issuer), a real provider — discovery, JWKS,
+  Authorization Code + PKCE, a signed ID token — whose shortcuts are that `/authorize`
+  lists the vertical's personas instead of asking for a password, and that it registers no
+  clients and checks no client secret (it is loopback-only and never deployed, so there is
+  nothing to compare against). The protocol the vertical runs is unchanged by either: the
+  dev login *is* the production round-trip, changing issuer is a change of
   `OIDC_ISSUER`, and a script impersonates someone at the issuer
   (`POST {issuer}/dev/token {"sub": …}`), never inside the vertical. The design record is
   [`oidc-only-demos.md`](https://github.com/substrat-run/substrat/blob/main/docs/architecture/oidc-only-demos.md).
