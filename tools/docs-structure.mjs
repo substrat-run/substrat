@@ -77,7 +77,7 @@ for (const f of files) {
   if (!m) { errs.push(`${f}: no frontmatter`); continue; }
 
   const fm = Object.fromEntries(
-    m[1].split('\n').filter((l) => /^\w+:/.test(l)).map((l) => {
+    m[1].split('\n').filter((l) => /^[\w-]+:/.test(l)).map((l) => {
       const i = l.indexOf(':');
       return [l.slice(0, i), l.slice(i + 1).trim().replace(/^"|"$/g, '')];
     }),
@@ -126,7 +126,7 @@ const GROUPS = [
   ['architecture', '`architecture/`', 'How the platform works **today** — present tense. A document here may not open by calling itself unbuilt.'],
   ['architecture/builder', '`architecture/builder/`', 'The builder subsystem — one plane, three documents.'],
   ['engines', '`engines/`', 'One per engine, mirroring `engines/*`.'],
-  ['rfc', '`rfc/`', 'Open proposals. A document leaves when it is decided — to `architecture/` rewritten in present tense, or to `archive/`. One that never leaves is a signal.'],
+  ['rfc', '`rfc/`', 'Open proposals. A document leaves when it is decided — to `architecture/` rewritten in present tense, or marked `superseded` / `historical` in place. One that never leaves is a signal.'],
   ['briefs', '`briefs/`', 'Handoffs with a short shelf life by design. They become `historical` once consumed.'],
   ['research', '`research/`', 'Dated snapshots of the outside world. Never revised.'],
   ['acceptance', '`acceptance/`', 'Agent-loop run records. **Closed** — the practice is retired (D-57); the records stay because later work cites them.'],

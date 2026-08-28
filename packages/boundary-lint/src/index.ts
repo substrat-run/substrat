@@ -61,7 +61,7 @@
  *                      the boundary; inside one, catching is legal and the
  *                      callee's rows, events, links, grants and platform
  *                      intents are all discarded. See §2 and §7 of
- *                      docs/rfc/sub-transactions.md.
+ *                      docs/architecture/sub-transactions.md.
  *
  *                      `try`/`finally` with no `catch` is fine (it does not
  *                      swallow), and so is a catch that always rethrows
@@ -76,9 +76,9 @@
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
  * unbuilt; the no-clock rule landed first and took the number, so #786 shipped
- * as R7 — the issue title, and §2/§7/§10 of docs/rfc/sub-transactions.md, still
- * say R6 because they predate #812. Two rules sharing a number would be worse
- * than a stale title.
+ * as R7 — the issue title still says R6 because it predates #812
+ * (docs/architecture/sub-transactions.md §2 records the renumbering). Two rules
+ * sharing a number would be worse than a stale title.
  *
  * R7 AND THE PARSER QUESTION (#786 open question 1, decided here). R7 needs two
  * things R1–R6 do not: which identifiers are bound to an engine import, and

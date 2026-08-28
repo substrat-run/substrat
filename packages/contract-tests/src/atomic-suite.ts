@@ -1,6 +1,6 @@
 /**
  * Contract suite for `ctx.atomic` — sub-transactions at the engine seam (#770,
- * docs/rfc/sub-transactions.md).
+ * docs/architecture/sub-transactions.md).
  *
  * What it pins is one sentence: **a caught error inside `ctx.atomic` destroys
  * everything that region wrote and nothing else.** Before this existed, a

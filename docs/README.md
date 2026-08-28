@@ -38,8 +38,9 @@ Two rules carry the structure, and both are meant to be enforceable:
    "not built". That single rule is what would have caught `dashboard.md` opening with
    *"design. Not built."* while `apps/dashboard` had a month of commits behind it.
 2. **`rfc/` empties.** A decided RFC moves to `architecture/` — rewritten, not just
-   relabelled — or to `archive/`, and lands an entry in [`decisions/`](decisions/). A
-   document that never leaves `rfc/` is telling you something.
+   relabelled — or is marked `superseded` (naming its replacement) or `historical` in
+   place, and lands an entry in [`decisions/`](decisions/). A document that never leaves
+   `rfc/` is telling you something.
 
 ## Status vocabulary
 
@@ -140,6 +141,7 @@ How the platform works **today** — present tense. A document here may not open
 | [dashboard-teams.md](architecture/dashboard-teams.md) | `built` | One login, many teams; team = tenant. |
 | [dashboard.md](architecture/dashboard.md) | `built` | The tenant-facing self-service surface. apps/dashboard. |
 | [dependency-policy.md](architecture/dependency-policy.md) | `built` | Peer vs direct dependencies, and the declared-deps gate. |
+| [error-model.md](architecture/error-model.md) | `built` | One error model — RFC 9457 problem+json, a closed code taxonomy, typed throws that survive the RPC hop. |
 | [kernel-design.md](architecture/kernel-design.md) | `canonical` | Technical shape of the plan's decisions, and the K log. |
 | [marketplace-publish.md](architecture/marketplace-publish.md) | `built` | Push to your team, publish to everyone. |
 | [membership.md](architecture/membership.md) | `built` | Membership, invites, and the admin as first consumer. |
@@ -155,6 +157,7 @@ How the platform works **today** — present tense. A document here may not open
 | [scope-local-permissions.md](architecture/scope-local-permissions.md) | `built` | Permission checks off the control-plane hot path. |
 | [self-serve-deploy.md](architecture/self-serve-deploy.md) | `built` | The untrusted trust model and the sandbox contract. |
 | [signature-contact-carrier.md](architecture/signature-contact-carrier.md) | `built` | Reaching a signatory without putting them in the spine. |
+| [sub-transactions.md](architecture/sub-transactions.md) | `built` | Sub-transactions at the engine seam: ctx.atomic. |
 | [vertical-auth-detach.md](architecture/vertical-auth-detach.md) | `built` | Pick your issuer at install. All four phases implemented. |
 
 ### `architecture/builder/`
@@ -183,16 +186,16 @@ One per engine, mirroring `engines/*`.
 
 ### `rfc/`
 
-Open proposals. A document leaves when it is decided — to `architecture/` rewritten in present tense, or to `archive/`. One that never leaves is a signal.
+Open proposals. A document leaves when it is decided — to `architecture/` rewritten in present tense, or marked `superseded` / `historical` in place. One that never leaves is a signal.
 
 | document | status | |
 |---|---|---|
 | [agent-surface.md](rfc/agent-surface.md) | `building` | How any agent discovers and works with Substrat. #749 open. |
 | [booking-social.md](rfc/booking-social.md) | `building` | Booking engine shipped; the cross-tenant social tier is not. |
 | [docs-restructure.md](rfc/docs-restructure.md) | `building` | Audit of docs/ and the restructure. All four phases executed; the prose rewrite is what remains. |
-| [error-model.md](rfc/error-model.md) | `proposed` | One error model — RFC 9457 problem+json, a closed code taxonomy, typed throws that survive the RPC hop. |
+| [error-model.md](rfc/error-model.md) | `superseded` | Moved — the error-model RFC shipped in @substrat-run/contracts and now lives in architecture/. |
 | [model-phase-plan.md](rfc/model-phase-plan.md) | `building` | The model phase. Umbrella #685 open. |
-| [sub-transactions.md](rfc/sub-transactions.md) | `proposed` | Sub-transactions at the engine seam: ctx.atomic. |
+| [sub-transactions.md](rfc/sub-transactions.md) | `superseded` | Moved — the sub-transactions RFC shipped as ctx.atomic and now lives in architecture/. |
 
 ### `briefs/`
 
