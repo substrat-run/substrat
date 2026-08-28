@@ -4,6 +4,10 @@ description: "The append-only meter ledger, the counter and gauge kinds frozen a
 
 # Domain model & invariants
 
+The engine exports its registry as `meteringEntities` — `metering-meter`, `metering-entry`
+and `metering-period` — so a vertical composes it by passing the registry to
+`defineOperations` and never retypes a shape (see [Composing engines](/concepts/model#composing-engines)).
+
 ## Tables
 
 ```sql

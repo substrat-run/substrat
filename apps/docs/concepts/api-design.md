@@ -62,8 +62,12 @@ the honest answer is "most, not all":
 
 - **Declaring the permission is a compile error to skip.** An operation carries either a
   `permission` or a `narrows` with a stated reason — never both, and never neither. An
-  entity-narrowed check must say what it narrows to, and which field the entity id comes
-  from; naming a field that does not exist does not compile.
+  entity-narrowed check must say what it narrows to, in one of three forms: `entity` +
+  `idFrom` (one type, id in a field), `entityFrom` + `idFrom` (the type comes from a field
+  too, its admissible values read off that field's `z.enum`), or `refFrom` (a whole
+  `EntityRef` the caller supplies — the engine case). Naming a field that does not exist
+  does not compile, and neither does mixing the forms: `entity` beside `refFrom` is a type
+  error, not a tie-break. See [Narrowed permissions](/concepts/model#narrowed-permissions).
 - **The permission surface is re-emitted by CI.** `pnpm lint:permissions --check` renders
   each vertical's `PERMISSIONS.md` from the same objects the code uses, so a widened role
   cannot merge without appearing in the pull-request diff.
@@ -211,14 +215,12 @@ supplies the envelope, the query parameters and the handler's return type:
 `Page<Entry>` — so declaring `paged` and returning a bare array does not compile. See
 [The model](/concepts/model#paged-reads) for the handler side.
 
-::: warning Declared here, adopted incrementally
-The convention ships in `@substrat-run/contracts` and is used across the control plane,
-dashboard and console. The `paged` declaration exists and the todo demo uses it end to end,
-but most engine and vertical list operations have **not** adopted it yet — several still
-return unbounded arrays. Tracked in
-[#129](https://github.com/substrat-run/substrat/issues/129) and
-[#811](https://github.com/substrat-run/substrat/issues/811), which also adds the declared
-filter/sort vocabulary a cursor needs to stay correct under a caller-chosen sort.
+::: tip Not adopted — enforced
+A list operation that declares no `paged` and answers with a bare `z.array()` is **refused
+when the module loads**, so an unbounded list read cannot exist in a registered module. The
+declared filter/sort vocabulary (`paged.over` — the kernel-composed half) is what keeps a
+cursor correct under a caller-chosen sort, and the engines and demos declare it; the
+control plane, dashboard and console use the same convention on their own reads.
 :::
 
 ::: tip The one place offset survives
@@ -494,7 +496,7 @@ Two things follow that are worth stating, because they cut against instinct:
 | Boundary parsing | Zod at the edge | Shipped |
 | Money | decimal string + currency | Shipped |
 | Identifiers | ULID | Shipped |
-| Pagination | keyset cursor, declared with `paged`; entries in the body, the walk in `Link` / `X-Total-Count` | Declaration shipped; [#811](https://github.com/substrat-run/substrat/issues/811) to adopt everywhere |
+| Pagination | keyset cursor, declared with `paged`; entries in the body, the walk in `Link` / `X-Total-Count` | Shipped; a bare-array list output with no `paged` is refused at module load |
 | Lost-update safety | `concurrency` + `If-Match` / `ETag`, 412 on a stale tag | Shipped; compile error to omit on a field-bag update |
 | Errors | RFC 9457 problem+json, closed codes | Shipped; `about:blank` where a status is all we have |
 | Clock | `ctx.now()` | Shipped; `new Date()` in module code is a lint error |

@@ -177,6 +177,7 @@ compiler checks the joins between them. Full walkthrough in
 |---|---|
 | `defineEntities` | declares entities — `table`, `fields`, `parents`, `key`, `erasable`. `parents` is checked against the map's own keys; `key` and `erasable` against each entity's own fields |
 | `defineOperations(entities, permissions, engines?)` | declares operations against those entities, a declared permission set, and any composed engine registries |
+| `manifestOperations(ops, { permissions, checksDeclaredElsewhere?, consumes? })` | the operation half of the manifest — descriptions supplied, the permission key set and `events.emits` derived; a key checked but owned by a composed engine is listed under `checksDeclaredElsewhere` with its owner, and both an undescribed key and a stale exemption are load errors |
 | `manifestEntities(entities, refs)` | composes the entity-referencing manifest fragments; derives `entityRelations` from each entity's `parents` |
 | `permissionsUsedBy` · `eventsEmittedBy` | derive the manifest's `permissions` and `events.emits` from the operations |
 | `emitModel` | renders the registry to deterministic JSON — the artifact `pnpm lint:model --check` gates |
