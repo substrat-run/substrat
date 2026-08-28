@@ -1,0 +1,50 @@
+name: Docs
+
+# The docs site deploys on every push to main that touches it.
+#
+# Until now it deployed only inside release.yml, gated on a package release — so a
+# docs-only merge (a changelog entry, a corrected page) reached main and never reached
+# substrat.net until some unrelated package happened to release. That is the app-only
+# half of #451, and it showed again when weeks 31–33 of the changelog merged and the
+# live site kept showing week 34 alone.
+#
+# release.yml keeps its docs step: a release moves the version numbers the reference
+# pages print, and the two deploys are idempotent — both build the same main, the later
+# one wins. `concurrency` is per workflow, so a burst of docs merges collapses to the
+# latest rather than racing.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/docs/**'
+      # The package changelog is changesets' output and not a page (config.mts srcExclude).
+      - '!apps/docs/CHANGELOG.md'
+  workflow_dispatch:
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # `lastUpdated` stamps each page from git history; a shallow clone dates every
+          # page to the checkout.
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The site builds from source alone — no workspace package needs compiling first
+      # (the llms emitter reads package.json files, not dist).
+      - run: pnpm --filter @substrat-run/docs cf:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
