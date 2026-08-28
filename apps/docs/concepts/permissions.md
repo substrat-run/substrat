@@ -302,8 +302,9 @@ they no longer have access to, and for an app whose pitch is "you see only what 
 that is the worst-looking failure available, and exactly what a revocation demo shows on
 stage. So a view revalidates on focus, on visibility and on a slow poll
 (`useAutoRefresh(load)` from `@substrat-run/ui`), a click on the nav item already selected
-refetches instead of being a no-op same-route link, and a revalidation that comes back 403
-**replaces** the content with the wall rather than leaving it underneath.
+refetches instead of being a no-op same-route link, and a read that comes back 403
+**replaces** the content with the wall rather than leaving it underneath — every read the
+screen makes, the next page of a walk and the detail of one row as much as the refetch.
 `demos/todo/app/src/App.tsx` (`ListView`) and `demos/shop/app/src/App.tsx` (the nav tabs)
 are the reference.
 

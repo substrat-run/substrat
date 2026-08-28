@@ -15,9 +15,11 @@ import { browserEnv, startAutoRefresh } from './auto-refresh';
  *
  * - `load()` must route a 403 into its deny state and **replace** the content it just
  *   refused — clear the page, not only set an error beside it — so the wall takes the
- *   place of the data rather than sitting above it. This hook only ignores rejections;
- *   it does not know what a denial looks like, and whatever `load()` did with its own
- *   state stands.
+ *   place of the data rather than sitting above it. The same goes for every other read
+ *   the screen makes (the next page of a walk, the detail of one row): a denial there
+ *   is the same revoke, seen from a different request. This hook only ignores
+ *   rejections; it does not know what a denial looks like, and whatever `load()` did
+ *   with its own state stands.
  * - **Refetch on re-select.** A click on the nav item that is already selected is the
  *   click someone makes when they suspect the screen is stale, and it changes no route,
  *   so nothing else would refetch. Wire it to `revalidate()` (or bump a reload key)

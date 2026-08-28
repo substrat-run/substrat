@@ -177,6 +177,22 @@ function ListView({ listId }: { listId: string }) {
   // same depth instead of snapping back to the first page under someone's cursor.
   const depth = useRef(1);
 
+  // Revalidate-and-deny: a read of this list that comes back 403 is a share revoked
+  // while this screen was open. What the server just refused leaves with the
+  // refusal, so the wall replaces the list instead of sitting above data you may no
+  // longer see. Nothing leaked — every action would have failed — but you were
+  // looking at it, and for a permission-centric app that is the whole failure.
+  // Every read of the list goes through here: the refetch and the walk alike. A
+  // refused *mutation* does not — `delete` needs `list:manage`, which a reader never
+  // had, so that 403 is the honest answer and not a revoke.
+  const refused = useCallback((e: unknown) => {
+    setError(e);
+    if (denied(e)) {
+      setPage(null);
+      setShares(null);
+    }
+  }, []);
+
   const load = useCallback(async () => {
     try {
       let fresh = await api.listItems({ listId });
@@ -187,16 +203,7 @@ function ListView({ listId }: { listId: string }) {
       setPage(fresh);
       setError(null);
     } catch (e) {
-      setError(e);
-      // Revalidate-and-deny: a refetch that comes back 403 is a share revoked while
-      // this screen was open. What the server just refused leaves with the refusal,
-      // so the wall replaces the list instead of sitting above data you may no
-      // longer see. Nothing leaked — every action would have failed — but you were
-      // looking at it, and for a permission-centric app that is the whole failure.
-      if (denied(e)) {
-        setPage(null);
-        setShares(null);
-      }
+      refused(e);
       return;
     }
     // Owner-only. A 403 here is the honest answer for someone the list was
@@ -206,7 +213,7 @@ function ListView({ listId }: { listId: string }) {
     } catch {
       setShares(null);
     }
-  }, [listId]);
+  }, [listId, refused]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -237,7 +244,7 @@ function ListView({ listId }: { listId: string }) {
       setPage({ entries: [...page.entries, ...rest.entries], next: rest.next, total: rest.total });
       depth.current += 1;
     } catch (e) {
-      setError(e);
+      refused(e);
     }
   };
 
