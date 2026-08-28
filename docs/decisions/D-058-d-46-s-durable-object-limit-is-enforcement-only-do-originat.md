@@ -5,6 +5,7 @@ layer: plan
 title: "D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable"
 status: accepted
 aliases: []
+amends: [D-46]
 tracking: ["#863", "#858"]
 ---
 # D-58 — D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable
