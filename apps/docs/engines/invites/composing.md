@@ -6,6 +6,11 @@ description: "Calling the invites engine from your own operations, delivering th
 
 ## From a vertical
 
+The engine exports its entity registry as `invitesEntities`; pass it to your
+`defineOperations(entities, PERMISSIONS, [invitesEntities])` so an operation that narrows
+to, or emits about, an invitation names the engine's entity rather than retyping it (see
+[Composing engines](/concepts/model#composing-engines)).
+
 Call the exported in-scope functions inside your own operation, in the same
 transaction, having checked your own permission first:
 

@@ -162,6 +162,36 @@ handler, and a new operation cannot forget to.
 
 Omit `input` entirely for an operation that takes no body.
 
+### Narrowed permissions
+
+A bare `permission: 'customer:manage'` is a **node** check — anyone holding the key anywhere
+in the scope passes. An operation about *one* record says so, and there are three ways to
+say it, chosen by what the input carries:
+
+```ts
+// One entity type, id in a field — the common case.
+permission: { key: 'facility:manage', entity: 'facility', idFrom: 'facilityId' },
+
+// More than one type: the TYPE comes from a field too (#890). The admissible types
+// are read off that field's own schema — z.enum(['workorder', 'protocol']) — so the
+// set is stated once and cannot drift from a second list.
+permission: { key: 'workorder:read', entityFrom: 'entityType', idFrom: 'entityId' },
+
+// A whole EntityRef the caller supplies — the engine case (#896). The engine narrows
+// to a noun in no registry it can see (absence checks against Meridian's employee),
+// so it names the FIELD carrying the ref. A dotted path reaches one level in.
+permission: { key: 'absence:read', refFrom: 'subject.ref' },
+```
+
+The three are **mutually exclusive at compile time**: `entity` and `entityFrom` cannot
+appear together, and `refFrom` admits neither of them nor `idFrom` — a ref already carries
+both halves, so a second opinion beside it is a type error rather than a tie-break. When
+the id is genuinely not in the input (`set-item-done` takes an item and checks the *list*
+it sits on), say `resolved: '<why>'` in place of `idFrom` — still not a node check, and
+honest that the handler finds the entity itself. An open `z.string()` behind `entityFrom`
+compiles, but the conformance kit reports the operation as undrivable rather than guessing
+a type.
+
 ### Paged reads
 
 A list operation declares `paged`, and its `output` then carries the **entry** shape — the
@@ -268,6 +298,8 @@ Every one of these is a compile error, not a lint:
 - entity-pointing positions name a **pointable** entity — one identified by a single column
 - `permission` names a **declared** key — a typo becomes a *"Did you mean"* suggestion
 - an operation carries `permission` **or** `narrows: { reason }` — never both, never neither
+- a narrowed permission is **one** of `{ entity, idFrom }`, `{ entityFrom, idFrom }` or
+  `{ refFrom }` — `entity` beside `entityFrom`, or either beside `refFrom`, does not compile
 - every `{var}` in an `http` path names a real input field
 - **`entityIdFrom` names a field of that operation's `output`** — for a mutation writing a
   *child*, the event is usually about the *parent*, so the id field and the entity differ
@@ -278,6 +310,13 @@ Every one of these is a compile error, not a lint:
   a keyset walk needs one column to break ties on
 - **a bare `z.array()` output with no `paged`** is refused when the module loads: a list read
   that answers with the whole table is unbounded by construction
+- **`concurrency.over` names the entity the operation `emits` about** — a version is the ULID
+  of the last event about the entity, so a guarded write that announces nothing would leave
+  both writers' `If-Match` passing and both commits landing; refused at module load
+- **a field-bag update declares `concurrency`** — an input with one required field naming
+  the row and every other field optional over that entity's own columns is the shape that
+  loses updates, and one with no `concurrency` is refused at module load, the same way a
+  bare-array list output is
 - `piiClass` is required, and anything other than `'none'` requires a `subjectId`, because an
   erasure has to be keyable
 - a `payload` cannot carry a field the entity marks `erasable` — immutable events are the one
@@ -289,7 +328,9 @@ That last check resolves through `emits.entity`, so it is exact: a `name` marked
 ## Composing engines
 
 An engine exports its entity registry and its published row schemas. Import them; never
-retype an engine's shape.
+retype an engine's shape. The registries today: `workorderEntities`, `protocolEntities`,
+`bookingEntities`, `meteringEntities` (`metering-meter`, `metering-entry`,
+`metering-period`) and `invitesEntities`.
 
 ```ts
 import { protocolEntities, protocolInstanceRow } from '@substrat-run/engine-protocol';
@@ -308,6 +349,32 @@ export const operations = defineOperations(entities, PERMISSIONS, [
   },
 });
 ```
+
+Composing an engine means being gated by the engine's **keys**, not only your own —
+`acme/open-job` above may check `workorder:read`, and the work order engine is what
+declares that key, describes it and owns its meaning. The manifest says so with
+`manifestOperations` (#889): descriptions are supplied, the key *set* is derived from what
+the operations check, and a key another module owns is listed under
+`checksDeclaredElsewhere` rather than restated:
+
+```ts
+export const manifest = moduleManifest.parse({
+  id: '@acme/vertical', version: '0.1.0', kernelContract: '^0.0.1',
+  migrations: { journalDir: './migrations', compatibleFrom: '0.1.0' },
+  ...manifestOperations(operations, {
+    permissions: { 'customer:manage': 'Open jobs and manage customers' },
+    checksDeclaredElsewhere: { 'workorder:read': '@substrat-run/engine-workorder' },
+  }),
+  ...manifestEntities(entities, {}),
+});
+```
+
+Both directions are errors at load: a key some operation checks that is neither described
+nor listed elsewhere, and a `checksDeclaredElsewhere` entry no operation checks any more.
+Without this the two options were both wrong — restate the engine's key (two modules
+declaring one key, the prose free to drift) or declare a key of your own that the handler
+does not check, which is how Callout's timeline came to tell a technician they could not
+read what they read every day (#865).
 
 Two things to know:
 
