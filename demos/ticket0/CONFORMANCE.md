@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-42 operations · 18 narrowed checks · 18 conformance pairs driven
+43 operations · 19 narrowed checks · 19 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**18 pairs driven** across 18 of this package's 18 narrowed checks.
+**19 pairs driven** across 19 of this package's 19 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
@@ -59,6 +59,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/submit-csat` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/tag-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/wake` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/widget-session` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 
 ## 3. Not driven, by name
 

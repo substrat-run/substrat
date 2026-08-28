@@ -65,7 +65,7 @@ export const API = apiCatalogFrom(ticket0Operations, {
   'ticket0/read-outbound': { tag: 'Relay', description: 'The body the event could not carry, read at send time.' },
   'ticket0/record-delivery': { tag: 'Relay' },
 
-  'ticket0/widget-start': { tag: 'Widget', description: 'Anonymous, or verified by an HMAC the host site’s server computed.' },
+  'ticket0/widget-start': { tag: 'Widget', description: 'Anonymous, or verified by an HMAC the host site’s server computed. Opens a session, not a conversation — the first message does that.' },
   'ticket0/widget-post': { tag: 'Widget' },
   'ticket0/widget-thread': { tag: 'Widget', description: 'Public messages only — a separate read, never a flag.' },
 

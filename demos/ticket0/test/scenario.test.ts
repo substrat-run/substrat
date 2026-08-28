@@ -79,7 +79,7 @@ async function openSession(desk: Desk, identify = true) {
           signature: await signIdentity(desk.verificationSecret, desk.customer.email),
         }
       : null,
-  })) as { sessionId: string; token: string; conversationId: string; verified: boolean };
+  })) as { sessionId: string; token: string; verified: boolean };
 }
 
 beforeAll(async () => {
@@ -100,7 +100,6 @@ describe('a question arrives and gets answered', () => {
     expect(started.verified).toBe(true);
     story.session = started.sessionId;
     story.token = started.token;
-    story.conversation = started.conversationId;
   });
 
   it('she asks, and it lands as a public message', async () => {
@@ -112,7 +111,8 @@ describe('a question arrives and gets answered', () => {
     })) as Message;
     expect(msg.visibility).toBe('public');
     expect(msg.author_kind).toBe('contact');
-    expect(msg.conversation_id).toBe(story.conversation);
+    // The conversation came into being with this message, not with the session.
+    story.conversation = msg.conversation_id;
   });
 
   it('the assistant finds the answer in the desk’s own docs', async () => {
@@ -454,6 +454,58 @@ describe('the attacks', () => {
     ).rejects.toThrow(/signature does not verify/i);
   });
 
+  /**
+   * Opening the bubble is not a conversation. Before this, every `widget-start` —
+   * a curl, a crawler that ran the script, a person who clicked and left — put an
+   * empty "Chat" from a blank contact in the inbox; the live desk collected three
+   * for one real chat. The thread exists from the first message.
+   */
+  it('opening the widget creates nothing an agent can see, until something is said', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const widget = await at(world.substrat, 'widget');
+    const count = async () => {
+      const conversations = (await anna.invoke('ticket0/list-conversations', {
+        limit: 100,
+      })) as CountedPage<Conversation>;
+      const contacts = (await anna.invoke('ticket0/list-contacts', { limit: 100 })) as Page<{
+        id: string;
+      }>;
+      return { conversations: conversations.total, contacts: contacts.entries.length };
+    };
+
+    const before = await count();
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+    })) as { sessionId: string; token: string };
+    expect(await count()).toEqual(before);
+
+    // The visitor's own view is an empty thread, not a refusal: the widget polls this
+    // before anything is said, and a 404 would make it throw the session away.
+    const empty = (await widget.invoke('ticket0/widget-thread', {
+      sessionId: started.sessionId,
+      token: started.token,
+    })) as Page<Message>;
+    expect(empty.entries).toEqual([]);
+
+    // The first message opens the conversation, and the anonymous contact with it.
+    const msg = (await widget.invoke('ticket0/widget-post', {
+      sessionId: started.sessionId,
+      token: started.token,
+      body: 'Is anyone there?',
+    })) as Message;
+    const after = await count();
+    expect(after.conversations).toBe(before.conversations + 1);
+    expect(after.contacts).toBe(before.contacts + 1);
+
+    // And the same session — same id, same token — now reads the thread it opened.
+    const thread = (await widget.invoke('ticket0/widget-thread', {
+      sessionId: started.sessionId,
+      token: started.token,
+    })) as Page<Message>;
+    expect(thread.entries.map((m) => m.id)).toEqual([msg.id]);
+    expect(thread.entries[0]!.conversation_id).toBe(msg.conversation_id);
+  });
+
   it('the widget refuses to open on an origin the desk does not embed on', async () => {
     const widget = await at(world.substrat, 'widget');
     await expect(
@@ -516,7 +568,12 @@ describe('the attacks', () => {
   it('one session’s token does not open another session’s conversation', async () => {
     const widget = await at(world.substrat, 'widget');
     const other = await openSession(world.substrat, false);
-    expect(other.conversationId).not.toBe(story.conversation);
+    const said = (await widget.invoke('ticket0/widget-post', {
+      sessionId: other.sessionId,
+      token: other.token,
+      body: 'A different visitor.',
+    })) as Message;
+    expect(said.conversation_id).not.toBe(story.conversation);
 
     await expect(
       widget.invoke('ticket0/widget-thread', {
@@ -600,10 +657,22 @@ describe('the attacks', () => {
    * `widget-thread` would serve it, because the token IS the capability it checks.
    */
   it('a conversation cannot be merged into a different contact’s', async () => {
+    // A fresh conversation of hers, so the loser is `new`: merge refuses a resolved
+    // conversation on state before it ever compares contacts. It used to be the seed's
+    // empty "Chat" that stood in here; opening the widget no longer opens anything.
+    const widget = await at(world.substrat, 'widget');
+    const hers = await openSession(world.substrat);
+    const asked = (await widget.invoke('ticket0/widget-post', {
+      sessionId: hers.sessionId,
+      token: hers.token,
+      body: 'One more question.',
+    })) as Message;
     const anna = await at(world.substrat, 'agent');
     const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
-    const mine = page.entries.find((c) => c.contact_id === world.substrat.customerContactId)!;
+    const mine = page.entries.find((c) => c.id === asked.conversation_id)!;
+    expect(mine.contact_id).toBe(world.substrat.customerContactId);
     const theirs = page.entries.find((c) => c.contact_id !== world.substrat.customerContactId)!;
+    expect(theirs).toBeDefined();
 
     const admin = await at(world.substrat, 'admin');
     await expect(
@@ -686,22 +755,23 @@ describe('a stranger in a chat bubble', () => {
   let token = '';
   let conversation = '';
 
-  it('opens a conversation with no identity at all', async () => {
+  it('opens the widget with no identity at all', async () => {
     const started = await openSession(world.substrat, false);
     expect(started.verified).toBe(false);
     session = started.sessionId;
     token = started.token;
-    conversation = started.conversationId;
-    expect(conversation).not.toBe(story.conversation);
   });
 
   it('asks a question, and reads the answer back', async () => {
     const widget = await at(world.substrat, 'widget');
-    await widget.invoke('ticket0/widget-post', {
+    // The question is what opens the conversation — their own, not the story's.
+    const asked = (await widget.invoke('ticket0/widget-post', {
       sessionId: session,
       token,
       body: 'Is there a free tier?',
-    });
+    })) as Message;
+    conversation = asked.conversation_id;
+    expect(conversation).not.toBe(story.conversation);
     const anna = await at(world.substrat, 'agent');
     await anna.invoke('ticket0/post-public-reply', {
       conversationId: conversation,
@@ -730,6 +800,76 @@ describe('a stranger in a chat bubble', () => {
     const mine = contacts.entries.find((c) => c.id === conv.contact_id)!;
     expect(mine.principal).toBeNull();
     expect(mine.external_id).toBeNull();
+  });
+
+  /**
+   * What the host knew about the browser rides in as INPUT, already normalised, is
+   * held on the opening, and travels onto the session with the first message — so an
+   * agent reads it back off the conversation. Never the token hash, which is the one
+   * column that would turn a readable session into a usable one.
+   */
+  it('remembers what the visitor was holding, and where, when the host says', async () => {
+    const widget = await at(world.substrat, 'widget');
+    const anna = await at(world.substrat, 'agent');
+
+    // This stranger's host said nothing: a node dev server, or a seed. Every client
+    // column is null and the read still answers, rather than throwing on a gap.
+    const bare = (await anna.invoke('ticket0/widget-session', {
+      conversationId: conversation,
+    })) as { session: Record<string, unknown> | null };
+    expect(bare.session).toMatchObject({ conversation_id: conversation, browser: null, country: null });
+    expect(bare.session).not.toHaveProperty('token_hash');
+
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+      client: {
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) Version/17.5 Mobile/15E148 Safari/604.1',
+        language: 'sv-SE',
+        device: { browser: 'Safari', browserVersion: '17.5', os: 'iOS', osVersion: '17.5.1', kind: 'mobile' },
+        geo: { country: 'SE', region: 'Stockholm County', city: 'Stockholm', timezone: 'Europe/Stockholm', continent: 'EU' },
+      },
+    })) as { sessionId: string; token: string };
+
+    // Opening the widget opened nothing an agent can read. The first message binds
+    // the opening to a conversation, and the client columns must come with it: the
+    // request that carried them is long gone by then.
+    const asked = (await widget.invoke('ticket0/widget-post', {
+      sessionId: started.sessionId,
+      token: started.token,
+      body: 'Does this work on my phone?',
+    })) as Message;
+
+    const read = (await anna.invoke('ticket0/widget-session', {
+      conversationId: asked.conversation_id,
+    })) as { session: Record<string, unknown> | null };
+    expect(read.session).toMatchObject({
+      id: started.sessionId,
+      browser: 'Safari',
+      browser_version: '17.5',
+      os: 'iOS',
+      os_version: '17.5.1',
+      device: 'mobile',
+      language: 'sv-SE',
+      country: 'SE',
+      region: 'Stockholm County',
+      city: 'Stockholm',
+      timezone: 'Europe/Stockholm',
+    });
+    expect(read.session).not.toHaveProperty('token_hash');
+
+    // The email side has no browser behind it, and says so with a null rather than a refusal.
+    const relay = await at(world.substrat, 'relay');
+    const mailed = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'letter@customer.example',
+      contactName: 'Letter',
+      subject: 'By post',
+      bodyText: 'No browser here.',
+      emailMessageId: '<letter-1@mail.example>',
+    })) as Message;
+    expect(
+      await anna.invoke('ticket0/widget-session', { conversationId: mailed.conversation_id }),
+    ).toEqual({ session: null });
   });
 });
 
@@ -890,15 +1030,17 @@ describe('the audit spine', () => {
     });
   });
 
-  it('a widget session announces the conversation and never the token', async () => {
+  it('a widget session announces itself and never the token', async () => {
     const widget = await at(world.substrat, 'widget');
     const started = (await widget.invoke('ticket0/widget-start', {
       origin: world.substrat.origin,
-    })) as { sessionId: string; token: string; conversationId: string; startedAt: string };
+    })) as { sessionId: string; token: string; startedAt: string };
 
     const evt = outbox(world.substrat, 'ticket0.widget-session-started')!;
     expect(evt).toBeDefined();
-    expect(evt.entity_id).toBe(started.conversationId);
+    // About the opening, not a conversation: there is none until something is said.
+    expect(evt.entity_type).toBe('widgetOpening');
+    expect(evt.entity_id).toBe(started.sessionId);
     const payload = JSON.parse(evt.payload!) as Record<string, unknown>;
     // The token is the visitor's whole authority over this thread. An immutable
     // copy of a capability cannot be revoked, so it is not in the event.
@@ -907,7 +1049,6 @@ describe('the audit spine', () => {
     // And everything else about the session is — exactly this, and no more.
     expect(payload).toEqual({
       sessionId: started.sessionId,
-      conversationId: started.conversationId,
       verified: false,
       origin: world.substrat.origin,
       startedAt: started.startedAt,
