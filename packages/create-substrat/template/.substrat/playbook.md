@@ -1,3 +1,4 @@
+<!-- Adapted by hand from the substrat skill (.claude/skills/substrat/SKILL.md in substrat-run/substrat) — NOT emitted from it. The two diverge on purpose; tools/playbook-sync.mts fails CI when the skill moves so a human ports what belongs here. Edit this file directly. -->
 # Playbook — build a vertical on Substrat
 
 The always-on rules live in [`AGENTS.md`](../AGENTS.md); read them first. This playbook is

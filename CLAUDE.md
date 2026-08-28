@@ -257,8 +257,13 @@ The gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
 **The one exception, stated rather than hidden:** a file generated from a *remote* source
 cannot be re-emitted hermetically in CI, so it gets marks 1 and 2 plus a `GENERATED_AT`
 stamp instead of mark 3 — `apps/builder/src/rate-card.generated.ts` (models.dev),
-`packages/psl/src/data.ts` (the public suffix list). Never invent a fourth category;
-an in-repo source with no gate is a defect, not a style.
+`packages/psl/src/data.ts` (the public suffix list). And one accepted shape, not a
+category: a **JSON** artifact cannot carry a comment, so `model.json`, `openapi.json` and
+`.claude/launch.json` have mark 3 only — their producer is named in the gate list above and
+in the tool that emits them. Never invent a fourth category; an in-repo source with no gate
+is a defect, not a style. The inverse also holds: a file that is *hand-adapted* from a source
+and only drift-guarded (`.substrat/playbook.md` under `lint:playbook`) is not generated, and
+must not claim to be.
 
 **A vertical's browser client is generated** (`substrat.client` in its package.json →
 `app/src/api.generated.ts`). Every fact in it — the entity interfaces, the paths and
