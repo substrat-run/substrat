@@ -46,6 +46,8 @@ import {
   projectedConnectionGrant,
   projectedConnectionKey,
   projectedIdentityLink,
+  ownerSeat,
+  ownerClaimLink,
   platformRequestFilter,
   denialFilter,
   type DenialFilter,
@@ -71,6 +73,7 @@ import {
   type ProjectedConnectionGrant,
   type ProjectedConnectionKey,
   type ProjectedIdentityLink,
+  type OwnerClaimLink,
   type PlatformRequest,
   type PlatformRequestFilter,
   type PlatformRequestId,
@@ -237,6 +240,14 @@ const configureBody = z.object({
 /** The parsed configure body handed to `onConfigure`. */
 export type ConfigureBody = z.infer<typeof configureBody>;
 
+/** `/internal/owner-claim` body (#925). `origin` is the instance's public origin, supplied by the
+ *  platform (it owns the hostname directory; a dispatched `/internal` call carries no usable host). */
+const ownerClaimBody = z.object({
+  tenantId: tenantIdOf,
+  scopeId: scopeIdOf,
+  origin: z.string().url(),
+});
+
 const settleBody = z.object({
   tenantId: tenantIdOf,
   scopeId: scopeIdOf,
@@ -311,6 +322,24 @@ export interface PlatformSurfaceDeps<Env> {
    * answers 501 — the vertical stores no per-scope config.
    */
   onConfigure?: (env: Env, body: ConfigureBody) => Promise<void>;
+  /**
+   * The scope's owner seat as the platform may see it (#925) — claimed, unclaimed (and whether
+   * a plain first sign-in still claims it), or unknown. Omit ⇒ `/internal/owner-seat` answers
+   * 501: the vertical keeps no owner seat (it binds logins some other way).
+   */
+  ownerSeat?: (env: Env, ref: { tenantId: TenantId; scopeId: ScopeId }) => Promise<z.input<typeof ownerSeat>>;
+  /**
+   * Mint a short-lived claim link for an UNCLAIMED owner seat (#925) — what the dashboard
+   * hands the installer once the first-sign-in window has closed (or instead of relying on
+   * it). Return `null` when the seat is already claimed (⇒ 409). The link is answered to the
+   * platform and never persisted by it; the vertical stores only the token's hash. Omit ⇒
+   * `/internal/owner-claim` answers 501.
+   */
+  mintOwnerClaim?: (
+    env: Env,
+    ref: { tenantId: TenantId; scopeId: ScopeId },
+    input: { origin: string },
+  ) => Promise<OwnerClaimLink | null>;
   /**
    * Vertical-specific delete-scope side effect — e.g. drop the scope from a deployment
    * sweep roster (#461) so its alarm never wakes a reaped scope. Runs after the host has
@@ -638,6 +667,41 @@ export function mountPlatformSurface<Env extends object>(
     const body = configureBody.parse(await c.req.json());
     await deps.onConfigure(c.env, body);
     return c.json({ scopeId: body.scopeId, entries: body.entries.length });
+  });
+
+  // The owner seat (#925), read and claimed on the platform's instruction. Both answer 501
+  // without a hook, so a control plane can tell "this vertical binds logins some other way"
+  // from a failure. The claim link is the ONE `/internal` answer that carries a credential,
+  // and it is allowed to precisely because nothing persists it: the vertical holds a hash,
+  // the platform relays it once, the dashboard shows it. Parsed on the way OUT as well as in
+  // — a hook returning the wrong shape is a 400 here, never a half-rendered seat upstream.
+  app.get('/internal/owner-seat', async (c) => {
+    if (!deps.ownerSeat) {
+      throw new HTTPException(501, { message: 'this vertical keeps no owner seat' });
+    }
+    const ref = {
+      tenantId: tenantIdOf.parse(c.req.query('tenantId')),
+      scopeId: scopeIdOf.parse(c.req.query('scopeId')),
+    };
+    return c.json(ownerSeat.parse(await deps.ownerSeat(c.env, ref)));
+  });
+
+  app.post('/internal/owner-claim', async (c) => {
+    if (!deps.mintOwnerClaim) {
+      throw new HTTPException(501, { message: 'this vertical keeps no owner seat' });
+    }
+    const body = ownerClaimBody.parse(await c.req.json());
+    const link = await deps.mintOwnerClaim(
+      c.env,
+      { tenantId: body.tenantId, scopeId: body.scopeId },
+      { origin: body.origin },
+    );
+    if (!link) {
+      throw new HTTPException(409, {
+        message: `the owner seat of scope ${body.scopeId} is already claimed — nothing to mint a claim link for`,
+      });
+    }
+    return c.json(ownerClaimLink.parse(link), 201);
   });
 
   // ── The guaranteed error envelope — the whole point (#510). Without this, Hono answers

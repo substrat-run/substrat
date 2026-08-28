@@ -21,7 +21,14 @@ import { principalId, scopeId, tenantId, z, type PrincipalId, type TenantId, typ
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { PLATFORM_REQUEST_HEADER, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
-import { IdentityDO, oidcAuthProvider, oidcRpAuthProvider, type AuthProvider } from '@substrat-run/vertical-auth';
+import {
+  IdentityDO,
+  mintOwnerClaimLink,
+  oidcAuthProvider,
+  oidcRpAuthProvider,
+  sha256Hex,
+  type AuthProvider,
+} from '@substrat-run/vertical-auth';
 import { MODULES, ROLES } from './provision.js';
 import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
@@ -113,11 +120,6 @@ function hostFor(env: Env): CloudflareScopeHost {
 const originOf = (req: Request): string => new URL(req.url).origin;
 const identityDo = (env: Env, node: SiteNode) => env.AUTH.get(env.AUTH.idFromName(node.tenantId));
 
-async function sha256Hex(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 /**
  * The scope's DELIVERED auth choice (`substrat:auth`, the dashboard configured at install /
  * Settings), stored in the tenant's identity DO. OIDC-only (oidc-only-demos.md): `oidc` is the
@@ -208,8 +210,13 @@ app.get('/api/me', async (c) => {
   const node = await nodeFor(c.req.raw, c.env);
   const principal = await principalFor(c.env, c.req.raw);
   if (!principal) {
-    const needsSetup = await identityDo(c.env, node).needsSetup(node.scopeId);
-    return needsSetup ? c.json({ status: 'needs-setup' }) : c.json({ error: 'unauthorized' }, 401);
+    // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the first-sign-in
+    // window is open; by a claim link from the dashboard once it has closed. The SPA's copy
+    // depends on which, and it must not offer a sign-in that binds nobody.
+    const seat = await identityDo(c.env, node).ownerSeat(node.scopeId);
+    return seat.state === 'unclaimed'
+      ? c.json({ status: 'needs-setup', firstSignInOpen: seat.firstSignIn?.open ?? false })
+      : c.json({ error: 'unauthorized' }, 401);
   }
   const scope = await hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
   const who = (await scope.invoke('manyfold/whoami', undefined)) as { can: Record<string, boolean> };
@@ -274,6 +281,11 @@ mountPlatformSurface<Env>(app, {
     const owner = await identityDo(env, ref).getOwnerOfRecord(ref.scopeId);
     return owner ? principalId.parse(owner) : null;
   },
+  // The owner seat as the platform may see it, and the claim link it may mint for one that
+  // sits empty after the first-sign-in window (#925). Both read the same directory the
+  // provision hook above writes.
+  ownerSeat: (env, ref) => identityDo(env, ref).ownerSeat(ref.scopeId),
+  mintOwnerClaim: (env, ref, input) => mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
 });
 
 // Resolve the caller + selected site → a scope stub. 401 if nobody. Shared route table.
@@ -337,6 +349,22 @@ app.post('/api/accept-invite', async (c) => {
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const principal = await identityDo(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
   if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
+  return c.json({ ok: true, principal });
+});
+
+/**
+ * Claim the owner seat by link (#925): the installer signed in at the issuer and now presents
+ * the token the dashboard minted for this workspace. Binds their subject → the owner principal,
+ * which already holds `admin` from provision. One answer for every way it can fail, so a
+ * probe learns nothing about which.
+ */
+app.post('/api/claim-owner', async (c) => {
+  const node = await nodeFor(c.req.raw, c.env);
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
+  if (!subject) throw new HTTPException(401, { message: 'sign in before claiming this workspace' });
+  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
+  const principal = await identityDo(c.env, node).claimOwner(node.scopeId, subject.sub, await sha256Hex(token));
+  if (!principal) throw new HTTPException(400, { message: 'this claim link is invalid, expired, or already used' });
   return c.json({ ok: true, principal });
 });
 

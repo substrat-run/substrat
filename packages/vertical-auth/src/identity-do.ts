@@ -14,6 +14,18 @@ import {
   type RegistrySql,
   type SiteRow,
 } from './site-registry.js';
+import {
+  OWNER_SEAT_DDL,
+  migrateOwnerSeat,
+  recordOwnerSeat,
+  ownerOfRecord as ownerOfRecordRow,
+  needsSetup as needsSetupRow,
+  ownerSeat as ownerSeatRow,
+  resolvePrincipal as resolvePrincipalRow,
+  mintOwnerClaim as mintOwnerClaimRow,
+  claimOwner as claimOwnerRow,
+  type OwnerSeat,
+} from './owner-seat.js';
 
 /**
  * The per-tenant IDENTITY Durable Object — one per tenant, running its OWN Better Auth
@@ -28,8 +40,9 @@ import {
  * Two roles, either or both used per deployment:
  *   - `doAuthProvider` (below) exposes Better Auth here as an `AuthProvider` (the
  *     `better-auth-do` config). With an OIDC provider instead, Better Auth stays dormant.
- *   - `setPendingOwner` / `resolvePrincipal` are the identity directory — used under EVERY
- *     provider, since the subject → principal mapping is provider-independent.
+ *   - `setPendingOwner` / `resolvePrincipal` / `claimOwner` are the identity directory —
+ *     used under EVERY provider, since the subject → principal mapping is provider-independent.
+ *     The owner seat's rules (the bounded first sign-in, the claim link) are in owner-seat.ts.
  */
 
 const SCHEMA_STATEMENTS: string[] = [
@@ -57,19 +70,15 @@ const SCHEMA_STATEMENTS: string[] = [
     created_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
   `CREATE INDEX IF NOT EXISTS verification_identifier_idx ON verification (identifier)`,
-  // The PROVIDER-AGNOSTIC identity directory: a verified subject (`sub`) → the Substrat
-  // PrincipalId it maps to, per scope (K-22 — the same login is a different principal in
-  // each scope). Independent of WHICH provider verified the subject.
-  `CREATE TABLE IF NOT EXISTS identity (scope_id TEXT NOT NULL, sub TEXT NOT NULL, principal TEXT NOT NULL, PRIMARY KEY (scope_id, sub))`,
-  // The owner seat waiting to be claimed: set at provision, consumed by the first login.
-  `CREATE TABLE IF NOT EXISTS pending_owner (scope_id TEXT PRIMARY KEY, principal TEXT NOT NULL)`,
-  // The DURABLE owner of record: also set at provision, but NEVER consumed (#332). `pending_owner`
-  // is gone the moment the owner first signs in, so it can't answer "who owns this scope" after
-  // that. This can — it's the vertical's own memory of the owner, in the per-tenant IdentityDO
-  // (a different DO from the scope's data DO), so it survives a scope-DO storage wipe. A builder-
-  // triggered reconcile reads it to re-establish the owner's role grant without the platform
-  // secret and without the CP having to persist an owner it doesn't otherwise track.
-  `CREATE TABLE IF NOT EXISTS owner_of_record (scope_id TEXT PRIMARY KEY, principal TEXT NOT NULL)`,
+  // The PROVIDER-AGNOSTIC identity directory (`identity`: a verified `sub` → the Substrat
+  // PrincipalId it maps to, per scope — K-22, the same login is a different principal in each
+  // scope, independent of WHICH provider verified it) and the OWNER SEAT around it —
+  // `pending_owner` (claimed and consumed), `owner_of_record` (#332, never consumed: the
+  // vertical's own durable memory of the owner, in this per-tenant DO rather than the scope's
+  // data DO, so it survives a scope-DO wipe and a reconcile can re-grant from it) and
+  // `owner_claim` (the claim link's hash, #925). The tables and the rules over them live in
+  // `owner-seat.ts` so they are unit-tested without a DO; the methods below delegate there.
+  ...OWNER_SEAT_DDL,
   // Outstanding member invites (the post-setup join path). Each is a pre-minted principal +
   // role the admin already granted at scope level, waiting for a login to claim it by token.
   // Only the token's HASH is stored — the token itself lives in the accept link, never here.
@@ -105,6 +114,8 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
+      // Columns the DDL cannot add to a table that already exists (#925's `claim_until`).
+      migrateOwnerSeat(ctx.storage.sql as unknown as RegistrySql);
       // Load-or-generate this tenant's OWN signing secret. Each IdentityDO mints its own on
       // first init and persists it here, so the secret is per-tenant, never leaves the DO,
       // and needs no `wrangler secret put` (which would be one value shared across every
@@ -204,14 +215,13 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
   }
 
   /**
-   * Record the owner seat at provision. Writes BOTH the transient `pending_owner` (claimed +
-   * consumed by the first login) and the durable `owner_of_record` (#332, never consumed) in one
-   * call, so the vertical always retains who the owner is even after the seat has been claimed.
-   * Idempotent — the reconciliation sweep re-runs it.
+   * Record the owner seat at provision (#925): the transient `pending_owner`, bounded by the
+   * first-sign-in window, and the durable `owner_of_record` (#332). Idempotent the way the
+   * platform needs — a re-run (reconcile, retry) keeps the seat's existing window and never
+   * re-opens a seat already claimed.
    */
   async setPendingOwner(scopeId: string, principal: string): Promise<void> {
-    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO pending_owner (scope_id, principal) VALUES (?, ?)', scopeId, principal);
-    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
+    recordOwnerSeat(this.registrySql, scopeId, principal, Date.now());
   }
 
   /**
@@ -220,41 +230,49 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
    * owner their role after a scope-DO wipe left the scope enforcing against an empty tuple table.
    */
   async getOwnerOfRecord(scopeId: string): Promise<string | null> {
-    const row = [...this.ctx.storage.sql.exec('SELECT principal FROM owner_of_record WHERE scope_id = ?', scopeId)][0] as
-      | { principal: string }
-      | undefined;
-    return row?.principal ?? null;
+    return ownerOfRecordRow(this.registrySql, scopeId);
   }
 
   /**
-   * Is this scope awaiting first-run setup? True while its owner seat is unclaimed — the
-   * instance is provisioned but no admin has signed in yet. The worker uses this to show a
-   * "create the admin account" setup screen instead of a plain sign-in, and to keep open
-   * sign-up allowed only during this window (after the owner claims, sign-up is invite-only).
+   * Is this scope awaiting first-run setup? True while its owner seat is unclaimed — whether or
+   * not a plain first sign-in can still claim it (`ownerSeat` says which). The worker uses this
+   * to answer `needs-setup` instead of a bare 401, so the SPA can say what to do.
    */
   async needsSetup(scopeId: string): Promise<boolean> {
-    const pending = [...this.ctx.storage.sql.exec('SELECT 1 FROM pending_owner WHERE scope_id = ?', scopeId)][0];
-    return pending !== undefined;
+    return needsSetupRow(this.registrySql, scopeId);
+  }
+
+  /** The seat as the platform sees it: claimed / unclaimed (window open or closed, link live or not) / unknown. */
+  async ownerSeat(scopeId: string): Promise<OwnerSeat> {
+    return ownerSeatRow(this.registrySql, scopeId, Date.now());
   }
 
   /**
    * Map a verified subject to a PrincipalId in this scope. If already bound, return it. If
-   * not, and the scope's owner seat is unclaimed, CLAIM it: bind this subject to the owner
-   * principal and consume the pending seat. Otherwise null — a valid login with no seat has
-   * no access. Provider-agnostic: the subject may come from Better Auth or an OIDC issuer.
+   * not, and the scope's owner seat is unclaimed with its first-sign-in window still open,
+   * CLAIM it. Otherwise null — a valid login with no seat has no access, and after the
+   * window the seat is reached by claim link only. Provider-agnostic: the subject may come
+   * from Better Auth or an OIDC issuer.
    */
   async resolvePrincipal(scopeId: string, sub: string): Promise<string | null> {
-    const bound = [...this.ctx.storage.sql.exec('SELECT principal FROM identity WHERE scope_id = ? AND sub = ?', scopeId, sub)][0] as
-      | { principal: string }
-      | undefined;
-    if (bound) return bound.principal;
-    const pending = [...this.ctx.storage.sql.exec('SELECT principal FROM pending_owner WHERE scope_id = ?', scopeId)][0] as
-      | { principal: string }
-      | undefined;
-    if (!pending) return null;
-    this.ctx.storage.sql.exec('INSERT OR REPLACE INTO identity (scope_id, sub, principal) VALUES (?, ?, ?)', scopeId, sub, pending.principal);
-    this.ctx.storage.sql.exec('DELETE FROM pending_owner WHERE scope_id = ?', scopeId);
-    return pending.principal;
+    return resolvePrincipalRow(this.registrySql, scopeId, sub, Date.now());
+  }
+
+  /**
+   * Mint a claim link for an unclaimed seat: the platform asks for this under its secret and
+   * the dashboard hands the installer the link. Only `tokenHash` reaches the DO; a new mint
+   * replaces the previous link. Null ⇒ the seat is already claimed (nothing to mint).
+   */
+  async mintOwnerClaim(scopeId: string, tokenHash: string): Promise<{ expiresAt: string } | null> {
+    return mintOwnerClaimRow(this.registrySql, scopeId, tokenHash, Date.now());
+  }
+
+  /**
+   * Claim the seat by link: bind this verified subject to the owner principal if the token's
+   * hash matches the live claim. Consumes the seat and the link. Null ⇒ invalid or expired.
+   */
+  async claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null> {
+    return claimOwnerRow(this.registrySql, scopeId, sub, tokenHash, Date.now());
   }
 
   /**
@@ -360,7 +378,10 @@ export type IdentityStub = {
   setPendingOwner(scopeId: string, principal: string): Promise<void>;
   getOwnerOfRecord(scopeId: string): Promise<string | null>;
   needsSetup(scopeId: string): Promise<boolean>;
+  ownerSeat(scopeId: string): Promise<OwnerSeat>;
   resolvePrincipal(scopeId: string, sub: string): Promise<string | null>;
+  mintOwnerClaim(scopeId: string, tokenHash: string): Promise<{ expiresAt: string } | null>;
+  claimOwner(scopeId: string, sub: string, tokenHash: string): Promise<string | null>;
   createInvite(scopeId: string, principal: string, roleKey: string, email: string | null, tokenHash: string): Promise<void>;
   listInvites(scopeId: string): Promise<Array<{ principal: string; roleKey: string; email: string | null; createdAt: number }>>;
   inviteExists(scopeId: string, tokenHash: string): Promise<boolean>;

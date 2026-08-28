@@ -68,17 +68,58 @@ export function AcceptInvite({ token, onDone }: { token: string; onDone: () => v
 }
 
 /**
- * Sign-in for a hosted instance. Accounts and passwords live at the identity provider, so the
- * only action here is to go there. On a freshly-installed instance the first sign-in still
- * claims the owner seat (→ hr-admin) via the worker binding, so first-run needs no separate form.
+ * Claim the owner seat by link (#925). Same shape as AcceptInvite: try at once (a session may
+ * already exist), and on 401 send them to the issuer with the token riding the round-trip.
  */
-export function SignIn({ firstRun = false }: { onDone?: () => void; firstRun?: boolean }) {
+export function ClaimOwner({ token, onDone }: { token: string; onDone: () => void }) {
+  const [state, setState] = useState<'trying' | 'needs-login' | 'error'>('trying');
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.claimOwner(token).then(
+      () => { if (alive) onDone(); },
+      (e) => {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 401) setState('needs-login');
+        else { setErr(e instanceof ApiError ? e.message : String(e)); setState('error'); }
+      },
+    );
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per token
+  }, [token]);
+  return (
+    <AuthFrame title="Claim this workspace" subtitle="Sign in with your identity provider to become its owner">
+      {err && <div className="err-banner">{err}</div>}
+      {state === 'trying' ? (
+        <div className="muted" style={{ textAlign: 'center', fontSize: 13 }}>Checking your claim link…</div>
+      ) : state === 'needs-login' ? (
+        <Button onClick={() => loginAt(`/?claim=${encodeURIComponent(token)}`)}>Continue to sign-in</Button>
+      ) : null}
+    </AuthFrame>
+  );
+}
+
+/**
+ * Sign-in for a hosted instance. Accounts and passwords live at the identity provider, so the
+ * only action here is to go there. On a freshly-installed instance the first sign-in claims the
+ * owner seat (→ hr-admin) via the worker binding — for a window after provision (#925). Once it
+ * has closed, the seat is claimed by a link from the dashboard instead, and offering a sign-in
+ * that binds nobody would only look like a failed login.
+ */
+export function SignIn({ firstRun = false, firstSignInOpen = true }: { onDone?: () => void; firstRun?: boolean; firstSignInOpen?: boolean }) {
+  const closed = firstRun && !firstSignInOpen;
   return (
     <AuthFrame
       title="Meridian"
-      subtitle={firstRun ? 'Sign in with your identity provider to claim this workspace' : 'Sign in to your HR workspace'}
+      subtitle={
+        closed
+          ? 'This workspace has no owner yet, and the window for claiming it by signing in has closed. Ask whoever installed it for a claim link from the dashboard.'
+          : firstRun
+            ? 'Sign in with your identity provider to claim this workspace'
+            : 'Sign in to your HR workspace'
+      }
     >
-      <Button onClick={() => loginAt('/')}>Continue to sign-in</Button>
+      {!closed && <Button onClick={() => loginAt('/')}>Continue to sign-in</Button>}
     </AuthFrame>
   );
 }

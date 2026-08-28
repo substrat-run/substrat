@@ -486,6 +486,20 @@ export interface AppEnvValue {
 }
 
 /** `GET /api/apps/:scope/env` — the vertical's declared spec + this app's current values. */
+/** The app's owner seat (#925) as the platform relays it from the app's own identity directory. */
+export interface OwnerSeatView {
+  state: 'claimed' | 'unclaimed' | 'unknown';
+  owner: string | null;
+  firstSignIn: { open: boolean; until: string | null } | null;
+  claimLink: { expiresAt: string } | null;
+}
+
+/** A freshly minted owner-claim link — shown once, stored nowhere. */
+export interface OwnerClaimLinkView {
+  claimUrl: string;
+  expiresAt: string;
+}
+
 export interface AppEnvView {
   spec: EnvVarSpec[];
   values: AppEnvValue[];
@@ -962,6 +976,11 @@ export const api = {
       body: JSON.stringify({ tables }),
     }),
   /** The app's env-spec + current values (secrets masked). */
+  /** The app's owner seat (#925) — 501 in embedded mode, where no vertical runs. */
+  appOwnerSeat: (scopeId: string) => call<OwnerSeatView>(`/apps/${encodeURIComponent(scopeId)}/owner-seat`),
+  /** Mint a claim link for an unclaimed owner seat (#925). */
+  appOwnerClaim: (scopeId: string) =>
+    call<OwnerClaimLinkView>(`/apps/${encodeURIComponent(scopeId)}/owner-claim`, { method: 'POST' }),
   appEnv: (scopeId: string) => call<AppEnvView>(`/apps/${encodeURIComponent(scopeId)}/env`),
   /** Upsert env values; an empty value leaves a key unchanged (untouched secret). */
   setAppEnv: (scopeId: string, entries: Array<{ key: string; value: string; secret: boolean }>) =>

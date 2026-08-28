@@ -718,3 +718,97 @@ describe('mountPlatformSurface — the envelope is problem+json', () => {
     expect(body.error).toBe('seat taken');
   });
 });
+
+describe('mountPlatformSurface — the owner seat (#925)', () => {
+  const REF = { tenantId: TENANT, scopeId: SCOPE };
+  const SEAT = {
+    state: 'unclaimed',
+    owner: OWNER,
+    firstSignIn: { open: false, until: '2026-08-28T12:15:00.000Z' },
+    claimLink: null,
+  } as const;
+
+  it('reads the seat through the hook, and parses what the hook returns on the way out', async () => {
+    const seen: unknown[] = [];
+    const app = appWith(fakeHost(), {
+      ownerSeat: async (_env, ref) => {
+        seen.push(ref);
+        return SEAT;
+      },
+    });
+    const res = await app.request(
+      `/internal/owner-seat?tenantId=${TENANT}&scopeId=${SCOPE}`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(SEAT);
+    expect(seen).toEqual([REF]);
+
+    // A hook answering a shape the contract does not know is refused HERE — a 400 with the
+    // parse's reason, never a half-rendered seat on the dashboard.
+    const drifted = appWith(fakeHost(), { ownerSeat: async () => ({ state: 'open' }) as never });
+    const bad = await drifted.request(`/internal/owner-seat?tenantId=${TENANT}&scopeId=${SCOPE}`, { headers: authed() }, ENV);
+    expect(bad.status).toBe(400);
+  });
+
+  it('mints a claim link with the platform-supplied origin, 409s a claimed seat, 501s without the hook', async () => {
+    const seen: unknown[] = [];
+    const app = appWith(fakeHost(), {
+      mintOwnerClaim: async (_env, ref, input) => {
+        seen.push({ ref, input });
+        return { claimUrl: `${input.origin}/?claim=tok`, expiresAt: '2026-08-28T12:30:00.000Z' };
+      },
+    });
+    const res = await app.request(
+      '/internal/owner-claim',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ ...REF, origin: 'https://desk.example.test' }),
+      },
+      ENV,
+    );
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ claimUrl: 'https://desk.example.test/?claim=tok', expiresAt: '2026-08-28T12:30:00.000Z' });
+    expect(seen).toEqual([{ ref: REF, input: { origin: 'https://desk.example.test' } }]);
+
+    // The origin is parsed, not forwarded: a bare host is refused before the hook runs.
+    const bareHost = await app.request(
+      '/internal/owner-claim',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, origin: 'desk.example.test' }) },
+      ENV,
+    );
+    expect(bareHost.status).toBe(400);
+    expect(seen).toHaveLength(1);
+
+    // Already claimed: the hook says null, the surface says 409 with the reason.
+    const claimed = appWith(fakeHost(), { mintOwnerClaim: async () => null });
+    const conflict = await claimed.request(
+      '/internal/owner-claim',
+      { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, origin: 'https://desk.example.test' }) },
+      ENV,
+    );
+    expect(conflict.status).toBe(409);
+    expect(((await conflict.json()) as { error: string }).error).toMatch(/already claimed/);
+
+    // No hook at all: both routes are honestly unimplemented.
+    const none = appWith(fakeHost());
+    expect((await none.request(`/internal/owner-seat?tenantId=${TENANT}&scopeId=${SCOPE}`, { headers: authed() }, ENV)).status).toBe(501);
+    expect(
+      (
+        await none.request(
+          '/internal/owner-claim',
+          { method: 'POST', headers: authed({ 'content-type': 'application/json' }), body: JSON.stringify({ ...REF, origin: 'https://desk.example.test' }) },
+          ENV,
+        )
+      ).status,
+    ).toBe(501);
+  });
+
+  it('is behind the platform-secret gate like every other /internal route', async () => {
+    const app = appWith(fakeHost(), { ownerSeat: async () => SEAT });
+    expect((await app.request(`/internal/owner-seat?tenantId=${TENANT}&scopeId=${SCOPE}`, {}, ENV)).status).toBe(403);
+    expect((await app.request('/internal/owner-claim', { method: 'POST' }, ENV)).status).toBe(403);
+  });
+});

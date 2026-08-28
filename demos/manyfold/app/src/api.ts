@@ -66,7 +66,7 @@ export interface Site { slug: string; name: string }
 export interface Caps { read: boolean; author: boolean; review: boolean; publish: boolean; admin: boolean }
 export type Me =
   | { mode: 'authed'; principal: string; display: string; site: string | null; can: Caps; role: string }
-  | { mode: 'needs-setup' }
+  | { mode: 'needs-setup'; firstSignInOpen: boolean }
   | { mode: 'anon' };
 
 export function capsFromRole(role: string | null): Caps {
@@ -105,9 +105,9 @@ export const api = {
     const res = await fetch('/api/me', { headers: headers(), credentials: 'same-origin' });
     if (res.status === 401) return { mode: 'anon' };
     const b = (await res.json().catch(() => ({}))) as {
-      status?: string; can?: Caps; key?: string; display?: string; site?: string;
+      status?: string; firstSignInOpen?: boolean; can?: Caps; key?: string; display?: string; site?: string;
     };
-    if (b.status === 'needs-setup') return { mode: 'needs-setup' };
+    if (b.status === 'needs-setup') return { mode: 'needs-setup', firstSignInOpen: b.firstSignInOpen === true };
     if (b.can) return { mode: 'authed', principal: b.key ?? '', display: b.display ?? 'You', site: b.site ?? null, can: b.can, role: roleLabel(b.can) };
     return { mode: 'anon' };
   },
@@ -143,4 +143,6 @@ export const api = {
   createInvite: (email: string | undefined, roleKey: string) => postJson<CreatedInvite>('/api/invites', { email, roleKey }),
   revokeInvite: (principal: string) => postJson<null>(`/api/invites/${principal}/revoke`, {}),
   acceptInvite: (token: string) => postJson<{ ok: boolean }>('/api/accept-invite', { token }),
+  /** Claim the owner seat with a dashboard-minted claim link's token (#925). */
+  claimOwner: (token: string) => postJson<{ ok: boolean }>('/api/claim-owner', { token }),
 };

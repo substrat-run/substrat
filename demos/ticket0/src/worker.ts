@@ -55,8 +55,10 @@ import { readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@sub
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import {
   IdentityDO,
+  mintOwnerClaimLink,
   oidcAuthProvider,
   oidcRpAuthProvider,
+  sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { API_DOCUMENT } from './api.js';
@@ -377,13 +379,38 @@ app.get('/api/me', async (c) => {
     ? await identityDo(c.env, node).resolvePrincipal(node.scopeId, subject.sub)
     : null;
   if (!principal) {
-    const needsSetup = await identityDo(c.env, node).needsSetup(node.scopeId);
-    return needsSetup ? c.json({ status: 'needs-setup' }) : c.json({ error: 'unauthorized' }, 401);
+    // An unclaimed seat says HOW it can be claimed (#925): by signing in, while the
+    // first-sign-in window is open; by a claim link from the dashboard once it has closed.
+    // The SPA's copy depends on which, and it must not offer a sign-in that binds nobody.
+    const seat = await identityDo(c.env, node).ownerSeat(node.scopeId);
+    return seat.state === 'unclaimed'
+      ? c.json({ status: 'needs-setup', firstSignInOpen: seat.firstSignIn?.open ?? false })
+      : c.json({ error: 'unauthorized' }, 401);
   }
   return c.json({
     principal: principalId.parse(principal),
     display: subject?.name ?? subject?.email ?? 'You',
   });
+});
+
+/**
+ * Claim the owner seat by link (#925): the installer signed in at the issuer and now
+ * presents the token the dashboard minted for this desk. Binds their subject → the owner
+ * principal, which already holds `desk-admin` from provision. One answer for every way it
+ * can fail, so a probe learns nothing about which.
+ */
+app.post('/api/claim-owner', async (c) => {
+  const node = nodeFor(c.req.raw, c.env);
+  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
+  if (!subject) throw new HTTPException(401, { message: 'sign in before claiming this desk' });
+  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
+  const principal = await identityDo(c.env, node).claimOwner(
+    node.scopeId,
+    subject.sub,
+    await sha256Hex(token),
+  );
+  if (!principal) throw new HTTPException(400, { message: 'this claim link is invalid, expired, or already used' });
+  return c.json({ ok: true, principal });
 });
 
 // ── Invites — the only way a second person reaches a hosted desk ─────────────
@@ -407,13 +434,6 @@ const inviteBody = z.object({
  * check.
  */
 const HUMAN_ROLES = ['desk-admin', 'agent', 'customer'] as const;
-
-/** SHA-256 hex (Web Crypto — same call in workerd, node and browsers). Invite tokens are
- *  stored and compared only as hashes, so a DB read never yields a usable token. */
-async function sha256Hex(s: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
-  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
-}
 
 /** Gate an admin-only action: the caller must hold `desk:configure`, which only `desk-admin` does. */
 async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
@@ -627,6 +647,11 @@ mountPlatformSurface<Env>(app, {
   },
   onConfigure: (env, b) =>
     identityDo(env, { tenantId: b.tenantId, scopeId: b.scopeId }).setScopeConfig(b.scopeId, b.entries),
+  // The owner seat as the platform may see it, and the claim link it may mint for one that
+  // sits empty after the first-sign-in window (#925). Both read the same directory the
+  // provision hook above writes.
+  ownerSeat: (env, ref) => identityDo(env, ref).ownerSeat(ref.scopeId),
+  mintOwnerClaim: (env, ref, input) => mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
 });
 
 // Any OTHER platform verb is honestly unimplemented: JSON 501, never the SPA fallback —

@@ -14,6 +14,8 @@ import type {
   ProjectedConnectionGrant,
   ProjectedConnectionKey,
   ProjectedIdentityLink,
+  OwnerSeat,
+  OwnerClaimLink,
   QueryScopeInput,
   ReadScopeTableInput,
   ScopeDumpTable,
@@ -28,7 +30,7 @@ import type {
   TenantStoreHandle,
   Visibility,
 } from '@substrat-run/contracts';
-import { attachmentRecord } from '@substrat-run/contracts';
+import { attachmentRecord, ownerSeat, ownerClaimLink } from '@substrat-run/contracts';
 import type { OpenedAttachment } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
@@ -387,6 +389,28 @@ export class VerticalClient {
     return this.getInternal<DenialSummary>(
       `/internal/denials/summary?${denialParams(scopeId, filter)}`,
     );
+  }
+
+  /**
+   * The scope's OWNER SEAT (#925) — claimed, unclaimed (with whether a plain first sign-in
+   * still claims it), or unknown. Pulled for the same reason the denials are: the seat lives
+   * in the vertical's own identity directory, in its deployment, not the platform's. Parsed
+   * on arrival: a vertical answering a stale shape is a diagnosis here, not a screen upstream.
+   */
+  async ownerSeat(tenantId: TenantId, scopeId: ScopeId): Promise<OwnerSeat> {
+    const q = new URLSearchParams({ tenantId, scopeId });
+    return ownerSeat.parse(await this.getInternal<unknown>(`/internal/owner-seat?${q}`));
+  }
+
+  /**
+   * Mint a short-lived claim link for an unclaimed owner seat (#925). `origin` is the
+   * instance's public origin — the platform owns the hostname directory, so it names the host
+   * the link must open on. The answer carries the token in its URL and is relayed once, never
+   * stored: `provisionResultFrom` drops secret-shaped keys from an ack that installers
+   * persist, and this is the deliberate opposite — a credential that lives one exchange.
+   */
+  async mintOwnerClaim(input: { tenantId: TenantId; scopeId: ScopeId; origin: string }): Promise<OwnerClaimLink> {
+    return ownerClaimLink.parse(await this.postInternal<unknown>('/internal/owner-claim', input, 'owner-claim'));
   }
 
   /**

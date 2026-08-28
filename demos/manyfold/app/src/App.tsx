@@ -14,7 +14,7 @@ import {
   type Site,
 } from './api';
 import { Avatar, Button, Card, ColHead, CountPill, DistBar, Empty, Mono, Pill, RolePill, StatusBadge, relativeTime } from './ui';
-import { SignIn, AcceptInvite } from './Auth';
+import { AcceptInvite, ClaimOwner, SignIn } from './Auth';
 import { EntryForm } from './EntryForm';
 import { DeliveryPreview } from './Delivery';
 import { renderMarkdown } from './Markdown';
@@ -125,7 +125,10 @@ export default function App() {
   if (me.mode !== 'authed') {
     const inviteToken = new URLSearchParams(location.search).get('invite');
     if (inviteToken) return <AcceptInvite token={inviteToken} />;
-    return <SignIn firstRun={me.mode === 'needs-setup'} />;
+    // Arrived by a dashboard-minted claim link (#925) → bind this login to the owner seat.
+    const claimToken = new URLSearchParams(location.search).get('claim');
+    if (claimToken) return <ClaimOwner token={claimToken} />;
+    return <SignIn firstRun={me.mode === 'needs-setup'} firstSignInOpen={me.mode === 'needs-setup' ? me.firstSignInOpen : true} />;
   }
 
   return (

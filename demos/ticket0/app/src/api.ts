@@ -35,13 +35,36 @@ export interface Session {
  * Reading it as one is how a fresh hosted desk came up showing the signed-in shell
  * with nobody signed in, and no way to reach the login at all.
  */
-export type Identity = Session | 'needs-setup' | null;
+export interface NeedsSetup {
+  status: 'needs-setup';
+  /** Whether a plain sign-in still claims the seat (#925) — it closes on a window after
+   *  provision; after that only a claim link from the dashboard binds the owner. */
+  firstSignInOpen: boolean;
+}
+export type Identity = Session | NeedsSetup | null;
 
 export async function me(): Promise<Identity> {
   const res = await fetch('/api/me', { credentials: 'same-origin' });
   if (!res.ok) return null;
-  const body = (await res.json()) as Session | { status: 'needs-setup' };
-  return 'principal' in body ? body : 'needs-setup';
+  const body = (await res.json()) as Session | NeedsSetup;
+  return 'principal' in body ? body : { status: 'needs-setup', firstSignInOpen: body.firstSignInOpen === true };
+}
+
+/**
+ * Claim the desk's owner seat with the token from a dashboard-minted claim link (#925).
+ * Throws with the status so the screen can tell "sign in first" (401) from a dead link (400).
+ */
+export async function claimOwner(token: string): Promise<void> {
+  const res = await fetch('/api/claim-owner', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => null)) as { detail?: string; error?: string } | null;
+    throw Object.assign(new Error(body?.detail ?? body?.error ?? `${res.status}`), { status: res.status });
+  }
 }
 
 export const auth = {

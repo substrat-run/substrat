@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview } from '../lib/api';
+import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { relativeTime, shortDate, shortId } from '../lib/format';
@@ -215,10 +215,20 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // The app's REAL running version (the version its scope is bound to — what the router
   // serves), not a hardcoded label. Same source as the Deployments tab.
   const [dep, setDep] = useState<Deployment | null>(null);
+  // The app's OWNER SEAT (#925): whether anyone has signed in to claim the instance. Read
+  // live from the app's own identity directory — the fact that used to be invisible, a
+  // provisioned app with an empty seat and nothing saying so. `undefined` while loading,
+  // `null` when the platform cannot answer (embedded mode, an app deployment that keeps no
+  // seat) — shown as "not available", never as a fabricated "claimed".
+  const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
+  const [claim, setClaim] = useState<OwnerClaimLinkView | null>(null);
+  const [claimErr, setClaimErr] = useState<string | null>(null);
+  const [minting, setMinting] = useState(false);
   useEffect(() => {
     if (DEV_MOCK) {
       setEvents(mockEventsFor(app));
       setDep(MOCK_DEPLOYMENTS[0] ?? null);
+      setSeat({ state: 'claimed', owner: app.created_by, firstSignIn: null, claimLink: null });
       return;
     }
     let live = true;
@@ -234,10 +244,33 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
       .catch(() => {});
+    if (app.status === 'active') {
+      api
+        .appOwnerSeat(app.app_scope_id)
+        .then((s) => live && setSeat(s))
+        .catch(() => live && setSeat(null));
+    } else {
+      setSeat(null);
+    }
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [app.app_scope_id, app.status, app.created_by]);
+
+  const mintClaimLink = async () => {
+    if (DEV_MOCK || minting) return;
+    setMinting(true);
+    setClaimErr(null);
+    try {
+      setClaim(await api.appOwnerClaim(app.app_scope_id));
+      // The seat now carries a live link; re-read so the card says so.
+      api.appOwnerSeat(app.app_scope_id).then(setSeat).catch(() => {});
+    } catch (e) {
+      setClaimErr(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setMinting(false);
+    }
+  };
 
   const loadOlderEvents = async () => {
     if (DEV_MOCK || loadingOlder || !eventsCursor) return;
@@ -322,6 +355,54 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>A hostname is assigned once provisioning completes.</div>
           )}
         </div>
+        {seat !== null && (
+          <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Eyebrow>Owner seat</Eyebrow>
+            {seat === undefined ? (
+              <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Checking who owns this app…</div>
+            ) : seat.state === 'claimed' ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                <Pill kind="success">claimed</Pill>
+                <span style={{ color: 'var(--text-secondary)' }}>Someone has signed in as this app's owner.</span>
+              </div>
+            ) : seat.state === 'unknown' ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+                <Pill kind="neutral">unknown</Pill>
+                <span style={{ color: 'var(--text-secondary)' }}>This app's deployment keeps no record of an owner seat for this instance.</span>
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, flexWrap: 'wrap' }}>
+                  <Pill kind={seat.firstSignIn?.open ? 'warning' : 'info'} pulse={seat.firstSignIn?.open}>unclaimed</Pill>
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {seat.firstSignIn?.open
+                      ? `Nobody has signed in yet. Until ${seat.firstSignIn.until ? relativeTime(seat.firstSignIn.until) : 'the window closes'}, the first person to sign in at its address becomes the owner — open it now, or mint a claim link that only its holder can use.`
+                      : 'Nobody has signed in yet, and the first-sign-in window has closed — a plain sign-in no longer claims it. Mint a claim link and open it (or send it to the person who should own this app).'}
+                  </span>
+                </div>
+                {claim ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <a href={claim.claimUrl} target="_blank" rel="noreferrer" style={{ ...mono, wordBreak: 'break-all', color: 'var(--accent)' }}>{claim.claimUrl}</a>
+                      <CopyButton text={claim.claimUrl} label="Copy claim link" />
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                      Valid until {relativeTime(claim.expiresAt)}; shown once and stored nowhere — mint again if it is lost, which also retires this one.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                    <Button size="sm" onClick={mintClaimLink} disabled={minting}>{minting ? 'Minting…' : seat.claimLink ? 'Mint a new claim link' : 'Get claim link'}</Button>
+                    {seat.claimLink && (
+                      <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>A claim link is already out, valid until {relativeTime(seat.claimLink.expiresAt)}; minting again retires it.</span>
+                    )}
+                  </div>
+                )}
+                {claimErr && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{claimErr}</div>}
+              </>
+            )}
+          </div>
+        )}
         {provisionResult && (
           <div style={{ ...card, padding: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Eyebrow>Provision result</Eyebrow>
@@ -1414,7 +1495,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
               )}
             </div>
             <HonestyBanner>
-              A new environment starts empty — the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install.
+              A new environment starts empty — for a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, its Overview offers a claim link.
               It runs the same code as production but never receives production traffic or data.
             </HonestyBanner>
 

@@ -123,7 +123,9 @@ the auth path — Meridian resolves its ordinary keys from that same hop, no ext
 - **`oidcAuthProvider` (bearer verification) stays** as the API-client path — same
   issuer, token presented directly.
 - **The identity directory stays put.** `IdentityDO` minus Better Auth is still needed:
-  `sub → principal` mapping, the pending-owner TOFU claim on first login, and invites.
+  `sub → principal` mapping, the pending-owner claim on first login (bounded to a window
+  after provision since #925; a dashboard-minted claim link binds the owner after that), and
+  invites.
   Those are authorization concerns of the *vertical*, whoever authenticates. An invite
   stops creating credentials: the invitee authenticates at the issuer (self-serve if the
   issuer allows, or created by an auth-server admin), opens the invite link, and the

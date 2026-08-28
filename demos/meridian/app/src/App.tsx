@@ -6,10 +6,12 @@ import { Expenses, Home, Me, TimeOff, TimesheetScreen, type FlowKind } from './s
 import { LogTime, Onboarding, RequestLeave, SubmitExpense } from './flows';
 import { Inbox, OnboardingView, Team, TeamCalendar, Timesheets } from './manage';
 import { ADMIN_TABS, AdminAccess, AdminLeaveTypes, AdminPayroll, AdminPeople, AdminProjects, AdminSetup, type AdminTab } from './admin';
-import { AcceptInvite, SignIn } from './auth';
+import { AcceptInvite, ClaimOwner, SignIn } from './auth';
 
 /** A pending invite token in the URL (`?invite=<token>`), if the user arrived via an invite link. */
 const INVITE_TOKEN = new URLSearchParams(window.location.search).get('invite');
+/** A claim token in the URL (`?claim=<token>`) — arrived by a dashboard-minted owner-claim link (#925). */
+const CLAIM_TOKEN = new URLSearchParams(window.location.search).get('claim');
 
 type WorkTab = 'home' | 'timeoff' | 'timesheet' | 'expenses' | 'me';
 type ManageTab = 'inbox' | 'calendar' | 'timesheets' | 'onboarding' | 'team';
@@ -49,7 +51,7 @@ export default function App() {
   // One session, so one cache key. It used to be the persona the picker had selected; the
   // picker now lives at the issuer, and a switch comes back through a full page load.
   const sessionKey = 'session';
-  const { data: empData, loading, error, unauthorized, needsSetup, reload: reloadEmp } = useAppData(sessionKey);
+  const { data: empData, loading, error, unauthorized, needsSetup, firstSignInOpen, reload: reloadEmp } = useAppData(sessionKey);
   const me = empData?.me ?? null;
   const hasMyWork = !!me?.employeeId;
   const canManage = me?.role === 'manager' || me?.role === 'hr-admin';
@@ -180,9 +182,18 @@ export default function App() {
         onDone={() => { window.history.replaceState({}, '', window.location.pathname); window.location.reload(); }}
       />
     );
-  // Freshly-provisioned instance with no admin yet → first-run setup (create the admin
-  // account, which claims the owner seat → hr-admin). Distinct from a plain sign-in.
-  if (needsSetup) return <SignIn firstRun onDone={() => window.location.reload()} />;
+  // Arrived via a claim link (#925) → bind this login to the owner seat. Same priority as an
+  // invite: it works whether or not there's already a session.
+  if (CLAIM_TOKEN && (needsSetup || unauthorized))
+    return (
+      <ClaimOwner
+        token={CLAIM_TOKEN}
+        onDone={() => { window.history.replaceState({}, '', window.location.pathname); window.location.reload(); }}
+      />
+    );
+  // Freshly-provisioned instance with no admin yet → first-run setup: signing in claims the
+  // owner seat (→ hr-admin) while the window is open; after that, only a claim link does.
+  if (needsSetup) return <SignIn firstRun firstSignInOpen={firstSignInOpen} onDone={() => window.location.reload()} />;
   // No session (hosted instance, not signed in) → the sign-in/sign-up screen. On success
   // it reloads and /api/me resolves (the first sign-in claims the owner seat → hr-admin).
   if (unauthorized) return <SignIn onDone={() => window.location.reload()} />;

@@ -256,6 +256,36 @@ export const projectedIdentityLink = identityLink.omit({ tenantId: true });
 export type ProjectedIdentityLink = z.infer<typeof projectedIdentityLink>;
 
 /**
+ * A hosted scope's OWNER SEAT as the platform sees it (#925). The seat is minted empty at
+ * provision — the platform knows the principal it minted but not the login the tenant's
+ * issuer will emit — and bound later by a verified subject. `unclaimed` is the state that
+ * used to be invisible: an instance nobody has signed in to, reachable by whoever signs in
+ * first. `firstSignIn` says whether that plain path is still open (it closes on a window
+ * after provision); `claimLink` says whether a platform-minted claim link is outstanding.
+ * `unknown` ⇒ the vertical keeps no record of this scope (never provisioned through its
+ * directory). Read from the vertical's `/internal/owner-seat`, relayed to the dashboard.
+ */
+export const ownerSeat = z.object({
+  state: z.enum(['claimed', 'unclaimed', 'unknown']),
+  owner: principalId.nullable(),
+  firstSignIn: z.object({ open: z.boolean(), until: z.string().nullable() }).nullable(),
+  claimLink: z.object({ expiresAt: z.string() }).nullable(),
+});
+export type OwnerSeat = z.infer<typeof ownerSeat>;
+
+/**
+ * A freshly minted owner-claim link (#925): the URL the installer opens to bind their login
+ * to the seat, and when it stops working. The token is IN the URL and nowhere else — the
+ * vertical stores only its hash, and no caller persists this shape; it rides one exchange
+ * from the vertical through the control plane to the dashboard's screen.
+ */
+export const ownerClaimLink = z.object({
+  claimUrl: z.string().url(),
+  expiresAt: z.string(),
+});
+export type OwnerClaimLink = z.infer<typeof ownerClaimLink>;
+
+/**
  * How an identity pool relates to tenants (K-23) — the fact that decides whether the
  * same `externalId` seen in two tenants is one human or two.
  *

@@ -34,6 +34,8 @@ mountPlatformSurface(app, {
   onProvision,     // pending-owner claim / site registry (optional)
   resolveOwner,    // owner-of-record for reconcile (omit ⇒ 501)
   onConfigure,     // per-instance config store (omit ⇒ 501)
+  ownerSeat,       // the owner seat's state, for the dashboard (omit ⇒ 501)
+  mintOwnerClaim,  // a short-lived owner-claim link (omit ⇒ 501)
   onDeleteScope,   // e.g. drop the scope from a sweep roster (optional)
 });
 
@@ -46,9 +48,13 @@ export default app;
   `delete-scope`, `tables`, `tables/:table`, `query`, `platform-requests`,
   `platform-requests/settle` — pure delegations to your scope host, owned entirely by the
   package.
-- **Flavored routes** — `provision`, `reconcile`, `configure` — the package keeps the
-  platform-secret gate, body parse and response envelope; you supply only the hook. Omit
-  `resolveOwner` / `onConfigure` and that route answers `501`.
+- **Flavored routes** — `provision`, `reconcile`, `configure`, `owner-seat`,
+  `owner-claim` — the package keeps the platform-secret gate, body parse and response
+  envelope; you supply only the hook. Omit `resolveOwner` / `onConfigure` / `ownerSeat` /
+  `mintOwnerClaim` and that route answers `501`. The two owner-seat routes are how the
+  dashboard sees whether anyone has claimed an instance, and mints the claim link that
+  binds its owner once the first-sign-in window has closed (see
+  [vertical-auth](/reference/vertical-auth)).
 - **The gate** — one `/internal/*` middleware runs the platform-secret check; an unset
   secret fails closed (`403`).
 - **The error envelope** — a Hono `onError` that maps the kernel/engine vocabulary onto HTTP

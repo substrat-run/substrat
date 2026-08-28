@@ -55,10 +55,22 @@ vertical's own.
 Its `sub → principal` mapping is **provider-agnostic** and used under *every* provider,
 including the two OIDC ones where Better Auth stays dormant:
 
-- `setPendingOwner` — the first-run claim. The first authenticated subject takes the pending
-  owner slot; access is invite-only afterwards.
+- `setPendingOwner` — records the owner seat at provision. The seat is minted **empty** (the
+  platform knows the principal it minted, not the login the tenant's issuer will emit) and
+  bound later by a verified subject. For 15 minutes after provision the first authenticated
+  subject claims it — the install flow, where the installer opens the app seconds later. After
+  that a plain sign-in binds nobody, so an instance nobody opened is not a seat anyone can
+  take indefinitely. A re-provision keeps the window it has and never re-opens a claimed seat.
 - `resolvePrincipal` — the per-request lookup that turns a verified `sub` into the
-  `PrincipalId` the kernel checks permissions against.
+  `PrincipalId` the kernel checks permissions against (and performs the first-sign-in claim
+  while the window is open).
+- `ownerSeat` / `mintOwnerClaim` / `claimOwner` — the claim link. Once the window has closed
+  (or instead of relying on it), the platform mints a short-lived `/?claim=<token>` link under
+  its secret — the dashboard's *Owner seat* card — and `claimOwner` binds the subject that
+  presents it. Only the token's hash is stored; minting again retires the earlier link.
+  `mintOwnerClaimLink` does the token, the hash and the URL in one call, so the vertical's
+  `mintOwnerClaim` hook is a one-liner. A closed window is not a lost instance: the seat stays
+  pending — `needsSetup` keeps saying so, and `ownerSeat` says *why* — until a claim binds it.
 
 ## Cookie-domain safety
 

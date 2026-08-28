@@ -60,13 +60,60 @@ export function AcceptInvite({ token }: { token: string }) {
   );
 }
 
-export function SignIn({ firstRun }: { firstRun: boolean }) {
+/**
+ * Claim the owner seat by link (#925). Same shape as AcceptInvite: try at once (a session may
+ * already exist), and on 401 send them to the issuer with the token riding the round-trip.
+ */
+export function ClaimOwner({ token }: { token: string }) {
+  const [state, setState] = useState<'trying' | 'needs-login' | 'error'>('trying');
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    api.claimOwner(token).then(
+      () => {
+        window.history.replaceState({}, '', location.pathname + location.hash); // drop ?claim=
+        location.reload();
+      },
+      (e) => {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 401) setState('needs-login');
+        else { setErr(e instanceof ApiError ? e.message : String(e)); setState('error'); }
+      },
+    );
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once per token
+  }, [token]);
+  return (
+    <Frame title="Claim this workspace" subtitle="Sign in with your identity provider to become its owner">
+      {err && <div style={{ padding: '9px 12px', borderRadius: 'var(--r-input)', background: 'var(--st-danger-bg)', color: 'var(--st-danger-fg)', fontSize: 13, marginBottom: 12 }}>{err}</div>}
+      {state === 'trying' ? (
+        <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center' }}>Checking your claim link…</div>
+      ) : state === 'needs-login' ? (
+        <Button variant="primary" onClick={() => auth.login(`/?claim=${encodeURIComponent(token)}`)}>Continue to sign-in</Button>
+      ) : null}
+    </Frame>
+  );
+}
+
+/**
+ * On a fresh instance the first sign-in claims the owner seat (→ admin) — for a window after
+ * provision (#925). Once it has closed, the seat is claimed by a link from the dashboard, and
+ * offering a sign-in that binds nobody would only look like a failed login.
+ */
+export function SignIn({ firstRun, firstSignInOpen = true }: { firstRun: boolean; firstSignInOpen?: boolean }) {
+  const closed = firstRun && !firstSignInOpen;
   return (
     <Frame
       title="Manyfold"
-      subtitle={firstRun ? 'Sign in with your identity provider to claim this workspace' : 'Sign in to your workspace'}
+      subtitle={
+        closed
+          ? 'This workspace has no owner yet, and the window for claiming it by signing in has closed. Ask whoever installed it for a claim link from the dashboard.'
+          : firstRun
+            ? 'Sign in with your identity provider to claim this workspace'
+            : 'Sign in to your workspace'
+      }
     >
-      <Button variant="primary" onClick={() => auth.login('/')}>Continue to sign-in</Button>
+      {!closed && <Button variant="primary" onClick={() => auth.login('/')}>Continue to sign-in</Button>}
     </Frame>
   );
 }
