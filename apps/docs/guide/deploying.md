@@ -198,8 +198,10 @@ ends up missing one (granted later, or repaired), the control plane re-delivers 
 snapshot/export/restore family). A vertical without `/internal/reconcile` cannot be repaired
 in place.
 
-You do **not** hand-write those routes. The whole `/internal` surface — plus the `{ error }`
-response envelope the control plane relies on to read a failure — is authored once in
+You do **not** hand-write those routes. The whole `/internal` surface — plus the
+`application/problem+json` error envelope the control plane relies on to read a failure
+(`code`, `detail`, and a module's own `reason`; see
+[API design](/concepts/api-design#_5-failures-are-data)) — is authored once in
 [`@substrat-run/vertical-host`](/reference/vertical-host) and mounted in one call:
 
 ```ts
