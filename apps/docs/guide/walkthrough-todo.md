@@ -1,5 +1,5 @@
 ---
-description: "One vertical, end to end, as whole files rather than excerpts: a one-line brief, the interview's answers, the approved concept, the declared model, what is derived from it, and the business logic that is all you write. The todo app, because the domain costs a reader nothing."
+description: "One vertical end to end, as whole files: the one-line brief, the interview, the approved concept, the declared model, what is derived, and the business logic that is all you write. The todo app."
 ---
 
 # Walkthrough: the todo app
