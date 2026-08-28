@@ -1865,6 +1865,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.1
+      create-substrat:
+        specifier: workspace:*
+        version: link:../create-substrat
       typescript:
         specifier: ^7.0.0
         version: 7.0.2

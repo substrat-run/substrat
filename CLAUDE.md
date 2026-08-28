@@ -59,7 +59,14 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   than the registry: `tools/template-sync.mjs` materializes it into
   `packages/template-check`, a member that owns the `workspace:*` links, and
   `pnpm -r typecheck`, `pnpm -r test` and `node tools/boundary-lint.mjs` all reach it
-  with no new command to remember. This is the gate that makes a **non-additive engine
+  with no new command to remember. On a **PR**, `typecheck` and `test` run only over the
+  packages the diff changed plus everything that depends on them — pnpm's own
+  `--filter="...[origin/main]"`, decided by the `scope` step in `.github/workflows/ci.yml`;
+  a change outside every package (`tools/`, the lockfile, the catalog) widens it back to
+  everything, and a push to `main` always runs everything. The graph has to name every
+  edge for that to hold, which is why `template-check` declares `create-substrat` as a
+  devDependency: the edge is a file copy, not an import, and pnpm cannot see it otherwise.
+  This is the gate that makes a **non-additive engine
   surface** red in its own PR: the template is a call site of every engine it imports,
   and it used to be the only one the compiler never saw — so #811's paged `listOrders`
   was merged, released, and reached `npm create substrat` failing all three of the
