@@ -1,5 +1,13 @@
 # @substrat-run/contract-tests
 
+## 0.91.1
+
+### Patch Changes
+
+- fcb5700: The entity-check conformance kit can drive an operation that names a second entity of the kind it narrows to (#939). `coEntities: { 'ticket0/merge': { intoConversationId: 'conversation' } }` has the kit make that entity per case and grant it the same keys as the target, so `merge`-shaped operations join the behavioural pair instead of sitting in the receipt's "not driven" table; a co-entity naming a field the schema does not have is reported rather than counted as coverage. The receipt lists every second entity the kit supplies, and says plainly that a check on it is not what the pair asserts.
+  - @substrat-run/contracts@0.91.1
+  - @substrat-run/kernel@0.91.1
+
 ## 0.91.0
 
 ### Patch Changes
@@ -3352,7 +3360,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
