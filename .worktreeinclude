@@ -1,0 +1,33 @@
+# Gitignored files a fresh worktree needs in order to RUN — copied from the main
+# checkout when Claude Code creates a worktree (--worktree, the desktop app, a
+# subagent with isolation: worktree). .gitignore syntax; only files that match AND
+# are gitignored are copied, so nothing tracked is ever duplicated. Docs:
+# https://code.claude.com/docs/en/worktrees#copy-gitignored-files-into-worktrees
+#
+# Without this, a new session's first `pnpm dev` fails for reasons that read as
+# code problems — a missing OIDC client, an empty PLATFORM_SECRET — because the
+# files that hold them were never in git to begin with (#760).
+
+# The filled platform secret files (templates in secrets/*.example stay committed).
+# scripts/secrets.mjs reads these to drive every worker's secrets.
+secrets/*.env
+
+# Per-app / per-demo local env: apps/{builder,control-plane,dashboard}/.env,
+# demos/ticket0/.env (local model credentials), and whatever a new app adds.
+.env
+**/.env
+
+# wrangler's local dev secrets (BETTER_AUTH_SECRET etc.); `scripts/secrets.mjs dev`
+# writes them from secrets/platform.dev.env, and the demo `server` scripts load
+# them with --env-file-if-exists.
+.dev.vars
+**/.dev.vars
+
+# Callout's local wrangler config, hand-copied from wrangler.example.jsonc.
+demos/callout/wrangler.jsonc
+
+# Deliberately NOT included:
+#   .data/  — each worktree seeds its own SQLite on first boot. Inheriting another
+#             session's world would carry its tenants, logins and half-run scenarios
+#             into a tree that is supposed to start clean.
+#   node_modules/, dist/ — run `pnpm install` and `pnpm build` in the worktree.
