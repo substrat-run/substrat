@@ -168,6 +168,8 @@ export function guideSidebar() {
         { text: 'Meridian (HR)', link: '/verticals/meridian' },
         { text: 'RallyPoint (padel club)', link: '/verticals/rallypoint' },
         { text: 'Manyfold (headless CMS)', link: '/verticals/manyfold' },
+        { text: 'Todo (shared lists)', link: '/verticals/todo' },
+        { text: 'ticket0 (support desk)', link: '/verticals/ticket0' },
       ],
     },
     {

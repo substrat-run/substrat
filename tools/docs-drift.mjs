@@ -11,10 +11,11 @@
  *
  * Two questions, both mechanical:
  *
- *   1. **Coverage** — does every published package have a reference page at all?
- *      `@substrat-run/model-emit` shipped with zero docs and nobody noticed for a
- *      month. A missing page is a hard failure: it is unambiguous and one file
- *      fixes it.
+ *   1. **Coverage** — does every published package have a reference page at all,
+ *      and every demo vertical a page under `verticals/`? `@substrat-run/model-emit`
+ *      shipped with zero docs and nobody noticed for a month; `todo` and `ticket0`
+ *      sat undocumented behind a hand-list. A missing page is a hard failure: it
+ *      is unambiguous and one file fixes it.
  *   2. **Drift** — how many non-merge commits have touched the source since the
  *      page was last edited? A coarse proxy (a package can churn without its
  *      public surface moving), but the *ranking* is what the refresh order needs,
@@ -41,20 +42,23 @@ const WARN_AT = 30;
 const FAIL_AT = 75;
 
 /**
- * Areas whose doc path and source path are not the same word.
+ * The one vertical whose doc path and source path are not the same word: the
+ * page is named for the product, the directory for the working title.
  *
  * Everything else is derived by convention below, because a convention that
  * needs a list is not a convention — and a hand-list is the thing that would
- * silently omit the next package the way `model-emit` was omitted.
+ * silently omit the next package the way `model-emit` was omitted, and the next
+ * demo the way `todo` and `ticket0` were (#998).
  */
-const VERTICAL_DIRS = {
-  callout: 'demos/callout',
-  handlebar: 'demos/handlebar',
-  manyfold: 'demos/manyfold',
-  meridian: 'demos/meridian',
-  rallypoint: 'demos/rally',
-  shop: 'demos/shop',
-};
+const VERTICAL_SLUG = { rally: 'rallypoint' };
+
+/**
+ * Every demo is `private`, so the `substrat` block in its package.json is what
+ * marks it as a vertical — except the one that `provides` the others their OIDC
+ * issuer (`auth-server`), which is shared infrastructure with no page to write.
+ */
+const isVertical = (pkg) =>
+  Boolean(pkg.substrat) && !(pkg.substrat.provides ?? []).includes('oidc-issuer');
 
 /**
  * The prose pages. These describe an idea rather than a directory, so the source
@@ -162,10 +166,16 @@ for (const dir of dirsIn('connectors')) {
   areas.push({ area: `connector/${dir}`, docs: [page], src: codeOf(`connectors/${dir}`) });
 }
 
-for (const [slug, dir] of Object.entries(VERTICAL_DIRS)) {
+for (const dir of dirsIn('demos')) {
+  const pkg = pkgName(`demos/${dir}`);
+  if (!isVertical(pkg)) continue;
+  const slug = VERTICAL_SLUG[dir] ?? dir;
   const page = `${DOCS}/verticals/${slug}.md`;
-  if (!existsSync(join(ROOT, page)) || !existsSync(join(ROOT, dir))) continue;
-  areas.push({ area: `vertical/${slug}`, docs: [page], src: codeOf(dir) });
+  if (!existsSync(join(ROOT, page))) {
+    uncovered.push({ pkg: pkg.name, dir: `demos/${dir}`, expected: `verticals/${slug}.md` });
+    continue;
+  }
+  areas.push({ area: `vertical/${slug}`, docs: [page], src: codeOf(`demos/${dir}`) });
 }
 
 for (const [page, src] of Object.entries(PROSE)) {
@@ -215,7 +225,7 @@ console.log(
 );
 
 if (uncovered.length) {
-  console.log('\nPublished with no page:');
+  console.log('\nWith no page:');
   for (const u of uncovered) console.log(`  ${u.pkg}  →  write ${DOCS}/${u.expected}`);
 }
 
@@ -228,8 +238,9 @@ if (uncovered.length || rotted.length) {
   console.error('\ndocs-drift: FAILED');
   if (uncovered.length)
     console.error(
-      `  ${uncovered.length} published package(s) with no reference page. A package the ` +
-        'world can `npm install` and cannot read about is not shipped.',
+      `  ${uncovered.length} published package(s) or demo vertical(s) with no page. A package ` +
+        'the world can `npm install` and cannot read about is not shipped; a demo that is\n' +
+        '  meant to prove a shape and has no page under verticals/ proves it to nobody.',
     );
   if (rotted.length)
     console.error(
