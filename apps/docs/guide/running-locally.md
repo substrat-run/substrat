@@ -58,17 +58,19 @@ flowchart TB
     V --> H
   end
 
+  I["dev-issuer (OIDC)<br/>:8879 — picks a persona"]
+
   subgraph data["demos/callout/.data — one SQLite directory"]
-    D[("_directory.sqlite<br/>tenants · scopes · roles · entitlements · audit")]
+    D[("_directory.sqlite<br/>tenants · scopes · roles · entitlements · audit · identity links")]
     S[("&lt;tenant&gt;__&lt;scope&gt;.sqlite<br/>one file per scope — its data + outbox")]
-    B[("better-auth.sqlite<br/>logins · sessions")]
   end
 
   C -->|"/api → :8788"| CP
   A -->|"/api → :8871"| V
+  A -.->|"login redirect"| I
+  V -.->|"verify ID token"| I
   H --> D
   H --> S
-  V -.->|identity| B
 ```
 
 Because the control plane and the vertical share **one host**, they share **one
@@ -85,9 +87,11 @@ and the console just wrote to that same row. There is no sync, no second copy �
 | `5271` | Vite dev server | The **portal** — Callout's tenant-facing app |
 | `8871` | Node (Hono) | The **vertical API** — resolves a user, `getScope`, invokes operations |
 | `8788` | Node (Hono) | The **control plane** — the audited directory surface the console drives |
+| `8879` | Node (dev-issuer) | The **local login** — a real OIDC provider whose `/authorize` lists Callout's personas |
 
-The two Node listeners are the *same process* sharing one host; the two Vite servers are
-separate. All four are launched and torn down together by `pnpm dev`.
+The two Hono listeners are the *same process* sharing one host; the dev issuer is its own
+Node process, and the two Vite servers are separate again. All five are launched and torn
+down together by `pnpm dev`.
 
 ### The databases
 
@@ -98,7 +102,11 @@ Everything lives under `demos/callout/.data` as plain SQLite files (WAL mode —
 |---|---|---|
 | `_directory.sqlite` | the shared host | The directory: tenant registry, scope records + lifecycle status, roles, entitlements, tenant-level permission tuples, and the admin audit log |
 | `<tenantId>__<scopeId>.sqlite` | the shared host | One per scope — that scope's own tables, permission tuples, and event outbox. Isolated: a scope is its own database and consistency domain |
-| `better-auth.sqlite` | the vertical's auth | Identities, credentials, and sessions for the portal's logins |
+
+There is no credentials database. Callout is OIDC-only: accounts live at the issuer, and the
+directory holds only the *link* from each issuer subject to a principal — the seed writes it
+from `src/personas.ts`, the same array the dev issuer's picker lists. Locally that issuer is
+[`@substrat-run/dev-issuer`](/reference/dev-issuer) on `:8879`, started by the same `pnpm dev`.
 
 Debugging is opening a file:
 
@@ -127,12 +135,28 @@ API's log independently. Callout's:
 {
   "version": "0.0.1",
   "configurations": [
+    { "name": "issuer", "runtimeExecutable": "pnpm", "runtimeArgs": ["run", "issuer"],
+      "port": 8879, "autoPort": false },
     { "name": "api", "runtimeExecutable": "pnpm", "runtimeArgs": ["run", "server"],
-      "port": 8871, "env": { "ALLOW_DEV_HEADER": "true" }, "autoPort": false },
+      "port": 8871, "autoPort": false },
     { "name": "web", "runtimeExecutable": "pnpm", "runtimeArgs": ["--dir", "app", "dev"],
       "port": 5271, "autoPort": false }
   ]
 }
+```
+
+Three entries, and no `env` block — there is no dev header to switch on. The first entry
+is the **local login**: [`@substrat-run/dev-issuer`](/reference/dev-issuer), a real OpenID
+Connect provider whose only shortcut is that `/authorize` lists the vertical's personas
+(`src/personas.ts`) instead of asking for a password. Picking a name there *is* the
+production round-trip — the API is an ordinary relying party against whatever
+`OIDC_ISSUER` names, so the login you exercise in dev is the one a deployment runs, and
+moving to a real issuer changes configuration, not code. A script that needs to act as
+someone mints a token at the issuer, never in the vertical — a JSON body naming the
+subject, and the returned `access_token` is the bearer:
+
+```sh
+curl -XPOST localhost:8879/dev/token -d '{"sub":"dev|anna"}'   # → { access_token, id_token, … }
 ```
 
 ### These files are emitted — don't hand-edit them

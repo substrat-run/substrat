@@ -50,7 +50,7 @@ It is interesting for reasons the field-service demos can't show:
 | **Own tables** | `manyfold_entry` · `manyfold_revision` (append-only) · `manyfold_status_log` (append-only) · `manyfold_delivery` (published read model) · `manyfold_content_type` (types are data) |
 | **Roles** | `admin` (owner, tenant-wide) · `publisher` / `editor` / `author` / `viewer` (per site) — a role ladder, no entity-narrowed grants |
 | **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/manyfold/PERMISSIONS.md) — 5 keys · 5 roles |
-| **App** | one content-studio React app over one API, with a dev persona + **site** picker (`x-principal` / `x-site`) |
+| **App** | one content-studio React app over one API, signed in through OIDC (locally, the dev issuer's persona picker) with a **site** switcher (`x-site`) that selects the scope — never the caller |
 | **Status** | Working — a 10-case scenario green on the pure-SQLite adapter |
 
 ## No engine, and why that's the point
@@ -157,9 +157,15 @@ consumer is host code, the documented next step, not module code.
 ## The app
 
 One content-studio React app, composed over the vertical's single API. The twist over the
-other demos is **multi-scope**: the dev picker sends `x-principal` (who you are) **and
-`x-site`** (which of the tenant's sites you're working in), and the server maps both to a
-scope stub. The app gates its own chrome on `manyfold/whoami`, which reports what the
+other demos is **multi-scope**: *who* you are comes from the login — an ordinary OIDC
+session, which locally is [`@substrat-run/dev-issuer`](/reference/dev-issuer) rendering the
+personas in `src/personas.ts` as a picker — and *where* you are working comes from the
+in-app **site switcher**, which sends `x-site` (a site slug the server resolves to one of the
+tenant's scopes). Selection is not authentication: the login says who, the site says where,
+and the kernel re-checks your authority in that scope either way — a slug can only ever
+reach a scope of the tenant you are linked to. There is no `x-principal` header; the one
+that stood here defaulted the app to "already signed in as somebody", which is the one thing
+a hosted instance never does. The app gates its own chrome on `manyfold/whoami`, which reports what the
 current principal may do *in this site* — so the same login sees author tools on one site
 and read-only on another. The seeded personas make that concrete:
 
@@ -178,9 +184,15 @@ where he holds nothing, denied even to read.
 pnpm --filter @substrat-run/demo-manyfold dev
 ```
 
-Starts the API on `:8876` and the app on `:5276` (both in the private `887x` / `527x`
-block; override with `PORT=… WEB_PORT=…`). Switch persona **and** site to watch the same
-login's authority change scope by scope.
+Starts the dev issuer on `:8879`, the API on `:8876` and the app on `:5276` (all in the
+private `887x` / `527x` block; override with `ISSUER_PORT=… PORT=… WEB_PORT=…`). Two
+different controls do two different things: the in-app **site switcher** changes which
+scope the *current* OIDC session works in — same person, possibly a different role — while
+**Switch user** goes back to the issuer and signs in as a different subject. Sign in as a
+persona, then move between sites to watch one login's authority change scope by scope;
+switch user to see another person's. A script acts as someone
+by minting a bearer at the issuer (`POST http://localhost:8879/dev/token {"sub":"dev|emil"}`),
+never by telling the vertical who it is.
 
 The executable spec is the scenario test — ten cases replayed headlessly on the
 pure-SQLite adapter:
