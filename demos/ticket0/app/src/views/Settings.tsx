@@ -7,15 +7,16 @@
  */
 import { useEffect, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
-import { api, refreshKbSource, type KbSource } from '../api.js';
-import { Dot, Empty, UnitPrice } from '../ui.js';
+import { api, assistantStatus, refreshKbSource, type AssistantStatus, type KbSource } from '../api.js';
+import { Dot, Empty, UnitPrice, ago } from '../ui.js';
 
-type Tab = 'desk' | 'identity' | 'knowledge' | 'usage';
+type Tab = 'desk' | 'identity' | 'knowledge' | 'assistant' | 'usage';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'desk', label: 'Desk' },
   { id: 'identity', label: 'Identity verification' },
   { id: 'knowledge', label: 'Knowledge base' },
+  { id: 'assistant', label: 'Assistant' },
   { id: 'usage', label: 'Usage & cost' },
 ];
 
@@ -67,6 +68,7 @@ export function Settings({
         {tab === 'desk' ? <Desk /> : null}
         {tab === 'identity' ? <Identity /> : null}
         {tab === 'knowledge' ? <Knowledge /> : null}
+        {tab === 'assistant' ? <Assistant go={go} /> : null}
         {tab === 'usage' ? <Usage money={caps.money} /> : null}
       </section>
     </div>
@@ -720,6 +722,154 @@ function Knowledge() {
 
       <div className="t-small" style={{ marginTop: 12 }}>
         Every answer cites the articles it drew from.
+      </div>
+    </>
+  );
+}
+
+/* ── Assistant ──────────────────────────────────────────────────────────── */
+
+/**
+ * Is the assistant working, and with what?
+ *
+ * Two facts an admin asking "why is nobody getting answers" needs on one screen, and
+ * neither used to be anywhere in the desk. Which model this install runs is a host
+ * fact — with no credential the desk quotes the documentation and labels itself
+ * `offline/extractive`, which is honest on a turn record and invisible from the inbox.
+ * And a turn that failed was, until its reason was recorded, a note that said "I
+ * could not answer this one" and nothing else. This shows the model, says plainly
+ * when it is not one, and lists the newest failures by conversation.
+ */
+function Assistant({ go }: { go: (v: View) => void }) {
+  const [status, setStatus] = useState<AssistantStatus | null>(null);
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    assistantStatus()
+      .then((s) => {
+        setStatus(s);
+        setLoadFailed(null);
+      })
+      .catch((e: Error) => setLoadFailed(e.message));
+  }, []);
+
+  if (!status) {
+    return loadFailed ? (
+      <>
+        <Head title="Assistant" note="Which model answers, and what has gone wrong." />
+        <div className="card" style={{ padding: '10px 14px', color: 'var(--danger)' }}>
+          <span className="t-small">{loadFailed}</span>
+        </div>
+      </>
+    ) : (
+      <div className="t-meta">Loading…</div>
+    );
+  }
+
+  const { health } = status;
+  return (
+    <>
+      <Head title="Assistant" note="Which model answers, and what has gone wrong." />
+
+      <div className="card" style={{ padding: '14px 16px', marginBottom: 14 }}>
+        <div className="micro" style={{ marginBottom: 6 }}>
+          Model
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Dot color={status.generative ? 'var(--green)' : '#c98a1a'} />
+          <span className="mono" style={{ font: "500 13px 'Geist Mono', monospace" }}>
+            {status.model}
+          </span>
+        </div>
+        {status.generative ? (
+          <div className="t-small" style={{ marginTop: 8 }}>
+            Answers are generated from the knowledge base by this model, billed to the
+            account whose token this install holds.
+          </div>
+        ) : (
+          <div
+            style={{
+              marginTop: 10,
+              padding: '9px 11px',
+              background: 'var(--danger-bg)',
+              border: '1px solid var(--danger-border-2)',
+              borderRadius: 6,
+              font: "400 12px/1.55 'Geist', sans-serif",
+              color: 'var(--danger-3)',
+            }}
+          >
+            <strong>No model is configured.</strong> The assistant is quoting the best-matching
+            documentation section rather than generating an answer. To answer with Workers AI,
+            set <span className="mono">CF_ACCOUNT_ID</span> and{' '}
+            <span className="mono">CF_AI_TOKEN</span> (and optionally{' '}
+            <span className="mono">TICKET0_MODEL</span>) in this install's environment — the
+            dashboard's Env tab for a hosted desk, <span className="mono">demos/ticket0/.env</span>{' '}
+            for the dev server.
+          </div>
+        )}
+      </div>
+
+      <div className="card" style={{ overflow: 'hidden' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'baseline',
+            gap: 10,
+            padding: '11px 16px',
+            borderBottom: '1px solid var(--hairline)',
+          }}
+        >
+          <span className="micro">Last 24 hours</span>
+          <span className="t-small">
+            {health.turns} turn{health.turns === 1 ? '' : 's'} ·{' '}
+            <span style={{ color: health.failed > 0 ? 'var(--danger-3)' : undefined }}>
+              {health.failed} failed
+            </span>
+          </span>
+        </div>
+        {health.recent.length === 0 ? (
+          <div className="t-meta" style={{ padding: '18px 16px' }}>
+            No failed turns. Every message the assistant was asked to answer got a turn
+            recorded — answered, drafted, or escalated to a person.
+          </div>
+        ) : (
+          health.recent.map((f) => (
+            <div key={f.id} style={{ padding: '11px 16px', borderBottom: '1px solid var(--hairline)' }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                <button
+                  onClick={() => go({ name: 'conversation', id: f.conversation_id })}
+                  style={{
+                    border: 0,
+                    background: 'transparent',
+                    padding: 0,
+                    cursor: 'pointer',
+                    font: "500 12px 'Geist', sans-serif",
+                    color: 'var(--accent-text)',
+                    textAlign: 'left',
+                  }}
+                >
+                  {f.subject || 'Untitled conversation'}
+                </button>
+                <span className="t-small mono">{f.model}</span>
+                <span className="t-small" style={{ marginLeft: 'auto' }}>
+                  {ago(f.created_at)}
+                </span>
+              </div>
+              <div
+                className="mono"
+                style={{
+                  marginTop: 6,
+                  font: "400 11px/1.5 'Geist Mono', monospace",
+                  color: 'var(--danger-3)',
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {f.error ?? 'No reason was recorded.'}
+              </div>
+            </div>
+          ))
+        )}
       </div>
     </>
   );

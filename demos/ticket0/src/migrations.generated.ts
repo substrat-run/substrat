@@ -231,4 +231,11 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_widget_sessions ADD COLUMN timezone TEXT;
     `,
   },
+  {
+    // add-ticket0_ai_turns-error
+    version: '0004',
+    sql: `
+      ALTER TABLE ticket0_ai_turns ADD COLUMN error TEXT;
+    `,
+  },
 ];

@@ -65,7 +65,13 @@ import { API_DOCUMENT } from './api.js';
 import { T0_PERM, TICKET0_ENV } from './manifest.js';
 import { MODULES, OWNER_ROLE_KEY, ROLES, SERVICE_ROLES, type ServiceRole } from './provision.js';
 import { mountApi } from './routes.js';
-import { answerConversation, modelFromEnv } from '../harness/assistant.js';
+import {
+  answerConversation,
+  errorText,
+  modelFromEnv,
+  recordAssistantFailure,
+} from '../harness/assistant.js';
+import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh } from '../harness/kb-refresh.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 
@@ -546,6 +552,14 @@ app.post('/api/accept-invite', async (c) => {
  */
 mountKbRefresh(app, stub);
 
+// Which model THIS install would answer with, beside its failed turns — the read
+// behind Settings → Assistant. Per install through `instanceConfig`, like the job.
+mountAssistantStatus(app, stub, async (c) => {
+  const env = c.env as Env;
+  const { settings } = await instanceConfig(env, nodeFor(c.req.raw, env));
+  return modelFromEnv(settings as Record<string, string | undefined>);
+});
+
 // ── The public widget surface ────────────────────────────────────────────────
 
 mountWidgetSurface(app, {
@@ -574,27 +588,69 @@ mountWidgetSurface(app, {
   },
 });
 
-/** Answer one customer message as this desk's assistant, out of band. */
+/**
+ * Answer one customer message as this desk's assistant, out of band.
+ *
+ * Nothing that goes wrong in here is allowed to be silent. This used to `return` when
+ * the assistant principal was missing and swallow everything else in a bare `catch`,
+ * on the reasoning that an unanswered message leaves the conversation for a human
+ * anyway — which is true of the conversation and false of the desk: a customer
+ * message with no turn against it is indistinguishable from an assistant that is
+ * merely slow, and the reason lived nowhere. Now the reason is (1) logged, where the
+ * platform's observability tail can read it, and (2) recorded on the conversation as
+ * a failed turn, where the desk draws it — by the assistant when the assistant can
+ * still write, and by the widget when the assistant is what broke.
+ */
 async function answerFor(
   env: Env,
   req: Request,
   m: { conversationId: string; messageId: string; body: string },
 ): Promise<void> {
   const node = nodeFor(req, env);
-  const assistant = await serviceStub(env, node, 'assistant');
-  if (!assistant) return;
-  const { settings } = await instanceConfig(env, node);
+  const where = { scope: node.scopeId, conversation: m.conversationId, message: m.messageId };
+  let model = 'unknown';
   try {
-    await answerConversation(
+    const { settings } = await instanceConfig(env, node);
+    // No credential ⇒ the extractive model, which quotes the best-matching section
+    // and labels itself `offline/extractive`. A desk with no model still answers.
+    const chosen = modelFromEnv(settings as Record<string, string | undefined>);
+    model = chosen.label;
+    const assistant = await serviceStub(env, node, 'assistant');
+    if (!assistant) {
+      throw new Error(
+        'this desk has no assistant service principal — provision never minted one, so nothing can answer',
+      );
+    }
+    const outcome = await answerConversation(
       { invoke: (op, input, options) => assistant.invoke(op, input, options) as Promise<never> },
       { conversationId: m.conversationId, messageId: m.messageId, question: m.body },
-      // No credential ⇒ the extractive model, which quotes the best-matching section
-      // and labels itself `offline/extractive`. A desk with no model still answers.
-      modelFromEnv(settings as Record<string, string | undefined>),
+      chosen,
     );
-  } catch {
-    // The visitor already has their message in the thread; a failed assistant turn
-    // leaves the conversation for a human, which is the escalation path anyway.
+    // The turn already carries this; the log line is for whoever is tailing the
+    // worker rather than reading the desk.
+    if (outcome.outcome === 'failed') {
+      console.error('ticket0 assistant: turn failed', { ...where, model, error: outcome.detail });
+    }
+  } catch (err) {
+    const error = errorText(err);
+    console.error('ticket0 assistant: could not run', { ...where, model, error });
+    // The last resort: the assistant could not write its own failure, so the widget —
+    // the principal that just accepted the message — writes it. Best effort; if this
+    // refuses too, the desk's own storage is what is broken, and the log has both.
+    try {
+      const widget = await serviceStub(env, node, 'widget');
+      if (!widget) throw new Error('no widget service principal either');
+      await recordAssistantFailure(
+        { invoke: (op, input) => widget.invoke(op, input) as Promise<never> },
+        { conversationId: m.conversationId, messageId: m.messageId, model, error: err },
+      );
+    } catch (recordErr) {
+      console.error('ticket0 assistant: could not record the failure either', {
+        ...where,
+        model,
+        error: errorText(recordErr),
+      });
+    }
   }
 }
 

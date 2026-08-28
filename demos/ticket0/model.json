@@ -115,6 +115,16 @@
               }
             ]
           },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           }
@@ -130,6 +140,7 @@
           "confidence",
           "outcome",
           "meter_entry_id",
+          "error",
           "created_at"
         ],
         "additionalProperties": false
@@ -1178,6 +1189,7 @@
             "ticket0/merge",
             "ticket0/post-note",
             "ticket0/record-answer",
+            "ticket0/record-assistant-failure",
             "ticket0/tag-conversation",
             "ticket0/widget-post"
           ]
@@ -1194,6 +1206,7 @@
             "ticket0/post-note",
             "ticket0/post-public-reply",
             "ticket0/record-answer",
+            "ticket0/record-assistant-failure",
             "ticket0/tag-conversation",
             "ticket0/widget-post"
           ]

@@ -54,6 +54,15 @@ export const SEARCH_OVERFETCH = 4;
 export const TICKET0_SEARCH_MAX = Math.floor(MAX_SEARCH_LIMIT / SEARCH_OVERFETCH);
 
 /**
+ * How much of a failure's reason a turn keeps. A provider's error body can be a page
+ * of HTML; the first two thousand characters carry the status line and the sentence
+ * after it, which is what a person reading the card needs. The harness truncates to
+ * this BEFORE recording — a reason too long to record would otherwise turn a
+ * recordable failure into an unrecorded one, which is the silence this exists to end.
+ */
+export const ASSISTANT_ERROR_MAX = 2000;
+
+/**
  * What the HOST knew about the browser when the widget opened — `ClientContext`
  * flattened into columns. Shared by `widgetOpening` (where `widget-start` records it)
  * and `widgetSession` (where the first message carries it), so the two tables cannot
@@ -379,6 +388,12 @@ export const ticket0Entities = defineEntities({
    * the ledger counts tokens and stays ignorant of support desks, and richer
    * tagging hangs off the entry id here. `meter_entry_id` is nullable because a
    * turn that failed before the model answered has nothing to record.
+   *
+   * `error` is why a `failed` turn failed, in the words of whatever threw — the
+   * provider's status line, the refused permission, the missing credential. A failed
+   * turn used to carry only its outcome, so the desk could see THAT the assistant had
+   * not answered and nothing about why; the reason went to the dev server's stdout
+   * and, on a worker, nowhere at all. Null on every other outcome.
    */
   aiTurn: {
     table: 'ticket0_ai_turns',
@@ -393,6 +408,7 @@ export const ticket0Entities = defineEntities({
       confidence: z.number().nullable(),
       outcome: z.enum(['drafted', 'answered', 'escalated', 'failed']),
       meter_entry_id: z.string().nullable(),
+      error: z.string().nullable(),
       created_at: z.string(),
     }),
     parents: ['conversation'],
@@ -1076,6 +1092,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       citedArticleIds: z.array(z.string()),
       confidence: z.number().min(0).max(1).nullable().optional(),
       outcome: z.enum(['drafted', 'answered', 'escalated', 'failed']),
+      /** Why, when `outcome` is `failed` — what the model or the provider threw. Additive. */
+      error: z.string().min(1).max(ASSISTANT_ERROR_MAX).optional(),
     }),
     output: ticket0Entities.aiTurn.fields,
     http: { method: 'POST', path: '/conversations/{conversationId}/answers' },
@@ -1087,6 +1105,75 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       piiClass: 'none',
       payload: ['id', 'conversation_id', 'model', 'input_tokens', 'output_tokens', 'outcome'],
     },
+  },
+
+  /**
+   * Record that the assistant never got as far as an answer — as the WIDGET.
+   *
+   * `record-answer` is how the assistant records its own failure: the model threw,
+   * the assistant still holds `conversation:draft`, and the turn says `failed` with
+   * the reason. This is for the failure the assistant cannot record because the
+   * assistant itself is what failed: its service principal was never minted, its role
+   * was never assigned, its first operation was refused. The host that started the
+   * job sees that, and the only principal it can still be sure of is the widget's —
+   * the one that just accepted the customer's message — so the widget writes the turn.
+   *
+   * Without this, a desk whose assistant could not act at all was silent in exactly
+   * the way a slow one is: the customer's message sat in the thread, no turn existed,
+   * and the worker's bare `catch` had eaten the reason. Same row, same `failed`
+   * outcome, same card in the desk; no tokens, because nothing ran.
+   */
+  'ticket0/record-assistant-failure': {
+    summary: 'Record that the assistant could not act on a message',
+    permission: { key: 'conversation:widget', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({
+      conversationId: z.string(),
+      /** The customer message that went unanswered — the turn's id, so a retry finds it. */
+      turnId: z.string(),
+      model: z.string(),
+      error: z.string().min(1).max(ASSISTANT_ERROR_MAX),
+    }),
+    output: ticket0Entities.aiTurn.fields,
+    http: { method: 'POST', path: '/conversations/{conversationId}/assistant-failures' },
+    emits: {
+      entity: 'aiTurn',
+      entityIdFrom: 'id',
+      type: 'ticket0.assistant-failed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'conversation_id', 'model', 'error'],
+    },
+  },
+
+  /**
+   * Is the assistant answering? The desk admin's view of the failed turns.
+   *
+   * A failed turn is visible on its conversation, but an admin asking "is the
+   * assistant working" should not have to open conversations one by one to find out.
+   * The counts are the last 24 hours; `recent` is the newest failures, each naming
+   * its conversation so the card links to it. The host wraps this in
+   * `GET /api/assistant/status` and adds the one fact the module cannot know — which
+   * model this install would run, and whether it is a model at all.
+   */
+  'ticket0/assistant-health': {
+    summary: 'Recent assistant failures, for the admin deciding whether it is working',
+    permission: 'desk:configure',
+    output: z.object({
+      since: z.string(),
+      turns: z.number().int(),
+      failed: z.number().int(),
+      recent: z.array(
+        z.object({
+          id: z.string(),
+          conversation_id: z.string(),
+          subject: z.string(),
+          model: z.string(),
+          error: z.string().nullable(),
+          created_at: z.string(),
+        }),
+      ),
+    }),
+    http: { method: 'GET', path: '/assistant/health' },
   },
 
   /**
@@ -1112,6 +1199,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       model: z.string(),
       confidence: z.number().nullable(),
       outcome: z.enum(['drafted', 'answered', 'escalated', 'failed']),
+      error: z.string().nullable(),
       created_at: z.string(),
       citations: z.array(
         z.object({
@@ -1551,6 +1639,7 @@ export const ticket0Lifecycles = defineLifecycles(
         allow: [
           'ticket0/post-note',
           'ticket0/record-answer',
+          'ticket0/record-assistant-failure',
           'ticket0/ingest-message',
           'ticket0/widget-post',
           'ticket0/tag-conversation',
@@ -1566,6 +1655,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/post-public-reply',
           'ticket0/post-note',
           'ticket0/record-answer',
+          'ticket0/record-assistant-failure',
           'ticket0/ingest-message',
           'ticket0/widget-post',
           'ticket0/assign',

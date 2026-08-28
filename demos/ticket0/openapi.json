@@ -525,6 +525,109 @@
         }
       }
     },
+    "/api/assistant/health": {
+      "get": {
+        "operationId": "ticket0-assistant-health",
+        "summary": "Recent assistant failures, for the admin deciding whether it is working",
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "since": {
+                      "type": "string"
+                    },
+                    "turns": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "failed": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "recent": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "conversation_id": {
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "created_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "conversation_id",
+                          "subject",
+                          "model",
+                          "error",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "since",
+                    "turns",
+                    "failed",
+                    "recent"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/conversations/{conversationId}/close": {
       "post": {
         "operationId": "ticket0-close",
@@ -2586,6 +2689,16 @@
                           "failed"
                         ]
                       },
+                      "error": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "created_at": {
                         "type": "string"
                       },
@@ -2624,6 +2737,7 @@
                       "model",
                       "confidence",
                       "outcome",
+                      "error",
                       "created_at",
                       "citations"
                     ],
@@ -4150,6 +4264,11 @@
                       "escalated",
                       "failed"
                     ]
+                  },
+                  "error": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
                   }
                 },
                 "required": [
@@ -4231,6 +4350,16 @@
                         }
                       ]
                     },
+                    "error": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     }
@@ -4246,6 +4375,185 @@
                     "confidence",
                     "outcome",
                     "meter_entry_id",
+                    "error",
+                    "created_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/conversations/{conversationId}/assistant-failures": {
+      "post": {
+        "operationId": "ticket0-record-assistant-failure",
+        "summary": "Record that the assistant could not act on a message",
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "conversationId": {
+                    "type": "string"
+                  },
+                  "turnId": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "error": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                },
+                "required": [
+                  "conversationId",
+                  "turnId",
+                  "model",
+                  "error"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "conversation_id": {
+                      "type": "string"
+                    },
+                    "message_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "model": {
+                      "type": "string"
+                    },
+                    "input_tokens": {
+                      "type": "number"
+                    },
+                    "output_tokens": {
+                      "type": "number"
+                    },
+                    "cited_article_ids": {
+                      "type": "string"
+                    },
+                    "confidence": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "outcome": {
+                      "type": "string",
+                      "enum": [
+                        "drafted",
+                        "answered",
+                        "escalated",
+                        "failed"
+                      ]
+                    },
+                    "meter_entry_id": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "error": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "conversation_id",
+                    "message_id",
+                    "model",
+                    "input_tokens",
+                    "output_tokens",
+                    "cited_article_ids",
+                    "confidence",
+                    "outcome",
+                    "meter_entry_id",
+                    "error",
                     "created_at"
                   ],
                   "additionalProperties": false

@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-43 operations · 19 narrowed checks · 19 conformance pairs driven
+45 operations · 20 narrowed checks · 20 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**19 pairs driven** across 19 of this package's 19 narrowed checks.
+**20 pairs driven** across 20 of this package's 20 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
@@ -52,6 +52,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/post-note` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-public-reply` | `conversation:reply-public` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/record-answer` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/record-assistant-failure` | `conversation:widget` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/record-kb-articles` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/record-kb-ingest-failure` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/resolve` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
@@ -91,7 +92,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 23 | `ticket0/add-kb-source`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/create-saved-reply`, `ticket0/get-desk`, `ticket0/ingest-message`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-kb-sources`, `ticket0/list-saved-replies`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/read-outbound`, `ticket0/record-delivery`, `ticket0/rotate-verification-secret`, `ticket0/search-kb`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/usage-summary`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
+| Node-level check | 24 | `ticket0/add-kb-source`, `ticket0/assistant-health`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/create-saved-reply`, `ticket0/get-desk`, `ticket0/ingest-message`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-kb-sources`, `ticket0/list-saved-replies`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/read-outbound`, `ticket0/record-delivery`, `ticket0/rotate-verification-secret`, `ticket0/search-kb`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/usage-summary`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
 | Per-entity proof walk (`narrows`) | 1 | `ticket0/my-conversations` |
 
 ## 5. Not covered by this artifact

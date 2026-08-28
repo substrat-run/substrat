@@ -24,6 +24,8 @@ interface Turn {
   model: string;
   confidence: number | null;
   outcome: 'drafted' | 'answered' | 'escalated' | 'failed';
+  /** Why, when `outcome` is `failed`. */
+  error: string | null;
   citations: { id: string; title: string; url: string; headingPath: string }[];
 }
 
@@ -263,7 +265,9 @@ function Thread({
             {reopened && i > 0 ? (
               <EventDivider tone="reopened" label="reopened" meta="customer replied · back in the queue, same thread" />
             ) : null}
-            {turn && turn.outcome === 'drafted' && m.visibility === 'internal' ? (
+            {turn && turn.outcome === 'failed' ? (
+              <FailedCard message={m} turn={turn} />
+            ) : turn && turn.outcome === 'drafted' && m.visibility === 'internal' ? (
               <DraftCard message={m} turn={turn} busy={busy} act={act} conv={conv} />
             ) : (
               <MessageRow message={m} />
@@ -360,6 +364,89 @@ function MessageRow({ message }: { message: MessageWithCitations }) {
             public · {message.delivered_at ? 'delivered by email' : 'shown in widget'}
           </div>
         ) : null}
+      </div>
+    </div>
+  );
+}
+
+/* ── The failure card ───────────────────────────────────────────────────── */
+
+/**
+ * The assistant did not answer, and this says why.
+ *
+ * A failed turn used to render as an ordinary internal note — "I could not answer
+ * this one" — which told an agent the assistant had given up and nothing about what
+ * had gone wrong. The reason is on the turn now (`error`), so it goes on the card, in
+ * the words of whatever threw: a provider's status line, a refused permission, a
+ * principal that was never minted. Same avatar and name as any other turn — the
+ * assistant is staff, and staff are allowed to fail visibly.
+ */
+function FailedCard({ message, turn }: { message: MessageWithCitations; turn: Turn }) {
+  return (
+    <div
+      style={{
+        border: '1.5px dashed var(--danger-border-2)',
+        borderRadius: 8,
+        background: 'var(--surface)',
+        overflow: 'hidden',
+      }}
+    >
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          padding: '9px 13px',
+          background: 'var(--danger-bg)',
+          borderBottom: '1px solid var(--danger-border-2)',
+        }}
+      >
+        <Avatar name="Assistant" size={22} />
+        <span style={{ font: "600 12px 'Geist', sans-serif" }}>Assistant</span>
+        <span
+          className="mono"
+          style={{
+            font: "600 10px 'Geist Mono', monospace",
+            letterSpacing: '.07em',
+            color: 'var(--danger-3)',
+            background: 'var(--surface)',
+            border: '1px solid var(--danger-border-2)',
+            borderRadius: 4,
+            padding: '2px 7px',
+          }}
+        >
+          COULD NOT ANSWER
+        </span>
+        <span className="t-small" style={{ marginLeft: 'auto' }}>
+          {clock(message.created_at)} · <span className="mono">{turn.model}</span>
+        </span>
+      </div>
+      <div style={{ padding: '13px', font: "400 13px/1.65 'Geist', sans-serif", whiteSpace: 'pre-wrap' }}>
+        {message.body_text}
+      </div>
+      <div style={{ padding: '0 13px 13px' }}>
+        <div className="micro" style={{ marginBottom: 6 }}>
+          Why
+        </div>
+        <div
+          className="mono"
+          style={{
+            font: "400 11px/1.5 'Geist Mono', monospace",
+            color: 'var(--danger-3)',
+            background: 'var(--danger-bg)',
+            border: '1px solid var(--danger-border-2)',
+            borderRadius: 6,
+            padding: '8px 10px',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          {turn.error ?? 'No reason was recorded.'}
+        </div>
+        <div className="t-small" style={{ marginTop: 7 }}>
+          Nothing was sent and nothing was charged. The customer is waiting for a person — reply
+          below.
+        </div>
       </div>
     </div>
   );
