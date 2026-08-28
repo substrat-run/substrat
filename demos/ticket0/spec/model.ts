@@ -33,6 +33,7 @@
  * either way, and discovering them later would mean a migration rather than an edit.
  */
 import {
+  clientContext,
   defineEntities,
   defineLifecycles,
   defineOperations,
@@ -60,6 +61,30 @@ export const TICKET0_SEARCH_MAX = Math.floor(MAX_SEARCH_LIMIT / SEARCH_OVERFETCH
  * recordable failure into an unrecorded one, which is the silence this exists to end.
  */
 export const ASSISTANT_ERROR_MAX = 2000;
+
+/**
+ * What the HOST knew about the browser when the widget opened — `ClientContext`
+ * flattened into columns. Shared by `widgetOpening` (where `widget-start` records it)
+ * and `widgetSession` (where the first message carries it), so the two tables cannot
+ * drift apart on what a browser is. Every column is nullable: a node dev server has no
+ * geo, a request may carry no `User-Agent`, and a row that predates these columns has
+ * nothing to say. `user_agent` is the raw header beside the parsed names, so a better
+ * parser can re-read it later. No IP address: the city carries the useful part of it
+ * without the fingerprint.
+ */
+const CLIENT_COLUMNS = {
+  user_agent: z.string().nullable(),
+  language: z.string().nullable(),
+  browser: z.string().nullable(),
+  browser_version: z.string().nullable(),
+  os: z.string().nullable(),
+  os_version: z.string().nullable(),
+  device: z.enum(['desktop', 'mobile', 'tablet', 'bot', 'unknown']).nullable(),
+  country: z.string().nullable(),
+  region: z.string().nullable(),
+  city: z.string().nullable(),
+  timezone: z.string().nullable(),
+} as const;
 
 export const ticket0Entities = defineEntities({
   /**
@@ -241,6 +266,12 @@ export const ticket0Entities = defineEntities({
    * tokens. `origin` is recorded because the desk's embedding allowlist is checked
    * per request, and a session that started on an origin later removed from the
    * allowlist must stop working rather than coast.
+   *
+   * The `CLIENT_COLUMNS` are what the host knew about the browser when the widget
+   * opened, carried over from the opening by the first message — so an agent can see
+   * "Safari 17 on iOS, Stockholm, 3 am their time" without asking. Read back by
+   * `widget-session`, which is the one staff-side read of this table and omits
+   * `token_hash`.
    */
   widgetSession: {
     table: 'ticket0_widget_sessions',
@@ -252,6 +283,7 @@ export const ticket0Entities = defineEntities({
       token_hash: z.string(),
       started_at: z.string(),
       last_seen_at: z.string(),
+      ...CLIENT_COLUMNS,
     }),
     parents: ['conversation'],
     key: ['token_hash'],
@@ -281,6 +313,9 @@ export const ticket0Entities = defineEntities({
       token_hash: z.string(),
       started_at: z.string(),
       last_seen_at: z.string(),
+      // Recorded here, at the moment the host had the request in hand; the first
+      // message copies them onto the session, since the opening row is gone by then.
+      ...CLIENT_COLUMNS,
     }),
     key: ['token_hash'],
   },
@@ -798,6 +833,27 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       total: true,
     },
     http: { method: 'GET', path: '/conversations/{conversationId}/messages' },
+  },
+
+  /**
+   * The browser behind a widget conversation — what the visitor was holding and
+   * roughly where, as recorded when the session opened.
+   *
+   * Staff-side and entity-checked like every other read of a conversation; the
+   * session's `token_hash` is the one column that never leaves the row, since the
+   * table is otherwise a readable set of session tokens. One session, the latest: a
+   * merge can leave a survivor with several, and the most recent one is the browser
+   * the person is in now. Null for an email conversation, or a widget session that
+   * predates the client columns — the rail simply has no card to show.
+   */
+  'ticket0/widget-session': {
+    summary: 'The browser session behind a widget conversation',
+    permission: { key: 'conversation:read', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({
+      session: ticket0Entities.widgetSession.fields.omit({ token_hash: true }).nullable(),
+    }),
+    http: { method: 'GET', path: '/conversations/{conversationId}/widget-session' },
   },
 
   'ticket0/post-note': {
@@ -1344,6 +1400,15 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * its whole history; an absent one gets an anonymous contact — made when they first
    * say something, never before — that can see exactly one conversation; an invalid
    * one is refused.
+   *
+   * `client` is what the host's transport knew about the browser — user agent,
+   * language, and whatever geo the edge attached — already normalised by the
+   * adapter (`cloudflareClientContext` on Workers, `clientContextOf` anywhere). It
+   * arrives as INPUT because module code has no request to read and must not
+   * acquire one; and it is optional because a caller with no transport (a test, a
+   * seed) has nothing to say. It is display and triage material, never authority.
+   * It is recorded on the opening and travels with it onto the session when the
+   * first message binds one.
    */
   'ticket0/widget-start': {
     summary: 'Open a chat session from an embedded widget',
@@ -1352,6 +1417,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     permission: 'conversation:widget',
     input: z.object({
       origin: z.string().url(),
+      client: clientContext.optional(),
       identity: z
         .object({
           externalId: z.string(),

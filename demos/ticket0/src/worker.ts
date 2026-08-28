@@ -50,7 +50,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { CloudflareScopeHost, defineScopeDO } from '@substrat-run/adapter-cloudflare';
+import { CloudflareScopeHost, cloudflareClientContext, defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import {
@@ -577,6 +577,9 @@ mountWidgetSurface(app, {
     const declared = await invoke<{ origins: string[] }>('ticket0/widget-origins', {});
     return { invoke, allowedOrigins: declared.origins };
   },
+  // The edge knows where the request came from; the adapter is the one place that
+  // reads `request.cf`, and the operation sees only the normalised shape.
+  clientOf: (c) => cloudflareClientContext(c.req.raw),
   onCustomerMessage: (c, m) => {
     // `waitUntil`, not a floating promise: a Workers isolate stops executing the moment
     // the response is returned, so an un-tracked model call would be cancelled mid-flight

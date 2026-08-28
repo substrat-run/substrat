@@ -183,8 +183,57 @@ export const ticket0Migrations: SqlMigration[] = [
     `,
   },
   {
-    // add-ticket0_ai_turns-error
+    // add-ticket0_widget_openings-user_agent-and-21-more
     version: '0003',
+    sql: `
+      ALTER TABLE ticket0_widget_openings ADD COLUMN user_agent TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN language TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN browser TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN browser_version TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN os TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN os_version TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN device TEXT CHECK (device IN ('desktop','mobile','tablet','bot','unknown'));
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN country TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN region TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN city TEXT;
+
+      ALTER TABLE ticket0_widget_openings ADD COLUMN timezone TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN user_agent TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN language TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN browser TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN browser_version TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN os TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN os_version TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN device TEXT CHECK (device IN ('desktop','mobile','tablet','bot','unknown'));
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN country TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN region TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN city TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN timezone TEXT;
+    `,
+  },
+  {
+    // add-ticket0_ai_turns-error
+    version: '0004',
     sql: `
       ALTER TABLE ticket0_ai_turns ADD COLUMN error TEXT;
     `,

@@ -45,3 +45,5 @@ export type { R2BlobStores, R2BlobStoresOptions } from './r2.js';
 export { createRouteResolver } from './route-resolver.js';
 export type { RouteResolver } from './route-resolver.js';
 export type { ControlPlaneReader, DoCheckerDeps } from './checker.js';
+export { cloudflareClientContext, cloudflareGeo } from './client-context.js';
+export type { CloudflareRequestLike } from './client-context.js';

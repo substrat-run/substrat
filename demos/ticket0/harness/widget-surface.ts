@@ -25,7 +25,7 @@
  * Nothing here is doing access control; it is deciding which desk and which origin.
  */
 import type { Context, Hono } from 'hono';
-import { substratError } from '@substrat-run/contracts';
+import { clientContextOf, substratError, type ClientContext } from '@substrat-run/contracts';
 
 /** A desk, resolved for one request: how to act as its widget service, and where it is embeddable. */
 export interface WidgetDesk {
@@ -50,6 +50,17 @@ export type ResolveWidgetDesk = (c: Context, origin: string) => Promise<WidgetDe
 
 export interface WidgetSurfaceOptions {
   readonly resolveDesk: ResolveWidgetDesk;
+  /**
+   * What this host knows about the browser opening a session — handed to
+   * `widget-start` as input, since module code has no request to read.
+   *
+   * The default reads the headers every host has (`User-Agent`, `Accept-Language`)
+   * and knows no geo. A host behind an edge that does know overrides it with its
+   * adapter's normaliser — the worker passes `cloudflareClientContext` — and the
+   * operation sees the same shape either way. That is the whole point of the seam:
+   * the vertical never learns which runtime it is on.
+   */
+  readonly clientOf?: (c: Context) => ClientContext;
   /**
    * Called after a customer message lands, so the assistant can answer it.
    *
@@ -78,6 +89,7 @@ export function mountWidgetSurface(
   options: WidgetSurfaceOptions,
 ): void {
   const { resolveDesk } = options;
+  const clientOf = options.clientOf ?? ((c: Context) => clientContextOf(c.req.raw.headers));
 
   /**
    * The door. Every `/widget/*` request passes the desk's embedding allowlist here, and
@@ -149,11 +161,13 @@ export function mountWidgetSurface(
   app.post('/widget/sessions', async (c: Context) => {
     const { desk, origin } = deskOf(c);
     const body = (await c.req.json().catch(() => ({}))) as { identity?: unknown };
-    // `origin` comes from the header. The body may carry an identity signature — which
-    // the operation verifies against the desk's secret — and nothing else.
+    // `origin` comes from the header, and so does `client`: both are facts about the
+    // request that the page cannot forge. The body may carry an identity signature —
+    // which the operation verifies against the desk's secret — and nothing else.
     return c.json(
       await desk.invoke('ticket0/widget-start', {
         origin,
+        client: clientOf(c),
         identity: body.identity ?? null,
       }),
     );
