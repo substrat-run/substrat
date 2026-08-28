@@ -70,11 +70,12 @@ indistinguishable from a real one.
 | `_substrat_attachments` | attachment records against your entities |
 | `_substrat_platform_requests` | durable [platform intents](/concepts/platform) a vertical enqueued for the platform to execute |
 | `_substrat_schedule_state` | the last-fired cadence per registered schedule |
+| `_substrat_idempotency` | recorded responses per `(subject, Idempotency-Key)`, with the request fingerprint that tells a replay from a reuse; pruned after 24 hours |
 
 The directory database holds the other half — tenants, scopes, hostnames, verticals and
 their versions and channels, orgs, roles, entitlements, identity pools and links,
-connections and their sealed secrets, subject keys, and the admin, access and ops-failure
-logs.
+connections and their sealed secrets, subject keys, impersonation sessions
+(`_substrat_impersonations`), and the admin, access and ops-failure logs.
 
 ## The host surface
 
