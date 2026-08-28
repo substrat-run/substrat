@@ -48,7 +48,7 @@
  * kernel" is the failure this has to make visible.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, extname, join, resolve } from 'node:path';
 import { fileForLink, START_HERE, tableOfContents, type IndexedPage } from './sidebar.mjs';
 import { altFor } from './theme/components/alt.mjs';
 
@@ -179,7 +179,7 @@ export function propsOf(attrs: string): Record<string, string> {
  * plain arrays — and fall back to a pointer at the rendered page only when there
  * is genuinely nothing to flatten.
  */
-export function toTwin(raw: string): string {
+export function toTwin(raw: string, srcDir?: string): string {
   const { body } = splitFrontmatter(raw);
   const out: string[] = [];
   let inFence = false;
@@ -199,6 +199,15 @@ export function toTwin(raw: string): string {
     }
     if (inFence) {
       push(line);
+      continue;
+    }
+
+    // A file the page pulls in at build time. The rendered page resolves it; the
+    // twin has to as well, or a walkthrough that exists to show whole files hands
+    // an agent a page of pointers.
+    const pulled = pulledIn(line, srcDir);
+    if (pulled) {
+      for (const l of pulled) push(l);
       continue;
     }
 
@@ -239,6 +248,38 @@ export function toTwin(raw: string): string {
     .replace(/\]\((\/[^)\s]*)\)/g, (_m, link: string) => `](${twinUrl(link)})`);
 
   return `${collapseBlankRuns(linked).trimEnd()}\n`;
+}
+
+/** VitePress's snippet import: `<<< @/path`, with an optional `{lang}` or region suffix. */
+const SNIPPET = /^<<<\s*@\/(\S+?)(?:[#{]\S*)?\s*$/;
+/** VitePress's markdown include: `<!--@include: @/path{from,to}-->`, the range 1-based. */
+const INCLUDE = /^<!--@include:\s*@\/(\S+?)(?:\{(\d*),(\d*)\})?\s*-->$/;
+
+/**
+ * The lines a snippet or include stands for (#741), or `undefined` for any other
+ * line. `@/` is the docs source directory, exactly as VitePress resolves it, so
+ * a walkthrough pulling `@/../../demos/todo/spec/model.ts` into the page pulls
+ * the same file into the twin. A snippet becomes a fence tagged by extension; an
+ * include is spliced in as the markdown it is, honouring the line range.
+ *
+ * Without a source directory (a caller with only the text) the line is kept as
+ * written, which is what the twin did before and is still the honest fallback.
+ */
+function pulledIn(line: string, srcDir: string | undefined): string[] | undefined {
+  if (!srcDir) return undefined;
+  const snippet = SNIPPET.exec(line.trim());
+  if (snippet) {
+    const file = resolve(srcDir, snippet[1]!);
+    return [`\`\`\`${extname(file).slice(1)}`, readFileSync(file, 'utf8').trimEnd(), '```'];
+  }
+  const include = INCLUDE.exec(line.trim());
+  if (include) {
+    const lines = readFileSync(resolve(srcDir, include[1]!), 'utf8').trimEnd().split('\n');
+    const from = include[2] ? Number(include[2]) : 1;
+    const to = include[3] ? Number(include[3]) : lines.length;
+    return lines.slice(from - 1, to);
+  }
+  return undefined;
 }
 
 /** Three blank lines in a row is an artifact of stripping, not authorial intent. */
@@ -301,7 +342,7 @@ export function buildArtifacts(srcDir: string, repoRoot: string): Artifact[] {
 
   // The twins.
   for (const { page, raw } of pages.values()) {
-    artifacts.push({ path: page.file, contents: toTwin(raw) });
+    artifacts.push({ path: page.file, contents: toTwin(raw, srcDir) });
   }
 
   // The index.
@@ -399,7 +440,7 @@ export function buildArtifacts(srcDir: string, repoRoot: string): Artifact[] {
       const { raw } = pages.get(page.link)!;
       full.push('---', '', `# ${indexLabel(page)}`, '', `Source: ${twinUrl(page.link)}`, '');
       // The twin's own H1 would collide with the section header above it.
-      const twin = toTwin(raw);
+      const twin = toTwin(raw, srcDir);
       const h1 = titleOf(raw, page.text);
       full.push(twin.replace(`# ${h1}\n`, '').trimStart(), '');
     }
