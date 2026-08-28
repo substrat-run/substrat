@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 import { buildArtifacts, emitInto } from './llms.mjs';
-import { guideSidebar } from './sidebar.mjs';
+import { changelogSidebar, guideSidebar } from './sidebar.mjs';
 
 export default withMermaid(defineConfig({
   title: 'Substrat',
@@ -63,6 +63,10 @@ export default withMermaid(defineConfig({
       { text: 'Verticals', link: '/verticals/', activeMatch: '/verticals/' },
       { text: 'Platform', link: '/platform/', activeMatch: '/platform/' },
       { text: 'Reference', link: '/reference/contracts', activeMatch: '/reference/' },
+      // Last, and deliberately apart from the sections a reader takes in order: the
+      // changelog is dated, not sequenced. Its sidebar is read from the directory
+      // (sidebar.mts), so Monday's entry reaches the nav with nothing else to remember.
+      { text: 'Changelog', link: '/changelog/', activeMatch: '/changelog/' },
     ],
 
     sidebar: {
@@ -73,6 +77,7 @@ export default withMermaid(defineConfig({
       '/verticals/': guideSidebar(),
       '/platform/': guideSidebar(),
       '/reference/': guideSidebar(),
+      '/changelog/': changelogSidebar(),
     },
 
     outline: { level: [2, 3] },
