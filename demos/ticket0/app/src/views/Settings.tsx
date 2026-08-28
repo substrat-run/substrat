@@ -643,7 +643,9 @@ function Knowledge() {
         </form>
         <div className="t-small" style={{ marginTop: 8 }}>
           {KINDS.find((k) => k.value === draft.kind)?.hint} It is read as soon as it is added;
-          the same URL twice is the same source.
+          the same URL twice is the same source. A hosted desk can only reach the hosts its
+          version declares (<span className="mono">substrat.outbound</span> in package.json) —
+          a source on any other host is refused when read, and the refusal shows on its row.
         </div>
         {addFailed ? (
           <div className="t-small" style={{ marginTop: 8, color: 'var(--danger-2)' }}>

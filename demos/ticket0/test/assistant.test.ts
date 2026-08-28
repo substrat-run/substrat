@@ -192,15 +192,21 @@ describe('ingesting into a desk', () => {
   it('a read that fails is recorded on the source, keeping the last good read', async () => {
     const admin = await at(world.kestrel, 'admin');
     const source = ((await admin.invoke('ticket0/list-kb-sources', {})) as Page<SourceRow>).entries[0]!;
+    // A good read of our own first, so the case does not lean on the test above for
+    // the timestamp it is about to assert on.
+    await readSource(asTarget(admin), source.id, fakeFetch);
+    const good = await sourceRow(admin, source.id);
+    expect(good.last_ingested_at).not.toBeNull();
+
     // Before `record-kb-ingest-failure`, this left the row at `ingesting` for good —
     // the throw was the only trace, and it went to the dev server's stdout.
     await expect(readSource(asTarget(admin), source.id, broken)).rejects.toThrow(/404/);
     const failed = await sourceRow(admin, source.id);
     expect(failed.status).toBe('failed');
     expect(failed.last_error).toMatch(/404 Not Found fetching/);
-    // The good read from the test above is still the last good read: the assistant
-    // is answering from that copy, and the desk should say when it is from.
-    expect(failed.last_ingested_at).not.toBeNull();
+    // The good read is still the last good read, to the millisecond: the assistant is
+    // answering from that copy, and the desk should say when it is from.
+    expect(failed.last_ingested_at).toBe(good.last_ingested_at);
 
     const again = await readSource(asTarget(admin), source.id, fakeFetch);
     expect(again).toEqual({ added: 0, updated: 0, unchanged: 1 });
