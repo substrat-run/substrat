@@ -315,8 +315,22 @@ const freeIntervals = z.array(freeIntervalShape);
  * which is the shape a composing vertical declared its `output` with when it
  * compiled against some earlier version of this engine.
  */
-const toResource = (r: ResourceRow): Resource =>
-  returns(resourceShape, `resource ${r.id}`, {
+/**
+ * The stored resource row, parsed BEFORE anything is made of it.
+ *
+ * `active` is a 0/1 column that `toResource` turns into a boolean with `=== 1`,
+ * and the sweep in `availability` reads it the same way — so a retyped column
+ * (an `active` that arrived as text) would not fail the published parse; it
+ * would publish every resource as inactive and every calendar as empty. The
+ * registry's row schema is the shape the migration promised; hold the row to it
+ * first, and the normalisation only ever sees a number.
+ */
+const storedResource = (r: ResourceRow): ResourceRow =>
+  returns(resourceRow, `resource row ${r.id}`, r);
+
+const toResource = (raw: ResourceRow): Resource => {
+  const r = storedResource(raw);
+  return returns(resourceShape, `resource ${r.id}`, {
     id: r.id,
     kind: r.kind,
     name: r.name,
@@ -324,6 +338,7 @@ const toResource = (r: ResourceRow): Resource =>
     active: r.active === 1,
     createdAt: r.created_at,
   });
+};
 
 /** The one definition of "a hold past its deadline is expired". */
 export function effectiveStateOf(
@@ -383,7 +398,7 @@ function getResourceRow(ctx: OperationContext, id: string): ResourceRow {
     [id],
   )[0];
   if (!row) throw substratError('not_found', `resource not found: ${id}`);
-  return row;
+  return storedResource(row);
 }
 
 function getRow(ctx: OperationContext, id: string): ReservationRow {

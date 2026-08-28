@@ -127,6 +127,23 @@ describe('engine-booking — the seam is parsed, not asserted', () => {
     ).rejects.toThrow(/does not match the shape this engine publishes/);
   });
 
+  it('a retyped `active` is caught BEFORE it is normalised to a boolean', async () => {
+    const c = await court();
+    // `active` is 0/1 and `toResource` reads it with `=== 1`. A text value would
+    // not fail the published parse — it would quietly publish the court as
+    // inactive and its calendar as empty. (`'1'` would be coerced back to an
+    // integer by SQLite's column affinity, so the drift has to be non-numeric.)
+    await drift(`UPDATE booking_resources SET active = 'yes'`);
+
+    await expect(h.run((ctx) => listResources(ctx))).rejects.toThrow(
+      /resource row .* does not match the shape this engine publishes.*active/s,
+    );
+    await expect(
+      h.run((ctx) => availability(ctx, { resourceId: c.id, from: T17, to: T20, now: NOW })),
+    ).rejects.toThrow(/does not match the shape this engine publishes.*active/s);
+    await expect(hold(c.id)).rejects.toThrow(/does not match the shape this engine publishes/);
+  });
+
   it('the page walk parses every entry it publishes, not just the first read', async () => {
     const c = await court();
     await hold(c.id);
