@@ -162,10 +162,12 @@ Entity-required (module code can never write a scope- or tenant-wide grant), del
 more than it holds), and transactional with the operation. Every later `ctx.check` reads
 the grant, so nothing else has to remember who may touch what.
 
-What is **not** revocable, so you can tell a real absence from this one: a `ctx.link` edge
-is permanent, and org membership is the coarse-grained tool — a whole org, not one record.
-Never mint an org per domain row, or a membership table consulted by hand in every handler,
-to get a revoke.
+Neither alternative is this, so you can tell a real absence from this one: a `ctx.link`
+edge is **not revocable at all** — it is permanent — and org membership is revocable but
+coarse-grained — a whole org, not one record. Never mint an org per domain row, or a
+membership table consulted by hand in every handler, to get a revoke. The two-line
+reference is the [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)
+(`src/module.ts`, `todo/share-list` and `todo/revoke-share`).
 
 ## The gates — run them, believe them
 

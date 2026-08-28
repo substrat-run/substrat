@@ -96,11 +96,12 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 1. **Kernel owns no domain entities.** It provides `OperationContext` (`ctx.sql`,
    `ctx.emit`, `ctx.check`, `ctx.link`, `ctx.grant`/`ctx.revoke`), scope provisioning,
    roles/grants, migrations. **User-initiated sharing is `ctx.grant(principal, perm,
-   entityRef)` and its `ctx.revoke`** — entity-required and delegating (the caller's own
-   decision on that entity is re-checked), transactional with the operation. What is *not*
-   revocable: a `ctx.link` edge is permanent, and org membership is the coarse tool. Never
-   mint an org per domain row to get a revoke (#798); `demos/todo/src/module.ts` is the
-   two-line reference.
+   entityRef)` and `ctx.revoke(principal, perm, entityRef)`** — entity-required and
+   delegating (the caller's own decision on that entity is re-checked), transactional with
+   the operation. Neither alternative is this: a `ctx.link` edge is permanent (not
+   revocable at all), and org membership is revocable but coarse — a whole org, not one
+   record. Never mint an org per domain row to get a revoke (#798);
+   `demos/todo/src/module.ts` is the two-line reference.
 2. **Engines own invariants**: state machines that can't skip states, append-only
    entries, immutable-after-export, every mutation emits an event, every operation
    checks a permission. Engines never import other engines (**star topology**) —

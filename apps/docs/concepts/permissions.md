@@ -282,9 +282,9 @@ Three guardrails make this non-escalating by construction:
   same as its rows and its events.
 
 Every later `ctx.check` reads the grant, so nothing else in the app has to remember who
-may touch what. What is deliberately **not** revocable: a `ctx.link` parent edge is
-permanent, and org membership is the coarse-grained tool (a whole org, not one record).
-The mistake this section exists to prevent is minting an org per domain row — or keeping a
+may touch what. Neither alternative is this: a `ctx.link` parent edge is **not revocable
+at all** — it is permanent — and org membership is revocable but coarse-grained (a whole
+org, not one record). The mistake this section exists to prevent is minting an org per domain row — or keeping a
 membership table consulted by hand in every handler — to get a revoke the kernel already
 has. The [todo demo](https://github.com/substrat-run/substrat/tree/main/demos/todo)
 (`src/module.ts`, `todo/share-list` and `todo/revoke-share`) is the two-line reference.
