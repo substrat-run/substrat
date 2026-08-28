@@ -1,5 +1,89 @@
 # @substrat-run/demo-ticket0
 
+## 0.1.2
+
+### Patch Changes
+
+- 75bd27c: The owner seat is claimed by whoever signs in first — for fifteen minutes, and then by a claim link (#925)
+
+  A hosted vertical's owner seat is minted empty at provision and bound to a human by the first
+  verified subject to arrive. That is the right trade in the install flow, where the installer
+  opens the app seconds later. It was the wrong trade everywhere else: the window was unbounded
+  in time and in audience, so a CI-deployed instance whose issuer had open sign-up sat as a seat
+  anyone could take, indefinitely — and nothing anywhere said it was open. A re-provision made
+  it worse: `INSERT OR REPLACE` re-minted the pending seat on every reconcile, so a sweep could
+  hand a claimed desk's ownership to the next stranger to sign in.
+
+  **`@substrat-run/vertical-auth`** — the rules now live in `owner-seat.ts`, unit-tested over a
+  real SQLite. The first-sign-in claim closes `FIRST_SIGN_IN_WINDOW_MS` (15 min) after provision;
+  a seat from before the column existed reads as closed. The seat then stays pending — `needsSetup`
+  keeps saying so, and the new `ownerSeat` says _why_ — until a claim binds it. `mintOwnerClaim` /
+  `claimOwner` are the claim link (only the token's hash is stored; minting again retires the
+  earlier link), and `mintOwnerClaimLink` does token + hash + URL in one call. A re-provision
+  keeps the window it has and never re-opens a claimed seat.
+
+  **`@substrat-run/vertical-host`** — two flavored routes, `GET /internal/owner-seat` and
+  `POST /internal/owner-claim`, over the `ownerSeat` / `mintOwnerClaim` hooks (501 without them),
+  parsed on the way out as well as in. **`@substrat-run/contracts`** — the `ownerSeat` and
+  `ownerClaimLink` shapes. **`@substrat-run/control-plane-api`** — `GET …/owner-seat` and
+  `POST …/owner-claim` per scope, with the link's origin taken from the platform's own hostname
+  directory (canonical `app` first), never from a body.
+
+  **Dashboard** — an _Owner seat_ card on the app's Overview: claimed, unclaimed with the window
+  still open (pulsing — open it now), or unclaimed and closed, with a _Get claim link_ button.
+  The link is shown once and stored nowhere.
+
+  **The four verticals on vertical-auth** (callout, meridian, manyfold, ticket0) — `/api/me`'s
+  `needs-setup` answer now carries `firstSignInOpen`, the SPAs say which way in applies instead
+  of offering a sign-in that binds nobody, and `?claim=<token>` → `POST /api/claim-owner` is the
+  counterpart of the invite flow.
+
+  Not built: binding from the projected identity links (#406). The dashboard links identities
+  under the platform's own pool, and a hosted app's issuer is always an external one or a team
+  Auth Server — so no link would ever match, and matching on `sub` alone would be the cross-pool
+  bind the issue warns against.
+
+- 0822167: A desk admin can add a documentation source, and a read that fails says so on the row
+
+  Settings → Knowledge base listed the desk's sources and offered "Re-read", and that was
+  all: `ticket0/add-kb-source` existed, `desk-admin` held `kb:manage`, and no screen ever
+  called it. Two more things stood between an admin and a source that actually worked.
+  "Re-read" called `/kb/sources/:id/ingest`, which records the intent and emits — the fetch
+  lives on a separate `/refresh` route the hosted worker mounted and nothing ever called, so
+  on a hosted desk a re-read spun at `ingesting` for good. And nothing anywhere wrote
+  `status = 'failed'`: a URL that could not be read — the likeliest thing a person types —
+  spun the same way, with the reason on the dev server's stdout and nowhere else.
+
+  - **`ticket0/record-kb-ingest-failure`** (new, `kb:manage`, entity-scoped, emits
+    `ticket0.kb-ingest-failed`): the other half of `record-kb-articles`. Marks the source
+    `failed` with the reason and leaves `last_ingested_at` alone — it is when the last GOOD
+    read happened, which is what the desk wants to know once one fails.
+  - **`harness/kb-refresh.ts`** — `readSource()` marks, fetches, records the articles or
+    the failure, and `mountKbRefresh()` mounts `POST /api/kb/sources/:id/refresh` (502 with
+    the reason on a failed read). The worker's inline route is replaced by it, the dev server
+    mounts the same one, and its boot-time ingest goes through it too, so the two hosts
+    cannot drift and a boot-time failure lands on the row.
+  - **The screen** gains "Add a source" — label, URL, kind — which adds and reads at once.
+    Only `llms.txt` and `Markdown` are offered: `sitemap` is in the model but the fetcher
+    does not implement it, and a control that always fails is worse than none. "Re-read"
+    now hits `/refresh`. A failed row shows the reason and whether a last good copy exists.
+  - A network failure names the URL (`could not reach …`) rather than the runtime's bare
+    `fetch failed`, since the message is what the row shows.
+
+  Additive: the new operation joins `openapi.json`, `api.generated.ts`, `model.json` and
+  `CONFORMANCE.md` through their gates; no permission key or role changed.
+
+- c2d5c2a: The ticket0 support widget on one docs page. `widget.js` now keeps one widget per page and exposes `window.ticket0.unmount()` for a host with a client-side router; the docs site mounts it at `/guide/support` through a `Ticket0Widget` theme component that tears it down on navigation.
+- Updated dependencies [75bd27c]
+  - @substrat-run/vertical-auth@0.9.0
+  - @substrat-run/vertical-host@0.91.0
+  - @substrat-run/contracts@0.91.0
+  - @substrat-run/dev-issuer@0.1.5
+  - @substrat-run/engine-metering@0.4.1
+  - @substrat-run/adapter-cloudflare@0.91.0
+  - @substrat-run/adapter-sqlite@0.91.0
+  - @substrat-run/kernel@0.91.0
+
 ## 0.1.1
 
 ### Patch Changes

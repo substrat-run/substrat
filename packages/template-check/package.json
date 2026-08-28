@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/template-check",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "private": true,
   "description": "Compiles create-substrat's template against THIS checkout — the call site the compiler never saw (#878)",
   "license": "Apache-2.0",
