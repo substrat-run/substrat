@@ -59,6 +59,93 @@ two tenants is one human or two), and `orgMembership`, whose `revokedAt` is a to
 rather than a deletion. See [The platform layer](/concepts/platform) and
 [Authentication & identity](/concepts/identity).
 
+The owner seat of a hosted scope (#925) is here as well: `ownerSeat` / `OwnerSeat` —
+`claimed` | `unclaimed` | `unknown`, the bound `owner`, whether the plain first-sign-in
+path is still `open` and until when, and whether a `claimLink` is outstanding — and
+`ownerClaimLink` / `OwnerClaimLink`, the freshly minted `claimUrl` + `expiresAt` that
+rides one exchange from the vertical through the control plane to the dashboard and is
+persisted by nobody (the vertical keeps only its hash).
+
+## Errors (`errors.ts`)
+
+The failure vocabulary, one closed taxonomy for every layer (D-22 / RFC 9457):
+
+- `errorCode` / `ErrorCode` — `unauthenticated`, `permission_denied`, `forbidden`,
+  `not_found`, `conflict`, `validation_failed`, `precondition_failed`, `rate_limited`,
+  `unavailable`, `internal`. A module never invents a code; it narrows one with a
+  `reason` slug it owns (`conflict` + `reason: 'already_exported'`).
+- `problem` / `Problem` — the wire body: the RFC 9457 members plus `code` and the
+  per-code extensions in `PROBLEM_EXTENSIONS` (`permission_denied.permission` /
+  `.entity`, `validation_failed.errors` as `validationIssue[]` — path, message, code —
+  `precondition_failed.entity`, `rate_limited.retryAfter`). `PROBLEM_CONTENT_TYPE`,
+  `PROBLEM_TYPE_BASE` and `problemTypeFor(code)` name the `type` URIs; `PROBLEM_CATALOG`
+  and `DOCUMENTED_ERROR_CODES` are what the OpenAPI emitter documents.
+- `substratError(code, message, extensions?)` — the one way to throw: it types *and*
+  parses the extensions at the throw site. `SubstratError`, `isSubstratError`,
+  `errorCodeOf`.
+- `toProblem(err, instance?)` — any thrown value to a `Problem`, an unknown one becoming
+  `internal` with nothing leaked; `problemForStatus` for the transport-level cases.
+  `validationIssuesFrom(zodError)` is what turns a failed input parse into the
+  `validation_failed.errors` member.
+- `wireFailure` / `toWireFailure` / `fromWireFailure` — the same error carried across a
+  structured-clone or RPC boundary and rehydrated as the same class on the other side.
+
+See [Failures are data](/concepts/api-design#_5-failures-are-data).
+
+## Pagination (`pagination.ts`)
+
+The one list convention: keyset pages over the list's own sort key, `{ entries,
+nextCursor }` out. `ListPage` (`limit`, `cursor`, `order` — the kernel-side params,
+unset limit meaning *unbounded* for an internal caller), `listPageQuery` /
+`ListPageQuery` (the HTTP query, which always defaults a page), `Page<T>` and
+`CountedPage<T>` (`total`, opt-in per operation because it is a second query),
+`pageOf` / `countedPageOf` / `mapPage` / `isPage` / `pageSchema`, `listLimitOf`
+(`LIST_PAGE_DEFAULT` 20, `LIST_PAGE_MAX` 200 — one resolution for the HTTP layer,
+`ctx.page` and handler-composed reads), the `Link` and `X-Total-Count` headers
+(`PAGE_LINK_HEADER`, `PAGE_TOTAL_HEADER`, `PAGE_EXPOSED_HEADERS`, `nextPageLink`),
+`LIST_SORT_PARAM`, and `pageVisible` — the over-fetch loop a per-row-filtered read owns.
+See [Lists are pages, not dumps](/concepts/api-design#_4-lists-are-pages-not-dumps).
+
+## Concurrency (`concurrency.ts`)
+
+The wire half of optimistic concurrency (#129): `ETAG_HEADER` (`ETag`, always strong),
+`IF_MATCH_HEADER`, `CONCURRENCY_EXPOSED_HEADERS`, `etagOf(version)` and
+`ifMatchAdmits(ifMatch, version)`. The version itself is the ULID of the entity's last
+event and lives in the kernel (`entityVersionOf`), because contracts sits below the
+spine and must not know which table answers. A stale tag is a `precondition_failed`
+`Problem` that deliberately does not carry the current version. See
+[A read-modify-write says what it is writing over](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over).
+
+## Idempotency (`idempotency.ts`)
+
+The wire half of request idempotency (#116): `IDEMPOTENCY_KEY_HEADER`
+(`Idempotency-Key`), `IDEMPOTENCY_REPLAYED_HEADER`, `IDEMPOTENCY_EXPOSED_HEADERS`,
+`isValidIdempotencyKey` (`IDEMPOTENCY_KEY_MAX_LENGTH`), `canonicalJson` and
+`requestFingerprint(operation, input)` — what makes two requests *the same request*, so a
+second key use with a different fingerprint is a reuse (`IDEMPOTENCY_REUSED`, 409) rather
+than a replay — plus `IDEMPOTENCY_RETENTION_MS` (24 h), `IDEMPOTENCY_RESULT_LIMIT` and
+`IDEMPOTENCY_REPLAY_UNAVAILABLE`. The table that remembers the answer is the kernel's
+(`_substrat_idempotency`). See [Writes are safe to retry](/concepts/api-design#_7-writes-are-safe-to-retry).
+
+## Impersonation (`impersonation.ts`)
+
+Acting as a principal with the real actor preserved (K-42): `beginImpersonationInput`
+(tenant, scope, `principal`, a `reason` of at least `IMPERSONATION_MIN_REASON` characters,
+`mode`, `minutes`), `impersonationMode` (`'read-only' | 'write'`), `impersonationSession`
+/ `ImpersonationSession` and its `impersonationSessionId`, `impersonationStamp` (the
+`{ session, actor }` pair every outbox row, denial and platform intent written under a
+session carries), `impersonationFilter`, and the bounds — `IMPERSONATION_MAX_MINUTES`
+(60, an over-ask is refused rather than clamped), `IMPERSONATION_DEFAULT_MINUTES` (15),
+`DEFAULT_IMPERSONATION_LIMIT`.
+
+## Denials (`denial.ts`)
+
+The refused-check log's shapes (K-35): `permissionDenial` / `PermissionDenial`,
+`denialFilter` (actor, permission, operation, `since`/`until`), `denialBucket` and
+`denialSummary` (per actor and key, busiest first, with the window's own floor), and
+`DEFAULT_DENIAL_LIMIT` / `DENIAL_LIMIT_MAX`. Read through `HostAdmin.listDenials` /
+`summarizeDenials`. See [Denials are recorded](/concepts/permissions#denials-are-recorded).
+
 ## Events (`events.ts`)
 
 - `entityRef` / `EntityRef` — the opaque `(entityType, entityId)` reference everything
@@ -179,6 +266,8 @@ compiler checks the joins between them. Full walkthrough in
 | `defineOperations(entities, permissions, engines?)` | declares operations against those entities, a declared permission set, and any composed engine registries |
 | `manifestEntities(entities, refs)` | composes the entity-referencing manifest fragments; derives `entityRelations` from each entity's `parents` |
 | `permissionsUsedBy` · `eventsEmittedBy` | derive the manifest's `permissions` and `events.emits` from the operations |
+| `operationInputsOf(ops)` | the `operationInputs` map a `ModuleRegistration` carries — every operation's declared input schema, which the **host** parses on every path in before the guards and the handler |
+| `operationConcurrencyOf(ops)` · `operationIdempotencyOptOutsOf(ops)` | the `operationConcurrency` map (which entity's version each operation's `If-Match` is checked against) and the operations that opted out of `Idempotency-Key` — both derived, never written a second time |
 | `emitModel` | renders the registry to deterministic JSON — the artifact `pnpm lint:model --check` gates |
 | `EntityRow<T, K>` | a declared entity's row type, for `ctx.sql.query<…>` |
 | `OperationImpl<Ops, Ctx>` | the handler map an operation set requires; bind with `satisfies` |

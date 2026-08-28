@@ -54,6 +54,9 @@ interface OperationContext {
   now(): Instant;                   // the operation's instant — the only clock
   emit(event: DomainEventInput): void;
   check(permission: PermissionKey, entity?: EntityRef): Promise<Decision>;
+  search(entityType: string, term: string, options?: SearchOptions): SearchHit[];
+  page<T>(entityType: string, params: PageParams): Page<T> | CountedPage<T>;
+  versionOf(entity: EntityRef): EntityVersion | null;
   entitlement(key: string): Promise<EntitlementView | null>;
   entitlements(): Promise<EntitlementView[]>;
   link(child: EntityRef, parent: EntityRef): void;
@@ -62,6 +65,7 @@ interface OperationContext {
   requestPlatform(request: PlatformRequestInput): PlatformRequestId;
   platformRequests(filter?: PlatformRequestFilter): PlatformRequest[];
   sealToConnection(provider: string, plaintext: string): Promise<SealedSecret>;
+  atomic<T>(fn: () => T | Promise<T>): Promise<T>;
 }
 ```
 
@@ -78,6 +82,21 @@ interface OperationContext {
   timestamp, tenant, scope, actor). See [Events & audit](/concepts/events).
 - **`check`** asks the permission checker about the ambient principal at the ambient
   node, optionally narrowed to one entity. See [Permissions](/concepts/permissions).
+- **`search`** returns entity ids from the FTS index the kernel derived from the
+  manifest's `searchables` — a module never writes a `MATCH` of its own. An entity type
+  nobody declared searchable throws `NotSearchable` rather than returning nothing.
+- **`page`** reads one page of a declared entity: the kernel composes the `WHERE` from
+  the operation's declared `filterable` columns, the `ORDER BY` from the caller's
+  choice among `sortable`, the keyset cursor, the `LIMIT`, and — when the declaration
+  asks for one — the total over the same `WHERE`. It reads the indexes it also
+  provisioned. Rows come back wrapped; `mapPage` re-shapes the entries and keeps the
+  cursor. An undeclared sort or filter throws (`SortNotDeclared`, `FilterNotDeclared`),
+  never silently applies nothing. See [Lists are pages, not dumps](/concepts/api-design#_4-lists-are-pages-not-dumps).
+- **`versionOf`** is an entity's version — the ULID of the last event about it, read
+  from the outbox; there is no version column. It is what a read-modify-write's
+  `If-Match` is checked against, and it survives a shred, so an erased entity can still
+  refuse a stale write. See
+  [A read-modify-write says what it is writing over](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over).
 - **`entitlement`** / **`entitlements`** read the tenant's currently-held
   entitlements at request time — the sanctioned way a hosted vertical gates a feature
   or enforces its own quota *without* a control-plane binding. `entitlement(key)`
@@ -109,6 +128,14 @@ interface OperationContext {
   see. It **fails closed and legibly**: no projected key for that provider throws, rather
   than emitting a request that silently reaches nobody. Await it *before* `ctx.emit`, which
   is what lets `emit` stay synchronous.
+- **`atomic`** runs a callback as a sub-transaction inside the operation's own. A throw
+  inside discards everything the callback wrote — rows, events, links, grants, platform
+  intents — while the operation's other writes survive, and it still commits once. This
+  is the **only** place module code may catch an engine error: an engine call composed
+  inside your transaction has no boundary of its own, so a bare `catch` would commit its
+  partial writes. `boundary-lint` R7 rejects the unprotected form. A succeeded `atomic` is
+  still provisional — if the operation later throws, its writes go too — and sub-transactions
+  nest but must not interleave.
 
 ## Testing with a clock
 
