@@ -324,11 +324,16 @@ async function seedDesk(
       displayName: spec.customer.name,
       signature,
     },
-  })) as { conversationId: string };
+  })) as { verified: boolean };
+  if (!started.verified) throw new Error('seed: the customer’s signature did not verify');
 
-  const conversation = (await agentStub.invoke('ticket0/get-conversation', {
-    conversationId: started.conversationId,
-  })) as { contact_id: string };
+  // Opening the widget opens no conversation — the first message does — but a visitor
+  // the site vouched for IS a contact from the start, which is what the grant needs.
+  const contacts = (await agentStub.invoke('ticket0/list-contacts', {})) as {
+    entries: { id: string; external_id: string | null }[];
+  };
+  const contact = contacts.entries.find((c) => c.external_id === spec.customer.email);
+  if (!contact) throw new Error('seed: the vouched-for customer has no contact');
 
   /**
    * The PORTAL grant — what a signed-in customer gets, and nothing the widget needs.
@@ -346,7 +351,7 @@ async function seedDesk(
       principalId: spec.customer.principal,
       permission: T0_PERM.conversationReadOwn,
       node,
-      entity: { entityType: 'contact', entityId: conversation.contact_id },
+      entity: { entityType: 'contact', entityId: contact.id },
       grantedBy: spec.customer.principal,
     });
   }
@@ -363,7 +368,7 @@ async function seedDesk(
     relay: spec.relay,
     widget: spec.widget,
     verificationSecret: rotated.secret,
-    customerContactId: conversation.contact_id,
+    customerContactId: contact.id,
     origin: spec.origin,
     devOrigins: spec.devOrigins,
   };

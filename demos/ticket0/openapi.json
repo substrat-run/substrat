@@ -6606,7 +6606,7 @@
             }
           }
         ],
-        "description": "Anonymous, or verified by an HMAC the host site’s server computed.",
+        "description": "Anonymous, or verified by an HMAC the host site’s server computed. Opens a session, not a conversation — the first message does that.",
         "tags": [
           "Widget"
         ],
@@ -6687,9 +6687,6 @@
                     "token": {
                       "type": "string"
                     },
-                    "conversationId": {
-                      "type": "string"
-                    },
                     "greeting": {
                       "type": "string"
                     },
@@ -6706,7 +6703,6 @@
                   "required": [
                     "sessionId",
                     "token",
-                    "conversationId",
                     "greeting",
                     "verified",
                     "origin",
