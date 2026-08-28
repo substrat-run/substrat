@@ -35,12 +35,18 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   With no flag it prints a week's raw material — every first-parent merge grouped by
   area, the commits that landed without a PR, and each package's version span
   (`--week 2026-w34` for a named week). With `--check`, CI asserts **completeness**:
-  every merge inside an entry's declared `range` is cited somewhere on its page. The
-  prose is authored, not generated, and deliberately carries none of the three marks
+  every merged PR inside an entry's declared `range` is named somewhere in its source
+  (a commit that landed without a PR is reported as a note, not failed on). The prose
+  is written for a **platform user** — what changed for them, no PR references — so
+  each entry accounts for its merges in a coverage-ledger HTML comment at the end.
+  The prose is authored, not generated, and deliberately carries none of the three marks
   below — no producer could re-emit a digest. What rots invisibly is coverage, and
-  that is what the gate holds. Written each Monday by the `weekly-changelog` skill,
-  which opens a PR and never merges it. Needs real history, so the CI checkout is
-  `fetch-depth: 0` and the check refuses to run on a shallow clone.
+  that is what the gate holds. Written each Monday by the **Weekly changelog** Scape
+  playbook (Substrat project) — the authoring rules live in its writing step, not in
+  this repo — which opens a PR and never merges it. **Never merge an entry before its
+  week has ended**: the gate reddens on the first later merge the entry does not name,
+  and the Monday run's refresh is what turns it green again. Needs real history, so
+  the CI checkout is `fetch-depth: 0` and the check refuses to run on a shallow clone.
 - `pnpm lint:scaffold` — the scaffold checkpoint (#797): `npm create substrat` at the
   published version, `npm install` from the registry with no workspace links, then the
   three gates a scaffolded project ships with. `packages/create-substrat/template` is
