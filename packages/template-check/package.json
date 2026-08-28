@@ -26,6 +26,7 @@
     "@cloudflare/workers-types": "catalog:",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
+    "create-substrat": "workspace:*",
     "typescript": "^7.0.0",
     "vitest": "catalog:"
   }

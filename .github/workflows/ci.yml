@@ -144,6 +144,60 @@ jobs:
       # into a field nobody reads, and it surfaced as a legal document not reaching a
       # counterparty (#716, #841). A floor, not an equality: the catalog may carry more.
       - run: pnpm lint:connector-grants
+      # ── Scope ────────────────────────────────────────────────────────────
+      # Everything above this line runs in full on every PR: the build is what
+      # the lints import from, and the lints together take fifteen seconds. The
+      # two steps below are the other ~80% of the job, and most of it is spent
+      # re-checking packages a PR never touched. So on a PR they run only over
+      # the packages the diff can have changed — the ones with a modified file,
+      # plus everything that depends on them, which is pnpm's own
+      # `--filter="...[ref]"` and reads the declared workspace graph.
+      #
+      # Two things keep that honest:
+      #
+      #   1. A push to main always runs everything. If the graph ever lies —
+      #      an edge a package.json does not declare — the merge goes red on
+      #      main, where the full run is, not silently green on a PR forever.
+      #   2. A change OUTSIDE every workspace package widens the scope back to
+      #      everything, unless it is one of the paths that cannot feed a
+      #      typecheck or a test (docs/, .changeset/, .claude/, a root README).
+      #      tools/ can — `template-sync.mjs` writes `packages/template-check`'s
+      #      sources — and so can the lockfile, pnpm-workspace.yaml (the
+      #      catalog), tsconfig.base.json and this workflow, so none of those
+      #      are on the inert list.
+      #
+      # The graph has to name every edge for this to hold, including the ones
+      # that are not imports: `packages/template-check` compiles files COPIED
+      # from `packages/create-substrat/template`, so it declares create-substrat
+      # as a devDependency purely for this step to see. A test reading another
+      # package's files by relative path would be the same hole; today none does.
+      - id: scope
+        if: github.event_name == 'pull_request'
+        env:
+          # Through the environment, not interpolated into the script: a `${{ }}`
+          # inside `run:` is pasted into Bash source before it runs.
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          base="origin/$BASE_REF"
+          members='^(packages|engines|connectors|demos|apps)/'
+          inert='^(docs/|\.changeset/|\.claude/|\.githooks/|\.vscode/|[^/]+\.md$|LICENSE|\.gitignore$|\.editorconfig$)'
+          changed=$(git diff --name-only "$base" HEAD)
+          widening=$(echo "$changed" | grep -vE "$members" | grep -vE "$inert" || true)
+          in_members=$(echo "$changed" | grep -cE "$members" || true)
+          selected=$(pnpm ls -r --depth -1 --parseable --filter "...[$base]" | grep -vxF "$PWD" | sed "s#^$PWD/##")
+          count=$(echo "$selected" | grep -c . || true)
+          if [ -n "$widening" ]; then
+            echo "scope: everything — changed outside every package:"; echo "$widening" | sed 's/^/  /'
+          elif [ "$in_members" -gt 0 ] && [ "$count" -eq 0 ]; then
+            # pnpm's selector answers "nothing" for reasons other than "nothing
+            # changed" — it does inside a linked git worktree, for one — and a
+            # gate that skips work must never mistake the two. Files changed under
+            # a package directory and the selector saw none of them: run everything.
+            echo "scope: everything — $in_members package file(s) changed but pnpm selected no package"
+          else
+            echo "scope: $count package(s) — changed against $base, plus their dependents:"; echo "$selected" | sed 's/^/  /'
+            echo "filter=--filter=...[$base]" >> "$GITHUB_OUTPUT"
+          fi
       # Includes packages/template-check, which compiles create-substrat's template
       # against THIS checkout (#878). The template is not a workspace member — #797
       # needs it to install from npm — so it was the one call site the compiler never
@@ -154,13 +208,17 @@ jobs:
       # its own gates. This asks the question a PR CAN answer — does the template's
       # source still match the surface we are about to ship — while scaffold.yml keeps
       # asking the post-release one: does a real npm install work.
-      - run: pnpm -r typecheck
+      - run: pnpm -r ${SCOPE_FILTER:+"$SCOPE_FILTER"} typecheck
+        env:
+          SCOPE_FILTER: ${{ steps.scope.outputs.filter }}
       # The rule this job exists to enforce: the pure-SQLite adapter stays
       # green in CI forever (master plan D-14). Contract tests + the FSM
       # demo's nine-step scenario — and the TEMPLATE's own nine-step scenario,
       # via packages/template-check (#878), which is how a surface that still
       # typechecks but no longer behaves gets caught before it is published.
-      - run: pnpm -r test
+      - run: pnpm -r ${SCOPE_FILTER:+"$SCOPE_FILTER"} test
+        env:
+          SCOPE_FILTER: ${{ steps.scope.outputs.filter }}
 
   # Deploy the prod apps to the shared TEST environment on every green push to
   # main. Prod itself is deployed separately, only on an actual changeset
