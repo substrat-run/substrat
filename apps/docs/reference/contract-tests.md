@@ -60,9 +60,12 @@ permissionContractSuite('adapter-yours', async () => { /* default checker */ });
 scheduleContractSuite('adapter-yours', async () => { /* default checker */ });
 ```
 
-Every suite takes the same `(adapterName, makeFixture)` pair; the one thing that varies is
-which checker the fixture is built with, and the table says which and why. The complete
-wiring — all thirteen, with the reason beside each — is
+Every adapter suite takes the same `(adapterName, makeFixture)` pair; the one thing that
+varies is which checker the fixture is built with, and the table says which and why. Those
+twelve are what an *adapter* runs. The package's thirteenth suite,
+`entityCheckConformanceSuite`, holds a **vertical or engine** to its declarations rather
+than an adapter to the contract, and has [its own section](#the-entity-check-kit) below.
+The complete adapter wiring — all twelve, with the reason beside each — is
 [`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts),
 and the two shipped adapters run every suite in it. The count is deliberately not written
 here: it grows with every merged guarantee, and the number that matters is that the
