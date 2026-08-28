@@ -395,7 +395,13 @@ function renderDriven(decl: Declaration): string[] {
     );
   }
 
-  const beside = Object.entries(decl.coEntities ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  // Only for operations the kit drives: a co-entity declared on one it cannot
+  // (or one that does not exist) is a stale note the suite refuses at collect
+  // time, and §3 is the receipt's one place for an undriven declaration.
+  const driven = new Set(covered.map(({ name }) => name));
+  const beside = Object.entries(decl.coEntities ?? {})
+    .filter(([name]) => driven.has(name))
+    .sort(([a], [b]) => a.localeCompare(b));
   if (beside.length) {
     out.push(
       `### A second entity the kit supplies`,
