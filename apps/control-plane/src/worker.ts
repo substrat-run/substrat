@@ -105,6 +105,7 @@ import { oidcStaffSessionReader, oidcStaffBearerReader } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
 import { studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
+import { dispatchNamespaceOf } from './dispatch-namespace.js';
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
@@ -192,7 +193,10 @@ interface Env extends OidcEnv {
   /**
    * A `substrat push` uploads a built vertical bundle into this WfP dispatch namespace,
    * with the platform's own token — the builder never holds one (D-34, self-serve-deploy.md).
-   * All three unset ⇒ the deploy route 501s.
+   * Token + account unset ⇒ the deploy route 501s. DISPATCH_NAMESPACE has NO default
+   * (#962): it is a checked-in `vars` entry per environment, matching that environment's
+   * `dispatch_namespaces` binding, and `dispatchNamespaceOf` throws when it is absent
+   * rather than guessing prod's — TEST once uploaded every push into prod's namespace.
    */
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
@@ -299,7 +303,7 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
   return createWfpUploader({
     accountId: env.CF_ACCOUNT_ID,
-    namespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+    namespace: dispatchNamespaceOf(env),
     apiToken: env.CF_API_TOKEN,
     // Inject the platform-owned secrets a vertical needs to verify inbound platform +
     // router calls, so a pushed vertical is provisionable + servable with no per-vertical
@@ -351,7 +355,7 @@ function platformRuntimeFor(env: Env): PlatformRuntime | undefined {
   return {
     provider: 'cloudflare',
     accountId: env.CF_ACCOUNT_ID,
-    dispatchNamespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+    dispatchNamespace: dispatchNamespaceOf(env),
   };
 }
 
@@ -372,7 +376,7 @@ function fetchVerticalModulesFor(env: Env) {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
   return createWfpModulesFetcher({
     accountId: env.CF_ACCOUNT_ID,
-    namespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+    namespace: dispatchNamespaceOf(env),
     apiToken: env.CF_API_TOKEN,
   });
 }
@@ -700,7 +704,7 @@ function patchScriptBindingsFor(env: Env) {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
   return createWfpBindingsPatcher({
     accountId: env.CF_ACCOUNT_ID,
-    namespace: env.DISPATCH_NAMESPACE ?? 'substrat-verticals',
+    namespace: dispatchNamespaceOf(env),
     apiToken: env.CF_API_TOKEN,
   });
 }
