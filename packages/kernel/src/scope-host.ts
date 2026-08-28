@@ -381,7 +381,7 @@ export interface OperationContext {
   revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
   /**
    * Run `fn` as a SUB-TRANSACTION of this operation (#770,
-   * docs/rfc/sub-transactions.md) — the boundary that makes catching an
+   * docs/architecture/sub-transactions.md) — the boundary that makes catching an
    * engine error safe.
    *
    * A vertical composes engine in-scope functions inside one scope transaction,

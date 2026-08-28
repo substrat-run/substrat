@@ -6,7 +6,7 @@ description: The model phase. Umbrella #685 open.
 
 # The model phase — a plan
 
-Status: draft for review. Written **before** reading `Egeryds/CRM-EFF`, deliberately, so
+Status: **building** (#685 open). Written **before** reading `Egeryds/CRM-EFF`, deliberately, so
 that it and their implementation are two independent descriptions and every disagreement
 between them is a defect in one of the two. **Proposes** changes to #680/#681/#684/#685 — it
 decides nothing on its own; the issue-by-issue mapping is §9, and §3's notation

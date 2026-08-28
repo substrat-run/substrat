@@ -151,7 +151,7 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
     invariants like immutable-after-export safe from a half-finished caller.
   Which mode an engine is, is a fact about its exports; state it in the engine's header
   so an absence reads as intent rather than an omission.
-- **Catching an engine error requires `ctx.atomic`** (#770, `docs/rfc/sub-transactions.md`).
+- **Catching an engine error requires `ctx.atomic`** (#770, `docs/architecture/sub-transactions.md`).
   An engine call composed inside your transaction has no boundary of its own, so a bare
   `catch` leaves you holding its partial writes — the rows its invariants were protecting —
   and commits them. Wrap it instead:

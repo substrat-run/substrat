@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { entityRef } from './events.js';
 
 /**
- * The ONE error model for every surface on the platform (`docs/rfc/error-model.md`,
+ * The ONE error model for every surface on the platform (`docs/architecture/error-model.md`,
  * issue #113): RFC 9457 `application/problem+json`, a CLOSED code taxonomy, and one
  * mapper — replacing the seven hand-rolled `onError` handlers that today choose a
  * status by matching on error message TEXT.
@@ -475,7 +475,7 @@ export const DOCUMENTED_ERROR_CODES: readonly ErrorCode[] = [
 
 /**
  * An error flattened for a boundary that carries only data — the DO↔coordinator wire
- * (#113 phase 3, `docs/rfc/error-model.md` §3).
+ * (#113 phase 3, `docs/architecture/error-model.md` §3).
  *
  * This exists because a THROW cannot carry structure across the ScopeDO hop: workerd
  * delivers a thrown error's message and nothing else, folding `name` into it and
