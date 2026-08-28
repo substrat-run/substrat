@@ -215,6 +215,11 @@ mountPlatformSurface(app, {
   onProvision,                   // your pending-owner / site-registry side effect
   resolveOwner,                  // owner-of-record for a reconcile (omit ⇒ 501)
   onConfigure,                   // per-instance config store (omit ⇒ 501)
+  // The owner seat as the platform may see it, and the claim link it may mint for one
+  // that sits empty after the first-sign-in window (omit either ⇒ 501)
+  ownerSeat: (env, ref) => identityDo(env, ref).ownerSeat(ref.scopeId),
+  mintOwnerClaim: (env, ref, input) =>
+    mintOwnerClaimLink(identityDo(env, ref), ref.scopeId, input.origin),
 });
 ```
 
@@ -222,6 +227,21 @@ Mounting it is what satisfies the contract — the routes cannot drift out of sy
 without the error envelope, because there is only one copy. `create-substrat` scaffolds this
 call for you; the demos (`demos/meridian`, `demos/manyfold`) are worked reference
 implementations.
+
+The last two hooks are the **owner seat** rule. At provision the platform mints a principal for
+the installer and hands it to `onProvision` as `owner`, but it cannot hand over the login — your
+app authenticates at whatever issuer the tenant bound, and the platform does not know which
+`sub` that issuer will emit for this person. So the seat is minted **empty** and bound later by
+a verified subject. For **15 minutes after provision** (`FIRST_SIGN_IN_WINDOW_MS` in
+[`@substrat-run/vertical-auth`](/reference/vertical-auth)) the first person to sign in claims it
+— the install flow, where the installer opens the app seconds later. After that a plain sign-in
+binds nobody: an instance nobody opened is not a seat anyone can take indefinitely. A closed
+window is not a lost instance — the seat stays **pending** until a claim binds it, and the
+dashboard's [Owner seat card](/platform/dashboard#owner-seat) mints a short-lived claim link
+(under the platform secret, through your `mintOwnerClaim` hook) that only its holder can use.
+A re-provision keeps whatever window the seat has and never re-opens a claimed one.
+`mintOwnerClaimLink` does the token, the hash and the URL in one call, which is why the hook is
+a one-liner; the full rule is on the [vertical-auth reference](/reference/vertical-auth#the-identity-directory).
 
 A push then:
 
