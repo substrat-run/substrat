@@ -210,11 +210,14 @@ they are made.
 An allow leaves its trace on the event it authorized; a **denial** has no event to ride, so
 it is captured on its own. When an enforced check refuses, the kernel writes a row to a
 scope-local `_substrat_denials` table (`id`, `actor`, `permission`, `tenant_id`, `scope_id`,
-`operation`, `at`, `drained_at`) — the one moment where an actor's intent and the permission
-model visibly disagree, and which no other log witnesses (the admin log records changes, the
-outbox records *allowed* mutations). Because a denial rolls its operation back, the row is
-written **outside** that transaction, at the operation boundary after the rollback, so the
-record survives the very failure it describes.
+`operation`, `impersonation`, `at`, `drained_at`) — the one moment where an actor's intent and
+the permission model visibly disagree, and which no other log witnesses (the admin log records
+changes, the outbox records *allowed* mutations). Because a denial rolls its operation back,
+the row is written **outside** that transaction, at the operation boundary after the rollback,
+so the record survives the very failure it describes. `impersonation` is the same
+`{ session, by }` stamp the event envelope carries, and null for the same reason — see
+[Impersonation](/concepts/events#impersonation): `actor` is the principal the check answered
+about, and this is the staff member who was acting as them, when one was.
 
 This is **not** the K-24 staff-directory read log (`_substrat_access_log`): that records
 control-plane *reads* against the directory; `_substrat_denials` records refused checks inside
