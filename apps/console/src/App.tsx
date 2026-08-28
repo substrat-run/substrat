@@ -34,18 +34,25 @@ import { Verticals } from './views/Verticals';
  * not pretending to be: the API is what refuses an unknown actor, and real staff
  * auth (SSO/MFA, short sessions) gates EXPOSING any of this — nothing with
  * cross-tenant reach goes anywhere non-local on a stub.
+ *
+ * Dev builds only (#980): the `?actor=` / localStorage override exists for the
+ * `vite` dev server, so it is gated on `import.meta.env.DEV` and tree-shaken out
+ * of a production bundle. A deployed console neither reads nor persists an actor
+ * override — it has nothing to do with one, since the header it would feed is
+ * only trusted under `ALLOW_DEV_ACTOR`, which a real deploy never sets.
  */
 function useDevActor(): [string, (v: string) => void] {
+  const envDefault = import.meta.env.VITE_DEV_ACTOR as string | undefined;
   const [actor, setActor] = useState(() => {
+    if (!import.meta.env.DEV) return envDefault ?? '';
     const fromUrl = new URLSearchParams(window.location.search).get('actor');
     if (fromUrl) localStorage.setItem('substrat.actor', fromUrl);
-    const envDefault = import.meta.env.VITE_DEV_ACTOR as string | undefined;
     return fromUrl ?? localStorage.getItem('substrat.actor') ?? envDefault ?? '';
   });
   return [
     actor,
     (v: string) => {
-      localStorage.setItem('substrat.actor', v);
+      if (import.meta.env.DEV) localStorage.setItem('substrat.actor', v);
       setActor(v);
     },
   ];

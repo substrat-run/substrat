@@ -10,6 +10,7 @@ import {
   createControlPlaneApi,
   UNSAFE_devPlatformActorAuth,
 } from '../src/index.js';
+import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from '../src/auth.js';
 
 /**
  * The connect seam (first-flow.md slice 4): a vertical registers into a
@@ -60,6 +61,26 @@ describe('ControlPlaneClient — the connect seam', () => {
     await expect(client.assertScopeActive(T, S)).resolves.toBeUndefined();
     await host.admin.setTenantStatus(actor, T, 'suspended');
     await expect(client.assertScopeActive(T, S)).rejects.toThrow(/tenant not active/);
+  });
+
+  it('sends one credential: the dev-actor header without a service token, only the token with one (#980)', async () => {
+    const seen: Headers[] = [];
+    const capture = (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(input, init).headers);
+      return Promise.resolve(new Response('{"status":"active"}', { headers: { 'content-type': 'application/json' } }));
+    };
+    const actor = platformActorId.parse(ulid());
+    const T = tenantId.parse(ulid());
+
+    await new ControlPlaneClient({ baseUrl: 'http://cp.local', actor, fetch: capture }).getTenant(T);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.get(DEV_ACTOR_HEADER)).toBe(actor);
+    expect(seen[0]!.get(SERVICE_TOKEN_HEADER)).toBeNull();
+
+    await new ControlPlaneClient({ baseUrl: 'http://cp.local', actor, serviceToken: 'svc-token', fetch: capture }).getTenant(T);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]!.get(SERVICE_TOKEN_HEADER)).toBe('svc-token');
+    expect(seen[1]!.get(DEV_ACTOR_HEADER)).toBeNull();
   });
 
   it('fails closed when the control plane is unreachable', async () => {

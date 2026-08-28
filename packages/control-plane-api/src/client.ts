@@ -51,12 +51,18 @@ import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from './auth.js';
 export interface ControlPlaneClientOptions {
   /** Base URL of the control-plane API, e.g. `https://cp.example.com` or `http://127.0.0.1:8788`. */
   baseUrl: string;
-  /** The platform actor id stamped as the audit subject on every write. */
+  /**
+   * The platform actor id stamped as the audit subject on every write — sent as the
+   * dev-only `x-platform-actor` header, and ONLY when no `serviceToken` is set. With a
+   * token the control plane resolves the subject from the token (its fixed service
+   * actor), so the header is never consulted there and is not sent (#980).
+   */
   actor: string;
   /**
    * A service credential (`x-service-token`) proving the caller is an authorized
    * vertical, not just anyone with an actor id. Required when the control plane
-   * has real auth — the dev-actor header alone does not authenticate there.
+   * has real auth — the dev-actor header alone does not authenticate there. When
+   * set, it is the request's only credential: `actor` is not sent.
    */
   serviceToken?: string;
   /** Defaults to the global `fetch`. */
@@ -107,8 +113,14 @@ export class ControlPlaneClient {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
         ...init,
         headers: {
-          [DEV_ACTOR_HEADER]: this.actor,
-          ...(this.serviceToken ? { [SERVICE_TOKEN_HEADER]: this.serviceToken } : {}),
+          // One credential per request (#980): a service token identifies the caller as
+          // the plane's service actor and is checked BEFORE the dev-actor stub, so the
+          // actor header would be ignored there — and a dev-only header has no business
+          // leaving a production caller at all. Without a token, the actor header IS the
+          // (local, UNSAFE) credential.
+          ...(this.serviceToken
+            ? { [SERVICE_TOKEN_HEADER]: this.serviceToken }
+            : { [DEV_ACTOR_HEADER]: this.actor }),
           'content-type': 'application/json',
           ...init?.headers,
         },
