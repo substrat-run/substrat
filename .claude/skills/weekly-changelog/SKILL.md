@@ -151,15 +151,16 @@ pnpm lint:llms --check        # the entry is indexed and its description is usab
 pnpm docs:build               # the sidebar and nav pick it up from the directory
 ```
 
-Then confirm nothing leaked: the rendered page must contain no `#NNN` and no link to
-a pull request or issue. Set the week once and reuse it below.
+Then confirm nothing leaked: what the reader sees must contain no `#NNN` and no link
+to a pull request or issue. Check the page's markdown twin (what `llms.txt` serves)
+with the ledger comment stripped — not the raw HTML, where CSS colours (`#005`) and
+asset hashes match a `#NNN` grep. Set the week once and reuse it below.
 
 ```bash
 WEEK=2026-w35   # the entry you are checking
-PAGE=apps/docs/.vitepress/dist/changelog/$WEEK.html
-grep -o '#[0-9]\{3,\}' "$PAGE" | sort -u
-grep -oE '/(pull|issues)/[0-9]+' "$PAGE" | sort -u
-# expect: nothing from either (the ledger is an HTML comment and does not render)
+sed '/<!--/,/-->/d' "apps/docs/.vitepress/dist/changelog/$WEEK.md" \
+  | grep -oE '#[0-9]{3,}|/(pull|issues)/[0-9]+' | sort -u
+# expect: nothing (the ledger is the only place a number lives, and it was stripped)
 ```
 
 `lint:changelog` failing with *"N of M merges are not accounted for"* is the normal
