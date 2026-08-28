@@ -1,5 +1,12 @@
 # @substrat-run/cli
 
+## 0.25.13
+
+### Patch Changes
+
+- Updated dependencies [7843c4f]
+  - @substrat-run/contracts@0.92.0
+
 ## 0.25.12
 
 ### Patch Changes
