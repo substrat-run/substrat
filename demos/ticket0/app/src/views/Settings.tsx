@@ -7,7 +7,7 @@
  */
 import { useEffect, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
-import { api, type KbSource } from '../api.js';
+import { api, refreshKbSource, type KbSource } from '../api.js';
 import { Dot, Empty, UnitPrice } from '../ui.js';
 
 type Tab = 'desk' | 'identity' | 'knowledge' | 'usage';
@@ -413,6 +413,23 @@ function Identity() {
 
 const GRID = '190px 1.6fr 56px 118px 96px 56px';
 
+type Kind = KbSource['kind'];
+
+/**
+ * The kinds a person may add. `sitemap` is in the model but the fetcher does not
+ * implement it yet — offering it would be a control that always fails.
+ */
+const KINDS: { value: Kind; label: string; hint: string }[] = [
+  {
+    value: 'llms-txt',
+    label: 'llms.txt',
+    hint: 'An llms.txt index of links, or an llms-full.txt corpus — told apart by shape, not by you.',
+  },
+  { value: 'markdown', label: 'Markdown', hint: 'One markdown page, cited whole.' },
+];
+
+const EMPTY_DRAFT = { label: '', url: '', kind: 'llms-txt' as Kind };
+
 function Knowledge() {
   const [sources, setSources] = useState<KbSource[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -421,6 +438,11 @@ function Knowledge() {
   // and the successful re-read that follows it must not wipe that news.
   const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [ingestFailed, setIngestFailed] = useState<string | null>(null);
+  // And a third, for the form: a refused add belongs beside the fields it refused,
+  // not in the cards above the table, which are about sources that exist.
+  const [draft, setDraft] = useState(EMPTY_DRAFT);
+  const [adding, setAdding] = useState(false);
+  const [addFailed, setAddFailed] = useState<string | null>(null);
 
   // Returns the request, not `void`: the Re-read handler chains `.then(load)` and
   // clears `busy` in a `finally` — and a `load` that returned nothing would settle
@@ -436,6 +458,43 @@ function Knowledge() {
   useEffect(() => {
     void load();
   }, []);
+
+  /**
+   * Read one source now — the refresh route, which fetches, not `ingestKbSource`,
+   * which only records the intent and left the row at "ingesting" for good.
+   */
+  const read = (id: string) => {
+    setBusy(id);
+    setIngestFailed(null);
+    return (
+      refreshKbSource(id)
+        // Both ways, because a refused read is exactly when the row is most worth
+        // re-reading: the failure is recorded on the source itself, and `.then(load)`
+        // alone would never go and fetch it.
+        .catch((e: Error) => setIngestFailed(e.message))
+        .then(load)
+        // `finally`, or a failed re-read leaves "Re-read" disabled for the rest of
+        // the session — on the row most likely to need it.
+        .finally(() => setBusy(null))
+    );
+  };
+
+  const add = async () => {
+    setAdding(true);
+    setAddFailed(null);
+    try {
+      const s = await api.addKbSource({ ...draft, label: draft.label.trim(), url: draft.url.trim() });
+      setDraft({ ...EMPTY_DRAFT, kind: draft.kind });
+      // The row first, then the read: a source that fails its first read should
+      // fail on screen, on its own row, not vanish behind an error about the form.
+      await load();
+      await read(s.id);
+    } catch (e) {
+      setAddFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdding(false);
+    }
+  };
 
   const failures = [loadFailed, ingestFailed].filter((f): f is string => f !== null);
   const failureCards = failures.map((f) => (
@@ -457,6 +516,8 @@ function Knowledge() {
     );
   }
 
+  const canAdd = !adding && draft.label.trim() !== '' && draft.url.trim() !== '';
+
   return (
     <>
       <Head title="Knowledge base" note="What the assistant reads before it answers." />
@@ -469,10 +530,15 @@ function Knowledge() {
           <div>Source</div>
           <div>URL</div>
           <div>Kind</div>
-          <div>Last ingested</div>
+          <div>Last read</div>
           <div>Status</div>
           <div />
         </div>
+        {sources.length === 0 ? (
+          <div className="t-small" style={{ padding: '14px', borderTop: '1px solid var(--row-line)' }}>
+            No sources yet — the assistant has nothing to answer from. Add one below.
+          </div>
+        ) : null}
         {sources.map((s) => (
           <div
             key={s.id}
@@ -506,24 +572,10 @@ function Knowledge() {
             <div style={{ textAlign: 'right' }}>
               <button
                 className="btn btn-ghost"
-                disabled={s.status === 'ingesting' || busy === s.id}
-                onClick={() => {
-                  setBusy(s.id);
-                  setIngestFailed(null);
-                  void api
-                    .ingestKbSource({ sourceId: s.id })
-                    // Both ways, because a refused ingest is exactly when the row is
-                    // most worth re-reading: the failure is recorded on the source
-                    // itself, and `.then(load)` alone would never go and fetch it,
-                    // leaving the row spinning at "ingesting" forever.
-                    .catch((e: Error) => setIngestFailed(e.message))
-                    .then(load)
-                    // `finally`, or a failed re-read leaves "Re-read" disabled for
-                    // the rest of the session — on the row most likely to need it.
-                    .finally(() => setBusy(null));
-                }}
+                disabled={busy !== null}
+                onClick={() => void read(s.id)}
               >
-                Re-read
+                {busy === s.id ? 'Reading…' : 'Re-read'}
               </button>
             </div>
             {s.status === 'failed' || s.last_error ? (
@@ -539,13 +591,69 @@ function Knowledge() {
                   color: 'var(--danger-3)',
                 }}
               >
-                {s.last_error ?? 'The last read of this source failed.'} The assistant still
-                answers from the last good copy — say so rather than going quiet.
+                <span className="mono">{s.last_error ?? 'The last read of this source failed.'}</span>
+                {' — '}
+                {s.last_ingested_at
+                  ? 'The assistant still answers from the last good copy — say so rather than going quiet.'
+                  : 'This source has never been read, so the assistant has nothing of it to answer from.'}
               </div>
             ) : null}
           </div>
         ))}
       </div>
+
+      <div className="card" style={{ marginTop: 14, padding: 14 }}>
+        <div className="micro" style={{ marginBottom: 10 }}>
+          Add a source
+        </div>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (canAdd) void add();
+          }}
+          style={{ display: 'grid', gridTemplateColumns: '190px 1fr 130px auto', gap: 10, alignItems: 'center' }}
+        >
+          <input
+            className="input"
+            placeholder="Label"
+            value={draft.label}
+            onChange={(e) => setDraft({ ...draft, label: e.target.value })}
+          />
+          <input
+            className="input mono"
+            type="url"
+            placeholder="https://docs.example.com/llms.txt"
+            value={draft.url}
+            onChange={(e) => setDraft({ ...draft, url: e.target.value })}
+          />
+          <select
+            className="input"
+            value={draft.kind}
+            onChange={(e) => setDraft({ ...draft, kind: e.target.value as Kind })}
+          >
+            {KINDS.map((k) => (
+              <option key={k.value} value={k.value}>
+                {k.label}
+              </option>
+            ))}
+          </select>
+          <button className="btn btn-primary" type="submit" disabled={!canAdd}>
+            {adding ? 'Adding…' : 'Add & read'}
+          </button>
+        </form>
+        <div className="t-small" style={{ marginTop: 8 }}>
+          {KINDS.find((k) => k.value === draft.kind)?.hint} It is read as soon as it is added;
+          the same URL twice is the same source. A hosted desk can only reach the hosts its
+          version declares (<span className="mono">substrat.outbound</span> in package.json) —
+          a source on any other host is refused when read, and the refusal shows on its row.
+        </div>
+        {addFailed ? (
+          <div className="t-small" style={{ marginTop: 8, color: 'var(--danger-2)' }}>
+            {addFailed}
+          </div>
+        ) : null}
+      </div>
+
       <div className="t-small" style={{ marginTop: 12 }}>
         Every answer cites the articles it drew from.
       </div>

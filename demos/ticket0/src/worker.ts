@@ -66,7 +66,7 @@ import { T0_PERM, TICKET0_ENV } from './manifest.js';
 import { MODULES, OWNER_ROLE_KEY, ROLES, SERVICE_ROLES, type ServiceRole } from './provision.js';
 import { mountApi } from './routes.js';
 import { answerConversation, modelFromEnv } from '../harness/assistant.js';
-import { runIngest } from '../harness/kb-ingest.js';
+import { mountKbRefresh } from '../harness/kb-refresh.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 
 /** The scope-DO class = the app binary: kernel + metering + ticket0, bundled. */
@@ -539,28 +539,12 @@ app.post('/api/accept-invite', async (c) => {
 /**
  * Re-read one documentation source — the connector-shaped job, run as the CALLER.
  *
- * Module code has no network, so the fetch happens out here and re-enters through the
- * ordinary `ticket0/record-kb-articles`. Running as the caller rather than as a service
- * account is deliberate: `kb:manage` is what authorises this, the caller either holds
- * it or the operation refuses, and nothing in this route can widen that.
- *
- * The dev server runs the same job on every boot. A worker has no boot, and a dispatch
- * user-worker has no cron, so here it is a button: `POST /api/kb/sources/:id/refresh`.
+ * The dev server runs the same read on every boot. A worker has no boot, and a
+ * dispatch user-worker has no cron, so here it is only ever a button:
+ * `POST /api/kb/sources/:id/refresh`, shared with the dev server in
+ * `harness/kb-refresh.ts` so the two cannot drift.
  */
-app.post('/api/kb/sources/:sourceId/refresh', async (c) => {
-  const scope = await stub(c);
-  const sourceId = c.req.param('sourceId');
-  const sources = await scope.invoke<{
-    entries: { id: string; kind: 'llms-txt' | 'sitemap' | 'markdown'; url: string; label: string }[];
-  }>('ticket0/list-kb-sources', {});
-  const source = sources.entries.find((s) => s.id === sourceId);
-  if (!source) throw new HTTPException(404, { message: `no such knowledge-base source: ${sourceId}` });
-  // Marks it ingesting and emits — the same operation the dev server calls first, so a
-  // source that fails below is left in a state the desk can see rather than looking idle.
-  await scope.invoke('ticket0/ingest-kb-source', { sourceId: source.id });
-  const result = await runIngest({ invoke: (op, input) => scope.invoke(op, input) }, source);
-  return c.json({ source: source.label, ...result });
-});
+mountKbRefresh(app, stub);
 
 // ── The public widget surface ────────────────────────────────────────────────
 

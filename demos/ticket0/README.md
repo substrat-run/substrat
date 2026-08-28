@@ -104,6 +104,17 @@ substrat.net's own `llms-full.txt`. It is **opt-in** because the same config arr
 ships to production, and a support widget on the live site is a deliberate decision
 rather than a side effect of this demo landing.
 
+The site also carries the widget on **one page**, always:
+[substrat.net/guide/support](https://substrat.net/guide/support) mounts `<Ticket0Widget
+desk="https://ticket0.substrat.net" />` (`apps/docs/.vitepress/theme/components/`),
+which appends the same `<script>` tag on the way in and calls `window.ticket0.unmount()`
+on the way out. That verb exists for exactly this: a host with a client-side router
+adds and removes tags without a reload, and a removed `<script>` undoes nothing — so
+`widget.js` keeps one widget per page (a second run replaces the first) and offers the
+host one way to take it down, poll and all. For the hosted desk to answer there,
+`https://substrat.net` must be on its origin allowlist (Settings → Widget origins), and
+`http://localhost:5173` for the docs dev server.
+
 ## The knowledge base is the real Substrat docs
 
 On first boot the desk ingests `https://substrat.net/llms-full.txt` and turns it into
@@ -188,7 +199,10 @@ What a hosted desk does **not** get from a seed, and how it gets it instead:
   on that one contact and nothing else.
 - **A knowledge base.** A worker has no boot and a dispatch user-worker has no cron, so
   the ingest is a button: `POST /api/kb/sources/:sourceId/refresh`, running as the
-  caller and refused unless they hold `kb:manage`.
+  caller and refused unless they hold `kb:manage`. Settings → Knowledge base adds a
+  source and reads it at once; a read that fails is recorded on the source
+  (`ticket0/record-kb-ingest-failure`), so the row shows the reason rather than
+  spinning at `ingesting`.
 
 The model credentials are per-install (`CF_ACCOUNT_ID`, `CF_AI_TOKEN` in the dashboard's
 Env tab), never a deployment-wide binding — one serving script runs every desk, and a

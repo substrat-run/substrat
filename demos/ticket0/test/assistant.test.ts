@@ -15,7 +15,10 @@ import { join } from 'node:path';
 import type { Page } from '@substrat-run/contracts';
 import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
 import { answerConversation, searchQueriesOf, type Model } from '../harness/assistant.js';
+import { Hono } from 'hono';
 import { fetchArticles, parseLlmsFull, parseLlmsIndex, runIngest } from '../harness/kb-ingest.js';
+import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
+import { mountApi } from '../src/routes.js';
 import { buildHost, seed, signIdentity, type Desk, type World } from '../src/seed.js';
 
 let dir: string;
@@ -174,6 +177,69 @@ describe('ingesting into a desk', () => {
     // site must leave the audit trail worth reading.
     const again = await runIngest(asTarget(admin), sources.entries[0]!, fakeFetch);
     expect(again).toEqual({ added: 0, updated: 0, unchanged: 1 });
+  });
+
+  type SourceRow = { id: string; status: string; last_error: string | null; last_ingested_at: string | null };
+  const sourceRow = async (admin: ScopeStub, id: string): Promise<SourceRow> => {
+    const page = (await admin.invoke('ticket0/list-kb-sources', {})) as Page<SourceRow>;
+    const row = page.entries.find((s) => s.id === id);
+    if (!row) throw new Error(`source ${id} vanished`);
+    return row;
+  };
+  const broken = (async () =>
+    new Response('gone', { status: 404, statusText: 'Not Found' })) as unknown as typeof fetch;
+
+  it('a read that fails is recorded on the source, keeping the last good read', async () => {
+    const admin = await at(world.kestrel, 'admin');
+    const source = ((await admin.invoke('ticket0/list-kb-sources', {})) as Page<SourceRow>).entries[0]!;
+    // A good read of our own first, so the case does not lean on the test above for
+    // the timestamp it is about to assert on.
+    await readSource(asTarget(admin), source.id, fakeFetch);
+    const good = await sourceRow(admin, source.id);
+    expect(good.last_ingested_at).not.toBeNull();
+
+    // Before `record-kb-ingest-failure`, this left the row at `ingesting` for good —
+    // the throw was the only trace, and it went to the dev server's stdout.
+    await expect(readSource(asTarget(admin), source.id, broken)).rejects.toThrow(/404/);
+    const failed = await sourceRow(admin, source.id);
+    expect(failed.status).toBe('failed');
+    expect(failed.last_error).toMatch(/404 Not Found fetching/);
+    // The good read is still the last good read, to the millisecond: the assistant is
+    // answering from that copy, and the desk should say when it is from.
+    expect(failed.last_ingested_at).toBe(good.last_ingested_at);
+
+    const again = await readSource(asTarget(admin), source.id, fakeFetch);
+    expect(again).toEqual({ added: 0, updated: 0, unchanged: 1 });
+    const cleared = await sourceRow(admin, source.id);
+    expect(cleared.status).toBe('idle');
+    expect(cleared.last_error).toBeNull();
+  });
+
+  it('the refresh route answers 502 with the reason, and the row agrees', async () => {
+    const admin = await at(world.kestrel, 'admin');
+    const source = ((await admin.invoke('ticket0/list-kb-sources', {})) as Page<SourceRow>).entries[0]!;
+    const app = new Hono();
+    mountApi(app, async () => admin);
+    mountKbRefresh(app, async () => admin, broken);
+
+    const res = await app.request(`/api/kb/sources/${source.id}/refresh`, { method: 'POST' });
+    expect(res.status).toBe(502);
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    expect(((await res.json()) as { detail?: string }).detail).toMatch(/404 Not Found fetching/);
+    expect((await sourceRow(admin, source.id)).status).toBe('failed');
+
+    // A source that does not exist is a 404 of THIS desk's making, not a 502 about
+    // somebody's docs site — and nothing was recorded, because there is no row.
+    const missing = await app.request('/api/kb/sources/no-such-source/refresh', { method: 'POST' });
+    expect(missing.status).toBe(404);
+
+    const ok = new Hono();
+    mountApi(ok, async () => admin);
+    mountKbRefresh(ok, async () => admin, fakeFetch);
+    const good = await ok.request(`/api/kb/sources/${source.id}/refresh`, { method: 'POST' });
+    expect(good.status).toBe(200);
+    expect(await good.json()).toEqual({ added: 0, updated: 0, unchanged: 1 });
+    expect((await sourceRow(admin, source.id)).status).toBe('idle');
   });
 });
 

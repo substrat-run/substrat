@@ -19,6 +19,7 @@ export const conformance = declareEntityChecks({
   // itself and asks for nothing else it can work out.
   inputs: {
     'ticket0/record-kb-articles': { articles: [] },
+    'ticket0/record-kb-ingest-failure': { error: 'The conformance kit could not read it' },
     'ticket0/post-note': { body: 'A note from the conformance kit' },
     'ticket0/post-public-reply': { body: 'A reply from the conformance kit' },
     'ticket0/assign': { assignee: null },

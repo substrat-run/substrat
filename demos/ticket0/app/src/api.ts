@@ -7,9 +7,9 @@
  * carries — here a session cookie set by the relying-party flow the server mounts, so
  * there is no header to add, only `credentials` to send it.
  */
-import { createClient } from './api.generated.js';
+import { ApiError, createClient } from './api.generated.js';
 
-export { ApiError } from './api.generated.js';
+export { ApiError };
 export type {
   AgentProfile,
   AiTurn,
@@ -75,12 +75,36 @@ export const auth = {
   logout: () => location.assign('/api/auth/logout'),
 };
 
+// This vertical answers problem+json (`src/routes.ts`), whose message is `detail`.
+const problemDetail = (body: unknown): string | undefined =>
+  typeof body === 'object' && body !== null
+    ? ((body as { detail?: string; title?: string }).detail ?? (body as { title?: string }).title)
+    : undefined;
+
 export const api = createClient({
   fetch: (input, init) => fetch(input, { credentials: 'same-origin', ...init }),
-  // This vertical answers problem+json (`src/routes.ts`), whose message is `detail`.
-  errorMessage: (body) =>
-    typeof body === 'object' && body !== null
-      ? ((body as { detail?: string; title?: string }).detail ??
-        (body as { title?: string }).title)
-      : undefined,
+  errorMessage: problemDetail,
 });
+
+/**
+ * Re-read one documentation source — the one request here that is not in the model.
+ *
+ * The model declares operations, and reading a docs site is not one: module code may
+ * not fetch, so the read is a connector-shaped route both hosts mount
+ * (`harness/kb-refresh.ts`). It marks the source `ingesting`, fetches, and records
+ * what it found — or that it failed, as a 502 carrying the reason — before answering,
+ * so the row is worth re-reading whichever way it went. `ingestKbSource` alone only
+ * records the intent, which is how "Re-read" used to leave a row spinning for good.
+ */
+export async function refreshKbSource(
+  sourceId: string,
+): Promise<{ added: number; updated: number; unchanged: number }> {
+  const res = await fetch(`/api/kb/sources/${encodeURIComponent(sourceId)}/refresh`, {
+    method: 'POST',
+    credentials: 'same-origin',
+  });
+  const text = await res.text();
+  const body: unknown = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new ApiError(res.status, problemDetail(body) ?? res.statusText, body);
+  return body as { added: number; updated: number; unchanged: number };
+}

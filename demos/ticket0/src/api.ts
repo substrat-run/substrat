@@ -23,6 +23,7 @@ export const API = apiCatalogFrom(ticket0Operations, {
   'ticket0/list-kb-sources': { tag: 'Knowledge base' },
   'ticket0/ingest-kb-source': { tag: 'Knowledge base', description: 'Records the intent and emits; a connector does the fetching.' },
   'ticket0/record-kb-articles': { tag: 'Knowledge base', description: 'Idempotent on content hash — an unchanged page writes nothing.' },
+  'ticket0/record-kb-ingest-failure': { tag: 'Knowledge base', description: 'The connector’s catch — marks the source failed with the reason, keeping the last good read.' },
   'ticket0/search-kb': { tag: 'Knowledge base', description: 'Ranked and capped, not paged.' },
 
   'ticket0/list-contacts': { tag: 'Contacts' },
