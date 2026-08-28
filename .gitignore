@@ -4,6 +4,7 @@ dist/
 coverage/
 .DS_Store
 **/.vitepress/cache/
+**/.vitepress/.temp/
 .data/
 
 # Design handoff bundles dropped in the repo root. The tokens, brand assets and

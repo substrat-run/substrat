@@ -84,6 +84,10 @@ export function changelogSidebar() {
 
 export function guideSidebar() {
   return [
+    // The guide is three groups a reader takes in order: what Substrat is, how to
+    // build on it, how to ship what was built. The two halves of the AI-agent story
+    // (`ai-agents` and `ai-guardrails` each call the other "the other half") sit
+    // together under Build, right after the agent rules they explain (#1009).
     {
       text: 'Introduction',
       items: [
@@ -93,15 +97,25 @@ export function guideSidebar() {
         { text: "What Substrat doesn't have (yet)", link: '/guide/what-substrat-lacks' },
         { text: 'FAQ', link: '/guide/faq' },
         { text: 'Architecture', link: '/guide/architecture' },
+      ],
+    },
+    {
+      text: 'Build',
+      items: [
         { text: 'Getting started', link: '/guide/getting-started' },
         { text: 'Walkthrough: the todo app', link: '/guide/walkthrough-todo' },
         { text: 'Agent rules', link: START_HERE },
         { text: 'The Claude Code plugin', link: '/guide/agent-plugin' },
-        { text: 'Running locally', link: '/guide/running-locally' },
-        { text: 'Deploying a vertical', link: '/guide/deploying' },
-        { text: 'Environments & previews', link: '/guide/environments-and-previews' },
         { text: 'Building for AI agents', link: '/guide/ai-agents' },
         { text: 'Where AI mistakes stop', link: '/guide/ai-guardrails' },
+        { text: 'Running locally', link: '/guide/running-locally' },
+      ],
+    },
+    {
+      text: 'Ship',
+      items: [
+        { text: 'Deploying a vertical', link: '/guide/deploying' },
+        { text: 'Environments & previews', link: '/guide/environments-and-previews' },
         { text: 'Ask the docs', link: '/guide/support' },
       ],
     },
