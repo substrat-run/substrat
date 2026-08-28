@@ -153,8 +153,9 @@ attachment item that could reach a customer portal.
 `clientContext` / `ClientContext` — who is on the other end of a request, as distinct
 from the principal: `device` (browser, OS and `kind` — desktop, mobile, tablet, bot —
 parsed out of the `User-Agent` by `parseUserAgent`), `language` (the head of
-`Accept-Language`), and `geo` (country, region, city, timezone, continent). Every field
-is nullable and there is no IP address. A host builds one with `clientContextOf(headers,
+`Accept-Language`), and `geo` (country, region, city, timezone, continent). Every
+collected value is nullable; `device` and `geo` are always present and `device.kind` is
+`unknown` when the parser could not tell. There is no IP address. A host builds one with `clientContextOf(headers,
 geo?)` and hands it to an operation as **input**; module code has no request to read.
 The Cloudflare read of `request.cf` is normalised once, in
 [`cloudflareClientContext`](/reference/adapter-cloudflare) — a vertical sees this shape

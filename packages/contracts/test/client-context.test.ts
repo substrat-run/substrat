@@ -109,6 +109,14 @@ describe('clientContextOf', () => {
     expect(clientContext.parse(ctx)).toEqual(ctx);
   });
 
+  it('treats a geo field that is present but undefined as absent', () => {
+    // `Partial<ClientGeo>` admits `{ city: undefined }`, and the schema does not: a
+    // spread would have carried the undefined through and failed the parse.
+    const ctx = clientContextOf(headers, { country: 'SE', city: undefined, region: undefined });
+    expect(ctx.geo).toEqual({ ...EMPTY_GEO, country: 'SE' });
+    expect(clientContext.parse(ctx)).toEqual(ctx);
+  });
+
   it('is all-null for a request with no headers', () => {
     const ctx = clientContextOf(new Headers());
     expect(ctx).toEqual({

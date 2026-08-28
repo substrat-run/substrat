@@ -21,7 +21,10 @@ import { z } from 'zod';
  * What is deliberately absent: the IP address. It is the most identifying field a
  * request carries and the least useful to a person reading a conversation; the
  * country and city it resolves to carry the useful part without the fingerprint.
- * Every field is nullable, because every field is something a request may not say.
+ * Every COLLECTED value is nullable, because every one is something a request may not
+ * say; the shape around them is not. `device` and `geo` are always present, and
+ * `device.kind` is always a kind — `'unknown'` when the parser could not tell — so a
+ * reader destructures without guarding and a row always has every column.
  */
 
 /** ISO 3166-1 alpha-2, upper case. */
@@ -239,7 +242,8 @@ export function preferredLanguage(acceptLanguage: string | null | undefined): st
  * geo is what differs — so a host with none (the node dev server) passes nothing and
  * gets `EMPTY_GEO`, and one with some (`cloudflareClientContext`) passes what it
  * normalised. A partial geo is filled out to the full shape so a row always has
- * every column.
+ * every column — and a field that is present but `undefined` counts as absent, since
+ * `Partial` admits it and a spread would carry it through to a schema that does not.
  */
 export function clientContextOf(headers: HeadersLike, geo?: Partial<ClientGeo>): ClientContext {
   const userAgent = headers.get('user-agent')?.trim() || null;
@@ -247,6 +251,12 @@ export function clientContextOf(headers: HeadersLike, geo?: Partial<ClientGeo>):
     userAgent,
     language: preferredLanguage(headers.get('accept-language')),
     device: parseUserAgent(userAgent),
-    geo: { ...EMPTY_GEO, ...(geo ?? {}) },
+    geo: {
+      country: geo?.country ?? null,
+      region: geo?.region ?? null,
+      city: geo?.city ?? null,
+      timezone: geo?.timezone ?? null,
+      continent: geo?.continent ?? null,
+    },
   };
 }
