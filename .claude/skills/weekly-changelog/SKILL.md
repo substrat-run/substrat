@@ -151,11 +151,15 @@ pnpm lint:llms --check        # the entry is indexed and its description is usab
 pnpm docs:build               # the sidebar and nav pick it up from the directory
 ```
 
-Then confirm nothing leaked: the rendered page must contain no `#NNN`.
+Then confirm nothing leaked: the rendered page must contain no `#NNN` and no link to
+a pull request or issue. Set the week once and reuse it below.
 
 ```bash
-grep -o '#[0-9]\{3,\}' apps/docs/.vitepress/dist/changelog/2026-w35.html | sort -u
-# expect: nothing (the ledger is an HTML comment and does not render)
+WEEK=2026-w35   # the entry you are checking
+PAGE=apps/docs/.vitepress/dist/changelog/$WEEK.html
+grep -o '#[0-9]\{3,\}' "$PAGE" | sort -u
+grep -oE '/(pull|issues)/[0-9]+' "$PAGE" | sort -u
+# expect: nothing from either (the ledger is an HTML comment and does not render)
 ```
 
 `lint:changelog` failing with *"N of M merges are not accounted for"* is the normal
@@ -165,7 +169,8 @@ forgot.
 
 ## 6. Open the PR
 
-Branch `changelog/2026-w35`, one commit, subject `docs(changelog): week 35, 2026`. The PR
+Branch `changelog/$WEEK` (`changelog/2026-w35`), one commit, subject
+`docs(changelog): week <N>, <YYYY>` (`docs(changelog): week 35, 2026`). The PR
 body is the lede plus the section titles — enough for a reviewer to see the shape without
 opening the diff — and a note of which sections carry a *changes behaviour* flag.
 

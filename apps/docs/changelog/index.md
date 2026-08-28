@@ -39,7 +39,9 @@ regenerates it is worse than one that admits an author.
 
 What *is* mechanical is completeness. `pnpm lint:changelog --check` reads each
 entry's declared `range`, walks `git log` for the merges inside it, and fails if
-any of them is not accounted for. The prose names no pull requests — it is
+any merged pull request is not named in the entry (a commit pushed without a PR
+has no number to name, so it is reported for the author to cover, not failed
+on). The prose names no pull requests — it is
 written for someone building on the platform, who has no reason to open the
 repo — so each entry ends with a ledger of the merges it covers, in a comment
 that does not render. An author who drops thirty PRs out of ninety produces a
