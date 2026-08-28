@@ -618,6 +618,30 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   /**
+   * Record that a source could not be read.
+   *
+   * The other half of `record-kb-articles`, and the half that was missing: a fetch
+   * that failed left the source at `ingesting` for good, because nothing wrote
+   * `failed`. The connector invokes this from its catch, and the desk shows the reason
+   * on the row — a failed read is a health signal, not a spinner.
+   */
+  'ticket0/record-kb-ingest-failure': {
+    summary: 'Record that a documentation source could not be read',
+    permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
+    input: z.object({ sourceId: z.string(), error: z.string().min(1) }),
+    output: ticket0Entities.kbSource.fields,
+    http: { method: 'POST', path: '/kb/sources/{sourceId}/failure' },
+    emits: {
+      entity: 'kbSource',
+      entityIdFrom: 'id',
+      type: 'ticket0.kb-ingest-failed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'url', 'last_error'],
+    },
+  },
+
+  /**
    * Find articles by text — ranked and capped, not paged.
    *
    * A separate contract from a paged list on purpose: this one is ordered by

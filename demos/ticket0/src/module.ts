@@ -750,6 +750,28 @@ const operations = {
     return result;
   },
 
+  'ticket0/record-kb-ingest-failure': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    sourceOrThrow(ctx, input.sourceId);
+    // `last_ingested_at` is left alone on purpose: it is when the last GOOD read
+    // happened, which is exactly what the desk wants to know once a read has failed —
+    // the assistant is still answering from that copy.
+    ctx.sql.exec('UPDATE ticket0_kb_sources SET status = ?, last_error = ? WHERE id = ?', [
+      'failed',
+      input.error,
+      input.sourceId,
+    ]);
+    const row = sourceOrThrow(ctx, input.sourceId);
+    ctx.emit({
+      type: 'ticket0.kb-ingest-failed',
+      schemaVersion: 1,
+      entity: sourceRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, url: row.url, last_error: row.last_error },
+    });
+    return row;
+  },
+
   'ticket0/search-kb': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.kbRead));
     const limit = input.limit ?? DEFAULT_SEARCH_LIMIT;

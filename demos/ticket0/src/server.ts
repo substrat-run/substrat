@@ -26,7 +26,7 @@ import { devLogin } from '@substrat-run/dev-issuer';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { API_DOCUMENT } from './api.js';
 import { answerConversation, modelFromEnv } from '../harness/assistant.js';
-import { runIngest } from '../harness/kb-ingest.js';
+import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { buildHost, linkDevPersonas, seed, type Desk, type World } from './seed.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
@@ -86,11 +86,14 @@ async function boot() {
 
   app.get('/openapi.json', (c) => c.json(API_DOCUMENT));
 
-  mountApi(app, async (c) => {
+  const staffStub = async (c: Context) => {
     const caller = await login.caller(c.req.raw.headers);
     if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
     return host.getScope(caller.principal, caller.tenantId, caller.scopeId);
-  });
+  };
+  mountApi(app, staffStub);
+  // "Re-read" and "Add a source" in the desk — the same route the worker mounts.
+  mountKbRefresh(app, staffStub);
 
   // ── The public widget surface ────────────────────────────────────────────
   const widgetJs = readFileSync(WIDGET_JS, 'utf8');
@@ -204,15 +207,13 @@ async function ingestFor(host: ScopeHost, desk: Desk): Promise<void> {
   };
   for (const source of sources.entries) {
     try {
-      await admin.invoke('ticket0/ingest-kb-source', { sourceId: source.id });
-      const result = await runIngest(admin, source);
+      const result = await readSource(admin, source.id);
       process.stdout.write(
         `  ${source.label}: +${result.added} new, ${result.updated} changed, ${result.unchanged} unchanged\n`,
       );
     } catch (err) {
-      // A failed ingest is a health signal. Note the gap honestly: the source keeps
-      // `status = 'ingesting'` because no operation writes `failed` / `last_error`
-      // yet, so this line is currently the only place the failure is visible.
+      // Already recorded on the source as `failed` with this reason, so the desk shows
+      // it on the row; this line is the boot log's copy.
       process.stdout.write(
         `  ${source.label}: FAILED — ${err instanceof Error ? err.message : String(err)}\n`,
       );

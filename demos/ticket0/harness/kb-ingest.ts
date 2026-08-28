@@ -128,7 +128,13 @@ export async function fetchArticles(
   url: string,
   fetchImpl: typeof fetch = fetch,
 ): Promise<Article[]> {
-  const res = await fetchImpl(url, { headers: { accept: 'text/plain, text/markdown, */*' } });
+  // A network failure is a bare `fetch failed` from the runtime; name the URL, since
+  // the message ends up on the source's row and "fetch failed" alone says nothing.
+  const res = await fetchImpl(url, { headers: { accept: 'text/plain, text/markdown, */*' } }).catch(
+    (e: unknown) => {
+      throw new Error(`could not reach ${url}: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+    },
+  );
   if (!res.ok) throw new Error(`${res.status} ${res.statusText} fetching ${url}`);
   const text = await res.text();
 

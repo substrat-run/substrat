@@ -431,6 +431,13 @@ export interface Ticket0Client {
   recordKbArticles(input: { sourceId: string; articles: { url: string; title: string; headingPath: string; body: string }[] }): Promise<{ sourceId: string; added: number; updated: number; unchanged: number }>;
 
   /**
+   * Record that a documentation source could not be read
+   *
+   * `POST /kb/sources/{sourceId}/failure` — `ticket0/record-kb-ingest-failure`
+   */
+  recordKbIngestFailure(input: { sourceId: string; error: string }): Promise<KbSource>;
+
+  /**
    * Mark a conversation resolved
    *
    * `POST /conversations/{conversationId}/resolve` — `ticket0/resolve`
@@ -684,6 +691,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/relay/outbound/${encodeURIComponent(String(input.messageId))}/delivered`, "POST", omit(input, ["messageId"]), undefined),
     recordKbArticles: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/articles`, "POST", omit(input, ["sourceId"]), undefined),
+    recordKbIngestFailure: (input: Args) =>
+      send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/failure`, "POST", omit(input, ["sourceId"]), undefined),
     resolve: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/resolve`, "POST", omit(input, ["conversationId"]), undefined),
     rotateVerificationSecret: () =>
