@@ -71,6 +71,7 @@ for (const p of ['D', 'K']) {
 // worse than none: it says a back-pointer is rendered when nothing is.
 for (const e of entries) {
   if (e.twin && !seen.has(e.twin)) errs.push(`${e.file}: twin ${e.twin} not found`);
+  else if (e.twin && seen.get(e.twin) === e.file) errs.push(`${e.file}: twin of itself`);
   for (const id of e.amends) {
     if (!seen.has(id)) errs.push(`${e.file}: amends ${id} not found`);
     else if (seen.get(id) === e.file) errs.push(`${e.file}: amends itself`);
