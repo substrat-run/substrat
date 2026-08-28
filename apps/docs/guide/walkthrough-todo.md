@@ -8,7 +8,10 @@ This page shows the whole process once, on the smallest app anyone could ask for
 to create a todo app"* — using **complete files from the repository** rather than excerpts.
 An excerpt of generated code is unconvincing, because the reader assumes the messy parts
 were cropped. Every block below is the file as it sits in `demos/todo/` at the version of
-these docs, pulled in at build time; nothing is retyped for the page.
+these docs, pulled in at build time; nothing is retyped for the page. The one thing dropped
+is the title line of each markdown file — the section heading above the block stands in for
+it, so the page keeps a single top-level heading — and everything from the first line after
+it onward is shown.
 
 Todo was chosen for the reason a todo app is usually a bad demo: the reader spends zero
 attention on the domain, so the *process* is the only thing on the page. Every other

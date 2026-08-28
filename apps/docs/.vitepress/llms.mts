@@ -250,36 +250,87 @@ export function toTwin(raw: string, srcDir?: string): string {
   return `${collapseBlankRuns(linked).trimEnd()}\n`;
 }
 
-/** VitePress's snippet import: `<<< @/path`, with an optional `{lang}` or region suffix. */
-const SNIPPET = /^<<<\s*@\/(\S+?)(?:[#{]\S*)?\s*$/;
-/** VitePress's markdown include: `<!--@include: @/path{from,to}-->`, the range 1-based. */
-const INCLUDE = /^<!--@include:\s*@\/(\S+?)(?:\{(\d*),(\d*)\})?\s*-->$/;
+/**
+ * VitePress's snippet import, in full: `<<< path[#region][{meta}] [title]`, where
+ * `meta` is any of line highlights, a language, `:line-numbers` — `{1,3-5 ts:line-numbers}`.
+ */
+const SNIPPET = /^<<<\s*(\S+?)(#[\w*-]+)?(?:\{([^}]*)\})?(?:\s+\[[^\]]*\])?\s*$/;
+/**
+ * VitePress's markdown include, in full: `<!--@include: path[#region][{from,to}]-->`,
+ * the range 1-based and either end open.
+ */
+const INCLUDE = /^<!--@include:\s*(\S+?)(#[\w-]+)?(?:\{(\d*),(\d*)\})?\s*-->$/;
 
 /**
  * The lines a snippet or include stands for (#741), or `undefined` for any other
  * line. `@/` is the docs source directory, exactly as VitePress resolves it, so
  * a walkthrough pulling `@/../../demos/todo/spec/model.ts` into the page pulls
- * the same file into the twin. A snippet becomes a fence tagged by extension; an
- * include is spliced in as the markdown it is, honouring the line range.
+ * the same file into the twin. A snippet becomes a fence tagged by its explicit
+ * language or else its extension; an include is spliced in as the markdown it
+ * is, honouring the line range.
+ *
+ * What the rendered page can do and the twin does not, the twin **refuses**
+ * rather than approximates: a `#region` selector (VitePress's marker grammar is
+ * not worth a second implementation), a path relative to the page rather than
+ * `@/` (this function does not know the page), or a directive it cannot parse
+ * at all. Reading the whole file where the page shows a region would hand an
+ * agent a twin that quietly differs from the page, and this runs under
+ * `lint:llms --check`, so the refusal is a red PR rather than a wrong artifact.
+ * Line highlights and line numbers are presentation and are dropped on purpose.
  *
  * Without a source directory (a caller with only the text) the line is kept as
  * written, which is what the twin did before and is still the honest fallback.
  */
 function pulledIn(line: string, srcDir: string | undefined): string[] | undefined {
   if (!srcDir) return undefined;
-  const snippet = SNIPPET.exec(line.trim());
-  if (snippet) {
-    const file = resolve(srcDir, snippet[1]!);
-    return [`\`\`\`${extname(file).slice(1)}`, readFileSync(file, 'utf8').trimEnd(), '```'];
+  const directive = line.trim();
+  const isSnippet = directive.startsWith('<<<');
+  const isInclude = directive.startsWith('<!--@include:');
+  if (!isSnippet && !isInclude) return undefined;
+
+  const refuse = (why: string): never => {
+    throw new Error(
+      `The llms twin cannot reproduce \`${directive}\`: ${why}.\n` +
+        `Supported: \`<<< @/path[{lang}]\` and \`<!--@include: @/path[{from,to}]-->\`.`,
+    );
+  };
+  const fileOf = (path: string, region: string | undefined): string => {
+    if (region) refuse(`\`${region}\` selects a region, and the twin pulls whole files or line ranges only`);
+    if (!path.startsWith('@/')) refuse('the path must be `@/…`, relative to the docs source directory');
+    return resolve(srcDir, path.slice(2));
+  };
+
+  if (isSnippet) {
+    const snippet = SNIPPET.exec(directive);
+    if (!snippet) refuse('it is not a snippet import the twin can parse');
+    const [, path, region, meta] = snippet!;
+    const file = fileOf(path!, region);
+    const lang = languageOf(meta) ?? extname(file).slice(1);
+    return [`\`\`\`${lang}`, readFileSync(file, 'utf8').trimEnd(), '```'];
   }
-  const include = INCLUDE.exec(line.trim());
-  if (include) {
-    const lines = readFileSync(resolve(srcDir, include[1]!), 'utf8').trimEnd().split('\n');
-    const from = include[2] ? Number(include[2]) : 1;
-    const to = include[3] ? Number(include[3]) : lines.length;
-    return lines.slice(from - 1, to);
-  }
-  return undefined;
+
+  const include = INCLUDE.exec(directive);
+  if (!include) refuse('it is not a markdown include the twin can parse');
+  const [, path, region, fromText, toText] = include!;
+  const lines = readFileSync(fileOf(path!, region), 'utf8').trimEnd().split('\n');
+  const from = fromText ? Number(fromText) : 1;
+  const to = toText ? Number(toText) : lines.length;
+  return lines.slice(from - 1, to);
+}
+
+/**
+ * The language a snippet's `{meta}` names, if any: the token that is not a line
+ * highlight (`1,3-5`), shorn of its `:line-numbers` flag — `{2 ts:line-numbers}`
+ * is `ts`. VitePress falls back to the extension when there is none; so do we.
+ */
+function languageOf(meta: string | undefined): string | undefined {
+  if (!meta) return undefined;
+  const word = meta
+    .split(/\s+/)
+    .filter(Boolean)
+    .find((token) => !/^[\d,-]+$/.test(token));
+  const lang = word?.replace(/:(?:no-)?line-numbers(?:=\d+)?$/, '');
+  return lang || undefined;
 }
 
 /** Three blank lines in a row is an artifact of stripping, not authorial intent. */
