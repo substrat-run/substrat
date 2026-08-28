@@ -336,9 +336,16 @@ function getLeaveTypeRow(ctx: OperationContext, key: string): LeaveTypeRow {
 }
 
 function getEntryRow(ctx: OperationContext, id: string): EntryRow {
-  return storedEntry(
-    ctx.sql.query<EntryRow>(`SELECT ${ENTRY_COLUMNS} FROM absence_ledger WHERE id = ?`, [id])[0]!,
-  );
+  const row = ctx.sql.query<EntryRow>(
+    `SELECT ${ENTRY_COLUMNS} FROM absence_ledger WHERE id = ?`,
+    [id],
+  )[0];
+  // Only ever called with an id this transaction just inserted, so this is a
+  // ledger-integrity claim rather than a lookup — but it must stay a CLASSIFIED
+  // engine error: `storedEntry` reads `r.id` to name the surface, so a bare `!`
+  // would answer an unclassified TypeError that `errorCodeOf` cannot read.
+  if (!row) throw substratError('internal', `ledger entry ${id} vanished after insert`);
+  return storedEntry(row);
 }
 
 const subjectRefOf = (r: { subject_type: string; subject_id: string }): EntityRef => ({
