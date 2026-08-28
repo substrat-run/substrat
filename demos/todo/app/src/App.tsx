@@ -7,8 +7,12 @@
  * filtering anywhere in this file. The picker itself lives at the issuer — this app
  * has no list of who exists, exactly as a deployed one would not.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useAutoRefresh } from '@substrat-run/ui';
 import { api, ApiError, auth, me, type Item, type List, type Paged, type Session, type Share } from './api.js';
+
+/** The wall, as opposed to a blip: the server said no, not "try again". */
+const denied = (error: unknown) => error instanceof ApiError && error.status === 403;
 
 function useHash(): string {
   const [hash, setHash] = useState(() => window.location.hash);
@@ -22,10 +26,9 @@ function useHash(): string {
 
 function Problem({ error }: { error: unknown }) {
   if (!error) return null;
-  const denied = error instanceof ApiError && error.status === 403;
   return (
     <p className="error">
-      <strong>{denied ? 'Not allowed. ' : 'Something went wrong. '}</strong>
+      <strong>{denied(error) ? 'Not allowed. ' : 'Something went wrong. '}</strong>
       {error instanceof Error ? error.message : String(error)}
     </p>
   );
@@ -78,13 +81,21 @@ function Lists() {
   const [error, setError] = useState<unknown>(null);
   const [name, setName] = useState('');
 
-  const load = useCallback(() => {
-    api
-      .myLists()
-      .then((page) => setLists(page.entries))
-      .catch((e: unknown) => setError(e));
+  const load = useCallback(async () => {
+    try {
+      setLists((await api.myLists()).entries);
+      setError(null);
+    } catch (e) {
+      setError(e);
+      if (denied(e)) setLists(null);
+    }
   }, []);
-  useEffect(load, [load]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  // The screen outlives the grant: a list shared with you and then un-shared stays
+  // on this screen until something re-asks. Focus, visibility and a slow poll do.
+  useAutoRefresh(load);
 
   const create = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -107,7 +118,7 @@ function Lists() {
       </p>
       <Problem error={error} />
       {lists === null ? (
-        <p className="empty">Loading…</p>
+        !error && <p className="empty">Loading…</p>
       ) : lists.length === 0 ? (
         <div className="card">
           <p className="empty">Nothing yet. Create a list, or ask someone to share one with you.</p>
@@ -162,19 +173,53 @@ function ListView({ listId }: { listId: string }) {
   const [text, setText] = useState('');
   const [email, setEmail] = useState('');
 
-  const load = useCallback(() => {
-    api
-      .listItems({ listId })
-      .then(setPage)
-      .catch((e: unknown) => setError(e));
+  // How far down the walk this screen has gone, so a revalidation refetches the
+  // same depth instead of snapping back to the first page under someone's cursor.
+  const depth = useRef(1);
+
+  // Revalidate-and-deny: a read of this list that comes back 403 is a share revoked
+  // while this screen was open. What the server just refused leaves with the
+  // refusal, so the wall replaces the list instead of sitting above data you may no
+  // longer see. Nothing leaked — every action would have failed — but you were
+  // looking at it, and for a permission-centric app that is the whole failure.
+  // Every read of the list goes through here: the refetch and the walk alike. A
+  // refused *mutation* does not — `delete` needs `list:manage`, which a reader never
+  // had, so that 403 is the honest answer and not a revoke.
+  const refused = useCallback((e: unknown) => {
+    setError(e);
+    if (denied(e)) {
+      setPage(null);
+      setShares(null);
+    }
+  }, []);
+
+  const load = useCallback(async () => {
+    try {
+      let fresh = await api.listItems({ listId });
+      for (let n = 1; n < depth.current && fresh.next; n++) {
+        const rest = await api.follow<Item>(fresh.next);
+        fresh = { entries: [...fresh.entries, ...rest.entries], next: rest.next, total: rest.total };
+      }
+      setPage(fresh);
+      setError(null);
+    } catch (e) {
+      refused(e);
+      return;
+    }
     // Owner-only. A 403 here is the honest answer for someone the list was
     // shared with, so it is not surfaced as an error.
-    api
-      .listShares({ listId })
-      .then((page) => setShares(page.entries))
-      .catch(() => setShares(null));
-  }, [listId]);
-  useEffect(load, [load]);
+    try {
+      setShares((await api.listShares({ listId })).entries);
+    } catch {
+      setShares(null);
+    }
+  }, [listId, refused]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  // The re-ask. This screen has no nav item to re-click (the sidebar case lives in
+  // demos/shop/app); focus, visibility and the slow poll are what catch a revoke.
+  useAutoRefresh(load);
 
   const guard = async (fn: () => Promise<unknown>) => {
     setError(null);
@@ -197,8 +242,9 @@ function ListView({ listId }: { listId: string }) {
     try {
       const rest = await api.follow<Item>(page.next);
       setPage({ entries: [...page.entries, ...rest.entries], next: rest.next, total: rest.total });
+      depth.current += 1;
     } catch (e) {
-      setError(e);
+      refused(e);
     }
   };
 
@@ -222,7 +268,7 @@ function ListView({ listId }: { listId: string }) {
       <Problem error={error} />
 
       {page === null ? (
-        <p className="empty">Loading…</p>
+        !error && <p className="empty">Loading…</p>
       ) : page.entries.length === 0 ? (
         <div className="card">
           <p className="empty">Nothing on this list yet.</p>
