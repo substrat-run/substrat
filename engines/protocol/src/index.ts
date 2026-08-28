@@ -66,6 +66,18 @@ export {
   protocolSignatureRow,
   protocolSignatureRequestRow,
 } from './schemas.js';
+import {
+  protocolDetail,
+  protocolResponseRow,
+  protocolSignatureRequestRow,
+  protocolSignatureRow,
+  protocolSummary,
+  protocolTemplateRow,
+  requestSignaturesResult,
+  signResult,
+} from './schemas.js';
+import { protocolInstanceRow } from './entities.js';
+import { columnsOf, returns } from './seam.js';
 /**
  * The input shapes, and the template-content vocabulary they are built from
  * (#738). Moved out of this file so `operations.ts` can declare against the
@@ -599,22 +611,58 @@ export interface ProtocolSignatureRequestRow {
 
 const protocolRef = (id: string): EntityRef => ({ entityType: 'protocol', entityId: id });
 
+/**
+ * The SELECT lists, derived from the published row schemas (#771).
+ *
+ * Never `SELECT *`: that pins the shape a read returns to whatever the physical
+ * table currently holds, which is the same trust-TypeScript hole `returns` closes
+ * from the other side. A column dropped from the table is then a SQL error naming
+ * it; a column added to the table is simply never read.
+ */
+const TEMPLATE_COLUMNS = columnsOf(protocolTemplateRow);
+const INSTANCE_COLUMNS = columnsOf(protocolInstanceRow);
+const RESPONSE_COLUMNS = columnsOf(protocolResponseRow);
+const SIGNATURE_COLUMNS = columnsOf(protocolSignatureRow);
+const REQUEST_COLUMNS = columnsOf(protocolSignatureRequestRow);
+
+const responseRows = z.array(protocolResponseRow);
+const signatureRows = z.array(protocolSignatureRow);
+const requestRows = z.array(protocolSignatureRequestRow);
+const templateRows = z.array(protocolTemplateRow);
+
+/**
+ * A stored row, published (#771).
+ *
+ * Every path out of this engine that returns a template, an instance, a response,
+ * a signature or a request goes through one of these — the in-scope reads, the
+ * page walk, and each operation binding — so the parse lives here rather than at
+ * each call site. `returns` refuses a row that no longer matches the published
+ * schema, which is the shape a composing vertical declared its `output` with when
+ * it compiled against some earlier version of this engine.
+ */
+const storedInstance = (row: unknown, id: string): ProtocolInstanceRow =>
+  returns(protocolInstanceRow, `protocol instance ${id}`, row);
+const storedTemplate = (row: unknown, name: string): ProtocolTemplateRow =>
+  returns(protocolTemplateRow, `protocol template ${name}`, row);
+const storedRequest = (row: unknown, id: string): ProtocolSignatureRequestRow =>
+  returns(protocolSignatureRequestRow, `signature request ${id}`, row);
+
 function getInstanceRow(ctx: OperationContext, instanceId: string): ProtocolInstanceRow {
   const row = ctx.sql.query<ProtocolInstanceRow>(
-    'SELECT * FROM protocol_instances WHERE id = ?',
+    `SELECT ${INSTANCE_COLUMNS} FROM protocol_instances WHERE id = ?`,
     [instanceId],
   )[0];
   if (!row) throw substratError('not_found', `protocol instance not found: ${instanceId}`);
-  return row;
+  return storedInstance(row, instanceId);
 }
 
 function getTemplateRow(ctx: OperationContext, key: string, version: number): ProtocolTemplateRow {
   const row = ctx.sql.query<ProtocolTemplateRow>(
-    'SELECT * FROM protocol_templates WHERE key = ? AND version = ?',
+    `SELECT ${TEMPLATE_COLUMNS} FROM protocol_templates WHERE key = ? AND version = ?`,
     [key, version],
   )[0];
   if (!row) throw substratError('not_found', `protocol template not found: ${key}@${version}`);
-  return row;
+  return storedTemplate(row, `${key}@${version}`);
 }
 
 const templateContentOf = (template: ProtocolTemplateRow): ProtocolTemplateContent =>
@@ -622,16 +670,24 @@ const templateContentOf = (template: ProtocolTemplateRow): ProtocolTemplateConte
 
 /** Append order is authoritative for "latest wins" — rowid, not ULID (same-ms safe). */
 function getResponseRows(ctx: OperationContext, instanceId: string): ProtocolResponseRow[] {
-  return ctx.sql.query<ProtocolResponseRow>(
-    'SELECT * FROM protocol_responses WHERE instance_id = ? ORDER BY rowid',
-    [instanceId],
+  return returns(
+    responseRows,
+    `responses of protocol ${instanceId}`,
+    ctx.sql.query<ProtocolResponseRow>(
+      `SELECT ${RESPONSE_COLUMNS} FROM protocol_responses WHERE instance_id = ? ORDER BY rowid`,
+      [instanceId],
+    ),
   );
 }
 
 function getSignatureRows(ctx: OperationContext, instanceId: string): ProtocolSignatureRow[] {
-  return ctx.sql.query<ProtocolSignatureRow>(
-    'SELECT * FROM protocol_signatures WHERE instance_id = ? ORDER BY rowid',
-    [instanceId],
+  return returns(
+    signatureRows,
+    `signatures of protocol ${instanceId}`,
+    ctx.sql.query<ProtocolSignatureRow>(
+      `SELECT ${SIGNATURE_COLUMNS} FROM protocol_signatures WHERE instance_id = ? ORDER BY rowid`,
+      [instanceId],
+    ),
   );
 }
 
@@ -639,10 +695,25 @@ function getRequestRows(
   ctx: OperationContext,
   instanceId: string,
 ): ProtocolSignatureRequestRow[] {
-  return ctx.sql.query<ProtocolSignatureRequestRow>(
-    'SELECT * FROM protocol_signature_requests WHERE instance_id = ? ORDER BY rowid',
-    [instanceId],
+  return returns(
+    requestRows,
+    `signature requests of protocol ${instanceId}`,
+    ctx.sql.query<ProtocolSignatureRequestRow>(
+      `SELECT ${REQUEST_COLUMNS} FROM protocol_signature_requests
+       WHERE instance_id = ? ORDER BY rowid`,
+      [instanceId],
+    ),
   );
+}
+
+/** A signature request by id, or a refusal — the ingress pair's first read. */
+function getRequestRow(ctx: OperationContext, requestId: string): ProtocolSignatureRequestRow {
+  const row = ctx.sql.query<ProtocolSignatureRequestRow>(
+    `SELECT ${REQUEST_COLUMNS} FROM protocol_signature_requests WHERE id = ?`,
+    [requestId],
+  )[0];
+  if (!row) throw substratError('not_found', `signature request not found: ${requestId}`);
+  return storedRequest(row, requestId);
 }
 
 function latestPerItem(responses: ProtocolResponseRow[]): Record<string, ProtocolResponseRow> {
@@ -881,9 +952,13 @@ export function defineTemplate(
      VALUES (?, ?, ?, ?, ?, ?)`,
     [id, input.key, version, input.title, JSON.stringify(input.content), ctx.now()],
   );
-  return ctx.sql.query<ProtocolTemplateRow>('SELECT * FROM protocol_templates WHERE id = ?', [
-    id,
-  ])[0]!;
+  return storedTemplate(
+    ctx.sql.query<ProtocolTemplateRow>(
+      `SELECT ${TEMPLATE_COLUMNS} FROM protocol_templates WHERE id = ?`,
+      [id],
+    )[0]!,
+    `${input.key}@${version}`,
+  );
 }
 
 /** Latest version per key — the instantiation picker's list. */
@@ -899,14 +974,14 @@ export function defineTemplate(
 export function listTemplates(ctx: OperationContext, page: PageParams): Page<ProtocolTemplateRow> {
   const limit = listLimitOf(page?.limit);
   const rows = ctx.sql.query<ProtocolTemplateRow>(
-    `SELECT t.* FROM protocol_templates t
+    `SELECT ${TEMPLATE_COLUMNS} FROM protocol_templates t
      WHERE t.version = (SELECT MAX(version) FROM protocol_templates WHERE key = t.key)${
        page?.cursor ? ' AND t.key > ?' : ''
      }
      ORDER BY t.key LIMIT ?`,
     page?.cursor ? [page.cursor, limit] : [limit],
   );
-  return pageOf(rows, limit, (row) => row.key);
+  return pageOf(returns(templateRows, 'protocol templates', rows), limit, (row) => row.key);
 }
 
 /**
@@ -919,11 +994,12 @@ export function instantiateProtocol(
   rawInput: InstantiateProtocolInput,
 ): ProtocolInstanceRow {
   const input = instantiateProtocolInput.parse(rawInput);
-  const template = ctx.sql.query<ProtocolTemplateRow>(
-    'SELECT * FROM protocol_templates WHERE key = ? ORDER BY version DESC LIMIT 1',
+  const latest = ctx.sql.query<ProtocolTemplateRow>(
+    `SELECT ${TEMPLATE_COLUMNS} FROM protocol_templates WHERE key = ? ORDER BY version DESC LIMIT 1`,
     [input.templateKey],
   )[0];
-  if (!template) throw substratError('not_found', `protocol template not found: ${input.templateKey}`);
+  if (!latest) throw substratError('not_found', `protocol template not found: ${input.templateKey}`);
+  const template = storedTemplate(latest, `${input.templateKey} (latest)`);
 
   // An instance being signed is still "in play": a second one would race the
   // first for the same (template, entity) slot.
@@ -1049,9 +1125,14 @@ export function fillProtocol(
       entity: { entityType: instance.entity_type, entityId: instance.entity_id },
     },
   });
-  return ctx.sql.query<ProtocolResponseRow>('SELECT * FROM protocol_responses WHERE id = ?', [
-    id,
-  ])[0]!;
+  return returns(
+    protocolResponseRow,
+    `response ${id}`,
+    ctx.sql.query<ProtocolResponseRow>(
+      `SELECT ${RESPONSE_COLUMNS} FROM protocol_responses WHERE id = ?`,
+      [id],
+    )[0]!,
+  );
 }
 
 /**
@@ -1359,7 +1440,11 @@ export async function requestSignatures(
     },
   });
 
-  return { instance: getInstanceRow(ctx, instance.id), contentHash, requests };
+  return returns(requestSignaturesResult, `signature requests for protocol ${instance.id}`, {
+    instance: getInstanceRow(ctx, instance.id),
+    contentHash,
+    requests,
+  });
 }
 
 export interface SignResult {
@@ -1391,11 +1476,7 @@ export async function recordSignature(
   rawInput: RecordSignatureInput,
 ): Promise<SignResult> {
   const input = recordSignatureInput.parse(rawInput);
-  const request = ctx.sql.query<ProtocolSignatureRequestRow>(
-    'SELECT * FROM protocol_signature_requests WHERE id = ?',
-    [input.requestId],
-  )[0];
-  if (!request) throw substratError('not_found', `signature request not found: ${input.requestId}`);
+  const request = getRequestRow(ctx, input.requestId);
   if (request.status !== 'pending') {
     throw conflict('request_resolved', `signature request is already ${request.status}: ${request.id}`);
   }
@@ -1481,7 +1562,10 @@ export async function recordSignature(
     contentHash: frozen,
     complete,
   });
-  return { instance: getInstanceRow(ctx, instance.id), signature };
+  return returns(signResult, `signature ${id} on protocol ${instance.id}`, {
+    instance: getInstanceRow(ctx, instance.id),
+    signature,
+  });
 }
 
 /**
@@ -1495,11 +1579,7 @@ export function declineSignature(
   rawInput: DeclineSignatureInput,
 ): ProtocolSignatureRequestRow {
   const input = declineSignatureInput.parse(rawInput);
-  const request = ctx.sql.query<ProtocolSignatureRequestRow>(
-    'SELECT * FROM protocol_signature_requests WHERE id = ?',
-    [input.requestId],
-  )[0];
-  if (!request) throw substratError('not_found', `signature request not found: ${input.requestId}`);
+  const request = getRequestRow(ctx, input.requestId);
   if (request.status !== 'pending') {
     throw conflict('request_resolved', `signature request is already ${request.status}: ${request.id}`);
   }
@@ -1524,10 +1604,7 @@ export function declineSignature(
       reason: input.reason,
     },
   });
-  return ctx.sql.query<ProtocolSignatureRequestRow>(
-    'SELECT * FROM protocol_signature_requests WHERE id = ?',
-    [request.id],
-  )[0]!;
+  return getRequestRow(ctx, request.id);
 }
 
 /**
@@ -1697,7 +1774,10 @@ export async function signProtocol(
     complete: true,
     responses: frozenAnswers(latest),
   });
-  return { instance: getInstanceRow(ctx, instance.id), signature };
+  return returns(signResult, `signature ${id} on protocol ${instance.id}`, {
+    instance: getInstanceRow(ctx, instance.id),
+    signature,
+  });
 }
 
 /**
@@ -1745,7 +1825,10 @@ export async function countersignProtocol(
     complete: true,
     responses: frozenAnswers(latest),
   });
-  return { instance: getInstanceRow(ctx, instance.id), signature };
+  return returns(signResult, `counter-signature ${id} on protocol ${instance.id}`, {
+    instance: getInstanceRow(ctx, instance.id),
+    signature,
+  });
 }
 
 /** Voiding, not deleting: a superseded protocol keeps its rows forever. */
@@ -1802,7 +1885,10 @@ export function getProtocol(ctx: OperationContext, instanceId: string): Protocol
   const template = getTemplateRow(ctx, instance.template_key, instance.template_version);
   const responses = getResponseRows(ctx, instance.id);
   const signatures = getSignatureRows(ctx, instance.id);
-  return {
+  // The composite is parsed as a whole, by the schema `protocol/get` is declared
+  // with: the rows were each parsed at their read, and this is what pins the
+  // assembly — the projection a vertical's `output` names — to the same contract.
+  return returns(protocolDetail, `protocol ${instanceId}`, {
     instance,
     template: {
       key: template.key,
@@ -1815,7 +1901,7 @@ export function getProtocol(ctx: OperationContext, instanceId: string): Protocol
     signature: signatures.find((s) => s.kind === 'primary') ?? null,
     signatures,
     requests: getRequestRows(ctx, instance.id),
-  };
+  });
 }
 
 export interface ProtocolSummary {
@@ -1850,7 +1936,10 @@ export function listProtocolsForEntity(
     ...page,
     filters: { entity_type: entity.entityType, entity_id: entity.entityId },
   });
-  return mapPage(instances, (instance) => {
+  return mapPage(instances, (raw) => {
+    // The kernel's walk answers against the declared entity; the row is still
+    // parsed here, because the page is a seam like any other read (#771).
+    const instance = storedInstance(raw, raw.id);
     const template = getTemplateRow(ctx, instance.template_key, instance.template_version);
     const content = templateContentOf(template);
     // A document has one thing to settle — its bound content — so it reads as
@@ -1873,7 +1962,7 @@ export function listProtocolsForEntity(
        WHERE instance_id = ? AND status = 'pending'`,
       [instance.id],
     )[0]!.n;
-    return {
+    return returns(protocolSummary, `protocol summary ${instance.id}`, {
       instance,
       title: template.title,
       contentKind: content.kind,
@@ -1884,7 +1973,7 @@ export function listProtocolsForEntity(
       countersignedBy: counter?.signed_by ?? null,
       countersignedAt: counter?.signed_at ?? null,
       pendingSignatures,
-    };
+    });
   });
 }
 
