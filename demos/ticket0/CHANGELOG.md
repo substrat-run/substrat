@@ -1,5 +1,69 @@
 # @substrat-run/demo-ticket0
 
+## 0.2.0
+
+### Minor Changes
+
+- c25c74d: ticket0: the assistant's failures are visible in the desk, with their reason.
+
+  - A failed turn now carries `error` — why it failed, in the words of whatever threw
+    (migration `0002-add-ticket0_ai_turns-error`). `record-answer` accepts it (additive,
+    optional) and `list-turns` returns it. The conversation view draws a failed turn as a
+    "could not answer" card with the reason, in place of an internal note that said only
+    that it had given up.
+  - `answerConversation` records a failed turn for an index that refused, not just for a
+    model that threw; the reason used to leave with the exception.
+  - New `ticket0/record-assistant-failure` (`conversation:widget`, entity-narrowed): when the
+    assistant itself cannot act — no service principal, no role, its first call refused — the
+    host records the failure through the widget, the principal that just accepted the
+    message. Both hosts do this from their `catch`; the worker's used to be bare and silent.
+  - New `ticket0/assistant-health` (`desk:configure`) and `GET /api/assistant/status`, behind
+    Settings → Assistant: which model this install would answer with (and a plain warning
+    when it is `offline/extractive` because no `CF_ACCOUNT_ID`/`CF_AI_TOKEN` is set), the
+    last day's turn and failure counts, and the newest failures linked to their conversations.
+
+- 7843c4f: The client half of a request, normalised once. `@substrat-run/contracts` gains `ClientContext` — the browser, OS and device kind parsed out of the `User-Agent` (`parseUserAgent`), the preferred language, and a geo (country, region, city, timezone, continent) — plus `clientContextOf(headers, geo?)` to build one from the headers every host has. `@substrat-run/adapter-cloudflare` gains `cloudflareClientContext(request)` / `cloudflareGeo(cf)`, the one place `request.cf` is read: Cloudflare's `T1`/`XX` country sentinels become null, the region is the name rather than the code, and latitude, longitude and postal code are not carried. No IP address in either.
+
+  ticket0 stores it: `ticket0/widget-start` takes an optional `client`, the widget surface supplies it from the request (the worker via the Cloudflare adapter, the dev server from headers alone), `ticket0_widget_openings` and `ticket0_widget_sessions` each grow the same eleven nullable columns for it (the opening records them, the first message carries them onto the session), and a new staff read `ticket0/widget-session` (`GET /conversations/{id}/widget-session`, `conversation:read`) returns the latest session minus its token hash. The inbox rail shows it as "Safari 17 on iOS · Stockholm, Sweden · 03:12 their time".
+
+### Patch Changes
+
+- aad0e26: fix(ticket0): opening the widget opens a session, not a conversation
+
+  Every `widget-start` used to open a conversation and mint a blank contact on the spot, so
+  the inbox showed an empty "Chat" for every curl, every crawler that ran the script, and
+  every visitor who clicked the bubble and left — the live desk on substrat.net held three
+  threads for one real chat. `spec/concept.md` had already promised the opposite: an
+  anonymous visitor is not a record, and the desk creates nothing on their behalf that
+  anybody has to clean up later.
+
+  - A new `widgetOpening` entity (`ticket0_widget_openings`) holds a session until its first
+    message: token hash, origin, and — for a visitor the host site vouched for — the contact.
+    The first `widget-post` opens the conversation (and the anonymous contact with it) and
+    moves the row into `ticket0_widget_sessions` under the same id and token, so the widget
+    holds the same session throughout and never learns the difference.
+  - `widget-thread` on an opening answers an empty page rather than a refusal: the widget
+    polls before anything is said, and a 404 would make it discard the session.
+  - `widget-start` no longer returns `conversationId` (the widget never read it), and
+    `ticket0.widget-session-started` is at `schemaVersion: 2`: it is about the opening, and
+    `conversationId` left its payload.
+  - Its own table rather than a nullable `conversation_id`: the journal cannot relax a
+    `NOT NULL` in place, and would have reported up-to-date over a live table that still
+    refused NULLs. One appended migration, `CREATE TABLE` only.
+  - Scenario: a session open leaves the conversation and contact counts unchanged and reads
+    an empty thread; the first message adds exactly one of each and the same session reads
+    it back. The seed finds the customer's contact by external id instead of through a
+    conversation that no longer exists at that point.
+
+- Updated dependencies [7843c4f]
+  - @substrat-run/contracts@0.92.0
+  - @substrat-run/adapter-cloudflare@0.92.0
+  - @substrat-run/engine-metering@0.4.2
+  - @substrat-run/adapter-sqlite@0.92.0
+  - @substrat-run/dev-issuer@0.1.6
+  - @substrat-run/kernel@0.92.0
+  - @substrat-run/vertical-host@0.92.0
+
 ## 0.1.3
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @substrat-run/engine-workorder
 
+## 0.10.0
+
+### Minor Changes
+
+- d9793bc: `assignWorkOrder`, `startWorkOrder`, `reportTime` and `reportMaterial` are exported in-scope functions (#975). They used to live inline in the `workorder/assign`, `workorder/start`, `workorder/report-time` and `workorder/report-material` handlers, so a vertical could not assign, start or report inside its own transaction without forking the engine. The four operations are now thin bindings — the permission check plus one call — and their behaviour and event payloads are unchanged. Each function's input is the schema its operation declares (also exported: `assignWorkOrderInput`, `startWorkOrderInput`, `reportTimeInput`, `reportMaterialInput`), parsed on the way in.
+
+### Patch Changes
+
+- 7ad9ec8: `workorder/start` declares `workorder:report` — the key its handler has always checked — instead of `workorder:assign` (#960). The declaration is what the conformance receipt, `lint:permissions` and a vertical's `defineEngineRoutes` binding read, so a role widened to `workorder:assign` on its strength could not start work. No permission key or handler changed; `test/permissions.test.ts` now holds every declared permission to the one its handler checks.
+- Updated dependencies [7843c4f]
+  - @substrat-run/contracts@0.92.0
+  - @substrat-run/kernel@0.92.0
+
 ## 0.9.2
 
 ### Patch Changes
@@ -1262,7 +1275,7 @@ active`, `unknown tenant/scope/table`). Those are next, and they are the ones th
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

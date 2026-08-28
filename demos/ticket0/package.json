@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-ticket0",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "private": true,
   "description": "An AI-assisted support desk — chat widget, email relay, docs as knowledge base, tokens metered honestly",
   "license": "Apache-2.0",
