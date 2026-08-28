@@ -146,6 +146,11 @@ the CLI derives it at push time:
 - `entry` — your worker's entry module.
 - `needsNodeCompat` — set it if you use Node built-ins at runtime (Better Auth does).
 - `build` — an optional command to run before bundling (an SPA build, asset generation).
+- `assets` — the built front end (`directory`, `notFoundHandling`, `runWorkerFirst`), uploaded
+  to the runtime's asset store as native assets. A vertical with an `app/index.html` and no
+  `assets` block is **refused at push**: the deploy would otherwise succeed and 404 on `/`.
+  The refusal, the declaration it prints, and the `--allow-unserved-ui` override are in
+  [the CLI reference](/reference/cli#push).
 - `stores` — your vertical's **own** durable state classes and the binding each is reached
   through (`env.SCOPE`). This is the whole vocabulary on purpose: the sandbox contract refuses
   everything except your own stores anyway, so there is nothing else to say. The compatibility

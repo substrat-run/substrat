@@ -117,6 +117,32 @@ input defaults from the project; flags override each:
 | slug / name | `"substrat": { "slug", "name" }` in `package.json`, else derived from the package name | `--slug`, `--name` |
 | version | the registry's latest for the slug, patch-bumped (seeded from `package.json` `version` on the very first push) | `--version` |
 | workspace | `"substrat": { "tenant" }` in `package.json` — the **pin** | `--tenant`, `SUBSTRAT_TENANT` |
+| UI served? | refuse if `app/index.html` exists and nothing in the manifest would serve it | `--allow-unserved-ui` |
+
+**Push refuses a UI that nothing would serve.** A front end ships as native assets: the push
+runs your declared `build`, hashes the output and uploads it to the runtime's asset store.
+Undeclared, `app/` is never built and never uploaded, and the deployed vertical answers the
+API on `/api/*` and 404s on `/` — a deploy that looks entirely successful. So when
+`app/index.html` exists (Vite's own entry marker, and what the scaffold writes) but there is
+no `assets` block in either vocabulary — `runtimeNeeds.assets` or a hand-authored
+`wrangler.jsonc` — and no inlined-assets module under `src/`, the push stops before uploading
+anything. The fix is the declaration it prints:
+
+```json
+"runtimeNeeds": {
+  "build": "npm --prefix app install && npm --prefix app run build",
+  "assets": {
+    "directory": "app/dist",
+    "notFoundHandling": "single-page-application",
+    "runWorkerFirst": ["/api/*", "/internal/*"]
+  }
+}
+```
+
+`runWorkerFirst` must list **every** worker-owned prefix: with single-page-application
+handling, a prefix missing from it answers `index.html`, so the app reports parse errors where
+it should report denials. If the app is deliberately not part of this deploy — a mock, a
+fixture, or built and deployed elsewhere — `--allow-unserved-ui` says so and the push proceeds.
 
 The push builds the bundle (`wrangler deploy --dry-run`, running your own `build.command`),
 reads the declared surface (your own DO classes, D1 databases, compatibility date/flags, entry
