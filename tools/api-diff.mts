@@ -20,13 +20,20 @@
  * catalog (no timestamp, no ULID), which is what lets string equality be the
  * drift check. Exit codes follow boundary-lint's: 0 = fine, 1 = drift,
  * 2 = the tool could not do its job.
+ *
+ * `--root <dir>` targets ONE project instead of the sweep (#628) — the same
+ * addition, for the same reason, as `permission-diff --root`: a vertical the
+ * builder studio generates lives under `.builder/projects/*` and the demos/+apps/
+ * sweep never sees it, so the studio's standalone API gate was declared and
+ * skipped rather than run.
  */
 import { existsSync, readdirSync, statSync, writeFileSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const root = new URL('..', import.meta.url).pathname;
-const check = process.argv.includes('--check');
+const argv = process.argv.slice(2);
+const check = argv.includes('--check');
 
 /** Exit 2: the tool cannot do its job. Always names the remedy. */
 function cannot(message: string): never {
@@ -34,30 +41,56 @@ function cannot(message: string): never {
   process.exit(2);
 }
 
+const rootFlag = argv.indexOf('--root');
+const rootArg = rootFlag >= 0 ? argv[rootFlag + 1] : undefined;
+if (rootFlag >= 0 && (!rootArg || rootArg.startsWith('--'))) {
+  cannot(`--root needs a directory.\n  Usage: api-diff [--root <dir>] [--check]`);
+}
+/** The regenerate command an operator is told to run — the sweep does not reach a `--root` project. */
+const regenerate =
+  rootArg === undefined ? 'pnpm lint:api' : `pnpm exec tsx tools/api-diff.mts --root ${rootArg}`;
+
 const verticals: { rel: string; dir: string }[] = [];
-for (const group of ['demos', 'apps']) {
-  const groupDir = join(root, group);
-  let entries: string[];
-  try {
-    entries = readdirSync(groupDir);
-  } catch {
-    continue;
+if (rootArg !== undefined) {
+  const dir = resolve(rootArg);
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) cannot(`--root ${rootArg} is not a directory.`);
+  // The caller asked for THIS project, so a missing catalog is exit 2, not a
+  // silent skip: opting in is `src/api.ts`, and a gate that reports green over a
+  // vertical it never read is the failure this tool exists to prevent.
+  if (!existsSync(join(dir, 'src/api.ts'))) {
+    cannot(
+      `${rootArg} has no src/api.ts.\n` +
+        `  Remedy: export the buildOpenApiDocument(...) result as API_DOCUMENT from\n` +
+        `  src/api.ts — see demos/meridian/src/api.ts. (A vertical that has not opted\n` +
+        `  into the API catalog should not be asked for this check at all.)`,
+    );
   }
-  for (const n of entries) {
-    const dir = join(groupDir, n);
-    if (statSync(dir).isDirectory() && existsSync(join(dir, 'src/api.ts'))) {
-      verticals.push({ rel: `${group}/${n}`, dir });
+  verticals.push({ rel: rootArg, dir });
+} else {
+  for (const group of ['demos', 'apps']) {
+    const groupDir = join(root, group);
+    let entries: string[];
+    try {
+      entries = readdirSync(groupDir);
+    } catch {
+      continue;
+    }
+    for (const n of entries) {
+      const dir = join(groupDir, n);
+      if (statSync(dir).isDirectory() && existsSync(join(dir, 'src/api.ts'))) {
+        verticals.push({ rel: `${group}/${n}`, dir });
+      }
     }
   }
-}
-verticals.sort((a, b) => a.rel.localeCompare(b.rel));
+  verticals.sort((a, b) => a.rel.localeCompare(b.rel));
 
-if (verticals.length === 0) {
-  cannot(
-    `no vertical has a src/api.ts under demos/ or apps/.\n` +
-      `  At least one (demos/meridian) is expected to export an operation catalog —\n` +
-      `  a checkpoint that checks nothing must never print a green light.`,
-  );
+  if (verticals.length === 0) {
+    cannot(
+      `no vertical has a src/api.ts under demos/ or apps/.\n` +
+        `  At least one (demos/meridian) is expected to export an operation catalog —\n` +
+        `  a checkpoint that checks nothing must never print a green light.`,
+    );
+  }
 }
 
 const drifted: string[] = [];
@@ -90,7 +123,7 @@ for (const { rel, dir } of verticals) {
     cannot(
       `${rel}/openapi.json does not exist.\n` +
         `  A missing artifact is a broken setup, not drift.\n` +
-        `  Remedy: run \`pnpm lint:api\` and commit the result.`,
+        `  Remedy: run \`${regenerate}\` and commit the result.`,
     );
   }
   if (readFileSync(artifact, 'utf8') !== content) drifted.push(rel);
@@ -101,7 +134,7 @@ if (check) {
     console.error(
       `api-diff: API surface drift in ${drifted.join(', ')}.\n` +
         `  The exported operation catalog no longer matches the checked-in openapi.json.\n` +
-        `  Run \`pnpm lint:api\` and commit the diff — that diff IS the review artifact.`,
+        `  Run \`${regenerate}\` and commit the diff — that diff IS the review artifact.`,
     );
     process.exit(1);
   }
