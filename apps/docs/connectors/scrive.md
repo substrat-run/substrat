@@ -88,8 +88,9 @@ Given a `scrive` signature request, the connector:
    the Nth signatory to provider party N+1. Each party's authentication method follows its
    `authLevel`: `strong` → `se_bankid`, `basic` → the connector's `defaultAuthMethod`
    (`standard` unless configured). And because every party is invited, **a party with no email
-   or mobile is refused before egress** — the error names the party, where Scrive's own answer is
-   a positional `participant #2` into a list the vertical never saw.
+   or mobile is refused before egress**, and the error names the party by its label. Left to
+   Scrive, the same mistake comes back as a positional `participant #2` error — an index into a
+   party list the vertical never saw.
 5. **Sets a capability callback URL** — an unguessable secret in the path, because Scrive's
    callbacks carry **no signature to verify**, so a callback can only ever be a *hint* to re-read
    the document, never a trusted fact.
