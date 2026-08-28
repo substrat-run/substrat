@@ -37,25 +37,25 @@ export const conformance = declareEntityChecks({
     },
   },
   /**
-   * The one the kit cannot generate, and why.
+   * `merge` names a second conversation, and needs a real one (#939).
    *
-   * Asserted exactly: turning any other operation into an undrivable shape fails
-   * here until this list says so, which is the coverage loss made visible in a diff.
+   * A sample id in `inputs` could not drive it: the handler checks
+   * `conversation:merge` on BOTH conversations, the loser and the survivor, so an id
+   * that names nothing — or one the probe holds no grant on — is refused on the
+   * survivor and the pair reads as a broken handler. The double check is deliberate:
+   * one check would let a caller fold a conversation into one they cannot see.
+   *
+   * So the kit makes the survivor the way it makes the loser, fresh per case, and
+   * grants the same key on it. The fixture seeds every conformance conversation under
+   * ONE contact, so case 1 is a merge the business rule allows (#919 refuses a
+   * cross-contact merge) rather than a refusal the kit merely tolerates. What the pair
+   * still does not assert is the survivor check itself — `test/scenario.test.ts`
+   * drives that by hand, against a conversation the caller cannot see.
+   *
+   * Nothing is left undriven: an operation that becomes undrivable fails the suite's
+   * exact-list assertion until it is named here, with its reason.
    */
-  uncovered: {
-    /**
-     * The string is the kit's own — it must match exactly, or a reason could drift
-     * from the fact it describes. What it does not say, and a reviewer needs:
-     *
-     * `merge` is uncovered because no sample input is supplied for
-     * `intoConversationId`, and that omission is deliberate. Supplying one would let
-     * the kit drive it, and the pair would fail — the handler checks
-     * `conversation:merge` on BOTH conversations, the loser and the survivor, while
-     * the kit grants on one entity. So the second check would refuse a principal the
-     * first let through, and the failure would look like a broken handler rather than
-     * a shape the harness cannot express. The double check is deliberate: one check
-     * would let a caller fold a conversation into one they cannot see.
-     */
-    'ticket0/merge': 'no sample input for required field(s): intoConversationId',
+  coEntities: {
+    'ticket0/merge': { intoConversationId: 'conversation' },
   },
 });

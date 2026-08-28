@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-42 operations · 18 narrowed checks · 17 conformance pairs driven
+42 operations · 18 narrowed checks · 18 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**17 pairs driven** across 17 of this package's 18 narrowed checks.
+**18 pairs driven** across 18 of this package's 18 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
@@ -47,7 +47,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/ingest-kb-source` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/list-messages` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-turns` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
-| `ticket0/merge` | `conversation:merge` | `conversation`, id from `conversationId` | — see §3 — |
+| `ticket0/merge` | `conversation:merge` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/my-messages` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-note` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-public-reply` | `conversation:reply-public` | `conversation`, id from `conversationId` | `conversation` |
@@ -67,9 +67,19 @@ Every narrowed check the kit cannot generate is listed here with its reason, and
 suite asserts this list **exactly** — an operation that becomes undrivable, or one that
 stops being, fails CI until this file is regenerated and the change is read.
 
-| Operation | Why it cannot be driven |
-| --- | --- |
-| `ticket0/merge` | no sample input for required field(s): intoConversationId |
+Every narrowed check this package declares is driven.
+
+### A second entity the kit supplies
+
+An operation that names another entity of the kind it narrows to — a merge, a move —
+needs that entity to exist for the pair to run at all, so the kit makes one per case and
+grants it the same keys as the target. What the pair measures is unchanged: the declared
+check on the target. That the handler also checks the second entity is the operation's
+own claim, and is **not** asserted here.
+
+| Operation | Field | Made as |
+| --- | --- | --- |
+| `ticket0/merge` | `intoConversationId` | `conversation` |
 
 ## 4. The rest of the surface
 
