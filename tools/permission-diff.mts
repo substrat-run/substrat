@@ -102,11 +102,17 @@ const projectDir = rootArg === undefined ? undefined : resolve(rootArg);
  * different header than the sweep does for the same vertical — a self-inflicted
  * drift report. Location it is: a repo vertical always says `pnpm
  * lint:permissions`, whichever way the tool was called.
+ *
+ * For the same reason the path is `relative(root, dir)` and never the raw `--root`
+ * argument: `--root .builder/projects/acme` and `--root .` from inside the project
+ * name one directory, and a header keyed off the spelling would report drift on the
+ * next run although no permission changed. The rendered command is always the one
+ * to run from the repo root.
  */
 function regenerateFor(dir: string): string {
   const rel = relative(root, dir);
   if (/^(demos|apps)\/[^/]+$/.test(rel)) return 'pnpm lint:permissions';
-  return `pnpm exec tsx tools/permission-diff.mts --root ${rootArg ?? rel}`;
+  return `pnpm exec tsx tools/permission-diff.mts --root ${rel}`;
 }
 
 /** The command to rerun THIS invocation, for the diagnostics below. */
@@ -316,10 +322,15 @@ interface Vertical {
 function declaredEntry(dir: string, rel: string): Vertical | undefined {
   const pkgPath = join(dir, 'package.json');
   if (!existsSync(pkgPath)) return undefined;
-  const pkgJson = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
-    name?: string;
-    substrat?: { permissions?: string };
-  };
+  let pkgJson: { name?: string; substrat?: { permissions?: string } };
+  try {
+    pkgJson = JSON.parse(readFileSync(pkgPath, 'utf8')) as typeof pkgJson;
+  } catch (e) {
+    // Not exit 1: an unparseable package.json is the tool unable to do its job, and
+    // exit 1 in this convention means "the artifact is out of date" — a caller told
+    // that regenerates and commits, which fixes nothing.
+    cannot(`${rel}/package.json is not valid JSON: ${(e as Error).message}`);
+  }
   const entry = pkgJson.substrat?.permissions;
   if (!entry) return undefined;
   return { rel, dir, entry, pkg: pkgJson.name ?? rel };

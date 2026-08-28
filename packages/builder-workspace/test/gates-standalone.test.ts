@@ -185,6 +185,29 @@ describe('permission-diff --root — the standalone permission checkpoint', () =
 		expect(drift.out).toContain('out of date');
 	}, 60_000);
 
+	it('the header does not depend on how the path was spelled', async () => {
+		const dir = await fixtureProject();
+		expect((await tool(['tools/permission-diff.mts', '--root', dir])).code).toBe(0);
+		const first = await readFile(join(dir, 'PERMISSIONS.md'), 'utf8');
+
+		// The same directory, named with a trailing slash and a `.` hop. A header keyed
+		// off the raw argument would report drift here although no permission changed.
+		const spelled = join(dir, '.', '');
+		const again = await tool(['tools/permission-diff.mts', '--root', spelled, '--check']);
+		expect(again.code).toBe(0);
+		expect(await readFile(join(dir, 'PERMISSIONS.md'), 'utf8')).toBe(first);
+	}, 60_000);
+
+	it('an unparseable package.json is exit 2, not the exit-1 that means "regenerate"', async () => {
+		const dir = join(await mkdtemp(join(tmpdir(), 'permission-diff-bad-json-')), 'broken');
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, 'package.json'), '{ "name": "broken",,, }');
+
+		const r = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
+		expect(r.code).toBe(2);
+		expect(r.out).toContain('is not valid JSON');
+	}, 60_000);
+
 	it('a project declaring no permission surface is exit 2, never a green light', async () => {
 		const dir = join(await mkdtemp(join(tmpdir(), 'permission-diff-bare-')), 'bare');
 		await mkdir(dir, { recursive: true });
