@@ -88,9 +88,12 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 
 /**
  * Record the seat at provision — both the transient `pending_owner` and the durable
- * `owner_of_record`. Idempotent in the direction that matters: a seat ALREADY CLAIMED stays
- * claimed (the platform re-runs provision on reconcile and retry), and a pending seat keeps
- * the window it was given rather than getting a fresh one per re-run.
+ * `owner_of_record`. The FIRST write wins: a scope that already has an owner of record is
+ * left exactly as it is, whatever principal a re-run names. The platform re-runs provision
+ * on reconcile and retry with the owner it minted, so a same-owner re-run changes nothing
+ * either way; a DIFFERENT owner reaching a seat that is already recorded would otherwise
+ * re-point it — and re-open a claimed one for a stranger — which is the hole this closes.
+ * A pending seat keeps the window it was given rather than getting a fresh one per re-run.
  */
 export function recordOwnerSeat(
   sql: RegistrySql,
@@ -99,15 +102,10 @@ export function recordOwnerSeat(
   now: number,
   windowMs: number = FIRST_SIGN_IN_WINDOW_MS,
 ): void {
-  sql.exec('INSERT OR REPLACE INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
-  const claimed = [...sql.exec('SELECT 1 FROM identity WHERE scope_id = ? AND principal = ?', scopeId, principal)][0];
-  if (claimed) {
-    sql.exec('DELETE FROM pending_owner WHERE scope_id = ?', scopeId);
-    return;
-  }
+  if (ownerOfRecord(sql, scopeId) !== null) return;
+  sql.exec('INSERT INTO owner_of_record (scope_id, principal) VALUES (?, ?)', scopeId, principal);
   sql.exec(
-    `INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)
-     ON CONFLICT(scope_id) DO UPDATE SET principal = excluded.principal`,
+    'INSERT INTO pending_owner (scope_id, principal, claim_until) VALUES (?, ?, ?)',
     scopeId,
     principal,
     now + windowMs,

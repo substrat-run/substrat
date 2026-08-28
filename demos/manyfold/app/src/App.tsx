@@ -122,12 +122,13 @@ export default function App() {
   // Auth gate — the same in dev and prod: needs-setup → create the admin; anon → sign in.
   const splash = <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', color: 'var(--muted)', background: 'var(--bg)' }}>Loading…</div>;
   if (!booted || !me) return splash;
+  // Arrived by a dashboard-minted claim link (#925) → bind this login to the owner seat, whether
+  // or not a session (or even another principal) already exists — the token is the intent.
+  const claimToken = new URLSearchParams(location.search).get('claim');
+  if (claimToken) return <ClaimOwner token={claimToken} />;
   if (me.mode !== 'authed') {
     const inviteToken = new URLSearchParams(location.search).get('invite');
     if (inviteToken) return <AcceptInvite token={inviteToken} />;
-    // Arrived by a dashboard-minted claim link (#925) → bind this login to the owner seat.
-    const claimToken = new URLSearchParams(location.search).get('claim');
-    if (claimToken) return <ClaimOwner token={claimToken} />;
     return <SignIn firstRun={me.mode === 'needs-setup'} firstSignInOpen={me.mode === 'needs-setup' ? me.firstSignInOpen : true} />;
   }
 

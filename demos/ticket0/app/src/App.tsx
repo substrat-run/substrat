@@ -163,8 +163,8 @@ export function App() {
 
   if (session === undefined) return <Splash>Loading…</Splash>;
   // Arrived by a claim link (#925): bind this login to the owner seat, whether or not a
-  // session already exists. Takes priority over the sign-in screen.
-  if (CLAIM_TOKEN && (session === null || 'status' in session)) return <ClaimOwner token={CLAIM_TOKEN} />;
+  // session (or even another principal) already exists. Takes priority over everything.
+  if (CLAIM_TOKEN) return <ClaimOwner token={CLAIM_TOKEN} />;
   if (session === null || 'status' in session)
     return (
       <Splash>

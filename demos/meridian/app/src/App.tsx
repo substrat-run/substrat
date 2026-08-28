@@ -183,8 +183,8 @@ export default function App() {
       />
     );
   // Arrived via a claim link (#925) → bind this login to the owner seat. Same priority as an
-  // invite: it works whether or not there's already a session.
-  if (CLAIM_TOKEN && (needsSetup || unauthorized))
+  // invite: it works whether or not there's already a session, or even another principal.
+  if (CLAIM_TOKEN)
     return (
       <ClaimOwner
         token={CLAIM_TOKEN}

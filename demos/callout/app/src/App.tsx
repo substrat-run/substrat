@@ -51,7 +51,10 @@ export default function App() {
       </main>
     );
   }
-  if (!auth.session && CLAIM_TOKEN) return <ClaimOwnerScreen token={CLAIM_TOKEN} />;
+  // Arrived by a claim link (#925): claim first, whether or not a session (or even another
+  // principal) already exists — the token in the URL is the intent, and ignoring it would
+  // show the app as if nothing happened.
+  if (CLAIM_TOKEN) return <ClaimOwnerScreen token={CLAIM_TOKEN} />;
   if (!auth.session) return <LoginScreen setup={auth.setup} />;
   return <AuthedApp session={auth.session} onSignOut={() => signOut()} />;
 }

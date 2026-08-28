@@ -53,8 +53,15 @@ export const auth = {
 async function postJson<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, credentials: 'same-origin', body: JSON.stringify(body) });
   const text = await res.text();
-  const parsed = (text ? JSON.parse(text) : undefined) as (T & { error?: string }) | undefined;
-  if (!res.ok) throw new ApiError(parsed?.error ?? `${res.status}`, res.status);
+  let parsed: (T & { error?: string; detail?: string }) | undefined;
+  try {
+    parsed = text ? JSON.parse(text) : undefined;
+  } catch {
+    // A non-JSON body (a proxy page, a cold start) still carries a status worth acting on.
+    if (!res.ok) throw new ApiError(`${res.status}`, res.status);
+    throw new ApiError('unexpected non-JSON response', res.status);
+  }
+  if (!res.ok) throw new ApiError(parsed?.detail ?? parsed?.error ?? `${res.status}`, res.status);
   return parsed as T;
 }
 

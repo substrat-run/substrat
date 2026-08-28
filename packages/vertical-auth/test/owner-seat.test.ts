@@ -99,6 +99,22 @@ describe('owner seat', () => {
     expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + 63 * MIN)).toBe(OWNER);
   });
 
+  it('a re-provision naming a DIFFERENT owner changes nothing — the first record wins', () => {
+    recordOwnerSeat(sql, SCOPE, OWNER, T0);
+    expect(resolvePrincipal(sql, SCOPE, 'sub-installer', T0 + MIN)).toBe(OWNER);
+    // A later provision with another principal must neither re-point the seat nor re-open it.
+    recordOwnerSeat(sql, SCOPE, '01PRINCIPALOTHER', T0 + 2 * MIN);
+    expect(ownerOfRecord(sql, SCOPE)).toBe(OWNER);
+    expect(needsSetup(sql, SCOPE)).toBe(false);
+    expect(resolvePrincipal(sql, SCOPE, 'sub-stranger', T0 + 3 * MIN)).toBeNull();
+    // Same for a seat still pending: the window and the principal stay as first recorded.
+    const other = '01SCOPEOTHER';
+    recordOwnerSeat(sql, other, OWNER, T0);
+    recordOwnerSeat(sql, other, '01PRINCIPALOTHER', T0 + MIN);
+    expect(ownerSeat(sql, other, T0 + MIN)).toMatchObject({ owner: OWNER, firstSignIn: { until: new Date(T0 + FIRST_SIGN_IN_WINDOW_MS).toISOString() } });
+    expect(resolvePrincipal(sql, other, 'sub-installer', T0 + 2 * MIN)).toBe(OWNER);
+  });
+
   it('a claim link binds exactly the presented token, once, while it lives', () => {
     recordOwnerSeat(sql, SCOPE, OWNER, T0);
     const late = T0 + FIRST_SIGN_IN_WINDOW_MS + MIN;
