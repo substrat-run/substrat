@@ -3,7 +3,7 @@
 Turns a signature request from the [protocol engine](/engines/protocol/) into a real signing
 flow at **Scrive**, authenticated with Swedish **BankID**.
 
-::: warning Published (0.1.15), with two honest caveats a consumer must own
+::: warning Published (0.13.8), with two honest caveats a consumer must own
 Both halves work and it now ships as a public package: a request becomes a started Scrive document
 (**outbound**, verified against `api-testbed.scrive.com`), and a completed signature is recorded
 back into the scope (**inbound**, via `reconcileScriveDispatch` on the [authority seam](/connectors/#the-seam-a-connector-plugs-into)).
@@ -22,8 +22,8 @@ unverified. See [What's missing](#what-s-missing).
 |---|---|
 | **Provider** | Scrive eSign, `se_bankid` authentication-to-sign |
 | **Category** | E-signing & identity |
-| **Status** | Published `0.1.15` — both halves built (outbound + return path + poll driver); two caveats: the vertical must schedule the poll, and BankID is off on the testbed |
-| **Package** | `@substrat-run/connector-scrive` (published, `0.1.15`, public) |
+| **Status** | Published `0.13.8` — both halves built (outbound + return path + poll driver); two caveats: the vertical must schedule the poll, and BankID is off on the testbed |
+| **Package** | `@substrat-run/connector-scrive` (published, `0.13.8`, public) |
 | **Consumes** | `protocol.signatures-requested` |
 | **Registered with** | `registerConnector('scrive', 'protocol.signatures-requested', …)` |
 
@@ -77,9 +77,20 @@ Given a `scrive` signature request, the connector:
 2. **Creates the document** — `POST /api/v2/documents/new`.
 3. **Attaches the file** — `POST …/setfile`. Separate from creation in Scrive's own API, which
    is what makes the no-file creation step possible.
-4. **Sets the parties** — `POST …/update`, mapping each `external` party to `se_bankid` and each
-   `principal` party to `standard`. An external signatory (a new hire on their first day, with no
-   account) authenticates with BankID; the issuing principal need not.
+4. **Sets the parties** — `POST …/update`. The API account holder is sent as a **non-signing
+   author** (`is_author: true`, `is_signatory: false` → `signatory_role: "viewer"`), and
+   **every party the vertical names signs as itself**. This is deliberate: Scrive binds the
+   author party to the account holder and silently overwrites the name and email sent on it, so
+   while the issuing party was the author, the account owner signed for whoever the vertical had
+   actually named — and the return path, which refuses to attribute a signature when the
+   provider's party name disagrees with the dispatched label, could never record it. The
+   dispatch state records that the sender was sent (`senderParty`), because the reconcile matches
+   the Nth signatory to provider party N+1. Each party's authentication method follows its
+   `authLevel`: `strong` → `se_bankid`, `basic` → the connector's `defaultAuthMethod`
+   (`standard` unless configured). And because every party is invited, **a party with no email
+   or mobile is refused before egress**, and the error names the party by its label. Left to
+   Scrive, the same mistake comes back as a positional `participant #2` error — an index into a
+   party list the vertical never saw.
 5. **Sets a capability callback URL** — an unguessable secret in the path, because Scrive's
    callbacks carry **no signature to verify**, so a callback can only ever be a *hint* to re-read
    the document, never a trusted fact.

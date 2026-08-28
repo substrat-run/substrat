@@ -90,7 +90,7 @@ Substrat is pre-release (0.x). What exists today:
 | Invites engine | [`@substrat-run/engine-invites`](/engines/invites/) | Seed |
 | Absence engine | [`@substrat-run/engine-absence`](/engines/absence/) | Seed |
 | Metering engine | [`@substrat-run/engine-metering`](/engines/metering/) | Seed |
-| Scrive connector (e-signing, BankID) | [`@substrat-run/connector-scrive`](/connectors/scrive) | Published `0.1.15` |
+| Scrive connector (e-signing, BankID) | [`@substrat-run/connector-scrive`](/connectors/scrive) | Published `0.13.8` |
 | The `substrat` CLI — authenticated deploy (`login`, `push`) | [`@substrat-run/cli`](/guide/deploying) | Working |
 | Platform surfaces — [control plane](/platform/control-plane), [console](/platform/console), [router](/platform/router), [dashboard](/platform/dashboard) | private deployments | Working (self-serve deploy foundation) |
 | Callout (field service) — the canonical composition; first CP-less pushable vertical | [`demos/callout`](/verticals/callout) | Working |
