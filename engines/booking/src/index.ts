@@ -91,9 +91,13 @@ import { bookingLifecycles } from './lifecycle.js';
 
 import {
   createResourceInput,
+  freeInterval as freeIntervalShape,
   holdReservationInput,
   joinReservationInput,
   moveReservationInput,
+  participant as participantShape,
+  reservation as reservationShape,
+  resource as resourceShape,
   toInstant,
   type CreateResourceInput,
   type FreeInterval,
@@ -107,6 +111,8 @@ import {
 } from './schemas.js';
 
 export { bookingEntities, reservationRow, resourceRow } from './entities.js';
+import { reservationRow, resourceRow } from './entities.js';
+import { columnsOf, returns } from './seam.js';
 import {
   assertAllowed,
   ulid,
@@ -266,47 +272,58 @@ export class SlotUnavailable extends Error {
 /** States that consume capacity. `held` additionally requires an unexpired `expires_at`. */
 const LIVE_STATES: ReservationState[] = ['held', 'confirmed', 'in_service'];
 
-interface ResourceRow {
-  id: string;
-  kind: string;
-  name: string;
-  capacity: number;
-  active: number;
-  created_at: string;
-}
+/**
+ * The stored shapes — the entity registry's row schemas for the two entities,
+ * and a local one for `booking_participants`, which is a join row and not an
+ * entity (entities.ts) so has no registry entry to borrow.
+ */
+type ResourceRow = z.infer<typeof resourceRow>;
+type ReservationRow = z.infer<typeof reservationRow>;
 
-interface ReservationRow {
-  id: string;
-  resource_id: string;
-  starts_at: string;
-  ends_at: string;
-  state: ReservationState;
-  quantity: number;
-  expires_at: string | null;
-  fill_target: number | null;
-  note: string | null;
-  created_by: string;
-  created_at: string;
-}
-
-interface ParticipantRow {
-  id: string;
-  reservation_id: string;
-  party_ref: string;
-  share_amount: string | null;
-  share_currency: string | null;
-  joined_at: string;
-  left_at: string | null;
-}
-
-const toResource = (r: ResourceRow): Resource => ({
-  id: r.id,
-  kind: r.kind,
-  name: r.name,
-  capacity: r.capacity,
-  active: r.active === 1,
-  createdAt: r.created_at,
+const participantRow = z.object({
+  id: z.string(),
+  reservation_id: z.string(),
+  party_ref: z.string(),
+  share_amount: z.string().nullable(),
+  share_currency: z.string().nullable(),
+  joined_at: z.string(),
+  left_at: z.string().nullable(),
 });
+type ParticipantRow = z.infer<typeof participantRow>;
+
+/**
+ * The SELECT lists, derived from the row schemas (#771).
+ *
+ * Never `SELECT *`: that pins the shape a read returns to whatever the physical
+ * table currently holds, which is the same trust-TypeScript hole `returns` closes
+ * from the other side. A column dropped from the table is then a SQL error naming
+ * it; a column added to the table is simply never read.
+ */
+const RESOURCE_COLUMNS = columnsOf(resourceRow);
+const RESERVATION_COLUMNS = columnsOf(reservationRow);
+const PARTICIPANT_COLUMNS = columnsOf(participantRow);
+
+const freeIntervals = z.array(freeIntervalShape);
+
+/**
+ * A stored row, published (#771).
+ *
+ * The projection AND the parse, in one place, because every path out of this
+ * engine that returns a resource, a reservation or a participant goes through one
+ * of these three — the in-scope reads, the page walks, and each operation
+ * binding. `returns` refuses a row that no longer matches the published schema,
+ * which is the shape a composing vertical declared its `output` with when it
+ * compiled against some earlier version of this engine.
+ */
+const toResource = (r: ResourceRow): Resource =>
+  returns(resourceShape, `resource ${r.id}`, {
+    id: r.id,
+    kind: r.kind,
+    name: r.name,
+    capacity: r.capacity,
+    active: r.active === 1,
+    createdAt: r.created_at,
+  });
 
 /** The one definition of "a hold past its deadline is expired". */
 export function effectiveStateOf(
@@ -329,45 +346,51 @@ export function effectiveStateOf(
  *
  * Required, the compiler finds every caller. A default here cannot.
  */
-const toReservation = (r: ReservationRow, now: string): Reservation => ({
-  id: r.id,
-  resourceId: r.resource_id,
-  startsAt: r.starts_at,
-  endsAt: r.ends_at,
-  state: r.state,
-  effectiveState: effectiveStateOf(r.state, r.expires_at, now),
-  quantity: r.quantity,
-  expiresAt: r.expires_at,
-  fillTarget: r.fill_target,
-  note: r.note,
-  createdBy: r.created_by,
-  createdAt: r.created_at,
-});
+const toReservation = (r: ReservationRow, now: string): Reservation =>
+  returns(reservationShape, `reservation ${r.id}`, {
+    id: r.id,
+    resourceId: r.resource_id,
+    startsAt: r.starts_at,
+    endsAt: r.ends_at,
+    state: r.state,
+    effectiveState: effectiveStateOf(r.state, r.expires_at, now),
+    quantity: r.quantity,
+    expiresAt: r.expires_at,
+    fillTarget: r.fill_target,
+    note: r.note,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+  });
 
-const toParticipant = (r: ParticipantRow): Participant => ({
-  id: r.id,
-  partyRef: r.party_ref,
-  share:
-    r.share_amount && r.share_currency
-      ? ({ amount: r.share_amount, currency: r.share_currency } as Money)
-      : null,
-  joinedAt: r.joined_at,
-  leftAt: r.left_at,
-});
+const toParticipant = (r: ParticipantRow): Participant =>
+  returns(participantShape, `participant ${r.id}`, {
+    id: r.id,
+    partyRef: r.party_ref,
+    share:
+      r.share_amount && r.share_currency
+        ? ({ amount: r.share_amount, currency: r.share_currency } as Money)
+        : null,
+    joinedAt: r.joined_at,
+    leftAt: r.left_at,
+  });
 
 const reservationRef = (id: string): EntityRef => ({ entityType: 'reservation', entityId: id });
 const resourceRef = (id: string): EntityRef => ({ entityType: 'resource', entityId: id });
 
 function getResourceRow(ctx: OperationContext, id: string): ResourceRow {
-  const row = ctx.sql.query<ResourceRow>('SELECT * FROM booking_resources WHERE id = ?', [id])[0];
+  const row = ctx.sql.query<ResourceRow>(
+    `SELECT ${RESOURCE_COLUMNS} FROM booking_resources WHERE id = ?`,
+    [id],
+  )[0];
   if (!row) throw substratError('not_found', `resource not found: ${id}`);
   return row;
 }
 
 function getRow(ctx: OperationContext, id: string): ReservationRow {
-  const row = ctx.sql.query<ReservationRow>('SELECT * FROM booking_reservations WHERE id = ?', [
-    id,
-  ])[0];
+  const row = ctx.sql.query<ReservationRow>(
+    `SELECT ${RESERVATION_COLUMNS} FROM booking_reservations WHERE id = ?`,
+    [id],
+  )[0];
   if (!row) throw substratError('not_found', `reservation not found: ${id}`);
   return row;
 }
@@ -397,7 +420,8 @@ function requireTransition(row: ReservationRow, operation: string): void {
 /** Participants who have not left — the count the fill target is measured against. */
 function activeParticipants(ctx: OperationContext, reservationId: string): ParticipantRow[] {
   return ctx.sql.query<ParticipantRow>(
-    'SELECT * FROM booking_participants WHERE reservation_id = ? AND left_at IS NULL ORDER BY id',
+    `SELECT ${PARTICIPANT_COLUMNS} FROM booking_participants
+      WHERE reservation_id = ? AND left_at IS NULL ORDER BY id`,
     [reservationId],
   );
 }
@@ -405,7 +429,7 @@ function activeParticipants(ctx: OperationContext, reservationId: string): Parti
 function allParticipants(ctx: OperationContext, reservationId: string): Participant[] {
   return ctx.sql
     .query<ParticipantRow>(
-      'SELECT * FROM booking_participants WHERE reservation_id = ? ORDER BY id',
+      `SELECT ${PARTICIPANT_COLUMNS} FROM booking_participants WHERE reservation_id = ? ORDER BY id`,
       [reservationId],
     )
     .map(toParticipant);
@@ -505,10 +529,10 @@ export function listResourcesPage(ctx: OperationContext, page: PageParams): Page
 export function listResources(ctx: OperationContext, kind?: string): Resource[] {
   const rows = kind
     ? ctx.sql.query<ResourceRow>(
-        'SELECT * FROM booking_resources WHERE kind = ? ORDER BY name',
+        `SELECT ${RESOURCE_COLUMNS} FROM booking_resources WHERE kind = ? ORDER BY name`,
         [kind],
       )
-    : ctx.sql.query<ResourceRow>('SELECT * FROM booking_resources ORDER BY name');
+    : ctx.sql.query<ResourceRow>(`SELECT ${RESOURCE_COLUMNS} FROM booking_resources ORDER BY name`);
   return rows.map(toResource);
 }
 
@@ -698,7 +722,9 @@ export function joinReservation(
   });
 
   const participant = ctx.sql
-    .query<ParticipantRow>('SELECT * FROM booking_participants WHERE id = ?', [id])
+    .query<ParticipantRow>(`SELECT ${PARTICIPANT_COLUMNS} FROM booking_participants WHERE id = ?`, [
+      id,
+    ])
     .map(toParticipant)[0]!;
 
   const filled = row.fill_target !== null && active.length + 1 >= row.fill_target;
@@ -762,7 +788,7 @@ export function leaveReservation(
   const row = getRow(ctx, input.reservationId);
   const now = nowOr(ctx, input.now);
   const participant = ctx.sql.query<ParticipantRow>(
-    'SELECT * FROM booking_participants WHERE id = ? AND reservation_id = ?',
+    `SELECT ${PARTICIPANT_COLUMNS} FROM booking_participants WHERE id = ? AND reservation_id = ?`,
     [input.participantId, row.id],
   )[0];
   if (!participant) throw substratError('not_found', `participant not found: ${input.participantId}`);
@@ -1001,7 +1027,7 @@ export function listReservationsPage(
   const limit = Math.min(input.limit ?? LIST_PAGE_DEFAULT, LIST_PAGE_MAX);
   const now = nowOr(ctx, input.now);
   const rows = ctx.sql.query<ReservationRow>(
-    `SELECT * FROM booking_reservations${where} ORDER BY id LIMIT ?`,
+    `SELECT ${RESERVATION_COLUMNS} FROM booking_reservations${where} ORDER BY id LIMIT ?`,
     [...params, limit],
   );
   return pageOf(
@@ -1033,7 +1059,7 @@ export function listReservations(
   const now = nowOr(ctx, input.now);
   return ctx.sql
     .query<ReservationRow>(
-      `SELECT * FROM booking_reservations${where} ORDER BY starts_at, id`,
+      `SELECT ${RESERVATION_COLUMNS} FROM booking_reservations${where} ORDER BY starts_at, id`,
       params,
     )
     .map((r) => toReservation(r, now));
@@ -1086,7 +1112,7 @@ export function availability(
   if (resource.active !== 1) return [];
 
   const live = ctx.sql.query<ReservationRow>(
-    `SELECT * FROM booking_reservations
+    `SELECT ${RESERVATION_COLUMNS} FROM booking_reservations
       WHERE resource_id = ?
         AND starts_at < ? AND ends_at > ?
         AND ( state IN ('confirmed','in_service')
@@ -1117,7 +1143,9 @@ export function availability(
       segments.push({ startsAt: segStart, endsAt: segEnd, available: free });
     }
   }
-  return segments;
+  // Computed, not read — but it crosses the seam the same as a row does, and a
+  // `capacity` that drifted to text would arrive here as NaN arithmetic.
+  return returns(freeIntervals, `availability of ${resource.id}`, segments);
 }
 
 // ---------------------------------------------------------------------------

@@ -171,7 +171,8 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   running against 0.4 reads a field that moved and gets *wrong data on a screen*, never a
   throw. Parse **always**, including bulk reads: dev-only validation is absent exactly
   where the version skew lives. `engines/workorder` is the reference (`src/seam.ts`:
-  `returns(schema, surface, value)` + `columnsOf(schema)`); the other engines have not
+  `returns(schema, surface, value)` + `columnsOf(schema)`) and `engines/booking` is
+  converted the same way; absence, invites, invoicing, metering and protocol have not
   been converted yet, so their seams are still typed by assertion.
 - IDs come from `ulid()`; money/decimals are strings via `@substrat-run/contracts`
   helpers (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
