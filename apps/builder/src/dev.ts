@@ -22,16 +22,11 @@ import {
 	defaultGates,
 	ensureVerticalRepo,
 	foreignChanges,
-	continuationPrompt,
 	formatGateRun,
-	gateRepairPrompt,
-	gateReport,
 	isGitRepo,
 	LocalWorkspace,
-	MAX_CONTINUATIONS,
-	MAX_GATE_REPAIRS,
-	repairNeeded,
 	runTurn,
+	runTurnLoop,
 	standaloneGates,
 	type TurnResult,
 } from '@substrat-run/builder-workspace';
@@ -241,22 +236,6 @@ async function main(): Promise<number> {
 			return truncated;
 		};
 
-		// A truncated pass is "not done yet", not "done but broken" — continue it
-		// before the gates run, so the repair budget stays reserved for genuine
-		// breakage (gates.ts MAX_CONTINUATIONS). Per-turn cap: repair passes draw
-		// from the same continuation budget as the first pass.
-		let continuations = 0;
-		const runToCompletion = async (text: string, carriedReport?: string): Promise<void> => {
-			let truncated = await runPass(text, carriedReport);
-			while (truncated && continuations < MAX_CONTINUATIONS) {
-				continuations += 1;
-				process.stdout.write(
-					`\n  step ceiling hit — continuation ${continuations}/${MAX_CONTINUATIONS}\n\n`,
-				);
-				truncated = await runPass(continuationPrompt(continuations, MAX_CONTINUATIONS));
-			}
-		};
-
 		// Commit-per-turn lives above the seam (§3), so it happens here — not in
 		// the generator and not in the workspace.
 		const runChecks = async (label: string): Promise<TurnResult> => {
@@ -281,18 +260,19 @@ async function main(): Promise<number> {
 			return turn;
 		};
 
-		await runToCompletion(message, lastGateReport);
-		let turn = await runChecks(`studio turn ${turnNo}: ${message.slice(0, 60)}`);
-		for (
-			let attempt = 1;
-			attempt <= MAX_GATE_REPAIRS && repairNeeded(turn.gates) && turn.changedFiles.length > 0;
-			attempt++
-		) {
-			process.stdout.write(`\n  gates red — repair attempt ${attempt}/${MAX_GATE_REPAIRS}\n\n`);
-			await runToCompletion(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
-			turn = await runChecks(`studio turn ${turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`);
-		}
-		lastGateReport = gateReport(turn.gates) ?? undefined;
+		// pass → continuations → checks → capped repair — the one shared loop
+		// (builder-workspace turn-loop.ts, #974); the CLI has no abort signal.
+		const loop = await runTurnLoop(
+			{ message, turnNo, lastGateReport },
+			{
+				runPass,
+				runChecks,
+				onContinuation: (n, max) =>
+					process.stdout.write(`\n  step ceiling hit — continuation ${n}/${max}\n\n`),
+				onRepair: (n, max) => process.stdout.write(`\n  gates red — repair attempt ${n}/${max}\n\n`),
+			},
+		);
+		lastGateReport = loop.lastGateReport;
 		process.stdout.write('\n');
 
 		history.push(...transcript);

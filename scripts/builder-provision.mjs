@@ -7,13 +7,14 @@
  * Safe to run MANY times: every step checks current state before acting and
  * reports ✓ (already correct) or → (changed it now). Exists because multi-step
  * manual ops drift — the platform's own 08-01 rotation incident is the proof —
- * and because "did I enable versioning on that bucket?" should be a question
- * this script answers, not a memory.
+ * and because "does that bucket exist, are the secrets there?" should be a
+ * question this script answers, not a memory.
  *
  * Steps:
  *   1. R2 bucket `substrat-builder-repos` exists       (wrangler; D-52)
- *   2. Object versioning ENABLED on it                 (CF API — wrangler has
- *      no versioning command; token/account read from secrets/platform.<env>.env)
+ *   2. Rollback trail: reports that it is APP-LEVEL bundle history — R2 has
+ *      NO object versioning (verified by probing the v4 API; step 2 below
+ *      only says so, it enables nothing)
  *   3. Builder secrets present in the env file          (names only, never values)
  *   4. Push builder secrets                             (delegates: secrets.mjs
  *      push --env <env> --only builder)

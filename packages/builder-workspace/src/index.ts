@@ -53,6 +53,13 @@ export {
 } from './turn.js';
 
 export {
+	runTurnLoop,
+	type TurnLoopHooks,
+	type TurnLoopInput,
+	type TurnLoopResult,
+} from './turn-loop.js';
+
+export {
 	SNAPSHOT_MAX_FILE_BYTES,
 	snapshotWorkspace,
 	type WorkspaceSnapshot,
