@@ -258,6 +258,34 @@ export const ticket0Entities = defineEntities({
   },
 
   /**
+   * A widget that has been opened and has not said anything yet.
+   *
+   * Opening the bubble is not a conversation. Until the first message the desk holds
+   * only this: a token hash to recognise the visitor by, the origin to keep checking,
+   * and — for a visitor the host site vouched for — which contact they are. The
+   * conversation, and for an anonymous visitor the contact too, are created by the
+   * first `widget-post`, which moves this row into `widgetSession` under the same id.
+   * So a curl, a crawler that ran the script, or a person who clicked and left create
+   * nothing an agent can see; before this, each of them was an empty "Chat" in the inbox.
+   *
+   * Its own table rather than a nullable `conversation_id` on `widgetSession`: the
+   * journal cannot relax a NOT NULL in place (SQLite would need a rebuild), and a
+   * session that exists but reaches no thread is a different thing anyway.
+   */
+  widgetOpening: {
+    table: 'ticket0_widget_openings',
+    fields: z.object({
+      id: z.string(),
+      contact_id: z.string().nullable(),
+      origin: z.string(),
+      token_hash: z.string(),
+      started_at: z.string(),
+      last_seen_at: z.string(),
+    }),
+    key: ['token_hash'],
+  },
+
+  /**
    * The desk's own settings — one row per scope, id fixed.
    *
    * Note what is NOT here: any column deciding whether the assistant may reply to
@@ -1313,8 +1341,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * `identity` is the middle rung: the host page's SERVER signed the user id with
    * the desk's secret, and the browser passes the signature along without ever
    * holding the secret. A valid signature attaches this session to that contact and
-   * its whole history; an absent one gets an anonymous contact that can see exactly
-   * one conversation; an invalid one is refused.
+   * its whole history; an absent one gets an anonymous contact — made when they first
+   * say something, never before — that can see exactly one conversation; an invalid
+   * one is refused.
    */
   'ticket0/widget-start': {
     summary: 'Open a chat session from an embedded widget',
@@ -1333,10 +1362,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
         .nullable()
         .optional(),
     }),
+    /**
+     * No `conversationId`, and that is the point: opening the widget opens nothing.
+     * The conversation exists from the first `widget-post`, and the widget reaches it
+     * through the session token alone, so it never needed the id.
+     */
     output: z.object({
       sessionId: z.string(),
       token: z.string(),
-      conversationId: z.string(),
       greeting: z.string(),
       verified: z.boolean(),
       origin: z.string(),
@@ -1344,15 +1377,17 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     }),
     http: { method: 'POST', path: '/widget/sessions' },
     emits: {
-      entity: 'conversation',
-      entityIdFrom: 'conversationId',
+      entity: 'widgetOpening',
+      entityIdFrom: 'sessionId',
       type: 'ticket0.widget-session-started',
-      schemaVersion: 1,
+      // v2: about the opening rather than a conversation — there is none yet — and
+      // `conversationId` left the payload, which is the bump the additive rule asks for.
+      schemaVersion: 2,
       piiClass: 'none',
       // Never the token. It is the visitor's whole authority over the thread, and an
       // immutable copy of a capability cannot be revoked. Everything else about the
       // session rides, so a consumer never has to come back and ask.
-      payload: ['sessionId', 'conversationId', 'verified', 'origin', 'startedAt'],
+      payload: ['sessionId', 'verified', 'origin', 'startedAt'],
     },
   },
 

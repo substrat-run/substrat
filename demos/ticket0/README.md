@@ -52,9 +52,10 @@ as an advert rather than part of the product.
 | `data-user` | who this visitor is, as far as the embedding site is concerned |
 | `data-signature` | that site's **server** vouching for the claim |
 
-Both identity attributes or neither. Without them the visitor is anonymous and gets a
-contact nothing else will ever reach; with them the header says *"your site verified
-you"*, because the desk could check.
+Both identity attributes or neither. Without them the visitor is anonymous, and gets a
+contact nothing else will ever reach — made by their first message, never by opening the
+bubble, so a visitor who clicks and leaves is no record at all; with them the header says
+*"your site verified you"*, because the desk could check.
 
 **The signature is the mechanism, not a formality.** It is
 `HMAC-SHA256(desk secret, data-user)`, hex — what Intercom calls `user_hash` and Help

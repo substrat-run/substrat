@@ -7,6 +7,11 @@
     },
     {
       "version": "0002",
+      "slug": "add-ticket0_widget_openings",
+      "sql": "CREATE TABLE ticket0_widget_openings (\n  id TEXT PRIMARY KEY NOT NULL,\n  contact_id TEXT,\n  origin TEXT NOT NULL,\n  token_hash TEXT NOT NULL,\n  started_at TEXT NOT NULL,\n  last_seen_at TEXT NOT NULL,\n  UNIQUE (token_hash)\n);"
+    },
+    {
+      "version": "0003",
       "slug": "add-ticket0_ai_turns-error",
       "sql": "ALTER TABLE ticket0_ai_turns ADD COLUMN error TEXT;"
     }

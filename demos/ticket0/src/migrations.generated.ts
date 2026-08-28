@@ -168,8 +168,23 @@ export const ticket0Migrations: SqlMigration[] = [
     `,
   },
   {
-    // add-ticket0_ai_turns-error
+    // add-ticket0_widget_openings
     version: '0002',
+    sql: `
+      CREATE TABLE ticket0_widget_openings (
+        id TEXT PRIMARY KEY NOT NULL,
+        contact_id TEXT,
+        origin TEXT NOT NULL,
+        token_hash TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        UNIQUE (token_hash)
+      );
+    `,
+  },
+  {
+    // add-ticket0_ai_turns-error
+    version: '0003',
     sql: `
       ALTER TABLE ticket0_ai_turns ADD COLUMN error TEXT;
     `,

@@ -108,6 +108,30 @@ export function defaultGates(verticalDir: string): GateSpec[] {
  * and skipped WITH A NOTE — an invisible gap becomes a visible one (same rule as
  * migration-replay).
  */
+/**
+ * Does this project declare a permission surface for `permission-diff` to render?
+ *
+ * The tool's own discovery rule (`substrat.permissions` in package.json), asked
+ * here so the gate SKIPS with a note rather than reporting `blocked` on a project
+ * that has not written a module yet — a scaffold mid-build is not a broken
+ * checker. Once the entry exists, every way the render can fail is the tool's
+ * exit 2, which the substrat convention reports as blocked.
+ *
+ * An unreadable or malformed package.json answers false: the `typecheck` and
+ * `install` gates own that failure and say so far better than a permission gate
+ * would.
+ */
+async function declaresPermissions(ws: Workspace, projectDir: string): Promise<boolean> {
+	try {
+		const pkg = JSON.parse(await ws.readFile(`${projectDir}/package.json`)) as {
+			substrat?: { permissions?: string };
+		};
+		return typeof pkg.substrat?.permissions === 'string';
+	} catch {
+		return false;
+	}
+}
+
 export function standaloneGates(projectDir: string): GateSpec[] {
 	const pkg = async (ws: Workspace): Promise<boolean> => await ws.exists(`${projectDir}/package.json`);
 	return [
@@ -140,16 +164,27 @@ export function standaloneGates(projectDir: string): GateSpec[] {
 			exitConvention: 'substrat',
 		},
 		{
+			// Standalone mode (#628): `permission-diff --root <project>` renders the
+			// project's OWN PERMISSIONS.md from the `substrat.permissions` entry its
+			// package.json declares, instead of sweeping demos/+apps/. Same render, same
+			// string-equality drift check, same 0/1/2 — only the discovery differs, so a
+			// generated vertical's permission surface reaches the same human checkpoint
+			// every demo's does.
 			name: 'permissions',
-			cmd: '',
-			appliesWhen: async () => false,
-			note: 'permission-diff is monorepo tooling; standalone form not built yet',
+			cmd: `pnpm exec tsx tools/permission-diff.mts --root ${projectDir} --check`,
+			appliesWhen: (ws) => declaresPermissions(ws, projectDir),
+			note: 'no substrat.permissions entry in package.json — no permission surface declared yet',
+			exitConvention: 'substrat',
 		},
 		{
+			// api-diff is opt-in per vertical (api-surface.md §3), exactly as in the
+			// monorepo gates: a vertical without src/api.ts is not documented yet, which
+			// is not a failure.
 			name: 'api',
-			cmd: '',
-			appliesWhen: async () => false,
-			note: 'api-diff is monorepo tooling; standalone form not built yet',
+			cmd: `pnpm exec tsx tools/api-diff.mts --root ${projectDir} --check`,
+			appliesWhen: async (ws) => await ws.exists(`${projectDir}/src/api.ts`),
+			note: 'no src/api.ts — vertical has not opted into the API catalog yet',
+			exitConvention: 'substrat',
 		},
 		{
 			name: 'scenario',

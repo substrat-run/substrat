@@ -55,6 +55,7 @@ type TagRow = EntityRow<typeof ticket0Entities, 'conversationTag'>;
 type SavedReplyRow = EntityRow<typeof ticket0Entities, 'savedReply'>;
 type CsatRow = EntityRow<typeof ticket0Entities, 'csat'>;
 type SessionRow = EntityRow<typeof ticket0Entities, 'widgetSession'>;
+type OpeningRow = EntityRow<typeof ticket0Entities, 'widgetOpening'>;
 type DeskRow = EntityRow<typeof ticket0Entities, 'deskSettings'>;
 type KbSourceRow = EntityRow<typeof ticket0Entities, 'kbSource'>;
 type KbArticleRow = EntityRow<typeof ticket0Entities, 'kbArticle'>;
@@ -330,6 +331,12 @@ async function verifyIdentity(
   return diff === 0;
 }
 
+function contactOrThrow(ctx: OperationContext, id: string): ContactRow {
+  const row = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [id])[0];
+  if (!row) throw substratError('not_found', `contact not found: ${id}`);
+  return row;
+}
+
 function contactByExternalId(ctx: OperationContext, externalId: string): ContactRow | undefined {
   return ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE external_id = ?', [
     externalId,
@@ -407,27 +414,74 @@ function allowedOrigins(ctx: OperationContext): string[] {
   return Array.isArray(parsed) ? parsed.filter((o): o is string => typeof o === 'string') : [];
 }
 
-/** The session a widget call holds, or a refusal - never a silent empty answer. */
-async function sessionOrThrow(
+/**
+ * What a widget call holds: a session bound to its conversation, or an opening that
+ * has not said anything yet. Either way the token decides, and a refusal is a
+ * sentence rather than a silent empty answer.
+ */
+type WidgetHold =
+  | { readonly kind: 'session'; readonly conversation: ConversationRow }
+  | { readonly kind: 'opening'; readonly opening: OpeningRow };
+
+async function holdOrThrow(
   ctx: OperationContext,
   sessionId: string,
   token: string,
-): Promise<ConversationRow> {
+): Promise<WidgetHold> {
   const session = ctx.sql.query<SessionRow>('SELECT * FROM ticket0_widget_sessions WHERE id = ?', [
     sessionId,
   ])[0];
-  if (!session) throw substratError('not_found', `widget session not found: ${sessionId}`);
-  if (session.token_hash !== (await sha256(token)))
+  const opening = session
+    ? undefined
+    : ctx.sql.query<OpeningRow>('SELECT * FROM ticket0_widget_openings WHERE id = ?', [
+        sessionId,
+      ])[0];
+  const held = session ?? opening;
+  if (!held) throw substratError('not_found', `widget session not found: ${sessionId}`);
+  if (held.token_hash !== (await sha256(token)))
     throw substratError('permission_denied', 'widget session token does not match');
   // An origin dropped from the allowlist stops working rather than coasting on a
   // session opened while it was still trusted.
-  if (!allowedOrigins(ctx).includes(session.origin))
-    throw substratError('permission_denied', `origin no longer embedded here: ${session.origin}`);
-  ctx.sql.exec('UPDATE ticket0_widget_sessions SET last_seen_at = ? WHERE id = ?', [
-    ctx.now(),
-    session.id,
-  ]);
-  return conversationOrThrow(ctx, session.conversation_id);
+  if (!allowedOrigins(ctx).includes(held.origin))
+    throw substratError('permission_denied', `origin no longer embedded here: ${held.origin}`);
+  const table = session ? 'ticket0_widget_sessions' : 'ticket0_widget_openings';
+  ctx.sql.exec(`UPDATE ${table} SET last_seen_at = ? WHERE id = ?`, [ctx.now(), held.id]);
+  return session
+    ? { kind: 'session', conversation: conversationOrThrow(ctx, session.conversation_id) }
+    : { kind: 'opening', opening: opening! };
+}
+
+/**
+ * The first message: the moment an opening becomes a conversation.
+ *
+ * The contact the host site vouched for was resolved when the widget opened (a
+ * verified person is a record already); an anonymous visitor gets theirs here, so a
+ * bubble opened and abandoned leaves no contact and no thread. The opening row moves
+ * into `ticket0_widget_sessions` under the same id and token hash — the widget holds
+ * the same session before and after, and never learns the difference.
+ */
+function bindOpening(ctx: OperationContext, opening: OpeningRow): ConversationRow {
+  const contact = opening.contact_id
+    ? contactOrThrow(ctx, opening.contact_id)
+    : createContact(ctx, {});
+  const conversation = openConversation(ctx, contact, 'widget', 'Chat');
+  ctx.sql.exec(
+    `INSERT INTO ticket0_widget_sessions
+       (id, conversation_id, contact_id, origin, token_hash, started_at, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [
+      opening.id,
+      conversation.id,
+      contact.id,
+      opening.origin,
+      opening.token_hash,
+      opening.started_at,
+      ctx.now(),
+    ],
+  );
+  ctx.sql.exec('DELETE FROM ticket0_widget_openings WHERE id = ?', [opening.id]);
+  ctx.link({ entityType: 'widgetSession', entityId: opening.id }, conversationRef(conversation.id));
+  return conversation;
 }
 
 /**
@@ -1643,7 +1697,7 @@ const operations = {
     if (!allowedOrigins(ctx).includes(input.origin))
       throw substratError('permission_denied', `this desk is not embedded on ${input.origin}`);
 
-    let contact: ContactRow;
+    let contact: ContactRow | null;
     let verified = false;
     if (input.identity) {
       const ok = await verifyIdentity(
@@ -1662,51 +1716,45 @@ const operations = {
           verified_at: ctx.now(),
         });
     } else {
-      // The bottom rung: their own contact, which nothing else will ever reach.
-      contact = createContact(ctx, {});
+      // The bottom rung: nobody, yet. An anonymous visitor's contact is made by their
+      // first message (`bindOpening`), so a bubble opened and abandoned leaves no row.
+      contact = null;
     }
 
     /**
-     * No principal is minted and no grant is made, and that is the design.
+     * No conversation, no principal, no grant — and that is the design.
      *
-     * `contact.principal` stays null until this person signs in for real, at which
-     * point the portal's grant is made against a login that actually exists. A
-     * visitor in a chat bubble reaches their conversation by holding the token
-     * below, which is why there is nothing here to grant, revoke, or reap.
+     * Opening the widget is not a conversation: the thread exists from the first
+     * `widget-post`, which is what keeps a curl, a crawler that ran the script, or a
+     * person who clicked and left out of the inbox. `contact.principal` stays null
+     * until this person signs in for real, at which point the portal's grant is made
+     * against a login that actually exists. A visitor in a chat bubble reaches their
+     * conversation by holding the token below, which is why there is nothing here to
+     * grant, revoke, or reap.
      */
-    const conversation = openConversation(ctx, contact, 'widget', 'Chat');
-
     const token = `${ulid()}${ulid()}`;
     const id = ulid();
     const now = ctx.now();
     ctx.sql.exec(
-      `INSERT INTO ticket0_widget_sessions
-         (id, conversation_id, contact_id, origin, token_hash, started_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, conversation.id, contact.id, input.origin, await sha256(token), now, now],
+      `INSERT INTO ticket0_widget_openings
+         (id, contact_id, origin, token_hash, started_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [id, contact?.id ?? null, input.origin, await sha256(token), now, now],
     );
-    ctx.link({ entityType: 'widgetSession', entityId: id }, conversationRef(conversation.id));
 
     ctx.emit({
       type: 'ticket0.widget-session-started',
-      schemaVersion: 1,
-      entity: conversationRef(conversation.id),
+      schemaVersion: 2,
+      entity: { entityType: 'widgetOpening', entityId: id },
       piiClass: 'none',
       // Never the token. It is the visitor's whole authority over this thread, and
       // an immutable copy of a capability cannot be revoked.
-      payload: {
-        sessionId: id,
-        conversationId: conversation.id,
-        verified,
-        origin: input.origin,
-        startedAt: now,
-      },
+      payload: { sessionId: id, verified, origin: input.origin, startedAt: now },
     });
 
     return {
       sessionId: id,
       token,
-      conversationId: conversation.id,
       greeting: settings.greeting,
       verified,
       origin: input.origin,
@@ -1718,7 +1766,10 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.conversationWidget));
     // The token decides WHICH conversation, and there is no conversation id in the
     // input for a caller to substitute one.
-    const conversation = await sessionOrThrow(ctx, input.sessionId, input.token);
+    const hold = await holdOrThrow(ctx, input.sessionId, input.token);
+    // The first message opens the conversation; every later one finds it bound.
+    const conversation =
+      hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
     const next = step(conversation, 'ticket0/widget-post');
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
@@ -1735,8 +1786,11 @@ const operations = {
 
   'ticket0/widget-thread': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationWidget));
-    const conversation = await sessionOrThrow(ctx, input.sessionId, input.token);
-    return publicThread(ctx, conversation.id, input);
+    const hold = await holdOrThrow(ctx, input.sessionId, input.token);
+    // Nothing said yet, nothing to read: an empty page, not a refusal. The widget
+    // polls this before the first message too, and a 404 would make it drop the session.
+    if (hold.kind === 'opening') return pageOf([], LIST_PAGE_DEFAULT, () => '');
+    return publicThread(ctx, hold.conversation.id, input);
   },
 
   // --- The portal ----------------------------------------------------------

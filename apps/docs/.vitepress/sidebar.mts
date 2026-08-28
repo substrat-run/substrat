@@ -94,6 +94,7 @@ export function guideSidebar() {
         { text: 'FAQ', link: '/guide/faq' },
         { text: 'Architecture', link: '/guide/architecture' },
         { text: 'Getting started', link: '/guide/getting-started' },
+        { text: 'Walkthrough: the todo app', link: '/guide/walkthrough-todo' },
         { text: 'Agent rules', link: START_HERE },
         { text: 'The Claude Code plugin', link: '/guide/agent-plugin' },
         { text: 'Running locally', link: '/guide/running-locally' },
