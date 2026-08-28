@@ -98,14 +98,20 @@ interface AuthAdapter {
 ```
 
 The server tries its mounted adapters in order; the first to recognise the request wins,
-and the resolved principal is handed to `getScope`. Adapters are **chosen by config**, so a
-deployment can run one, another, or several at once:
+and the resolved principal is handed to `getScope`. Which adapters a vertical mounts is the
+vertical's decision, and the two shapes in the repo make it differently:
 
 ```
-AUTH=better-auth,public    # a real session, else an anonymous browse-only fallback
-AUTH=oidc                  # an OIDC / authhero adapter
-AUTH=better-auth,oidc      # both doors — resolve to the same principal model underneath
+# demos/shop — a Better Auth session wins, else an anonymous browse-only fallback
+AUTH=better-auth,public      # the default; AUTH=public alone runs the storefront read-only
+
+# demos/callout, meridian, manyfold, todo, ticket0 — one provider, picked in code
+authProviderFor(env)  →  oidcRpAuthProvider({ issuer, clientId, … })
 ```
+
+The OIDC-only verticals have no `AUTH=` switch at all: the relying party from
+[`@substrat-run/vertical-auth`](/reference/vertical-auth) is their *only* way to resolve a
+caller, and the thing that varies is `OIDC_ISSUER` — a configuration value, not a code path.
 
 **OIDC is not a separate burden.** Better Auth can federate upstream identity itself
 (social, generic OIDC, enterprise SSO), so "log in with authhero/Google/SSO" becomes
@@ -123,11 +129,28 @@ The neutral seam is not hypothetical — the codebase exercises both ends of it 
   across every platform surface — including the `substrat login` CLI, which brokers the same
   flow. This is the "log in with SSO" corner, chosen because platform staff and tenant admins
   are one identity population the platform runs itself.
-- **The demos stay on Better Auth**, each with its own user store, because a demo vertical
-  models a business that owns *its* customers' logins. Same `AuthAdapter` contract, opposite
-  end of the choice.
+- **Five of the eight demo verticals are OIDC-only** — Callout, Meridian, Manyfold, Todo
+  and ticket0 run **no credential store**. Login, sign-up, password and reset all live at
+  an OIDC issuer, and the vertical does exactly one thing with the result: bind the
+  authenticated `sub` to a scope principal — hosted, in its per-tenant `IdentityDO` through
+  the owner-claim and invite flows ([`@substrat-run/vertical-auth`](/reference/vertical-auth));
+  locally, through the host's identity directory, which the seed fills from the same
+  persona list the issuer shows.
+  Hosted, that issuer is whatever the tenant configured — the
+  [`auth-server`](https://github.com/substrat-run/substrat/tree/main/demos/auth-server) demo
+  is the full Better Auth issuer for exercising real accounts. Locally it is
+  [`@substrat-run/dev-issuer`](/reference/dev-issuer), a real provider whose only shortcut
+  is that `/authorize` lists the vertical's personas instead of asking for a password —
+  so the dev login *is* the production round-trip, changing issuer is a change of
+  `OIDC_ISSUER`, and a script impersonates someone at the issuer
+  (`POST {issuer}/dev/token {"sub": …}`), never inside the vertical. The design record is
+  [`oidc-only-demos.md`](https://github.com/substrat-run/substrat/blob/main/docs/architecture/oidc-only-demos.md).
+- **Rally, Handlebar and the shop still run Better Auth**, each with its own user store —
+  the shape for a business that owns *its* customers' logins. Same `AuthAdapter` contract,
+  opposite end of the choice. (Rally and Handlebar keep a persona cast for domain reasons
+  the design record spells out, not as an auth preference.)
 
-That the same kernel serves both, unchanged, is the seam paying out.
+That the same kernel serves all of them, unchanged, is the seam paying out.
 
 ## Identity sync on first login
 
