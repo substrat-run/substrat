@@ -17,12 +17,16 @@ npx @substrat-run/boundary-lint
 ## What it checks
 
 **Module code** is everything reachable from a `ModuleRegistration` — operations and
-consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness and exempt.
+consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness and exempt,
+and so are the Durable Object classes a hosted vertical ships by filename — `auth-do.ts`,
+`config-do.ts` (the `*-do.ts` shape `create-substrat` scaffolds): they import `DurableObject`
+from `cloudflare:workers` because the runtime requires the base class, not to reach the
+ambient env.
 
 | Rule | What it enforces |
 |---|---|
 | **R1** star topology | an engine never imports another `@substrat-run/engine-*` |
-| **R2** no raw access | module code imports no `better-sqlite3`, no adapters, no `node:*` — data access is `ctx.sql` only |
+| **R2** no raw access | module code imports no `better-sqlite3`, no adapters, no `node:*`, no `cloudflare:workers` — data access is `ctx.sql` only. `cloudflare:workers` is banned for a sharper reason than the rest: it exports an **ambient `env`**, so one import hands module code every binding and secret the script declares, including its own `SCOPE` namespace — which reaches another scope's data, where `ctx.sql` cannot |
 | **R3** no network | module code never calls `fetch()` or imports an HTTP client |
 | **R4** spine is sacred | module code never *writes* `_substrat_*` tables (reads are fine — timelines are projections) |
 | **R5** tables private | module code never references another module's tables in SQL |

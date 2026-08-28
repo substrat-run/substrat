@@ -41,11 +41,24 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
 - **Scopes** — `/scopes`, `/tenants/:t/scopes/:s` and its lifecycle verbs (`configure`,
   `version`, `snapshots`, `restore`, `rewind`, `bookmarks`, `reap`), the read-only data
   window (`tables`, `tables/:table`, `query`, `export`, `health`), and `/fleet/migrations`.
+  Two routes are forwarded to the scope's own [vertical host](/reference/vertical-host)
+  rather than answered from the directory: `GET …/owner-seat` reads whether the instance's
+  owner seat has been claimed, and `POST …/owner-claim` mints the short-lived claim link
+  (`201`), addressed to the scope's bound `app` hostname. `owner-claim` answers `409` when
+  no hostname is bound or the seat is already claimed; either route answers `501` when the
+  scope is bound to no vertical (with the diagnosis) or the bound vertical keeps no owner
+  seat — both callbacks are optional in [`vertical-host`](/reference/vertical-host), and the
+  vertical's own status is forwarded unchanged.
 - **Verticals** — `/verticals` (+ `versions`, `versions/:id/admit`|`reject`, `channels`,
   `channels/:c/promote`, `deploy`, `instances`, `listing`, `publish-request`,
   `install-block`): the registry, admission, promotion, and the deploy path. A vertical has one
   channel — `prod` ([dev/staging retired](/concepts/deploying#the-one-channel-prod)); `channels/:c/promote`
-  refuses a non-`prod` channel with a `400`.
+  refuses a non-`prod` channel with a `400`. `GET /verticals/:slug/egress` (staff-only, like
+  the other observability reads) lays each deployed version's *observed* outbound hosts
+  beside the ones it *declared* ([D-46](/platform/control-plane)), so an admit decision can
+  see the difference; `?hours=` (1–72, default 24) and `?limit=` (1–1000, default 500) bound the read, and the
+  report says out loud when it is sampled or truncated — an absent host is not proof a
+  version never called it. `501` on a control plane with no observed-egress seam.
 - **Hostnames** — `/hostnames` (+ `/status`, `/verify`): the K-26 hostname map and its
   Cloudflare-for-SaaS issuance/verification.
 - **Connections** — `/tenants/:t/connections` (+ `/verify`, `/credential`, `/activity`,
@@ -88,5 +101,5 @@ surface; the audit property is built into it. See
 
 ## Versioning
 
-`0.25.0`, AGPL-3.0. Pre-release (0.x): the surface changes without notice until the
+`0.91.1`, AGPL-3.0. Pre-release (0.x): the surface changes without notice until the
 platform GAs.
