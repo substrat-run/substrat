@@ -147,6 +147,26 @@ consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
 adapter **rejects** a `ctx.link` for an undeclared edge, so a missing one fails loudly.
 This is also what lets a portal permission-walk reach the owner.
 
+## Sharing is `ctx.grant` / `ctx.revoke`, not a table
+
+When a person shares their own record with another person — and takes them off it again —
+the operation narrows a permission it already holds onto that one entity:
+
+```ts
+await ctx.grant(principal, PERM.listContribute, listRef(listId));   // share
+await ctx.revoke(principal, PERM.listContribute, listRef(listId));  // un-share
+```
+
+Entity-required (module code can never write a scope- or tenant-wide grant), delegating
+(the caller's own decision on that entity is re-checked, so an operation can never hand out
+more than it holds), and transactional with the operation. Every later `ctx.check` reads
+the grant, so nothing else has to remember who may touch what.
+
+What is **not** revocable, so you can tell a real absence from this one: a `ctx.link` edge
+is permanent, and org membership is the coarse-grained tool — a whole org, not one record.
+Never mint an org per domain row, or a membership table consulted by hand in every handler,
+to get a revoke.
+
 ## The gates — run them, believe them
 
 ```sh

@@ -71,7 +71,12 @@ Every vertical gets this whether or not it uses a single engine:
 - **Tenancy** — tenants and scopes, isolated at the database level. A scope is one
   SQLite/DO database. Cross-tenant access is not a bug you avoid; there is no API for it.
 - **Permissions** — roles, grants, entity-narrowed grants, and every decision carries a
-  proof path (why it was allowed).
+  proof path (why it was allowed). **Sharing is a kernel verb, not a table you design**:
+  an operation narrows a permission it already holds onto one entity, and withdraws it,
+  with `ctx.grant(principal, perm, entityRef)` / `ctx.revoke(...)` — entity-required,
+  delegating (re-checks the caller's own decision), transactional with the operation.
+  Not revocable, deliberately: a `ctx.link` edge is permanent, and org membership is the
+  coarse-grained tool. Never mint an org per domain row to get a revoke.
 - **Events + audit** — every mutation emits a kernel-stamped event. Origin fields (tenant,
   scope, actor, time) are stamped by the kernel; your code cannot mislabel one.
 - **Migrations** — journaled per module, applied lazily per scope.
@@ -392,7 +397,9 @@ await host.provisionScope(actor, { tenantId: tenant, scopeId: scope, jurisdictio
 
 Define roles **per tenant** from the engines' `PERM` + your keys, assign them, create seed
 entities via `stub.invoke` (**never raw SQL**), give portal principals entity-narrowed
-grants. Make it idempotent.
+grants. Make it idempotent. Seed-time grants are the platform actor's verb; sharing a
+**user** initiates at runtime is `ctx.grant` / `ctx.revoke` inside an operation (see the
+`AGENTS.md` section on sharing).
 
 ### `test/scenario.test.ts`
 
