@@ -42,9 +42,19 @@ export { absenceEntities, leaveTypeRow } from './entities.js';
 // a composing vertical imports one module, as it did when these lived inline.
 export { ABSENCE_PERMISSIONS, absenceOperations } from './operations.js';
 export * from './schemas.js';
+import { leaveTypeRow } from './entities.js';
+import { columnsOf, returns } from './seam.js';
 import {
+  absenceDay,
+  absenceEntry,
+  absenceRequest,
   absenceSubject,
+  entryKind,
   isoDate,
+  leaveType as leaveTypeShape,
+  posDecimal,
+  requestStatus,
+  signedDecimal,
   cancelAbsenceInput,
   configureLeaveTypeInput,
   decideAbsenceInput,
@@ -177,103 +187,165 @@ export const absenceMigrations = [
 // Schemas & shapes
 // ---------------------------------------------------------------------------
 
-interface LeaveTypeRow {
-  key: string;
-  floor: string;
-  active: number;
-  created_at: string;
-}
+/**
+ * The stored shapes. `leave-type` is the one entity, so its row schema comes
+ * from the registry; the ledger and the request book are rows this engine owns
+ * (entities.ts) and have no registry entry to borrow, so they are declared here.
+ *
+ * These describe what the migration PROMISED — they are not the published
+ * projections. Holding a row to this shape before anything is made of it is what
+ * keeps a retyped column from becoming a plausible-looking answer: `active` is
+ * read as `=== 1`, and a `delta` is fed to `addDecimal`, both of which accept a
+ * drifted value quietly.
+ */
+type LeaveTypeRow = z.infer<typeof leaveTypeRow>;
 
-interface EntryRow {
-  id: string;
-  subject_type: string;
-  subject_id: string;
-  data_subject_id: string;
-  leave_type_key: string;
-  entry_kind: 'accrual' | 'booking' | 'correction' | 'carryover' | 'reversal';
-  delta: string;
-  effective_date: string;
-  request_id: string | null;
-  note: string | null;
-  created_by: string;
-  created_at: string;
-}
-
-interface RequestRow {
-  id: string;
-  subject_type: string;
-  subject_id: string;
-  data_subject_id: string;
-  leave_type_key: string;
-  start_date: string;
-  end_date: string;
-  days: string;
-  status: 'requested' | 'approved' | 'rejected' | 'cancelled';
-  note: string | null;
-  decided_by: string | null;
-  decided_at: string | null;
-  created_by: string;
-  created_at: string;
-}
-
-
-const toEntry = (r: EntryRow): AbsenceEntry => ({
-  id: r.id,
-  subject: { entityType: r.subject_type, entityId: r.subject_id },
-  leaveTypeKey: r.leave_type_key,
-  entryKind: r.entry_kind,
-  delta: r.delta,
-  effectiveDate: r.effective_date,
-  requestId: r.request_id,
-  note: r.note,
-  createdBy: r.created_by,
-  createdAt: r.created_at,
+const entryRow = z.object({
+  id: z.string(),
+  subject_type: z.string(),
+  subject_id: z.string(),
+  data_subject_id: z.string(),
+  leave_type_key: z.string(),
+  entry_kind: entryKind,
+  delta: signedDecimal,
+  effective_date: isoDate,
+  request_id: z.string().nullable(),
+  note: z.string().nullable(),
+  created_by: z.string(),
+  created_at: z.string(),
 });
+type EntryRow = z.infer<typeof entryRow>;
 
-const toRequest = (r: RequestRow): AbsenceRequest => ({
-  id: r.id,
-  subject: { entityType: r.subject_type, entityId: r.subject_id },
-  leaveTypeKey: r.leave_type_key,
-  startDate: r.start_date,
-  endDate: r.end_date,
-  days: r.days,
-  status: r.status,
-  note: r.note,
-  decidedBy: r.decided_by,
-  decidedAt: r.decided_at,
-  createdBy: r.created_by,
-  createdAt: r.created_at,
+const requestRow = z.object({
+  id: z.string(),
+  subject_type: z.string(),
+  subject_id: z.string(),
+  data_subject_id: z.string(),
+  leave_type_key: z.string(),
+  start_date: isoDate,
+  end_date: isoDate,
+  days: posDecimal,
+  status: requestStatus,
+  note: z.string().nullable(),
+  decided_by: z.string().nullable(),
+  decided_at: z.string().nullable(),
+  created_by: z.string(),
+  created_at: z.string(),
 });
+type RequestRow = z.infer<typeof requestRow>;
 
-const toLeaveType = (r: LeaveTypeRow): LeaveType => ({
-  key: r.key,
-  floor: r.floor,
-  active: r.active === 1,
-  createdAt: r.created_at,
-});
+/**
+ * The SELECT lists, derived from the row schemas (#771).
+ *
+ * Never `SELECT *`: that pins the shape a read returns to whatever the physical
+ * table currently holds, which is the same trust-TypeScript hole `returns` closes
+ * from the other side. A column dropped from the table is then a SQL error naming
+ * it; a column added to the table is simply never read.
+ */
+/** The single column `balanceAsOf` folds — a projection of `entryRow`, not a table. */
+const ledgerDelta = entryRow.pick({ delta: true });
+
+/** `availability`'s computed half, published as one array. */
+const absenceDays = z.array(absenceDay);
+
+const LEAVE_TYPE_COLUMNS = columnsOf(leaveTypeRow);
+const ENTRY_COLUMNS = columnsOf(entryRow);
+const REQUEST_COLUMNS = columnsOf(requestRow);
+
+/** A stored row, parsed BEFORE anything is made of it. */
+const storedLeaveType = (r: LeaveTypeRow): LeaveTypeRow =>
+  returns(leaveTypeRow, `leave type row ${r.key}`, r);
+const storedEntry = (r: EntryRow): EntryRow => returns(entryRow, `ledger row ${r.id}`, r);
+const storedRequest = (r: RequestRow): RequestRow =>
+  returns(requestRow, `absence request row ${r.id}`, r);
+
+/**
+ * A stored row, published (#771).
+ *
+ * The projection AND the parse in one place, because every path out of this
+ * engine that returns an entry, a request or a leave type goes through one of
+ * these three — the in-scope reads, the page walks, and each operation binding.
+ * `returns` refuses a row that no longer matches the published schema, which is
+ * the shape a composing vertical declared its `output` with when it compiled
+ * against some earlier version of this engine.
+ */
+const toEntry = (raw: EntryRow): AbsenceEntry => {
+  const r = storedEntry(raw);
+  return returns(absenceEntry, `absence entry ${r.id}`, {
+    id: r.id,
+    subject: { entityType: r.subject_type, entityId: r.subject_id },
+    leaveTypeKey: r.leave_type_key,
+    entryKind: r.entry_kind,
+    delta: r.delta,
+    effectiveDate: r.effective_date,
+    requestId: r.request_id,
+    note: r.note,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+  });
+};
+
+const toRequest = (raw: RequestRow): AbsenceRequest => {
+  const r = storedRequest(raw);
+  return returns(absenceRequest, `absence request ${r.id}`, {
+    id: r.id,
+    subject: { entityType: r.subject_type, entityId: r.subject_id },
+    leaveTypeKey: r.leave_type_key,
+    startDate: r.start_date,
+    endDate: r.end_date,
+    days: r.days,
+    status: r.status,
+    note: r.note,
+    decidedBy: r.decided_by,
+    decidedAt: r.decided_at,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+  });
+};
+
+const toLeaveType = (raw: LeaveTypeRow): LeaveType => {
+  const r = storedLeaveType(raw);
+  return returns(leaveTypeShape, `leave type ${r.key}`, {
+    key: r.key,
+    floor: r.floor,
+    active: r.active === 1,
+    createdAt: r.created_at,
+  });
+};
 
 /** Negate a signed decimal string ('5' → '-5', '-5' → '5', '0' → '0'). */
 const negate = (d: string): string =>
   compareDecimal(d, '0') === 0 ? '0' : d.startsWith('-') ? d.slice(1) : `-${d}`;
 
 function getRequestRow(ctx: OperationContext, requestId: string): RequestRow {
-  const row = ctx.sql.query<RequestRow>('SELECT * FROM absence_requests WHERE id = ?', [
-    requestId,
-  ])[0];
+  const row = ctx.sql.query<RequestRow>(
+    `SELECT ${REQUEST_COLUMNS} FROM absence_requests WHERE id = ?`,
+    [requestId],
+  )[0];
   if (!row) throw substratError('not_found', `absence request not found: ${requestId}`);
-  return row;
+  return storedRequest(row);
 }
 
 function getLeaveTypeRow(ctx: OperationContext, key: string): LeaveTypeRow {
-  const row = ctx.sql.query<LeaveTypeRow>('SELECT * FROM absence_leave_types WHERE key = ?', [
-    key,
-  ])[0];
+  const row = ctx.sql.query<LeaveTypeRow>(
+    `SELECT ${LEAVE_TYPE_COLUMNS} FROM absence_leave_types WHERE key = ?`,
+    [key],
+  )[0];
   if (!row) throw substratError('not_found', `leave type not found: ${key}`);
-  return row;
+  return storedLeaveType(row);
 }
 
 function getEntryRow(ctx: OperationContext, id: string): EntryRow {
-  return ctx.sql.query<EntryRow>('SELECT * FROM absence_ledger WHERE id = ?', [id])[0]!;
+  const row = ctx.sql.query<EntryRow>(
+    `SELECT ${ENTRY_COLUMNS} FROM absence_ledger WHERE id = ?`,
+    [id],
+  )[0];
+  // Only ever called with an id this transaction just inserted, so this is a
+  // ledger-integrity claim rather than a lookup — but it must stay a CLASSIFIED
+  // engine error: `storedEntry` reads `r.id` to name the surface, so a bare `!`
+  // would answer an unclassified TypeError that `errorCodeOf` cannot read.
+  if (!row) throw substratError('internal', `ledger entry ${id} vanished after insert`);
+  return storedEntry(row);
 }
 
 const subjectRefOf = (r: { subject_type: string; subject_id: string }): EntityRef => ({
@@ -373,7 +445,7 @@ export function configureLeaveType(
 
 export function listLeaveTypes(ctx: OperationContext): LeaveType[] {
   return ctx.sql
-    .query<LeaveTypeRow>('SELECT * FROM absence_leave_types ORDER BY key')
+    .query<LeaveTypeRow>(`SELECT ${LEAVE_TYPE_COLUMNS} FROM absence_leave_types ORDER BY key`)
     .map(toLeaveType);
 }
 
@@ -409,7 +481,15 @@ export function balanceAsOf(
           WHERE subject_type = ? AND subject_id = ? AND leave_type_key = ?`,
         [input.subject.entityType, input.subject.entityId, input.leaveTypeKey],
       );
-  return rows.reduce((sum, r) => addDecimal(sum, r.delta), '0');
+  // Each summand is parsed, not just the total: `addDecimal` over a drifted
+  // `delta` is the one path here that answers a *plausible number* rather than
+  // throwing — a balance nobody questions is exactly the wrong-data-on-a-screen
+  // failure #771 is about.
+  const balance = rows.reduce(
+    (sum, r) => addDecimal(sum, returns(ledgerDelta, 'ledger delta', r).delta),
+    '0',
+  );
+  return returns(signedDecimal, `balance of '${input.leaveTypeKey}'`, balance);
 }
 
 export function requestAbsence(ctx: OperationContext, rawInput: RequestAbsenceInput): AbsenceRequest {
@@ -562,11 +642,12 @@ export function cancelAbsence(
 
   let reversal: AbsenceEntry | null = null;
   if (req.status === 'approved') {
-    const booking = ctx.sql.query<EntryRow>(
-      `SELECT * FROM absence_ledger WHERE request_id = ? AND entry_kind = 'booking'`,
+    const bookingRow = ctx.sql.query<EntryRow>(
+      `SELECT ${ENTRY_COLUMNS} FROM absence_ledger WHERE request_id = ? AND entry_kind = 'booking'`,
       [req.id],
     )[0];
-    if (!booking) throw substratError('internal', `approved request ${req.id} has no booking entry — ledger integrity violated`);
+    if (!bookingRow) throw substratError('internal', `approved request ${req.id} has no booking entry — ledger integrity violated`);
+    const booking = storedEntry(bookingRow);
     reversal = insertEntry(ctx, {
       subject,
       leaveTypeKey: req.leave_type_key,
@@ -607,12 +688,14 @@ export function cancelAbsence(
  */
 export function expireStaleRequests(ctx: OperationContext): { expired: number } {
   const today = ctx.now().slice(0, 10);
-  const stale = ctx.sql.query<RequestRow>(
-    `SELECT * FROM absence_requests
+  const stale = ctx.sql
+    .query<RequestRow>(
+      `SELECT ${REQUEST_COLUMNS} FROM absence_requests
        WHERE status = 'requested' AND start_date < ?
        ORDER BY start_date LIMIT 100`,
-    [today],
-  );
+      [today],
+    )
+    .map(storedRequest);
   const now = ctx.now();
   for (const req of stale) {
     ctx.sql.exec(
@@ -652,7 +735,7 @@ export function listRequests(
     where.push('status = ?');
     params.push(input.status);
   }
-  const sql = `SELECT * FROM absence_requests${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC`;
+  const sql = `SELECT ${REQUEST_COLUMNS} FROM absence_requests${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, id DESC`;
   return ctx.sql.query<RequestRow>(sql, params).map(toRequest);
 }
 
@@ -662,13 +745,13 @@ export function listEntries(
 ): AbsenceEntry[] {
   const rows = input.leaveTypeKey
     ? ctx.sql.query<EntryRow>(
-        `SELECT * FROM absence_ledger
+        `SELECT ${ENTRY_COLUMNS} FROM absence_ledger
           WHERE subject_type = ? AND subject_id = ? AND leave_type_key = ?
           ORDER BY effective_date, id`,
         [input.subject.entityType, input.subject.entityId, input.leaveTypeKey],
       )
     : ctx.sql.query<EntryRow>(
-        `SELECT * FROM absence_ledger
+        `SELECT ${ENTRY_COLUMNS} FROM absence_ledger
           WHERE subject_type = ? AND subject_id = ?
           ORDER BY effective_date, id`,
         [input.subject.entityType, input.subject.entityId],
@@ -689,13 +772,13 @@ export function entriesInWindow(
   const to = isoDate.parse(input.to);
   const rows = input.entryKind
     ? ctx.sql.query<EntryRow>(
-        `SELECT * FROM absence_ledger
+        `SELECT ${ENTRY_COLUMNS} FROM absence_ledger
           WHERE effective_date >= ? AND effective_date <= ? AND entry_kind = ?
           ORDER BY subject_id, effective_date, id`,
         [from, to, input.entryKind],
       )
     : ctx.sql.query<EntryRow>(
-        `SELECT * FROM absence_ledger
+        `SELECT ${ENTRY_COLUMNS} FROM absence_ledger
           WHERE effective_date >= ? AND effective_date <= ?
           ORDER BY subject_id, effective_date, id`,
         [from, to],
@@ -734,13 +817,15 @@ export function availability(
   const from = isoDate.parse(input.from);
   const to = isoDate.parse(input.to);
   if (to < from) throw substratError('validation_failed', `to ${to} precedes from ${from}`);
-  const rows = ctx.sql.query<RequestRow>(
-    `SELECT * FROM absence_requests
+  const rows = ctx.sql
+    .query<RequestRow>(
+      `SELECT ${REQUEST_COLUMNS} FROM absence_requests
        WHERE subject_type = ? AND subject_id = ? AND status = 'approved'
          AND start_date <= ? AND end_date >= ?
        ORDER BY start_date, id`,
-    [input.subject.entityType, input.subject.entityId, to, from],
-  );
+      [input.subject.entityType, input.subject.entityId, to, from],
+    )
+    .map(storedRequest);
   const days: AbsenceDay[] = [];
   for (const req of rows) {
     const start = req.start_date < from ? from : req.start_date;
@@ -749,7 +834,13 @@ export function availability(
       days.push({ date, leaveTypeKey: req.leave_type_key, requestId: req.id });
     }
   }
-  return { days, requests: rows.map(toRequest) };
+  // The days are COMPUTED rather than stored, so nothing else parses them: the
+  // walk is driven by two stored dates, and a drifted one would answer a
+  // plausible calendar. The requests are each parsed by `toRequest`.
+  return {
+    days: returns(absenceDays, `availability of ${input.subject.entityId}`, days),
+    requests: rows.map(toRequest),
+  };
 }
 
 // ---------------------------------------------------------------------------
