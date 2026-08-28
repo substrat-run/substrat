@@ -74,6 +74,24 @@ an **API card** surfaces the app's OpenAPI document (`/openapi.json`) and an *AP
 app's [Scalar](https://scalar.com) reference — which rides the app's own session, so you sign in to
 the app first.
 
+#### Owner seat {#owner-seat}
+
+Next to them sits the **Owner seat** card: whether anyone has signed in to claim this instance,
+read live from the app's own identity directory (the platform relays it through the vertical's
+`/internal/owner-seat` route). Provisioning mints the seat **empty** — the platform knows the
+principal it minted, not the login the tenant's issuer will emit — and for **15 minutes after
+provision** the first person to sign in at the app's address becomes the owner. That is the
+install flow, where you open the app seconds later; the card shows the deadline while it is open.
+Once the window has closed, a plain sign-in claims nothing, and the card says so. While the seat
+is **unclaimed** — window open or closed — **Get claim link** mints a short-lived `/?claim=<token>`
+link, shown once with a copy button and stored nowhere on the platform: open it yourself, or send
+it to the person who should own the instance. Minting again retires the earlier link (the card
+names the outstanding one's expiry). A **claimed** seat shows its owner and offers no link — the
+vertical refuses to mint one for a seat that is no longer pending. An app whose vertical keeps no
+owner seat says that instead of a state. The rule itself — the window, the claim, why a re-provision never re-opens a claimed
+seat — is on the [vertical-auth reference](/reference/vertical-auth); the two hooks a vertical
+wires to answer the card are in [Deploying](/guide/deploying#ship-it-substrat-push).
+
 ### Data
 
 A read-only browser of the app's **own** database: the vertical's tables on one side (with the
