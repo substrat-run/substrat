@@ -812,6 +812,51 @@
         "effective_from"
       ]
     },
+    "widgetOpening": {
+      "table": "ticket0_widget_openings",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "contact_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "origin": {
+            "type": "string"
+          },
+          "token_hash": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "last_seen_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "contact_id",
+          "origin",
+          "token_hash",
+          "started_at",
+          "last_seen_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "token_hash"
+      ]
+    },
     "widgetSession": {
       "table": "ticket0_widget_sessions",
       "fields": {
