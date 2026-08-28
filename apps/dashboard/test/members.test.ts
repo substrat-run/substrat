@@ -386,6 +386,7 @@ describe('Dashboard invite token — per-purpose derived key', () => {
     const forgedBody = b64url(new TextEncoder().encode(JSON.stringify({ ...claim, scopeId: 'S2' })));
     await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, `${forgedBody}.${sig}`, now)).resolves.toBeNull();
     await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, body!, now)).resolves.toBeNull();
+    await expect(verifyClaim(secret, INVITE_TOKEN_PURPOSE, `${token}.extra`, now)).resolves.toBeNull();
     await expect(verifyClaim('other-secret', INVITE_TOKEN_PURPOSE, token, now)).resolves.toBeNull();
   });
 });

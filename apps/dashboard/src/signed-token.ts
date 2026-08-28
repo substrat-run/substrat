@@ -61,7 +61,9 @@ export async function verifyClaim<T extends { exp: number }>(
   token: string,
   now: number,
 ): Promise<T | null> {
-  const [body, sig] = token.split('.');
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [body, sig] = parts;
   if (!body || !sig) return null;
   let ok = false;
   try {
