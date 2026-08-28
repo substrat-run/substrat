@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { listInvites, revokeInvite, sendInvite, type Invitation } from '@substrat-run/engine-invites';
 import {
+  addDecimal,
   dataSubjectId,
   orgId as orgIdSchema,
   manifestEntities,
@@ -44,6 +45,7 @@ const conflict = (reason: RallyConflictReason, message: string) =>
   substratError('conflict', message, { reason });
 import { bookingEntities } from '@substrat-run/engine-booking';
 import { rallyEntities } from './entities.js';
+import { moneyFromOre, oreOf, shareOf } from './money.js';
 import {
   assertAllowed,
   readTimeline,
@@ -570,9 +572,9 @@ export function resolvePrice(
 // The wallet — a club's prepaid balance, as an append-only ledger
 // ---------------------------------------------------------------------------
 
-const oreOf = (m: Money): number => Math.round(Number(m.amount) * 100);
-const kronor = (ore: number, currency = 'SEK'): Money =>
-  moneyOf((ore / 100).toFixed(2).replace(/\.00$/, ''), currency);
+// Prices are decimal strings and the ledger is integer öre; `./money.ts` converts
+// between them exactly (no `Number(amount) * 100`, no `(ore / 100).toFixed(2)`).
+const kronor = moneyFromOre;
 
 /** Balance is the SUM of entries, never a stored column that could drift from them. */
 export function walletBalance(ctx: OperationContext, memberId: string): number {
@@ -618,7 +620,7 @@ export function debitWallet(
   if (input.amountOre > balance) {
     throw conflict(
       'insufficient_balance',
-      `insufficient balance: ${(balance / 100).toFixed(2)} available, ${(input.amountOre / 100).toFixed(2)} required`,
+      `insufficient balance: ${kronor(balance).amount} available, ${kronor(input.amountOre).amount} required`,
     );
   }
   addEntry(ctx, { ...input, deltaOre: -input.amountOre });
@@ -1525,7 +1527,7 @@ const createOpenMatchOp: OperationHandler<
     [reservation.id, input.levelMin, input.levelMax, host?.id ?? null],
   );
 
-  const share = moneyOf(String(Math.round(Number(price.amount) / input.fillTarget)), price.currency);
+  const share = shareOf(price, input.fillTarget);
   if (!host) {
     // Club-opened: no owner, no portal link, and all places on offer.
     return { reservation, price, sharePerPlayer: share };
@@ -1579,9 +1581,9 @@ const joinMatchOp: OperationHandler<
     [input.reservationId],
   )[0]!;
   const reservationRow = listReservations(ctx, {}).find((r) => r.id === input.reservationId)!;
-  const share = moneyOf(
-    String(Math.round(Number(booking.price_amount) / (reservationRow.fillTarget ?? 1))),
-    booking.currency,
+  const share = shareOf(
+    moneyOf(booking.price_amount, booking.currency),
+    reservationRow.fillTarget ?? 1,
   );
 
   const result = joinReservation(ctx, {
@@ -1680,10 +1682,7 @@ const openMatchesOp: OperationHandler<
       fillTarget: r.fillTarget,
       levelMin: band.level_min,
       levelMax: band.level_max,
-      share: moneyOf(
-        String(Math.round(Number(booking.price_amount) / r.fillTarget)),
-        booking.currency,
-      ),
+      share: shareOf(moneyOf(booking.price_amount, booking.currency), r.fillTarget),
       players: rosterOf(ctx, r.id),
     });
   }
@@ -1759,10 +1758,7 @@ const matchLandingOp: OperationHandler<
     fillTarget: r.fillTarget,
     levelMin: band.level_min,
     levelMax: band.level_max,
-    share: moneyOf(
-      String(Math.round(Number(booking.price_amount) / r.fillTarget)),
-      booking.currency,
-    ),
+    share: shareOf(moneyOf(booking.price_amount, booking.currency), r.fillTarget),
     players: rosterOf(ctx, r.id),
   };
 };
@@ -1828,7 +1824,7 @@ const occupancyOp: OperationHandler<{ from: string; to: string; now?: string }, 
   let bookedMinutes = 0;
   let cancellations = 0;
   let noShows = 0;
-  let revenue = 0;
+  let revenue = '0';
   let currency = 'SEK';
   let offPeakGapMinutes = 0;
 
@@ -1865,7 +1861,7 @@ const occupancyOp: OperationHandler<{ from: string; to: string; now?: string }, 
 
     const price = prices.get(r.id);
     if (price) {
-      revenue += Number(price.price_amount);
+      revenue = addDecimal(revenue, price.price_amount);
       currency = price.currency;
     }
   }
@@ -1895,7 +1891,7 @@ const occupancyOp: OperationHandler<{ from: string; to: string; now?: string }, 
     bookedHours: Math.round(bookedMinutes / 60),
     openHours: Math.round(openMinutes / 60),
     offPeakGapHours: Math.max(0, Math.round((offPeakGapMinutes - bookedMinutes) / 60)),
-    revenue: moneyOf(String(revenue), currency),
+    revenue: moneyOf(revenue, currency),
     cancellations,
     noShows,
     heat,
@@ -1946,10 +1942,7 @@ const openUpOp: OperationHandler<
   );
   return {
     reservation,
-    share: moneyOf(
-      String(Math.round(Number(booking.price_amount) / Math.max(1, fillTarget))),
-      booking.currency,
-    ),
+    share: shareOf(moneyOf(booking.price_amount, booking.currency), fillTarget),
   };
 };
 
