@@ -27,6 +27,13 @@ a fresh host.
 | `scheduleContractSuite` | registered schedules firing under the system actor | the **default** checker, so the system grant resolves for real |
 | `atomicContractSuite` | `ctx.atomic` — a caught engine error discards that region's writes and nothing else | the **default** checker; the K-34 assertion needs a real authorization |
 | `searchContractSuite` | the derived FTS index — triggers, tokenizers, read-after-write, and a fork that searches without a re-index | `UNSAFE_allowAllChecker`; what the index answers, not who may ask |
+| `listContractSuite` | `ctx.page` — from a declaration of sortable and filterable columns, a keyset walk that never skips or repeats a row, with a count that matches the filter (#811) | `UNSAFE_allowAllChecker`; a page is a read, and the operation's own `assertAllowed` gates it |
+| `inputParseContractSuite` | an operation's declared `input` is parsed by the **host**, before the guards and the handler, on every path into a scope — `stub.invoke`, not only HTTP (#893) | the **default** checker; the fixture's handlers run a real `ctx.check` |
+| `entityVersionContractSuite` | `ctx.versionOf` — an entity's version is the ULID of the last event that touched it; a shred keeps it (#901) | `UNSAFE_allowAllChecker`; what the spine answers |
+| `concurrencyContractSuite` | `If-Match` → `412` — the version comparison runs inside the write's own transaction, and a refused write leaves nothing behind (#129) | the **default** checker, so the precondition is shown to run *after* the permission check and *before* the guards |
+| `idempotencyContractSuite` | `Idempotency-Key` — a retry does not do the work twice, because the recording is written in the same transaction as the work (#116) | the **default** checker, for the same ordering reason |
+| `timelineContractSuite` | `readTimeline` / `readHistory` — the supported read of an entity's history, including the page-boundary and actor-decoding cases five demos got wrong (#800) | the **default** checker; the history half asserts the K-34 authorization stamp |
+| `impersonationContractSuite` | acting as a principal with the real actor preserved — authority is the impersonated principal's, both actors are stamped, read-only holds on `ctx.sql`, the time box is checked per invoke (K-42) | the **default** checker; half the suite is that the door confers no authority of its own |
 
 ```ts
 // packages/adapter-yours/test/contract.test.ts
@@ -35,6 +42,7 @@ import {
   permissionContractSuite,
   scheduleContractSuite,
   scopeHostContractSuite,
+  // …and the other nine, each with the same (name, factory) signature
 } from '@substrat-run/contract-tests';
 import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import { YourScopeHost } from '../src/index.js';
@@ -52,7 +60,16 @@ permissionContractSuite('adapter-yours', async () => { /* default checker */ });
 scheduleContractSuite('adapter-yours', async () => { /* default checker */ });
 ```
 
-Today that is **253 assertions**, and the two shipped adapters run every one of them.
+Every adapter suite takes the same `(adapterName, makeFixture)` pair; the one thing that
+varies is which checker the fixture is built with, and the table says which and why. Those
+twelve are what an *adapter* runs. The package's thirteenth suite,
+`entityCheckConformanceSuite`, holds a **vertical or engine** to its declarations rather
+than an adapter to the contract, and has [its own section](#the-entity-check-kit) below.
+The complete adapter wiring — all twelve, with the reason beside each — is
+[`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts),
+and the two shipped adapters run every suite in it. The count is deliberately not written
+here: it grows with every merged guarantee, and the number that matters is that the
+Cloudflare host's is the same as SQLite's.
 
 ## What the suites verify
 
@@ -136,6 +153,175 @@ adapter gets it wrong:
 - revoking a membership stops it granting but keeps it readable as evidence;
 - identity is keyed per tenant: the same `externalId` in two pools is two people, and a
   tenant-bound pool refuses to enumerate tenants.
+
+**Paged reads** (`listContractSuite`, #811)
+- a module that only *declares* which columns are sortable and filterable gets a correct
+  keyset walk in every scope, over indexes it never wrote;
+- the sort column in the fixture is deliberately non-unique and the page sizes force ties
+  to straddle a boundary — the walk that drops tied rows emits SQL that *reads* perfectly,
+  so the assertions are behavioural, never string comparisons;
+- the count matches the filter, and the cursor neither skips nor repeats a row.
+
+**Input parsing at the door** (`inputParseContractSuite`, #893)
+- the declared `input` is parsed by the host before the guards and the handler — so a
+  malformed call is refused on every adapter, and "parse, don't trust" is not a fact about
+  which substrate a tenant landed on;
+- it holds for `stub.invoke`, not only the HTTP mount: a scenario test, a seed and a
+  schedule all go through the parsed path.
+
+**Entity versions and optimistic concurrency** (`entityVersionContractSuite`, #901;
+`concurrencyContractSuite`, #129)
+- an entity's version is the ULID of the last event that touched it — no table has a
+  version column, and none is going to;
+- a shred keeps the version: an erased entity can still refuse a stale write, rather than
+  failing open at the moment the data was most sensitive;
+- a silent mutation (one that emits nothing) does not move the version — pinned as a known
+  property, not papered over;
+- `If-Match` is compared inside the write's own transaction; a `412` is never a partial
+  write with an error attached;
+- an `If-Match` on an operation that declares no concurrency is **refused**, not ignored — a
+  caller must not believe its write was serialised when nothing was compared.
+
+**Idempotency** (`idempotencyContractSuite`, #116)
+- every case counts *executions*, not responses — a host that re-ran the work and produced
+  the same answer would pass a response comparison, and a duplicated work order looks a
+  great deal like the original;
+- a failed request leaves no recording, so the retry runs;
+- a key belongs to the subject that sent it; a reused key with a different request is
+  refused, never served; a replay that cannot be answered is a `409`, not a second run.
+
+**Timelines** (`timelineContractSuite`, #800)
+- a burst of events from one operation shares one instant (`ctx.now()` is stable for the
+  invocation), and a page boundary inside that burst loses nothing — the timestamp-cursor
+  bug two demos shipped;
+- `actor` decodes to the principal or the system actor, not the JSON-quoted string the
+  column holds;
+- a shred keeps the row: the history says something happened here, even when the payload
+  is gone.
+
+**Impersonation** (`impersonationContractSuite`, K-42)
+- the permission model answers as the *impersonated* principal, resolved the ordinary way —
+  a session against someone who holds nothing is refused exactly as they would be, with the
+  denial recorded against both actors;
+- the stamp cannot be supplied or suppressed by module code: the same handler writes a null
+  stamp through the ordinary door and both actors through the impersonation door;
+- read-only is a mechanism — a handler that writes with plain `ctx.sql.exec` is refused,
+  not only one that calls `ctx.emit`;
+- the time box is checked per invoke, so an expired session expires for the caller holding
+  the stub too.
+
+## The entity-check kit
+
+The suites above hold an **adapter** to the contract. The same package also ships the kit
+that holds a **vertical or engine** to its own permission declarations — the evidence
+behind the `CONFORMANCE.md` each one checks in beside its `PERMISSIONS.md`.
+
+The problem it exists for (#747): an operation declares what its permission checks against
+— `{ key, entity, idFrom }` for one entity, a bare key for the node — and nothing verified
+it. A declaration of `entity: 'list'` beside a handler calling `ctx.check(perm)` typechecks
+and fails *open*: everyone holding the key anywhere in the scope passes, which in a sharing
+app is every member against every record.
+
+`entityCheckConformanceSuite` reads the declared operation set and generates, for every
+operation that declares an entity check, the behavioural pair that tells the two apart. A
+probe principal holds the key **only** through entity-narrowed grants, never scope-wide:
+
+- **grant on A, invoke against A → not denied.** A real entity check resolves the grant; a
+  node check asks for the key at the scope, which a narrowed grant does not widen, and
+  denies. This is the case that catches the node-check bug — and it fails in the direction
+  nobody files a security bug about (a baffling denial, not a breach).
+- **grant on A, invoke against B → a permission denial, specifically.** The breach
+  direction: a handler that checks nothing, checks a constant entity, or reads the id from
+  the wrong field. A business error here is a *failure*, which also pins that the check is
+  the operation's first line and answers before a not-found ever can.
+
+Neither case alone is the test; the pair is.
+
+### Declaring the claim
+
+The claim lives in `test/conformance.ts`, which both the vitest file and the
+`CONFORMANCE.md` emitter (`pnpm lint:conformance`, `--check` in CI) import — one object, so
+the receipt cannot disagree with what the suite runs. There are three helpers, because
+there are three strengths of evidence, and the helper stamps the kind rather than letting a
+package label itself:
+
+| helper | kind | what it proves |
+|---|---|---|
+| `declareEntityChecks({ subject, operations, … })` | `driven` | the pair runs against every declared check; a wrong implementation fails |
+| `declareNodeOnly({ subject, operations, because })` | `declared` | the operation set is declared and narrows nowhere — the day one narrows, the plan stops being empty and this goes red (`declaredNodeOnlySuite`) |
+| `assertNodeOnly({ subject, sources, because })` | `asserted` | a lexical tripwire over the module's source for a two-argument `ctx.check` (`nodeOnlySuite`) — proves an absence on the obvious path, nothing more, and the report says so |
+
+A driven claim, from `demos/todo/test/conformance.ts`:
+
+```ts
+import { declareEntityChecks } from '@substrat-run/contract-tests/conformance';
+import { todoOperations } from '../spec/model.js';
+
+export const conformance = declareEntityChecks({
+  subject: 'todo',
+  operations: todoOperations,
+  // Only what each schema REQUIRES beyond the entity id — the kit reads the input
+  // shape and supplies the id itself.
+  inputs: {
+    'todo/rename-list': { name: 'Renamed by the conformance kit' },
+    'todo/share-list': { email: 'ada@example.com' },
+  },
+  // A declared permission is the gate an operation opens with, not necessarily the
+  // whole authority it exercises. `share-list` honours `list:manage`, then delegates
+  // `list:contribute` via ctx.grant — and delegation only narrows a permission the
+  // caller HOLDS. The reason is required, not a comment.
+  alsoGrant: {
+    'todo/share-list': {
+      permissions: ['list:contribute'],
+      because: 'the handler delegates list:contribute to the invitee via ctx.grant, …',
+    },
+  },
+  // What the kit cannot generate, asserted EXACTLY: losing coverage fails here until
+  // this list says so, which is the gap made visible in the diff.
+  uncovered: {
+    'todo/set-item-done': "declares 'resolved' — the entity id is not in the input",
+  },
+});
+```
+
+The test file passes that same object through as the suite's options, with a fixture the
+vertical supplies:
+
+```ts
+entityCheckConformanceSuite(conformance.subject, conformance.operations, async () => ({
+  createEntity: async (type) => /* make one, return its id — fresh per case */,
+  grantOnEntity: async (permission, ref) => /* the ADMIN grant, never the vertical's own share op */,
+  invoke: async (operation, input) => /* as the probe principal */,
+}), conformance);
+```
+
+Two more options cover shapes the plain form cannot:
+
+- **`coEntities`** (#939) — an operation naming a *second* entity of the kind it narrows to
+  (`ticket0/merge` folds one conversation into `intoConversationId`). A made-up id is
+  refused before the check under test answers, so the kit creates the co-entity the way it
+  creates the target, fresh per case, and grants the same keys on it. What it does **not**
+  assert is that the handler checks the co-entity at all — that is the operation's own
+  claim, proved where its scenario is written.
+- **`refEntityType`** (#896) — an engine narrowing to a `refFrom` ref the caller supplies
+  whole has no entity type of its own to name; the harness names one and `createEntity`
+  makes it. An engine that cares which noun it was handed has a finding, not a fixture
+  problem.
+
+### What it reports rather than drives
+
+A kit that quietly covered the easy half would read as "checked" when it is not, so
+anything it cannot generate lands in `uncovered`, asserted against the list the author
+wrote down:
+
+- a `resolved` check — the entity id is not in the input, so the harness cannot reach it;
+- an `entityFrom` field whose schema is an open `z.string()` — the kit reads admissible
+  types off a literal or enum and refuses to pick one;
+- an operation whose input has required fields nothing supplied.
+
+And three guards keep the receipt honest: an `alsoGrant` or `coEntities` entry naming an
+operation the kit does not drive fails (a stale note reads as coverage), and a suite that
+generated no pair at all fails — silence must not read as success.
 
 ## `connectorTestFetch` — the third party, in memory
 
