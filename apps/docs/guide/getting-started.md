@@ -188,7 +188,7 @@ export const notesModule: ModuleRegistration = {
       const id = ulid();
       ctx.sql.exec(
         'INSERT INTO notes (id, text, created_by, created_at) VALUES (?, ?, ?, ?)',
-        [id, text, ctx.principal, new Date().toISOString()],
+        [id, text, ctx.principal, ctx.now()],
       );
       ctx.emit({
         type: 'notes.created',
@@ -212,6 +212,11 @@ Things to notice:
   unless the decision is an allow.
 - **`ctx.emit` takes no origin fields.** Tenant, scope, actor, id, and timestamp are
   stamped by the kernel; your code physically cannot mislabel an event.
+- **The row's timestamp is `ctx.now()`, not `new Date()`.** Module code has no clock of
+  its own — `ctx.now()` is an ISO 8601 instant, stable for the whole invocation, so the row
+  and the event announcing it agree about when. `new Date()` / `Date.now()` in module code
+  is a [boundary-lint R6](/reference/boundary-lint) violation, and a scaffolded project
+  fails its own gate on it.
 - **Migrations apply lazily per scope**, journaled, inside the scope's serialization
   domain — you never run a migration step yourself.
 - **`id TEXT PRIMARY KEY NOT NULL`, not `id TEXT PRIMARY KEY`.** In SQLite a non-INTEGER

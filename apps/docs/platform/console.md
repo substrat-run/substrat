@@ -14,10 +14,16 @@ The views map onto the directory the control plane owns:
 
 - **Tenants** and **Tenant detail** — the registry, and a drill-down into one tenant's scopes,
   members, and lifecycle.
-- **Scopes** — the fleet of provisioned scopes and their status.
+- **Scopes** — the fleet of provisioned scopes and their status. A scope's detail page
+  carries its **Denials** panel — the refusals that scope recorded (K-35), bucketed per
+  (actor, permission) first so a probing client's volume cannot push a quiet actor off the
+  screen, with the rows as the drill-down behind one bucket.
 - **Verticals** — the registered vertical versions, including the ones pushed by
   [`substrat push`](/guide/deploying) that are **pending admission**. Admitting a version here is
-  the human gate that lets a scope bind and serve it.
+  the human gate that lets a scope bind and serve it. Each version's **Outbound** column
+  shows the third-party hosts it *declared* ([D-46](/platform/control-plane)) beside the
+  ones it was *observed* reaching, with the sampling window stated every time — the admit
+  decision is about the difference, and an absent host is not proof it was never called.
 - **Create instance** — the catalog → provision flow: pick a vertical, pin it to a version,
   provision a scope for a tenant.
 - **Domains** — hostname bindings the [router](/platform/router) resolves.
