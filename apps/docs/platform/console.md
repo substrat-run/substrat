@@ -16,8 +16,10 @@ The views map onto the directory the control plane owns:
   members, and lifecycle.
 - **Scopes** — the fleet of provisioned scopes and their status.
 - **Verticals** — the registered vertical versions, including the ones pushed by
-  [`substrat push`](/guide/deploying) that are **pending admission**. Admitting a version here is
-  the human gate that lets a scope bind and serve it.
+  [`substrat push`](/guide/deploying). A **listed** vertical's pushes land **pending admission**,
+  and admitting a version here is the human gate that lets a scope bind and serve it; a
+  **private** vertical's pushes land admitted automatically, with a note that no human vouched
+  ([D-36](/concepts/deploying#admission-may-this-code-run-here)).
 - **Create instance** — the catalog → provision flow: pick a vertical, pin it to a version,
   provision a scope for a tenant.
 - **Domains** — hostname bindings the [router](/platform/router) resolves.

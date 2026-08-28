@@ -23,6 +23,8 @@ are how the platform actually runs — the same architecture the [concepts](/con
 
 ::: tip Where deploy fits
 A vertical reaches these surfaces via [`substrat push`](/guide/deploying): the push lands a
-pending version in the control plane, an operator admits it in the Console, and the Router serves
-it once a scope is bound.
+version in the control plane — **admitted automatically** for a private vertical, **pending**
+for a listed one until an operator admits it in the Console
+([who vouches, and why](/concepts/deploying#admission-may-this-code-run-here)) — and the Router
+serves it once a scope is bound.
 :::
