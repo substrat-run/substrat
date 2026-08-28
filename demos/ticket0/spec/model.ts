@@ -53,6 +53,30 @@ export const SEARCH_OVERFETCH = 4;
 /** This vertical's own search cap, derived from the kernel's so the two cannot drift. */
 export const TICKET0_SEARCH_MAX = Math.floor(MAX_SEARCH_LIMIT / SEARCH_OVERFETCH);
 
+/**
+ * What the HOST knew about the browser when the widget opened — `ClientContext`
+ * flattened into columns. Shared by `widgetOpening` (where `widget-start` records it)
+ * and `widgetSession` (where the first message carries it), so the two tables cannot
+ * drift apart on what a browser is. Every column is nullable: a node dev server has no
+ * geo, a request may carry no `User-Agent`, and a row that predates these columns has
+ * nothing to say. `user_agent` is the raw header beside the parsed names, so a better
+ * parser can re-read it later. No IP address: the city carries the useful part of it
+ * without the fingerprint.
+ */
+const CLIENT_COLUMNS = {
+  user_agent: z.string().nullable(),
+  language: z.string().nullable(),
+  browser: z.string().nullable(),
+  browser_version: z.string().nullable(),
+  os: z.string().nullable(),
+  os_version: z.string().nullable(),
+  device: z.enum(['desktop', 'mobile', 'tablet', 'bot', 'unknown']).nullable(),
+  country: z.string().nullable(),
+  region: z.string().nullable(),
+  city: z.string().nullable(),
+  timezone: z.string().nullable(),
+} as const;
+
 export const ticket0Entities = defineEntities({
   /**
    * A person who asked something.
@@ -234,14 +258,11 @@ export const ticket0Entities = defineEntities({
    * per request, and a session that started on an origin later removed from the
    * allowlist must stop working rather than coast.
    *
-   * The client columns are what the HOST knew about the browser when the session
-   * opened — normalised into `ClientContext` by the adapter, never read from the
-   * runtime here — so an agent can see "Safari 17 on iOS, Stockholm, 3 am their
-   * time" without asking. Every one is nullable: a node dev server has no geo, a
-   * request may carry no `User-Agent`, and a session that predates these columns has
-   * nothing to say. `user_agent` is the raw header beside the parsed names, so a
-   * better parser can re-read it later. No IP address: the city carries the useful
-   * part of it without the fingerprint.
+   * The `CLIENT_COLUMNS` are what the host knew about the browser when the widget
+   * opened, carried over from the opening by the first message — so an agent can see
+   * "Safari 17 on iOS, Stockholm, 3 am their time" without asking. Read back by
+   * `widget-session`, which is the one staff-side read of this table and omits
+   * `token_hash`.
    */
   widgetSession: {
     table: 'ticket0_widget_sessions',
@@ -253,19 +274,40 @@ export const ticket0Entities = defineEntities({
       token_hash: z.string(),
       started_at: z.string(),
       last_seen_at: z.string(),
-      user_agent: z.string().nullable(),
-      language: z.string().nullable(),
-      browser: z.string().nullable(),
-      browser_version: z.string().nullable(),
-      os: z.string().nullable(),
-      os_version: z.string().nullable(),
-      device: z.enum(['desktop', 'mobile', 'tablet', 'bot', 'unknown']).nullable(),
-      country: z.string().nullable(),
-      region: z.string().nullable(),
-      city: z.string().nullable(),
-      timezone: z.string().nullable(),
+      ...CLIENT_COLUMNS,
     }),
     parents: ['conversation'],
+    key: ['token_hash'],
+  },
+
+  /**
+   * A widget that has been opened and has not said anything yet.
+   *
+   * Opening the bubble is not a conversation. Until the first message the desk holds
+   * only this: a token hash to recognise the visitor by, the origin to keep checking,
+   * and — for a visitor the host site vouched for — which contact they are. The
+   * conversation, and for an anonymous visitor the contact too, are created by the
+   * first `widget-post`, which moves this row into `widgetSession` under the same id.
+   * So a curl, a crawler that ran the script, or a person who clicked and left create
+   * nothing an agent can see; before this, each of them was an empty "Chat" in the inbox.
+   *
+   * Its own table rather than a nullable `conversation_id` on `widgetSession`: the
+   * journal cannot relax a NOT NULL in place (SQLite would need a rebuild), and a
+   * session that exists but reaches no thread is a different thing anyway.
+   */
+  widgetOpening: {
+    table: 'ticket0_widget_openings',
+    fields: z.object({
+      id: z.string(),
+      contact_id: z.string().nullable(),
+      origin: z.string(),
+      token_hash: z.string(),
+      started_at: z.string(),
+      last_seen_at: z.string(),
+      // Recorded here, at the moment the host had the request in hand; the first
+      // message copies them onto the session, since the opening row is gone by then.
+      ...CLIENT_COLUMNS,
+    }),
     key: ['token_hash'],
   },
 
@@ -1267,8 +1309,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * `identity` is the middle rung: the host page's SERVER signed the user id with
    * the desk's secret, and the browser passes the signature along without ever
    * holding the secret. A valid signature attaches this session to that contact and
-   * its whole history; an absent one gets an anonymous contact that can see exactly
-   * one conversation; an invalid one is refused.
+   * its whole history; an absent one gets an anonymous contact — made when they first
+   * say something, never before — that can see exactly one conversation; an invalid
+   * one is refused.
    *
    * `client` is what the host's transport knew about the browser — user agent,
    * language, and whatever geo the edge attached — already normalised by the
@@ -1276,6 +1319,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * arrives as INPUT because module code has no request to read and must not
    * acquire one; and it is optional because a caller with no transport (a test, a
    * seed) has nothing to say. It is display and triage material, never authority.
+   * It is recorded on the opening and travels with it onto the session when the
+   * first message binds one.
    */
   'ticket0/widget-start': {
     summary: 'Open a chat session from an embedded widget',
@@ -1295,10 +1340,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
         .nullable()
         .optional(),
     }),
+    /**
+     * No `conversationId`, and that is the point: opening the widget opens nothing.
+     * The conversation exists from the first `widget-post`, and the widget reaches it
+     * through the session token alone, so it never needed the id.
+     */
     output: z.object({
       sessionId: z.string(),
       token: z.string(),
-      conversationId: z.string(),
       greeting: z.string(),
       verified: z.boolean(),
       origin: z.string(),
@@ -1306,15 +1355,17 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     }),
     http: { method: 'POST', path: '/widget/sessions' },
     emits: {
-      entity: 'conversation',
-      entityIdFrom: 'conversationId',
+      entity: 'widgetOpening',
+      entityIdFrom: 'sessionId',
       type: 'ticket0.widget-session-started',
-      schemaVersion: 1,
+      // v2: about the opening rather than a conversation — there is none yet — and
+      // `conversationId` left the payload, which is the bump the additive rule asks for.
+      schemaVersion: 2,
       piiClass: 'none',
       // Never the token. It is the visitor's whole authority over the thread, and an
       // immutable copy of a capability cannot be revoked. Everything else about the
       // session rides, so a consumer never has to come back and ask.
-      payload: ['sessionId', 'conversationId', 'verified', 'origin', 'startedAt'],
+      payload: ['sessionId', 'verified', 'origin', 'startedAt'],
     },
   },
 

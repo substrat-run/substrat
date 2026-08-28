@@ -163,6 +163,27 @@ export interface WidgetSession {
   timezone: string | null;
 }
 
+/** `ticket0_widget_openings` — declared in spec/model.ts. */
+export interface WidgetOpening {
+  id: string;
+  contact_id: string | null;
+  origin: string;
+  token_hash: string;
+  started_at: string;
+  last_seen_at: string;
+  user_agent: string | null;
+  language: string | null;
+  browser: string | null;
+  browser_version: string | null;
+  os: string | null;
+  os_version: string | null;
+  device: "desktop" | "mobile" | "tablet" | "bot" | "unknown" | null;
+  country: string | null;
+  region: string | null;
+  city: string | null;
+  timezone: string | null;
+}
+
 /** `ticket0_desk_settings` — declared in spec/model.ts. */
 export interface DeskSettings {
   id: string;
@@ -544,7 +565,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions` — `ticket0/widget-start`
    */
-  widgetStart(input: { origin: string; client?: { userAgent: string | null; language: string | null; device: { browser: string | null; browserVersion: string | null; os: string | null; osVersion: string | null; kind: "desktop" | "mobile" | "tablet" | "bot" | "unknown" }; geo: { country: string | null; region: string | null; city: string | null; timezone: string | null; continent: string | null } }; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; conversationId: string; greeting: string; verified: boolean; origin: string; startedAt: string }>;
+  widgetStart(input: { origin: string; client?: { userAgent: string | null; language: string | null; device: { browser: string | null; browserVersion: string | null; os: string | null; osVersion: string | null; kind: "desktop" | "mobile" | "tablet" | "bot" | "unknown" }; geo: { country: string | null; region: string | null; city: string | null; timezone: string | null; continent: string | null } }; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; greeting: string; verified: boolean; origin: string; startedAt: string }>;
 
   /**
    * The public messages in this session’s conversation

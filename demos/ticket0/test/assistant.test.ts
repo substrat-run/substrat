@@ -292,24 +292,25 @@ describe('answering a customer', () => {
         externalId: desk.customer.email,
         signature: await signIdentity(desk.verificationSecret, desk.customer.email),
       },
-    })) as { sessionId: string; token: string; conversationId: string };
+    })) as { sessionId: string; token: string };
+    // The question opens the conversation; the session alone opens nothing.
     const message = (await widget.invoke('ticket0/widget-post', {
       sessionId: started.sessionId,
       token: started.token,
       body: question,
-    })) as { id: string };
+    })) as { id: string; conversation_id: string };
 
     const assistant = await at(desk, 'assistant');
     const outcome = await answerConversation(
       asTarget(assistant),
       {
-        conversationId: started.conversationId,
+        conversationId: message.conversation_id,
         messageId: message.id,
         question,
       },
       model,
     );
-    return { ...outcome, conversationId: started.conversationId };
+    return { ...outcome, conversationId: message.conversation_id };
   }
 
   it('Substrat’s desk: the assistant answers, and the customer sees it', async () => {
