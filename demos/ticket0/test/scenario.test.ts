@@ -461,6 +461,34 @@ describe('the attacks', () => {
     ).rejects.toThrow(/not embedded on/i);
   });
 
+  it('an origin saved as a page URL still admits the page it came from', async () => {
+    // A desk admin pastes what the address bar shows. The browser sends only the
+    // origin, and the check is a string compare - so the list must hold origins, or
+    // the desk looks configured and refuses everyone (that is how the hosted desk
+    // stood on substrat.net: 403 on every preflight).
+    const admin = await at(world.substrat, 'admin');
+    const widget = await at(world.substrat, 'widget');
+    const before = [world.substrat.origin, ...world.substrat.devOrigins];
+
+    const saved = (await admin.invoke('ticket0/configure-desk', {
+      allowedOrigins: [...before, 'https://docs.example/guide/support?x=1', 'https://docs.example/'],
+    })) as { allowed_origins: string };
+    expect(JSON.parse(saved.allowed_origins)).toEqual([...before, 'https://docs.example']);
+
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: 'https://docs.example',
+    })) as { sessionId: string };
+    expect(started.sessionId).toBeTruthy();
+
+    // Not an origin at all - refused at the door, not stored as a string that can never match.
+    await expect(
+      admin.invoke('ticket0/configure-desk', { allowedOrigins: ['mailto:hi@docs.example'] }),
+    ).rejects.toThrow(/not an http\(s\) origin/i);
+
+    // Restore, so the tests after this one see the seeded desk.
+    await admin.invoke('ticket0/configure-desk', { allowedOrigins: before });
+  });
+
   it('a session token that does not match reaches nothing', async () => {
     const widget = await at(world.substrat, 'widget');
     await expect(

@@ -386,6 +386,22 @@ function openConversation(
   return conversationOrThrow(ctx, id);
 }
 
+/**
+ * What gets stored is an ORIGIN, because that is what the browser sends and what
+ * `widget-start` compares by string. The input schema only asks for a URL, so
+ * `https://example.com/` or `https://example.com/pricing` would otherwise be saved
+ * verbatim and never match — the desk would look configured and refuse everyone.
+ */
+function originsOf(urls: string[]): string[] {
+  const origins = urls.map((u) => {
+    const url = new URL(u);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:')
+      throw substratError('validation_failed', `${u} is not an http(s) origin`);
+    return url.origin;
+  });
+  return [...new Set(origins)];
+}
+
 function allowedOrigins(ctx: OperationContext): string[] {
   const parsed = JSON.parse(desk(ctx).allowed_origins) as unknown;
   return Array.isArray(parsed) ? parsed.filter((o): o is string => typeof o === 'string') : [];
@@ -556,7 +572,7 @@ const operations = {
       [
         input.fromAddress ?? current.from_address,
         input.greeting ?? current.greeting,
-        input.allowedOrigins ? JSON.stringify(input.allowedOrigins) : current.allowed_origins,
+        input.allowedOrigins ? JSON.stringify(originsOf(input.allowedOrigins)) : current.allowed_origins,
         input.businessHours === undefined ? current.business_hours : input.businessHours,
         ctx.now(),
         DESK,

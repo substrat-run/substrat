@@ -122,6 +122,11 @@ function Desk() {
    */
   const [loadFailed, setLoadFailed] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
+  // The origin being typed, and why the last one was refused. Kept apart from the
+  // list itself: the list lives in `desk.allowed_origins`, the one string the save
+  // sends, so what is shown and what is saved cannot be two different arrays.
+  const [draft, setDraft] = useState('');
+  const [draftError, setDraftError] = useState<string | null>(null);
 
   useEffect(() => {
     void api.getDesk().then(setDesk).catch((e: Error) => setLoadFailed(e.message));
@@ -132,6 +137,30 @@ function Desk() {
   if (!desk) return <div className="t-meta">Loading…</div>;
 
   const origins: string[] = JSON.parse(desk.allowed_origins || '[]');
+  const setOrigins = (next: string[]) => setDesk({ ...desk, allowed_origins: JSON.stringify(next) });
+
+  /**
+   * An ORIGIN, not a URL. The browser sends `https://substrat.net` and the desk
+   * compares strings, so `https://substrat.net/` or a page path pasted from the
+   * address bar would save cleanly and never match. Reduce to the origin here, where
+   * the person can see what was kept.
+   */
+  const addOrigin = () => {
+    const raw = draft.trim();
+    if (!raw) return;
+    let origin: string;
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('scheme');
+      origin = url.origin;
+    } catch {
+      setDraftError(`"${raw}" is not an http(s) origin - try https://example.com`);
+      return;
+    }
+    setDraftError(null);
+    setDraft('');
+    if (!origins.includes(origin)) setOrigins([...origins, origin]);
+  };
 
   const save = async () => {
     setSaving(true);
@@ -189,9 +218,14 @@ function Desk() {
       </Field>
       <Field
         label="Widget origins"
-        hint="A site not on this list is refused before a conversation exists."
+        hint="A site not on this list is refused before a conversation exists. Add the origin the page is served from, then Save."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {origins.length === 0 ? (
+            <div className="t-small" style={{ color: 'var(--secondary)' }}>
+              No origins yet - the widget is refused everywhere until one is added.
+            </div>
+          ) : null}
           {origins.map((o) => (
             <div
               key={o}
@@ -208,11 +242,41 @@ function Desk() {
               <span className="mono" style={{ fontSize: 12, flex: 1 }}>
                 {o}
               </span>
-              <button className="btn btn-ghost" disabled>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setOrigins(origins.filter((x) => x !== o))}
+              >
                 Remove
               </button>
             </div>
           ))}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              className="input mono"
+              style={{ flex: 1, fontSize: 12 }}
+              placeholder="https://www.example.com"
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setDraftError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addOrigin();
+                }
+              }}
+            />
+            <button type="button" className="btn btn-ghost" onClick={addOrigin} disabled={!draft.trim()}>
+              Add
+            </button>
+          </div>
+          {draftError ? (
+            <div className="t-small" style={{ color: 'var(--danger-2)' }}>
+              {draftError}
+            </div>
+          ) : null}
         </div>
       </Field>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
