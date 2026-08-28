@@ -87,9 +87,11 @@ and the console just wrote to that same row. There is no sync, no second copy �
 | `5271` | Vite dev server | The **portal** — Callout's tenant-facing app |
 | `8871` | Node (Hono) | The **vertical API** — resolves a user, `getScope`, invokes operations |
 | `8788` | Node (Hono) | The **control plane** — the audited directory surface the console drives |
+| `8879` | Node (dev-issuer) | The **local login** — a real OIDC provider whose `/authorize` lists Callout's personas |
 
-The two Node listeners are the *same process* sharing one host; the two Vite servers are
-separate. All four are launched and torn down together by `pnpm dev`.
+The two Hono listeners are the *same process* sharing one host; the dev issuer is its own
+Node process, and the two Vite servers are separate again. All five are launched and torn
+down together by `pnpm dev`.
 
 ### The databases
 
@@ -150,8 +152,12 @@ Connect provider whose only shortcut is that `/authorize` lists the vertical's p
 production round-trip — the API is an ordinary relying party against whatever
 `OIDC_ISSUER` names, so the login you exercise in dev is the one a deployment runs, and
 moving to a real issuer changes configuration, not code. A script that needs to act as
-someone mints a bearer at the issuer, `POST {issuer}/dev/token {sub}`, never in the
-vertical.
+someone mints a token at the issuer, never in the vertical — a JSON body naming the
+subject, and the returned `access_token` is the bearer:
+
+```sh
+curl -XPOST localhost:8879/dev/token -d '{"sub":"dev|anna"}'   # → { access_token, id_token, … }
+```
 
 ### These files are emitted — don't hand-edit them
 

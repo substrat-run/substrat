@@ -185,9 +185,12 @@ pnpm --filter @substrat-run/demo-manyfold dev
 ```
 
 Starts the dev issuer on `:8879`, the API on `:8876` and the app on `:5276` (all in the
-private `887x` / `527x` block; override with `ISSUER_PORT=… PORT=… WEB_PORT=…`). Sign in as
-a persona at the issuer, then switch site in the app — or **Switch user** and pick another
-name — to watch the same login's authority change scope by scope. A script acts as someone
+private `887x` / `527x` block; override with `ISSUER_PORT=… PORT=… WEB_PORT=…`). Two
+different controls do two different things: the in-app **site switcher** changes which
+scope the *current* OIDC session works in — same person, possibly a different role — while
+**Switch user** goes back to the issuer and signs in as a different subject. Sign in as a
+persona, then move between sites to watch one login's authority change scope by scope;
+switch user to see another person's. A script acts as someone
 by minting a bearer at the issuer (`POST http://localhost:8879/dev/token {"sub":"dev|emil"}`),
 never by telling the vertical who it is.
 
