@@ -215,6 +215,15 @@ describe('permission-diff --root — the standalone permission checkpoint', () =
 		const nul = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
 		expect(nul.code).toBe(2);
 		expect(nul.out).toContain('not an object');
+
+		// Declared but not a path: `join(dir, {})` throws, which would exit 1 the same way.
+		await writeFile(
+			join(dir, 'package.json'),
+			JSON.stringify({ name: 'broken', substrat: { permissions: {} } }),
+		);
+		const shape = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
+		expect(shape.code).toBe(2);
+		expect(shape.out).toContain('not a path');
 	}, 60_000);
 
 	it('a project declaring no permission surface is exit 2, never a green light', async () => {

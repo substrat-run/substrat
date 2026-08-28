@@ -343,7 +343,17 @@ function declaredEntry(dir: string, rel: string): Vertical | undefined {
   }
   const pkgJson = parsed as { name?: string; substrat?: { permissions?: string } };
   const entry = pkgJson.substrat?.permissions;
-  if (!entry) return undefined;
+  if (entry === undefined || entry === null) return undefined;
+  // Declared-but-not-a-path is a broken declaration, not an absent one. `join(dir,
+  // {})` would throw a TypeError past `cannot` and exit 1 — "the artifact is out of
+  // date" — which sends the caller to regenerate something that cannot be read.
+  if (typeof entry !== 'string' || entry.trim() === '') {
+    cannot(
+      `${rel} declares \`substrat.permissions\` as ${JSON.stringify(entry)}, not a path.\n` +
+        `  Remedy: point it at the module that exports \`definePermissions(...)\`, e.g.\n` +
+        `  \`"substrat": { "permissions": "src/provision.ts" }\`. See demos/callout.`,
+    );
+  }
   return { rel, dir, entry, pkg: pkgJson.name ?? rel };
 }
 
