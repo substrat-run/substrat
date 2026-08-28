@@ -1,5 +1,11 @@
 # @substrat-run/docs
 
+## 0.1.10
+
+### Patch Changes
+
+- c2d5c2a: The ticket0 support widget on one docs page. `widget.js` now keeps one widget per page and exposes `window.ticket0.unmount()` for a host with a client-side router; the docs site mounts it at `/guide/support` through a `Ticket0Widget` theme component that tears it down on navigation.
+
 ## 0.1.9
 
 ### Patch Changes
