@@ -46,10 +46,15 @@ entityCheckConformanceSuite(
       if (entityType === 'conversation') {
         // Through the relay, which is how a conversation actually comes into being
         // from outside. Never a raw INSERT.
+        //
+        // One contact for every conversation the kit makes: `merge` refuses to fold
+        // one person's thread into another's (#919), and the survivor the kit hands
+        // it is a second conversation from this same factory (#939). Under one
+        // contact case 1 is a merge the rule allows, not a refusal the kit tolerates.
         const relay = await host.getScope(desk.relay.principal, desk.tenant, desk.scope);
         const m = await relay.invoke<{ conversation_id: string }>('ticket0/ingest-message', {
           conversationId: null,
-          contactEmail: `conformance-${made}@example.test`,
+          contactEmail: 'conformance@example.test',
           subject: `Conformance ${made}`,
           bodyText: 'Driven by the conformance kit.',
           emailMessageId: `<conformance-${made}@mail.example>`,

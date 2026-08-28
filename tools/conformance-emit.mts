@@ -183,6 +183,7 @@ interface Declaration {
   readonly alsoGrant?: Readonly<
     Record<string, { readonly permissions: readonly string[]; readonly because: string }>
   >;
+  readonly coEntities?: Readonly<Record<string, Readonly<Record<string, string>>>>;
   readonly refEntityType?: string;
 }
 
@@ -310,6 +311,7 @@ function renderDriven(decl: Declaration): string[] {
     operations,
     decl.inputs ?? {},
     decl.refEntityType,
+    decl.coEntities,
   );
 
   // The vacuity plug. A package declaring `driven` whose plan is empty would
@@ -388,6 +390,34 @@ function renderDriven(decl: Declaration): string[] {
       `| --- | --- | --- |`,
       ...grants.map(
         ([name, g]) => `| ${code(name)} | ${g.permissions.map(code).join(', ')} | ${g.because} |`,
+      ),
+      ``,
+    );
+  }
+
+  // Only for operations the kit drives: a co-entity declared on one it cannot
+  // (or one that does not exist) is a stale note the suite refuses at collect
+  // time, and §3 is the receipt's one place for an undriven declaration.
+  const driven = new Set(covered.map(({ name }) => name));
+  const beside = Object.entries(decl.coEntities ?? {})
+    .filter(([name]) => driven.has(name))
+    .sort(([a], [b]) => a.localeCompare(b));
+  if (beside.length) {
+    out.push(
+      `### A second entity the kit supplies`,
+      ``,
+      `An operation that names another entity of the kind it narrows to — a merge, a move —`,
+      `needs that entity to exist for the pair to run at all, so the kit makes one per case and`,
+      `grants it the same keys as the target. What the pair measures is unchanged: the declared`,
+      `check on the target. That the handler also checks the second entity is the operation's`,
+      `own claim, and is **not** asserted here.`,
+      ``,
+      `| Operation | Field | Made as |`,
+      `| --- | --- | --- |`,
+      ...beside.flatMap(([name, fields]) =>
+        Object.entries(fields)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([field, type]) => `| ${code(name)} | ${code(field)} | ${code(type)} |`),
       ),
       ``,
     );
@@ -517,6 +547,7 @@ function render(pkg: string, decl: Declaration): string {
       decl.operations!,
       decl.inputs ?? {},
       decl.refEntityType,
+      decl.coEntities,
     );
     const survey = surveyOperations(decl.operations!);
     const subtitle =

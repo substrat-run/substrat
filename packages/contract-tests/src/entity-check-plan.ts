@@ -73,6 +73,29 @@ export interface EntityCheckSuiteOptions {
     Record<string, { readonly permissions: readonly string[]; readonly because: string }>
   >;
   /**
+   * Input fields that must carry a SECOND entity the kit makes, per operation
+   * (#939): `{ 'ticket0/merge': { intoConversationId: 'conversation' } }`.
+   *
+   * `merge` folds `conversationId` into `intoConversationId` and checks the
+   * declared key on both ends. A sample value in `inputs` cannot stand in for the
+   * second one: a made-up id is refused before the check under test answers, and
+   * an id minted once at collect time is granted to nobody — so case 1 is denied
+   * on the survivor and reads as a broken handler. What the field needs is an
+   * entity that EXISTS, fresh per case, that the probe holds the key on.
+   *
+   * So the kit creates it the way it creates the target — `createEntity(type)`,
+   * per case — and grants the same keys on it, in BOTH cases. Case 2 still
+   * separates: the probe holds the key on the co-entity and on A, and is refused
+   * for B. The bare id is written into the field; a field taking a whole ref is
+   * not this shape.
+   *
+   * What this does NOT assert, stated so the receipt cannot overclaim: that the
+   * handler checks the co-entity at all. The pair measures the declared check on
+   * the TARGET; a second check on the co-entity is the operation's own claim,
+   * asserted where its scenario is written.
+   */
+  readonly coEntities?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /**
    * The in-scope operations this kit cannot generate, each with its reason.
    *
    * Asserted EXACTLY: an operation that becomes uncoverable, or one that stops
@@ -203,6 +226,11 @@ export interface PlannedCheck {
   readonly target: { readonly kind: 'id' | 'ref'; readonly path: readonly string[] };
   /** Input fields the schema fixes to one value, supplied by the kit (#890). */
   readonly fixed: Record<string, unknown>;
+  /**
+   * Input fields the kit fills with a second entity it makes and grants on, by
+   * declared type (#939). Empty for every operation that names none.
+   */
+  readonly coEntities: Readonly<Record<string, string>>;
 }
 
 /**
@@ -227,6 +255,7 @@ export function planEntityCheckCoverage(
   operations: Readonly<Record<string, object>>,
   inputs: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {},
   refEntityType?: string,
+  coEntities: Readonly<Record<string, Readonly<Record<string, string>>>> = {},
 ): { covered: PlannedCheck[]; uncovered: Record<string, string> } {
   const covered: PlannedCheck[] = [];
   const uncovered: Record<string, string> = {};
@@ -235,6 +264,24 @@ export function planEntityCheckCoverage(
     const op = raw as DeclaredOp;
     const check = entityCheckOf(op);
     if (!check) continue;
+
+    // A co-entity (#939) is supplied by the kit, so its field is never a missing
+    // sample — but only where the field exists, and is not the target's own. A
+    // declaration naming a field the schema does not have is a stale note, and a
+    // stale note that quietly counted as coverage would be the overclaim this
+    // whole partition exists to avoid.
+    const co = coEntities[name] ?? {};
+    const targetField = check.refFrom ? check.refFrom.split('.')[0]! : check.idFrom;
+    const misnamed = Object.keys(co).filter(
+      (field) => field === targetField || !(field in (op.input?.shape ?? {})),
+    );
+    if (misnamed.length > 0) {
+      uncovered[name] =
+        `names a co-entity for '${misnamed.join("', '")}', which is not an input field ` +
+        'beside the target';
+      continue;
+    }
+    const coFields = Object.keys(co);
 
     // The ref case first: it names neither a type nor an id field, because the
     // field it names carries both (#896).
@@ -251,7 +298,7 @@ export function planEntityCheckCoverage(
         uncovered[name] = `declares 'refFrom: ${check.refFrom}', which names no input field`;
         continue;
       }
-      const missing = requiredExtras(op, '', [path[0]!]).filter(
+      const missing = requiredExtras(op, '', [path[0]!, ...coFields]).filter(
         (f) => inputs[name]?.[f] === undefined,
       );
       if (missing.length > 0) {
@@ -264,6 +311,7 @@ export function planEntityCheckCoverage(
         entity: refEntityType,
         target: { kind: 'ref', path },
         fixed: fixedFields(op, path[0]!),
+        coEntities: co,
       });
       continue;
     }
@@ -296,7 +344,7 @@ export function planEntityCheckCoverage(
     }
 
     const typeField = check.entityFrom ? [check.entityFrom] : [];
-    const missing = requiredExtras(op, check.idFrom, typeField).filter(
+    const missing = requiredExtras(op, check.idFrom, [...typeField, ...coFields]).filter(
       (f) => inputs[name]?.[f] === undefined,
     );
     if (missing.length > 0) {
@@ -314,6 +362,7 @@ export function planEntityCheckCoverage(
           ...fixedFields(op, check.idFrom),
           ...(check.entityFrom ? { [check.entityFrom]: type } : {}),
         },
+        coEntities: co,
       });
     }
   }

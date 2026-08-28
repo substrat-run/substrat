@@ -59,6 +59,10 @@ const ops = {
     permission: { key: 'thing:read', refFrom: 'absent' },
     input: z.object({ subject: z.object({ entityType: z.string(), entityId: z.string() }) }),
   },
+  'x/merge': {
+    permission: { key: 'thing:manage', entity: 'thing', idFrom: 'thingId' },
+    input: z.object({ thingId: z.string(), intoThingId: z.string() }),
+  },
 };
 
 describe('what the kit will drive', () => {
@@ -112,6 +116,50 @@ describe('what the kit will drive', () => {
   });
 });
 
+describe('a second entity of the same kind (#939)', () => {
+  it('reports the second field as a missing sample until a co-entity is declared', () => {
+    // The shape `merge` has: two ids of one kind, and the declared check on the
+    // first. A sample string cannot stand in for the second — it has to exist.
+    const { covered, uncovered } = planEntityCheckCoverage(ops);
+    expect(covered.map((c) => c.name)).not.toContain('x/merge');
+    expect(uncovered['x/merge']).toMatch(/no sample input.*intoThingId/);
+  });
+
+  it('drives it once the field is declared as a co-entity the kit makes', () => {
+    const { covered, uncovered } = planEntityCheckCoverage(ops, {}, undefined, {
+      'x/merge': { intoThingId: 'thing' },
+    });
+    expect(uncovered['x/merge']).toBeUndefined();
+    expect(covered.find((c) => c.name === 'x/merge')).toMatchObject({
+      target: { kind: 'id', path: ['thingId'] },
+      coEntities: { intoThingId: 'thing' },
+    });
+  });
+
+  it('carries an empty co-entity map for every operation that names none', () => {
+    // Not `undefined`: the suite iterates it, and a missing map on one plan and
+    // a present one on another is two shapes for one thing.
+    const { covered } = planEntityCheckCoverage(ops);
+    for (const c of covered) expect(c.coEntities).toEqual({});
+  });
+
+  it('refuses a co-entity naming a field the schema does not have, or the target itself', () => {
+    // A stale note must not count as coverage. Either would make the kit write
+    // an id somewhere the operation never reads — and case 2 would pass on a
+    // denial that had nothing to do with the field.
+    const absent = planEntityCheckCoverage(ops, {}, undefined, {
+      'x/merge': { fromThingId: 'thing' },
+    });
+    expect(absent.covered.map((c) => c.name)).not.toContain('x/merge');
+    expect(absent.uncovered['x/merge']).toMatch(/co-entity.*fromThingId.*not an input field/);
+
+    const target = planEntityCheckCoverage(ops, {}, undefined, {
+      'x/merge': { thingId: 'thing' },
+    });
+    expect(target.uncovered['x/merge']).toMatch(/co-entity.*thingId/);
+  });
+});
+
 describe('a ref the caller supplies whole (#896)', () => {
   it('drives it against a type the HARNESS names, since the module names none', () => {
     const { covered } = planEntityCheckCoverage(ops, {}, 'thing');
@@ -158,6 +206,7 @@ describe('what the kit reports rather than hides', () => {
       'x/by-nested-ref',
       'x/by-ref',
       'x/by-ref-nowhere',
+      'x/merge',
       'x/resolved',
       'x/two-admissible-types',
     ]);

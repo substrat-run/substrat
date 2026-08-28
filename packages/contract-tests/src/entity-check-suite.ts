@@ -72,9 +72,15 @@ import { planEntityCheckCoverage } from './entity-check-plan.js';
  * ```ts
  * entityCheckConformanceSuite('todo', todoOperations, makeFixture, {
  *   inputs: { 'todo/rename-list': { name: 'renamed' } },
+ *   coEntities: { 'todo/merge-lists': { intoListId: 'list' } },
  *   uncovered: { 'todo/set-item-done': 'resolved — the id is not in the input' },
  * });
  * ```
+ *
+ * An operation naming a SECOND entity of the kind it narrows to — `merge`, a
+ * future `move` — declares it under `coEntities` (#939): the kit makes one per
+ * case and grants the same keys on it, so the field carries something that
+ * exists and the pair still measures the check on the target.
  */
 export function entityCheckConformanceSuite(
   subjectName: string,
@@ -90,6 +96,7 @@ export function entityCheckConformanceSuite(
     operations,
     supplied,
     options.refEntityType,
+    options.coEntities,
   );
 
   describe(`declared entity checks are honoured: ${subjectName}`, () => {
@@ -108,17 +115,27 @@ export function entityCheckConformanceSuite(
       expect(Object.keys(options.alsoGrant ?? {}).filter((n) => !driven.has(n))).toEqual([]);
     });
 
+    it('makes a second entity only for an operation it drives', () => {
+      // Same reasoning as `alsoGrant`: a `coEntities` entry naming an operation
+      // that is uncovered or absent is a note about coverage that is not there.
+      const driven = new Set(covered.map((c) => c.name));
+      expect(Object.keys(options.coEntities ?? {}).filter((n) => !driven.has(n))).toEqual([]);
+    });
+
     it('generated a pair for at least one operation', () => {
       // A suite that generated nothing passes every assertion above it. This is
       // the zero guard: silence must not read as success.
       expect(covered.length).toBeGreaterThan(0);
     });
 
-    for (const { name, key, entity, target, fixed } of covered) {
+    for (const { name, key, entity, target, fixed, coEntities } of covered) {
+      const beside = Object.entries(coEntities)
+        .map(([field, type]) => `, a second ${type} in '${field}'`)
+        .join('');
       const where =
-        target.kind === 'ref'
+        (target.kind === 'ref'
           ? `ref from '${target.path.join('.')}'`
-          : `id from '${target.path[0]}'`;
+          : `id from '${target.path[0]}'`) + beside;
 
       /**
        * The input the pair is driven with. A `refFrom` check is handed the whole
@@ -161,10 +178,29 @@ export function entityCheckConformanceSuite(
          * delegate. All of them NARROWED to the one entity — never scope-wide,
          * which is what keeps case 1 able to catch a node check.
          */
-        const grantAllOn = async (fixture: EntityCheckFixture, entityId: string) => {
-          const ref = { entityType: entity, entityId };
+        const grantAllOn = async (
+          fixture: EntityCheckFixture,
+          entityId: string,
+          entityType: string = entity,
+        ) => {
+          const ref = { entityType, entityId };
           await fixture.grantOnEntity(key, ref);
           for (const extra of extraKeys) await fixture.grantOnEntity(extra, ref);
+        };
+
+        /**
+         * The second entities the operation needs beside its target (#939), made
+         * fresh and granted the same keys — in both cases, so that what case 2
+         * refuses is the target and nothing else.
+         */
+        const coEntitiesFor = async (fixture: EntityCheckFixture) => {
+          const made: Record<string, unknown> = {};
+          for (const [field, type] of Object.entries(coEntities)) {
+            const id = await fixture.createEntity(type);
+            await grantAllOn(fixture, id, type);
+            made[field] = id;
+          }
+          return made;
         };
 
         const denialFrom = async (
@@ -187,8 +223,12 @@ export function entityCheckConformanceSuite(
           const fixture = await makeFixture();
           const targetId = await fixture.createEntity(entity);
           await grantAllOn(fixture, targetId);
+          const beside = await coEntitiesFor(fixture);
 
-          const outcome = await denialFrom(fixture, inputFor(targetId, extrasNow()));
+          const outcome = await denialFrom(
+            fixture,
+            inputFor(targetId, { ...extrasNow(), ...beside }),
+          );
           const denied = outcome !== undefined && !(outcome as { notADenial?: unknown }).notADenial;
           expect(
             denied,
@@ -204,8 +244,9 @@ export function entityCheckConformanceSuite(
           const granted = await fixture.createEntity(entity);
           await grantAllOn(fixture, granted);
           const other = await fixture.createEntity(entity);
+          const beside = await coEntitiesFor(fixture);
 
-          const outcome = await denialFrom(fixture, inputFor(other, extrasNow()));
+          const outcome = await denialFrom(fixture, inputFor(other, { ...extrasNow(), ...beside }));
           const notADenial = (outcome as { notADenial?: unknown } | undefined)?.notADenial;
           expect(
             outcome,
