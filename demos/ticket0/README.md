@@ -104,6 +104,17 @@ substrat.net's own `llms-full.txt`. It is **opt-in** because the same config arr
 ships to production, and a support widget on the live site is a deliberate decision
 rather than a side effect of this demo landing.
 
+The site also carries the widget on **one page**, always:
+[substrat.net/guide/support](https://substrat.net/guide/support) mounts `<Ticket0Widget
+desk="https://ticket0.substrat.net" />` (`apps/docs/.vitepress/theme/components/`),
+which appends the same `<script>` tag on the way in and calls `window.ticket0.unmount()`
+on the way out. That verb exists for exactly this: a host with a client-side router
+adds and removes tags without a reload, and a removed `<script>` undoes nothing — so
+`widget.js` keeps one widget per page (a second run replaces the first) and offers the
+host one way to take it down, poll and all. For the hosted desk to answer there,
+`https://substrat.net` must be on its origin allowlist (Settings → Widget origins), and
+`http://localhost:5173` for the docs dev server.
+
 ## The knowledge base is the real Substrat docs
 
 On first boot the desk ingests `https://substrat.net/llms-full.txt` and turns it into

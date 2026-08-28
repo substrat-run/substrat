@@ -25,6 +25,20 @@
   var SIGNATURE = script && script.dataset.signature;
   var STORE = 'ticket0:' + API;
 
+  /**
+   * One widget per page, and a way to take it down.
+   *
+   * A page with a client-side router — the documentation site is one — can run this
+   * script more than once without ever reloading: the router adds the tag on the way
+   * into a page and removes it on the way out, and removing a <script> undoes nothing
+   * it did. Left alone that is two bubbles after one round trip, and a poll that
+   * outlives the page it was polling for. So a second run replaces the first, and the
+   * host page gets one verb, `window.ticket0.unmount()`, for the way out.
+   */
+  if (window.ticket0 && typeof window.ticket0.unmount === 'function') window.ticket0.unmount();
+  /** Set by `unmount`. A refresh already in flight must not reschedule the poll. */
+  var dead = false;
+
   var session = null;
   try {
     session = JSON.parse(localStorage.getItem(STORE) || 'null');
@@ -242,16 +256,30 @@
     // replies that arrive while it is shut, and a widget that stops looking has
     // nothing to count. A hidden tab stops entirely, and a session that does not
     // exist yet has nothing to poll for.
-    if (document.hidden || !session) return;
+    if (dead || document.hidden || !session) return;
     poll = setInterval(refresh, open && waiting ? FAST : IDLE);
   }
 
-  document.addEventListener('visibilitychange', function () {
+  function onVisibility() {
     if (!open) return;
     // Coming back is the one moment a poll is certainly worth making.
     if (!document.hidden) void refresh();
     schedule();
-  });
+  }
+  document.addEventListener('visibilitychange', onVisibility);
+
+  var api = {
+    unmount: function () {
+      dead = true;
+      clearInterval(poll);
+      poll = null;
+      document.removeEventListener('visibilitychange', onVisibility);
+      document.removeEventListener('DOMContentLoaded', attach);
+      host.remove();
+      if (window.ticket0 === api) delete window.ticket0;
+    },
+  };
+  window.ticket0 = api;
 
   function recover(e, retry) {
     if (recovering || !staleSession(e)) return false;

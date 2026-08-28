@@ -24,6 +24,7 @@ import { alt as runtimeTopology } from './RuntimeTopology.content.mjs';
 import { alt as scopeTopology } from './ScopeTopology.content.mjs';
 import { alt as blastRadius } from './BlastRadius.content.mjs';
 import { alt as guardPath } from './GuardPath.content.mjs';
+import { alt as ticket0Widget } from './Ticket0Widget.content.mjs';
 
 export const COMPONENT_ALT: Record<string, (props: Record<string, string>) => string> = {
   ConnectorLoop: connectorLoop,
@@ -37,6 +38,7 @@ export const COMPONENT_ALT: Record<string, (props: Record<string, string>) => st
   StateMachine: stateMachine,
   BlastRadius: blastRadius,
   GuardPath: guardPath,
+  Ticket0Widget: ticket0Widget,
 };
 
 /** The twin for `<Name … />`, or null when the component has no flattening. */
