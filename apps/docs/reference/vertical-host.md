@@ -2,8 +2,8 @@
 
 The platform's `/internal/*` management contract — the routes the control plane calls to
 provision, reconcile, introspect, snapshot, export/restore, bookmark/rewind and configure an
-install — plus the `{ error }` response envelope, **authored once and mounted** into a
-vertical's [Hono](https://hono.dev) worker.
+install — plus the `application/problem+json` error envelope, **authored once and mounted**
+into a vertical's [Hono](https://hono.dev) worker.
 
 Before this package every sandbox-clean vertical hand-copied those routes and a Hono
 `onError` into its own `worker.ts`. The copies drifted — route sets disagreed and some
@@ -59,8 +59,44 @@ export default app;
   secret fails closed (`403`).
 - **The error envelope** — a Hono `onError` that maps the kernel/engine vocabulary onto HTTP
   (`permission denied → 403`, `not found / unknown scope → 404`, `invalid transition /
-  immutable → 409`) and renders everything else as `{ error: <message> }`. Registered last,
-  so mounting the surface installs it.
+  immutable → 409`, a runtime fault → `502`) and renders every failure as an
+  [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problem document —
+  `Content-Type: application/problem+json`, with the platform's closed `code` and, where a
+  module narrowed it, the module's own `reason`. `error` is still present as a copy of
+  `detail` for one migration window; read `detail`. Registered last, so mounting the surface
+  installs it. The shape is the one every surface answers with, described in
+  [API design § failures are data](/concepts/api-design#_5-failures-are-data).
+
+## `problemResponse(c, err)`
+
+The same envelope, for a vertical's **own** routes. The `onError` above is registered by
+`mountPlatformSurface` for the whole app, so a vertical that mounts the platform surface
+already answers problem+json everywhere; a vertical that owns its `onError` — to log, or to
+map its own domain errors to a status first — keeps the shape in one line:
+
+```ts
+import { problemResponse } from '@substrat-run/vertical-host';
+
+app.onError((err, c) => problemResponse(c, err));
+```
+
+An `HTTPException` that already carries its own response is handed back untouched, so a
+redirect or a `WWW-Authenticate` a route chose survives. `demos/callout`, `demos/handlebar`
+and `demos/manyfold` are the worked references.
+
+## `mountOperations(app, operations, resolveStub, options?)`
+
+One route per declared operation, from the same object the module registers — the seam that
+reads `If-Match` (a stale tag → `412 precondition_failed`) and `Idempotency-Key` (a reused
+key → `409 conflict`, a replay → the stored response with `Idempotency-Replayed: true`) on
+every unsafe method, so a vertical never hand-parses either header. It maps the kernel's own
+vocabulary to a status (`PermissionDenied → 403`, a `ZodError` → `400`, a runtime fault →
+`502`) and re-throws everything else unchanged, so a vertical's domain errors reach
+`app.onError` exactly as before — this decides the status, `problemResponse` decides the
+shape. Two declarations that would dispatch identically fail at mount, naming both. The
+headers and their semantics are specified in API design —
+[§7 writes are safe to retry](/concepts/api-design#_7-writes-are-safe-to-retry) and
+[§7b a read-modify-write says what it is writing over](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over).
 
 ### The scope host is structural
 
