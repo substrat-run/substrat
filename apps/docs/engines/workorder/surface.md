@@ -57,7 +57,7 @@ import { createWorkOrder, completeWorkOrder, PERM } from '@substrat-run/engine-w
 | `reportMaterial(ctx, input)` | `workorder/report-material` | appends a material line |
 | `completeWorkOrder(ctx, input)` | `workorder/complete` | validates + freezes billable lines |
 | `closeWorkOrder(ctx, input)` | `workorder/close` | |
-| `listOrders(ctx, page)` | `workorder/list` | a `Page<WorkOrder>` — `page` is the kernel's `PageParams` (`limit`, `sort`, `order`, `cursor`, `filters`), walked by `ctx.page` |
+| `listOrders(ctx, page)` | `workorder/list` | a `Page<WorkOrder>` — `page` is the kernel's `PageParams` (`limit`, `sort`, `order`, `cursor`, `filters`, `total`), walked by `ctx.page`; with `total: true` the result is a `CountedPage` that also carries the filtered count |
 | `getWorkOrder(ctx, orderId)` | `workorder/get` | one order by id; throws on an id that names nothing |
 | `getReportedLines(ctx, orderId)` | `workorder/get` | time + material for an order |
 

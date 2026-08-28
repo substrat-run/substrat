@@ -70,14 +70,17 @@ invocable *endpoint*, and that is what the twins back.
 They page differently, and the difference is the cursor. `listResourcesPage` is
 kernel-composed: `ctx.page` builds the `WHERE`, the `ORDER BY` and the keyset tie-break from
 the operation's declared `paged` vocabulary, so it takes the kernel's `PageParams` (`limit`,
-`sort`, `order`, `cursor`, `filters`). `listReservationsPage` owns its own `WHERE` because the
-window is an overlap test (`starts_at < to AND ends_at > from`), which the kernel's
-equality-only filter vocabulary cannot express; its cursor is the reservation `id`, since
-`startsAt` is not unique on a court schedule — a caller rendering a calendar sorts the page it
-got by `startsAt` itself. `availabilityPage` runs the whole fold and takes the page off the
-end of it (the segments are derived by merging every live reservation in the window, so there
-is nothing partial to push into SQL); its segments are disjoint and ordered, which is what
-makes `startsAt` a sound cursor there.
+`sort`, `order`, `cursor`, `filters`, `total`) — and with `total: true` it returns a
+`CountedPage` carrying the filtered count. `listReservationsPage` owns its own `WHERE` because
+the window is an overlap test (`starts_at < to AND ends_at > from`), which the kernel's
+equality-only filter vocabulary cannot express. Its rows come back **ordered by reservation
+`id`**, the cursor is exclusive (`id > cursor`), and the walk is *not* globally ordered by
+`startsAt` — `startsAt` is not unique on a court schedule, so a caller rendering a calendar
+sorts the page it got by `startsAt` itself. `availabilityPage` runs the whole fold and takes
+the page off the end of it (the segments are derived by merging every live reservation in the
+window, so there is nothing partial to push into SQL); its segments are disjoint and ordered,
+which is what makes `startsAt` a sound cursor there. Neither handler-composed twin counts:
+they page with `pageOf`, so there is no `total` to ask for.
 
 ### `move`, not `update`
 
