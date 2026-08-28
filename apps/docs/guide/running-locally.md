@@ -174,6 +174,18 @@ still be mandatory on your machine, where no such delivery exists.
   `--env-file-if-exists`, so one file serves every way of starting the vertical. A shell
   variable still wins over it — but only in a terminal, which is exactly the gap that makes
   the file the reliable answer for Desktop.
+- **A fresh worktree is a fresh checkout — it has no gitignored files.** Desktop gives every
+  session its own [worktree](https://code.claude.com/docs/en/worktrees), and without help a
+  new session's first `pnpm dev` fails for reasons that read as code problems: a missing OIDC
+  client, an empty `PLATFORM_SECRET`, a demo asking for a model key. The monorepo's root
+  `.worktreeinclude` names the gitignored files a worktree needs in order to run, and Claude
+  Code copies them from the main checkout when it creates one: `secrets/*.env`, every
+  `.env` and `.dev.vars`, and Callout's local `wrangler.jsonc`. What it deliberately does
+  **not** copy is `.data/` — each worktree seeds its own SQLite on first boot, so a session
+  starts from the seed world rather than inheriting another session's tenants, logins and
+  half-run scenarios. `node_modules/` and `dist/` are not copied either: run `pnpm install`
+  and `pnpm build` in the new tree. A worktree you create yourself with `git worktree add`
+  gets none of this — copy the files by hand or start the session through Desktop.
 - **Claude curling its own API from Bash may fail.** The sandboxed Bash tool still blocks
   outbound TCP to `localhost` ([claude-code#28018](https://github.com/anthropics/claude-code/issues/28018)).
   The Browser-pane path is separate and works; wiring up Bash-side `curl` is a deliberate
