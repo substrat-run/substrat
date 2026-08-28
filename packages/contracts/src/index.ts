@@ -43,3 +43,4 @@ export * from './attachments.js';
 export * from './model.js';
 export * from './operations.js';
 export * from './lifecycle.js';
+export * from './client-context.js';

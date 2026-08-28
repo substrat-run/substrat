@@ -35,6 +35,13 @@ pnpm add @substrat-run/adapter-cloudflare
   an inbound `hostname → RouteTarget` (tenant, scope, `deploymentRef`, `verticalSlug`) for
   Workers-for-Platforms dynamic dispatch. The environment [router](/platform/router) is built on
   it.
+- **`cloudflareClientContext`** / **`cloudflareGeo`** — the one place `request.cf` is read.
+  Normalises the edge's geo (country, region *name*, city, timezone, continent; the `T1` /
+  `XX` sentinels become null; latitude, longitude and postal code are not carried) and
+  joins it to the header half from contracts (`clientContextOf`) into a
+  [`ClientContext`](/reference/contracts) — the shape a vertical takes as operation input
+  on every runtime, so a desk can show "Safari 17 on iOS · Stockholm" without knowing
+  which host it is on.
 - **`definePlatformSweeperDO`** — the alarm-driven Durable Object that runs the platform's
   scheduled maintenance. A singleton (`PLATFORM_SWEEPER_NAME`) whose `alarm()` runs one
   `runPlatformSweep` pass — reaping expired previews, an archived scope's DO storage, and

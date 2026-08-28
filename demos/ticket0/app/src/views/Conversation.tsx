@@ -10,7 +10,7 @@
  *   3. the assistant is staff — `MessageRow` treats it like a person, and only its
  *      DRAFT gets the special card (`DraftCard`).
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
 import type { Session } from '../api.js';
 import { ApiError, api, type Contact, type Conversation, type Message, type SavedReply } from '../api.js';
@@ -38,6 +38,9 @@ interface Usage {
   lines: { meterKey: string; qty: string; unitPrice: string; amount: string }[];
 }
 
+/** What `widget-session` returns: the browser behind a widget conversation, or nothing. */
+type WidgetSession = Awaited<ReturnType<typeof api.widgetSession>>['session'];
+
 export function ConversationView({
   id,
   caps,
@@ -53,6 +56,7 @@ export function ConversationView({
   const [messages, setMessages] = useState<MessageWithCitations[]>([]);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [usage, setUsage] = useState<Usage | null>(null);
+  const [visitor, setVisitor] = useState<WidgetSession>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [who, setWho] = useState<Contact | undefined>(undefined);
@@ -68,6 +72,8 @@ export function ConversationView({
       setWho((await contacts()).get(c.contact_id));
       setMessages(m.entries as MessageWithCitations[]);
       setTurns(t.entries as Turn[]);
+      // Only a widget conversation has a browser behind it; an email one is not asked.
+      setVisitor(c.channel === 'widget' ? (await api.widgetSession({ conversationId: id })).session : null);
       // Constraint 2: the cost read is only attempted when the caller holds the key,
       // and a refusal leaves `usage` null — which is what makes the card absent.
       if (caps?.money) {
@@ -134,7 +140,7 @@ export function ConversationView({
           <Thread messages={messages} turnFor={turnFor} conv={conv} busy={busy} act={act} />
           <Composer conv={conv} busy={busy} act={act} session={session} />
         </div>
-        <Rail conv={conv} who={who} usage={usage} go={go} />
+        <Rail conv={conv} who={who} visitor={visitor} usage={usage} go={go} />
       </div>
     </div>
   );
@@ -745,11 +751,13 @@ function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onC
 function Rail({
   conv,
   who,
+  visitor,
   usage,
   go,
 }: {
   conv: Conversation;
   who: Contact | undefined;
+  visitor: WidgetSession;
   usage: Usage | null;
   go: (v: View) => void;
 }) {
@@ -794,6 +802,8 @@ function Rail({
         {field('Owner', conv.assignee ? <Avatar name={conv.assignee} size={20} /> : '—')}
         {field('Priority', <span className="mono">{conv.priority}</span>)}
       </div>
+
+      {visitor ? <VisitorCard session={visitor} /> : null}
 
       <div>
         <div className="micro" style={{ marginBottom: 8 }}>
@@ -866,5 +876,91 @@ function Rail({
         </button>
       </div>
     </aside>
+  );
+}
+
+/* ── The visitor card ───────────────────────────────────────────────────── */
+
+const DEVICE_LABEL: Record<string, string> = {
+  desktop: 'desktop',
+  mobile: 'phone',
+  tablet: 'tablet',
+  bot: 'bot',
+  unknown: '',
+};
+
+/** `Sweden` for `SE`, in the agent's own language; the code itself if the browser cannot. */
+function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames(undefined, { type: 'region' }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
+/** The visitor's wall clock right now — the fact behind "it is 3 am for them". */
+function localTime(timezone: string): string | null {
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeZone: timezone, hour: '2-digit', minute: '2-digit' }).format(
+      new Date(),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * What the visitor is holding and roughly where — the client context the host
+ * attached when the session opened, stored on the session and read back here.
+ *
+ * Every line is conditional, because every column is nullable: a session opened on
+ * the dev server has no geo, one opened before the columns existed has nothing at
+ * all, and the card says only what it knows rather than showing "unknown" four times.
+ */
+function VisitorCard({ session }: { session: NonNullable<WidgetSession> }) {
+  const major = (v: string | null) => (v ? v.split('.')[0] : null);
+  const browser = session.browser
+    ? [session.browser, major(session.browser_version)].filter(Boolean).join(' ')
+    : null;
+  const os = session.os ? [session.os, major(session.os_version)].filter(Boolean).join(' ') : null;
+  const device = [browser, os].filter(Boolean).join(' on ') || null;
+  const kind = session.device ? DEVICE_LABEL[session.device] ?? '' : '';
+  const place = [session.city, session.country ? countryName(session.country) : null].filter(Boolean).join(', ') || null;
+  const time = session.timezone ? localTime(session.timezone) : null;
+
+  const rows: [string, React.ReactNode][] = [];
+  if (device) rows.push(['Device', kind ? `${device} · ${kind}` : device]);
+  if (place) rows.push(['Location', place]);
+  if (time) rows.push(['Local time', <span title={session.timezone ?? undefined}>{time}</span>]);
+  if (session.language) rows.push(['Language', <span className="mono">{session.language}</span>]);
+  rows.push(['Page', <span className="mono" title={session.origin}>{session.origin.replace(/^https?:\/\//, '')}</span>]);
+
+  return (
+    <div>
+      <div className="micro" style={{ marginBottom: 8 }}>
+        Visitor
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '6px 10px', alignItems: 'baseline' }}>
+        {rows.map(([k, v]) => (
+          <Fragment key={k}>
+            <div className="micro" style={{ color: 'var(--muted)' }}>
+              {k}
+            </div>
+            <div
+              style={{
+                font: "400 12px 'Geist', sans-serif",
+                color: 'var(--secondary)',
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {v}
+            </div>
+          </Fragment>
+        ))}
+      </div>
+    </div>
   );
 }

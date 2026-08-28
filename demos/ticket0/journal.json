@@ -9,6 +9,11 @@
       "version": "0002",
       "slug": "add-ticket0_widget_openings",
       "sql": "CREATE TABLE ticket0_widget_openings (\n  id TEXT PRIMARY KEY NOT NULL,\n  contact_id TEXT,\n  origin TEXT NOT NULL,\n  token_hash TEXT NOT NULL,\n  started_at TEXT NOT NULL,\n  last_seen_at TEXT NOT NULL,\n  UNIQUE (token_hash)\n);"
+    },
+    {
+      "version": "0003",
+      "slug": "add-ticket0_widget_openings-user_agent-and-21-more",
+      "sql": "ALTER TABLE ticket0_widget_openings ADD COLUMN user_agent TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN language TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN browser TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN browser_version TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN os TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN os_version TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN device TEXT CHECK (device IN ('desktop','mobile','tablet','bot','unknown'));\n\nALTER TABLE ticket0_widget_openings ADD COLUMN country TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN region TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN city TEXT;\n\nALTER TABLE ticket0_widget_openings ADD COLUMN timezone TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN user_agent TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN language TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN browser TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN browser_version TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN os TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN os_version TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN device TEXT CHECK (device IN ('desktop','mobile','tablet','bot','unknown'));\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN country TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN region TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN city TEXT;\n\nALTER TABLE ticket0_widget_sessions ADD COLUMN timezone TEXT;"
     }
   ]
 }
