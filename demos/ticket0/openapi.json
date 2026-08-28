@@ -5050,7 +5050,9 @@
                   }
                 },
                 "required": [
-                  "displayName"
+                  "displayName",
+                  "avatarUrl",
+                  "signature"
                 ]
               }
             }
@@ -6546,6 +6548,12 @@
                     },
                     "verified": {
                       "type": "boolean"
+                    },
+                    "origin": {
+                      "type": "string"
+                    },
+                    "startedAt": {
+                      "type": "string"
                     }
                   },
                   "required": [
@@ -6553,7 +6561,9 @@
                     "token",
                     "conversationId",
                     "greeting",
-                    "verified"
+                    "verified",
+                    "origin",
+                    "startedAt"
                   ],
                   "additionalProperties": false
                 }

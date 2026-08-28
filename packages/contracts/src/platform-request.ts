@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { instant, platformRequestId, scopeId } from './ids.js';
 import { actor, domainEvent } from './events.js';
+import { impersonationStamp } from './impersonation.js';
 import { errorCode } from './errors.js';
 
 /**
@@ -75,6 +76,13 @@ export const platformRequest = z.object({
   kind: z.string().min(1),
   payload: z.unknown(),
   requestedBy: actor, // stamped kernel-side from the operation's ambient actor, like an event's `actor`
+  /**
+   * The staff actor and session this intent was raised under (K-42), or null.
+   * An intent is a request for the PLATFORM to act with `HostAdmin` authority,
+   * so "who really asked" is the field a drain operator most needs and the one
+   * `requestedBy` cannot carry.
+   */
+  impersonation: impersonationStamp.nullable(),
   status: platformRequestStatus,
   attempts: z.number().int().nonnegative(),
   lastError: z.string().nullable(),

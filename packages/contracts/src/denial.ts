@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { actor } from './events.js';
+import { impersonationStamp } from './impersonation.js';
 import { permissionKey, scopeId, tenantId } from './ids.js';
 
 /**
@@ -48,6 +49,13 @@ export const permissionDenial = z.object({
   scopeId: scopeId.nullable(),
   /** The operation the denial rolled back, e.g. `workorder/complete`. */
   operation: z.string().nullable(),
+  /**
+   * The staff actor and session behind the refusal (K-42), or null for the
+   * ordinary case. A denial is the one row where intent and the permission model
+   * disagree, so "which of the two actors was refused" is exactly the question
+   * this log exists to answer — and `actor` alone would answer it wrongly.
+   */
+  impersonation: impersonationStamp.nullable(),
   /** ISO 8601. */
   at: z.string().min(1),
   drainedAt: z.string().nullable(),

@@ -18,6 +18,7 @@ import {
 import { PermissionDenied, ulid, UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
+  impersonationContractSuite,
   billedMod,
   connectorTestFetch,
   permissionContractSuite,
@@ -73,6 +74,20 @@ permissionContractSuite('adapter-cloudflare', async () => {
 // real check to record). `atomicMod` is in `contractTestModules`, so the ScopeDO
 // already carries it at code time — a DO cannot be handed handlers over RPC.
 atomicContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// K-42 (#868): acting as a principal with the real actor preserved. The DEFAULT
+// tuple checker, not allow-all — half of what this suite pins is that the door
+// grants no authority of its own, and an allow-all checker would make the one
+// test that proves it (a session against a principal who holds nothing) pass for
+// the wrong reason.
+impersonationContractSuite('adapter-cloudflare', async () => {
   const host = new CloudflareScopeHost({
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,

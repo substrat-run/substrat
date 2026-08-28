@@ -1163,9 +1163,15 @@ importers:
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
+      '@types/better-sqlite3':
+        specifier: ^9.6.0
+        version: 9.6.0
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.1
+      better-sqlite3:
+        specifier: 13.0.3
+        version: 13.0.3
       concurrently:
         specifier: ^9.0.0
         version: 9.2.4

@@ -910,6 +910,51 @@ restore → keep serving), which is what turns this from a claim into a procedur
      which is exactly why restoring *the map* is a different and much smaller act than restoring
      the world.
 
+### 4.10 Impersonation: acting as a principal (K-42, [#868](https://github.com/substrat-run/substrat/issues/868))
+
+§4.4 records who changed the directory, §4.6 who read it and who was refused inside a
+scope. None of them let a staff member **see what a named person sees** — so supporting a
+customer's live vertical meant asking them to screenshot things, and the only
+impersonation in the tree was `ALLOW_DEV_HEADER`, correctly labelled *"never a production
+path."*
+
+A **session** is the unit. `HostAdmin.beginImpersonation(actor, { tenantId, scopeId,
+principal, reason, minutes?, mode? })` mints one; `ScopeHost.getImpersonatedScope(session,
+tenantId, scopeId)` is the fourth scope door, beside the principal, connection and system
+ones. Inside, the operation is ordinary: the permission model answers about the
+**impersonated principal**, through the same checker, with no override branch — so a
+session against somebody who holds nothing is refused precisely where they would be.
+
+**Two actors on every record.** The outbox envelope, the scope-local denial row and the
+platform-intent journal each gain an `impersonation` (`{ session, by }`), stamped
+kernel-side on K-34's pattern. `actor` stays the impersonated principal, because that is
+who the permission model answered about and whose domain fact it is; this says who was
+holding the keyboard. Module code can neither supply it (it is not on `DomainEventInput`)
+nor suppress it — and it cannot **read** it either, which K-34 did not need: a vertical
+that could see the session could hide rows from it.
+
+| | what bounds it |
+|---|---|
+| authority | the impersonated principal's, resolved the ordinary way |
+| time | `expiresAt`, capped at `IMPERSONATION_MAX_MINUTES`, re-read on **every** invoke |
+| intent | a required `reason`, recorded on the session and in the admin log |
+| effect | `read-only` unless asked otherwise — the transaction is rolled back, not committed |
+
+**Read-only is a mechanism.** The effecting verbs (`emit`, `requestPlatform`, `grant`,
+`revoke`, `link`) refuse by name, which is the half a support engineer sees; the rollback
+is the half that holds when a handler writes a row with plain `ctx.sql.exec` and calls
+none of them. The operation still runs and still answers — only its writes do not survive.
+
+**The admin entry precedes the session** (K-33's failure ordering): `beginImpersonation`
+records before it returns, so a durable row exists before any operation can run under it.
+`endImpersonation` closes one early and is idempotent; `listImpersonations` reads the log
+and is access-logged like every other staff read (§4.6). Sessions are never deleted — one
+that existed is why some rows carry the stamp they do — and an expired session is a
+different fact from an ended one.
+
+**Not built here:** the HTTP route and the console's "viewing as…" banner. This is the
+kernel seam and both adapters; the surface above it is its own piece of work.
+
 ## 5. Billing: meter, do not bill
 
 **No billing system, no payment rail, no invoicing in v1.** Instead: make the meters that

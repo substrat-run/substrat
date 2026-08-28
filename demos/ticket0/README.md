@@ -28,6 +28,69 @@ drafts and never posts — so a marketing page to watch an assistant decline to 
 was scenery for a negative. That behaviour is asserted in the tests and visible in the
 inbox as a draft awaiting a human (sign in as Dana or Omar).
 
+## Embedding the widget
+
+One `<script>` tag, and nothing else — no npm package, no custom element, no build step
+on the customer's side:
+
+```html
+<script src="https://desk.example/widget.js"
+        data-user="marcus@parcelbay.com"
+        data-signature="a3f1…"></script>
+```
+
+`widget/widget.js` is a vanilla IIFE that appends its own `<div>` to `document.body` and
+renders into a **shadow root**, so the host page's CSS cannot reach in and the widget's
+cannot leak out. It ships no framework because it runs on somebody else's page, and it
+follows that page's `prefers-color-scheme` — a widget that is light on a dark site reads
+as an advert rather than part of the product.
+
+| attribute | |
+|---|---|
+| `src` | the desk. Also the default API base — the script reads its own origin, so nothing is baked in at build time |
+| `data-api` | override the base. Only the demo needs it, because the stand-in sites are served from their own ports |
+| `data-user` | who this visitor is, as far as the embedding site is concerned |
+| `data-signature` | that site's **server** vouching for the claim |
+
+Both identity attributes or neither. Without them the visitor is anonymous and gets a
+contact nothing else will ever reach; with them the header says *"your site verified
+you"*, because the desk could check.
+
+**The signature is the mechanism, not a formality.** It is
+`HMAC-SHA256(desk secret, data-user)`, hex — what Intercom calls `user_hash` and Help
+Scout calls a Beacon signature. The embedding site's backend computes it from a secret
+this script never sees, which is exactly what stops a visitor claiming somebody else's
+identity in devtools. The desk mints that secret at Settings → Identity verification
+(`POST /api/desk/verification-secret`), which returns it **once** — every read of the
+desk omits it, and rotating invalidates every signature the customer's site is currently
+producing.
+
+**Which sites may embed is the desk's decision.** `configure-desk` holds an origin
+allowlist (Settings → Widget origins), and `harness/widget-surface.ts` checks the
+request's `Origin` **header** against it — never a body field, which would be a
+suggestion rather than a fact. The check runs in middleware — it answers the preflight
+itself, and it refuses the request *before* the handler, because withholding
+`access-control-allow-origin` stops a browser *reading* a response and does nothing to
+stop the write behind it. An origin removed from
+the list stops working without a redeploy; the list is read per request.
+
+Behind the script are three unauthenticated routes — open a session, post a message, read
+the thread — confined by a session token rather than a login, since a visitor in a chat
+bubble has no principal. The session lives in `localStorage`; a token that no longer names
+anything (reaped session, reseeded desk) is thrown away and replaced silently rather than
+shown to the visitor as an id.
+
+Replies arrive by **polling** — 1.5s while an answer is outstanding, 10s idle, and not at
+all in a hidden tab. That is a stopgap and `widget.js` says so: the right answer is a
+WebSocket on the scope's own Durable Object, and neither the router nor the DO carries an
+`Upgrade` today, so it is platform work rather than a change to that file.
+
+The script is served by the dev server from `src/server.ts` with
+`access-control-allow-origin: *` — the script is public, the API behind it is not. A
+deployed desk serves it from the edge instead: `scripts/copy-widget.mjs` copies it beside
+the built SPA, deliberately outside Vite's import graph, because it is not part of this
+app — it is part of somebody else's.
+
 ## The widget on the real docs site
 
 The fake sites are stand-ins. To put the widget on the actual documentation:

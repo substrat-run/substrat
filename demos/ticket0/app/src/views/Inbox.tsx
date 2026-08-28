@@ -15,7 +15,7 @@
  *  - the empty state, which for this product is a *good* outcome ("Zero open
  *    conversations") rather than an apology.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
 import { api, type Contact, type Conversation, type Session } from '../api.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
@@ -94,12 +94,24 @@ export function Inbox({
   const [cursor, setCursor] = useState(0);
   const [people, setPeople] = useState<Map<string, Contact>>(new Map());
 
+  /**
+   * The newest request wins.
+   *
+   * Two filter changes in quick succession are two requests, and nothing orders their
+   * responses — so the slower first one could land last and repaint the list with the
+   * filter the user had already moved off. A sequence number is enough: a response
+   * that is not the latest is dropped rather than applied.
+   */
+  const latest = useRef(0);
+
   const load = useCallback(
     (fromFilters = false) => {
       if (fromFilters) setPage(null);
+      const seq = ++latest.current;
       api
         .listConversations(asked(filters))
         .then((p) => {
+          if (seq !== latest.current) return;
           setPage({ entries: p.entries, total: p.total });
           // Only a deliberate filter change moves the cursor. A background refresh
           // that reset it would drag the selection back to the top mid-keystroke.
@@ -108,7 +120,10 @@ export function Inbox({
           // makes a working screen look broken.
           setError(null);
         })
-        .catch((e: Error) => setError(e.message));
+        .catch((e: Error) => {
+          if (seq !== latest.current) return;
+          setError(e.message);
+        });
     },
     [filters],
   );
