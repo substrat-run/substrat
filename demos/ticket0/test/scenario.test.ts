@@ -731,6 +731,66 @@ describe('a stranger in a chat bubble', () => {
     expect(mine.principal).toBeNull();
     expect(mine.external_id).toBeNull();
   });
+
+  /**
+   * What the host knew about the browser rides in as INPUT, already normalised, and
+   * an agent reads it back off the session — never the token hash, which is the one
+   * column that would turn a readable session into a usable one.
+   */
+  it('remembers what the visitor was holding, and where, when the host says', async () => {
+    const widget = await at(world.substrat, 'widget');
+    const anna = await at(world.substrat, 'agent');
+
+    // This stranger's host said nothing: a node dev server, or a seed. Every client
+    // column is null and the read still answers, rather than throwing on a gap.
+    const bare = (await anna.invoke('ticket0/widget-session', {
+      conversationId: conversation,
+    })) as { session: Record<string, unknown> | null };
+    expect(bare.session).toMatchObject({ conversation_id: conversation, browser: null, country: null });
+    expect(bare.session).not.toHaveProperty('token_hash');
+
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+      client: {
+        userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) Version/17.5 Mobile/15E148 Safari/604.1',
+        language: 'sv-SE',
+        device: { browser: 'Safari', browserVersion: '17.5', os: 'iOS', osVersion: '17.5.1', kind: 'mobile' },
+        geo: { country: 'SE', region: 'Stockholm County', city: 'Stockholm', timezone: 'Europe/Stockholm', continent: 'EU' },
+      },
+    })) as { sessionId: string; conversationId: string };
+
+    const read = (await anna.invoke('ticket0/widget-session', {
+      conversationId: started.conversationId,
+    })) as { session: Record<string, unknown> | null };
+    expect(read.session).toMatchObject({
+      id: started.sessionId,
+      browser: 'Safari',
+      browser_version: '17.5',
+      os: 'iOS',
+      os_version: '17.5.1',
+      device: 'mobile',
+      language: 'sv-SE',
+      country: 'SE',
+      region: 'Stockholm County',
+      city: 'Stockholm',
+      timezone: 'Europe/Stockholm',
+    });
+    expect(read.session).not.toHaveProperty('token_hash');
+
+    // The email side has no browser behind it, and says so with a null rather than a refusal.
+    const relay = await at(world.substrat, 'relay');
+    const mailed = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'letter@customer.example',
+      contactName: 'Letter',
+      subject: 'By post',
+      bodyText: 'No browser here.',
+      emailMessageId: '<letter-1@mail.example>',
+    })) as Message;
+    expect(
+      await anna.invoke('ticket0/widget-session', { conversationId: mailed.conversation_id }),
+    ).toEqual({ session: null });
+  });
 });
 
 // ---------------------------------------------------------------------------

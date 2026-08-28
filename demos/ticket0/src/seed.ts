@@ -318,6 +318,15 @@ async function seedDesk(
   const widgetStub = await host.getScope(spec.widget.principal, tenant, scope);
   const started = (await widgetStub.invoke('ticket0/widget-start', {
     origin: spec.origin,
+    // What a host's transport would have attached, in the shape the adapter
+    // normalises it to — so the seeded inbox shows the rail card a real session gets.
+    client: {
+      userAgent:
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+      language: 'sv-SE',
+      device: { browser: 'Safari', browserVersion: '17.5', os: 'iOS', osVersion: '17.5.1', kind: 'mobile' },
+      geo: { country: 'SE', region: 'Stockholm County', city: 'Stockholm', timezone: 'Europe/Stockholm', continent: 'EU' },
+    },
     identity: {
       externalId: spec.customer.email,
       email: spec.customer.email,

@@ -150,6 +150,17 @@ export interface WidgetSession {
   token_hash: string;
   started_at: string;
   last_seen_at: string;
+  user_agent: string | null;
+  language: string | null;
+  browser: string | null;
+  browser_version: string | null;
+  os: string | null;
+  os_version: string | null;
+  device: "desktop" | "mobile" | "tablet" | "bot" | "unknown" | null;
+  country: string | null;
+  region: string | null;
+  city: string | null;
+  timezone: string | null;
 }
 
 /** `ticket0_desk_settings` — declared in spec/model.ts. */
@@ -522,11 +533,18 @@ export interface Ticket0Client {
   widgetPost(input: { sessionId: string; token: string; body: string }): Promise<Message>;
 
   /**
+   * The browser session behind a widget conversation
+   *
+   * `GET /conversations/{conversationId}/widget-session` — `ticket0/widget-session`
+   */
+  widgetSession(input: { conversationId: string }): Promise<{ session: { id: string; conversation_id: string; contact_id: string; origin: string; started_at: string; last_seen_at: string; user_agent: string | null; language: string | null; browser: string | null; browser_version: string | null; os: string | null; os_version: string | null; device: "desktop" | "mobile" | "tablet" | "bot" | "unknown" | null; country: string | null; region: string | null; city: string | null; timezone: string | null } | null }>;
+
+  /**
    * Open a chat session from an embedded widget
    *
    * `POST /widget/sessions` — `ticket0/widget-start`
    */
-  widgetStart(input: { origin: string; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; conversationId: string; greeting: string; verified: boolean; origin: string; startedAt: string }>;
+  widgetStart(input: { origin: string; client?: { userAgent: string | null; language: string | null; device: { browser: string | null; browserVersion: string | null; os: string | null; osVersion: string | null; kind: "desktop" | "mobile" | "tablet" | "bot" | "unknown" }; geo: { country: string | null; region: string | null; city: string | null; timezone: string | null; continent: string | null } }; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; conversationId: string; greeting: string; verified: boolean; origin: string; startedAt: string }>;
 
   /**
    * The public messages in this session’s conversation
@@ -717,6 +735,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/widget/origins", "GET", undefined, undefined),
     widgetPost: (input: Args) =>
       send(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/messages`, "POST", omit(input, ["sessionId"]), undefined),
+    widgetSession: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/widget-session`, "GET", undefined, omit(input, ["conversationId"])),
     widgetStart: (input: Args) =>
       send("/widget/sessions", "POST", input, undefined),
     widgetThread: (input: Args) =>

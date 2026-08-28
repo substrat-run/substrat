@@ -849,6 +849,25 @@ const operations = {
     return conversationOrThrow(ctx, input.conversationId);
   },
 
+  'ticket0/widget-session': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
+    conversationOrThrow(ctx, input.conversationId);
+    // Named columns, and `token_hash` is not among them: this is the one read of the
+    // session table a human can reach, and the hash is the one thing it must not say.
+    const session =
+      ctx.sql.query<Omit<SessionRow, 'token_hash'>>(
+        `SELECT id, conversation_id, contact_id, origin, started_at, last_seen_at,
+                user_agent, language, browser, browser_version, os, os_version, device,
+                country, region, city, timezone
+           FROM ticket0_widget_sessions
+          WHERE conversation_id = ?
+          ORDER BY started_at DESC, id DESC
+          LIMIT 1`,
+        [input.conversationId],
+      )[0] ?? null;
+    return { session };
+  },
+
   'ticket0/list-messages': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
     conversationOrThrow(ctx, input.conversationId);
@@ -1575,11 +1594,35 @@ const operations = {
     const token = `${ulid()}${ulid()}`;
     const id = ulid();
     const now = ctx.now();
+    // What the transport knew about the browser, or nulls when it knew nothing. Stored
+    // beside the session because it is a fact about THIS browser, not about the person.
+    const client = input.client;
     ctx.sql.exec(
       `INSERT INTO ticket0_widget_sessions
-         (id, conversation_id, contact_id, origin, token_hash, started_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [id, conversation.id, contact.id, input.origin, await sha256(token), now, now],
+         (id, conversation_id, contact_id, origin, token_hash, started_at, last_seen_at,
+          user_agent, language, browser, browser_version, os, os_version, device,
+          country, region, city, timezone)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        id,
+        conversation.id,
+        contact.id,
+        input.origin,
+        await sha256(token),
+        now,
+        now,
+        client?.userAgent ?? null,
+        client?.language ?? null,
+        client?.device.browser ?? null,
+        client?.device.browserVersion ?? null,
+        client?.device.os ?? null,
+        client?.device.osVersion ?? null,
+        client?.device.kind ?? null,
+        client?.geo.country ?? null,
+        client?.geo.region ?? null,
+        client?.geo.city ?? null,
+        client?.geo.timezone ?? null,
+      ],
     );
     ctx.link({ entityType: 'widgetSession', entityId: id }, conversationRef(conversation.id));
 

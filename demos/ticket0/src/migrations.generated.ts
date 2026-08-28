@@ -167,4 +167,31 @@ export const ticket0Migrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-ticket0_widget_sessions-user_agent-and-10-more
+    version: '0002',
+    sql: `
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN user_agent TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN language TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN browser TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN browser_version TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN os TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN os_version TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN device TEXT CHECK (device IN ('desktop','mobile','tablet','bot','unknown'));
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN country TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN region TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN city TEXT;
+
+      ALTER TABLE ticket0_widget_sessions ADD COLUMN timezone TEXT;
+    `,
+  },
 ];
