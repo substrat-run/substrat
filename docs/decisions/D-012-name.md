@@ -3,7 +3,8 @@ id: D-12
 date: 2026-07-12
 layer: plan
 title: "Name"
-status: accepted
+status: superseded
+superseded-by: D-24
 aliases: []
 tracking: []
 ---

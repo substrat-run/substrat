@@ -13,7 +13,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
 | [D-1](decisions/D-001-kernel-not-platform.md) | 2026-07-12 | plan | Kernel, not platform |  |
-| [D-2](decisions/D-002-runtime-enforcement-over-conventions-codegen.md) | 2026-07-12 | plan | Runtime enforcement over conventions/codegen |  |
+| [D-2](decisions/D-002-runtime-enforcement-over-conventions-codegen.md) | 2026-07-12 | plan | Runtime enforcement over conventions/codegen <br>*amended by D-57* |  |
 | [D-3](decisions/D-003-two-level-tenancy-tenant-scope-tree-shaped-permissions.md) | 2026-07-12 | plan | Two-level tenancy (tenant → scope), tree-shaped permissions |  |
 | [D-4](decisions/D-004-do-consistency-domain-scope-not-tenant.md) | 2026-07-12 | plan | DO = consistency domain (scope), not tenant |  |
 | [D-5](decisions/D-005-three-data-tiers.md) | 2026-07-12 | plan | Three data tiers |  |
@@ -23,7 +23,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-9](decisions/D-009-posco-adopts-services-piecemeal.md) | 2026-07-12 | plan | POSCo adopts services piecemeal |  |
 | [D-10](decisions/D-010-ekonomisk-f-rvaltning-out-of-v1.md) | 2026-07-12 | plan | Ekonomisk förvaltning out of v1 |  |
 | [D-11](decisions/D-011-build-contracts-control-planes.md) | 2026-07-12 | plan | Build contracts + control planes |  |
-| [D-12](decisions/D-012-name.md) | 2026-07-12 | plan | Name |  |
+| [D-12](decisions/D-012-name.md) | 2026-07-12 | plan | Name <br>*superseded by D-24* |  |
 | [D-13](decisions/D-013-master-doc-canonical.md) | 2026-07-12 | plan | Master doc = canonical |  |
 | [D-14](decisions/D-014-every-kernel-contract-ships-a-cloudflare-adapter-and-a-pure-.md) | 2026-07-12 | plan | Every kernel contract ships a Cloudflare adapter and a pure SQLite adapter |  |
 | [D-15](decisions/D-015-spec-first-contracts.md) | 2026-07-12 | plan | Spec-first contracts |  |
@@ -45,7 +45,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-9](decisions/K-009-contracts-zod-first-via-zod-openapi-on-hono.md) | 2026-07-12 | kernel | Contracts Zod-first via zod-openapi on Hono |  |
 | [K-10](decisions/K-010-stub-exposes-invoke-operation-input.md) | 2026-07-12 | kernel | Stub exposes invoke(operation, input) |  |
 | [D-23](decisions/D-023-permission-evaluation-built-in-constrained-relationship-tupl.md) | 2026-07-13 | plan | Permission evaluation = built-in constrained relationship-tuple engine (FGA-shaped) |  |
-| [D-24](decisions/D-024-name.md) | 2026-07-13 | plan | Name |  |
+| [D-24](decisions/D-024-name.md) | 2026-07-13 | plan | Name <br>*supersedes D-12* |  |
 | [D-25](decisions/D-025-dual-licensing-implemented-per-9.md) | 2026-07-13 | plan | Dual licensing implemented (per §9) |  |
 | [K-11](decisions/K-011-module-storage-model-7-3.md) | 2026-07-13 | kernel | Module storage model (§7.3) |  |
 | [K-12](decisions/K-012-permission-evaluation-constrained-relationship-tuple-engine-.md) | 2026-07-13 | kernel | Permission evaluation = constrained relationship-tuple engine (§4.2) |  |
@@ -55,10 +55,10 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-16](decisions/K-016-in-scope-composition-demos-callout-spec-testrun-md-9-2.md) | 2026-07-13 | kernel | In-scope composition (demos/callout/spec/testrun.md §9.2) |  |
 | [D-26](decisions/D-026-engine-extension-model-pinned-kernel-design-7-5-k-17-k-18.md) | 2026-07-14 | plan | Engine extension model pinned (kernel-design §7.5, K-17/K-18) |  |
 | [D-27](decisions/D-027-placement-spectrum-pinned-6.md) | 2026-07-14 | plan | Placement spectrum pinned (§6) |  |
-| [D-28](decisions/D-028-engine-compatibility-surface-pinned.md) | 2026-07-14 | plan | Engine compatibility surface pinned |  |
+| [D-28](decisions/D-028-engine-compatibility-surface-pinned.md) | 2026-07-14 | plan | Engine compatibility surface pinned <br>*amended by K-39* |  |
 | [D-29](decisions/D-029-event-payloads-get-per-type-schemaversion-zod-schemas-owned-.md) | 2026-07-14 | plan | Event payloads get per-(type, schemaVersion) Zod schemas owned by the emitting engine |  |
 | [K-17](decisions/K-017-vertical-substates-7-5.md) | 2026-07-14 | kernel | Vertical substates (§7.5) |  |
-| [K-18](decisions/K-018-queryable-custom-fields.md) | 2026-07-14 | kernel | Queryable custom fields |  |
+| [K-18](decisions/K-018-queryable-custom-fields.md) | 2026-07-14 | kernel | Queryable custom fields <br>*amended by K-41* |  |
 | [D-30](decisions/D-030-control-plane-the-shared-layer-across-n-per-vertical-deploym.md) | 2026-07-15 | plan | Control plane = the shared layer across N per-vertical deployments; billing deferred <br>*restated as K-20* |  |
 | [K-19](decisions/K-019-read-path-tiering-5-6.md) | 2026-07-15 | kernel | Read-path tiering (§5.6) |  |
 | [K-20](decisions/K-020-control-plane.md) | 2026-07-15 | kernel | Control plane <br>*restated as D-30* |  |
@@ -95,7 +95,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-44](decisions/D-044-native-static-assets-are-an-additive-allow-to-the-hosted-ver.md) | 2026-08-06 | plan | Native static assets are an additive allow to the hosted-vertical sandbox — the bytes are… | #340, #286 |
 | [D-45](decisions/D-045-subject-erasure-is-scoped-to-the-stores-that-exist-the-spine.md) | 2026-08-08 | plan | Subject erasure is scoped to the stores that exist: the spine is redacted,… <br>*restated as K-37* | #37, #493, #40, #36 |
 | [K-37](decisions/K-037-subject-erasure-splits-by-store-tier-1-is-redacted-platform-.md) | 2026-08-08 | kernel | Subject erasure splits by store: Tier 1 is redacted, platform-retained copies are… <br>*restated as D-45* | #37, #493, #542, #543, #545 |
-| [D-46](decisions/D-046-a-hosted-vertical-s-outbound-egress-is-a-declared-per-versio.md) | 2026-08-11 | plan | A hosted vertical's outbound egress is a declared per-version allowlist, enforced at the… | #303, #442 |
+| [D-46](decisions/D-046-a-hosted-vertical-s-outbound-egress-is-a-declared-per-versio.md) | 2026-08-11 | plan | A hosted vertical's outbound egress is a declared per-version allowlist, enforced at the… <br>*amended by D-58* | #303, #442 |
 | [D-48](decisions/D-048-the-builder-studio-is-built-as-an-unlisted-internal-tool-fir.md) | 2026-08-15 | plan | The builder studio is built as an unlisted internal tool first |  |
 | [D-49](decisions/D-049-the-studio-s-local-and-hosted-modes-are-one-product-behind-a.md) | 2026-08-15 | plan | The studio's local and hosted modes are one product behind a `Workspace` interface |  |
 | [D-50](decisions/D-050-the-llm-is-pluggable-at-the-generator-seam-and-running-any-p.md) | 2026-08-15 | plan | The LLM is pluggable at the generator seam, and running any provider is a requirement |  |
@@ -105,10 +105,10 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-54](decisions/D-054-the-generated-vertical-is-the-customer-s-code-the-studio-is-.md) | 2026-08-15 | plan | The generated vertical is the customer's code; the studio is a tool, not the author |  |
 | [D-55](decisions/D-055-the-generator-s-skills-are-builder-distilled-documents-owned.md) | 2026-08-15 | plan | The generator's skills are builder-distilled documents owned by the studio |  |
 | [D-56](decisions/D-056-which-skills-ride-a-turn-is-decided-by-a-phase-ladder-derive.md) | 2026-08-15 | plan | Which skills ride a turn is decided by a phase ladder derived from workspace facts |  |
-| [D-57](decisions/D-057-the-agent-loop-acceptance-benchmark-is-retired-the-run-record.md) | 2026-08-19 | plan | The agent-loop acceptance benchmark is retired; the run records are kept |  |
+| [D-57](decisions/D-057-the-agent-loop-acceptance-benchmark-is-retired-the-run-record.md) | 2026-08-19 | plan | The agent-loop acceptance benchmark is retired; the run records are kept <br>*amends D-2* |  |
 | [K-38](decisions/K-038-cross-engine-transition-guards-ship-as-both-poles-chosen-per.md) | 2026-08-19 | kernel | Cross-engine transition guards ship as both poles, chosen per case |  |
-| [K-39](decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md) | 2026-08-19 | kernel | Payload changes are loud-failure replaces; dual-emit is unavailable, not merely awkward | #128 |
+| [K-39](decisions/K-039-payload-changes-are-loud-failure-replaces-until-dispatch-rou.md) | 2026-08-19 | kernel | Payload changes are loud-failure replaces; dual-emit is unavailable, not merely awkward <br>*amends D-28* | #128 |
 | [K-40](decisions/K-040-an-entity-s-state-machine-is-declared-in-the-model-not-w.md) | 2026-08-21 | kernel | An entity's state machine is declared in the model, not written a second time as guards | #844 |
-| [D-58](decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md) | 2026-08-22 | plan | D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable | #863, #858 |
-| [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it | #811, #129, #132 |
+| [D-58](decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md) | 2026-08-22 | plan | D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable <br>*amends D-46* | #863, #858 |
+| [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it <br>*amends K-18* | #811, #129, #132 |
 | [K-42](decisions/K-042-an-impersonated-operation-carries-two-actors-and-the-permis.md) | 2026-08-26 | kernel | An impersonated operation carries two actors, and the permission model answers as the impersonated one | #868, #85, #44 |

@@ -83,7 +83,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — 94 entries, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->100 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
@@ -94,6 +94,13 @@ pnpm lint:decisions --check    # CI: fail if any generated table is stale
 
 `D-*` are plan-layer, `K-*` kernel-layer. The two id vocabularies are historical: one log,
 ids never reused. See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
+
+An entry's `status` is `accepted`, `proposed` (rendered as awaiting ratification) or
+`superseded` (carries `superseded-by`, and every rendering of the row names the
+replacement). The log is append-only, so a later entry that corrects an earlier one
+declares `amends: [D-46]` and the earlier row gets the back-pointer — a reader landing on
+D-46 sees D-58 without knowing to look for it. Every one of those references must name an
+entry that exists, and the count above is written by the same tool; `--check` holds all of it.
 
 ## Index
 
