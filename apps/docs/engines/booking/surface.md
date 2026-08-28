@@ -9,7 +9,7 @@ below.
 |---|---|---|
 | `booking/create-resource` | `booking:manage-resources` | add a bookable resource |
 | `booking/set-resource-active` | `booking:manage-resources` | take one out of service |
-| `booking/list-resources` | `booking:read` | list resources |
+| `booking/list-resources` | `booking:read` | a page of resources, optionally filtered by `kind` |
 | `booking/hold` | `booking:hold` | tentative hold; throws `SlotUnavailable` |
 | `booking/confirm` | `booking:confirm` *(per reservation)* | held → confirmed, re-checking capacity |
 | `booking/expire` | `booking:confirm` | surface a lapsed hold as `expired` |
@@ -19,7 +19,8 @@ below.
 | `booking/move` | `booking:move` *(per reservation)* | reschedule; throws `SlotUnavailable` |
 | `booking/open` | `booking:confirm` *(per reservation)* | put places on offer on an existing reservation, or close it again |
 | `booking/start` · `complete` · `no-show` | `booking:complete` | service transitions |
-| `booking/get` · `list` · `availability` | `booking:read` | reads |
+| `booking/get` | `booking:read` | one reservation with its participants |
+| `booking/list` · `availability` | `booking:read` | paged reads — a `Page<Reservation>` / `Page<FreeInterval>` |
 
 Checks marked *(per reservation)* pass an `EntityRef`, so a consumer holding an
 entity-narrowed grant reaches their own booking and no one else's.
@@ -48,7 +49,35 @@ getReservation(ctx, reservationId, now?)  → { reservation, participants }
 listReservations(ctx, { resourceId?, from?, to? }) → Reservation[]
 availability(ctx, { resourceId, from, to })        → FreeInterval[]
 effectiveStateOf(state, expiresAt, now)            → ReservationState
+
+// the paged twins — what the three list operations answer
+listResourcesPage(ctx, page)                       → Page<Resource>       // page: PageParams, filters: { kind? }
+listReservationsPage(ctx, { resourceId?, from?, to?,
+                            limit?, cursor? })     → Page<Reservation>    // cursor is the reservation id
+availabilityPage(ctx, { resourceId, from, to,
+                        limit?, cursor? })         → Page<FreeInterval>   // cursor is a segment's startsAt
 ```
+
+### The paged twins
+
+Each list operation answers with a `Page<T>` — `{ entries, nextCursor }` — and the function
+behind it is the `…Page` twin, not the array-returning fold above it. Both stay exported on
+purpose: `listResources(ctx, kind?)` and `listReservations(ctx, window)` are in-scope folds a
+vertical calls inside its own transaction, where the bound is the vertical's (a club has eight
+courts, not eight thousand). The unbounded read that paging was introduced against is the
+invocable *endpoint*, and that is what the twins back.
+
+They page differently, and the difference is the cursor. `listResourcesPage` is
+kernel-composed: `ctx.page` builds the `WHERE`, the `ORDER BY` and the keyset tie-break from
+the operation's declared `paged` vocabulary, so it takes the kernel's `PageParams` (`limit`,
+`sort`, `order`, `cursor`, `filters`). `listReservationsPage` owns its own `WHERE` because the
+window is an overlap test (`starts_at < to AND ends_at > from`), which the kernel's
+equality-only filter vocabulary cannot express; its cursor is the reservation `id`, since
+`startsAt` is not unique on a court schedule — a caller rendering a calendar sorts the page it
+got by `startsAt` itself. `availabilityPage` runs the whole fold and takes the page off the
+end of it (the segments are derived by merging every live reservation in the window, so there
+is nothing partial to push into SQL); its segments are disjoint and ordered, which is what
+makes `startsAt` a sound cursor there.
 
 ### `move`, not `update`
 
