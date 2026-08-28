@@ -3,8 +3,14 @@ import { moneyOf, type EntityRef, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   PERM,
+  assignWorkOrder,
   completeWorkOrder,
   createWorkOrder,
+  getReportedLines,
+  getWorkOrder,
+  reportMaterial,
+  reportTime,
+  startWorkOrder,
   workorderModule,
   type WorkOrder,
 } from '../src/index.js';
@@ -21,6 +27,9 @@ import {
 
 const FACILITY: EntityRef = { entityType: 'facility', entityId: '01JFACILITY0000000000000000' };
 const CUSTOMER: EntityRef = { entityType: 'customer', entityId: '01JCUSTOMER0000000000000000' };
+// A principal id: `workorder.assigned` names the technician as its data subject,
+// and a subject id is a ULID (`dataSubjectId`), not a display name.
+const TECHNICIAN = '01JTEKN1KER000000000000000';
 
 const billable = (article: string, amount: string, currency = 'SEK') => ({
   article,
@@ -75,6 +84,99 @@ describe('engine-workorder', () => {
     // shape — the HTTP body is still the bare array (#829).
     const page = await staff.invoke<Page<WorkOrder>>('workorder/list');
     expect(page.entries).toHaveLength(0);
+  });
+
+  // -- the four reporting-side in-scope functions (#975) --------------------
+
+  it('assignWorkOrder records the technician, leaves the order planned, and emits about them', async () => {
+    const order = await create();
+    const assigned = await h.run((ctx) => assignWorkOrder(ctx, { orderId: order.id, technician: TECHNICIAN }));
+    expect(assigned.assignedTo).toBe(TECHNICIAN);
+    expect(assigned.status).toBe('planned');
+
+    const [evt] = h.eventsOfType('workorder.assigned');
+    expect(evt!.payload).toEqual({ orderId: order.id, technician: TECHNICIAN });
+    // The technician is the data subject, not the caller.
+    expect(evt!.piiClass).toBe('pseudonymous');
+    expect(evt!.subjectId).toBe(TECHNICIAN);
+  });
+
+  it('startWorkOrder moves planned → in_progress and emits workorder.started', async () => {
+    const order = await create();
+    const started = await h.run((ctx) => startWorkOrder(ctx, { orderId: order.id }));
+    expect(started.status).toBe('in_progress');
+    expect(h.eventsOfType('workorder.started')[0]!.payload).toEqual({ orderId: order.id });
+  });
+
+  it('reportTime and reportMaterial append, attributed to the acting principal', async () => {
+    const order = await create();
+    const { entry, line, principal } = await h.run((ctx) => ({
+      principal: ctx.principal,
+      entry: reportTime(ctx, { orderId: order.id, hours: '1.5', note: 'felsökning' }),
+      line: reportMaterial(ctx, { orderId: order.id, article: 'termostat', qty: '2' }),
+    }));
+    expect(entry).toMatchObject({ order_id: order.id, technician: principal, hours: '1.5', note: 'felsökning' });
+    expect(line).toMatchObject({ order_id: order.id, article: 'termostat', qty: '2', reported_by: principal });
+
+    const lines = await h.run((ctx) => getReportedLines(ctx, order.id));
+    expect(lines.time.map((t) => t.id)).toEqual([entry.id]);
+    expect(lines.material.map((m) => m.id)).toEqual([line.id]);
+
+    expect(h.eventsOfType('workorder.time-reported')[0]!.payload).toEqual({
+      orderId: order.id,
+      entryId: entry.id,
+      hours: '1.5',
+    });
+    expect(h.eventsOfType('workorder.material-reported')[0]!.payload).toEqual({
+      orderId: order.id,
+      lineId: line.id,
+      article: 'termostat',
+      qty: '2',
+    });
+  });
+
+  it('the in-scope functions parse their input on the way in', async () => {
+    const order = await create();
+    await expect(
+      h.run((ctx) => assignWorkOrder(ctx, { orderId: order.id, technician: '' })),
+    ).rejects.toThrow();
+    await expect(
+      h.run((ctx) => reportTime(ctx, { orderId: order.id, hours: 'en och en halv' })),
+    ).rejects.toThrow();
+    expect(h.eventsOfType('workorder.assigned')).toHaveLength(0);
+    expect(h.eventsOfType('workorder.time-reported')).toHaveLength(0);
+  });
+
+  it('composes inside one transaction: assign, start and report together, and all of it rolls back together', async () => {
+    const order = await create();
+
+    // The happy path a vertical would write: three engine calls in ITS operation.
+    const started = await h.run((ctx) => {
+      assignWorkOrder(ctx, { orderId: order.id, technician: TECHNICIAN });
+      const s = startWorkOrder(ctx, { orderId: order.id });
+      reportTime(ctx, { orderId: order.id, hours: '0.5' });
+      return s;
+    });
+    expect(started.status).toBe('in_progress');
+    expect(started.assignedTo).toBe(TECHNICIAN);
+
+    // A second order: the vertical's own step fails AFTER the engine wrote. No
+    // `ctx.atomic`, so the whole operation — engine rows and events included —
+    // is gone, which is what "same transaction" promises.
+    const other = await create('andra');
+    await expect(
+      h.run((ctx) => {
+        startWorkOrder(ctx, { orderId: other.id });
+        reportMaterial(ctx, { orderId: other.id, article: 'packning', qty: '1' });
+        throw new Error('the vertical refused');
+      }),
+    ).rejects.toThrow('the vertical refused');
+    const untouched = await h.run((ctx) => getWorkOrder(ctx, other.id));
+    expect(untouched.status).toBe('planned');
+    const lines = await h.run((ctx) => getReportedLines(ctx, other.id));
+    expect(lines.material).toHaveLength(0);
+    expect(h.eventsOfType('workorder.started')).toHaveLength(1);
+    expect(h.eventsOfType('workorder.material-reported')).toHaveLength(0);
   });
 
   // -- the state machine cannot skip ---------------------------------------

@@ -74,9 +74,19 @@ createWorkOrder(ctx, input): WorkOrder
 listOrders(ctx, page): Page<WorkOrder>
 getWorkOrder(ctx, orderId): WorkOrder
 getReportedLines(ctx, orderId): { time: TimeEntry[]; material: MaterialLine[] }
+assignWorkOrder(ctx, { orderId, technician }): WorkOrder
+startWorkOrder(ctx, { orderId }): WorkOrder
+reportTime(ctx, { orderId, hours, note? }): TimeEntry
+reportMaterial(ctx, { orderId, article, qty, note? }): MaterialLine
 completeWorkOrder(ctx, { orderId, billable }): { order: WorkOrder; total: Money }
 closeWorkOrder(ctx, { orderId }): WorkOrder
 ```
+
+`assignWorkOrder`, `startWorkOrder`, `reportTime` and `reportMaterial` were extracted from
+their operation handlers in [#975](https://github.com/substrat-run/substrat/issues/975);
+until then the four carried their UPDATE/INSERT and emit inline, so a vertical could not
+assign, start or report inside its own transaction without forking. Their inputs are the
+schemas the operations declare (`operations.ts`), parsed on the way in.
 
 **The caller owns the permission check.** These functions are the composable half of K-16;
 the registered operations bind them behind `assertAllowed(await ctx.check(PERM.…))`. A

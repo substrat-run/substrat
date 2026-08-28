@@ -192,6 +192,21 @@ export const createWorkOrderInput = z.object({
 export type CreateWorkOrderInput = z.infer<typeof createWorkOrderInput>;
 
 /**
+ * The inputs of the four in-scope functions extracted in #975 are the schemas
+ * their default operation bindings DECLARE — read from `operations.ts`, never
+ * restated here. One description of each input, parsed on the way in whether
+ * the call arrives through the operation or from a vertical's own code.
+ */
+export const assignWorkOrderInput = workorderOperations['workorder/assign'].input;
+export type AssignWorkOrderInput = z.infer<typeof assignWorkOrderInput>;
+export const startWorkOrderInput = workorderOperations['workorder/start'].input;
+export type StartWorkOrderInput = z.infer<typeof startWorkOrderInput>;
+export const reportTimeInput = workorderOperations['workorder/report-time'].input;
+export type ReportTimeInput = z.infer<typeof reportTimeInput>;
+export const reportMaterialInput = workorderOperations['workorder/report-material'].input;
+export type ReportMaterialInput = z.infer<typeof reportMaterialInput>;
+
+/**
  * DERIVED from the entity registry (`entities.ts`) rather than written beside
  * it. The registry is what a vertical imports for the row's Zod schema, and two
  * descriptions of one row is how they come to disagree.
@@ -404,6 +419,114 @@ export function getWorkOrder(ctx: OperationContext, orderId: string): WorkOrder 
   return toWorkOrder(getRow(ctx, orderId));
 }
 
+/**
+ * Assign a technician. Records and emits; the order stays `planned` (§3).
+ *
+ * In-scope (K-16) since #975: `assignWorkOrder`, `startWorkOrder`, `reportTime`
+ * and `reportMaterial` used to live inline in their operation handlers, so a
+ * vertical could not assign, start or report inside its own transaction without
+ * forking — the exact failure the by-call shape exists to prevent. Each is now a
+ * plain export, and `workorder/assign` … `workorder/report-material` below are
+ * their default bindings. The CALLER owns the permission check, as with every
+ * other function in this section.
+ */
+export function assignWorkOrder(ctx: OperationContext, rawInput: AssignWorkOrderInput): WorkOrder {
+  const input = assignWorkOrderInput.parse(rawInput);
+  const row = getRow(ctx, input.orderId);
+  requireTransition(row, 'workorder/assign');
+  ctx.sql.exec('UPDATE workorder_orders SET assigned_to = ? WHERE id = ?', [
+    input.technician,
+    row.id,
+  ]);
+  ctx.emit({
+    type: 'workorder.assigned',
+    schemaVersion: 1,
+    entity: orderRef(row.id),
+    piiClass: 'pseudonymous',
+    subjectId: dataSubjectId.parse(input.technician),
+    payload: { orderId: row.id, technician: input.technician },
+  });
+  return toWorkOrder(getRow(ctx, row.id));
+}
+
+/** planned → in_progress. See `assignWorkOrder` for why this is exported. */
+export function startWorkOrder(ctx: OperationContext, rawInput: StartWorkOrderInput): WorkOrder {
+  const input = startWorkOrderInput.parse(rawInput);
+  const row = getRow(ctx, input.orderId);
+  requireTransition(row, 'workorder/start');
+  ctx.sql.exec(`UPDATE workorder_orders SET status = 'in_progress' WHERE id = ?`, [row.id]);
+  ctx.emit({
+    type: 'workorder.started',
+    schemaVersion: 1,
+    entity: orderRef(row.id),
+    piiClass: 'none',
+    payload: { orderId: row.id },
+  });
+  return toWorkOrder(getRow(ctx, row.id));
+}
+
+/**
+ * Append a time entry, attributed to the acting principal. Append-only: there
+ * is no update path, so a correction is another entry (§2).
+ */
+export function reportTime(ctx: OperationContext, rawInput: ReportTimeInput): TimeEntry {
+  const input = reportTimeInput.parse(rawInput);
+  const hours = decimal.parse(input.hours);
+  const row = getRow(ctx, input.orderId);
+  requireTransition(row, 'workorder/report-time');
+  const id = ulid();
+  ctx.sql.exec(
+    `INSERT INTO workorder_time_entries (id, order_id, technician, hours, note, reported_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, row.id, ctx.principal, hours, input.note ?? null, ctx.now()],
+  );
+  ctx.emit({
+    type: 'workorder.time-reported',
+    schemaVersion: 1,
+    entity: orderRef(row.id),
+    piiClass: 'pseudonymous',
+    subjectId: dataSubjectId.parse(ctx.principal),
+    payload: { orderId: row.id, entryId: id, hours },
+  });
+  return returns(
+    timeEntry,
+    `time entry ${id}`,
+    ctx.sql.query<TimeEntry>(
+      `SELECT ${TIME_ENTRY_COLUMNS} FROM workorder_time_entries WHERE id = ?`,
+      [id],
+    )[0],
+  );
+}
+
+/** Append a material line, reported by the acting principal. Append-only, as above. */
+export function reportMaterial(ctx: OperationContext, rawInput: ReportMaterialInput): MaterialLine {
+  const input = reportMaterialInput.parse(rawInput);
+  const qty = decimal.parse(input.qty);
+  const row = getRow(ctx, input.orderId);
+  requireTransition(row, 'workorder/report-material');
+  const id = ulid();
+  ctx.sql.exec(
+    `INSERT INTO workorder_material_lines (id, order_id, article, qty, note, reported_by, reported_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, row.id, input.article, qty, input.note ?? null, ctx.principal, ctx.now()],
+  );
+  ctx.emit({
+    type: 'workorder.material-reported',
+    schemaVersion: 1,
+    entity: orderRef(row.id),
+    piiClass: 'none',
+    payload: { orderId: row.id, lineId: id, article: input.article, qty },
+  });
+  return returns(
+    materialLine,
+    `material line ${id}`,
+    ctx.sql.query<MaterialLine>(
+      `SELECT ${MATERIAL_LINE_COLUMNS} FROM workorder_material_lines WHERE id = ?`,
+      [id],
+    )[0],
+  );
+}
+
 export function completeWorkOrder(
   ctx: OperationContext,
   input: { orderId: string; billable: BillableLine[] },
@@ -482,104 +605,24 @@ const listOp: OperationHandler<
   return listOrders(ctx, { ...input, filters: { status: input?.status } });
 };
 
-const assignOp: OperationHandler<{ orderId: string; technician: string }, WorkOrder> = async (
-  ctx,
-  input,
-) => {
+const assignOp: OperationHandler<AssignWorkOrderInput, WorkOrder> = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.assign));
-  const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/assign');
-  ctx.sql.exec('UPDATE workorder_orders SET assigned_to = ? WHERE id = ?', [
-    input.technician,
-    row.id,
-  ]);
-  ctx.emit({
-    type: 'workorder.assigned',
-    schemaVersion: 1,
-    entity: orderRef(row.id),
-    piiClass: 'pseudonymous',
-    subjectId: dataSubjectId.parse(input.technician),
-    payload: { orderId: row.id, technician: input.technician },
-  });
-  return toWorkOrder(getRow(ctx, row.id));
+  return assignWorkOrder(ctx, input);
 };
 
-const startOp: OperationHandler<{ orderId: string }, WorkOrder> = async (ctx, input) => {
+const startOp: OperationHandler<StartWorkOrderInput, WorkOrder> = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.report));
-  const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/start');
-  ctx.sql.exec(`UPDATE workorder_orders SET status = 'in_progress' WHERE id = ?`, [row.id]);
-  ctx.emit({
-    type: 'workorder.started',
-    schemaVersion: 1,
-    entity: orderRef(row.id),
-    piiClass: 'none',
-    payload: { orderId: row.id },
-  });
-  return toWorkOrder(getRow(ctx, row.id));
+  return startWorkOrder(ctx, input);
 };
 
-const reportTimeOp: OperationHandler<
-  { orderId: string; hours: string; note?: string },
-  TimeEntry
-> = async (ctx, input) => {
+const reportTimeOp: OperationHandler<ReportTimeInput, TimeEntry> = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.report));
-  const hours = decimal.parse(input.hours);
-  const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/report-time');
-  const id = ulid();
-  ctx.sql.exec(
-    `INSERT INTO workorder_time_entries (id, order_id, technician, hours, note, reported_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, row.id, ctx.principal, hours, input.note ?? null, ctx.now()],
-  );
-  ctx.emit({
-    type: 'workorder.time-reported',
-    schemaVersion: 1,
-    entity: orderRef(row.id),
-    piiClass: 'pseudonymous',
-    subjectId: dataSubjectId.parse(ctx.principal),
-    payload: { orderId: row.id, entryId: id, hours },
-  });
-  return returns(
-    timeEntry,
-    `time entry ${id}`,
-    ctx.sql.query<TimeEntry>(
-      `SELECT ${TIME_ENTRY_COLUMNS} FROM workorder_time_entries WHERE id = ?`,
-      [id],
-    )[0],
-  );
+  return reportTime(ctx, input);
 };
 
-const reportMaterialOp: OperationHandler<
-  { orderId: string; article: string; qty: string; note?: string },
-  MaterialLine
-> = async (ctx, input) => {
+const reportMaterialOp: OperationHandler<ReportMaterialInput, MaterialLine> = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.report));
-  const qty = decimal.parse(input.qty);
-  const row = getRow(ctx, input.orderId);
-  requireTransition(row, 'workorder/report-material');
-  const id = ulid();
-  ctx.sql.exec(
-    `INSERT INTO workorder_material_lines (id, order_id, article, qty, note, reported_by, reported_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, row.id, input.article, qty, input.note ?? null, ctx.principal, ctx.now()],
-  );
-  ctx.emit({
-    type: 'workorder.material-reported',
-    schemaVersion: 1,
-    entity: orderRef(row.id),
-    piiClass: 'none',
-    payload: { orderId: row.id, lineId: id, article: input.article, qty },
-  });
-  return returns(
-    materialLine,
-    `material line ${id}`,
-    ctx.sql.query<MaterialLine>(
-      `SELECT ${MATERIAL_LINE_COLUMNS} FROM workorder_material_lines WHERE id = ?`,
-      [id],
-    )[0],
-  );
+  return reportMaterial(ctx, input);
 };
 
 const completeOp: OperationHandler<

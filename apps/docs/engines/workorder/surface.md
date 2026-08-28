@@ -51,6 +51,10 @@ import { createWorkOrder, completeWorkOrder, PERM } from '@substrat-run/engine-w
 | Function | Backs | Notes |
 |---|---|---|
 | `createWorkOrder(ctx, input)` | *(no operation)* | the deliberate hole above |
+| `assignWorkOrder(ctx, input)` | `workorder/assign` | records the technician; the order stays `planned` |
+| `startWorkOrder(ctx, input)` | `workorder/start` | `planned` → `in_progress` |
+| `reportTime(ctx, input)` | `workorder/report-time` | appends a time entry, attributed to the acting principal |
+| `reportMaterial(ctx, input)` | `workorder/report-material` | appends a material line |
 | `completeWorkOrder(ctx, input)` | `workorder/complete` | validates + freezes billable lines |
 | `closeWorkOrder(ctx, input)` | `workorder/close` | |
 | `listOrders(ctx, status?)` | `workorder/list` | |
@@ -69,14 +73,11 @@ moved, used to read a field that had become `null` and render it — now the rea
 the seam. Reads name their columns for the same reason: `SELECT *` would publish whatever
 the physical table happens to hold.
 
-::: warning Not every operation has an in-scope function yet
-`assign`, `start`, `report-time`, and `report-material` carry their logic **inline in the
-operation handler**, so there is no composable export behind them. A vertical that wants to
-report time *and* touch its own tables in one transaction cannot currently do it through the
-engine — the convention ("engine operations are thin: a permission check plus one exported
-in-scope function") is not yet met here. Unlike the missing `create`, this asymmetry is an
-artifact, not a decision.
-:::
+Every operation is a thin binding of one of these — a permission check plus one call — so a
+vertical that wants to report time *and* touch its own tables in one transaction composes
+`reportTime` inside its own operation. The four reporting-side functions (`assignWorkOrder`,
+`startWorkOrder`, `reportTime`, `reportMaterial`) take exactly the input their operation
+declares and parse it on the way in.
 
 ## Permissions
 
