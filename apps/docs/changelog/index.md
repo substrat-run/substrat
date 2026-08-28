@@ -39,8 +39,11 @@ regenerates it is worse than one that admits an author.
 
 What *is* mechanical is completeness. `pnpm lint:changelog --check` reads each
 entry's declared `range`, walks `git log` for the merges inside it, and fails if
-any of them goes uncited. An author who drops thirty PRs out of ninety produces a
-page that reads as finished and is not, and the only way to catch that by hand is
-to redo the work.
+any of them is not accounted for. The prose names no pull requests — it is
+written for someone building on the platform, who has no reason to open the
+repo — so each entry ends with a ledger of the merges it covers, in a comment
+that does not render. An author who drops thirty PRs out of ninety produces a
+page that reads as finished and is not, and the only way to catch that by hand
+is to redo the work.
 
 [changesets]: https://github.com/changesets/changesets

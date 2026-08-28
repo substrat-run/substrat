@@ -35,8 +35,10 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   With no flag it prints a week's raw material — every first-parent merge grouped by
   area, the commits that landed without a PR, and each package's version span
   (`--week 2026-w34` for a named week). With `--check`, CI asserts **completeness**:
-  every merge inside an entry's declared `range` is cited somewhere on its page. The
-  prose is authored, not generated, and deliberately carries none of the three marks
+  every merge inside an entry's declared `range` is named somewhere in its source. The
+  prose is written for a **platform user** — what changed for them, no PR references —
+  so each entry accounts for its merges in a coverage-ledger HTML comment at the end.
+  The prose is authored, not generated, and deliberately carries none of the three marks
   below — no producer could re-emit a digest. What rots invisibly is coverage, and
   that is what the gate holds. Written each Monday by the `weekly-changelog` skill,
   which opens a PR and never merges it. Needs real history, so the CI checkout is
