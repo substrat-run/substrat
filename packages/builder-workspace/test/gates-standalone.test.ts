@@ -190,10 +190,11 @@ describe('permission-diff --root — the standalone permission checkpoint', () =
 		expect((await tool(['tools/permission-diff.mts', '--root', dir])).code).toBe(0);
 		const first = await readFile(join(dir, 'PERMISSIONS.md'), 'utf8');
 
-		// The same directory, named with a trailing slash and a `.` hop. A header keyed
-		// off the raw argument would report drift here although no permission changed.
-		const spelled = join(dir, '.', '');
-		const again = await tool(['tools/permission-diff.mts', '--root', spelled, '--check']);
+		// The same directory, named with a `.` hop and a trailing slash — a genuinely
+		// different ARGUMENT (`join` would normalise it away, so it is built by hand).
+		// A header keyed off the raw argument would report drift here although no
+		// permission changed.
+		const again = await tool(['tools/permission-diff.mts', '--root', `${dir}/./`, '--check']);
 		expect(again.code).toBe(0);
 		expect(await readFile(join(dir, 'PERMISSIONS.md'), 'utf8')).toBe(first);
 	}, 60_000);
@@ -206,6 +207,14 @@ describe('permission-diff --root — the standalone permission checkpoint', () =
 		const r = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
 		expect(r.code).toBe(2);
 		expect(r.out).toContain('is not valid JSON');
+
+		// `null` parses fine and is not a package object. Reading `.substrat` off it
+		// throws a TypeError, which exits 1 — "the artifact is out of date", the same
+		// lie in a different costume.
+		await writeFile(join(dir, 'package.json'), 'null');
+		const nul = await tool(['tools/permission-diff.mts', '--root', dir, '--check']);
+		expect(nul.code).toBe(2);
+		expect(nul.out).toContain('not an object');
 	}, 60_000);
 
 	it('a project declaring no permission surface is exit 2, never a green light', async () => {

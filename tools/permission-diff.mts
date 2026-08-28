@@ -112,7 +112,12 @@ const projectDir = rootArg === undefined ? undefined : resolve(rootArg);
 function regenerateFor(dir: string): string {
   const rel = relative(root, dir);
   if (/^(demos|apps)\/[^/]+$/.test(rel)) return 'pnpm lint:permissions';
-  return `pnpm exec tsx tools/permission-diff.mts --root ${rel}`;
+  return `pnpm exec tsx tools/permission-diff.mts --root ${shellArg(rel)}`;
+}
+
+/** A path as a single shell word — quoted only when it needs to be, so ordinary paths read plainly. */
+function shellArg(value: string): string {
+  return /^[A-Za-z0-9._\-/]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 /** The command to rerun THIS invocation, for the diagnostics below. */
@@ -322,15 +327,21 @@ interface Vertical {
 function declaredEntry(dir: string, rel: string): Vertical | undefined {
   const pkgPath = join(dir, 'package.json');
   if (!existsSync(pkgPath)) return undefined;
-  let pkgJson: { name?: string; substrat?: { permissions?: string } };
+  let parsed: unknown;
   try {
-    pkgJson = JSON.parse(readFileSync(pkgPath, 'utf8')) as typeof pkgJson;
+    parsed = JSON.parse(readFileSync(pkgPath, 'utf8'));
   } catch (e) {
-    // Not exit 1: an unparseable package.json is the tool unable to do its job, and
+    // Not exit 1: an unreadable package.json is the tool unable to do its job, and
     // exit 1 in this convention means "the artifact is out of date" — a caller told
     // that regenerates and commits, which fixes nothing.
     cannot(`${rel}/package.json is not valid JSON: ${(e as Error).message}`);
   }
+  // `null` and `[]` parse fine and are not package objects; reading `.substrat` off
+  // `null` would throw a TypeError past `cannot` and exit 1 — the same lie again.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    cannot(`${rel}/package.json is valid JSON but not an object.`);
+  }
+  const pkgJson = parsed as { name?: string; substrat?: { permissions?: string } };
   const entry = pkgJson.substrat?.permissions;
   if (!entry) return undefined;
   return { rel, dir, entry, pkg: pkgJson.name ?? rel };
