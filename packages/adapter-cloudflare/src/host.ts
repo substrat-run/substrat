@@ -4,6 +4,7 @@ import {
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
+  modelUsageEntry,
   attachmentRecord,
   type AttachmentRecord,
   type BlobStoreHandle,
@@ -61,6 +62,8 @@ import {
   type AccessLogEntry,
   type AdminLogEntry,
   type OpsFailureEntry,
+  type ModelUsageEntry,
+  type ModelUsageSummary,
   type CapabilityGrant,
   type CreateOrgInput,
   type CreateTenantInput,
@@ -134,6 +137,10 @@ import {
   type AuditLogFilter,
   type OpsFailureFilter,
   type OpsFailureInput,
+  type ModelUsageFilter,
+  type ModelUsageInput,
+  type ModelUsageWindow,
+  foldModelUsage,
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
   type ScopeAttachments,
@@ -190,6 +197,8 @@ import type {
   AuditLogQuery,
   OpsFailureQuery,
   OpsFailureRow,
+  ModelUsageQuery,
+  ModelUsageRow,
   ChannelHistoryRow,
   ChannelRow,
   ConnectionDoRow,
@@ -609,6 +618,8 @@ interface ControlPlaneStub {
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   recordOpsFailure(row: OpsFailureRow): Promise<void>;
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
+  recordModelUsage(row: ModelUsageRow): Promise<{ recorded: boolean }>;
+  listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
   // #40 — the directory's own backup/restore pair.
   exportDump(): Promise<ScopeDumpTable[]>;
   importDump(tables: ScopeDumpTable[]): Promise<void>;
@@ -4435,6 +4446,45 @@ export class CloudflareScopeHost implements ScopeHost {
         );
         return rows.map((r) => opsFailureEntry.parse(r));
       },
+      recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
+        const l = input.line;
+        return this.cp.recordModelUsage({
+          id: ulid(),
+          request_id: input.requestId,
+          tenant_id: l.attribution.tenant,
+          scope_id: l.attribution.scope,
+          vertical: l.attribution.vertical,
+          version: l.attribution.version,
+          operation: l.attribution.operation,
+          model: l.model,
+          provider: l.provider,
+          model_id: l.modelId,
+          reported: l.reported ? 1 : 0,
+          input_tokens: l.inputTokens,
+          output_tokens: l.outputTokens,
+          cached_input_tokens: l.cachedInputTokens,
+          cache_write_tokens: l.cacheWriteTokens,
+          list_usd: l.listUsd,
+          at: l.at,
+          elapsed_ms: l.elapsedMs,
+        });
+      },
+      listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
+        const rows = await this.cp.listModelUsage({ ...filter });
+        await this.recordAccess(
+          actor,
+          'listModelUsage',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows.map(modelUsageEntryOf);
+      },
+      summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary> => {
+        const rows = await this.cp.listModelUsage({ ...window, order: 'asc' });
+        await this.recordAccess(actor, 'summarizeModelUsage', { tenantId: window.tenantId ?? null }, window, rows.length);
+        return foldModelUsage(rows.map(modelUsageEntryOf), { readAt: new Date().toISOString(), ...window, marginPercent });
+      },
     };
   }
 
@@ -5025,4 +5075,30 @@ export class CloudflareScopeHost implements ScopeHost {
       expiresAt ?? null,
     );
   }
+}
+
+/** A ledger row -> the wire entry, the attribution re-nested (#1054). */
+function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
+  return modelUsageEntry.parse({
+    id: r.id,
+    requestId: r.request_id,
+    attribution: {
+      tenant: r.tenant_id,
+      scope: r.scope_id,
+      vertical: r.vertical,
+      version: r.version,
+      operation: r.operation,
+    },
+    model: r.model,
+    provider: r.provider,
+    modelId: r.model_id,
+    reported: r.reported === 1,
+    inputTokens: r.input_tokens,
+    outputTokens: r.output_tokens,
+    cachedInputTokens: r.cached_input_tokens,
+    cacheWriteTokens: r.cache_write_tokens,
+    listUsd: r.list_usd,
+    at: r.at,
+    elapsedMs: r.elapsed_ms,
+  });
 }

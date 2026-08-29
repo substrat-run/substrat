@@ -73,7 +73,7 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
 - **Platform grants** — `/verticals/:slug/email-sender` and
   `/verticals/:slug/tenant-provisioner`: the capabilities a vertical must be *granted*
   rather than configure for itself.
-- **Roles**, **admin-log**, **ops-failures**, **meters**, and **observability**
+- **Roles**, **admin-log**, **ops-failures**, **meters**, **model-usage** (meter 3: the lines a vertical's model host raised as `model-usage` intents, listed and folded per tenant × model with the platform's margin applied at read time), and **observability**
   (`/observability/logs`, `/observability/metrics`) — the permission surface, the
   append-only audit history, operational failures, billable readings, and fleet telemetry.
 - **Denials** — `/tenants/:t/scopes/:s/denials` and `…/denials/summary`: the refusals a

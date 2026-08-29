@@ -22,6 +22,7 @@ import {
   provisionTenantHandler,
   setEntitlementsHandler,
   connectorDispatchHandler,
+  modelUsageHandler,
   type PlatformRequestHandler,
   ControlPlaneError,
   VerticalClient,
@@ -791,5 +792,91 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
     );
     expect(outcome.status).toBe('failed');
     expect(outcome.error).toMatch(/unknown scope for tenant/);
+  });
+});
+
+describe('modelUsageHandler — meter 3, idempotent on the intent id (#1054)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const ctx = { tenantId: t, scopeId: s, vertical: 'demo-vert' };
+  const line = (over: Record<string, unknown> = {}) => ({
+    attribution: { tenant: t, scope: s, vertical: 'demo-vert', version: '0.1.0', operation: 'demo/answer' },
+    model: 'anthropic:claude-opus-5',
+    provider: 'anthropic',
+    modelId: 'claude-opus-5',
+    reported: true,
+    inputTokens: 100_000,
+    outputTokens: 10_000,
+    cachedInputTokens: 0,
+    cacheWriteTokens: 0,
+    listUsd: '0.75',
+    at: '2026-08-29T10:00:00.000Z',
+    elapsedMs: 250,
+    ...over,
+  });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-model-usage-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records a well-formed line under the intent id, and a replay writes nothing twice', async () => {
+    const handler = modelUsageHandler({ host });
+    const req = intent('model-usage', { payload: line() });
+    const first = await handler(ctx, req);
+    expect(first.status).toBe('done');
+    expect(first.result).toEqual({ recorded: true, model: 'anthropic:claude-opus-5', listUsd: '0.75' });
+
+    const again = await handler(ctx, req);
+    expect(again.status).toBe('done');
+    expect((again.result as { recorded: boolean }).recorded).toBe(false);
+
+    const listed = await host.admin.listModelUsage(staff, { tenantId: t });
+    expect(listed).toHaveLength(1);
+    expect(listed[0]!.requestId).toBe(req.id);
+  });
+
+  it('refuses, terminally, a line attributed to another tenant or scope — a vertical cannot bill its neighbour', async () => {
+    const handler = modelUsageHandler({ host });
+    const other = tenantId.parse(ulid());
+    const out = await handler(
+      ctx,
+      intent('model-usage', { payload: line({ attribution: { tenant: other, scope: s, vertical: 'demo-vert', version: '0.1.0', operation: 'x' } }) }),
+    );
+    expect(out.status).toBe('failed');
+    expect(out.error).toMatch(/not the drained scope/);
+    expect(await host.admin.listModelUsage(staff, { tenantId: other })).toHaveLength(0);
+  });
+
+  it('refuses, terminally, a line naming a vertical this scope does not run', async () => {
+    const handler = modelUsageHandler({ host });
+    const out = await handler(
+      ctx,
+      intent('model-usage', { payload: line({ attribution: { tenant: t, scope: s, vertical: 'other-vert', version: '0.1.0', operation: 'x' } }) }),
+    );
+    expect(out.status).toBe('failed');
+    expect(out.error).toMatch(/names vertical 'other-vert'/);
+  });
+
+  it('refuses, terminally, a payload that is not a usage line — a sixth attribution key included', async () => {
+    const handler = modelUsageHandler({ host });
+    const notALine = await handler(ctx, intent('model-usage', { payload: { hello: 'world' } }));
+    expect(notALine.status).toBe('failed');
+    expect(notALine.error).toMatch(/not a usage line/);
+    const sixth = await handler(
+      ctx,
+      intent('model-usage', {
+        payload: line({ attribution: { tenant: t, scope: s, vertical: 'demo-vert', version: '0.1.0', operation: 'x', install: 'i' } }),
+      }),
+    );
+    expect(sixth.status).toBe('failed');
   });
 });

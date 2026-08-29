@@ -38,6 +38,7 @@ export {
   archiveScopeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
+  modelUsageHandler,
   connectorDispatchHandler,
   type ConnectorDispatchDeps,
   type ManagedTenantDeps,

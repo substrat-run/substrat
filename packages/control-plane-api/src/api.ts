@@ -163,6 +163,12 @@ export interface ConnectionInspector {
 }
 
 export interface ControlPlaneApiOptions {
+  /**
+   * The platform's margin over list price for model usage it provides (#1054), whole
+   * percent, applied at read time by `GET /model-usage/summary`. One global number
+   * today; a per-provider rate is an additive change later. Default 20.
+   */
+  modelMarginPercent?: number;
   host: ScopeHost;
   /**
    * How to reach each vertical, by slug (K-31). Absent slugs simply cannot be
@@ -630,6 +636,25 @@ const opsFailuresQuery = z.object({
   // Bounded by default exactly as /admin-log, and for the same reason.
   ...listPageQuery.shape,
 });
+
+const modelUsageQuery = z.object({
+  tenantId: tenantIdSchema.optional(),
+  scopeId: scopeIdSchema.optional(),
+  vertical: z.string().optional(),
+  model: z.string().optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  ...listPageQuery.shape,
+});
+
+/** The summary window: a half-open `[since, until)`; defaults to the current calendar month so far. */
+const modelUsageSummaryQuery = z.object({
+  tenantId: tenantIdSchema.optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+});
+
+export const DEFAULT_MODEL_MARGIN_PERCENT = 20;
 
 /** The upstream provider's trace handle, when a failure message carries one —
  *  Cloudflare's `internal error; reference = <id>` shape (#559). */
@@ -4667,6 +4692,45 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       filter as Parameters<typeof admin.listOpsFailures>[1],
     );
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // -- model usage (#1054): meter 3, the one D-30 could not compute -------------
+  // The ledger the `model-usage` intents drain into. Staff-only: the tenant-facing
+  // read is the vertical's own usage screen over its metering engine; this is the
+  // platform's copy, the one an invoice reconciles against.
+  app.get('/model-usage', async (c) => {
+    const filter = modelUsageQuery.parse({
+      tenantId: c.req.query('tenantId'),
+      scopeId: c.req.query('scopeId'),
+      vertical: c.req.query('vertical'),
+      model: c.req.query('model'),
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+      limit: c.req.query('limit'),
+      cursor: c.req.query('cursor'),
+      order: c.req.query('order'),
+    });
+    const entries = await admin.listModelUsage(c.get('actor'), filter as Parameters<typeof admin.listModelUsage>[1]);
+    return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // Folded per (tenant, vertical, model) with the platform's margin applied at read
+  // time. Nothing is stored by the read: D-30's "meter, don't bill" holds.
+  app.get('/model-usage/summary', async (c) => {
+    const q = modelUsageSummaryQuery.parse({
+      tenantId: c.req.query('tenantId'),
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+    });
+    const now = new Date();
+    const since = q.since ?? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const until = q.until ?? now.toISOString();
+    const summary = await admin.summarizeModelUsage(
+      c.get('actor'),
+      { ...(q.tenantId ? { tenantId: q.tenantId } : {}), since, until },
+      options.modelMarginPercent ?? DEFAULT_MODEL_MARGIN_PERCENT,
+    );
+    return c.json(summary);
   });
 
   return app;

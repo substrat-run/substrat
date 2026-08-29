@@ -5,6 +5,7 @@ import {
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
+  modelUsageEntry,
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
   attachmentRecord,
@@ -71,6 +72,8 @@ import {
   type SystemGrant,
   type AdminLogEntry,
   type OpsFailureEntry,
+  type ModelUsageEntry,
+  type ModelUsageSummary,
   type CapabilityGrant,
   type CreateTenantInput,
   type DomainEvent,
@@ -158,6 +161,11 @@ import {
   type AuditLogFilter,
   type OpsFailureFilter,
   type OpsFailureInput,
+  type ModelUsageFilter,
+  type ModelUsageInput,
+  type ModelUsageWindow,
+  MODEL_USAGE_RETENTION_DAYS,
+  foldModelUsage,
   type BlobStoreProvisionInput,
   type BlobStoreRecord,
   type OpenedAttachment,
@@ -741,6 +749,53 @@ interface OpsFailureRow {
   message: string;
   reference: string | null;
   at: string;
+}
+
+interface ModelUsageRow {
+  id: string;
+  request_id: string;
+  tenant_id: string;
+  scope_id: string;
+  vertical: string;
+  version: string;
+  operation: string;
+  model: string;
+  provider: string;
+  model_id: string;
+  reported: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  list_usd: string | null;
+  at: string;
+  elapsed_ms: number;
+}
+
+/** A ledger row → the wire entry, the attribution re-nested. Shared by both adapters' shape. */
+function modelUsageEntryOf(r: ModelUsageRow): ModelUsageEntry {
+  return modelUsageEntry.parse({
+    id: r.id,
+    requestId: r.request_id,
+    attribution: {
+      tenant: r.tenant_id,
+      scope: r.scope_id,
+      vertical: r.vertical,
+      version: r.version,
+      operation: r.operation,
+    },
+    model: r.model,
+    provider: r.provider,
+    modelId: r.model_id,
+    reported: r.reported === 1,
+    inputTokens: r.input_tokens,
+    outputTokens: r.output_tokens,
+    cachedInputTokens: r.cached_input_tokens,
+    cacheWriteTokens: r.cache_write_tokens,
+    listUsd: r.list_usd,
+    at: r.at,
+    elapsedMs: r.elapsed_ms,
+  });
 }
 
 interface OutboxRow {
@@ -1398,6 +1453,32 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
+      -- Model usage (#1054, meter 3): one line per model call a vertical made through
+      -- the platform's model host, drained here as a model-usage intent. request_id is
+      -- the intent id and UNIQUE, which is what makes a retried drain write nothing twice.
+      -- Retention-bounded like ops failures (MODEL_USAGE_RETENTION_DAYS), pruned on write.
+      CREATE TABLE IF NOT EXISTS _substrat_model_usage (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL,
+        scope_id TEXT NOT NULL,
+        vertical TEXT NOT NULL,
+        version TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        model TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model_id TEXT NOT NULL,
+        reported INTEGER NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        cached_input_tokens INTEGER NOT NULL,
+        cache_write_tokens INTEGER NOT NULL,
+        list_usd TEXT,
+        at TEXT NOT NULL,
+        elapsed_ms INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
+      CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
       CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
     `);
     this.ensureDirectoryColumns();
@@ -3571,6 +3652,51 @@ export class SqliteScopeHost implements ScopeHost {
    * `params` is a bounded summary, not the raw filter — enough to know what was
    * asked, capped so one query cannot write an unbounded row.
    */
+  /** The lines a filter names, in ledger order — shared by the list and the fold. */
+  private selectModelUsage(filter?: ModelUsageFilter): ModelUsageEntry[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (filter?.tenantId) {
+      where.push('tenant_id = ?');
+      params.push(filter.tenantId);
+    }
+    if (filter?.scopeId) {
+      where.push('scope_id = ?');
+      params.push(filter.scopeId);
+    }
+    if (filter?.vertical) {
+      where.push('vertical = ?');
+      params.push(filter.vertical);
+    }
+    if (filter?.model) {
+      where.push('model = ?');
+      params.push(filter.model);
+    }
+    if (filter?.since) {
+      where.push('at >= ?');
+      params.push(filter.since);
+    }
+    if (filter?.until) {
+      where.push('at < ?');
+      params.push(filter.until);
+    }
+    const order = (filter?.order ?? 'desc') === 'desc' ? 'DESC' : 'ASC';
+    if (filter?.cursor) {
+      where.push(order === 'DESC' ? 'id < ?' : 'id > ?');
+      params.push(filter.cursor);
+    }
+    let sql =
+      'SELECT * FROM _substrat_model_usage' +
+      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY id ${order}`;
+    if (filter?.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(filter.limit);
+    }
+    const rows = this.directory.prepare(sql).all(...params) as ModelUsageRow[];
+    return rows.map((r) => modelUsageEntryOf(r));
+  }
+
   private recordAccess(
     actor: PlatformActorId,
     method: string,
@@ -6783,6 +6909,57 @@ export class SqliteScopeHost implements ScopeHost {
             at: r.at,
           }),
         );
+      },
+      recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
+        const l = input.line;
+        // INSERT OR IGNORE on the UNIQUE request id: the drain may replay a settled-then-
+        // retried intent, and the second arrival must write nothing rather than bill twice.
+        const res = this.directory
+          .prepare(
+            `INSERT OR IGNORE INTO _substrat_model_usage
+               (id, request_id, tenant_id, scope_id, vertical, version, operation, model, provider, model_id,
+                reported, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, list_usd, at, elapsed_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            ulid(),
+            input.requestId,
+            l.attribution.tenant,
+            l.attribution.scope,
+            l.attribution.vertical,
+            l.attribution.version,
+            l.attribution.operation,
+            l.model,
+            l.provider,
+            l.modelId,
+            l.reported ? 1 : 0,
+            l.inputTokens,
+            l.outputTokens,
+            l.cachedInputTokens,
+            l.cacheWriteTokens,
+            l.listUsd,
+            l.at,
+            l.elapsedMs,
+          );
+        const horizon = new Date(Date.now() - MODEL_USAGE_RETENTION_DAYS * 86_400_000).toISOString();
+        this.directory.prepare('DELETE FROM _substrat_model_usage WHERE at < ?').run(horizon);
+        return { recorded: res.changes > 0 };
+      },
+      listModelUsage: async (actor, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]> => {
+        const rows = this.selectModelUsage(filter);
+        this.recordAccess(
+          actor,
+          'listModelUsage',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows;
+      },
+      summarizeModelUsage: async (actor, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary> => {
+        const rows = this.selectModelUsage({ ...window, order: 'asc' });
+        this.recordAccess(actor, 'summarizeModelUsage', { tenantId: window.tenantId ?? null }, window, rows.length);
+        return foldModelUsage(rows, { readAt: new Date().toISOString(), ...window, marginPercent });
       },
     };
   }

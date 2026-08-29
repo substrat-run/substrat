@@ -15,6 +15,8 @@ import type {
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
+  ModelUsageEntry,
+  ModelUsageSummary,
   CapabilityGrant,
   CreateTenantInput,
   Decision,
@@ -93,6 +95,7 @@ import type {
   Page,
   CountedPage,
 } from '@substrat-run/contracts';
+import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
 import type { EntityVersion } from './entity-version.js';
@@ -2434,6 +2437,26 @@ export interface HostAdmin {
    * "nothing recent", never "nothing ever".
    */
   listOpsFailures(actor: PlatformActorId, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]>;
+
+  /**
+   * Meter 3's ledger (#1054): one line per model call a vertical made through the
+   * platform's model host, drained here as a `model-usage` intent. Idempotent on the
+   * intent id — a retried drain records nothing twice — and retention-bounded
+   * (MODEL_USAGE_RETENTION_DAYS), pruned on write like the ops-failure record.
+   * Returns whether THIS call wrote the row, so a drain can settle honestly.
+   */
+  recordModelUsage(input: ModelUsageInput): Promise<{ recorded: boolean }>;
+
+  /** The lines, newest first by default — the per-tenant usage read behind the console. */
+  listModelUsage(actor: PlatformActorId, filter?: ModelUsageFilter): Promise<ModelUsageEntry[]>;
+
+  /**
+   * Meter 3, folded: per (tenant, vertical, model) over a half-open window, list price
+   * summed exactly and the platform's margin applied at read time (`foldModelUsage`).
+   * Nothing is stored by the read — D-30's "meter, don't bill" holds; the invoice is
+   * still somebody else's.
+   */
+  summarizeModelUsage(actor: PlatformActorId, window: ModelUsageWindow, marginPercent: number): Promise<ModelUsageSummary>;
 
   /**
    * The staff access log (K-24) — who READ the directory, when, and how much came

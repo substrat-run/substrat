@@ -12,6 +12,7 @@ import type {
   HostnameBinding,
   HostnameStatus,
   MeterReading,
+  ModelUsageSummary,
   MigrationProgress,
   OpsFailureEntry,
   Page,
@@ -297,6 +298,13 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // belongs to one definition, not to whichever surface renders it. Omit `tenantId`
     // for the fleet reading.
     readMeters: (tenantId?: TenantId) => call<MeterReading>(`/meters${query({ tenantId })}`),
+
+    // Meter 3 (#1054) — model usage, the one D-30 could not compute: the lines the
+    // `model-usage` intents drained into the directory, folded per (tenant, vertical,
+    // model) with the platform's margin applied at read time. Defaults to the current
+    // calendar month so far; omit `tenantId` for the fleet.
+    readModelUsage: (q: { tenantId?: TenantId; since?: string; until?: string } = {}) =>
+      call<ModelUsageSummary>(`/model-usage/summary${query({ ...q })}`),
 
     listScopes: (filter?: { tenantId?: TenantId; status?: ScopeStatus[]; vertical?: string } & PageQuery) =>
       call<Page<Scope>>(`/scopes${query({ ...filter })}`),

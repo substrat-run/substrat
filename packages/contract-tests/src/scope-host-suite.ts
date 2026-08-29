@@ -18,6 +18,7 @@ import {
   type PlatformRequestId,
   type PrincipalId,
   type TenantId,
+  type ModelUsageLine,
 } from '@substrat-run/contracts';
 import {
   isSearchIndexTable,
@@ -1620,6 +1621,97 @@ export function scopeHostContractSuite(
     });
 
     // -- the integrations hub: connections (#101) -----------------------------
+    // -- model usage (#1054): meter 3's ledger, idempotent on the intent id ----------------
+
+    describe('model usage (#1054)', () => {
+      const line = (at: string, over: Partial<ModelUsageLine> = {}): ModelUsageLine => ({
+        attribution: {
+          tenant: t1,
+          scope: scopeId.parse('01ARZ3NDEKTSV4RRFFQ69G5FAV'),
+          vertical: '@substrat-run/demo-ticket0',
+          version: '0.1.0',
+          operation: 'ticket0/answer',
+        },
+        model: 'anthropic:claude-opus-5',
+        provider: 'anthropic',
+        modelId: 'claude-opus-5',
+        reported: true,
+        inputTokens: 100_000,
+        outputTokens: 10_000,
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        listUsd: null,
+        elapsedMs: 250,
+        ...over,
+        at: instant.parse(at),
+      });
+
+      it('records a line once per intent id, lists it, and folds the window exactly', async () => {
+        const first = await host.admin.recordModelUsage({
+          requestId: 'req-model-usage-1',
+          line: line('2026-08-01T10:00:00.000Z', { listUsd: '0.75' }),
+        });
+        expect(first.recorded).toBe(true);
+        // The drain replays a settled-then-retried intent: nothing is billed twice.
+        const again = await host.admin.recordModelUsage({
+          requestId: 'req-model-usage-1',
+          line: line('2026-08-01T10:00:00.000Z', { listUsd: '0.75' }),
+        });
+        expect(again.recorded).toBe(false);
+        await host.admin.recordModelUsage({
+          requestId: 'req-model-usage-2',
+          line: line('2026-08-02T10:00:00.000Z', { listUsd: '0.5', inputTokens: 50_000, outputTokens: 5_000 }),
+        });
+        // An unpriced call: counted, never folded in as $0.
+        await host.admin.recordModelUsage({
+          requestId: 'req-model-usage-3',
+          line: line('2026-08-03T10:00:00.000Z', {
+            listUsd: null,
+            model: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
+            provider: 'cloudflare',
+            modelId: '@cf/meta/llama-3.1-8b-instruct',
+            inputTokens: 10,
+            outputTokens: 10,
+          }),
+        });
+        // Outside the window below.
+        await host.admin.recordModelUsage({
+          requestId: 'req-model-usage-4',
+          line: line('2026-09-01T00:00:00.000Z', { listUsd: '9' }),
+        });
+
+        const listed = await host.admin.listModelUsage(staff, { tenantId: t1, since: '2026-08-01T00:00:00.000Z' });
+        expect(listed.length).toBe(4);
+        expect(listed[0]!.requestId).toBe('req-model-usage-4'); // newest first
+        expect(listed.every((e) => e.attribution.tenant === t1)).toBe(true);
+
+        const summary = await host.admin.summarizeModelUsage(
+          staff,
+          { tenantId: t1, since: '2026-08-01T00:00:00.000Z', until: '2026-09-01T00:00:00.000Z' },
+          20,
+        );
+        expect(summary.marginPercent).toBe(20);
+        expect(summary.rows.length).toBe(2);
+        const opus = summary.rows.find((r) => r.model === 'anthropic:claude-opus-5')!;
+        expect(opus.calls).toBe(2);
+        expect(opus.inputTokens).toBe(150_000);
+        expect(opus.listUsd).toBe('1.25');
+        expect(opus.billedUsd).toBe('1.5');
+        const llama = summary.rows.find((r) => r.provider === 'cloudflare')!;
+        expect(llama.calls).toBe(1);
+        expect(llama.unpriced).toBe(1);
+        expect(llama.listUsd).toBe('0');
+        expect(summary.totals).toEqual({
+          calls: 3,
+          unpriced: 1,
+          inputTokens: 150_010,
+          outputTokens: 15_010,
+          listUsd: '1.25',
+          billedUsd: '1.5',
+        });
+      });
+    });
+
     // -- operational failures (#559): the durable record of what the platform could NOT do --
 
     describe('operational failures (#559)', () => {

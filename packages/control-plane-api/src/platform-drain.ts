@@ -15,6 +15,7 @@ import {
   setEntitlementsPayload,
   connectorDispatchPayload,
   CONNECTOR_DISPATCH_KIND_PREFIX,
+  modelUsageLine,
   type PlatformActorId,
   type PlatformRequest,
   type PlatformRequestFailure,
@@ -704,5 +705,40 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
       throw e;
     }
     return { status: 'done', result: { tenantId, plan: payload.plan } };
+  };
+}
+
+/**
+ * `model-usage` (#1054): a vertical's model host produced one `ModelUsageLine` and raised
+ * it as an intent; this records it in the platform's ledger (meter 3). Two refusals are
+ * terminal rather than retried: a payload that is not a line, and a line whose
+ * attribution names a tenant or scope other than the one being drained — the platform
+ * knows (tenant, scope, vertical) inherently from the DO it read, and a vertical does not
+ * get to bill another. Idempotent on the intent id, so a replay settles `done` with
+ * `recorded: false` instead of writing twice.
+ */
+export function modelUsageHandler(deps: { host: ScopeHost }): PlatformRequestHandler {
+  return async (ctx, request) => {
+    const parsed = modelUsageLine.safeParse(request.payload);
+    if (!parsed.success) {
+      return { status: 'failed', error: `model-usage payload is not a usage line: ${parsed.error.message}` };
+    }
+    const line = parsed.data;
+    if (line.attribution.tenant !== ctx.tenantId || line.attribution.scope !== ctx.scopeId) {
+      return {
+        status: 'failed',
+        error:
+          `usage line is attributed to (${line.attribution.tenant}, ${line.attribution.scope}), ` +
+          `which is not the drained scope (${ctx.tenantId}, ${ctx.scopeId})`,
+      };
+    }
+    if (line.attribution.vertical !== ctx.vertical) {
+      return {
+        status: 'failed',
+        error: `usage line names vertical '${line.attribution.vertical}', but this scope runs '${ctx.vertical}'`,
+      };
+    }
+    const { recorded } = await deps.host.admin.recordModelUsage({ requestId: request.id, line });
+    return { status: 'done', result: { recorded, model: line.model, listUsd: line.listUsd } };
   };
 }
