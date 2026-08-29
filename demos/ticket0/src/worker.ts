@@ -122,6 +122,11 @@ interface Env {
   CLOUDFLARE_AI_API_TOKEN?: string;
   ANTHROPIC_API_KEY?: string;
   SCALEWAY_API_KEY?: string;
+  /**
+   * Workers AI, bound by the platform on every pushed vertical (#1054). A capability the
+   * runtime grants — there is no credential here to read. Absent locally.
+   */
+  AI?: unknown;
   /** Local dev only: when 'true', fall back to DEV_NODE. Addresses an instance; authenticates nobody. */
   ALLOW_DEV_NODE?: string;
   /** Shared secret the router presents (K-26): how the desk knows the asserted node came from the router. */
@@ -575,6 +580,10 @@ const modelHostFor = (env: Env) =>
   createModelHost({
     env: env as unknown as Record<string, string | undefined>,
     factories: { anthropic: createAnthropic },
+    // The platform binds `env.AI` on every pushed vertical (#1054), so the default
+    // Cloudflare row runs with no credential on this script at all. Absent locally and
+    // in a test, where the row falls back to its HTTP transport or to extractive.
+    ...(env.AI ? { aiBinding: env.AI } : {}),
     sent: 'Customer messages and the knowledge-base excerpts they match',
   });
 

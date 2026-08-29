@@ -90,6 +90,18 @@ export interface CompatibleProvider extends ProviderBase {
 	 * here and dispatched in request.ts, never on the provider's name.
 	 */
 	readonly request?: 'cloudflare-gateway';
+	/**
+	 * This row is ALSO reachable through a runtime binding, not only over HTTP — and
+	 * when it is, that transport carries no credential at all.
+	 *
+	 * Workers AI is the case: a Worker on the owning account gets `env.AI`, and the
+	 * inference bills that account with nothing to hold, leak or rotate. A host that has
+	 * the binding passes a ready-made factory in `factories` and `createModel` uses it in
+	 * preference to the HTTP path; a host without one (the local CLI) still resolves the
+	 * row from `baseUrl` + `envVar` exactly as before. One provider, two transports —
+	 * declared here rather than branched on the provider's name.
+	 */
+	readonly binding?: 'workers-ai';
 }
 
 export type ProviderSpec = DirectProvider | CompatibleProvider;
@@ -172,6 +184,7 @@ export const PROVIDERS: Readonly<Record<string, ProviderSpec>> = {
 		envVar: 'CLOUDFLARE_AI_API_TOKEN',
 		catalog: 'cloudflare-catalog',
 		request: 'cloudflare-gateway',
+		binding: 'workers-ai',
 		hosting: {
 			vendor: 'Cloudflare (Workers AI)',
 			// D-53 honesty: `@cf/…` ids run on Cloudflare's network; bare

@@ -317,6 +317,9 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
       ROUTER_SECRET: env.ROUTER_SECRET,
       CONTROL_PLANE_URL: env.PLATFORM_CP_URL,
     },
+    // `env.AI` on every pushed vertical (#1054): the desk picks WHICH model, the platform
+    // pays for it, and no credential exists on the script to be read or rotated.
+    bindAi: true,
     traceSampling: traceSamplingFor(env),
   });
 }

@@ -39,6 +39,7 @@ import {
   type HostingInfo,
   type StepTokens,
 } from '@substrat-run/model-providers';
+import { createWorkersAI } from 'workers-ai-provider';
 import { modelAttribution, modelUsageLine, type ModelAttribution, type ModelUsageLine } from '@substrat-run/contracts';
 
 export type { HostingInfo, ModelAttribution, ModelUsageLine };
@@ -83,8 +84,25 @@ export interface ModelStatus {
 export interface ModelHostOptions {
   /** Platform-held credentials — the worker's own bindings. Only the row's own variables are read. */
   readonly env: CredentialEnv;
-  /** Direct-provider factories this bundle statically carries (`{ anthropic: createAnthropic }`). */
+  /**
+   * Provider factories this bundle statically carries (`{ anthropic: createAnthropic }`),
+   * and — for a row that declares a binding transport — the binding itself, already
+   * wrapped. `aiBinding` below is the sanctioned way to supply the Workers AI one.
+   */
   readonly factories?: DirectFactories;
+  /**
+   * The Workers AI binding (`env.AI`), when the runtime has one.
+   *
+   * This is the transport we WANT for Cloudflare models: the runtime grants a capability,
+   * the account that owns the script is billed, and no credential exists on the script to
+   * be read, leaked or rotated. Supplying it makes the `cloudflare` row runnable with no
+   * `CLOUDFLARE_AI_*` set at all.
+   *
+   * Typed `unknown` on purpose — `@substrat-run/vertical-host` must not depend on
+   * `@cloudflare/workers-types` to describe an optional binding, and `workers-ai-provider`
+   * validates what it is handed.
+   */
+  readonly aiBinding?: unknown;
   /**
    * The host's clock — stamped on every line.
    *
@@ -140,17 +158,29 @@ export function stepTokensOf(usage: LanguageModelUsage | undefined): ReportedTok
 
 export function createModelHost(options: ModelHostOptions): ModelHost {
   const now = options.now ?? (() => new Date());
+  // One place decides which providers this host can build. The binding, when present,
+  // joins the same `factories` map the direct rows use — so `createModel` reaches it
+  // through the seam it already had rather than a Cloudflare-shaped special case.
+  const factories: DirectFactories = {
+    ...(options.factories ?? {}),
+    ...(options.aiBinding
+      ? { cloudflare: () => (modelId: string) => createWorkersAI({ binding: options.aiBinding as never })(modelId) }
+      : {}),
+  };
 
   const status = (spec: string): ModelStatus => {
     const { provider, modelId } = parseModelSpec(spec);
     const creds = credentialsFrom(provider, options.env);
+    // A row the host holds a factory for needs no credential: the binding IS the
+    // configuration, so it is runnable with `missing` empty however bare the env is.
+    const bound = Boolean(factories[provider]);
     return {
       spec: normalizeModelSpec(spec),
       label: `${provider}/${modelId}`,
       provider,
       modelId,
-      configured: creds.missing.length === 0,
-      missing: creds.missing,
+      configured: bound || creds.missing.length === 0,
+      missing: bound ? [] : creds.missing,
       hosting: hostingInfo(provider, options.env, options.sent ? { sent: options.sent } : {}),
     };
   };
@@ -167,7 +197,7 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
     // guard is consulted, so a budget is never charged for a call that could not have
     // happened.
     const resolved = createModel(request.spec, options.env, {
-      factories: options.factories ?? {},
+      factories,
       hosted: true,
       describeMissing: DESCRIBE_MISSING,
     });

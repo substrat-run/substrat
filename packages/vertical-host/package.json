@@ -35,7 +35,8 @@
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/model-providers": "workspace:^",
     "ai": "7.0.62",
-    "hono": "^4.6.0"
+    "hono": "^4.6.0",
+    "workers-ai-provider": "^4.0.0"
   },
   "devDependencies": {
     "typescript": "^7.0.0",

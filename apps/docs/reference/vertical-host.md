@@ -131,7 +131,7 @@ const models = createModelHost({
 });
 
 const run = await models.run({
-  spec: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',   // whatever the tenant picked
+  spec: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast',   // whatever the tenant picked
   attribution: { tenant, scope, vertical, version, operation: 'ticket0/answer' },
   system, prompt, maxOutputTokens: 400,
 });

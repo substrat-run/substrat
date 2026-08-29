@@ -149,14 +149,43 @@ describe('run', () => {
   });
 });
 
+describe('the Workers AI binding', () => {
+  /** A stand-in for `env.AI` — `workers-ai-provider` only needs an object to wrap. */
+  const aiBinding = { run: async () => ({ response: 'bound' }) };
+
+  it('makes the cloudflare row runnable with NO credential in the environment', () => {
+    const bare = createModelHost({ env: {} });
+    expect(bare.status('cloudflare:@cf/meta/llama-3.1-8b-instruct-fast')).toMatchObject({
+      configured: false,
+      missing: ['CLOUDFLARE_AI_API_TOKEN', 'CLOUDFLARE_AI_BASE_URL'],
+    });
+
+    // The binding IS the configuration: nothing is missing, because nothing is needed.
+    const bound = createModelHost({ env: {}, aiBinding });
+    expect(bound.status('cloudflare:@cf/meta/llama-3.1-8b-instruct-fast')).toMatchObject({
+      configured: true,
+      missing: [],
+    });
+  });
+
+  it('leaves every other row alone — the binding is one row’s transport, not a global', () => {
+    const bound = createModelHost({ env: {}, aiBinding });
+    expect(bound.status('scaleway:llama-3.3-70b-instruct')).toMatchObject({
+      configured: false,
+      missing: ['SCALEWAY_API_KEY'],
+    });
+    expect(bound.status('anthropic:claude-opus-5').configured).toBe(false);
+  });
+});
+
 describe('status', () => {
   it('says whether the platform holds what the row needs, without running anything', () => {
     const host = createModelHost({ env: { CLOUDFLARE_AI_BASE_URL: 'https://x/ai/v1' } });
-    expect(host.status('cloudflare:@cf/meta/llama-3.1-8b-instruct')).toEqual({
-      spec: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
-      label: 'cloudflare/@cf/meta/llama-3.1-8b-instruct',
+    expect(host.status('cloudflare:@cf/meta/llama-3.1-8b-instruct-fast')).toEqual({
+      spec: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast',
+      label: 'cloudflare/@cf/meta/llama-3.1-8b-instruct-fast',
       provider: 'cloudflare',
-      modelId: '@cf/meta/llama-3.1-8b-instruct',
+      modelId: '@cf/meta/llama-3.1-8b-instruct-fast',
       configured: false,
       missing: ['CLOUDFLARE_AI_API_TOKEN'],
       hosting: {

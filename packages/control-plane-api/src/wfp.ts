@@ -43,6 +43,27 @@ export interface WfpUploaderOptions {
    */
   injectSecrets?: Record<string, string | undefined>;
   /**
+   * Bind Workers AI (`env.AI`) on every pushed script (#1054).
+   *
+   * Deliberately a BINDING and not a credential. The alternative was injecting a Workers
+   * AI token as one more `secret_text`, and a pushed vertical can read those: the push
+   * gate checks DECLARED bindings, never the code, so R2's ban on `cloudflare:workers`
+   * — what stops module code reaching ambient `env` — is not enforced here (#862). A
+   * spending credential under that hole is not something to ship; a binding leaves
+   * nothing to read, and Workers AI bills the account owning the script, which is ours.
+   *
+   * Verified on TEST rather than inferred (D-58's discipline): a throwaway
+   * dispatch-namespace script accepted `{type:'ai',name:'AI'}`, read back as
+   * `{name:'AI',project:'<catalog>',type:'ai'}`, and ran inference through it — with and
+   * without a gateway id, reporting real prompt/completion token counts.
+   *
+   * The honest limit: this is a CAPABILITY the vertical holds, so a vertical can call
+   * `env.AI.run()` on our account without passing our gateway id, unattributed. Bounded
+   * to Workers AI and cheaper to bound further (gateway spend limits); the durable fix is
+   * running inference platform-side, which is what BYOK needs anyway.
+   */
+  bindAi?: boolean;
+  /**
    * Head sampling rate (0–1) for Workers **automatic tracing** on pushed scripts (#858).
    * Absent ⇒ no `traces` block, which is what every push has sent until now.
    *
@@ -209,9 +230,12 @@ async function uploadAssets(
 }
 
 export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
-  const injected = Object.entries(opts.injectSecrets ?? {})
-    .filter(([, text]) => text)
-    .map(([name, text]) => ({ type: 'secret_text', name, text: text as string }));
+  const injected = [
+    ...Object.entries(opts.injectSecrets ?? {})
+      .filter(([, text]) => text)
+      .map(([name, text]) => ({ type: 'secret_text', name, text: text as string })),
+    ...(opts.bindAi ? [{ type: 'ai', name: 'AI' }] : []),
+  ];
 
   return async (deploymentRef, bundle, inPlace) => {
     // A fresh script declares every DO class under the first tag. An in-place update
