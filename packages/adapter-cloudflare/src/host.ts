@@ -207,6 +207,7 @@ import type {
   HostnameRow,
   OrgRow,
   RoleRow,
+  RouteRow,
   ScopeRow,
   VerticalRow,
   VersionRow,
@@ -385,6 +386,7 @@ interface ControlPlaneStub {
     tenantId: string,
   ): Promise<{ subject: string; relation: string; object: string; expires_at: string | null; revoked_at: string | null }[]>;
   readHostname(hostname: string): Promise<HostnameRow | undefined>;
+  readRoute(hostname: string): Promise<RouteRow | undefined>;
   demoteCanonical(scopeId: string, surface: string): Promise<void>;
   upsertHostname(h: {
     hostname: string; tenantId: string; scopeId: string; verticalSlug: string | null;
@@ -2936,8 +2938,15 @@ export class CloudflareScopeHost implements ScopeHost {
           throw new Error(`unknown scope ${parsed.scopeId} in tenant ${parsed.tenantId}`);
         }
         const existing = await this.cp.readHostname(parsed.hostname);
-        const holderStatus = (existing as { scope_status?: string } | undefined)?.scope_status;
-        const holderReleased = holderStatus === 'archived' || holderStatus === 'reaped';
+        // The holder's own status decides whether the name is reclaimable. Read it from
+        // the scope record rather than joining it onto the hostname read: the router
+        // shares that read's shape, and a scope status it can see is an invitation to
+        // re-check suspension there (route-resolver's `readRoute` deliberately has none).
+        const holder =
+          existing && existing.scope_id !== parsed.scopeId
+            ? await this.cp.getScopeRecord(existing.tenant_id, existing.scope_id)
+            : undefined;
+        const holderReleased = holder?.status === 'archived' || holder?.status === 'reaped';
         if (existing && existing.scope_id !== parsed.scopeId && !holderReleased) {
           // A hostname routes to exactly one place; silently rebinding would move
           // another tenant's traffic. Exception: the holder is ARCHIVED or REAPED (a
@@ -3042,7 +3051,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // The router's per-request read. No actor, not logged — the same machine-path
         // carve-out resolveIdentity has (K-24). Shares its mapping with the router's
         // own resolver so the two cannot disagree on what resolves.
-        toRouteTarget(await this.cp.readHostname(normalizeHostname(raw))),
+        toRouteTarget(await this.cp.readRoute(normalizeHostname(raw))),
       registerVertical: async (actor, input: RegisterVerticalInput) => {
         const parsed = registerVerticalInput.parse(input);
         const envSpecJson = parsed.envSpec ? JSON.stringify(parsed.envSpec) : null;

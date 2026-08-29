@@ -152,6 +152,24 @@ export interface HostnameRow {
   validation_records: string | null;
 }
 
+/**
+ * What `readRoute` hands the router: only what a dispatch needs.
+ *
+ * No `status` (the read filters on it) and no scope status (the router never
+ * re-checks suspension — `getScope` owns that, inside the vertical).
+ */
+export interface RouteRow {
+  tenant_id: string;
+  scope_id: string;
+  vertical_slug: string | null;
+  surface: string;
+  region: string | null;
+  /** The scope's bound version's dispatch script, joined in the read. */
+  deployment_ref: string | null;
+  /** The dispatched code's declared outbound surface (#303) as JSON text. */
+  outbound_json: string | null;
+}
+
 export interface VerticalRow {
   slug: string;
   name: string;
@@ -1439,7 +1457,7 @@ export class ControlPlaneDO extends DurableObject {
       // EXCEPTION (#527): a PREVIEW must NOT inherit the serving script. A preview forks
       // into — and binds — a specific (usually not-yet-serving) version's per-version
       // dispatch script, which is where `orchestratedPreview` restores its data. Inheriting
-      // `serving_ref` would make `readHostname`'s `COALESCE(s.serving_ref, vv.deployment_ref)`
+      // `serving_ref` would make `readRoute`'s `COALESCE(s.serving_ref, vv.deployment_ref)`
       // route the preview to the PROD serving script (prod code, and a fresh/empty DO in
       // that script) instead of the version it just bound — reporting success while serving
       // someone else's build. A null slug matches no `verticals` row, so the scalar
@@ -1727,9 +1745,26 @@ export class ControlPlaneDO extends DurableObject {
 
   // -- the hostname map (K-26) ------------------------------------------------
 
-  readHostname(
-    hostname: string,
-  ): (HostnameRow & { deployment_ref: string | null; outbound_json: string | null }) | undefined {
+  /** The admin read: the bare hostname row, for the bind/status/unbind paths. */
+  readHostname(hostname: string): HostnameRow | undefined {
+    return this.sql
+      .exec('SELECT * FROM hostnames WHERE hostname = ?', hostname)
+      .toArray()[0] as unknown as HostnameRow | undefined;
+  }
+
+  /**
+   * The router's read: hostname → route target, or nothing.
+   *
+   * `h.status = 'active'` is in the SQL, not in the caller, so this adapter and
+   * adapter-sqlite's `resolveHostname` answer "what resolves" the same way — a row
+   * that must not be served is never handed out in the first place.
+   *
+   * It deliberately carries NO scope status. The router does not re-check tenant or
+   * scope suspension (`getScope` owns that, inside the vertical), and a column it can
+   * read is an invitation to a second enforcement point that can disagree with the
+   * first.
+   */
+  readRoute(hostname: string): RouteRow | undefined {
     // Join the scope's dispatch script, so the router resolves it in the same one
     // directory read (orchestration.md §5.4). A scope whose data lives in the stable
     // serving script (#286) routes THERE — per-scope truth, because rerouting a scope
@@ -1747,8 +1782,8 @@ export class ControlPlaneDO extends DurableObject {
     // which the egress worker treats as unenforced-but-metered.
     return this.sql
       .exec(
-        `SELECT h.*, COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
-                s.status AS scope_status,
+        `SELECT h.tenant_id, h.scope_id, h.vertical_slug, h.surface, h.region,
+                COALESCE(s.serving_ref, vv.deployment_ref) AS deployment_ref,
                 CASE WHEN s.serving_ref IS NOT NULL
                      THEN json_extract(sv.manifest_json, '$.outbound')
                      ELSE json_extract(vv.manifest_json, '$.outbound') END AS outbound_json
@@ -1757,12 +1792,10 @@ export class ControlPlaneDO extends DurableObject {
            LEFT JOIN vertical_versions vv ON vv.id = s.vertical_version_id
            LEFT JOIN verticals vr ON vr.slug = s.vertical
            LEFT JOIN vertical_versions sv ON sv.id = vr.serving_version_id
-          WHERE h.hostname = ?`,
+          WHERE h.hostname = ? AND h.status = 'active'`,
         hostname,
       )
-      .toArray()[0] as unknown as
-      | (HostnameRow & { deployment_ref: string | null; outbound_json: string | null })
-      | undefined;
+      .toArray()[0] as unknown as RouteRow | undefined;
   }
 
   /** Demote any current canonical for this surface — exactly one may hold it. */

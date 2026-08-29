@@ -53,7 +53,7 @@ function directory(rows: Record<string, Row>) {
       stubs += 1;
       const bornIn = request;
       return {
-        readHostname: async (hostname: string) => {
+        readRoute: async (hostname: string) => {
           if (bornIn !== request) {
             throw new Error(
               'Cannot perform I/O on behalf of a different request. I/O objects ' +
@@ -62,7 +62,11 @@ function directory(rows: Record<string, Row>) {
                 "request's handler.",
             );
           }
-          return rows[hostname];
+          // The real read filters `h.status = 'active'` in SQL, so a hostname that is
+          // not active is never handed out — the fake models that, not a JS guard the
+          // router no longer has.
+          const row = rows[hostname];
+          return row?.status === 'active' ? row : undefined;
         },
       };
     },

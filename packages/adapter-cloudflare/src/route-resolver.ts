@@ -13,43 +13,34 @@ import { routeTarget, type RouteTarget } from '@substrat-run/contracts';
  * that boundary a deployment fact rather than a convention.
  */
 
+/** A route row as the control-plane DO's `readRoute` hands it back. */
+export interface RouteRowLike {
+  tenant_id: string;
+  scope_id: string;
+  vertical_slug: string | null;
+  surface: string;
+  region: string | null;
+  /** The scope's bound version's dispatch script, joined in the read. */
+  deployment_ref?: string | null;
+  /** The dispatched code's declared outbound surface (#303) as JSON text — the
+   *  `outbound` array lifted from the resolved version's manifest in the same read.
+   *  Null = a pre-#303 manifest (or no version), which dispatches unenforced. */
+  outbound_json?: string | null;
+}
+
 /** The one method this needs from the control-plane DO. */
 interface HostnameReader {
-  readHostname(hostname: string): Promise<{
-    tenant_id: string;
-    scope_id: string;
-    vertical_slug: string | null;
-    surface: string;
-    region: string | null;
-    status: string;
-    /** The scope's bound version's dispatch script, joined in the read. */
-    deployment_ref: string | null;
-    /** The dispatched code's declared outbound surface (#303) as JSON text — the
-     *  `outbound` array lifted from the resolved version's manifest in the same read.
-     *  Null = a pre-#303 manifest (or no version), which dispatches unenforced. */
-    outbound_json?: string | null;
-  } | undefined>;
+  readRoute(hostname: string): Promise<RouteRowLike | undefined>;
 }
 
 export type RouteResolver = (hostname: string) => Promise<RouteTarget | undefined>;
 
 /** A hostname row → what the router dispatches on. Shared with `CloudflareScopeHost`
  * so the two cannot drift on what "resolvable" means. */
-export function toRouteTarget(
-  row:
-    | {
-        tenant_id: string;
-        scope_id: string;
-        vertical_slug: string | null;
-        surface: string;
-        region: string | null;
-        status: string;
-        deployment_ref?: string | null;
-        outbound_json?: string | null;
-      }
-    | undefined,
-): RouteTarget | undefined {
-  if (!row || row.status !== 'active') return undefined;
+export function toRouteTarget(row: RouteRowLike | undefined): RouteTarget | undefined {
+  // No status check here: `readRoute` filters `h.status = 'active'` in SQL, the same
+  // way adapter-sqlite's `resolveHostname` does. One place decides what resolves.
+  if (!row) return undefined;
   // The declared outbound surface rides as JSON text from the directory read (#303).
   // A row that carries none — pre-#303 manifest, no bound version — resolves null,
   // which the egress worker treats as unenforced-but-metered, never as deny-all.
@@ -107,6 +98,6 @@ export function createRouteResolver(controlPlane: DurableObjectNamespace): Route
     const cp = controlPlane.get(
       controlPlane.idFromName('control-plane'),
     ) as unknown as HostnameReader;
-    return toRouteTarget(await cp.readHostname(normalizeHostname(hostname)));
+    return toRouteTarget(await cp.readRoute(normalizeHostname(hostname)));
   };
 }
