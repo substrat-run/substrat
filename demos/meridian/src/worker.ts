@@ -74,9 +74,10 @@ interface Env {
   SCOPE: DurableObjectNamespace;
   AUTH: DurableObjectNamespace<IdentityDO>;
   /**
-   * Which auth the app runs — the config section. `better-auth-do` (default): Better Auth
-   * in the per-tenant AUTH DO. `oidc`: verify a bearer token against an OIDC issuer
-   * (`OIDC_ISSUER` [+ `OIDC_AUDIENCE`]) — covers Supabase, Auth0, AuthHero, Keycloak, …
+   * Which auth the app runs — the config section. OIDC-only (oidc-only-demos.md): there is
+   * no builtin credential store, so `oidc` verifies a bearer token against an OIDC issuer
+   * (`OIDC_ISSUER` [+ `OIDC_AUDIENCE`]) — covers Supabase, Auth0, AuthHero, Keycloak, … —
+   * and anything else leaves the instance unconfigured, which fails closed.
    * The app never changes; only this config + the provider behind the contract does.
    * Declared in MERIDIAN_ENV (src/manifest.ts) and read ONLY through
    * `instanceAuthFor`'s settings pass in `authWiringFor` — a delivered per-scope value overrides

@@ -133,6 +133,12 @@ const identityDo = (env: Env, node: SiteNode) => env.AUTH.get(env.AUTH.idFromNam
  * The settings pass is the fix behind #972: this worker used to read `env.OIDC_ISSUER`
  * directly, so an issuer saved per install in the dashboard never reached it — a spec
  * default rides as a binding shared by every install of one serving script (#374).
+ *
+ * Keyed by the BASE (routed home) site, not the app's selected one, and deliberately: a
+ * tenant has ONE identity DO and ONE login across its sites, so who you are cannot depend
+ * on which site you are looking at — and the caller has to be resolved BEFORE a site can
+ * be selected, so reading auth off the selected site would be circular. Auth config is
+ * tenant-wide here; per-site issuers would be a different feature.
  */
 async function authWiringFor(env: Env, base: SiteNode) {
   return instanceAuthFor({
