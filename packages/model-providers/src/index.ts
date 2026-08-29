@@ -11,6 +11,7 @@ export {
 	PROVIDERS,
 	credentialEnvVar,
 	knownProviders,
+	providerRow,
 	ollamaLocation,
 	qwenLocation,
 	type CompatibleProvider,
