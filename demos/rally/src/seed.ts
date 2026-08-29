@@ -15,7 +15,7 @@ import {
   type ScopeId,
   type TenantId,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { ulid, type Clock } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { bookingModule, PERM as BK } from '@substrat-run/engine-booking';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
@@ -268,8 +268,15 @@ async function seedVenue(
   return ids;
 }
 
-export function buildRallyHost(dir: string): SqliteScopeHost {
-  const host = new SqliteScopeHost({ dir }); // default checker: the tuple engine
+/**
+ * `clock` is how a suite exercises elapsed time now that no operation takes `now`
+ * on the wire (#1065): a `manualClock` on the HOST moves the instant every
+ * operation — and every engine call inside it — is judged against, which is the
+ * same path an HTTP caller travels.
+ */
+export function buildRallyHost(dir: string, options?: { clock?: Clock }): SqliteScopeHost {
+  // default checker: the tuple engine
+  const host = new SqliteScopeHost({ dir, ...(options?.clock ? { clock: options.clock } : {}) });
   for (const m of MODULES) host.registerModule(m);
 
   /**

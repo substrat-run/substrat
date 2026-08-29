@@ -19,6 +19,22 @@ import { cover } from './schemas.js';
  * the parse call sites are the follow-up.
  *
  * `date` / `time` regexes match `bookInput`'s, which is where they came from.
+ *
+ * **No input below declares `now`, and that absence is the point (#1065).**
+ * RallyPoint composes `engine-booking` by call, and the engine's `nowOr` prefers a
+ * caller-supplied instant over `ctx.now()` — so an input that carried `now` would
+ * hand an HTTP caller the clock every expiry decision is judged against: confirm a
+ * lapsed hold by back-dating it, sweep someone's live hold by post-dating it, or
+ * read a match landing page that lies about whether the link is still good. #1055
+ * closed that on the engine's own wire (`atInstant`, `engines/booking/src/schemas.ts`);
+ * declaring it here would have re-opened it one layer up. The reads carried it too
+ * and are gone for the same reason: `rally/open-matches`, `rally/match`,
+ * `rally/portal-bookings` and `rally/occupancy` all report the engine's lazily
+ * computed `effectiveState`, so a chosen `now` decides what they say is expired.
+ *
+ * `now` stays a parameter of the engine's in-scope functions, which is what keeps
+ * lazy expiry replayable; a test moves a `manualClock` on the host instead, so it
+ * exercises the same path the wire does (`test/wire-clock.test.ts`).
  */
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -112,13 +128,11 @@ export const createMemberInput = z.object({
 export const availabilityInput = z.object({
   resourceId: z.string().min(1),
   date: isoDate,
-  now: z.string().optional(),
 });
 
 export const venueAvailabilityInput = z.object({
   date: isoDate,
   cover: z.array(cover).optional(),
-  now: z.string().optional(),
 });
 
 export const quoteInput = z.object({
@@ -130,8 +144,6 @@ export const quoteInput = z.object({
 });
 
 export const priceMatrixInput = z.object({ date: isoDate });
-
-export const nowInput = z.object({ now: z.string().optional() });
 
 export const timelineInput = z.object({
   entityType: z.string().min(1),
@@ -148,7 +160,6 @@ export const bookInput = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   time: z.string().regex(/^\d{2}:\d{2}$/),
   duration: z.number().int().positive(),
-  now: z.string().optional(),
 });
 
 export const openMatchInput = bookInput.extend({
@@ -161,16 +172,12 @@ export const openMatchInput = bookInput.extend({
 
 export const reservationIdInput = z.object({ reservationId: z.string().min(1) });
 
-export const reservationAtInput = reservationIdInput.extend({ now: z.string().optional() });
-
 export const confirmBookingInput = reservationIdInput.extend({
   payWith: z.enum(['wallet', 'card']).optional(),
-  now: z.string().optional(),
 });
 
 export const joinMatchInput = reservationIdInput.extend({
   memberId: z.string().min(1),
-  now: z.string().optional(),
 });
 
 export const addPlayerInput = joinMatchInput;
@@ -181,20 +188,17 @@ export const blockMaintenanceInput = z.object({
   time: clockTime,
   duration: z.number().int().positive(),
   reason: z.string().min(1),
-  now: z.string().optional(),
 });
 
 export const openUpInput = reservationIdInput.extend({
   spots: z.number().int().positive(),
   levelMin: z.string(),
   levelMax: z.string(),
-  now: z.string().optional(),
 });
 
 export const occupancyInput = z.object({
   from: isoDate,
   to: isoDate,
-  now: z.string().optional(),
 });
 
 // --- invitations ------------------------------------------------------------
