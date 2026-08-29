@@ -17,6 +17,7 @@ import {
   type PlatformRequest,
   type PlatformRequestId,
   type PrincipalId,
+  type ScopeId,
   type TenantId,
   type ModelUsageLine,
 } from '@substrat-run/contracts';
@@ -3219,6 +3220,37 @@ export function scopeHostContractSuite(
         tenantId: t1,
         scopeId: s1,
         surface: 'app',
+      });
+    });
+
+    it('refuses a name a LIVE scope holds; an archived holder releases it', async () => {
+      // A hostname routes to exactly one place, so a rebind that would move another
+      // scope's traffic is refused — unless the holder is archived or reaped, which is
+      // how a deleted app's name becomes claimable again. Both adapters read the
+      // holder's scope status to decide, and neither reads it on the router's path.
+      const holder = scopeId.parse(ulid());
+      const claimant = scopeId.parse(ulid());
+      for (const sc of [holder, claimant]) {
+        await host.provisionScope(staff, { tenantId: t1, scopeId: sc, jurisdiction: 'eu' });
+        await host.admin.activateScope(staff, t1, sc);
+      }
+      const bind = (sc: ScopeId): Promise<void> =>
+        host.admin.bindHostname(staff, {
+          hostname: 'reclaim.example.com',
+          tenantId: t1,
+          scopeId: sc,
+          surface: 'app',
+          region: null,
+          canonical: true,
+        });
+      await bind(holder);
+      await expect(bind(claimant)).rejects.toThrow(/already bound to another scope/);
+
+      await host.admin.archiveScope(staff, t1, holder);
+      await bind(claimant); // the holder released the name
+      await host.admin.setHostnameStatus(staff, 'reclaim.example.com', 'active');
+      expect(await host.admin.resolveHostname('reclaim.example.com')).toMatchObject({
+        scopeId: claimant,
       });
     });
 

@@ -4353,7 +4353,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const actor = c.get('actor');
     const surface = opts.surface ?? 'app';
     // #527 guard: a preview MUST serve the version it just bound. Routing resolves
-    // `COALESCE(scope.servingRef, version.deploymentRef)` (control-plane-do `readHostname`),
+    // `COALESCE(scope.servingRef, version.deploymentRef)` (control-plane-do `readRoute`),
     // so a preview that still carries an inherited `serving_ref` — or otherwise resolves away
     // from this version's own dispatch script — would answer with OTHER code (the promoted
     // prod build) while we report success. That is worse than a failure: it sends a reviewer

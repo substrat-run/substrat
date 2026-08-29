@@ -803,15 +803,26 @@ export async function snapshotApp(
  */
 async function bindSnapshotHostname(
   host: ScopeHost,
-  input: { node: DashboardNode; appHostname?: string | null; controlPlane?: TenantNarrowedControlPlane },
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    appHostname?: string | null;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
   snapId: ScopeId,
 ): Promise<string | null> {
   if (!input.appHostname || !input.appHostname.includes('.')) return null;
   const [label, ...rest] = input.appHostname.split('.');
   const hostname = `${label}--s${snapId.toLowerCase().slice(-4)}.${rest.join('.')}`;
+  // The copy fronts whatever the SOURCE hostname fronts. Hard-coding `app` bound the
+  // preview to a surface the vertical may not declare at all (a vertical whose first
+  // declared surface is `portal` gets its clean URL there — see `primarySurface`), so
+  // the preview URL answered from a surface the app itself never serves. Fall back to
+  // `app` only when the source row cannot be read.
+  const surface = await sourceHostnameSurface(host, input);
   try {
     if (input.controlPlane) {
-      await input.controlPlane.bindHostname({ hostname, scopeId: snapId, surface: 'app', canonical: true });
+      await input.controlPlane.bindHostname({ hostname, scopeId: snapId, surface, canonical: true });
       await input.controlPlane.setHostnameStatus(hostname, 'active');
     } else {
       const staff = platformActorId.parse(ulid());
@@ -819,7 +830,7 @@ async function bindSnapshotHostname(
         hostname,
         tenantId: input.node.tenantId,
         scopeId: snapId,
-        surface: 'app',
+        surface,
         region: null,
         canonical: true,
       });
@@ -828,6 +839,28 @@ async function bindSnapshotHostname(
     return hostname;
   } catch {
     return null; // collision or transient — the copy stands without a URL
+  }
+}
+
+/** The surface the app's own hostname is bound to; `app` when it cannot be read. */
+async function sourceHostnameSurface(
+  host: ScopeHost,
+  input: {
+    node: DashboardNode;
+    appScopeId: ScopeId;
+    appHostname?: string | null;
+    controlPlane?: TenantNarrowedControlPlane;
+  },
+): Promise<string> {
+  try {
+    const rows = await listAppHostnames(host, {
+      node: input.node,
+      appScopeId: input.appScopeId,
+      ...(input.controlPlane ? { controlPlane: input.controlPlane } : {}),
+    });
+    return rows.find((h) => h.hostname === input.appHostname)?.surface ?? 'app';
+  } catch {
+    return 'app'; // best-effort, like the bind itself
   }
 }
 
