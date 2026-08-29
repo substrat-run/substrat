@@ -36,7 +36,7 @@ Two forces make this worth a document now:
    product's margin and the builder's bill, and the rate card's correctness is a billing-integrity
    question.
 2. **We hand-maintain what the ecosystem already maintains.** The rate card
-   (`apps/builder/src/pricing.ts`), the model pairs (`apps/builder/src/model-pairs.ts`), and the
+   (`packages/model-providers/src/pricing.ts`, markup in `apps/builder/src/pricing.ts`), the model pairs (`packages/model-providers/src/model-pairs.ts`), and the
    picker catalog all carry hand-verified model ids, prices, and capabilities — each with a
    comment admitting it goes stale ("update them here when the catalog moves"). models.dev is a
    community-maintained, schema-checked catalog of exactly these facts for ~185 providers /

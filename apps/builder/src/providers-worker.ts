@@ -3,35 +3,26 @@
  * process.env, and static imports only: a worker cannot dynamically install
  * provider packages the way the local CLI offers to.
  *
- * Same `provider:model` spec grammar as src/providers.ts; the D-53 hosting
- * disclosure carries over (the picker must still say where inference runs).
- * Ollama is meaningfully LOCAL and is refused hosted with an error that says
- * why, instead of dialing localhost inside a container.
+ * Same `provider:model` grammar and the same table as src/providers.ts — both
+ * from `@substrat-run/model-providers` (#1054). What this file decides is only
+ * which direct providers the worker bundle carries (the factories below) and
+ * how missing configuration is phrased (worker secrets). The D-53 hosting
+ * disclosure carries over unchanged; Ollama is meaningfully LOCAL and is
+ * refused hosted by the resolver's `hosted` flag.
  */
 import { createAnthropic } from '@ai-sdk/anthropic';
-import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import type { LanguageModel } from 'ai';
-import { MODEL_PAIRS, type ModelPair } from './model-pairs.js';
-import { qwenCacheFetch } from './qwen-cache.js';
+import {
+	ProviderError,
+	createModel,
+	listModels,
+	providerCatalog,
+	type DirectFactories,
+	type ProviderCatalogEntry,
+} from '@substrat-run/model-providers';
+import { SENT } from './disclosure.js';
 
-/** Structurally identical to hosting.ts `ProviderCatalogEntry` (and the web
- * client's `ProviderEntry`) — declared here because even a type-only import of
- * hosting.ts would drag the Node-bound files into the worker tsconfig. */
-export interface HostedCatalogEntry {
-	readonly name: string;
-	readonly kind: 'direct' | 'compatible';
-	readonly hosting: {
-		readonly vendor: string;
-		readonly location: string;
-		readonly host: string;
-		readonly dataNote: string;
-	};
-	readonly credential: { readonly envVar: string | null; readonly set: boolean };
-	readonly listable: boolean;
-	readonly suggested: readonly string[];
-	/** The `<provider>:auto` pair, when one is declared (model-pairs.ts). */
-	readonly pair?: ModelPair;
-}
+/** Structurally identical to hosting.ts `ProviderCatalogEntry` (and the web client's `ProviderEntry`). */
+export type HostedCatalogEntry = ProviderCatalogEntry;
 
 export interface ProviderSecrets {
 	ANTHROPIC_API_KEY?: string;
@@ -39,117 +30,26 @@ export interface ProviderSecrets {
 	DASHSCOPE_BASE_URL?: string;
 	CLOUDFLARE_AI_BASE_URL?: string;
 	CLOUDFLARE_AI_API_TOKEN?: string;
+	SCALEWAY_API_KEY?: string;
+	SCALEWAY_AI_BASE_URL?: string;
 	OPENAI_COMPATIBLE_BASE_URL?: string;
 	OPENAI_COMPATIBLE_API_KEY?: string;
 }
 
-export class HostedProviderError extends Error {}
+export { ProviderError as HostedProviderError };
 
-const QWEN_DEFAULT_BASE = 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1';
+/** The direct providers this bundle statically carries. Add a row here AND `pnpm add` to wire another. */
+const FACTORIES: DirectFactories = { anthropic: createAnthropic };
 
-/** The compatible providers' effective endpoints, from worker secrets.
- * `undefined` = not a hosted compatible provider; `''` = known but unconfigured. */
-function compatibleBase(env: ProviderSecrets, provider: string): string | undefined {
-	switch (provider) {
-		case 'qwen':
-			return env.DASHSCOPE_BASE_URL ?? QWEN_DEFAULT_BASE;
-		case 'cloudflare':
-			return env.CLOUDFLARE_AI_BASE_URL ?? '';
-		case 'compat':
-			return env.OPENAI_COMPATIBLE_BASE_URL ?? '';
-		default:
-			return undefined;
-	}
-}
+/** Direct rows the bundle wired, plus every compatible row (they need no package). */
+const HOSTED = ['anthropic', 'qwen', 'cloudflare', 'scaleway', 'compat'];
 
-export function resolveModelHosted(
-	env: ProviderSecrets,
-	spec: string,
-): { model: LanguageModel; label: string; endpoint?: string } {
-	const idx = spec.indexOf(':');
-	const provider = idx === -1 ? 'anthropic' : spec.slice(0, idx);
-	const modelId = idx === -1 ? spec : spec.slice(idx + 1);
-	if (!modelId) throw new HostedProviderError(`no model id in ${JSON.stringify(spec)}`);
-
-	switch (provider) {
-		case 'anthropic': {
-			if (!env.ANTHROPIC_API_KEY)
-				throw new HostedProviderError('ANTHROPIC_API_KEY is not set as a worker secret');
-			const p = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
-			return { model: p(modelId), label: `anthropic/${modelId}` };
-		}
-		case 'qwen': {
-			if (!env.DASHSCOPE_API_KEY)
-				throw new HostedProviderError('DASHSCOPE_API_KEY is not set as a worker secret');
-			const baseURL = env.DASHSCOPE_BASE_URL ?? QWEN_DEFAULT_BASE;
-			const p = createOpenAICompatible({
-				name: 'qwen',
-				baseURL,
-				apiKey: env.DASHSCOPE_API_KEY,
-				// Explicit context-cache markers, injected at the wire (qwen-cache.ts) —
-				// the flash tier caches nothing without them.
-				fetch: qwenCacheFetch(),
-			});
-			return { model: p(modelId), label: `qwen/${modelId}`, endpoint: baseURL };
-		}
-		case 'cloudflare': {
-			if (!env.CLOUDFLARE_AI_BASE_URL)
-				throw new HostedProviderError('CLOUDFLARE_AI_BASE_URL is not set as a worker secret');
-			if (!env.CLOUDFLARE_AI_API_TOKEN)
-				throw new HostedProviderError('CLOUDFLARE_AI_API_TOKEN is not set as a worker secret');
-			const p = createOpenAICompatible({
-				name: 'cloudflare',
-				baseURL: env.CLOUDFLARE_AI_BASE_URL,
-				apiKey: env.CLOUDFLARE_AI_API_TOKEN,
-			});
-			return {
-				model: p(modelId),
-				label: `cloudflare/${modelId}`,
-				endpoint: env.CLOUDFLARE_AI_BASE_URL,
-			};
-		}
-		case 'compat': {
-			if (!env.OPENAI_COMPATIBLE_BASE_URL)
-				throw new HostedProviderError('OPENAI_COMPATIBLE_BASE_URL is not set as a worker secret');
-			const p = createOpenAICompatible({
-				name: 'compat',
-				baseURL: env.OPENAI_COMPATIBLE_BASE_URL,
-				apiKey: env.OPENAI_COMPATIBLE_API_KEY ?? 'none',
-			});
-			return {
-				model: p(modelId),
-				label: `compat/${modelId}`,
-				endpoint: env.OPENAI_COMPATIBLE_BASE_URL,
-			};
-		}
-		case 'ollama':
-			throw new HostedProviderError(
-				'ollama is local-machine inference — it does not exist on builder.substrat.net. Use the local studio (pnpm builder ui) for local models.',
-			);
-		default:
-			throw new HostedProviderError(
-				`provider ${JSON.stringify(provider)} is not wired hosted. Available: anthropic, qwen, cloudflare, compat.`,
-			);
-	}
-}
-
-function hostOf(url: string): string {
-	try {
-		return new URL(url).host;
-	} catch {
-		return url;
-	}
-}
-
-/** Same three endpoint families hosting.ts decodes — duplicated because
- * hosting.ts reaches process.env via providers.ts/env.ts (node:fs). */
-function qwenLocation(host: string): string {
-	if (host.includes('dashscope-intl')) return 'Singapore (international endpoint)';
-	if (host.includes('dashscope-us')) return 'United States';
-	if (host === 'dashscope.aliyuncs.com') return 'China mainland';
-	const regional = host.match(/^([^.]+)\.([a-z]{2}-[a-z]+-\d)\.maas\.aliyuncs\.com$/);
-	if (regional) return `workspace "${regional[1]}" · region ${regional[2]}`;
-	return 'unknown region';
+export function resolveModelHosted(env: ProviderSecrets, spec: string) {
+	return createModel(spec, env as Record<string, string | undefined>, {
+		factories: FACTORIES,
+		hosted: true,
+		describeMissing: (envVar) => `${envVar} is not set as a worker secret`,
+	});
 }
 
 /**
@@ -159,141 +59,13 @@ function qwenLocation(host: string): string {
  * so `credential.set` reflects the deployed configuration, not anyone's .env.
  */
 export function hostedProviderCatalog(env: ProviderSecrets): HostedCatalogEntry[] {
-	const sent = 'Session code and chat are sent to this provider.';
-	const qwenBase = compatibleBase(env, 'qwen') ?? QWEN_DEFAULT_BASE;
-	const cfBase = compatibleBase(env, 'cloudflare');
-	const compatBase = compatibleBase(env, 'compat');
-	return [
-		{
-			name: 'anthropic',
-			kind: 'direct',
-			hosting: {
-				vendor: 'Anthropic',
-				location: 'United States',
-				host: 'api.anthropic.com',
-				dataNote: sent,
-			},
-			credential: { envVar: 'ANTHROPIC_API_KEY', set: Boolean(env.ANTHROPIC_API_KEY) },
-			listable: false,
-			suggested: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5'],
-			...(MODEL_PAIRS['anthropic'] ? { pair: MODEL_PAIRS['anthropic'] } : {}),
-		},
-		{
-			name: 'qwen',
-			kind: 'compatible',
-			hosting: {
-				vendor: 'Alibaba Cloud (Model Studio)',
-				location: qwenLocation(hostOf(qwenBase)),
-				host: hostOf(qwenBase),
-				dataNote: sent,
-			},
-			credential: { envVar: 'DASHSCOPE_API_KEY', set: Boolean(env.DASHSCOPE_API_KEY) },
-			listable: true,
-			suggested: [],
-			...(MODEL_PAIRS['qwen'] ? { pair: MODEL_PAIRS['qwen'] } : {}),
-		},
-		{
-			name: 'cloudflare',
-			kind: 'compatible',
-			hosting: {
-				vendor: 'Cloudflare (Workers AI)',
-				location: 'global (Cloudflare network) · vendor/model ids partner-served',
-				host: cfBase ? hostOf(cfBase) : '(CLOUDFLARE_AI_BASE_URL not set)',
-				dataNote: sent,
-			},
-			credential: {
-				envVar: 'CLOUDFLARE_AI_API_TOKEN',
-				set: Boolean(env.CLOUDFLARE_AI_API_TOKEN && cfBase),
-			},
-			listable: true,
-			suggested: ['@cf/zai-org/glm-5.2', '@cf/moonshotai/kimi-k2.7-code', 'deepseek/deepseek-v4-pro'],
-		},
-		{
-			name: 'compat',
-			kind: 'compatible',
-			hosting: {
-				vendor: 'Custom endpoint',
-				location: 'operator-defined',
-				host: compatBase ? hostOf(compatBase) : '(OPENAI_COMPATIBLE_BASE_URL not set)',
-				dataNote: sent,
-			},
-			credential: {
-				envVar: 'OPENAI_COMPATIBLE_BASE_URL',
-				set: Boolean(compatBase),
-			},
-			listable: true,
-			suggested: [],
-		},
-	];
+	return providerCatalog(env as Record<string, string | undefined>, { hosted: true, only: HOSTED, sent: SENT });
 }
 
-/** `GET {base}/models` against a compatible provider's endpoint — the hosted
- * twin of providers.ts `listModels`, credentials from worker secrets. */
-export async function listModelsHosted(env: ProviderSecrets, provider: string): Promise<string[]> {
-	const baseURL = compatibleBase(env, provider);
-	if (baseURL === undefined) {
-		if (provider === 'anthropic')
-			throw new HostedProviderError(
-				'listing models is only supported for OpenAI-compatible providers; anthropic is a direct provider — see its own documentation.',
-			);
-		throw new HostedProviderError(`provider ${JSON.stringify(provider)} is not wired hosted.`);
+/** The hosted twin of providers.ts `listModels`, credentials from worker secrets. */
+export function listModelsHosted(env: ProviderSecrets, provider: string): Promise<string[]> {
+	if (!HOSTED.includes(provider)) {
+		throw new ProviderError(`provider ${JSON.stringify(provider)} is not wired hosted. Available: ${HOSTED.join(', ')}.`);
 	}
-	if (!baseURL) {
-		const envVar = provider === 'cloudflare' ? 'CLOUDFLARE_AI_BASE_URL' : 'OPENAI_COMPATIBLE_BASE_URL';
-		throw new HostedProviderError(`provider ${provider} needs ${envVar} set as a worker secret.`);
-	}
-	const key =
-		provider === 'qwen'
-			? env.DASHSCOPE_API_KEY
-			: provider === 'cloudflare'
-				? env.CLOUDFLARE_AI_API_TOKEN
-				: env.OPENAI_COMPATIBLE_API_KEY;
-
-	// Workers AI's OpenAI-compatible surface serves chat/completions and
-	// embeddings but NOT `GET /models` (405) — the catalog lives one level up,
-	// on the account API. Note it lists Cloudflare's own `@cf/…` models only;
-	// partner-served `vendor/model` ids stay free-text.
-	if (provider === 'cloudflare') {
-		return await listCloudflareCatalog(baseURL, key);
-	}
-
-	const res = await fetch(`${baseURL.replace(/\/$/, '')}/models`, {
-		headers: key ? { Authorization: `Bearer ${key}` } : {},
-	});
-	if (!res.ok) {
-		throw new HostedProviderError(`${baseURL}/models returned HTTP ${res.status}`);
-	}
-	const body = (await res.json()) as { data?: Array<{ id?: unknown }> };
-	return (body.data ?? [])
-		.map((m) => (typeof m.id === 'string' ? m.id : null))
-		.filter((id): id is string => id !== null)
-		.sort();
-}
-
-/**
- * `GET {account}/ai/models/search?task=Text Generation`, derived from the
- * OpenAI-compatible base (`…/ai/v1` → `…/ai`). Task-filtered server-side so the
- * picker offers models that can actually run a build turn, not embeddings or
- * speech. Paged defensively; the filtered catalog fits one page today.
- */
-async function listCloudflareCatalog(baseURL: string, key: string | undefined): Promise<string[]> {
-	const root = baseURL.replace(/\/$/, '').replace(/\/v1$/, '');
-	const names: string[] = [];
-	for (let page = 1; page <= 5; page++) {
-		const url = `${root}/models/search?task=${encodeURIComponent('Text Generation')}&per_page=100&page=${page}`;
-		const res = await fetch(url, { headers: key ? { Authorization: `Bearer ${key}` } : {} });
-		if (!res.ok) {
-			throw new HostedProviderError(`${root}/models/search returned HTTP ${res.status}`);
-		}
-		const body = (await res.json()) as {
-			success?: boolean;
-			result?: Array<{ name?: unknown }>;
-		};
-		const batch = (body.result ?? [])
-			.map((m) => (typeof m.name === 'string' ? m.name : null))
-			.filter((n): n is string => n !== null);
-		names.push(...batch);
-		if (batch.length < 100) break;
-	}
-	return names.sort();
+	return listModels(provider, env as Record<string, string | undefined>);
 }
