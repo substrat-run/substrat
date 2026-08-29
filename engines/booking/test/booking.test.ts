@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { dataSubjectId, moneyOf, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
+import { manualClock } from '@substrat-run/kernel';
 import {
   PERM,
   SlotUnavailable,
@@ -28,7 +29,8 @@ import {
  *
  * Every test pins `now` explicitly rather than leaning on the wall clock, so the
  * suite is deterministic and does not rot when the fixture dates fall into the
- * past.
+ * past. The in-scope calls pass it; the operations cannot be handed one (#961),
+ * so the host's clock is pinned to the same instant and moved on purpose.
  */
 
 const NOW = '2026-07-20T12:00:00.000Z';
@@ -50,9 +52,11 @@ const player = (n: number) => dataSubjectId.parse(`01JPADEK${'A'.repeat(17)}${n}
 describe('engine-booking', () => {
   let h: EngineHarness;
   let staff: Awaited<ReturnType<EngineHarness['as']>>;
+  const clock = manualClock(NOW);
 
   beforeEach(async () => {
-    h = await engineHarness({ modules: [bookingModule] });
+    clock.set(NOW);
+    h = await engineHarness({ modules: [bookingModule], clock: clock.read });
     staff = await h.as([
       PERM.create,
       PERM.read,
@@ -637,7 +641,7 @@ describe('engine-booking', () => {
     const held = await hold(r.id);
     const canceller = await h.as([PERM.read, PERM.cancel]);
     await expect(
-      canceller.invoke('booking/move', { reservationId: held.id, startsAt: T19, now: NOW }),
+      canceller.invoke('booking/move', { reservationId: held.id, startsAt: T19 }),
     ).rejects.toThrow(/permission denied/);
   });
 
@@ -651,11 +655,9 @@ describe('engine-booking', () => {
       startsAt: T17,
       endsAt: T1830,
       expiresAt: EXPIRES,
-      now: NOW,
     });
     const confirmed = await staff.invoke<Reservation>('booking/confirm', {
       reservationId: held.id,
-      now: NOW,
     });
     expect(confirmed.state).toBe('confirmed');
 
@@ -664,5 +666,81 @@ describe('engine-booking', () => {
     const list = await staff.invoke<Page<Reservation>>('booking/list', { resourceId: r.id });
     expect(list.entries).toHaveLength(1);
     expect(list.nextCursor).toBeNull();
+  });
+
+  // -- the clock is not on the wire (#961) ---------------------------------
+  //
+  // `nowOr` prefers an explicit `now` over `ctx.now()`, which is fine in scope
+  // and a hole over HTTP: a caller with `booking:confirm` would confirm an
+  // expired hold by back-dating it, or sweep a live one by post-dating it. The
+  // declared inputs carry no `now`, so the host's parse strips it and every
+  // operation judges against the host clock — which is what these move.
+
+  const wireHold = () =>
+    staff
+      .invoke<Resource>('booking/create-resource', { kind: 'court', name: 'Bana 3' })
+      .then((r) =>
+        staff.invoke<Reservation>('booking/hold', {
+          resourceId: r.id,
+          startsAt: T17,
+          endsAt: T1830,
+          expiresAt: EXPIRES,
+        }),
+      );
+
+  it('an expired hold cannot be confirmed by back-dating `now` over the wire', async () => {
+    const held = await wireHold();
+    clock.set(AFTER_EXPIRY);
+    await expect(
+      staff.invoke('booking/confirm', { reservationId: held.id, now: NOW }),
+    ).rejects.toThrow(/expired/);
+    expect(h.eventsOfType('booking.confirmed')).toHaveLength(0);
+  });
+
+  it('a live hold cannot be swept by post-dating `now` over the wire', async () => {
+    const held = await wireHold();
+    await expect(
+      staff.invoke('booking/expire', { reservationId: held.id, now: AFTER_EXPIRY }),
+    ).rejects.toThrow(/not expired yet/);
+    expect(h.eventsOfType('booking.expired')).toHaveLength(0);
+  });
+
+  it('a hold cannot pre-date the clock to place a deadline that has already passed', async () => {
+    const r = await staff.invoke<Resource>('booking/create-resource', {
+      kind: 'court',
+      name: 'Bana 4',
+    });
+    clock.set(AFTER_EXPIRY);
+    await expect(
+      staff.invoke('booking/hold', {
+        resourceId: r.id,
+        startsAt: T17,
+        endsAt: T1830,
+        expiresAt: EXPIRES,
+        now: NOW,
+      }),
+    ).rejects.toThrow(/already be expired/);
+  });
+
+  it('a read renders lazy expiry against the host clock, whatever `now` it was sent', async () => {
+    const held = await wireHold();
+    clock.set(AFTER_EXPIRY);
+    const { reservation } = await staff.invoke<{ reservation: Reservation }>('booking/get', {
+      reservationId: held.id,
+      now: NOW,
+    });
+    expect(reservation.state).toBe('held');
+    expect(reservation.effectiveState).toBe('expired');
+  });
+
+  it('the same instant, moved in scope, still works for a composing vertical', async () => {
+    // The in-scope function keeps `now` — that is how a vertical replays or a
+    // test pins a moment — and it is the one place the choice is the caller's.
+    const held = await wireHold();
+    await expect(
+      h.run((ctx) => confirmReservation(ctx, { reservationId: held.id, now: AFTER_EXPIRY })),
+    ).rejects.toThrow(/expired/);
+    const confirmed = await h.run((ctx) => confirmReservation(ctx, { reservationId: held.id }));
+    expect(confirmed.state).toBe('confirmed');
   });
 });

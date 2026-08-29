@@ -19,6 +19,7 @@ import {
 import {
   ulid,
   webCryptoSecretBox,
+  type Clock,
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
@@ -260,6 +261,15 @@ export interface EngineHarnessOptions {
    * pass `attachments` to name it, or the harness's own 'kit' is used.
    */
   connections?: string[];
+  /**
+   * What `ctx.now()` reads inside the harness (#812). Defaults to the wall clock.
+   *
+   * Pass `manualClock(...).read` to test anything that is a function of elapsed
+   * time — a hold lapsing, a period rolling — through the same operation path a
+   * caller uses, rather than by handing the engine a `now` it must never accept
+   * over the wire (#961).
+   */
+  clock?: Clock;
 }
 
 /**
@@ -274,6 +284,7 @@ export async function engineHarness(opts: EngineHarnessOptions): Promise<EngineH
   const host = new SqliteScopeHost({
     dir,
     secretBox: webCryptoSecretBox('engine-test-kit', new Uint8Array(32).fill(7)),
+    ...(opts.clock ? { clock: opts.clock } : {}),
   });
 
   const modules = [...opts.modules, buildProbeModule(opts.entityRelations ?? [])];

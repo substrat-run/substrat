@@ -108,6 +108,23 @@ export type FreeInterval = z.infer<typeof freeInterval>;
 // Operation inputs
 // ---------------------------------------------------------------------------
 
+/**
+ * The instant an IN-SCOPE call judges expiry against — never on the wire (#961).
+ *
+ * `nowOr` prefers it over `ctx.now()`, which is exactly why no operation input
+ * below carries it: a caller who could send `now` would confirm an expired hold
+ * by back-dating it, or sweep someone's live hold by post-dating it — R6's ban on
+ * ambient clocks re-opened through the input schema. The host parses each
+ * declared input before the handler runs and a wire `now` is stripped with the
+ * other undeclared keys, so an operation always judges against the operation's
+ * own instant.
+ *
+ * A vertical composing the engine by call may still pass it, which is what keeps
+ * lazy expiry testable and replayable at a chosen moment; so may a test, though
+ * a `manualClock` on the host is the shape that exercises the wire path too.
+ */
+export const atInstant = z.object({ now: z.string().optional() });
+
 /** Every reservation-scoped operation opens with this, and most add nothing. */
 export const reservationIdIn = z.object({ reservationId: z.string().min(1) });
 
@@ -134,9 +151,10 @@ export const holdReservationInput = z.object({
   quantity: z.number().int().min(1).optional(),
   fillTarget: z.number().int().min(1).optional(),
   note: z.string().optional(),
-  now: z.string().optional(),
 });
-export type HoldReservationInput = z.infer<typeof holdReservationInput>;
+/** What `holdReservation(ctx, …)` takes in scope: the wire input plus `now`. */
+export const holdReservationCall = holdReservationInput.extend(atInstant.shape);
+export type HoldReservationInput = z.infer<typeof holdReservationCall>;
 
 export const joinReservationInput = z.object({
   reservationId: z.string().min(1),
@@ -147,13 +165,13 @@ export const joinReservationInput = z.object({
    */
   partyRef: dataSubjectId,
   share: money.optional(),
-  now: z.string().optional(),
 });
-export type JoinReservationInput = z.infer<typeof joinReservationInput>;
+/** What `joinReservation(ctx, …)` takes in scope: the wire input plus `now`. */
+export const joinReservationCall = joinReservationInput.extend(atInstant.shape);
+export type JoinReservationInput = z.infer<typeof joinReservationCall>;
 
 export const leaveReservationInput = reservationIdIn.extend({
   participantId: z.string().min(1),
-  now: z.string().optional(),
 });
 
 export const cancelReservationInput = reservationIdIn.extend({
@@ -168,28 +186,29 @@ export const moveReservationInput = z.object({
   startsAt: instantIn.optional(),
   /** New end. Given alone, the booking is re-sized from its existing start. */
   endsAt: instantIn.optional(),
-  now: z.string().optional(),
 });
-export type MoveReservationInput = z.infer<typeof moveReservationInput>;
+/** What `moveReservation(ctx, …)` takes in scope: the wire input plus `now`. */
+export const moveReservationCall = moveReservationInput.extend(atInstant.shape);
+export type MoveReservationInput = z.infer<typeof moveReservationCall>;
 
 export const openReservationInput = reservationIdIn.extend({
   fillTarget: z.number().int().min(1).nullable(),
-  now: z.string().optional(),
 });
 
-/** `now` is injectable so lazy expiry renders identically in a test and a replay. */
-export const reservationAtInput = reservationIdIn.extend({ now: z.string().optional() });
+/**
+ * @deprecated Identical to `reservationIdIn` since `now` left the wire (#961);
+ * kept so a caller that named it keeps compiling.
+ */
+export const reservationAtInput = reservationIdIn;
 
 export const listReservationsInput = z.object({
   resourceId: z.string().min(1).optional(),
   from: z.string().optional(),
   to: z.string().optional(),
-  now: z.string().optional(),
 });
 
 export const availabilityInput = z.object({
   resourceId: z.string().min(1),
   from: z.string(),
   to: z.string(),
-  now: z.string().optional(),
 });

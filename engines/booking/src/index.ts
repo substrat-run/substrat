@@ -16,6 +16,7 @@ import {
   type Money,
   type Page,
   substratError,
+  operationConcurrencyOf,
   operationInputsOf,
 } from '@substrat-run/contracts';
 
@@ -53,16 +54,20 @@ import { bookingEntities } from './entities.js';
 // The schemas are PUBLIC and re-exported unchanged: they were declared here as
 // interfaces until `defineOperations` needed them as schemas (see schemas.ts).
 export {
+  atInstant,
   availabilityInput,
   cancelReservationInput,
   createResourceInput,
   freeInterval,
+  holdReservationCall,
   holdReservationInput,
   instantIn,
+  joinReservationCall,
   joinReservationInput,
   leaveReservationInput,
   listReservationsInput,
   listResourcesInput,
+  moveReservationCall,
   moveReservationInput,
   openReservationInput,
   participant,
@@ -92,9 +97,9 @@ import { bookingLifecycles } from './lifecycle.js';
 import {
   createResourceInput,
   freeInterval as freeIntervalShape,
-  holdReservationInput,
-  joinReservationInput,
-  moveReservationInput,
+  holdReservationCall,
+  joinReservationCall,
+  moveReservationCall,
   participant as participantShape,
   reservation as reservationShape,
   resource as resourceShape,
@@ -242,9 +247,15 @@ export const bookingMigrations = [
 // ---------------------------------------------------------------------------
 
 /**
- * `now` is injectable so hold expiry is testable and replayable; absent, it is the
- * operation's instant (#812) rather than a fresh wall-clock reading, so every
- * expiry decision inside one operation is judged against the same moment.
+ * `now` is injectable IN SCOPE so hold expiry is testable and replayable; absent,
+ * it is the operation's instant (#812) rather than a fresh wall-clock reading, so
+ * every expiry decision inside one operation is judged against the same moment.
+ *
+ * It is never on the wire (#961): no declared operation input carries `now`, the
+ * host strips an undeclared key before the handler runs, and the handlers below
+ * pass nothing — so an HTTP caller cannot confirm an expired hold by back-dating
+ * the clock, nor sweep a live one by post-dating it. See `atInstant` in
+ * `schemas.ts`.
  */
 const nowOr = (ctx: OperationContext, now?: string): string => (now ? toInstant(now) : ctx.now());
 
@@ -562,7 +573,7 @@ export function holdReservation(
   ctx: OperationContext,
   rawInput: HoldReservationInput,
 ): Reservation {
-  const input = holdReservationInput.parse(rawInput);
+  const input = holdReservationCall.parse(rawInput);
   const now = nowOr(ctx, input.now);
   if (input.startsAt >= input.endsAt) {
     throw substratError('validation_failed', `invalid interval: ${input.startsAt} is not before ${input.endsAt}`);
@@ -700,7 +711,7 @@ export function joinReservation(
   ctx: OperationContext,
   rawInput: JoinReservationInput,
 ): { participant: Participant; reservation: Reservation } {
-  const input = joinReservationInput.parse(rawInput);
+  const input = joinReservationCall.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/join');
   const now = nowOr(ctx, input.now);
@@ -868,7 +879,7 @@ export function moveReservation(
   ctx: OperationContext,
   rawInput: MoveReservationInput,
 ): Reservation {
-  const input = moveReservationInput.parse(rawInput);
+  const input = moveReservationCall.parse(rawInput);
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/move');
   const now = nowOr(ctx, input.now);
@@ -1194,7 +1205,7 @@ const holdOp: OperationHandler<HoldReservationInput, Reservation> = async (ctx, 
   return holdReservation(ctx, input);
 };
 
-const confirmOp: OperationHandler<{ reservationId: string; now?: string }, Reservation> = async (
+const confirmOp: OperationHandler<{ reservationId: string }, Reservation> = async (
   ctx,
   input,
 ) => {
@@ -1202,7 +1213,7 @@ const confirmOp: OperationHandler<{ reservationId: string; now?: string }, Reser
   return confirmReservation(ctx, input);
 };
 
-const expireOp: OperationHandler<{ reservationId: string; now?: string }, Reservation> = async (
+const expireOp: OperationHandler<{ reservationId: string }, Reservation> = async (
   ctx,
   input,
 ) => {
@@ -1219,7 +1230,7 @@ const joinOp: OperationHandler<
 };
 
 const leaveOp: OperationHandler<
-  { reservationId: string; participantId: string; now?: string },
+  { reservationId: string; participantId: string },
   Reservation
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.cancel, reservationRef(input.reservationId)));
@@ -1240,7 +1251,7 @@ const moveOp: OperationHandler<MoveReservationInput, Reservation> = async (ctx, 
 };
 
 const openOp: OperationHandler<
-  { reservationId: string; fillTarget: number | null; now?: string },
+  { reservationId: string; fillTarget: number | null },
   Reservation
 > = async (ctx, input) => {
   // Whoever may confirm a reservation may decide whether it is on offer.
@@ -1264,15 +1275,15 @@ const noShowOp: OperationHandler<{ reservationId: string }, Reservation> = async
 };
 
 const getOp: OperationHandler<
-  { reservationId: string; now?: string },
+  { reservationId: string },
   { reservation: Reservation; participants: Participant[] }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read, reservationRef(input.reservationId)));
-  return getReservation(ctx, input.reservationId, input.now);
+  return getReservation(ctx, input.reservationId);
 };
 
 const listOp: OperationHandler<
-  ({ resourceId?: string; from?: string; to?: string; now?: string } & ListPage) | undefined,
+  ({ resourceId?: string; from?: string; to?: string } & ListPage) | undefined,
   Page<Reservation>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read));
@@ -1280,7 +1291,7 @@ const listOp: OperationHandler<
 };
 
 const availabilityOp: OperationHandler<
-  { resourceId: string; from: string; to: string; now?: string } & ListPage,
+  { resourceId: string; from: string; to: string } & ListPage,
   Page<FreeInterval>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read));
@@ -1327,4 +1338,10 @@ export const bookingModule: ModuleRegistration = {
    * manifest and the routes — the schema is written once, in `operations.ts`.
    */
   operationInputs: operationInputsOf(bookingOperations),
+  /**
+   * #129: the host compares `If-Match` against the reservation's version for the
+   * operations that declare `concurrency` — `booking/move` since #961 — from the
+   * same declaration, so the guard cannot be forgotten by a handler.
+   */
+  operationConcurrency: operationConcurrencyOf(bookingOperations),
 };
