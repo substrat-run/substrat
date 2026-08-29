@@ -74,7 +74,15 @@ export function credentialsFrom(provider: string, env: CredentialEnv): ProviderC
 /** The `createX` shape every AI SDK direct provider exports. */
 export type DirectFactory = (config: { apiKey?: string; baseURL?: string }) => (modelId: string) => LanguageModel;
 
-/** Direct-provider factories keyed by provider name — `{ anthropic: createAnthropic }`. */
+/**
+ * Provider factories the HOST already built, keyed by provider name.
+ *
+ * Two jobs, one map. For a `direct` row it is the AI SDK package's `createX`, which this
+ * package deliberately does not import (a Worker cannot load one dynamically). For a row
+ * that declares `binding`, it is the binding transport — `createWorkersAI({ binding:
+ * env.AI })` — and supplying it means the row needs no credential at all, because the
+ * runtime holds the capability instead of the code holding a secret.
+ */
 export type DirectFactories = Readonly<Record<string, DirectFactory | undefined>>;
 
 export interface ResolvedModel {
@@ -118,6 +126,17 @@ export function createModel(spec: string, env: CredentialEnv, options: CreateMod
 		);
 	}
 
+	const label = `${provider}/${modelId}`;
+
+	// The binding transport, when the row declares one and the host has it. Checked BEFORE
+	// credentials because it replaces them: `env.AI` is a capability the runtime grants, so
+	// there is no base URL and no token to be missing. Nothing here names Cloudflare — the
+	// row said `binding: 'workers-ai'` and the host either supplied a factory or did not.
+	const bound = row.kind === 'compatible' && row.binding ? options.factories?.[provider] : undefined;
+	if (bound) {
+		return { model: bound({})(modelId), label, provider, modelId };
+	}
+
 	const creds = credentialsFrom(provider, env);
 	if (creds.missing.length) {
 		const describe = options.describeMissing ?? ((v: string) => `${v} is not set.`);
@@ -125,8 +144,6 @@ export function createModel(spec: string, env: CredentialEnv, options: CreateMod
 			`provider ${provider} is not configured.\n` + creds.missing.map((v) => `  ${describe(v, provider)}`).join('\n'),
 		);
 	}
-
-	const label = `${provider}/${modelId}`;
 	if (row.kind === 'direct') {
 		const create = options.factories?.[provider];
 		if (!create) {

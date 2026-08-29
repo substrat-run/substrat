@@ -94,9 +94,9 @@ export const TICKET0_ENV: EnvVarSpec[] = [
     key: 'TICKET0_MODEL',
     label: 'Model',
     description:
-      "Which model answers, as `provider:model` from the platform catalog — e.g. `cloudflare:@cf/meta/llama-3.1-8b-instruct` (runs on Cloudflare's network), `scaleway:llama-3.3-70b-instruct` (EU-hosted), `anthropic:claude-sonnet-5`. Run on the platform's credential and metered to this desk; Settings → Assistant shows where inference runs.",
-    placeholder: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
-    default: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
+      "Which model answers, as `provider:model` from the platform catalog — e.g. `cloudflare:@cf/meta/llama-3.1-8b-instruct-fast` (runs on Cloudflare's network), `scaleway:llama-3.3-70b-instruct` (EU-hosted), `anthropic:claude-sonnet-5`. Run on the platform's credential and metered to this desk; Settings → Assistant shows where inference runs.",
+    placeholder: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast',
+    default: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast',
     required: false,
     secret: false,
     group: 'Assistant',

@@ -43,6 +43,27 @@ export interface WfpUploaderOptions {
    */
   injectSecrets?: Record<string, string | undefined>;
   /**
+   * Bind Workers AI (`env.AI`) on every pushed script (#1054).
+   *
+   * Deliberately a BINDING and not a credential. The alternative was injecting a Workers
+   * AI token as one more `secret_text`, and a pushed vertical can read those: the push
+   * gate checks DECLARED bindings, never the code, so R2's ban on `cloudflare:workers`
+   * — what stops module code reaching ambient `env` — is not enforced here (#862). A
+   * spending credential under that hole is not something to ship; a binding leaves
+   * nothing to read, and Workers AI bills the account owning the script, which is ours.
+   *
+   * Verified on TEST rather than inferred (D-58's discipline): a throwaway
+   * dispatch-namespace script accepted `{type:'ai',name:'AI'}`, read back as
+   * `{name:'AI',project:'<catalog>',type:'ai'}`, and ran inference through it — with and
+   * without a gateway id, reporting real prompt/completion token counts.
+   *
+   * The honest limit: this is a CAPABILITY the vertical holds, so a vertical can call
+   * `env.AI.run()` on our account without passing our gateway id, unattributed. Bounded
+   * to Workers AI and cheaper to bound further (gateway spend limits); the durable fix is
+   * running inference platform-side, which is what BYOK needs anyway.
+   */
+  bindAi?: boolean;
+  /**
    * Head sampling rate (0–1) for Workers **automatic tracing** on pushed scripts (#858).
    * Absent ⇒ no `traces` block, which is what every push has sent until now.
    *
@@ -214,6 +235,11 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
     .map(([name, text]) => ({ type: 'secret_text', name, text: text as string }));
 
   return async (deploymentRef, bundle, inPlace) => {
+    // The model runtime needs BOTH halves: the platform willing to grant it at all
+    // (`bindAi`, a fleet kill-switch) and THIS version having declared it
+    // (`substrat.usesModels`). A vertical that never asked never holds the capability,
+    // and asking is a manifest diff a human reads at admit.
+    const bindings = [...injected, ...(opts.bindAi && bundle.usesModels ? [{ type: 'ai', name: 'AI' }] : [])];
     // A fresh script declares every DO class under the first tag. An in-place update
     // of the serving script (#286) may only declare classes the script does not
     // already have — re-declaring a live class errors — so send the delta under a
@@ -249,7 +275,7 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // The vertical's own bindings, plus the platform's injected secrets (added here,
       // AFTER the §4 sandbox check on the declared set — the platform is granting the
       // vertical verification secrets, not the vertical reaching for a platform binding).
-      bindings: [...bundle.bindings, ...injected],
+      bindings: [...bundle.bindings, ...bindings],
       ...(migrations ? { migrations } : {}),
       // On the serving script, secrets put by hand or by an earlier deploy survive the
       // re-upload — this is what deletes the "re-put every secret on every new script"

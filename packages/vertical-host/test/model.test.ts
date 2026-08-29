@@ -149,14 +149,58 @@ describe('run', () => {
   });
 });
 
+describe('the Workers AI binding', () => {
+  /** A stand-in for `env.AI` — `workers-ai-provider` only needs an object to wrap. */
+  const aiBinding = { run: async () => ({ response: 'bound' }) };
+
+  it('makes the cloudflare row runnable with NO credential in the environment', () => {
+    const bare = createModelHost({ env: {} });
+    expect(bare.status('cloudflare:@cf/meta/llama-3.1-8b-instruct-fast')).toMatchObject({
+      configured: false,
+      missing: ['CLOUDFLARE_AI_API_TOKEN', 'CLOUDFLARE_AI_BASE_URL'],
+    });
+
+    // The binding IS the configuration: nothing is missing, because nothing is needed.
+    const bound = createModelHost({ env: {}, aiBinding });
+    expect(bound.status('cloudflare:@cf/meta/llama-3.1-8b-instruct-fast')).toMatchObject({
+      configured: true,
+      missing: [],
+    });
+  });
+
+  it('does NOT treat a direct row’s factory as credential-free — status must not outrun run()', async () => {
+    // `createAnthropic` is the package, not a capability: the row still needs its key.
+    // Reported as configured, a settings screen would call this runnable and the call
+    // would then fail — status lying about the one thing it exists to answer.
+    const host = createModelHost({ env: {}, factories: { anthropic: (() => () => null) as never } });
+    expect(host.status('anthropic:claude-opus-5')).toMatchObject({
+      configured: false,
+      missing: ['ANTHROPIC_API_KEY'],
+    });
+    // And run() agrees, which is the property that was broken.
+    await expect(host.run({ spec: 'anthropic:claude-opus-5', attribution, prompt: 'hi' })).rejects.toThrow(
+      /ANTHROPIC_API_KEY/,
+    );
+  });
+
+  it('leaves every other row alone — the binding is one row’s transport, not a global', () => {
+    const bound = createModelHost({ env: {}, aiBinding });
+    expect(bound.status('scaleway:llama-3.3-70b-instruct')).toMatchObject({
+      configured: false,
+      missing: ['SCALEWAY_API_KEY'],
+    });
+    expect(bound.status('anthropic:claude-opus-5').configured).toBe(false);
+  });
+});
+
 describe('status', () => {
   it('says whether the platform holds what the row needs, without running anything', () => {
     const host = createModelHost({ env: { CLOUDFLARE_AI_BASE_URL: 'https://x/ai/v1' } });
-    expect(host.status('cloudflare:@cf/meta/llama-3.1-8b-instruct')).toEqual({
-      spec: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
-      label: 'cloudflare/@cf/meta/llama-3.1-8b-instruct',
+    expect(host.status('cloudflare:@cf/meta/llama-3.1-8b-instruct-fast')).toEqual({
+      spec: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast',
+      label: 'cloudflare/@cf/meta/llama-3.1-8b-instruct-fast',
       provider: 'cloudflare',
-      modelId: '@cf/meta/llama-3.1-8b-instruct',
+      modelId: '@cf/meta/llama-3.1-8b-instruct-fast',
       configured: false,
       missing: ['CLOUDFLARE_AI_API_TOKEN'],
       hosting: {

@@ -57,6 +57,10 @@ export interface VerticalBundle {
   /** DO classes to migrate as SQLite (`new_sqlite_classes`). */
   doClasses: string[];
   bindings: DeclaredBinding[];
+  /** The version DECLARED `substrat.usesModels` (#1054): bind the platform's model runtime
+   *  as `env.AI`. Travels with the version, so who holds the capability is a property of
+   *  the code that shipped rather than of the fleet's config. */
+  usesModels?: boolean;
   /** Static files served from the edge, with the routing config that decides how paths
    *  resolve against them (#340). Absent ⇒ the script serves no static assets.
    *  `recoverContent` is the re-serve's escape hatch (#578): the runtime's asset store

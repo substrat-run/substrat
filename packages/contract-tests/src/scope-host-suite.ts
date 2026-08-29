@@ -1667,9 +1667,9 @@ export function scopeHostContractSuite(
           requestId: 'req-model-usage-3',
           line: line('2026-08-03T10:00:00.000Z', {
             listUsd: null,
-            model: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
+            model: 'cloudflare:@cf/meta/llama-3.1-8b-instruct-fast',
             provider: 'cloudflare',
-            modelId: '@cf/meta/llama-3.1-8b-instruct',
+            modelId: '@cf/meta/llama-3.1-8b-instruct-fast',
             inputTokens: 10,
             outputTokens: 10,
           }),

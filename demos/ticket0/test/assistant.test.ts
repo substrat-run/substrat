@@ -448,7 +448,7 @@ describe('answering a customer', () => {
     });
     expect(d.hosting?.location).toMatch(/European Union/);
     // And the default is the platform's cheap Cloudflare row.
-    expect(describeModel(models, undefined).spec).toBe('cloudflare:@cf/meta/llama-3.1-8b-instruct');
+    expect(describeModel(models, undefined).spec).toBe('cloudflare:@cf/meta/llama-3.1-8b-instruct-fast');
   });
 
   it('a model outage records a failed turn and charges nothing for it', async () => {
