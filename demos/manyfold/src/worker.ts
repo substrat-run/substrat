@@ -22,14 +22,15 @@ import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudf
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { PLATFORM_REQUEST_HEADER, readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import {
+  AuthConfigError,
   IdentityDO,
+  instanceAuthFor,
   mintOwnerClaimLink,
-  oidcAuthProvider,
-  oidcRpAuthProvider,
   sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { MODULES, ROLES } from './provision.js';
+import { MANYFOLD_ENV } from './manifest.js';
 import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
 import { API_DOCUMENT } from './api.js';
@@ -125,66 +126,38 @@ const originOf = (req: Request): string => new URL(req.url).origin;
 const identityDo = (env: Env, node: SiteNode) => env.AUTH.get(env.AUTH.idFromName(node.tenantId));
 
 /**
- * The scope's DELIVERED auth choice (`substrat:auth`, the dashboard configured at install /
- * Settings), stored in the tenant's identity DO. OIDC-only (oidc-only-demos.md): `oidc` is the
- * only supported mode; a malformed / `builtin` entry fails this parse → "no choice delivered".
+ * Everything this site was configured with, in ONE DO hop — the delivered `substrat:auth`
+ * choice, the declared settings (MANYFOLD_ENV, resolved delivered > binding > manifest
+ * default, #398) and the tenant's session secret.
+ *
+ * The settings pass is the fix behind #972: this worker used to read `env.OIDC_ISSUER`
+ * directly, so an issuer saved per install in the dashboard never reached it — a spec
+ * default rides as a binding shared by every install of one serving script (#374).
  */
-const authChoice = z.object({
-  mode: z.literal('oidc'),
-  issuer: z.string().url().optional(),
-  clientId: z.string().min(1).optional(),
-  clientSecret: z.string().optional(),
-  audience: z.string().optional(),
-  cookieDomain: z.string().min(1).optional(),
-});
-const AUTH_CONFIG_KEY = 'substrat:auth';
-
-/** The scope's auth wiring in one DO hop: the delivered choice + the tenant's session secret. */
 async function authWiringFor(env: Env, base: SiteNode) {
-  const wiring = await identityDo(env, base).authWiring(base.scopeId);
-  const raw = wiring.config[AUTH_CONFIG_KEY];
-  let choice: z.infer<typeof authChoice> | null = null;
-  if (raw) {
-    try {
-      const parsed = authChoice.safeParse(JSON.parse(raw));
-      choice = parsed.success ? parsed.data : null;
-    } catch {
-      choice = null;
-    }
-  }
-  return { choice, sessionSecret: wiring.sessionSecret };
+  return instanceAuthFor({
+    directory: identityDo(env, base),
+    scopeId: base.scopeId,
+    envSpec: MANYFOLD_ENV,
+    env: env as unknown as Record<string, unknown>,
+  });
 }
 
 /**
- * The `AuthProvider` for this request, chosen by CONFIG (oidc-only-demos.md): the vertical runs
- * no credential store. A delivered `substrat:auth` (mode 'oidc') builds the relying-party
- * provider (browser login at the issuer, cookie sessions signed with the tenant's DO-minted
- * secret, bearer fallback for API clients); a standalone `AUTH_PROVIDER=oidc` verifies bearer
- * tokens against OIDC_ISSUER. Anything else is unconfigured — fail closed.
+ * The `AuthProvider` for this request, chosen by CONFIG (oidc-only-demos.md): the vertical
+ * runs no credential store. A delivered `substrat:auth` builds the relying-party provider
+ * (browser login at the issuer, cookie sessions signed with the tenant's DO-minted secret,
+ * bearer fallback for API clients); a standalone `AUTH_PROVIDER=oidc` verifies bearer tokens
+ * against OIDC_ISSUER. Anything else is unconfigured — fail closed.
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
-  const base = baseNode(req, env);
-  const { choice, sessionSecret } = await authWiringFor(env, base);
-  if (choice?.mode === 'oidc') {
-    if (!choice.issuer || !choice.clientId) {
-      throw new HTTPException(503, { message: "this instance's OIDC configuration is incomplete — set issuer and clientId" });
-    }
-    return oidcRpAuthProvider({
-      issuer: choice.issuer,
-      clientId: choice.clientId,
-      clientSecret: choice.clientSecret ?? '',
-      sessionSecret,
-      ...(choice.audience ? { audience: choice.audience } : {}),
-      ...(choice.cookieDomain ? { cookieDomain: choice.cookieDomain } : {}),
-    });
+  const instance = await authWiringFor(env, baseNode(req, env));
+  try {
+    return instance.provider();
+  } catch (err) {
+    if (err instanceof AuthConfigError) throw new HTTPException(err.status, { message: err.message });
+    throw err;
   }
-  if (env.AUTH_PROVIDER === 'oidc') {
-    if (!env.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
-    return oidcAuthProvider({ issuer: env.OIDC_ISSUER, ...(env.OIDC_AUDIENCE ? { audience: env.OIDC_AUDIENCE } : {}) });
-  }
-  throw new HTTPException(503, {
-    message: "this instance has no identity provider configured — deliver substrat:auth with mode 'oidc'",
-  });
 }
 
 /**
