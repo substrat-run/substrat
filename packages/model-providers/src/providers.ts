@@ -84,6 +84,12 @@ export interface CompatibleProvider extends ProviderBase {
 	 * context-cache markers. Named, not imported, so the table stays data.
 	 */
 	readonly wire?: 'qwen-cache';
+	/**
+	 * Per-request extras the row's endpoint understands — Cloudflare's AI Gateway
+	 * headers (attribution metadata, payload retention off, gateway selection). Named
+	 * here and dispatched in request.ts, never on the provider's name.
+	 */
+	readonly request?: 'cloudflare-gateway';
 }
 
 export type ProviderSpec = DirectProvider | CompatibleProvider;
@@ -165,6 +171,7 @@ export const PROVIDERS: Readonly<Record<string, ProviderSpec>> = {
 		baseUrlEnv: 'CLOUDFLARE_AI_BASE_URL',
 		envVar: 'CLOUDFLARE_AI_API_TOKEN',
 		catalog: 'cloudflare-catalog',
+		request: 'cloudflare-gateway',
 		hosting: {
 			vendor: 'Cloudflare (Workers AI)',
 			// D-53 honesty: `@cf/…` ids run on Cloudflare's network; bare

@@ -84,6 +84,18 @@ asks a compatible endpoint what it actually serves — Cloudflare's catalog live
 account API rather than `/models`, and that is a property of its row (`catalog`), not a
 branch on its name.
 
+## Per-request extras, by row
+
+`requestHeadersFor(provider, { attribution, env })` returns what a row's endpoint wants
+attached to one call beyond the prompt — for Cloudflare's AI Gateway row, its headers:
+`cf-aig-metadata` (the five attribution keys as JSON — the gateway keeps at most five,
+which is why `ModelAttribution` is fixed there and a sixth is refused rather than dropped),
+`cf-aig-collect-log-payload: false` (the gateway logs counts, model, cost and duration but
+never the prompt or the answer), and `cf-aig-gateway-id` when the platform named one
+(`CLOUDFLARE_AI_GATEWAY_ID`). Every other row returns nothing, and the host never learns
+which case it was in. A gateway **spend limit** is operator configuration keyed on the same
+metadata — a second guard beneath the host's own budget, never the only one.
+
 ## The rate card and list price
 
 `rate-card.generated.ts` is a checked-in snapshot generated from models.dev × LiteLLM

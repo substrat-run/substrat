@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-100 decisions · 58 plan · 42 kernel
+101 decisions · 59 plan · 42 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -59,7 +59,7 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-29](decisions/D-029-event-payloads-get-per-type-schemaversion-zod-schemas-owned-.md) | 2026-07-14 | plan | Event payloads get per-(type, schemaVersion) Zod schemas owned by the emitting engine |  |
 | [K-17](decisions/K-017-vertical-substates-7-5.md) | 2026-07-14 | kernel | Vertical substates (§7.5) |  |
 | [K-18](decisions/K-018-queryable-custom-fields.md) | 2026-07-14 | kernel | Queryable custom fields <br>*amended by K-41* |  |
-| [D-30](decisions/D-030-control-plane-the-shared-layer-across-n-per-vertical-deploym.md) | 2026-07-15 | plan | Control plane = the shared layer across N per-vertical deployments; billing deferred <br>*restated as K-20* |  |
+| [D-30](decisions/D-030-control-plane-the-shared-layer-across-n-per-vertical-deploym.md) | 2026-07-15 | plan | Control plane = the shared layer across N per-vertical deployments; billing deferred <br>*restated as K-20* <br>*amended by D-59* |  |
 | [K-19](decisions/K-019-read-path-tiering-5-6.md) | 2026-07-15 | kernel | Read-path tiering (§5.6) |  |
 | [K-20](decisions/K-020-control-plane.md) | 2026-07-15 | kernel | Control plane <br>*restated as D-30* |  |
 | [D-31](decisions/D-031-the-admin-s-record-keeping-half-becomes-a-vertical-and-is-th.md) | 2026-07-18 | plan | The admin's record-keeping half becomes a vertical, and is the first consumer of the… | #38, #39, #33, #34 |
@@ -112,3 +112,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [D-58](decisions/D-058-d-46-s-durable-object-limit-is-enforcement-only-do-originat.md) | 2026-08-22 | plan | D-46's Durable-Object limit is enforcement-only; DO-originated egress is observable <br>*amends D-46* | #863, #858 |
 | [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it <br>*amends K-18* | #811, #129, #132 |
 | [K-42](decisions/K-042-an-impersonated-operation-carries-two-actors-and-the-permis.md) | 2026-08-26 | kernel | An impersonated operation carries two actors, and the permission model answers as the impersonated one | #868, #85, #44 |
+| [D-59](decisions/D-059-the-model-provider-seam-is-a-table-platform-billed-inference-is-a-cr.md) | 2026-08-29 | plan | The model-provider seam is a table; platform-billed inference is a credential-resolution rule, not a provider <br>*amends D-30* | #1054 |

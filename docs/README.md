@@ -84,7 +84,7 @@ These are recorded rather than fixed, and are tracked in
 
 ## The decision log
 
-[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->100 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
+[`DECISIONS.md`](DECISIONS.md) is the whole log — <!-- DECISIONS:COUNT -->101 entries<!-- /DECISIONS:COUNT -->, both layers, oldest first —
 generated from [`decisions/`](decisions/), one file per decision. The tables in master plan
 §12 and kernel design §14 are generated from the same source and must not be hand-edited.
 
