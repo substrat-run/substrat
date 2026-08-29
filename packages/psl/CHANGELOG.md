@@ -1,5 +1,11 @@
 # @substrat-run/psl
 
+## 0.2.3
+
+### Patch Changes
+
+- b38cf04: `src/data.ts` now carries the `GENERATED_AT` stamp CLAUDE.md promises for a file generated from a remote source, and its header names the producer script and the list URL. Data unchanged.
+
 ## 0.2.2
 
 ### Patch Changes

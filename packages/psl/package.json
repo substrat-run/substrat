@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/psl",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Vendored Public Suffix List + the canonical matching algorithm — the registrable-suffix guard behind cookie-domain and custom-hostname validation (D-35). The list data is MPL-2.0 from publicsuffix.org; the code is AGPL-3.0.",
   "license": "AGPL-3.0-only",
   "repository": {
