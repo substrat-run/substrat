@@ -13,8 +13,9 @@
  *   node scripts/secrets.mjs status --env prod     # cross-check the file vs what's LIVE in Cloudflare
  *   node scripts/secrets.mjs push --env prod       # upload to the deployed workers (wrangler secret bulk)
  *   node scripts/secrets.mjs push --env test       # same, for the CI test workers (<name>-test)
- *   node scripts/secrets.mjs verticals --env prod  # re-put PLATFORM_SECRET/ROUTER_SECRET on every
- *                                                  # dispatch-namespace vertical script (rotation step 2)
+ *   node scripts/secrets.mjs verticals --env prod  # re-put PLATFORM_SECRET/ROUTER_SECRET + the fleet's
+ *                                                  # model credentials on every dispatch-namespace
+ *                                                  # vertical script (rotation step 2)
  *   node scripts/secrets.mjs dev                    # write each worker's .dev.vars for `wrangler dev`
  *
  * --file <path>   override the env file (defaults: secrets/platform.<env>.env, and
@@ -93,6 +94,14 @@ const MANIFEST = {
       // entry (#423), and a secret cannot share a name with a var.)
       CF_SAAS_ROUTING_TARGET: 'CF_SAAS_ROUTING_TARGET',
       CF_SAAS_SSL_METHOD: 'CF_SAAS_SSL_METHOD',
+      // The FLEET's model credentials (#1054). Held here because the control plane is
+      // what injects them onto every pushed vertical at deploy (`injectSecrets`), and
+      // re-puts them on already-deployed scripts via `verticals`. Deliberately NOT
+      // required: unset, every desk answers extractively and says which key is missing —
+      // a supported configuration, not a broken plane.
+      CLOUDFLARE_AI_BASE_URL: 'FLEET_CLOUDFLARE_AI_BASE_URL',
+      CLOUDFLARE_AI_API_TOKEN: 'FLEET_CLOUDFLARE_AI_API_TOKEN',
+      CLOUDFLARE_AI_GATEWAY_ID: 'FLEET_CLOUDFLARE_AI_GATEWAY_ID',
     },
   },
   builder: {
@@ -416,24 +425,39 @@ async function cmdVerticals() {
   for (const key of ['CF_API_TOKEN', 'CF_ACCOUNT_ID', 'PLATFORM_SECRET', 'ROUTER_SECRET']) {
     if (!values[key]) fail(`${key} is blank in ${filePath}`);
   }
+  // The fleet's model credentials ride the same path (#1054): a vertical's model host
+  // reads them as its own bindings, and a deploy bakes them in (`injectSecrets`), so
+  // this is the same rotation step 2 the two verification secrets need. Skipped when
+  // blank rather than failed — a fleet with no model credential is supported, and every
+  // desk then answers extractively and names the missing key.
+  const MODEL_KEYS = {
+    CLOUDFLARE_AI_BASE_URL: values.FLEET_CLOUDFLARE_AI_BASE_URL,
+    CLOUDFLARE_AI_API_TOKEN: values.FLEET_CLOUDFLARE_AI_API_TOKEN,
+    CLOUDFLARE_AI_GATEWAY_ID: values.FLEET_CLOUDFLARE_AI_GATEWAY_ID,
+  };
+  const modelNames = Object.keys(MODEL_KEYS).filter((k) => MODEL_KEYS[k]);
+  const names = ['PLATFORM_SECRET', 'ROUTER_SECRET', ...modelNames];
   const api = `https://api.cloudflare.com/client/v4/accounts/${values.CF_ACCOUNT_ID}/workers/dispatch/namespaces/${namespace}`;
   const headers = { Authorization: `Bearer ${values.CF_API_TOKEN}`, 'Content-Type': 'application/json' };
   const listed = await (await fetch(`${api}/scripts?per_page=100`, { headers })).json();
   if (!listed.success) fail(`could not list ${namespace} scripts: ${JSON.stringify(listed.errors)}`);
   const scripts = listed.result.map((r) => r.id);
-  console.log(`● ${namespace}: ${scripts.length} script(s) × PLATFORM_SECRET, ROUTER_SECRET${dryRun ? '  [dry-run]' : ''}`);
+  console.log(`● ${namespace}: ${scripts.length} script(s) × ${names.join(', ')}${dryRun ? '  [dry-run]' : ''}`);
+  if (!modelNames.length) {
+    console.log('    (no FLEET_CLOUDFLARE_AI_* in the file — desks will answer extractively)');
+  }
   if (dryRun) {
     for (const s of scripts) console.log(`    ${s}`);
     return;
   }
   let failures = 0;
   for (const script of scripts) {
-    for (const name of ['PLATFORM_SECRET', 'ROUTER_SECRET']) {
+    for (const name of names) {
       const res = await (
         await fetch(`${api}/scripts/${script}/secrets`, {
           method: 'PUT',
           headers,
-          body: JSON.stringify({ name, text: values[name], type: 'secret_text' }),
+          body: JSON.stringify({ name, text: MODEL_KEYS[name] ?? values[name], type: 'secret_text' }),
         })
       ).json();
       if (!res.success) {

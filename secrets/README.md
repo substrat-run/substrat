@@ -84,9 +84,23 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `SECRET_BOX_KEY` | — | `SECRET_BOX_KEY` | — |
 | `GITHUB_APP_ID` / `_SLUG` / `_PRIVATE_KEY` | — | same names | — |
 
+| `FLEET_CLOUDFLARE_AI_BASE_URL` / `_API_TOKEN` / `_GATEWAY_ID` | `CLOUDFLARE_AI_BASE_URL` / `_API_TOKEN` / `_GATEWAY_ID` | — | — |
+
 `PLATFORM_SECRET` and `ROUTER_SECRET` are also injected into every pushed vertical by
 the control plane's WfP uploader — verticals need no secret setup of their own, but the
 control plane must hold the values (hence they're set here).
+
+The `FLEET_CLOUDFLARE_AI_*` keys ride the same path (#1054, D-59): the control plane
+holds them, injects them onto every pushed vertical at deploy, and
+`node scripts/secrets.mjs verticals --env prod` re-puts them on already-deployed
+scripts. A vertical's model host reads them as its own bindings; the desk only chooses
+WHICH model. Leave them blank and every desk answers extractively, naming the missing
+key in Settings → Assistant — a supported configuration, not an outage.
+
+**The token is a spending credential**, unlike the two verification secrets beside it:
+scope it to Workers AI Read + Run and nothing else, and set
+`FLEET_CLOUDFLARE_AI_GATEWAY_ID` so per-tenant spend limits can be enforced at the
+gateway on the attribution metadata every call carries.
 
 Optional keys (`CF_SAAS_ROUTING_TARGET`, `CF_SAAS_SSL_METHOD`, `PLATFORM_BASE_DOMAINS`,
 `SECRET_BOX_KEY_ID`, `EMAIL_FROM`, `CP_ACTOR`) are normally wrangler.jsonc `vars`; set

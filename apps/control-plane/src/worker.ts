@@ -275,6 +275,30 @@ interface Env extends OidcEnv {
    */
   SCRIVE_BASE_URL?: string;
   /**
+   * The platform's margin over list price for model usage it provides (#1054), whole
+   * percent. Unset ⇒ `DEFAULT_MODEL_MARGIN_PERCENT` (20).
+   */
+  MODEL_MARGIN_PERCENT?: string;
+  /**
+   * The FLEET's model credentials (#1054, D-59), injected onto every pushed vertical at
+   * deploy and re-put on already-deployed ones by `secrets.mjs verticals`.
+   *
+   * The control plane never calls a model itself; it holds these because it is the only
+   * component that can hand a secret to a dispatch-namespace script — `wrangler secret`
+   * cannot reach one. The desk chooses WHICH model (`TICKET0_MODEL`, per install); the
+   * platform pays for it, so the credential is deployment-wide and belongs here rather
+   * than in anyone's Env tab. Unset ⇒ desks answer extractively and name the missing key.
+   *
+   * Declared explicitly, though the index signature below would swallow them: it types an
+   * undeclared key as `unknown`, which silently fails to assign to a `string | undefined`
+   * binding — a typo'd name would read as "no credential configured" rather than as an
+   * error.
+   */
+  CLOUDFLARE_AI_BASE_URL?: string;
+  CLOUDFLARE_AI_API_TOKEN?: string;
+  /** Optional named AI Gateway; unset ⇒ the account's default gateway serves. */
+  CLOUDFLARE_AI_GATEWAY_ID?: string;
+  /**
    * Service bindings to vertical deployments, `VERTICAL_<SLUG>` with dashes as
    * underscores — the same convention and the same static-map shape the router
    * carries, with the same Workers-for-Platforms swap later.
@@ -316,6 +340,14 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
       PLATFORM_SECRET: env.PLATFORM_SECRET,
       ROUTER_SECRET: env.ROUTER_SECRET,
       CONTROL_PLANE_URL: env.PLATFORM_CP_URL,
+      // The FLEET's model credentials (#1054, D-59). The desk picks WHICH model
+      // (`TICKET0_MODEL`, per install); the platform pays for it, so the credential is
+      // deployment-wide and arrives here rather than in anyone's Env tab. Undefined
+      // values are skipped by the uploader, and a vertical with no credential answers
+      // extractively and names the missing key — a supported configuration.
+      CLOUDFLARE_AI_BASE_URL: env.CLOUDFLARE_AI_BASE_URL,
+      CLOUDFLARE_AI_API_TOKEN: env.CLOUDFLARE_AI_API_TOKEN,
+      CLOUDFLARE_AI_GATEWAY_ID: env.CLOUDFLARE_AI_GATEWAY_ID,
     },
     traceSampling: traceSamplingFor(env),
   });
