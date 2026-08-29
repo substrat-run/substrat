@@ -51,9 +51,6 @@ importers:
 
   apps/builder:
     dependencies:
-      '@ai-sdk/openai-compatible':
-        specifier: 3.0.30
-        version: 3.0.30(zod@4.4.3)
       '@cloudflare/sandbox':
         specifier: 0.12.5
         version: 0.12.5
@@ -75,6 +72,9 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:*
         version: link:../../packages/kernel
+      '@substrat-run/model-providers':
+        specifier: workspace:*
+        version: link:../../packages/model-providers
       '@substrat-run/oidc-rp':
         specifier: workspace:*
         version: link:../../packages/oidc-rp
@@ -1794,6 +1794,25 @@ importers:
       zod:
         specifier: 'catalog:'
         version: 4.4.3
+
+  packages/model-providers:
+    dependencies:
+      '@ai-sdk/openai-compatible':
+        specifier: 3.0.30
+        version: 3.0.30(zod@4.4.3)
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../contracts
+      ai:
+        specifier: 7.0.62
+        version: 7.0.62(zod@4.4.3)
+    devDependencies:
+      typescript:
+        specifier: ^7.0.0
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0)
 
   packages/oidc-rp:
     dependencies:

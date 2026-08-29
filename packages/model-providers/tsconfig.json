@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    // DOM for `fetch`/`Response`/`URL` types — the package runs unchanged in Node,
+    // Workers and the browser, so it types against the web-standard surface only.
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["src"]
+}

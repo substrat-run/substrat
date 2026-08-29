@@ -54,7 +54,7 @@ import {
 	skillsForPhase,
 	SKILL_MANIFEST,
 } from './phase.js';
-import { explainProviderFailure } from './provider-errors.js';
+import { explainProviderFailure } from '@substrat-run/model-providers';
 import {
 	HostedProviderError,
 	hostedProviderCatalog,

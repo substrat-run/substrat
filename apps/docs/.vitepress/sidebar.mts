@@ -198,6 +198,7 @@ export function guideSidebar() {
         { text: '@substrat-run/oidc-rp', link: '/reference/oidc-rp' },
         { text: '@substrat-run/dev-issuer', link: '/reference/dev-issuer' },
         { text: '@substrat-run/psl', link: '/reference/psl' },
+        { text: '@substrat-run/model-providers', link: '/reference/model-providers' },
         { text: '@substrat-run/cli', link: '/reference/cli' },
         { text: 'create-substrat', link: '/reference/create-substrat' },
       ],
