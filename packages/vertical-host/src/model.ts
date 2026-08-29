@@ -33,6 +33,7 @@ import {
   normalizeModelSpec,
   parseModelSpec,
   ProviderError,
+  requestHeadersFor,
   type CredentialEnv,
   type DirectFactories,
   type HostingInfo,
@@ -176,9 +177,14 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
     const model = normalizeModelSpec(request.spec);
     await options.guard?.({ spec: model, attribution });
 
+    // The row's per-request extras — for Cloudflare's gateway, the attribution as
+    // metadata and payload retention off; for every other row, nothing. The host does
+    // not know which.
+    const headers = requestHeadersFor(resolved.provider, { attribution: request.attribution, env: options.env });
     const started = now();
     const result = await generateText({
       model: resolved.model,
+      ...(Object.keys(headers).length ? { headers } : {}),
       ...(request.system ? { system: request.system } : {}),
       prompt: request.prompt,
       ...(request.maxOutputTokens !== undefined ? { maxOutputTokens: request.maxOutputTokens } : {}),
