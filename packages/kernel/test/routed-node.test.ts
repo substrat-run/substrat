@@ -17,10 +17,14 @@ const headers = (h: Record<string, string>) => ({
 const routed = (extra: Record<string, string> = {}) =>
   headers({ 'x-substrat-tenant': T, 'x-substrat-scope': S, ...extra });
 
+/** The dev-router opt-out (#966): the only way an unsigned assertion is read. */
+const unsigned = { allowUnsigned: true };
+
 describe('readRoutedNode', () => {
   it('reads the asserted node', () => {
     const node = readRoutedNode(
       routed({ 'x-substrat-surface': 'back-office', 'x-substrat-vertical': 'shop' }),
+      unsigned,
     );
     expect(node).toEqual({
       tenantId: T,
@@ -31,7 +35,49 @@ describe('readRoutedNode', () => {
   });
 
   it('defaults the surface, since most verticals have exactly one', () => {
-    expect(readRoutedNode(routed())?.surface).toBe('app');
+    expect(readRoutedNode(routed(), unsigned)?.surface).toBe('app');
+  });
+
+  // -- fail closed without a secret (#966) -----------------------------------
+
+  it('refuses an assertion it cannot verify: no secret configured, no opt-out', () => {
+    // The hole this closes: a worker deployed without its ROUTER_SECRET used to
+    // trust any x-substrat-* headers it was handed — a forged tenant from anyone
+    // who could reach the script directly. Now that deployment is a visible outage.
+    expect(() => readRoutedNode(routed())).toThrow(RouterAssertionError);
+    expect(() => readRoutedNode(routed())).toThrow(/no ROUTER_SECRET configured/);
+    expect(() => readRoutedNode(routed(), {})).toThrow(RouterAssertionError);
+    expect(() => readRoutedNode(routed(), { expectedSecret: '' })).toThrow(RouterAssertionError);
+  });
+
+  it('reads an unsigned assertion only with the explicit opt-out', () => {
+    expect(readRoutedNode(routed(), { allowUnsigned: true })).toMatchObject({
+      tenantId: T,
+      scopeId: S,
+    });
+    expect(() => readRoutedNode(routed(), { allowUnsigned: false })).toThrow(
+      RouterAssertionError,
+    );
+  });
+
+  it('still checks a configured secret when the opt-out is on', () => {
+    // The opt-out covers the ABSENCE of a secret, never a mismatch against one.
+    expect(() =>
+      readRoutedNode(routed({ 'x-substrat-router': 'guess' }), {
+        expectedSecret: 'shhh',
+        allowUnsigned: true,
+      }),
+    ).toThrow(/not signed by a known router/);
+    expect(() => readRoutedNode(routed(), { expectedSecret: 'shhh', allowUnsigned: true })).toThrow(
+      RouterAssertionError,
+    );
+  });
+
+  it('leaves the no-assertion path alone: null with or without a secret', () => {
+    // An un-routed request is not an unsigned one. The standalone deploy and the
+    // ALLOW_DEV_NODE instance both live here, and neither is affected.
+    expect(readRoutedNode(headers({}))).toBeNull();
+    expect(readRoutedNode(headers({}), unsigned)).toBeNull();
   });
 
   it('returns null when no router fronted the request', () => {
@@ -71,22 +117,27 @@ describe('readRoutedNode', () => {
   });
 
   it('refuses a half-assertion rather than guessing the other half', () => {
-    expect(() => readRoutedNode(headers({ 'x-substrat-tenant': T }))).toThrow(
-      RouterAssertionError,
+    // With the opt-out, so the refusal is about the half and not about the signature.
+    expect(() => readRoutedNode(headers({ 'x-substrat-tenant': T }), unsigned)).toThrow(
+      /incomplete/,
     );
-    expect(() => readRoutedNode(headers({ 'x-substrat-scope': S }))).toThrow(
-      RouterAssertionError,
+    expect(() => readRoutedNode(headers({ 'x-substrat-scope': S }), unsigned)).toThrow(
+      /incomplete/,
     );
   });
 
   it('refuses ids that are not ULIDs', () => {
     // Parse, don't trust — even from the router. A malformed id reaching getScope
     // is a worse failure than a rejected request.
-    expect(() => readRoutedNode(headers({ 'x-substrat-tenant': 'evil', 'x-substrat-scope': S })))
-      .toThrow(RouterAssertionError);
     expect(() =>
-      readRoutedNode(headers({ 'x-substrat-tenant': T, 'x-substrat-scope': '../../admin' })),
-    ).toThrow(RouterAssertionError);
+      readRoutedNode(headers({ 'x-substrat-tenant': 'evil', 'x-substrat-scope': S }), unsigned),
+    ).toThrow(/malformed id/);
+    expect(() =>
+      readRoutedNode(
+        headers({ 'x-substrat-tenant': T, 'x-substrat-scope': '../../admin' }),
+        unsigned,
+      ),
+    ).toThrow(/malformed id/);
   });
 
   it('checks the secret before it checks anything else', () => {
