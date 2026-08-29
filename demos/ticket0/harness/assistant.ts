@@ -2,7 +2,9 @@
  * The assistant — harness code, and connector-shaped like the ingester.
  *
  * Module code may not reach the network, so the model call happens here, outside the
- * scope's transaction, and the result comes back in through `ticket0/record-answer`.
+ * scope's transaction — through the PLATFORM's model host (#1054), which resolves the
+ * desk's `provider:model` against the platform's credential and hands back one usage
+ * line — and the result comes back in through `ticket0/record-answer`, line included.
  * In a hosted deployment this is a registered connector; on the demo's Node server it
  * is a function the widget surface calls. The operations either end are identical.
  *
@@ -15,6 +17,7 @@
  * desk sends; Kestrel's does not; same code, same call, different grant.
  */
 
+import type { ModelAttribution, ModelHost, ModelStatus, ModelUsageLine } from '@substrat-run/vertical-host/model';
 import { ASSISTANT_ERROR_MAX } from '../spec/model.js';
 
 export interface ModelAnswer {
@@ -22,6 +25,8 @@ export interface ModelAnswer {
   readonly inputTokens: number;
   readonly outputTokens: number;
   readonly confidence: number | null;
+  /** The platform's record of the call, when the platform's model host made it. */
+  readonly usage?: ModelUsageLine;
 }
 
 export interface Model {
@@ -59,63 +64,35 @@ function prompt(question: string, context: RetrievedArticle[]): string {
 }
 
 /**
- * Cloudflare Workers AI over its REST API.
+ * The platform's model host, as a `Model`.
  *
- * REST rather than the `env.AI` binding because this demo runs on Node. In a deployed
- * worker the binding is the better call — it needs no token and no egress allowance —
- * and swapping is a change to this function and nothing else.
+ * Which `provider:model` is a setting of this desk; the credential is the platform's
+ * and never the desk's; the usage line the host produces rides into `record-answer`
+ * beside the token counts, so the desk's meter and the platform's ledger are written
+ * in one transaction. Nothing here knows which provider ran.
  */
-export function workersAiModel(opts: {
-  accountId: string;
-  apiToken: string;
-  model?: string;
-  fetchImpl?: typeof fetch;
-}): Model {
-  const model = opts.model ?? '@cf/meta/llama-3.1-8b-instruct';
-  const doFetch = opts.fetchImpl ?? fetch;
+export function platformModel(host: ModelHost, spec: string, attribution: ModelAttribution): Model {
+  const status = host.status(spec);
   return {
-    label: `workers-ai/${model}`,
+    label: status.label,
     async answer({ question, context }) {
-      const res = await doFetch(
-        `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/ai/run/${model}`,
-        {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${opts.apiToken}`,
-            'content-type': 'application/json',
-          },
-          body: JSON.stringify({
-            messages: [
-              { role: 'system', content: SYSTEM },
-              { role: 'user', content: prompt(question, context) },
-            ],
-            max_tokens: 400,
-          }),
-        },
-      );
-      if (!res.ok) throw new Error(`workers-ai ${res.status}: ${(await res.text()).slice(0, 300)}`);
-      const json = (await res.json()) as {
-        success?: boolean;
-        errors?: { message: string }[];
-        result?: {
-          response?: string;
-          usage?: { prompt_tokens?: number; completion_tokens?: number };
-        };
-      };
-      if (json.success === false) {
-        throw new Error(`workers-ai: ${json.errors?.map((e) => e.message).join('; ') ?? 'failed'}`);
-      }
-      const text = json.result?.response?.trim();
-      if (!text) throw new Error('workers-ai returned no text');
-      const usage = json.result?.usage;
+      const run = await host.run({
+        spec,
+        attribution,
+        system: SYSTEM,
+        prompt: prompt(question, context),
+        maxOutputTokens: 400,
+      });
+      const text = run.text.trim();
+      if (!text) throw new Error(`${status.label} returned no text`);
       return {
         text,
-        // Counted by the provider where it reports them. Estimated only as a last
-        // resort, and an estimate that silently became a bill would be worse than a
-        // missing one — which is why this demo prices for display and not for money.
-        inputTokens: usage?.prompt_tokens ?? estimateTokens(prompt(question, context)),
-        outputTokens: usage?.completion_tokens ?? estimateTokens(text),
+        // As the provider reported them — the line says `reported: false` and zeros
+        // when it reported none, and this demo shows that rather than estimating.
+        inputTokens: run.line.inputTokens,
+        outputTokens: run.line.outputTokens,
         confidence: null,
+        usage: run.line,
       };
     },
   };
@@ -163,21 +140,52 @@ export function extractiveModel(): Model {
   };
 }
 
+/** The platform default: runs on Cloudflare's network, costs next to nothing, and answers. */
+export const DEFAULT_TICKET0_MODEL = 'cloudflare:@cf/meta/llama-3.1-8b-instruct';
+
 /**
- * Whichever the environment can actually run. Never throws for want of a credential.
+ * Whichever the platform can actually run. Never throws for want of a credential.
  *
- * The map is a REQUIRED argument rather than a `process.env` default, because there
- * are now two hosts and only one of them has a `process`: the worker resolves these
- * per install through `resolveScopedEnvSpec`, so the credential a desk is billed
- * against is that desk's, not whatever the deployment-wide binding happened to hold.
+ * `spec` is the desk's `TICKET0_MODEL` (per install, through `resolveScopedEnvSpec`);
+ * the credential behind it is the platform's, held by the host. A provider the platform
+ * holds nothing for falls back to the extractive model, so a desk still answers — and
+ * Settings → Assistant says which it is and why.
  */
-export function modelFromEnv(env: Record<string, string | undefined>): Model {
-  const accountId = env.CF_ACCOUNT_ID ?? env.CLOUDFLARE_ACCOUNT_ID;
-  const apiToken = env.CF_AI_TOKEN ?? env.CLOUDFLARE_API_TOKEN;
-  if (accountId && apiToken) {
-    return workersAiModel({ accountId, apiToken, model: env.TICKET0_MODEL });
-  }
-  return extractiveModel();
+export function modelFor(opts: {
+  spec: string | undefined;
+  host: ModelHost;
+  attribution: ModelAttribution;
+}): Model {
+  const spec = opts.spec?.trim() || DEFAULT_TICKET0_MODEL;
+  return opts.host.status(spec).configured
+    ? platformModel(opts.host, spec, opts.attribution)
+    : extractiveModel();
+}
+
+/** What Settings → Assistant shows: the model a desk would run, and whether it can. */
+export interface ModelDescription {
+  /** As a turn records it — `cloudflare/@cf/…`, or `offline/extractive`. */
+  readonly label: string;
+  readonly generative: boolean;
+  /** The desk's setting, defaulted. */
+  readonly spec: string;
+  /** The platform holds what this row needs. */
+  readonly configured: boolean;
+  readonly missing: readonly string[];
+  /** Where inference runs and what is sent there. */
+  readonly hosting: ModelStatus['hosting'] | null;
+}
+
+export function describeModel(host: ModelHost, spec: string | undefined): ModelDescription {
+  const status = host.status(spec?.trim() || DEFAULT_TICKET0_MODEL);
+  return {
+    label: status.configured ? status.label : extractiveModel().label,
+    generative: status.configured,
+    spec: status.spec,
+    configured: status.configured,
+    missing: status.missing,
+    hosting: status.hosting,
+  };
 }
 
 export interface AssistantTarget {
@@ -345,6 +353,7 @@ export async function answerConversation(
     citedArticleIds: context.map((c) => c.id),
     confidence: answer.confidence,
     outcome: context.length === 0 ? 'escalated' : 'drafted',
+    ...(answer.usage ? { usage: answer.usage } : {}),
   });
 
   if (context.length === 0) {

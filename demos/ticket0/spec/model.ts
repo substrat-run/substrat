@@ -39,6 +39,7 @@ import {
   defineOperations,
   emitModel,
   z,
+  modelUsageLine,
 } from '@substrat-run/contracts';
 import { MAX_SEARCH_LIMIT } from '@substrat-run/kernel';
 
@@ -1094,6 +1095,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       outcome: z.enum(['drafted', 'answered', 'escalated', 'failed']),
       /** Why, when `outcome` is `failed` — what the model or the provider threw. Additive. */
       error: z.string().min(1).max(ASSISTANT_ERROR_MAX).optional(),
+      /**
+       * The platform's own record of the call (#1054), when the platform's model host ran
+       * it: the line goes to the platform ledger as a `model-usage` intent in the same
+       * transaction as the meter entries. Absent for the extractive fallback and for a
+       * failed turn — nothing ran, nothing to attribute. Additive.
+       */
+      usage: modelUsageLine.optional(),
     }),
     output: ticket0Entities.aiTurn.fields,
     http: { method: 'POST', path: '/conversations/{conversationId}/answers' },

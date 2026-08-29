@@ -781,10 +781,15 @@ function Assistant({ go }: { go: (v: View) => void }) {
             {status.model}
           </span>
         </div>
+        {status.hosting ? (
+          <div className="t-small" style={{ marginTop: 8, color: 'var(--text-secondary)' }}>
+            Runs at {status.hosting.vendor} · {status.hosting.location} · {status.hosting.dataNote}
+          </div>
+        ) : null}
         {status.generative ? (
           <div className="t-small" style={{ marginTop: 8 }}>
-            Answers are generated from the knowledge base by this model, billed to the
-            account whose token this install holds.
+            Answers are generated from the knowledge base by this model, on the platform's
+            credential, and metered to this desk — see Usage &amp; cost.
           </div>
         ) : (
           <div
@@ -798,13 +803,24 @@ function Assistant({ go }: { go: (v: View) => void }) {
               color: 'var(--danger-3)',
             }}
           >
-            <strong>No model is configured.</strong> The assistant is quoting the best-matching
-            documentation section rather than generating an answer. To answer with Workers AI,
-            set <span className="mono">CF_ACCOUNT_ID</span> and{' '}
-            <span className="mono">CF_AI_TOKEN</span> (and optionally{' '}
-            <span className="mono">TICKET0_MODEL</span>) in this install's environment — the
-            dashboard's Env tab for a hosted desk, <span className="mono">demos/ticket0/.env</span>{' '}
-            for the dev server.
+            <strong>The platform cannot run <span className="mono">{status.spec}</span>.</strong>{' '}
+            The assistant is quoting the best-matching documentation section rather than
+            generating an answer.{' '}
+            {status.missing.length > 0 ? (
+              <>
+                The platform holds no{' '}
+                {status.missing.map((m, i) => (
+                  <span key={m}>
+                    {i > 0 ? ', ' : ''}
+                    <span className="mono">{m}</span>
+                  </span>
+                ))}
+                .{' '}
+              </>
+            ) : null}
+            Pick a model the platform runs — <span className="mono">TICKET0_MODEL</span> in this
+            install's environment (the dashboard's Env tab for a hosted desk,{' '}
+            <span className="mono">demos/ticket0/.env</span> for the dev server).
           </div>
         )}
       </div>

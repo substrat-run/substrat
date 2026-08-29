@@ -16,11 +16,18 @@ import type { Page } from '@substrat-run/contracts';
 import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
 import {
   answerConversation,
+  describeModel,
   errorText,
+  modelFor,
+  platformModel,
   recordAssistantFailure,
   searchQueriesOf,
   type Model,
+  type ModelDescription,
 } from '../harness/assistant.js';
+import { createModelHost } from '@substrat-run/vertical-host/model';
+import { MockLanguageModelV3 } from 'ai/test';
+import { MODEL_USAGE_KIND, modelUsageLine } from '@substrat-run/contracts';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { ASSISTANT_ERROR_MAX } from '../spec/model.js';
 import { Hono } from 'hono';
@@ -42,6 +49,48 @@ const fakeModel = (text = 'Append a new migration; a shipped one is never edited
   async answer() {
     return { text, inputTokens: 900, outputTokens: 120, confidence: 0.8 };
   },
+});
+
+/** What the status route says about a fake — a description, not a model. */
+const fakeDescription: ModelDescription = {
+  label: 'test/fake',
+  generative: true,
+  spec: 'test:fake',
+  configured: true,
+  missing: [],
+  hosting: null,
+};
+
+/**
+ * The platform's model host over the AI SDK's mock — the same seam the worker wires
+ * `createAnthropic` into, so what is under test is ticket0's use of the host, not a
+ * provider's wire format.
+ */
+function platformHost(text: string, tokens: { input: number; output: number } | null) {
+  const mock = new MockLanguageModelV3({
+    doGenerate: {
+      content: [{ type: 'text', text }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: {
+        inputTokens: { total: tokens?.input, noCache: tokens?.input, cacheRead: undefined, cacheWrite: undefined },
+        outputTokens: { total: tokens?.output, text: tokens?.output, reasoning: undefined },
+      },
+      warnings: [],
+    } as never,
+  });
+  return createModelHost({
+    env: { ANTHROPIC_API_KEY: 'k' },
+    factories: { anthropic: () => () => mock as never },
+    sent: 'Customer messages and the knowledge-base excerpts they match',
+  });
+}
+
+const attributionFor = (desk: Desk) => ({
+  tenant: desk.tenant,
+  scope: desk.scope,
+  vertical: '@substrat-run/demo-ticket0',
+  version: '0.1.0',
+  operation: 'ticket0/answer',
 });
 
 const asTarget = (stub: ScopeStub) => ({
@@ -353,6 +402,55 @@ describe('answering a customer', () => {
     expect(assistantMessages.every((m) => m.visibility === 'internal')).toBe(true);
   });
 
+  it('through the platform’s model host: the turn carries the provider’s counts, and the platform gets its line (#1054)', async () => {
+    const models = platformHost('Append a new migration; a shipped one is never edited.', { input: 1234, output: 56 });
+    const model = platformModel(models, 'anthropic:claude-sonnet-5', attributionFor(world.substrat));
+    expect(model.label).toBe('anthropic/claude-sonnet-5');
+
+    const r = await ask(world.substrat, 'How do I edit a migration that already shipped?', model);
+    expect(r.outcome).toBe('answered');
+
+    // The turn names the model as the host labels it; its token counts have one door
+    // (`usage:read`), so they are read below from the line the platform got.
+    const admin = await at(world.substrat, 'admin');
+    const listed = (await admin.invoke('ticket0/list-turns', { conversationId: r.conversationId })) as
+      | { id: string; model: string }[]
+      | Page<{ id: string; model: string }>;
+    const turns = Array.isArray(listed) ? listed : listed.entries;
+    expect(turns.find((t) => t.id === r.turnId)?.model).toBe('anthropic/claude-sonnet-5');
+
+    // The same line, handed to the platform as an intent in the same transaction —
+    // priced from the rate card on our side, attributed with the five keys.
+    const intents = await host.listPlatformRequests(world.substrat.tenant, world.substrat.scope);
+    const mine = intents.filter((i) => i.kind === MODEL_USAGE_KIND);
+    expect(mine.length).toBeGreaterThanOrEqual(1);
+    const line = modelUsageLine.parse(mine[mine.length - 1]!.payload);
+    expect(line).toMatchObject({
+      model: 'anthropic:claude-sonnet-5',
+      reported: true,
+      inputTokens: 1234,
+      outputTokens: 56,
+      attribution: attributionFor(world.substrat),
+    });
+    expect(line.listUsd).not.toBeNull();
+  });
+
+  it('a provider the platform holds nothing for falls back to the extractive model, and says so', async () => {
+    const models = createModelHost({ env: {} });
+    const model = modelFor({ spec: 'scaleway:llama-3.3-70b-instruct', host: models, attribution: attributionFor(world.substrat) });
+    expect(model.label).toBe('offline/extractive');
+    const d = describeModel(models, 'scaleway:llama-3.3-70b-instruct');
+    expect(d).toMatchObject({
+      generative: false,
+      configured: false,
+      missing: ['SCALEWAY_API_KEY'],
+      spec: 'scaleway:llama-3.3-70b-instruct',
+    });
+    expect(d.hosting?.location).toMatch(/European Union/);
+    // And the default is the platform's cheap Cloudflare row.
+    expect(describeModel(models, undefined).spec).toBe('cloudflare:@cf/meta/llama-3.1-8b-instruct');
+  });
+
   it('a model outage records a failed turn and charges nothing for it', async () => {
     const broken: Model = {
       label: 'test/broken',
@@ -520,12 +618,13 @@ describe('answering a customer', () => {
     // cannot know — which model, and whether it is one.
     const app = new Hono();
     mountApi(app, async () => admin);
-    mountAssistantStatus(app, async () => admin, () => fakeModel());
+    mountAssistantStatus(app, async () => admin, () => fakeDescription);
     const res = await app.request('/api/assistant/status');
     expect(res.status).toBe(200);
-    const status = (await res.json()) as { model: string; generative: boolean; health: { failed: number } };
+    const status = (await res.json()) as { model: string; generative: boolean; spec: string; health: { failed: number } };
     expect(status.model).toBe('test/fake');
     expect(status.generative).toBe(true);
+    expect(status.spec).toBe('test:fake');
     expect(status.health.failed).toBe(health.failed);
 
     // And it is the admin's. An agent holds no `desk:configure`, and the route
@@ -533,7 +632,7 @@ describe('answering a customer', () => {
     const agent = await at(world.substrat, 'agent');
     const asAgent = new Hono();
     mountApi(asAgent, async () => agent);
-    mountAssistantStatus(asAgent, async () => agent, () => fakeModel());
+    mountAssistantStatus(asAgent, async () => agent, () => fakeDescription);
     expect((await asAgent.request('/api/assistant/status')).status).toBe(403);
     await expect(agent.invoke('ticket0/assistant-health', {})).rejects.toThrow(/permission denied/i);
   });

@@ -53,6 +53,8 @@ import {
 import { CloudflareScopeHost, cloudflareClientContext, defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
+import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import {
   IdentityDO,
   mintOwnerClaimLink,
@@ -62,13 +64,14 @@ import {
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
 import { API_DOCUMENT } from './api.js';
-import { T0_PERM, TICKET0_ENV } from './manifest.js';
+import { T0_PERM, TICKET0_ENV, ticket0Manifest } from './manifest.js';
 import { MODULES, OWNER_ROLE_KEY, ROLES, SERVICE_ROLES, type ServiceRole } from './provision.js';
 import { mountApi } from './routes.js';
 import {
   answerConversation,
   errorText,
-  modelFromEnv,
+  describeModel,
+  modelFor,
   recordAssistantFailure,
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
@@ -108,9 +111,17 @@ interface Env {
   AUTH_PROVIDER?: string;
   OIDC_ISSUER?: string;
   OIDC_AUDIENCE?: string;
-  CF_ACCOUNT_ID?: string;
-  CF_AI_TOKEN?: string;
   TICKET0_MODEL?: string;
+  /**
+   * PLATFORM-held model credentials (#1054) — deployment-wide on purpose, the one
+   * place a bare binding read is the design rather than the bug (#374): the platform
+   * pays the provider and meters the desk. A desk never holds one of these. Read only by
+   * the model host, which reads each row's own variables and nothing else.
+   */
+  CLOUDFLARE_AI_BASE_URL?: string;
+  CLOUDFLARE_AI_API_TOKEN?: string;
+  ANTHROPIC_API_KEY?: string;
+  SCALEWAY_API_KEY?: string;
   /** Local dev only: when 'true', fall back to DEV_NODE. Addresses an instance; authenticates nobody. */
   ALLOW_DEV_NODE?: string;
   /** Shared secret the router presents (K-26): how the desk knows the asserted node came from the router. */
@@ -556,12 +567,32 @@ app.post('/api/accept-invite', async (c) => {
  */
 mountKbRefresh(app, stub);
 
+/**
+ * The platform's model host (#1054), over this worker's own bindings. One per request
+ * is fine: it holds no state beyond the credential map and the wired factories.
+ */
+const modelHostFor = (env: Env) =>
+  createModelHost({
+    env: env as unknown as Record<string, string | undefined>,
+    factories: { anthropic: createAnthropic },
+    sent: 'Customer messages and the knowledge-base excerpts they match',
+  });
+
+/** The five keys every model call this desk makes is attributed with. */
+const attributionFor = (node: DeskNode): ModelAttribution => ({
+  tenant: node.tenantId,
+  scope: node.scopeId,
+  vertical: ticket0Manifest.id,
+  version: ticket0Manifest.version,
+  operation: 'ticket0/answer',
+});
+
 // Which model THIS install would answer with, beside its failed turns — the read
 // behind Settings → Assistant. Per install through `instanceConfig`, like the job.
 mountAssistantStatus(app, stub, async (c) => {
   const env = c.env as Env;
   const { settings } = await instanceConfig(env, nodeFor(c.req.raw, env));
-  return modelFromEnv(settings as Record<string, string | undefined>);
+  return describeModel(modelHostFor(env), settings.TICKET0_MODEL as string | undefined);
 });
 
 // ── The public widget surface ────────────────────────────────────────────────
@@ -615,9 +646,13 @@ async function answerFor(
   let model = 'unknown';
   try {
     const { settings } = await instanceConfig(env, node);
-    // No credential ⇒ the extractive model, which quotes the best-matching section
-    // and labels itself `offline/extractive`. A desk with no model still answers.
-    const chosen = modelFromEnv(settings as Record<string, string | undefined>);
+    // A provider the platform holds nothing for ⇒ the extractive model, which quotes the
+    // best-matching section and labels itself `offline/extractive`. A desk still answers.
+    const chosen = modelFor({
+      spec: settings.TICKET0_MODEL as string | undefined,
+      host: modelHostFor(env),
+      attribution: attributionFor(node),
+    });
     model = chosen.label;
     const assistant = await serviceStub(env, node, 'assistant');
     if (!assistant) {

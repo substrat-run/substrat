@@ -98,10 +98,17 @@ export const api = createClient({
  */
 /** `GET /api/assistant/status` — the model this install runs, beside its failed turns. */
 export interface AssistantStatus {
-  /** As a turn records it: `workers-ai/…`, or `offline/extractive` when there is no credential. */
+  /** As a turn records it: `cloudflare/@cf/…`, or `offline/extractive` when the platform cannot run the model. */
   model: string;
   /** False when the desk is quoting the documentation rather than generating. */
   generative: boolean;
+  /** The desk's `provider:model` setting, defaulted. */
+  spec: string;
+  /** Whether the platform holds what that provider needs, and what is missing when not. */
+  configured: boolean;
+  missing: string[];
+  /** Where inference runs and what is sent there. */
+  hosting: { vendor: string; location: string; host: string; dataNote: string } | null;
   health: {
     since: string;
     turns: number;

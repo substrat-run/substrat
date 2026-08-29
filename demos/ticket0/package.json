@@ -17,6 +17,7 @@
     "build:assets": "pnpm --dir app build && node scripts/copy-widget.mjs"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.0",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-cloudflare": "workspace:^",
     "@substrat-run/adapter-sqlite": "workspace:^",
@@ -35,6 +36,7 @@
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
+    "ai": "7.0.62",
     "better-sqlite3": "^13.0.3",
     "concurrently": "^9.0.0",
     "tsx": "^4.19.0",
@@ -125,34 +127,20 @@
         "group": "Auth"
       },
       {
-        "key": "CF_ACCOUNT_ID",
-        "label": "Cloudflare account id",
-        "description": "The account whose Workers AI runs the assistant. Without it (or without the token) answers are extractive quotes from the knowledge base rather than generated prose.",
-        "placeholder": "0123456789abcdef0123456789abcdef",
-        "required": false,
-        "secret": false,
-        "group": "Assistant"
-      },
-      {
-        "key": "CF_AI_TOKEN",
-        "label": "Workers AI token",
-        "description": "API token with Workers AI read/run. Billed to the account above — which is why it is per-install and never a deployment-wide binding.",
-        "required": false,
-        "secret": true,
-        "group": "Assistant"
-      },
-      {
         "key": "TICKET0_MODEL",
         "label": "Model",
-        "description": "Which Workers AI model answers. Defaults to the one `workersAiModel` picks.",
-        "placeholder": "@cf/meta/llama-3.1-8b-instruct",
+        "description": "Which model answers, as `provider:model` from the platform catalog — e.g. `cloudflare:@cf/meta/llama-3.1-8b-instruct` (runs on Cloudflare's network), `scaleway:llama-3.3-70b-instruct` (EU-hosted), `anthropic:claude-sonnet-5`. Run on the platform's credential and metered to this desk; Settings → Assistant shows where inference runs.",
+        "placeholder": "cloudflare:@cf/meta/llama-3.1-8b-instruct",
         "required": false,
         "secret": false,
-        "group": "Assistant"
+        "group": "Assistant",
+        "default": "cloudflare:@cf/meta/llama-3.1-8b-instruct"
       }
     ],
     "outbound": [
+      "api.anthropic.com",
       "api.cloudflare.com",
+      "api.scaleway.ai",
       "substrat.net"
     ],
     "runtimeNeeds": {

@@ -454,7 +454,7 @@ export interface Ticket0Client {
    *
    * `POST /conversations/{conversationId}/answers` — `ticket0/record-answer`
    */
-  recordAnswer(input: { conversationId: string; turnId: string; model: string; body: string; inputTokens: number; outputTokens: number; citedArticleIds: string[]; confidence?: number | null; outcome: "drafted" | "answered" | "escalated" | "failed"; error?: string }): Promise<AiTurn>;
+  recordAnswer(input: { conversationId: string; turnId: string; model: string; body: string; inputTokens: number; outputTokens: number; citedArticleIds: string[]; confidence?: number | null; outcome: "drafted" | "answered" | "escalated" | "failed"; error?: string; usage?: { attribution: { tenant: string; scope: string; vertical: string; version: string; operation: string }; model: string; provider: string; modelId: string; reported: boolean; inputTokens: number; outputTokens: number; cachedInputTokens: number; cacheWriteTokens: number; listUsd: string | null; at: string; elapsedMs: number } }): Promise<AiTurn>;
 
   /**
    * Record that the assistant could not act on a message
