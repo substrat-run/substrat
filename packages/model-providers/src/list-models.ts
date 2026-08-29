@@ -48,11 +48,10 @@ async function listCloudflareCatalog(baseUrl: string, headers: Record<string, st
 		const res = await fetch(url, { headers });
 		if (!res.ok) throw new ProviderError(`${root}/models/search returned HTTP ${res.status}`);
 		const body = (await res.json()) as { result?: Array<{ name?: unknown }> };
-		const batch = (body.result ?? [])
-			.map((m) => (typeof m.name === 'string' ? m.name : null))
-			.filter((n): n is string => n !== null);
-		names.push(...batch);
-		if (batch.length < 100) break;
+		const rows = body.result ?? [];
+		names.push(...rows.map((m) => (typeof m.name === 'string' ? m.name : null)).filter((n): n is string => n !== null));
+		// The page boundary is the RAW page length: a filtered-out entry must not end the walk early.
+		if (rows.length < 100) break;
 	}
 	return names.sort();
 }

@@ -32,7 +32,7 @@ export function hostOf(url: string): string {
 export interface CatalogOptions {
 	/**
 	 * What this host sends — 'Session code and chat', 'Conversation text and the
-	 * knowledge base'. Completed as "<sent> are sent to this provider."
+	 * knowledge base'. Rendered as "<sent> — sent to this provider." (number-neutral).
 	 */
 	readonly sent?: string;
 	/** Exclude rows marked `local` (a hosted runtime cannot dial localhost). */
@@ -49,7 +49,7 @@ function effectiveHost(name: string, row: ProviderSpec, env: CredentialEnv): str
 
 export function hostingInfo(provider: string, env: CredentialEnv, options: CatalogOptions = {}): HostingInfo {
 	const row = PROVIDERS[provider];
-	const sent = `${options.sent ?? 'Inputs'} are sent to this provider.`;
+	const sent = `${options.sent ?? 'Inputs'} — sent to this provider.`;
 	if (!row) return { vendor: provider, location: 'unknown', host: 'unknown', dataNote: sent };
 	const host = effectiveHost(provider, row, env);
 	const location = typeof row.hosting.location === 'function' ? row.hosting.location(host) : row.hosting.location;
@@ -57,7 +57,7 @@ export function hostingInfo(provider: string, env: CredentialEnv, options: Catal
 		vendor: row.hosting.vendor,
 		location,
 		host,
-		dataNote: row.hosting.local ? `${options.sent ?? 'Inputs'} never leave this machine.` : sent,
+		dataNote: row.hosting.local ? `${options.sent ?? 'Inputs'} — never leaves this machine.` : sent,
 	};
 }
 
@@ -65,7 +65,14 @@ export interface ProviderCatalogEntry {
 	readonly name: string;
 	readonly kind: 'direct' | 'compatible';
 	readonly hosting: HostingInfo;
-	readonly credential: { readonly envVar: string | null; readonly set: boolean };
+	/**
+	 * `set` means THIS ENVIRONMENT CAN RUN THE ROW — the credential and, for an
+	 * account-scoped endpoint such as Cloudflare's, the base URL too. A picker gates
+	 * listing and selection on it, and a token with no endpoint can do neither, so
+	 * "credential present but endpoint absent" must read as not set. `missing` names
+	 * which variables, so the UI can say which one rather than blaming the key.
+	 */
+	readonly credential: { readonly envVar: string | null; readonly set: boolean; readonly missing: readonly string[] };
 	/** True when models can be listed live from the endpoint. */
 	readonly listable: boolean;
 	readonly suggested: readonly string[];
@@ -89,7 +96,7 @@ export function providerCatalog(env: CredentialEnv, options: CatalogOptions = {}
 				name,
 				kind: row.kind,
 				hosting: hostingInfo(name, env, options),
-				credential: { envVar, set: creds.missing.length === 0 },
+				credential: { envVar, set: creds.missing.length === 0, missing: creds.missing },
 				listable: row.kind === 'compatible',
 				suggested: row.suggested ?? [],
 				...(pair ? { pair } : {}),

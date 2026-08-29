@@ -6,6 +6,7 @@
  * reviewed diff includes the expected values below).
  */
 import { describe, expect, it } from 'vitest';
+import { addDecimal } from '@substrat-run/contracts';
 import { listCostOf, listCostOfSteps, normalizeModelSpec, rateFor } from '../src/index.js';
 
 describe('rateFor', () => {
@@ -65,8 +66,8 @@ describe('listCostOfSteps — real card', () => {
 		];
 		const together = listCostOfSteps('anthropic:claude-sonnet-5', steps);
 		const apart = steps.map((s) => listCostOfSteps('anthropic:claude-sonnet-5', [s])!);
-		const sum = apart.reduce((acc, c) => acc + Number(c), 0);
-		expect(Number(together)).toBeCloseTo(sum, 6);
+		// Exact: the same decimal fold the function uses, compared as the canonical string.
+		expect(together).toBe(apart.reduce((acc, c) => addDecimal(acc, c), '0'));
 	});
 
 	it('returns null for unpriced models — never a guessed $0', () => {

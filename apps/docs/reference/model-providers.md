@@ -11,7 +11,7 @@ second design.
 
 ## The grammar
 
-```
+```text
 anthropic:claude-opus-5
 cloudflare:@cf/zai-org/glm-5.2
 scaleway:llama-3.3-70b-instruct
@@ -69,7 +69,7 @@ which model:
 providerCatalog(env, { hosted: true, sent: 'Conversation text' });
 // → [{ name: 'scaleway', hosting: { vendor: 'Scaleway (Generative APIs)',
 //      location: 'European Union (France, Paris)', host: 'api.scaleway.ai',
-//      dataNote: 'Conversation text are sent to this provider.' },
+//      dataNote: 'Conversation text — sent to this provider.' },
 //      credential: { envVar: 'SCALEWAY_API_KEY', set: false }, listable: true, … }, …]
 ```
 

@@ -111,11 +111,20 @@ describe('the disclosure', () => {
 
 	it('says what is sent, in the host’s words, and that local rows send nothing', () => {
 		expect(hostingInfo('scaleway', {}, { sent: 'Conversation text' }).dataNote).toBe(
-			'Conversation text are sent to this provider.',
+			'Conversation text — sent to this provider.',
 		);
 		expect(hostingInfo('ollama', {}, { sent: 'Conversation text' }).dataNote).toBe(
-			'Conversation text never leave this machine.',
+			'Conversation text — never leaves this machine.',
 		);
+	});
+
+	it('credential.set means the row can run here, and missing says what stops it', () => {
+		const cf = providerCatalog({ CLOUDFLARE_AI_API_TOKEN: 't' }).find((e) => e.name === 'cloudflare')!;
+		expect(cf.credential).toEqual({ envVar: 'CLOUDFLARE_AI_API_TOKEN', set: false, missing: ['CLOUDFLARE_AI_BASE_URL'] });
+		const ok = providerCatalog({ CLOUDFLARE_AI_API_TOKEN: 't', CLOUDFLARE_AI_BASE_URL: 'https://x/ai/v1' }).find(
+			(e) => e.name === 'cloudflare',
+		)!;
+		expect(ok.credential.set).toBe(true);
 	});
 
 	it('a hosted catalog drops local rows and can be narrowed to what the host wired', () => {
