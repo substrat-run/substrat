@@ -141,7 +141,7 @@ export type { ManualClock } from './clock.js';
 export { ulid } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';
-export type { RoutedNode, HeaderReader } from './routed-node.js';
+export type { RoutedNode, HeaderReader, ReadRoutedNodeOptions } from './routed-node.js';
 export {
   assertPlatformCall,
   PlatformCallError,

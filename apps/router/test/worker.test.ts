@@ -9,6 +9,8 @@ import worker, { type Env } from '../src/worker.js';
 
 const T = '01JZ0000000000000000000001';
 const S = '01JZ0000000000000000000002';
+/** Every env below holds the shared secret: without one the router refuses to dispatch (#966). */
+const SECRET = 'shhh';
 
 interface Row {
   tenant_id: string;
@@ -96,6 +98,7 @@ describe('router', () => {
   it('resolves the hostname and forwards to that vertical', async () => {
     const fsm = spyVertical();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: fsm.binding,
     } as unknown as Env;
@@ -117,6 +120,7 @@ describe('router', () => {
     // the vertical serves whichever tenant the caller named.
     const fsm = spyVertical();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: fsm.binding,
     } as unknown as Env;
@@ -135,14 +139,39 @@ describe('router', () => {
     expect(seen.headers.get('x-substrat-tenant')).toBe(T);
     expect(seen.headers.get('x-substrat-scope')).toBe(S);
     expect(seen.headers.get('x-substrat-surface')).toBe('app');
-    // No secret is configured here, so none should be forwarded — the caller's
-    // guess must not survive as one.
-    expect(seen.headers.get('x-substrat-router')).toBeNull();
+    // The router's own signature is forwarded — the caller's guess must not
+    // survive as one.
+    expect(seen.headers.get('x-substrat-router')).toBe(SECRET);
+  });
+
+  it('refuses to dispatch at all without ROUTER_SECRET (#966)', async () => {
+    // Fail closed. An unsigned forward is one a vertical must refuse, so a router
+    // deployed without its secret is an outage to make loud here, not a 400 from
+    // every vertical with no explanation.
+    const fsm = spyVertical();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = {
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: fsm.binding,
+      // ROUTER_SECRET intentionally unset.
+    } as unknown as Env;
+
+    try {
+      const res = await worker.fetch(get('https://acme.example.com/api/repairs'), env);
+      expect(res.status).toBe(500);
+      expect(() => fsm.seen()).toThrow(/never called/);
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('ROUTER_SECRET'));
+      // The body names nothing about the tenant it did not resolve.
+      expect(await res.text()).not.toContain('acme');
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('preserves headers it does not own', async () => {
     const fsm = spyVertical();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: fsm.binding,
     } as unknown as Env;
@@ -156,16 +185,16 @@ describe('router', () => {
     expect(fsm.seen().headers.get('x-request-id')).toBe('r1');
   });
 
-  it('presents the router secret when one is configured', async () => {
+  it('presents the router secret on every forward', async () => {
     const fsm = spyVertical();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: fsm.binding,
-      ROUTER_SECRET: 'shhh',
     } as unknown as Env;
 
     await worker.fetch(get('https://acme.example.com/'), env);
-    expect(fsm.seen().headers.get('x-substrat-router')).toBe('shhh');
+    expect(fsm.seen().headers.get('x-substrat-router')).toBe(SECRET);
   });
 
   it('sends two surfaces of one scope to the binding, distinguished by header', async () => {
@@ -173,6 +202,7 @@ describe('router', () => {
     // different app — the vertical needs to be told which.
     const shop = spyVertical();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({
         'shop.example.com': row({ vertical_slug: 'shop', surface: 'storefront' }),
         'admin.shop.example.com': row({ vertical_slug: 'shop', surface: 'back-office' }),
@@ -199,6 +229,7 @@ describe('router', () => {
       },
     };
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row({ deployment_ref: 'fsm-01ky535a' }) }),
       DISPATCH,
     } as unknown as Env;
@@ -226,6 +257,7 @@ describe('router', () => {
       },
     };
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({
         'acme.example.com': row({
           deployment_ref: 'fsm-01ky535a',
@@ -256,6 +288,7 @@ describe('router', () => {
       },
     };
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row({ deployment_ref: 'fsm-01ky535a' }) }),
       DISPATCH,
     } as unknown as Env;
@@ -273,6 +306,7 @@ describe('router', () => {
       },
     };
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }), // no deployment_ref
       DISPATCH,
       VERTICAL_FSM: fsm.binding,
@@ -283,6 +317,7 @@ describe('router', () => {
   it('maps a dashed slug to its binding name', async () => {
     const bikes = spyVertical();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'bikes.example.com': row({ vertical_slug: 'bike-shop' }) }),
       VERTICAL_BIKE_SHOP: bikes.binding,
     } as unknown as Env;
@@ -291,7 +326,7 @@ describe('router', () => {
   });
 
   it('404s an unknown hostname', async () => {
-    const env = { CONTROL_PLANE: directory({}) } as unknown as Env;
+    const env = { ROUTER_SECRET: SECRET, CONTROL_PLANE:directory({}) } as unknown as Env;
     expect((await worker.fetch(get('https://nobody.example.com/'), env)).status).toBe(404);
   });
 
@@ -299,6 +334,7 @@ describe('router', () => {
     // Still validating DNS, or its certificate failed. From outside, all the same:
     // which of those it is belongs in the console, not in a public response.
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'soon.example.com': row({ status: 'pending' }) }),
       VERTICAL_FSM: spyVertical().binding,
     } as unknown as Env;
@@ -308,13 +344,14 @@ describe('router', () => {
   it('502s when the map names a vertical nothing is bound to', async () => {
     // Our misconfiguration, not the caller's, so it must not read as 404.
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'orphan.example.com': row({ vertical_slug: 'ghost' }) }),
     } as unknown as Env;
     expect((await worker.fetch(get('https://orphan.example.com/'), env)).status).toBe(502);
   });
 
   it('does not leak which tenant a 404 nearly matched', async () => {
-    const env = { CONTROL_PLANE: directory({ 'acme.example.com': row() }) } as unknown as Env;
+    const env = { ROUTER_SECRET: SECRET, CONTROL_PLANE:directory({ 'acme.example.com': row() }) } as unknown as Env;
     const body = await (await worker.fetch(get('https://typo.example.com/'), env)).text();
     expect(body).not.toContain(T);
     expect(body).not.toContain('acme');
@@ -339,6 +376,7 @@ describe('router', () => {
 
   const envWith = (binding: Fetcher) =>
     ({
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: binding,
     }) as unknown as Env;
@@ -405,7 +443,7 @@ describe('router', () => {
     // behalf of a different request" — but not until the second request, so the
     // first one succeeds and it looks healthy. Only the namespace may be held.
     const cp = directory({ 'acme.example.com': row() });
-    const env = { CONTROL_PLANE: cp, VERTICAL_FSM: spyVertical().binding } as unknown as Env;
+    const env = { ROUTER_SECRET: SECRET, CONTROL_PLANE:cp, VERTICAL_FSM: spyVertical().binding } as unknown as Env;
 
     for (let i = 0; i < 3; i++) {
       cp.beginRequest();
@@ -419,7 +457,7 @@ describe('router', () => {
     // Stated separately from the stub count because this is the SYMPTOM: production
     // returned 1101 on every request after the first, while the first looked fine.
     const cp = directory({ 'acme.example.com': row() });
-    const env = { CONTROL_PLANE: cp, VERTICAL_FSM: spyVertical().binding } as unknown as Env;
+    const env = { ROUTER_SECRET: SECRET, CONTROL_PLANE:cp, VERTICAL_FSM: spyVertical().binding } as unknown as Env;
 
     cp.beginRequest();
     expect((await worker.fetch(get('https://acme.example.com/'), env)).status).toBe(200);
@@ -437,6 +475,7 @@ describe('router', () => {
       logs.push(line);
     });
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: spyVertical().binding,
       ANALYTICS: { writeDataPoint: (p: (typeof points)[number]) => points.push(p) },
@@ -475,6 +514,7 @@ describe('router', () => {
     const points: Array<{ blobs?: string[]; doubles?: number[] }> = [];
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       // No VERTICAL_FSM binding → dispatch answers 502; that must still be metered.
       ANALYTICS: { writeDataPoint: (p: (typeof points)[number]) => points.push(p) },
@@ -497,6 +537,7 @@ describe('router', () => {
   it('a metering failure never fails the request', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: spyVertical().binding,
       ANALYTICS: {
@@ -563,6 +604,7 @@ describe('router kick (platform-intents)', () => {
     const kick = kickSpy();
     const { ctx, settle } = collectingCtx();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: verticalFlaggingIntent(),
       CONTROL_PLANE_KICK: kick.binding,
@@ -586,6 +628,7 @@ describe('router kick (platform-intents)', () => {
     const kick = kickSpy();
     const { ctx, settle } = collectingCtx();
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: spyVertical().binding, // a plain 200, no flag
       CONTROL_PLANE_KICK: kick.binding,
@@ -597,19 +640,46 @@ describe('router kick (platform-intents)', () => {
     expect(kick.calls()).toHaveLength(0);
   });
 
-  it('skips the kick without throwing when PLATFORM_SECRET is unconfigured', async () => {
+  it('skips the kick without throwing when PLATFORM_SECRET is unconfigured — and says so', async () => {
     const kick = kickSpy();
     const { ctx, settle } = collectingCtx();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const env = {
+      ROUTER_SECRET: SECRET,
       CONTROL_PLANE: directory({ 'acme.example.com': row() }),
       VERTICAL_FSM: verticalFlaggingIntent(),
       CONTROL_PLANE_KICK: kick.binding,
       // PLATFORM_SECRET intentionally unset — the sweep is the backstop.
     } as unknown as Env;
 
-    const res = await worker.fetch(get('https://acme.example.com/api/sites'), env, ctx);
-    expect(res.status).toBe(202); // the response is unaffected
-    await settle();
-    expect(kick.calls()).toHaveLength(0);
+    try {
+      const res = await worker.fetch(get('https://acme.example.com/api/sites'), env, ctx);
+      expect(res.status).toBe(202); // the response is unaffected
+      await settle();
+      expect(kick.calls()).toHaveLength(0);
+      // #966: a bound kick with no secret is a half-provisioned router, never silent.
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('PLATFORM_SECRET'));
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('stays silent when the kick is simply not wired (dev / self-host)', async () => {
+    const { ctx, settle } = collectingCtx();
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const env = {
+      ROUTER_SECRET: SECRET,
+      CONTROL_PLANE: directory({ 'acme.example.com': row() }),
+      VERTICAL_FSM: verticalFlaggingIntent(),
+      // No CONTROL_PLANE_KICK binding at all: the documented dev / self-host shape.
+    } as unknown as Env;
+
+    try {
+      expect((await worker.fetch(get('https://acme.example.com/api/sites'), env, ctx)).status).toBe(202);
+      await settle();
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

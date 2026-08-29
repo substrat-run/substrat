@@ -43,6 +43,11 @@ data it will serve. Two things keep that safe, and both are required:
 2. **`ROUTER_SECRET`**, the same value here and on every vertical. Presented as
    `x-substrat-router` and verified by `readRoutedNode` in the kernel.
 
+Both halves fail closed when the secret is missing: this router answers 500 to every
+request until `ROUTER_SECRET` is set, and a vertical without its own refuses any asserted
+node (400) rather than trusting unsigned headers — `ALLOW_DEV_NODE` is the only opt-out,
+for the un-routed local instance it already names.
+
 (2) exists because (1) is a deployment fact and `workers.dev` is on by default — one
 forgotten toggle makes (1) false with nothing in the code noticing, and the consequence
 is a cross-tenant read. The router also **strips every inbound `x-substrat-*` header**

@@ -121,7 +121,11 @@ interface Env {
 function nodeFor(req: Request, env: Env): Node {
   let routed;
   try {
-    routed = readRoutedNode(req.headers, { expectedSecret: env.ROUTER_SECRET });
+    routed = readRoutedNode(req.headers, {
+      expectedSecret: env.ROUTER_SECRET,
+      // #966: an unsigned assertion is refused unless this is an un-routed dev instance.
+      allowUnsigned: env.ALLOW_DEV_NODE === 'true',
+    });
   } catch (e) {
     if (e instanceof RouterAssertionError) throw new HTTPException(400, { message: e.message });
     throw e;

@@ -254,8 +254,19 @@ function record(
  */
 async function kickDrain(env: Env, target: RouteTarget): Promise<void> {
   const cp = env.CONTROL_PLANE_KICK;
+  if (!cp) return; // Not wired (dev / self-host) — the sweep is the backstop.
   const secret = env.PLATFORM_SECRET;
-  if (!cp || !secret) return; // Not wired (dev / self-host) — the sweep is the backstop.
+  if (!secret) {
+    // Wired but unable to authenticate: still not a failure of the request — the sweep
+    // drains this scope — but never a silent one (#966). A kick binding with no secret
+    // is a half-provisioned router, and the only sign of it used to be that every
+    // platform intent took ~2 minutes instead of seconds.
+    console.error(
+      `router: CONTROL_PLANE_KICK is bound but PLATFORM_SECRET is not configured — ` +
+        `skipping the drain kick for scope ${target.scopeId}; the periodic sweep is the backstop`,
+    );
+    return;
+  }
   try {
     await cp.fetch(
       new Request('https://control-plane/internal/drain-scope', {
@@ -323,6 +334,19 @@ export default {
   // always provides one. Without it the kick simply doesn't fire — best-effort, and the
   // sweep is the backstop — so a missing context degrades latency, never correctness.
   async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    // Fail closed (#966). Without the shared secret every forward would be unsigned,
+    // and the verticals refuse an unsigned assertion — so a router deployed without
+    // its secret would answer 400 from every vertical and say nothing about why.
+    // Refusing here, before any lookup, makes the half-provisioned router the one
+    // thing that is loud: nothing is dispatched, and the log names the missing key.
+    if (!env.ROUTER_SECRET) {
+      console.error('router: ROUTER_SECRET is not configured — refusing to dispatch');
+      return new Response('This router is not configured.', {
+        status: 500,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }
+
     const hostname = new URL(request.url).hostname;
 
     const target = await resolverFor(env)(hostname);
