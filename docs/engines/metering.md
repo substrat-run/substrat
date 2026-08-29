@@ -88,6 +88,14 @@ snapshot:
   period's lines are reproducible from its entries forever. Late-arriving usage is
   recorded at observation time — the caller controls `occurred_at` and the default is
   now.
+- `occurred_at` is bounded **ahead** too (#1066): no more than a small clock-skew
+  tolerance past the operation's own instant. This is the same rule read the other way.
+  The horizon only ever advances, so an entry post-dated beyond every period anyone will
+  close is aggregated into none of them, and there is no sweep that would ever pick it
+  up — billable usage would leave the stream with no error raised anywhere. `dedupeKey`
+  offers no protection: it is per-`(meter, key)`, and a post-dated entry is a first
+  write. The tolerance exists for a producer whose clock runs slightly fast; a caller
+  with a genuinely future observation does not have one.
 
 Counters with no entries in the window are omitted (a zero sum bills nothing); gauges
 carry forward per D-B and appear with `entryCount: 0`.

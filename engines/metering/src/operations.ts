@@ -142,6 +142,16 @@ export const meteringOperations = defineOperations(meteringEntities, METERING_PE
        */
       qty: signedDecimal,
       subject: entityRef.optional(),
+      /**
+       * Defaults to the operation's own instant, and the handler bounds it on
+       * BOTH sides (#1066): never behind the close horizon, whose period is
+       * frozen, and never more than a small skew tolerance ahead of `ctx.now()`,
+       * because the horizon only moves forward and an entry past it is
+       * aggregated by no close — usage that leaves the billing stream silently.
+       * Like the per-kind `qty` rule above, that is a fact about stored state
+       * rather than about the string, so it lives in the handler and is stated
+       * here rather than claimed by the schema.
+       */
       occurredAt: instantIn.optional(),
       dedupeKey: z.string().min(1),
       note: z.string().optional(),
