@@ -63,3 +63,10 @@ neither `adapter-cloudflare` nor any concrete host.
 
 A vertical that never calls `mountPlatformSurface` has no `/internal/provision` and fails
 to provision on first deploy and in its scenario test — louder than any lint.
+
+## `createModelHost` — `@substrat-run/vertical-host/model`
+
+Governance around a language-model call, provider-neutral: resolve `provider:model` against
+platform-held credentials, consult the host's `guard`, run, and hand one `ModelUsageLine`
+(reported tokens, rate-card list price, five fixed attribution keys) to the host's `record`.
+Lives around operations, never inside a scope's transaction. See the reference page.

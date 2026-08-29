@@ -110,6 +110,55 @@ the same shape.
 A vertical that never calls `mountPlatformSurface` has no `/internal/provision`, so it fails
 to provision on first deploy and in its scenario test — louder than any lint could be.
 
+## `createModelHost(options)` — from `@substrat-run/vertical-host/model`
+
+The platform's model host: governance around one language-model call, provider-neutral.
+Master plan §5.7 / D-18 splits the AI capability in two — the model is an adapter (any row
+of [`@substrat-run/model-providers`](/reference/model-providers)), the governance is the
+kernel's — and this is the governance, at the host layer:
+
+```ts
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { createModelHost } from '@substrat-run/vertical-host/model';
+
+const models = createModelHost({
+  env,                                        // the worker's own bindings — platform-held credentials
+  factories: { anthropic: createAnthropic },  // the direct rows this bundle statically carries
+  guard: async ({ spec, attribution }) => {   // policy, before the bytes go out — throw to refuse
+    if (await spentToday(attribution.tenant) > budget) throw new Error('daily budget exhausted');
+  },
+  record: (line) => ledger.write(line),       // the one fact every call produces
+});
+
+const run = await models.run({
+  spec: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',   // whatever the tenant picked
+  attribution: { tenant, scope, vertical, version, operation: 'ticket0/answer' },
+  system, prompt, maxOutputTokens: 400,
+});
+run.text;        // the answer
+run.line;        // the ModelUsageLine, already handed to `record`
+```
+
+What it does, in order: resolve the spec against **platform-held** credentials (only the
+row's own variables — never a per-install token); consult `guard`; run; turn the AI SDK's
+usage into one `ModelUsageLine` — token counts as the provider reported them
+(`reported: false` and zeros when it reported none; never an estimate that becomes a
+bill), `listUsd` from the rate card on our side (`null` for a model the card does not
+know — unpriced, not $0), and the **five fixed attribution keys** `tenant / scope /
+vertical / version / operation` (the smallest per-request metadata limit among the
+providers we route through is five, so a sixth key is refused at the line rather than
+silently dropped on the wire). A `record` that throws fails the run: a call that could not
+be recorded must not look like one that was.
+
+`status(spec)` answers a settings screen — is this row configured on the platform, and
+what is it missing — without running anything.
+
+It lives **around** operations, not on `OperationContext`: a model call is a multi-second
+network round-trip, and holding a scope's transaction open across it would be the
+"no network in module code" rule broken from the inside. A vertical calls it from its
+harness and records the result through its own operations. Margin is not here either —
+the line carries list price; the platform's rate lives beside entitlements.
+
 ## License
 
 AGPL-3.0-only (dual-licensed commercially).
