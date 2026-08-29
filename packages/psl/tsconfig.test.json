@@ -1,0 +1,11 @@
+// Typecheck of src + test. The build tsconfig emits from `src` alone, which left every
+// file under `test/` compiled by nobody — vitest transpiles without checking, so a test
+// could reference a symbol that no longer exists and stay green (#989).
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src", "test"]
+}

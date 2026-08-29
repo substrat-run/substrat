@@ -28,10 +28,10 @@ describe('bindScopeHostname — a custom domain on any owned scope (#509 (a))', 
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('http://cp/hostnames');
-    expect(calls[0].init.method).toBe('POST');
+    expect(calls[0]!.url).toBe('http://cp/hostnames');
+    expect(calls[0]!.init.method).toBe('POST');
     // Domain lower-cased; scope addressed directly; canonical defaults false (additive alias).
-    expect(JSON.parse(calls[0].init.body as string)).toEqual({
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({
       hostname: 'crm-test.ahero.se',
       tenantId: 'acme',
       scopeId: 's-1',
