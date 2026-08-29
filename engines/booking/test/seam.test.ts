@@ -177,7 +177,7 @@ describe('engine-booking — the seam is parsed, not asserted', () => {
     );
     // The whole read refuses — a half-published roster would be the wrong-data
     // failure wearing an exception.
-    await expect(staff.invoke('booking/get', { reservationId: r.id, now: NOW })).rejects.toThrow(
+    await expect(staff.invoke('booking/get', { reservationId: r.id })).rejects.toThrow(
       /does not match the shape/,
     );
   });

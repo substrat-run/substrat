@@ -50,7 +50,6 @@ import {
   openReservationInput,
   participant,
   reservation,
-  reservationAtInput,
   reservationIdIn,
   resource,
   setResourceActiveInput,
@@ -115,7 +114,7 @@ export const bookingOperations = defineOperations(bookingEntities, BOOKING_PERMI
   'booking/confirm': {
     summary: 'Confirm a held reservation',
     permission: onReservation('booking:confirm'),
-    input: reservationAtInput,
+    input: reservationIdIn,
     output: reservation,
   },
 
@@ -123,7 +122,7 @@ export const bookingOperations = defineOperations(bookingEntities, BOOKING_PERMI
     summary: 'Sweep a hold whose deadline has passed',
     // Node, deliberately — see the header. A sweep acts on whatever has lapsed.
     permission: 'booking:confirm',
-    input: reservationAtInput,
+    input: reservationIdIn,
     output: reservation,
   },
 
@@ -153,6 +152,16 @@ export const bookingOperations = defineOperations(bookingEntities, BOOKING_PERMI
     permission: onReservation('booking:move'),
     input: moveReservationInput,
     output: reservation,
+    /**
+     * A partial field-bag over the reservation's own columns — read-modify-write,
+     * so the model requires the guard (#129). It was undeclared until #961 only
+     * because the input carried `now`, which is not a column and hid the shape
+     * from the check. The client opts in with `If-Match`; a caller sending none
+     * is served exactly as before. The version moves because `moveReservation`
+     * emits `booking.moved` about the reservation by hand, as every handler in
+     * this engine emits.
+     */
+    concurrency: { over: 'reservation', idFrom: 'reservationId' },
   },
 
   'booking/open': {
@@ -187,7 +196,7 @@ export const bookingOperations = defineOperations(bookingEntities, BOOKING_PERMI
   'booking/get': {
     summary: 'One reservation with its participants',
     permission: onReservation('booking:read'),
-    input: reservationAtInput,
+    input: reservationIdIn,
     output: z.object({ reservation, participants: z.array(participant) }),
   },
 
