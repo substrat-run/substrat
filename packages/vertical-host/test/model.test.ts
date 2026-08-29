@@ -99,7 +99,9 @@ describe('run', () => {
       record: (line) => void lines.push(line),
     });
     await expect(host.run({ spec: 'claude-opus-5', attribution, prompt: 'hi' })).rejects.toThrow(/daily budget/);
-    expect(seen).toEqual([{ spec: 'claude-opus-5', attribution }]);
+    // The guard sees the CANONICAL spec, so a policy written against
+    // `anthropic:claude-opus-5` cannot be dodged by passing the shorthand.
+    expect(seen).toEqual([{ spec: 'anthropic:claude-opus-5', attribution }]);
     expect(model.doGenerateCalls).toHaveLength(0);
     expect(lines).toHaveLength(0);
   });
@@ -127,8 +129,11 @@ describe('run', () => {
     await expect(host.run({ spec: 'ollama:qwen3-coder', attribution, prompt: 'hi' })).rejects.toThrow(/local-machine/);
   });
 
-  it('a malformed attribution is refused at the line, so a sixth key can never reach the wire', async () => {
-    const host = hostWith(mockModel({ input: 1, output: 1 }));
+  it('a malformed attribution is refused BEFORE the call, so a sixth key costs nothing', async () => {
+    const model = mockModel({ input: 1, output: 1 });
+    const lines: ModelUsageLine[] = [];
+    let guarded = 0;
+    const host = hostWith(model, { guard: () => void guarded++, record: (l) => void lines.push(l) });
     await expect(
       host.run({
         spec: 'claude-opus-5',
@@ -136,6 +141,11 @@ describe('run', () => {
         prompt: 'hi',
       }),
     ).rejects.toThrow();
+    // The point of moving the parse to the top: no provider call, no spend, and
+    // nothing half-recorded. Validated after the fact, this cost a model call.
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(guarded).toBe(0);
+    expect(lines).toHaveLength(0);
   });
 });
 

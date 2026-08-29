@@ -36,7 +36,7 @@ import {
   type DirectFactories,
   type StepTokens,
 } from '@substrat-run/model-providers';
-import { modelUsageLine, type ModelAttribution, type ModelUsageLine } from '@substrat-run/contracts';
+import { modelAttribution, modelUsageLine, type ModelAttribution, type ModelUsageLine } from '@substrat-run/contracts';
 
 export type { ModelAttribution, ModelUsageLine };
 export { ProviderError };
@@ -80,7 +80,16 @@ export interface ModelHostOptions {
   readonly env: CredentialEnv;
   /** Direct-provider factories this bundle statically carries (`{ anthropic: createAnthropic }`). */
   readonly factories?: DirectFactories;
-  /** The host's clock — stamped on every line. */
+  /**
+   * The host's clock — stamped on every line.
+   *
+   * NOT `ctx.now()`, and it cannot be: a model call runs OUTSIDE any operation (D-59 —
+   * no scope transaction may span a multi-second round-trip), so there is no `ctx` in
+   * scope when this fires. The line's `at` is when the provider answered; the meter
+   * entry the vertical writes afterwards carries `ctx.now()`, and the two are different
+   * facts about different moments rather than one fact from two clocks. Injectable so a
+   * scenario can freeze it — which is what R6 is really protecting.
+   */
   readonly now?: () => Date;
   /**
    * Policy, before the call. Throw to refuse: the model never runs, nothing is
@@ -139,15 +148,26 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
   };
 
   const run = async (request: ModelRequest): Promise<ModelRun> => {
-    // Resolve first: an unknown provider or an unconfigured row is refused before
-    // the guard is consulted, so a budget is never charged for a call that could
-    // not have happened.
+    // Parse the attribution FIRST — before the guard, and long before anything
+    // billable. It used to be validated only when the line was built, which is after
+    // `generateText` has returned: a sixth key therefore bought a model call and then
+    // threw, spending money that no ledger line accounted for. Parse, don't trust
+    // (and the five-key limit is the whole reason this schema is `.strict()`).
+    const attribution = modelAttribution.parse(request.attribution);
+
+    // Then resolve: an unknown provider or an unconfigured row is refused before the
+    // guard is consulted, so a budget is never charged for a call that could not have
+    // happened.
     const resolved = createModel(request.spec, options.env, {
       factories: options.factories ?? {},
       hosted: true,
       describeMissing: DESCRIBE_MISSING,
     });
-    await options.guard?.({ spec: request.spec, attribution: request.attribution });
+    // The guard sees the CANONICAL spec, never the caller's shorthand. `claude-opus-5`
+    // and `anthropic:claude-opus-5` resolve to one model, so a policy written against
+    // the canonical form would otherwise be bypassed by typing the short one.
+    const model = normalizeModelSpec(request.spec);
+    await options.guard?.({ spec: model, attribution });
 
     const started = now();
     const result = await generateText({
@@ -160,9 +180,8 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
     const finished = now();
 
     const tokens = stepTokensOf(result.totalUsage);
-    const model = normalizeModelSpec(request.spec);
     const line = modelUsageLine.parse({
-      attribution: request.attribution,
+      attribution,
       model,
       provider: resolved.provider,
       modelId: resolved.modelId,

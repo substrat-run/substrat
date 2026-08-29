@@ -28,7 +28,7 @@ export const modelAttribution = z
   .strict();
 export type ModelAttribution = z.infer<typeof modelAttribution>;
 
-export const modelUsageLine = z.object({
+const modelUsageLineFields = z.object({
   attribution: modelAttribution,
   /** Normalized `provider:modelId`. */
   model: z.string().min(1),
@@ -43,10 +43,46 @@ export const modelUsageLine = z.object({
   outputTokens: z.number().int().nonnegative(),
   cachedInputTokens: z.number().int().nonnegative(),
   cacheWriteTokens: z.number().int().nonnegative(),
-  /** USD list price from the rate card as a decimal string; null = the card does not know this model. */
-  listUsd: z.string().nullable(),
+  /**
+   * USD list price from the rate card; null = the card does not know this model.
+   *
+   * Shaped like `moneyAmount` (6 dp, K-14) because it IS money: the fold adds it with
+   * `addDecimal`, and an empty string or a stray word would survive a bare `z.string()`
+   * and land in the ledger as a price.
+   */
+  listUsd: z
+    .string()
+    .regex(/^-?\d+(\.\d{1,6})?$/, 'listUsd must be a decimal string with at most 6 decimal places')
+    .nullable(),
   /** ISO 8601, from the host's clock. */
   at: instant,
   elapsedMs: z.number().int().nonnegative(),
+});
+
+/**
+ * `reported: false` means the provider reported NO usage — so the counts are zero and
+ * there is nothing to price.
+ *
+ * Enforced rather than merely documented because this payload is parsed from a VERTICAL
+ * at the platform boundary: without the check, `{ reported: false, inputTokens: 9_000_000 }`
+ * is a well-formed line and the ledger would take it. That is an estimate becoming a
+ * bill, which is the single thing the `reported` flag exists to prevent.
+ */
+export const unreportedIsEmpty = (line: z.infer<typeof modelUsageLineFields>): boolean =>
+  line.reported ||
+  (line.inputTokens === 0 &&
+    line.outputTokens === 0 &&
+    line.cachedInputTokens === 0 &&
+    line.cacheWriteTokens === 0 &&
+    line.listUsd === null);
+
+export const UNREPORTED_MESSAGE =
+  'reported: false means the provider reported no usage — every token count must be 0 and listUsd null';
+
+/** The line's own fields, unrefined — for schemas that extend it (a refined schema cannot). */
+export { modelUsageLineFields };
+
+export const modelUsageLine = modelUsageLineFields.refine(unreportedIsEmpty, {
+  message: UNREPORTED_MESSAGE,
 });
 export type ModelUsageLine = z.infer<typeof modelUsageLine>;
