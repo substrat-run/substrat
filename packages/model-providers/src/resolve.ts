@@ -14,7 +14,7 @@
  */
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
-import { PROVIDERS, type ProviderSpec } from './providers.js';
+import { PROVIDERS, providerRow, type ProviderSpec } from './providers.js';
 import { qwenCacheFetch } from './qwen-cache.js';
 import { parseModelSpec } from './spec.js';
 
@@ -45,7 +45,7 @@ export interface ProviderCredentials {
  * sources.
  */
 export function credentialsFrom(provider: string, env: CredentialEnv): ProviderCredentials {
-	const spec = PROVIDERS[provider];
+	const spec = providerRow(provider);
 	if (!spec) throw unknownProvider(provider);
 	const missing: string[] = [];
 	const apiKey = spec.envVar ? env[spec.envVar] : undefined;
@@ -109,7 +109,7 @@ export interface CreateModelOptions {
  */
 export function createModel(spec: string, env: CredentialEnv, options: CreateModelOptions = {}): ResolvedModel {
 	const { provider, modelId } = parseModelSpec(spec);
-	const row = PROVIDERS[provider];
+	const row = providerRow(provider);
 	if (!row) throw unknownProvider(provider);
 	if (!modelId) throw new ProviderError(`no model id in ${JSON.stringify(spec)}`);
 	if (options.hosted && row.hosting.local) {
@@ -173,7 +173,7 @@ function unknownProvider(provider: string): ProviderError {
 
 /** The row for a provider, or a ProviderError naming the known ones. */
 export function providerSpec(provider: string): ProviderSpec {
-	const row = PROVIDERS[provider];
+	const row = providerRow(provider);
 	if (!row) throw unknownProvider(provider);
 	return row;
 }

@@ -16,6 +16,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./model": {
+      "types": "./dist/model.d.ts",
+      "default": "./dist/model.js"
     }
   },
   "files": [
@@ -29,6 +33,8 @@
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
+    "@substrat-run/model-providers": "workspace:^",
+    "ai": "7.0.62",
     "hono": "^4.6.0"
   },
   "devDependencies": {

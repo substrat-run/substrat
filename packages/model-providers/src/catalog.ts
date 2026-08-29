@@ -7,7 +7,7 @@
  * Deliberately factual — vendor, place, host — not marketing.
  */
 import { MODEL_PAIRS, type ModelPair } from './model-pairs.js';
-import { PROVIDERS, type ProviderSpec } from './providers.js';
+import { PROVIDERS, providerRow, type ProviderSpec } from './providers.js';
 import { hostOf, isLoopbackHost } from './host.js';
 import { credentialsFrom, type CredentialEnv } from './resolve.js';
 
@@ -46,7 +46,7 @@ function effectiveHost(name: string, row: ProviderSpec, env: CredentialEnv): str
 }
 
 export function hostingInfo(provider: string, env: CredentialEnv, options: CatalogOptions = {}): HostingInfo {
-	const row = PROVIDERS[provider];
+	const row = providerRow(provider);
 	const sent = `${options.sent ?? 'Inputs'} — sent to this provider.`;
 	if (!row) return { vendor: provider, location: 'unknown', host: 'unknown', local: false, dataNote: sent };
 	const host = effectiveHost(provider, row, env);

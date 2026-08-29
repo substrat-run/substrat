@@ -231,6 +231,21 @@ export function qwenLocation(host: string): string {
 	return 'unknown region';
 }
 
+/**
+ * The row for a provider name, or `undefined` — the ONLY way to look one up.
+ *
+ * Never `PROVIDERS[name]` directly. The table is an object literal, so a name that
+ * happens to be an `Object.prototype` member — `constructor`, `toString`, `valueOf` —
+ * resolves to a truthy INHERITED value, sails past an `if (!row)` guard, and reaches
+ * `row.hosting.local` as a TypeError instead of the "unknown provider" error the caller
+ * is owed. That is reachable from config, not just from a typo: a model spec is a
+ * per-install setting (a desk's `TICKET0_MODEL`), so `constructor:x` is a value a
+ * settings field can hold.
+ */
+export function providerRow(name: string): ProviderSpec | undefined {
+	return Object.hasOwn(PROVIDERS, name) ? PROVIDERS[name] : undefined;
+}
+
 /** One line per provider, for a CLI's "known providers" listing. */
 export function knownProviders(): string {
 	return Object.entries(PROVIDERS)
@@ -240,7 +255,7 @@ export function knownProviders(): string {
 
 /** The credential env var of a provider, or null when it needs none / is unknown. */
 export function credentialEnvVar(provider: string): string | null {
-	return PROVIDERS[provider]?.envVar ?? null;
+	return providerRow(provider)?.envVar ?? null;
 }
 
 export { SENT as DATA_SENT_PHRASE };

@@ -1952,6 +1952,12 @@ importers:
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../kernel
+      '@substrat-run/model-providers':
+        specifier: workspace:^
+        version: link:../model-providers
+      ai:
+        specifier: 7.0.62
+        version: 7.0.62(zod@4.4.3)
       hono:
         specifier: 4.12.30
         version: 4.12.30

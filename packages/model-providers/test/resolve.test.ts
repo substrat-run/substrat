@@ -14,6 +14,8 @@ import {
 	isLoopbackHost,
 	parseModelSpec,
 	providerCatalog,
+	providerRow,
+	providerSpec,
 	resolveAutoSpec,
 } from '../src/index.js';
 
@@ -49,6 +51,24 @@ describe('credentialsFrom', () => {
 
 	it('refuses an unknown provider by name', () => {
 		expect(() => credentialsFrom('opencode', {})).toThrow(ProviderError);
+	});
+
+	/**
+	 * A model spec is per-install CONFIG (a desk's `TICKET0_MODEL`), so an inherited
+	 * key is a value a settings field can hold — not merely a typo. Looked up on the
+	 * bare object literal, `constructor` is truthy and reaches `row.hosting.local` as
+	 * a TypeError; every one of these must be the ordinary unknown-provider refusal.
+	 */
+	it('treats an Object.prototype member as an unknown provider, not a row', () => {
+		for (const name of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__']) {
+			expect(() => credentialsFrom(name, {}), name).toThrow(ProviderError);
+			expect(() => providerSpec(name), name).toThrow(ProviderError);
+			expect(() => createModel(`${name}:x`, {}), name).toThrow(ProviderError);
+			expect(() => createModel(`${name}:x`, {}, { hosted: true }), name).toThrow(ProviderError);
+			expect(providerRow(name), name).toBeUndefined();
+			// The catalog's unknown-provider fallback, rather than a read of `row.hosting.vendor`.
+			expect(hostingInfo(name, {}).vendor, name).toBe(name);
+		}
 	});
 });
 
