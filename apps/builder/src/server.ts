@@ -22,18 +22,13 @@ import {
 	type VerticalGenerator,
 } from '@substrat-run/builder-generator';
 import {
-	continuationPrompt,
 	defaultGates,
 	ensureVerticalRepo,
 	foreignChanges,
-	gateRepairPrompt,
-	gateReport,
 	LocalWorkspace,
-	MAX_CONTINUATIONS,
-	MAX_GATE_REPAIRS,
-	repairNeeded,
 	runGates,
 	runTurn,
+	runTurnLoop,
 	snapshotWorkspace,
 	standaloneGates,
 	workspaceBrief,
@@ -332,19 +327,6 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			return truncated;
 		};
 
-		// A truncated pass is "not done yet", not "done but broken" — continue it
-		// before the gates run, so the repair budget stays reserved for genuine
-		// breakage (gates.ts MAX_CONTINUATIONS). The cap is per turn: repair
-		// passes draw from the same continuation budget as the first pass.
-		let continuations = 0;
-		const runToCompletion = async (text: string, carriedReport?: string): Promise<void> => {
-			let truncated = await runPass(text, carriedReport);
-			while (truncated && continuations < MAX_CONTINUATIONS && !signal.aborted) {
-				continuations += 1;
-				truncated = await runPass(continuationPrompt(continuations, MAX_CONTINUATIONS));
-			}
-		};
-
 		/** Gates + commit for one pass (commit-per-turn lives above the seam, §3). */
 		const runChecks = async (label: string): ReturnType<typeof runTurn> => {
 			const turn = await runTurn(ws, {
@@ -360,29 +342,16 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 			return turn;
 		};
 
-		await runToCompletion(message, cur.state.lastGateReport);
-		let turn = await runChecks(`studio turn ${cur.state.turnNo}: ${message.slice(0, 60)}`);
-
-		// Red gates are the model's problem, not the builder's (H5): drive capped
-		// repair attempts, but only while attempts make progress (changed files) —
-		// a chat-only turn over a pre-existing red tree must not burn budget, and
-		// `blocked` gates never trigger repair (the checker crashed, not the code).
-		for (
-			let attempt = 1;
-			attempt <= MAX_GATE_REPAIRS &&
-			repairNeeded(turn.gates) &&
-			turn.changedFiles.length > 0 &&
-			!signal.aborted;
-			attempt++
-		) {
-			await runToCompletion(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
-			turn = await runChecks(`studio turn ${cur.state.turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`);
-		}
+		// pass → continuations → checks → capped repair, abort-guarded between
+		// passes — the one shared loop (builder-workspace turn-loop.ts, #974).
+		const loop = await runTurnLoop(
+			{ message, turnNo: cur.state.turnNo, lastGateReport: cur.state.lastGateReport },
+			{ runPass, runChecks, signal },
+		);
 
 		// Whatever survived the loop is the report the NEXT turn opens with —
 		// deleted the moment the tree goes green.
-		const report = gateReport(turn.gates);
-		if (report) cur.state.lastGateReport = report;
+		if (loop.lastGateReport) cur.state.lastGateReport = loop.lastGateReport;
 		else delete cur.state.lastGateReport;
 
 		const after = await detectPhase(cur.projectWs);

@@ -12,8 +12,9 @@
  *
  * Durability (D-52, #627): the container's disk is a CACHE — it resets on
  * sleep (§4.2). The durable tier is one git bundle per project in R2:
- * restored on wake (clone at HEAD, §4.5), re-bundled after every commit,
- * rollback via R2 object versioning. History and names live in DO storage.
+ * restored on wake (clone at HEAD, §4.5), re-bundled after every commit —
+ * one ULID-keyed bundle per save, pruned app-side to the last N (R2 has no
+ * object versioning; see #saveBundle). History and names live in DO storage.
  *
  * Honest limit: /api/dev (preview) stays 503 — background processes want the
  * SDK's process API + exposePort wiring, a named follow-up of #626.
@@ -29,15 +30,10 @@ import {
 } from '@substrat-run/builder-generator';
 import {
 	ContainerWorkspace,
-	continuationPrompt,
 	ensureVerticalRepo,
-	gateRepairPrompt,
-	gateReport,
-	MAX_CONTINUATIONS,
-	MAX_GATE_REPAIRS,
-	repairNeeded,
 	runGates,
 	runTurn,
+	runTurnLoop,
 	snapshotWorkspace,
 	standaloneGates,
 	workspaceBrief,
@@ -260,7 +256,8 @@ export class BuilderAgent extends DurableObject<Env> {
 	}
 
 	/** The save path: after a commit, the repo IS the durable state — bundle it
-	 * whole (few MB) and let R2 versioning keep the rollback trail. */
+	 * whole (few MB) as one more ULID-keyed object; the rollback trail is the
+	 * bundle history below, pruned app-side (R2 has no object versioning). */
 	async #saveBundle(pair: { sb: SandboxLike; raw: Sandbox }, entry: ProjectEntry): Promise<void> {
 		const tmp = `/tmp/${entry.id}.bundle`;
 		const made = await pair.sb.exec(`git bundle create ${JSON.stringify(tmp)} --all`, {
@@ -497,19 +494,6 @@ export class BuilderAgent extends DurableObject<Env> {
 					return truncated;
 				};
 
-				// A truncated pass is "not done yet", not "done but broken" — continue
-				// it before the gates run, so the repair budget stays reserved for
-				// genuine breakage (gates.ts MAX_CONTINUATIONS). Per-turn cap: repair
-				// passes draw from the same continuation budget as the first pass.
-				let continuations = 0;
-				const runToCompletion = async (text: string, carriedReport?: string): Promise<void> => {
-					let truncated = await runPass(text, carriedReport);
-					while (truncated && continuations < MAX_CONTINUATIONS) {
-						continuations += 1;
-						truncated = await runPass(continuationPrompt(continuations, MAX_CONTINUATIONS));
-					}
-				};
-
 				const runChecks = async (label: string): Promise<TurnResult> => {
 					const turn = await runTurn(rootWs, {
 						verticalDir: entry.dir,
@@ -530,31 +514,18 @@ export class BuilderAgent extends DurableObject<Env> {
 					return turn;
 				};
 
-				await runToCompletion(message, state.lastGateReport);
-				let turn = await runChecks(`studio turn ${state.turnNo}: ${message.slice(0, 60)}`);
-
-				// Red gates are the model's problem, not the builder's (H5): capped
-				// repair attempts, only while attempts make progress (changed files) —
-				// a chat-only turn over a pre-existing red tree must not burn budget,
-				// and `blocked` gates never trigger repair (the checker crashed).
-				for (
-					let attempt = 1;
-					attempt <= MAX_GATE_REPAIRS &&
-					repairNeeded(turn.gates) &&
-					turn.changedFiles.length > 0 &&
-					!signal.aborted;
-					attempt++
-				) {
-					await runToCompletion(gateRepairPrompt(turn.gates, attempt, MAX_GATE_REPAIRS));
-					turn = await runChecks(
-						`studio turn ${state.turnNo} · gate repair ${attempt}/${MAX_GATE_REPAIRS}`,
-					);
-				}
+				// pass → continuations → checks → capped repair, abort-guarded between
+				// passes — the one shared loop (builder-workspace turn-loop.ts, #974).
+				// A stopped turn used to keep burning continuations here (#676 guarded
+				// only the local server's copy).
+				const loop = await runTurnLoop(
+					{ message, turnNo: state.turnNo, lastGateReport: state.lastGateReport },
+					{ runPass, runChecks, signal },
+				);
 
 				// Whatever survived the loop is the report the NEXT turn opens with —
 				// deleted the moment the tree goes green.
-				const report = gateReport(turn.gates);
-				if (report) state.lastGateReport = report;
+				if (loop.lastGateReport) state.lastGateReport = loop.lastGateReport;
 				else delete state.lastGateReport;
 
 				const after = await detectPhase(projectWs);
