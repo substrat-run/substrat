@@ -11,6 +11,7 @@ import {
 	createModel,
 	credentialsFrom,
 	hostingInfo,
+	isLoopbackHost,
 	parseModelSpec,
 	providerCatalog,
 	resolveAutoSpec,
@@ -107,6 +108,37 @@ describe('the disclosure', () => {
 			hostingInfo('qwen', { DASHSCOPE_BASE_URL: 'https://ws1.eu-central-1.maas.aliyuncs.com/compatible-mode/v1' })
 				.location,
 		).toBe('workspace "ws1" · region eu-central-1');
+	});
+
+	it('follows the ENDPOINT, not the declaration: a remote Ollama is disclosed as remote', () => {
+		// The default is loopback, so the local claim holds.
+		const home = hostingInfo('ollama', {}, { sent: 'Session code' });
+		expect(home).toMatchObject({
+			local: true,
+			location: 'this machine',
+			dataNote: 'Session code — never leaves this machine.',
+		});
+
+		// Pointed at a GPU box, it is somebody else's machine — and saying otherwise
+		// would be the one lie this disclosure exists to prevent.
+		const away = hostingInfo('ollama', { OLLAMA_BASE_URL: 'http://gpu-box.lan:11434/v1' }, { sent: 'Session code' });
+		expect(away).toMatchObject({
+			local: false,
+			host: 'gpu-box.lan:11434',
+			dataNote: 'Session code — sent to this provider.',
+		});
+		expect(away.location).toMatch(/remote host/);
+	});
+
+	it('recognises loopback narrowly, and reads anything unfamiliar as remote', () => {
+		for (const local of ['localhost:11434', '127.0.0.1:11434', '127.13.2.9', '[::1]:11434', 'dev.localhost']) {
+			expect(isLoopbackHost(local), local).toBe(true);
+		}
+		// `0.0.0.0` and a LAN address are NOT claimed as local: when unsure, the
+		// disclosure overstates the exposure rather than understating it.
+		for (const remote of ['0.0.0.0:11434', 'gpu-box.lan', '192.168.1.9:11434', 'localhost.evil.com', 'not a url']) {
+			expect(isLoopbackHost(remote), remote).toBe(false);
+		}
 	});
 
 	it('says what is sent, in the host’s words, and that local rows send nothing', () => {

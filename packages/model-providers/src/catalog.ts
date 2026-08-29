@@ -8,6 +8,7 @@
  */
 import { MODEL_PAIRS, type ModelPair } from './model-pairs.js';
 import { PROVIDERS, type ProviderSpec } from './providers.js';
+import { hostOf, isLoopbackHost } from './host.js';
 import { credentialsFrom, type CredentialEnv } from './resolve.js';
 
 export interface HostingInfo {
@@ -17,16 +18,13 @@ export interface HostingInfo {
 	readonly location: string;
 	/** The hostname requests actually go to. */
 	readonly host: string;
+	/**
+	 * True only when inference runs on this machine IN FACT — the row is declared local
+	 * and its effective endpoint is loopback. Never inferred the other way.
+	 */
+	readonly local: boolean;
 	/** The one sentence about what is sent — the host's own words. */
 	readonly dataNote: string;
-}
-
-export function hostOf(url: string): string {
-	try {
-		return new URL(url).host;
-	} catch {
-		return url;
-	}
 }
 
 export interface CatalogOptions {
@@ -50,14 +48,22 @@ function effectiveHost(name: string, row: ProviderSpec, env: CredentialEnv): str
 export function hostingInfo(provider: string, env: CredentialEnv, options: CatalogOptions = {}): HostingInfo {
 	const row = PROVIDERS[provider];
 	const sent = `${options.sent ?? 'Inputs'} — sent to this provider.`;
-	if (!row) return { vendor: provider, location: 'unknown', host: 'unknown', dataNote: sent };
+	if (!row) return { vendor: provider, location: 'unknown', host: 'unknown', local: false, dataNote: sent };
 	const host = effectiveHost(provider, row, env);
 	const location = typeof row.hosting.location === 'function' ? row.hosting.location(host) : row.hosting.location;
+	// `hosting.local` says the row is local BY DEFAULT; the effective endpoint says
+	// whether it still is. Ollama's endpoint is overridable, so a row declared local can
+	// be pointed at a remote host — and the disclosure must follow the endpoint, not the
+	// declaration. The effective endpoint only ever TAKES the local claim away; it never
+	// grants one, so a `compat` row aimed at localhost still reads as sent (see
+	// `isLoopbackHost`).
+	const local = row.hosting.local === true && isLoopbackHost(host);
 	return {
 		vendor: row.hosting.vendor,
 		location,
 		host,
-		dataNote: row.hosting.local ? `${options.sent ?? 'Inputs'} — never leaves this machine.` : sent,
+		local,
+		dataNote: local ? `${options.sent ?? 'Inputs'} — never leaves this machine.` : sent,
 	};
 }
 

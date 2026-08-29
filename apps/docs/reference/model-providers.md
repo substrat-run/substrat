@@ -74,7 +74,12 @@ providerCatalog(env, { hosted: true, sent: 'Conversation text' });
 ```
 
 Qwen's location is decoded from the effective host (DashScope keys are region- and
-workspace-scoped); a local row says the data never leaves the machine. `listModels`
+workspace-scoped). **The local claim follows the endpoint, not the row**: `ollama` is
+declared local, but its endpoint is overridable, so `hosting.local` is true only when the
+effective host is loopback — point `OLLAMA_BASE_URL` at a GPU box and the disclosure says
+remote. The inference only ever runs one way: an endpoint can take the local claim away,
+never grant one, so an unfamiliar or unparseable host reads as remote. Overstating where
+data went is safe; understating it is the lie this disclosure exists to prevent. `listModels`
 asks a compatible endpoint what it actually serves — Cloudflare's catalog lives on the
 account API rather than `/models`, and that is a property of its row (`catalog`), not a
 branch on its name.

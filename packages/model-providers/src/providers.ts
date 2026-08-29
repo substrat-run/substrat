@@ -26,6 +26,8 @@
  * layer on THAT row — never a reason for a second code path.
  */
 
+import { isLoopbackHost } from './host.js';
+
 export interface HostingSpec {
 	/** Who operates the inference endpoint. */
 	readonly vendor: string;
@@ -194,7 +196,7 @@ export const PROVIDERS: Readonly<Record<string, ProviderSpec>> = {
 		baseUrl: 'http://localhost:11434/v1',
 		baseUrlEnv: 'OLLAMA_BASE_URL',
 		catalog: 'openai',
-		hosting: { vendor: 'Ollama (self-hosted)', location: 'this machine', local: true },
+		hosting: { vendor: 'Ollama (self-hosted)', location: ollamaLocation, local: true },
 		note: 'e.g. ollama:qwen3-coder · needs `ollama serve` and the model pulled',
 	},
 
@@ -209,6 +211,15 @@ export const PROVIDERS: Readonly<Record<string, ProviderSpec>> = {
 		note: 'set OPENAI_COMPATIBLE_BASE_URL to the endpoint',
 	},
 };
+
+/**
+ * Ollama's endpoint is overridable, so "this machine" is a claim about the ENDPOINT, not
+ * about the row. Pointed at a GPU box on the LAN it is somebody else's machine, and the
+ * disclosure says so rather than repeating the default.
+ */
+export function ollamaLocation(host: string): string {
+	return isLoopbackHost(host) ? 'this machine' : 'a remote host — OLLAMA_BASE_URL points off this machine';
+}
 
 /** DashScope endpoints encode region three different ways; decode them all. */
 export function qwenLocation(host: string): string {

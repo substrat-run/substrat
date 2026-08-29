@@ -11,6 +11,7 @@ export {
 	PROVIDERS,
 	credentialEnvVar,
 	knownProviders,
+	ollamaLocation,
 	qwenLocation,
 	type CompatibleProvider,
 	type DirectProvider,
@@ -30,8 +31,8 @@ export {
 	type ResolvedModel,
 } from './resolve.js';
 export { listModels } from './list-models.js';
+export { hostOf, isLoopbackHost } from './host.js';
 export {
-	hostOf,
 	hostingInfo,
 	providerCatalog,
 	type CatalogOptions,
