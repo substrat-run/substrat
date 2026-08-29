@@ -1,5 +1,13 @@
 # @substrat-run/dev-issuer
 
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [722c2cc]
+- Updated dependencies [df4ffd1]
+  - @substrat-run/contracts@0.93.0
+
 ## 0.1.6
 
 ### Patch Changes

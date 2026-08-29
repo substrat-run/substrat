@@ -1,5 +1,19 @@
 # @substrat-run/adapter-sqlite
 
+## 0.93.0
+
+### Minor Changes
+
+- df4ffd1: Meter 3, for model usage (#1054, step 3). A vertical's model host raises each `ModelUsageLine` as a `model-usage` platform intent; the control plane's drain records it in the directory's `_substrat_model_usage` ledger, idempotent on the intent id (a replayed drain writes nothing twice) and refusing a line attributed to any tenant, scope or vertical other than the one being drained. `HostAdmin` gains `recordModelUsage`, `listModelUsage` and `summarizeModelUsage`; the fold (`foldModelUsage`) is the kernel's, so both adapters quote one number — list price summed exactly, the platform's margin (`MODEL_MARGIN_PERCENT`, default 20, applied at read time) beside it, unpriced calls counted rather than folded in as $0. `GET /model-usage` and `GET /model-usage/summary` serve it; the console's Meters view shows it beside meters 1 and 2.
+
+### Patch Changes
+
+- Updated dependencies [722c2cc]
+- Updated dependencies [df4ffd1]
+- Updated dependencies [0a536b7]
+  - @substrat-run/contracts@0.93.0
+  - @substrat-run/kernel@0.93.0
+
 ## 0.92.1
 
 ### Patch Changes
@@ -3758,7 +3772,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

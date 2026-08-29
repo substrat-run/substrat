@@ -1,5 +1,25 @@
 # @substrat-run/kernel
 
+## 0.93.0
+
+### Minor Changes
+
+- df4ffd1: Meter 3, for model usage (#1054, step 3). A vertical's model host raises each `ModelUsageLine` as a `model-usage` platform intent; the control plane's drain records it in the directory's `_substrat_model_usage` ledger, idempotent on the intent id (a replayed drain writes nothing twice) and refusing a line attributed to any tenant, scope or vertical other than the one being drained. `HostAdmin` gains `recordModelUsage`, `listModelUsage` and `summarizeModelUsage`; the fold (`foldModelUsage`) is the kernel's, so both adapters quote one number — list price summed exactly, the platform's margin (`MODEL_MARGIN_PERCENT`, default 20, applied at read time) beside it, unpriced calls counted rather than folded in as $0. `GET /model-usage` and `GET /model-usage/summary` serve it; the console's Meters view shows it beside meters 1 and 2.
+- 0a536b7: `readRoutedNode` fails closed without a secret (#966). When a request carries
+  `x-substrat-tenant`/`x-substrat-scope` headers and the worker has no `expectedSecret`
+  configured, it now throws `RouterAssertionError` instead of trusting the unsigned
+  assertion — a vertical deployed without its `ROUTER_SECRET` refuses routed requests (400)
+  rather than serving whichever tenant the header named. The new `allowUnsigned` option is
+  the explicit opt-out for an un-routed local instance behind a dev router; the scaffolded
+  `worker.ts` sets it from `ALLOW_DEV_NODE` and from nothing else. The no-headers → `null`
+  path is unchanged, so a standalone deploy and `ALLOW_DEV_NODE` keep working as before.
+
+### Patch Changes
+
+- Updated dependencies [722c2cc]
+- Updated dependencies [df4ffd1]
+  - @substrat-run/contracts@0.93.0
+
 ## 0.92.1
 
 ### Patch Changes
@@ -3580,7 +3600,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

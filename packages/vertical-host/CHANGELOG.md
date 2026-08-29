@@ -1,5 +1,24 @@
 # @substrat-run/vertical-host
 
+## 0.93.0
+
+### Minor Changes
+
+- 722c2cc: The platform's model host (#1054, step 2). `@substrat-run/vertical-host/model` exports `createModelHost({ env, factories, guard, record })`: resolve a `provider:model` against platform-held credentials, consult the host's policy before the bytes go out, run the call, and produce one `ModelUsageLine` — token counts as the provider reported them (`reported: false` when it reported none, never an estimate), list price from the rate card on our side, attributed with the five fixed keys — handed to the host's ledger. Provider-neutral by construction; it lives around operations, never inside a scope's transaction. Contracts gains `modelAttribution` and `modelUsageLine`, the shared vocabulary the control plane will parse at the drain.
+
+### Patch Changes
+
+- 4bbcf6b: Cloudflare's AI Gateway extras as properties of its row (#1054, step 5). `requestHeadersFor(provider, { attribution, env })` returns the per-request headers a row's endpoint wants: for `cloudflare`, the five attribution keys as `cf-aig-metadata`, `cf-aig-collect-log-payload: false` so the gateway never retains a prompt or an answer, and `cf-aig-gateway-id` when `CLOUDFLARE_AI_GATEWAY_ID` names one; for every other row, nothing. The model host attaches them to each call without knowing which case it is in. A sixth metadata key is refused rather than silently dropped.
+- 9606869: ticket0 answers through the platform's model host (#1054, step 4). The per-install `CF_ACCOUNT_ID` / `CF_AI_TOKEN` settings are gone; a desk's setting is only `TICKET0_MODEL`, a `provider:model` from the platform catalog (default `cloudflare:@cf/meta/llama-3.1-8b-instruct`), run on the platform's credential. `record-answer` takes the host's usage line beside the token counts and raises it to the platform ledger as a `model-usage` intent in the same transaction as the meter entries. Settings → Assistant shows where inference runs (vendor, location, what is sent) and, when the platform cannot run the chosen model, exactly which credential it is missing. `ModelHost.status` now carries that hosting disclosure.
+- Updated dependencies [4bbcf6b]
+- Updated dependencies [722c2cc]
+- Updated dependencies [f93cab4]
+- Updated dependencies [df4ffd1]
+- Updated dependencies [0a536b7]
+  - @substrat-run/model-providers@0.2.0
+  - @substrat-run/contracts@0.93.0
+  - @substrat-run/kernel@0.93.0
+
 ## 0.92.1
 
 ### Patch Changes
