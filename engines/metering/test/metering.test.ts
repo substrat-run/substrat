@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { manualClock } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   PERM,
@@ -25,11 +26,24 @@ const ALL = [PERM.read, PERM.record, PERM.configure, PERM.close];
 const t = (day: number, hour = 0) =>
   `2030-01-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:00:00.000Z`;
 
+/**
+ * The suite runs on a clock it owns, anchored past every `t(...)` fixture above.
+ *
+ * It used to run on the wall clock while recording usage in 2030 — every entry
+ * post-dated by four years, which is precisely the state #1066 says must not be
+ * reachable. Putting the harness clock where the fixtures already are makes the
+ * suite say what it meant (usage recorded a little in the past, closed later)
+ * and lets the forward bound be tested rather than tripped over.
+ */
+const CLOCK_AT = '2030-02-01T00:00:00.000Z';
+
 describe('engine-metering', () => {
   let h: EngineHarness;
+  let clock: ReturnType<typeof manualClock>;
 
   beforeEach(async () => {
-    h = await engineHarness({ modules: [meteringModule] });
+    clock = manualClock(CLOCK_AT);
+    h = await engineHarness({ modules: [meteringModule], clock: clock.read });
     await h.run((ctx) => {
       configureMeter(ctx, { key: 'ai.tokens.input', kind: 'counter', unit: 'tokens' });
       configureMeter(ctx, { key: 'storage.bytes', kind: 'gauge', unit: 'bytes' });
@@ -225,6 +239,100 @@ describe('engine-metering', () => {
       const ok = recordUsage(ctx, { meter: 'ai.tokens.input', qty: '5', occurredAt: t(10), dedupeKey: 'next' });
       expect(ok.deduped).toBe(false);
     }, ALL);
+  });
+
+  it('nothing lands AHEAD of the clock either: a post-dated entry no close would reach is refused', async () => {
+    await h.run((ctx) => {
+      // The mirror of the horizon rule, and the one that used to be missing
+      // (#1066). `closePeriod` only ever advances the horizon forward, so an
+      // entry parked past every period anyone will close is aggregated by none
+      // of them — billable usage leaving the stream with no error anywhere.
+      expect(() =>
+        recordUsage(ctx, {
+          meter: 'ai.tokens.input',
+          qty: '1000000',
+          occurredAt: '2031-01-01T00:00:00.000Z',
+          dedupeKey: 'far-future',
+        }),
+      ).toThrow(/ahead of/);
+      // …and nothing was written on the way to refusing.
+      expect(listEntries(ctx, { meter: 'ai.tokens.input' })).toHaveLength(0);
+
+      // An hour ahead is still refused: the tolerance is for clock skew, not for
+      // scheduling usage that has not happened.
+      expect(() =>
+        recordUsage(ctx, {
+          meter: 'ai.tokens.input',
+          qty: '1',
+          occurredAt: '2030-02-01T01:00:00.000Z',
+          dedupeKey: 'an-hour-out',
+        }),
+      ).toThrow(/ahead of/);
+    }, ALL);
+  });
+
+  it('the instants that must keep working still do: now, inside the tolerance, and behind it', async () => {
+    await h.run((ctx) => {
+      // The default — no `occurredAt` at all.
+      expect(recordUsage(ctx, { meter: 'ai.tokens.input', qty: '1', dedupeKey: 'd' }).deduped).toBe(
+        false,
+      );
+      // Exactly the operation's own instant.
+      expect(
+        recordUsage(ctx, {
+          meter: 'ai.tokens.input',
+          qty: '2',
+          occurredAt: CLOCK_AT,
+          dedupeKey: 'exact',
+        }).deduped,
+      ).toBe(false);
+      // A producer whose clock runs a minute fast — inside the skew tolerance.
+      expect(
+        recordUsage(ctx, {
+          meter: 'ai.tokens.input',
+          qty: '3',
+          occurredAt: '2030-02-01T00:01:00.000Z',
+          dedupeKey: 'skewed',
+        }).deduped,
+      ).toBe(false);
+      // And an ordinary back-dated observation inside the open period.
+      expect(
+        recordUsage(ctx, { meter: 'ai.tokens.input', qty: '4', occurredAt: t(2), dedupeKey: 'back' })
+          .deduped,
+      ).toBe(false);
+      expect(listEntries(ctx, { meter: 'ai.tokens.input' })).toHaveLength(4);
+    }, ALL);
+  });
+
+  it('the forward bound moves with the clock, and does not disturb dedupe', async () => {
+    const at = '2030-02-01T02:00:00.000Z';
+    await h.run((ctx) => {
+      expect(() =>
+        recordUsage(ctx, { meter: 'ai.tokens.input', qty: '9', occurredAt: at, dedupeKey: 'turn-1' }),
+      ).toThrow(/ahead of/);
+    }, ALL);
+
+    clock.set(at);
+    await h.run((ctx) => {
+      const first = recordUsage(ctx, {
+        meter: 'ai.tokens.input',
+        qty: '9',
+        occurredAt: at,
+        dedupeKey: 'turn-1',
+      });
+      expect(first.deduped).toBe(false);
+      // A replay is answered from the existing row, before either bound is even
+      // consulted — so the tightened window cannot turn a retry into an error.
+      const replay = recordUsage(ctx, {
+        meter: 'ai.tokens.input',
+        qty: '9',
+        occurredAt: '2032-01-01T00:00:00.000Z',
+        dedupeKey: 'turn-1',
+      });
+      expect(replay.deduped).toBe(true);
+      expect(replay.entry.id).toBe(first.entry.id);
+    }, ALL);
+    expect(h.eventsOfType('metering.usage-recorded')).toHaveLength(1);
   });
 
   it('normalizes instant precision so second- and millisecond-precision inputs compare correctly', async () => {

@@ -23,6 +23,7 @@ export const METERING_CONFLICT_REASONS = [
   'dedupe_mismatch',
   'definition_frozen',
   'meter_inactive',
+  'occurred_at_ahead',
   'period_closed',
   'period_overlap',
 ] as const;
@@ -398,13 +399,40 @@ export function listMeters(ctx: OperationContext): Meter[] {
   return ctx.sql.query<MeterRow>('SELECT * FROM metering_meters ORDER BY key').map(toMeter);
 }
 
+/**
+ * How far AHEAD of the operation's own instant an `occurredAt` may sit (#1066).
+ *
+ * The window is bounded on BOTH sides, and the two bounds are not the same kind
+ * of thing. Behind, the bound is the close horizon: the period covering that
+ * instant is frozen, so an entry landing there would change a line already
+ * billed. Ahead, the bound is this one, and it exists because `closePeriod`
+ * advances the horizon monotonically forward — an entry post-dated past every
+ * period anyone will realistically close is aggregated into none of them, and the
+ * usage it represents leaves the billing stream with no error anywhere. Nothing
+ * ever raises it again: `dedupeKey` does not help (it is per-`(meter, key)`, and
+ * this is a first write), and the close journal has no "sweep the stragglers"
+ * pass by design, because a closed period must stay reproducible from its own
+ * entries forever.
+ *
+ * So it is a SKEW tolerance, not a feature: a producer whose clock runs a little
+ * fast still records, and one that would park a year of usage past the horizon
+ * does not. Deliberately small — a caller with a legitimately future observation
+ * does not have one, it has a plan.
+ */
+const MAX_FUTURE_SKEW_MS = 5 * 60_000;
+
 export const recordUsageInput = z.object({
   meter: z.string().min(1),
   /** Counters take signed deltas (a correction is a compensating entry, never
    *  an edit); gauges take non-negative level samples — enforced per kind. */
   qty: signedDecimal,
   subject: entityRef.optional(),
-  /** Defaults to now. Must not fall behind the close horizon (D-D). */
+  /**
+   * Defaults to now, and is bounded on both sides. Behind: never past the close
+   * horizon (D-D), whose period is frozen. Ahead: never more than
+   * `MAX_FUTURE_SKEW_MS` past the operation's own instant, since the horizon only
+   * ever moves forward and an entry beyond it is aggregated by no close (#1066).
+   */
   occurredAt: isoInstant.optional(),
   /** Caller-supplied idempotency key, unique per meter (D-C) — e.g. a turn id. */
   dedupeKey: z.string().min(1),
@@ -440,11 +468,21 @@ export function recordUsage(
     return { entry: toEntry(existing), deduped: true };
   }
 
-  const occurredAt = input.occurredAt ?? ctx.now();
+  const now = ctx.now();
+  const occurredAt = input.occurredAt ?? now;
   const horizon = closeHorizon(ctx);
   if (horizon !== null && occurredAt < horizon) {
-    throw conflict('period_closed', 
+    throw conflict('period_closed',
       `occurred_at ${occurredAt} is behind the close horizon ${horizon} — the period covering it is closed; record late usage at observation time`,
+    );
+  }
+  // The forward half of the same window (#1066). `new Date(ms)` reads a value we
+  // just derived from `ctx.now()`, not the wall clock — R6 bans originating an
+  // instant, and this originates none.
+  const ceiling = new Date(Date.parse(now) + MAX_FUTURE_SKEW_MS).toISOString();
+  if (occurredAt > ceiling) {
+    throw conflict('occurred_at_ahead',
+      `occurred_at ${occurredAt} is ahead of ${now} by more than the ${MAX_FUTURE_SKEW_MS / 60_000}-minute skew tolerance — the close horizon only moves forward, so an entry past it is aggregated by no period; record usage at observation time`,
     );
   }
 
@@ -463,7 +501,7 @@ export function recordUsage(
       input.dedupeKey,
       input.note ?? null,
       ctx.principal,
-      ctx.now(),
+      now,
     ],
   );
   const entry = toEntry(
