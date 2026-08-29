@@ -11,24 +11,33 @@
  *
  *   node scripts/secrets.mjs check                 # show the map + what the file covers (no values)
  *   node scripts/secrets.mjs status --env prod     # cross-check the file vs what's LIVE in Cloudflare
- *   node scripts/secrets.mjs push --env prod       # upload to the deployed workers (wrangler secret bulk)
+ *   node scripts/secrets.mjs push --env prod       # upload to the deployed workers, THEN re-put
+ *                                                  # the pair on every vertical (both rotation steps)
  *   node scripts/secrets.mjs push --env test       # same, for the CI test workers (<name>-test)
- *   node scripts/secrets.mjs verticals --env prod  # re-put PLATFORM_SECRET/ROUTER_SECRET on every
- *                                                  # dispatch-namespace vertical script (rotation step 2)
+ *   node scripts/secrets.mjs verticals --env prod  # just step 2: PLATFORM_SECRET/ROUTER_SECRET on every
+ *                                                  # dispatch-namespace vertical script
  *   node scripts/secrets.mjs dev                    # write each worker's .dev.vars for `wrangler dev`
  *
  * --file <path>   override the env file (defaults: secrets/platform.<env>.env, and
  *                 secrets/platform.dev.env for `dev`)
- * --only <worker> restrict to one worker: control-plane | dashboard | router
+ * --only <worker> restrict to one worker: control-plane | builder | dashboard | router
  * --dry-run       print what WOULD be set (secret NAMES only — never values)
  * --allow-incomplete  let `push` proceed with a REQUIRED key blank (it refuses by default;
  *                 `check` exits non-zero on the same condition, so it gates a deploy).
  *                 Both apply to deployed envs only — `--env dev` reports and moves on.
+ * --skip-verticals  push the platform workers only, leaving the fleet on the OLD
+ *                 PLATFORM_SECRET/ROUTER_SECRET. Correct only when you know those two
+ *                 values did not change; see cmdVerticals for what step 2 is for.
  *
- * Sibling tool: tools/set-platform-secrets.sh rotates just the three GENERATABLE shared
- * secrets (SERVICE_TOKEN / PLATFORM_SECRET / ROUTER_SECRET) with fresh random values and
- * no file. Use that to rotate; use this to set everything from a saved file. `generate`
- * below fills any blank generatable field so a fresh file is push-ready.
+ * `push` runs step 2 itself (#979). It used to stop after the three workers and leave a
+ * printed reminder, which is how the 2026-08-01 rotation took the hosted fleet down: a
+ * rotation is not finished when the platform workers have the new values, it is finished
+ * when the verticals verifying against them do.
+ *
+ * `generate` fills any blank generatable field, so rotating the three shared tokens is
+ * `generate --keys SERVICE_TOKEN,PLATFORM_SECRET,ROUTER_SECRET --force` followed by
+ * `push` — and unlike a fresh-random-with-no-file rotate, the values survive in the file,
+ * which matters because Cloudflare never gives a secret back.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -318,7 +327,21 @@ function cmdStatus() {
   }
 }
 
-function cmdPush() {
+/**
+ * Whether this `push` also runs the vertical re-put (#979).
+ *
+ * Only a DEPLOYED env has a dispatch namespace, so `dev` never does. `--only` is a
+ * deliberately partial push at one worker, which is not a rotation. `--skip-verticals`
+ * is the escape for the case where PLATFORM_SECRET/ROUTER_SECRET did not change and the
+ * fleet walk is just slow.
+ */
+const pushRunsVerticals =
+  (env === 'prod' || env === 'test') && !only && !has('skip-verticals');
+
+/** What `cmdVerticals` cannot run without — checked BEFORE the push, not after. */
+const VERTICALS_KEYS = ['CF_API_TOKEN', 'CF_ACCOUNT_ID', 'PLATFORM_SECRET', 'ROUTER_SECRET'];
+
+async function cmdPush() {
   const values = parseEnvFile(filePath);
   const envFlag = env === 'prod' ? [] : ['--env', env];
   console.log(`Pushing secrets from ${filePath}  (env: ${env})${dryRun ? '  [dry-run]' : ''}\n`);
@@ -332,6 +355,19 @@ function cmdPush() {
     console.error(`✗ ${gaps.length} required secret(s) blank in ${filePath} — nothing pushed:`);
     for (const g of gaps) console.error(`    ${g.worker}: ${g.secretName}  ← ${g.canonical}`);
     fail('fill them, or pass --allow-incomplete to push anyway');
+  }
+  // Same discipline for step 2, and for a sharper reason: refusing here costs a retry,
+  // whereas discovering it after the workers are pushed leaves the platform on the new
+  // values and the whole fleet on the old ones — the 2026-08-01 outage exactly.
+  // (`--allow-incomplete` can get past the gate above with these blank.)
+  if (pushRunsVerticals) {
+    const missing = VERTICALS_KEYS.filter((k) => !values[k]);
+    if (missing.length) {
+      console.error(`✗ ${missing.join(', ')} blank in ${filePath} — nothing pushed.`);
+      console.error('  push finishes the rotation by re-putting PLATFORM_SECRET/ROUTER_SECRET on');
+      console.error('  every deployed vertical, and cannot do that without them.');
+      fail('fill them, or pass --skip-verticals to push the platform workers only');
+    }
   }
   for (const [name, cfg] of workers) {
     const { set } = resolveForWorker(cfg, values);
@@ -348,6 +384,24 @@ function cmdPush() {
       stdio: ['pipe', 'inherit', 'inherit'],
     });
     if (res.status !== 0) fail(`wrangler secret bulk failed for ${name} (exit ${res.status})`);
+  }
+  // Step 2, in the same command. A rotation that stops here has updated the three
+  // platform workers and left every deployed vertical verifying against the old pair.
+  if (pushRunsVerticals && dryRun) {
+    // A dry run stays local. Step 2's listing is a live Cloudflare GET, so doing it here
+    // would make `--dry-run` exit non-zero on a bad token while writing nothing —
+    // `verticals --env <env> --dry-run` is the command that shows the fleet.
+    console.log('\n[dry-run] would then re-put PLATFORM_SECRET, ROUTER_SECRET on every');
+    console.log(`          vertical — see \`node scripts/secrets.mjs verticals --env ${env} --dry-run\``);
+  } else if (pushRunsVerticals) {
+    console.log('\n── rotation step 2: the fleet ─────────────────────────────────────');
+    await cmdVerticals();
+  } else if (env === 'prod' || env === 'test') {
+    console.log(
+      `\n! vertical re-put SKIPPED (${only ? `--only ${only}` : '--skip-verticals'}). If PLATFORM_SECRET or`,
+    );
+    console.log('  ROUTER_SECRET changed, run `node scripts/secrets.mjs verticals --env ' + env + '`');
+    console.log('  now — until it runs, every hosted app rejects the router and the control plane.');
   }
   if (!dryRun) console.log('\n✓ done. Redeploy the affected workers so a NEW secret takes effect on the next deploy.');
 }
@@ -409,18 +463,41 @@ function cmdGenerate() {
  * (2026-08-01: the first prod rotation shipped without this and took every hosted app
  * offline until the secrets were re-put by hand.)
  */
+/**
+ * Every script in the dispatch namespace, following Cloudflare's pages.
+ *
+ * It used to ask for `?per_page=100` once and take whatever came back. A namespace
+ * holds one script per deployed vertical VERSION, not per vertical, so 100 is a
+ * ceiling the fleet grows through — and the failure is silent in the worst way: the
+ * walk reports success having skipped every script past the first page, which is the
+ * same fleet-down state as not running step 2 at all, minus the clue.
+ */
+async function listScripts(api, headers, namespace) {
+  const ids = [];
+  for (let page = 1; ; page++) {
+    const res = await (await fetch(`${api}/scripts?per_page=100&page=${page}`, { headers })).json();
+    if (!res.success) fail(`could not list ${namespace} scripts (page ${page}): ${JSON.stringify(res.errors)}`);
+    const batch = res.result ?? [];
+    ids.push(...batch.map((r) => r.id));
+    // Stop on the first short/empty page, and independently on the reported total — a
+    // full last page with no `result_info` would otherwise loop forever.
+    const total = res.result_info?.total_count;
+    if (batch.length === 0 || batch.length < 100) break;
+    if (typeof total === 'number' && ids.length >= total) break;
+  }
+  return ids;
+}
+
 async function cmdVerticals() {
   if (env !== 'prod' && env !== 'test') fail(`--env must be prod or test for verticals (got '${env}')`);
   const values = parseEnvFile(filePath);
   const namespace = env === 'prod' ? 'substrat-verticals' : 'substrat-verticals-test';
-  for (const key of ['CF_API_TOKEN', 'CF_ACCOUNT_ID', 'PLATFORM_SECRET', 'ROUTER_SECRET']) {
+  for (const key of VERTICALS_KEYS) {
     if (!values[key]) fail(`${key} is blank in ${filePath}`);
   }
   const api = `https://api.cloudflare.com/client/v4/accounts/${values.CF_ACCOUNT_ID}/workers/dispatch/namespaces/${namespace}`;
   const headers = { Authorization: `Bearer ${values.CF_API_TOKEN}`, 'Content-Type': 'application/json' };
-  const listed = await (await fetch(`${api}/scripts?per_page=100`, { headers })).json();
-  if (!listed.success) fail(`could not list ${namespace} scripts: ${JSON.stringify(listed.errors)}`);
-  const scripts = listed.result.map((r) => r.id);
+  const scripts = await listScripts(api, headers, namespace);
   console.log(`● ${namespace}: ${scripts.length} script(s) × PLATFORM_SECRET, ROUTER_SECRET${dryRun ? '  [dry-run]' : ''}`);
   if (dryRun) {
     for (const s of scripts) console.log(`    ${s}`);
@@ -461,7 +538,7 @@ switch (cmd) {
     cmdStatus();
     break;
   case 'push':
-    cmdPush();
+    await cmdPush();
     break;
   case 'verticals':
     await cmdVerticals();
@@ -473,6 +550,8 @@ switch (cmd) {
     cmdGenerate();
     break;
   default:
-    console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(2, 22).join('\n').replace(/^ \*?/gm, ''));
+    // Lines 3–30 of this file: the intro, the command list and the flags. Kept as a
+    // slice rather than a duplicated string so the help cannot drift from the header.
+    console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(2, 30).join('\n').replace(/^ \*?/gm, ''));
     if (cmd) fail(`unknown command '${cmd}'`);
 }

@@ -27,7 +27,7 @@
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm lint:pins",
     "release": "pnpm run build && pnpm publish -r --access public --no-git-checks && changeset tag",
-    "secrets:platform": "tools/set-platform-secrets.sh",
+    "secrets:platform": "node scripts/secrets.mjs push",
     "secrets:check": "node scripts/secrets.mjs check",
     "secrets:push": "node scripts/secrets.mjs push",
     "secrets:dev": "node scripts/secrets.mjs dev",

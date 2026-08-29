@@ -24,7 +24,7 @@ cp secrets/platform.prod.env.example secrets/platform.prod.env
 node scripts/secrets.mjs generate              # fill the random shared secrets
 $EDITOR secrets/platform.prod.env              # paste OIDC / Cloudflare / GitHub App values
 node scripts/secrets.mjs check                 # confirm coverage (names only, no values)
-node scripts/secrets.mjs push --env prod       # upload via `wrangler secret bulk`
+node scripts/secrets.mjs push --env prod       # workers via `wrangler secret bulk`, then the fleet
 ```
 
 Then **redeploy** the affected workers — a secret takes effect on the next deploy:
@@ -54,11 +54,11 @@ throwaway — never reuse a prod secret locally.
 | Command | What |
 |---|---|
 | `secrets.mjs check` | Print the worker→secret map and what the file covers. No values. |
-| `secrets.mjs push --env prod\|test` | Upload the file's secrets to each deployed worker. |
-| `secrets.mjs verticals --env prod\|test` | Re-put `PLATFORM_SECRET`/`ROUTER_SECRET` on every dispatch-namespace vertical script. |
+| `secrets.mjs push --env prod\|test` | Upload the file's secrets to each deployed worker, **then** re-put `PLATFORM_SECRET`/`ROUTER_SECRET` on every vertical. Also `pnpm secrets:platform`. |
+| `secrets.mjs verticals --env prod\|test` | Just that second step, on its own. |
 | `secrets.mjs dev` | Write `apps/*/.dev.vars` from the dev file. |
 | `secrets.mjs generate` | Fill blank *generatable* random secrets in the file. |
-| flags | `--file <path>` · `--only control-plane\|dashboard\|router` · `--dry-run` |
+| flags | `--file <path>` · `--only control-plane\|builder\|dashboard\|router` · `--dry-run` · `--skip-verticals` |
 
 Root aliases: `pnpm secrets:check`, `pnpm secrets:push`, `pnpm secrets:dev`.
 
@@ -96,14 +96,31 @@ them in the file only to override, and they'll be pushed as secrets that shadow 
 
 - **`SECRET_BOX_KEY`** seals stored connection credentials at rest. Replacing it orphans
   every sealed credential (recovery = reconnect each provider). Set once, back up, and
-  leave out of any rotation. See `tools/set-platform-secrets.sh` for the detail.
+  leave out of any rotation. The `webCryptoSecretBox` a worker deploys holds ONE key and
+  `open()` throws on a keyId mismatch; real rotation needs a keyring box plus a re-seal
+  sweep, and the keyId field is ready while the implementation is not.
 - **`SESSION_SECRET`** (either) signs cookies — rotating signs everyone out.
-- Rotating **`PLATFORM_SECRET` / `ROUTER_SECRET`** is a TWO-step move: `push` updates the
-  platform workers, then `secrets.mjs verticals --env prod` re-puts the pair on every
+- Rotating **`PLATFORM_SECRET` / `ROUTER_SECRET`** is a TWO-step move, and **`push` now
+  runs both** (#979): it updates the platform workers, then re-puts the pair on every
   deployed vertical script in the dispatch namespace. Vertical scripts receive these as
   bindings baked in at deploy (`wfp.ts` `injectSecrets`), so until step 2 runs every
   hosted app rejects the router's node assertion (users locked out) and the control
   plane's `/internal/*` calls 403 (Data tab, config delivery, provisioning). The
-  2026-08-01 rotation shipped without step 2 and took the whole hosted fleet down.
-  `tools/set-platform-secrets.sh` is the fresh-random rotate path for the three shared
-  tokens — run the `verticals` step after it too.
+  2026-08-01 rotation shipped without step 2 and took the whole hosted fleet down —
+  because the rotate script of the day printed the step as a reminder instead of doing
+  it. `secrets.mjs verticals --env prod` still exists to run step 2 alone;
+  `push --skip-verticals` is the escape when the pair did not change.
+
+## Rotating the three shared tokens
+
+There is no separate rotate script (the one that existed is the paragraph above):
+
+```
+node scripts/secrets.mjs generate --keys SERVICE_TOKEN,PLATFORM_SECRET,ROUTER_SECRET --force
+node scripts/secrets.mjs push --env prod          # workers, then every vertical
+pnpm --filter @substrat-run/control-plane cf:deploy
+```
+
+`generate` writes the new values into the env file first, on purpose: Cloudflare never
+gives a secret back, so a value that lives only in the deployed worker is one you cannot
+check with `status`, diff, or restore.
