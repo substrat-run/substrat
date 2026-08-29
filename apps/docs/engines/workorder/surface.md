@@ -20,7 +20,7 @@ HTTP is derived, never authored: a manifest may point at an emitted OpenAPI spec
 | Operation | Permission | Does |
 |---|---|---|
 | `workorder/get` | `workorder:read` (per-entity) | one order with its time and material |
-| `workorder/list` | `workorder:read` | orders, optionally by status |
+| `workorder/list` | `workorder:read` | a page of orders, optionally filtered by status |
 | `workorder/assign` | `workorder:assign` | assign a technician (order stays `planned`) |
 | `workorder/start` | `workorder:report` | `planned` → `in_progress` |
 | `workorder/report-time` | `workorder:report` | append a time entry |
@@ -57,8 +57,16 @@ import { createWorkOrder, completeWorkOrder, PERM } from '@substrat-run/engine-w
 | `reportMaterial(ctx, input)` | `workorder/report-material` | appends a material line |
 | `completeWorkOrder(ctx, input)` | `workorder/complete` | validates + freezes billable lines |
 | `closeWorkOrder(ctx, input)` | `workorder/close` | |
-| `listOrders(ctx, status?)` | `workorder/list` | |
+| `listOrders(ctx, page)` | `workorder/list` | a `Page<WorkOrder>` — `page` is the kernel's `PageParams` (`limit`, `sort`, `order`, `cursor`, `filters`, `total`), walked by `ctx.page`; with `total: true` the result is a `CountedPage` that also carries the filtered count |
+| `getWorkOrder(ctx, orderId)` | `workorder/get` | one order by id; throws on an id that names nothing |
 | `getReportedLines(ctx, orderId)` | `workorder/get` | time + material for an order |
+
+`listOrders` is **paged, not filtered by a positional `status?`**. The old
+`listOrders(ctx, status?)` returned every matching row with no bound and a hard-coded sort;
+it is gone rather than kept beside the paged read. Pass the status as a filter instead —
+`listOrders(ctx, { filters: { status: 'planned' } })` — and read one order with
+`getWorkOrder` rather than walking the list for it: once the list is a page, the row you
+want is simply not on page one. See [Lists are pages, not dumps](/concepts/api-design#_4-lists-are-pages-not-dumps) for the walk.
 
 None of these check permissions — that is the caller's job, by design. Calling one from your
 own operation without `assertAllowed(await ctx.check(…))` first is a bug the linter won't
