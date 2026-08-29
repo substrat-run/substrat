@@ -615,11 +615,13 @@ export type TenantExport = z.infer<typeof tenantExport>;
  * **Meter 1** (base fee: per tenant + per active scope) is a `COUNT` over the directory.
  * **Meter 2** (per-engine licensing) is a `GROUP BY` over the entitlement store, whose
  * flags *are* the SKUs. Both are free, both come from the directory database, and
- * neither needs a data pipeline. **Meters 3 and 4 are absent by construction**, not by
- * omission: the outbox is per-scope-database with no cross-tenant fan-in, reads emit
- * nothing, and the cross-tenant order flow does not exist. A field here would be a
- * number we cannot compute — "a meter you cannot compute is not a pricing decision, it
- * is a data-pipeline project" (§5).
+ * neither needs a data pipeline. **Meters 3 and 4 are absent from THIS reading by
+ * construction**, not by omission: the outbox is per-scope-database with no cross-tenant
+ * fan-in, reads emit nothing, and the cross-tenant order flow does not exist. A field here
+ * would be a number we cannot compute — "a meter you cannot compute is not a pricing
+ * decision, it is a data-pipeline project" (§5). The one slice of meter 3 that IS computable
+ * — model usage, because every call is raised as a platform intent and drained into the
+ * directory — has its own reading, `modelUsageSummary` (model-usage.ts, #1054).
  *
  * Two rules decide every number below, and they are the reason this is a server-side
  * aggregate rather than arithmetic over `listScopes`:

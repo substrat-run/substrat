@@ -6,6 +6,7 @@ import {
   impersonationListQuery,
   impersonationRowValues,
   OPS_FAILURE_RETENTION_DAYS,
+  MODEL_USAGE_RETENTION_DAYS,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
 import { splitSqlStatements } from './scope-do.js';
@@ -265,6 +266,40 @@ export interface OpsFailureRow {
 }
 
 /** The ops-failures filter, flattened for the RPC hop (#559). */
+export interface ModelUsageRow {
+  id: string;
+  request_id: string;
+  tenant_id: string;
+  scope_id: string;
+  vertical: string;
+  version: string;
+  operation: string;
+  model: string;
+  provider: string;
+  model_id: string;
+  reported: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  cache_write_tokens: number;
+  list_usd: string | null;
+  at: string;
+  elapsed_ms: number;
+}
+
+/** The model-usage filter, flattened for the RPC hop (#1054). */
+export interface ModelUsageQuery {
+  tenantId?: string;
+  scopeId?: string;
+  vertical?: string;
+  model?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  order?: 'asc' | 'desc';
+}
+
 export interface OpsFailureQuery {
   tenantId?: string;
   scopeId?: string;
@@ -726,6 +761,32 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
+  -- Model usage (#1054, meter 3): one line per model call a vertical made through the
+  -- platform's model host, drained here as a model-usage intent. request_id is the intent
+  -- id and UNIQUE, which is what makes a retried drain write nothing twice. Retention-
+  -- bounded like ops failures (MODEL_USAGE_RETENTION_DAYS), pruned on write.
+  CREATE TABLE IF NOT EXISTS _substrat_model_usage (
+    id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    tenant_id TEXT NOT NULL,
+    scope_id TEXT NOT NULL,
+    vertical TEXT NOT NULL,
+    version TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    model TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    reported INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cached_input_tokens INTEGER NOT NULL,
+    cache_write_tokens INTEGER NOT NULL,
+    list_usd TEXT,
+    at TEXT NOT NULL,
+    elapsed_ms INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_model_usage_tenant ON _substrat_model_usage (tenant_id, at);
+  CREATE INDEX IF NOT EXISTS _substrat_model_usage_at ON _substrat_model_usage (at);
   CREATE INDEX IF NOT EXISTS scopes_tenant ON scopes (tenant_id, scope_id);
 `;
 
@@ -3161,5 +3222,80 @@ export class ControlPlaneDO extends DurableObject {
       reference: r.reference,
       at: r.at,
     })) as OpsFailureEntry[];
+  }
+
+  /** #1054: idempotent on request_id — a replayed intent writes nothing. */
+  recordModelUsage(row: ModelUsageRow): { recorded: boolean } {
+    const cursor = this.sql.exec(
+      `INSERT OR IGNORE INTO _substrat_model_usage
+         (id, request_id, tenant_id, scope_id, vertical, version, operation, model, provider, model_id,
+          reported, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, list_usd, at, elapsed_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      row.id,
+      row.request_id,
+      row.tenant_id,
+      row.scope_id,
+      row.vertical,
+      row.version,
+      row.operation,
+      row.model,
+      row.provider,
+      row.model_id,
+      row.reported,
+      row.input_tokens,
+      row.output_tokens,
+      row.cached_input_tokens,
+      row.cache_write_tokens,
+      row.list_usd,
+      row.at,
+      row.elapsed_ms,
+    );
+    const recorded = cursor.rowsWritten > 0;
+    const horizon = new Date(Date.now() - MODEL_USAGE_RETENTION_DAYS * 86_400_000).toISOString();
+    this.sql.exec('DELETE FROM _substrat_model_usage WHERE at < ?', horizon);
+    return { recorded };
+  }
+
+  listModelUsage(query: ModelUsageQuery): ModelUsageRow[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (query.tenantId) {
+      where.push('tenant_id = ?');
+      params.push(query.tenantId);
+    }
+    if (query.scopeId) {
+      where.push('scope_id = ?');
+      params.push(query.scopeId);
+    }
+    if (query.vertical) {
+      where.push('vertical = ?');
+      params.push(query.vertical);
+    }
+    if (query.model) {
+      where.push('model = ?');
+      params.push(query.model);
+    }
+    if (query.since) {
+      where.push('at >= ?');
+      params.push(query.since);
+    }
+    if (query.until) {
+      where.push('at < ?');
+      params.push(query.until);
+    }
+    const order = (query.order ?? 'desc') === 'desc' ? 'DESC' : 'ASC';
+    if (query.cursor) {
+      where.push(order === 'DESC' ? 'id < ?' : 'id > ?');
+      params.push(query.cursor);
+    }
+    let sql =
+      'SELECT * FROM _substrat_model_usage' +
+      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY id ${order}`;
+    if (query.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(query.limit);
+    }
+    return this.sql.exec(sql, ...params).toArray() as unknown as ModelUsageRow[];
   }
 }

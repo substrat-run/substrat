@@ -229,6 +229,13 @@ export {
 } from './migration-progress.js';
 export type { ScopeMigrationState } from './migration-progress.js';
 export { foldMeterReading } from './meters.js';
+export {
+  MODEL_USAGE_RETENTION_DAYS,
+  foldModelUsage,
+  type ModelUsageFilter,
+  type ModelUsageInput,
+  type ModelUsageWindow,
+} from './model-usage.js';
 export type {
   MeterEntitlementInput,
   MeterInput,

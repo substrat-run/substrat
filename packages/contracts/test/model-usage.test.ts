@@ -5,7 +5,7 @@
  * so anything the schema merely documents is something a caller can ignore.
  */
 import { describe, expect, it } from 'vitest';
-import { modelAttribution, modelUsageLine } from '../src/model-usage.js';
+import { marginFactor, modelAttribution, modelUsageLine } from '../src/model-usage.js';
 
 const attribution = {
   tenant: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -29,6 +29,21 @@ const line = {
   at: '2026-08-29T10:00:00.000Z',
   elapsedMs: 5,
 };
+
+describe('marginFactor', () => {
+  it('turns a whole-percent margin into the exact decimal factor', () => {
+    expect(marginFactor(0)).toBe('1');
+    expect(marginFactor(7)).toBe('1.07');
+    expect(marginFactor(20)).toBe('1.2');
+    expect(marginFactor(100)).toBe('2');
+    expect(marginFactor(125)).toBe('2.25');
+  });
+
+  it('refuses fractions and negatives — nobody prices at 12.5%, and a discount is not a margin', () => {
+    expect(() => marginFactor(12.5)).toThrow(RangeError);
+    expect(() => marginFactor(-1)).toThrow(RangeError);
+  });
+});
 
 describe('modelAttribution', () => {
   it('is exactly five keys — a sixth is refused rather than dropped on the wire', () => {
@@ -60,6 +75,8 @@ describe('modelUsageLine', () => {
       expect(modelUsageLine.safeParse({ ...line, listUsd: bad }).success, bad).toBe(false);
     }
     expect(modelUsageLine.safeParse({ ...line, listUsd: null }).success).toBe(true);
+    // A number is not a decimal string, however price-shaped it looks.
+    expect(modelUsageLine.safeParse({ ...line, listUsd: 0.5 }).success).toBe(false);
   });
 
   it('still refuses negative counts and a malformed instant', () => {

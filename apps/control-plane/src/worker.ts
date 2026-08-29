@@ -26,6 +26,7 @@ import {
   ARCHIVE_SCOPE_KIND,
   PROVISION_TENANT_KIND,
   SET_ENTITLEMENTS_KIND,
+  MODEL_USAGE_KIND,
   connectorDispatchKind,
 } from '@substrat-run/contracts';
 import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
@@ -86,6 +87,7 @@ import {
   archiveScopeHandler,
   provisionTenantHandler,
   setEntitlementsHandler,
+  modelUsageHandler,
   connectorDispatchHandler,
   type ManagedTenantDeps,
   type PlatformDrainReport,
@@ -781,6 +783,8 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
       [ARCHIVE_SCOPE_KIND]: archiveScopeHandler({ host, actor: SWEEP_ACTOR }),
       [PROVISION_TENANT_KIND]: provisionTenantHandler(managedTenantDeps),
       [SET_ENTITLEMENTS_KIND]: setEntitlementsHandler(managedTenantDeps),
+      // #1054: a vertical's model host produced a usage line; the platform's ledger (meter 3).
+      [MODEL_USAGE_KIND]: modelUsageHandler({ host }),
       // #574 phase 3: the outbound half of the platform-run connector pass. A CP-less
       // vertical routed a `protocol.signatures-requested` delivery here as an intent;
       // this host holds the directory, the sealed credential, and (via its
@@ -1290,6 +1294,8 @@ export default {
       createControlPlaneApi({
         host: hostFor(env),
         authenticate: authFor(env),
+        // #1054: the platform's margin over list for model usage it provides. Whole percent.
+        ...(env.MODEL_MARGIN_PERCENT ? { modelMarginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
         // A tenant user acting on their own verticals — self-serve, no vetting roster.
         // Tried only after staff/service auth declines (control-plane-api middleware).
         // A CI push token (`spt1.…` in x-service-token) authenticates as the same kind

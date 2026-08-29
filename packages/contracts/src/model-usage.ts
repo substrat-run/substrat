@@ -86,3 +86,88 @@ export const modelUsageLine = modelUsageLineFields.refine(unreportedIsEmpty, {
   message: UNREPORTED_MESSAGE,
 });
 export type ModelUsageLine = z.infer<typeof modelUsageLine>;
+
+/**
+ * The platform intent a vertical raises to hand a line to the platform's ledger
+ * (`ctx.requestPlatform({ kind: MODEL_USAGE_KIND, payload: line })`). The drain parses
+ * the payload as `modelUsageLine`, refuses a line whose attribution names a different
+ * tenant or scope than the one being drained, and records it under the intent's own id
+ * — which is what makes a retried drain write nothing twice.
+ */
+export const MODEL_USAGE_KIND = 'model-usage';
+
+/** A line as the platform's ledger holds it: the line plus the platform's two stamps. */
+export const modelUsageEntry = modelUsageLineFields
+  .extend({
+    /** ULID, stamped platform-side; sortable = chronological in ledger order. */
+    id: z.string().min(1),
+    /** The intent it arrived as — the dedupe key. */
+    requestId: z.string().min(1),
+  })
+  // Extends the FIELDS, not `modelUsageLine`: a refined schema cannot be extended. The
+  // same invariant is re-applied so it also holds on the way back OUT of the ledger —
+  // a row written before the check existed cannot be read as a priced one.
+  .refine(unreportedIsEmpty, { message: UNREPORTED_MESSAGE });
+export type ModelUsageEntry = z.infer<typeof modelUsageEntry>;
+
+/**
+ * Meter 3, at last computable — for model usage. D-30 said meters 3 and 4 were
+ * uncomputable because the outbox has no cross-tenant fan-in; a line drained into the
+ * directory is exactly that fan-in, for this one kind of usage.
+ *
+ * One row per (tenant, vertical, model). Token sums are integers; money is folded with
+ * `addDecimal`, never floated, and `billedUsd` is `listUsd × marginFactor(marginPercent)`
+ * — the platform's rate applied at READ time, so a margin change re-prices history
+ * consistently rather than leaving two rates in one table. `unpriced` counts calls whose
+ * model the rate card did not know: shown beside the money, never folded into it as $0.
+ */
+export const modelUsageSummaryRow = z.object({
+  tenantId,
+  vertical: z.string().min(1),
+  model: z.string().min(1),
+  provider: z.string().min(1),
+  modelId: z.string().min(1),
+  calls: z.number().int().nonnegative(),
+  unpriced: z.number().int().nonnegative(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  cachedInputTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  listUsd: z.string(),
+  billedUsd: z.string(),
+});
+export type ModelUsageSummaryRow = z.infer<typeof modelUsageSummaryRow>;
+
+export const modelUsageSummary = z.object({
+  readAt: instant,
+  since: instant,
+  until: instant,
+  /** The platform's margin over list, whole percent. */
+  marginPercent: z.number().int().nonnegative(),
+  rows: z.array(modelUsageSummaryRow),
+  totals: z.object({
+    calls: z.number().int().nonnegative(),
+    unpriced: z.number().int().nonnegative(),
+    inputTokens: z.number().int().nonnegative(),
+    outputTokens: z.number().int().nonnegative(),
+    listUsd: z.string(),
+    billedUsd: z.string(),
+  }),
+});
+export type ModelUsageSummary = z.infer<typeof modelUsageSummary>;
+
+/**
+ * `20` → `'1.2'`, `7` → `'1.07'`, `125` → `'2.25'`: a whole-percent margin as the exact
+ * decimal factor `mulDecimal` takes. Whole percents only — a fractional margin would need
+ * a factor the 6-dp decimal scale cannot always carry, and nobody prices at 12.5%.
+ */
+export function marginFactor(percent: number): string {
+  if (!Number.isInteger(percent) || percent < 0) {
+    throw new RangeError(`margin percent must be a non-negative integer, got ${percent}`);
+  }
+  const whole = 1 + Math.floor(percent / 100);
+  const frac = String(percent % 100)
+    .padStart(2, '0')
+    .replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : String(whole);
+}

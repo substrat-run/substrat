@@ -1,5 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { EntitlementMeterRow, MeterReading, Tenant, TenantId, TenantMeterRow } from '@substrat-run/contracts';
+import type {
+  EntitlementMeterRow,
+  MeterReading,
+  ModelUsageSummary,
+  ModelUsageSummaryRow,
+  Tenant,
+  TenantId,
+  TenantMeterRow,
+} from '@substrat-run/contracts';
 import { Badge, Button, Card, Stat, Table, Tag } from '../components';
 import type { TableColumn } from '../components';
 import { tenantTone } from '../lib/fleet';
@@ -15,12 +23,13 @@ import type { Api } from '../lib/api';
  * re-derived here from `listScopes`, because the billable rule is commercial and must
  * have one definition (`foldMeterReading`), not one per surface.
  *
- * The uncomputable half is a first-class part of the page rather than a doc footnote.
- * Meters 3 and 4 have been re-proposed enough times to be worth answering where a
- * person goes looking for a usage number: the outbox is per-scope-database with no
- * cross-tenant fan-in, and reads emit nothing at all, so those numbers do not exist to
- * be shown. An empty card that explains itself is honest; a plausible-looking number
- * would be a pricing decision made by a UI.
+ * Meter 3 arrived with #1054, for ONE kind of usage: model calls a vertical makes
+ * through the platform's model host raise a `model-usage` intent, the drain lands it in
+ * the directory, and that IS the cross-tenant fan-in D-30 said the outbox lacked. The
+ * summary is folded platform-side (`foldModelUsage`) with the platform's margin applied
+ * at read time, so this view shows list and billed side by side and computes neither.
+ * Reads still emit nothing and the cross-tenant order flow still does not exist, so
+ * meter 4 stays absent and says so.
  */
 
 export interface MetersProps {
@@ -35,6 +44,7 @@ const num = (n: number) => n.toLocaleString();
 
 export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
   const [reading, setReading] = useState<MeterReading | null>(null);
+  const [usage, setUsage] = useState<ModelUsageSummary | null>(null);
   const [busy, setBusy] = useState(false);
 
   const read = useCallback(
@@ -48,6 +58,10 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
         })
         .catch((e: Error) => onToast('Failed to read meters', e.message, 'danger'))
         .finally(() => setBusy(false));
+      api
+        .readModelUsage()
+        .then(setUsage)
+        .catch((e: Error) => onToast('Failed to read model usage', e.message, 'danger'));
     },
     [api, onToast],
   );
@@ -128,6 +142,39 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
     },
   ];
 
+  const usd = (s: string) => `$${s}`;
+  const usageColumns: TableColumn<ModelUsageSummaryRow>[] = [
+    {
+      header: 'Tenant',
+      render: (r) => <span style={{ fontWeight: 500 }}>{tenants.get(r.tenantId)?.name ?? r.tenantId}</span>,
+    },
+    { header: 'Vertical', key: 'vertical', mono: true, muted: true },
+    { header: 'Model', key: 'model', mono: true },
+    { header: 'Calls', align: 'right', render: (r) => num(r.calls) },
+    {
+      header: 'Tokens in / out',
+      align: 'right',
+      render: (r) => (
+        <span title={`${num(r.cachedInputTokens)} cached reads · ${num(r.cacheWriteTokens)} cache writes`}>
+          {num(r.inputTokens)} / {num(r.outputTokens)}
+        </span>
+      ),
+    },
+    { header: 'List', align: 'right', render: (r) => <span style={{ fontFamily: 'var(--font-mono)' }}>{usd(r.listUsd)}</span> },
+    {
+      header: 'Billed',
+      align: 'right',
+      render: (r) => <span style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{usd(r.billedUsd)}</span>,
+    },
+    {
+      header: 'Unpriced',
+      align: 'right',
+      // A model the rate card does not know: counted beside the money, never folded in as $0.
+      render: (r) =>
+        r.unpriced === 0 ? <span style={{ color: 'var(--text-tertiary)' }}>—</span> : <Badge status="warning">{num(r.unpriced)}</Badge>,
+    },
+  ];
+
   const scopes = reading?.scopes;
   const skuTotal = reading?.entitlements.reduce((n, r) => n + r.tenants, 0) ?? 0;
 
@@ -137,7 +184,7 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>Meters</h2>
           <p style={{ margin: '4px 0 0', fontSize: 13, color: 'var(--text-secondary)' }}>
-            The two meters the directory can answer, read live. Nothing here is stored or invoiced —
+            The three meters the directory can answer, read live. Nothing here is invoiced —
             a reading is recomputed per visit and stamped with the instant it was taken.
           </p>
         </div>
@@ -193,6 +240,23 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
         />
       </Card>
 
+      {/* Meter 3 (#1054) — model usage: list from the rate card, billed = list × the platform's margin, at read time. */}
+      <Card
+        title={`Model usage (meter 3)${usage ? ` · ${usage.marginPercent}% over list` : ''}`}
+        description={
+          usage
+            ? `Since ${new Date(usage.since).toLocaleDateString()} — ${num(usage.totals.calls)} calls, ${num(usage.totals.inputTokens)} tokens in, ${num(usage.totals.outputTokens)} out · list ${usd(usage.totals.listUsd)} · billed ${usd(usage.totals.billedUsd)}${usage.totals.unpriced ? ` · ${num(usage.totals.unpriced)} unpriced` : ''}. Reads emit nothing, so meter 4 stays absent.`
+            : 'Model calls made through the platform’s model host, folded per tenant and model. Reading…'
+        }
+        padding={0}
+      >
+        <Table
+          columns={usageColumns}
+          rows={usage?.rows ?? []}
+          emptyText="No model usage recorded this month — no vertical has answered through the platform’s model host yet."
+        />
+      </Card>
+
       {/* Meter 1, per tenant — the base fee is per tenant AND per active scope. */}
       <Card
         title="Per tenant (meter 1)"
@@ -208,15 +272,16 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
       </Card>
 
       <Card
-        title="Meters 3 and 4 are not shown"
+        title="What meter 3 still cannot count, and why meter 4 is not shown"
         description="Not unbuilt — uncomputable, by construction. Writing it here so it stops being re-proposed."
       >
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
           <li>
-            <strong>Meter 3 (usage: events retained, storage, API calls).</strong> The outbox is one table
-            per scope database, queryable only from inside that scope — there is no cross-tenant
-            aggregate path and no Tier-2 sink to fan into. Reads emit nothing at all, so API volume is
-            unmeterable from the event spine by design, not by omission.
+            <strong>Meter 3 beyond model usage (events retained, storage, API calls).</strong> Model
+            calls fan in because each one is raised as a platform intent and drained here; nothing
+            else does. The outbox is one table per scope database, queryable only from inside that
+            scope — there is no cross-tenant aggregate path and no Tier-2 sink to fan into. Reads emit
+            nothing at all, so API volume is unmeterable from the event spine by design, not by omission.
           </li>
           <li>
             <strong>Meter 4 (network transactions).</strong> Needs the cross-tenant order flow, which
