@@ -3329,6 +3329,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         modules,
         doClasses: manifest.doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
+        // #1054: the model runtime is bound only for a version that ASKED for it, so the
+        // capability is visible in the manifest diff at admit rather than fleet-wide.
+        ...(manifest.usesModels ? { usesModels: true } : {}),
         // #340/#578: the version's static files travel with it onto the serving script —
         // from the RETAINED manifest, with no bytes. The runtime's asset store dedupes
         // per SCRIPT (not namespace-wide — the #578 finding), so the serving script only

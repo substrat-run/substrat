@@ -167,6 +167,7 @@
           "/widget/*"
         ]
       }
-    }
+    },
+    "usesModels": true
   }
 }

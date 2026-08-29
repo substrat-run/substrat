@@ -29,6 +29,7 @@ import {
   createModel,
   credentialsFrom,
   hostingInfo,
+  providerRow,
   listCostOfSteps,
   normalizeModelSpec,
   parseModelSpec,
@@ -171,9 +172,13 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
   const status = (spec: string): ModelStatus => {
     const { provider, modelId } = parseModelSpec(spec);
     const creds = credentialsFrom(provider, options.env);
-    // A row the host holds a factory for needs no credential: the binding IS the
-    // configuration, so it is runnable with `missing` empty however bare the env is.
-    const bound = Boolean(factories[provider]);
+    // Exactly `createModel`'s rule, not a looser one. Only a row that DECLARES a binding
+    // transport is credential-free; a `direct` row's factory (`createAnthropic`) is just
+    // the package, and it still needs its key. Reported any looser, a settings screen
+    // would call an Anthropic row 'configured' with no key set and the call would then
+    // fail — the status lying about the thing it exists to answer.
+    const row = providerRow(provider);
+    const bound = Boolean(row?.kind === 'compatible' && row.binding && factories[provider]);
     return {
       spec: normalizeModelSpec(spec),
       label: `${provider}/${modelId}`,

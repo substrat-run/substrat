@@ -168,6 +168,21 @@ describe('the Workers AI binding', () => {
     });
   });
 
+  it('does NOT treat a direct row’s factory as credential-free — status must not outrun run()', async () => {
+    // `createAnthropic` is the package, not a capability: the row still needs its key.
+    // Reported as configured, a settings screen would call this runnable and the call
+    // would then fail — status lying about the one thing it exists to answer.
+    const host = createModelHost({ env: {}, factories: { anthropic: (() => () => null) as never } });
+    expect(host.status('anthropic:claude-opus-5')).toMatchObject({
+      configured: false,
+      missing: ['ANTHROPIC_API_KEY'],
+    });
+    // And run() agrees, which is the property that was broken.
+    await expect(host.run({ spec: 'anthropic:claude-opus-5', attribution, prompt: 'hi' })).rejects.toThrow(
+      /ANTHROPIC_API_KEY/,
+    );
+  });
+
   it('leaves every other row alone — the binding is one row’s transport, not a global', () => {
     const bound = createModelHost({ env: {}, aiBinding });
     expect(bound.status('scaleway:llama-3.3-70b-instruct')).toMatchObject({

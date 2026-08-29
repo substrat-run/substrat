@@ -230,14 +230,16 @@ async function uploadAssets(
 }
 
 export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
-  const injected = [
-    ...Object.entries(opts.injectSecrets ?? {})
-      .filter(([, text]) => text)
-      .map(([name, text]) => ({ type: 'secret_text', name, text: text as string })),
-    ...(opts.bindAi ? [{ type: 'ai', name: 'AI' }] : []),
-  ];
+  const injected = Object.entries(opts.injectSecrets ?? {})
+    .filter(([, text]) => text)
+    .map(([name, text]) => ({ type: 'secret_text', name, text: text as string }));
 
   return async (deploymentRef, bundle, inPlace) => {
+    // The model runtime needs BOTH halves: the platform willing to grant it at all
+    // (`bindAi`, a fleet kill-switch) and THIS version having declared it
+    // (`substrat.usesModels`). A vertical that never asked never holds the capability,
+    // and asking is a manifest diff a human reads at admit.
+    const bindings = [...injected, ...(opts.bindAi && bundle.usesModels ? [{ type: 'ai', name: 'AI' }] : [])];
     // A fresh script declares every DO class under the first tag. An in-place update
     // of the serving script (#286) may only declare classes the script does not
     // already have — re-declaring a live class errors — so send the delta under a
@@ -273,7 +275,7 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
       // The vertical's own bindings, plus the platform's injected secrets (added here,
       // AFTER the §4 sandbox check on the declared set — the platform is granting the
       // vertical verification secrets, not the vertical reaching for a platform binding).
-      bindings: [...bundle.bindings, ...injected],
+      bindings: [...bundle.bindings, ...bindings],
       ...(migrations ? { migrations } : {}),
       // On the serving script, secrets put by hand or by an earlier deploy survive the
       // re-upload — this is what deletes the "re-put every secret on every new script"

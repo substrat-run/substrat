@@ -588,6 +588,19 @@ export const deployManifest = z.object({
    *  the staff-flipped `emailSender` grant is set. A request, never a grant — refreshed on
    *  every re-push, feeds the console's requested/granted review surface. */
   sendsEmail: z.boolean().optional(),
+  /** DECLARED model-runtime intent (#1054): this vertical answers with a language model and
+   *  wants the platform's model runtime bound as `env.AI` — package.json
+   *  `substrat.usesModels`. Versioned with the code, like `outbound` and for the same
+   *  reason: the binding is a CAPABILITY on the platform's own AI account, so widening who
+   *  holds it must ship as a version and be visible at the admit checkpoint rather than
+   *  being granted to every script by default. A vertical that does not declare it gets no
+   *  binding at all and falls back to whatever credential its own env carries (usually
+   *  none, which is the extractive path).
+   *
+   *  Least privilege, not a sandbox: a vertical that declares it can call `env.AI.run()`
+   *  outside the metered path. That is the honest bound, and #1073 removes it by running
+   *  inference platform-side. */
+  usesModels: z.boolean().optional(),
   /** The surfaces the vertical serves (package.json `substrat.surfaces`, K-26 multi-surface) —
    *  labels only, carried to the registry for the hostname-binding picker. Metadata, not code. */
   surfaces: z.array(declaredSurface).optional(),

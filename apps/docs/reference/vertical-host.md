@@ -123,6 +123,7 @@ import { createModelHost } from '@substrat-run/vertical-host/model';
 
 const models = createModelHost({
   env,                                        // the worker's own bindings — platform-held credentials
+  aiBinding: env.AI,                          // the Workers AI binding: the cloudflare row then needs no credential
   factories: { anthropic: createAnthropic },  // the direct rows this bundle statically carries
   guard: async ({ spec, attribution }) => {   // policy, before the bytes go out — throw to refuse
     if (await spentToday(attribution.tenant) > budget) throw new Error('daily budget exhausted');
