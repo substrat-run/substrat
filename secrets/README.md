@@ -115,7 +115,7 @@ them in the file only to override, and they'll be pushed as secrets that shadow 
 
 There is no separate rotate script (the one that existed is the paragraph above):
 
-```
+```bash
 node scripts/secrets.mjs generate --keys SERVICE_TOKEN,PLATFORM_SECRET,ROUTER_SECRET --force
 node scripts/secrets.mjs push --env prod          # workers, then every vertical
 pnpm --filter @substrat-run/control-plane cf:deploy
