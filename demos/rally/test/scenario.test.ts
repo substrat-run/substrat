@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { ulid, type ScopeStub } from '@substrat-run/kernel';
+import { manualClock, ulid, type ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { principalId, type Money,
   type Page,
@@ -24,8 +24,11 @@ import {
  * priced booking → the lost race → hold expiry → maintenance → open match →
  * portal isolation → the cross-tenant attack.
  *
- * Every clock-sensitive step pins `now`, so the suite is deterministic and does
- * not rot when the fixture dates fall into the past.
+ * The suite is deterministic — and does not rot when the fixture dates fall into
+ * the past — because the HOST runs on a clock this file owns. It used to pin the
+ * instant by sending `now` on every clock-sensitive call, which meant the wire
+ * carried the clock: #1065 removed that, so the pin moved to where it belongs and
+ * these calls now travel exactly the path an HTTP caller does.
  */
 describe('RallyPoint demo scenario (spec §11)', () => {
   let dir: string;
@@ -39,10 +42,11 @@ describe('RallyPoint demo scenario (spec §11)', () => {
   const DATE = '2026-07-20';
   const NOW = '2026-07-20T06:00:00.000Z';
   const LATER = '2026-07-20T06:11:00.000Z'; // past a 10-minute hold
+  const clock = manualClock(NOW);
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-rally-'));
-    host = buildRallyHost(dir);
+    host = buildRallyHost(dir, { clock: clock.read });
     w = await seedRally(host, dir);
     astrid = await host.getScope(w.astrid, w.t1, w.s1);
     ravi = await host.getScope(w.ravi, w.t1, w.s1);
@@ -81,7 +85,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const slots = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court1,
       date: DATE,
-      now: NOW,
     })).entries;
     expect(slots.length).toBeGreaterThan(0);
     // An empty court opens at 07:00 local and every duration fits.
@@ -91,7 +94,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const bana2 = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court2,
       date: DATE,
-      now: NOW,
     })).entries;
     expect(bana2[0]!.fits).toEqual([60, 90]);
   });
@@ -107,7 +109,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
       date: DATE,
       time: '19:00',
       duration: 90,
-      now: NOW,
     });
     expect(booked.reservation.state).toBe('held');
     expect(booked.reservation.startsAt).toBe('2026-07-20T17:00:00.000Z');
@@ -118,7 +119,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
 
     const confirmed = await ravi.invoke<{ reservation: Reservation }>('rally/confirm-booking', {
       reservationId: booked.reservation.id,
-      now: NOW,
     });
     expect(confirmed.reservation.state).toBe('confirmed');
   });
@@ -131,7 +131,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
         date: DATE,
         time: '19:00',
         duration: 90,
-        now: NOW,
       }),
     ).rejects.toThrow(/slot unavailable/i);
   });
@@ -140,7 +139,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const slots = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court1,
       date: DATE,
-      now: NOW,
     })).entries;
     const at19 = slots.find((s) => s.startsAt === '2026-07-20T17:00:00.000Z');
     expect(at19).toBeUndefined();
@@ -153,20 +151,24 @@ describe('RallyPoint demo scenario (spec §11)', () => {
       date: DATE,
       time: '09:00',
       duration: 60,
-      now: NOW,
     });
     expect(held.reservation.state).toBe('held');
 
-    // Same slot, asked for after the 10-minute hold lapsed.
+    // Same slot, asked for after the 10-minute hold lapsed. The lapse is real
+    // time passing for the whole host, not a `now` this caller chose.
+    clock.set(LATER);
     const second = await ravi.invoke<{ reservation: Reservation }>('rally/book-court', {
       resourceId: w.court2,
       memberId: w.elinId,
       date: DATE,
       time: '09:00',
       duration: 60,
-      now: LATER,
     });
     expect(second.reservation.state).toBe('held');
+
+    // Back to the scenario's opening instant: every step after this one is
+    // written against it, and the eleven minutes were this test's alone.
+    clock.set(NOW);
   });
 
   it('8. bookings outside the opening window are refused by the vertical', async () => {
@@ -177,7 +179,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
         date: DATE,
         time: '05:00', // club opens 07:00
         duration: 60,
-        now: NOW,
       }),
     ).rejects.toThrow(/outside opening hours/);
   });
@@ -190,7 +191,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
         date: DATE,
         time: '12:00',
         duration: 120,
-        now: NOW,
       }),
     ).rejects.toThrow(/not bookable on this court/);
   });
@@ -203,13 +203,12 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const slots = (await ravi.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court1,
       date: '2026-07-21',
-      now: NOW,
     })).entries;
     expect(slots).toEqual([]);
     await expect(
       ravi.invoke('rally/book-court', {
         resourceId: w.court1, memberId: w.elinId, date: '2026-07-21',
-        time: '19:00', duration: 90, now: NOW,
+        time: '19:00', duration: 90,
       }),
     ).rejects.toThrow(/closed/);
   });
@@ -221,12 +220,11 @@ describe('RallyPoint demo scenario (spec §11)', () => {
       time: '13:00',
       duration: 120,
       reason: 'Omslipning',
-      now: NOW,
     });
     await expect(
       ravi.invoke('rally/book-court', {
         resourceId: w.court1, memberId: w.elinId, date: DATE,
-        time: '13:00', duration: 60, now: NOW,
+        time: '13:00', duration: 60,
       }),
     ).rejects.toThrow(/slot unavailable/i);
   });
@@ -245,7 +243,6 @@ describe('RallyPoint demo scenario (spec §11)', () => {
       fillTarget: 2,
       levelMin: '3.0',
       levelMax: '4.0',
-      now: NOW,
     });
     // The host is already IN. Opening a court you are not on is never the intent,
     // and without it a 4-player match starts at 0/4 — the fill meter, the share
@@ -262,12 +259,12 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     // …so the host cannot double-join their own match.
     await expect(
       astrid.invoke('rally/join-match', {
-        reservationId: match.reservation.id, memberId: w.elinId, now: NOW,
+        reservationId: match.reservation.id, memberId: w.elinId,
       }),
     ).rejects.toThrow(/already joined/);
 
     const second = await astrid.invoke<{ reservation: Reservation }>('rally/join-match', {
-      reservationId: match.reservation.id, memberId: w.johanId, now: NOW,
+      reservationId: match.reservation.id, memberId: w.johanId,
     });
     expect(second.reservation.state).toBe('confirmed'); // the 2nd tips it
   });
@@ -276,12 +273,12 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const match = await astrid.invoke<{ reservation: Reservation }>('rally/create-open-match', {
       resourceId: w.court2, memberId: w.elinId, date: DATE,
       time: '15:00', duration: 60, fillTarget: 2,
-      levelMin: '4.5', levelMax: '6.0', now: NOW,
+      levelMin: '4.5', levelMax: '6.0',
     });
     // Elin is 3.4 — below her own match's band.
     await expect(
       astrid.invoke('rally/join-match', {
-        reservationId: match.reservation.id, memberId: w.elinId, now: NOW,
+        reservationId: match.reservation.id, memberId: w.elinId,
       }),
     ).rejects.toThrow(/outside the band/);
   });
@@ -291,7 +288,7 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     await expect(
       nils.invoke('rally/book-court', {
         resourceId: w.court1, memberId: w.elinId, date: DATE,
-        time: '11:00', duration: 60, now: NOW,
+        time: '11:00', duration: 60,
       }),
     ).rejects.toThrow(/permission denied/);
 
@@ -324,8 +321,8 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     // booking:read, so they see every court and every booking — not only their
     // own lessons. Pinned here so narrowing it later is a visible, tested change
     // rather than a silent one.
-    const coachSees = (await nils.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
-    const staffSees = (await astrid.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
+    const coachSees = (await nils.invoke<Page<Reservation>>('rally/portal-bookings')).entries;
+    const staffSees = (await astrid.invoke<Page<Reservation>>('rally/portal-bookings')).entries;
     expect(coachSees.length).toBe(staffSees.length);
     expect(coachSees.length).toBeGreaterThan(0);
 
@@ -344,17 +341,16 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const slots = (await elin.invoke<Page<SlotFit>>('rally/availability', {
       resourceId: w.court2,
       date: DATE,
-      now: NOW,
     })).entries;
     expect(slots.length).toBeGreaterThan(0);
 
     // Taking a free court is public capability; the booking becomes hers.
     const booked = await elin.invoke<{ reservation: Reservation }>('rally/book-court', {
       resourceId: w.court2, memberId: w.elinId, date: DATE,
-      time: '16:00', duration: 60, now: NOW,
+      time: '16:00', duration: 60,
     });
     const confirmed = await elin.invoke<{ reservation: Reservation }>('rally/confirm-booking', {
-      reservationId: booked.reservation.id, now: NOW,
+      reservationId: booked.reservation.id,
     });
     expect(confirmed.reservation.state).toBe('confirmed');
 
@@ -367,8 +363,8 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     const elin = await host.getScope(w.elin, w.t1, w.s1);
     const johan = await host.getScope(w.johan, w.t1, w.s1);
 
-    const elinsBookings = (await elin.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
-    const johansBookings = (await johan.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
+    const elinsBookings = (await elin.invoke<Page<Reservation>>('rally/portal-bookings')).entries;
+    const johansBookings = (await johan.invoke<Page<Reservation>>('rally/portal-bookings')).entries;
 
     // Both must be non-empty, or "no overlap" would be vacuously true.
     expect(elinsBookings.length).toBeGreaterThan(0);
@@ -377,7 +373,7 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     for (const r of johansBookings) expect(elinIds.has(r.id)).toBe(false);
 
     // Neither sees the club's full book: staff see strictly more.
-    const all = (await astrid.invoke<Page<Reservation>>('rally/portal-bookings', { now: NOW })).entries;
+    const all = (await astrid.invoke<Page<Reservation>>('rally/portal-bookings')).entries;
     expect(all.length).toBeGreaterThan(elinsBookings.length + johansBookings.length - 1);
 
     // And the portal principal cannot reach staff surfaces at all.
@@ -390,13 +386,13 @@ describe('RallyPoint demo scenario (spec §11)', () => {
   it('18. the state machine cannot skip', async () => {
     const booked = await ravi.invoke<{ reservation: Reservation }>('rally/book-court', {
       resourceId: w.court1, memberId: w.elinId, date: DATE,
-      time: '08:00', duration: 60, now: NOW,
+      time: '08:00', duration: 60,
     });
     await ravi.invoke('rally/confirm-booking', {
-      reservationId: booked.reservation.id, now: NOW,
+      reservationId: booked.reservation.id,
     });
     await expect(
-      ravi.invoke('rally/confirm-booking', { reservationId: booked.reservation.id, now: NOW }),
+      ravi.invoke('rally/confirm-booking', { reservationId: booked.reservation.id }),
     ).rejects.toThrow(/invalid transition/);
   });
 
@@ -405,14 +401,14 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     // costs base rate; in December it is pitch dark and the lights are billed.
     const july = await ravi.invoke<{ price: Money; ruleLabel: string }>('rally/book-court', {
       resourceId: w.court1, memberId: w.elinId, date: DATE,
-      time: '16:00', duration: 60, now: NOW,
+      time: '16:00', duration: 60,
     });
     expect(july.price.amount).toBe('220'); // Bas, 60 min
     expect(july.ruleLabel).toContain('Bas');
 
     const december = await ravi.invoke<{ price: Money; ruleLabel: string }>('rally/book-court', {
       resourceId: w.court1, memberId: w.elinId, date: '2026-12-15',
-      time: '16:00', duration: 60, now: NOW,
+      time: '16:00', duration: 60,
     });
     // Winter dark at 16:00: the floodlight rule for 60 min, not the base rate.
     expect(december.price.amount).toBe('340');
@@ -435,7 +431,7 @@ describe('RallyPoint demo scenario (spec §11)', () => {
       'rally/book-court',
       {
         resourceId: w.court2, memberId: w.johanId, date: DATE,
-        time: '11:00', duration: 60, now: NOW,
+        time: '11:00', duration: 60,
       },
     );
     const paid = await astrid.invoke<{
@@ -443,7 +439,7 @@ describe('RallyPoint demo scenario (spec §11)', () => {
       paidFromWallet: boolean;
       balance: Money | null;
     }>('rally/confirm-booking', {
-      reservationId: booked.reservation.id, payWith: 'wallet', now: NOW,
+      reservationId: booked.reservation.id, payWith: 'wallet',
     });
     expect(paid.reservation.state).toBe('confirmed');
     expect(paid.paidFromWallet).toBe(true);
@@ -454,11 +450,11 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     // Elin has no balance at all.
     const booked = await astrid.invoke<{ reservation: Reservation }>('rally/book-court', {
       resourceId: w.court2, memberId: w.elinId, date: DATE,
-      time: '12:00', duration: 60, now: NOW,
+      time: '12:00', duration: 60,
     });
     await expect(
       astrid.invoke('rally/confirm-booking', {
-        reservationId: booked.reservation.id, payWith: 'wallet', now: NOW,
+        reservationId: booked.reservation.id, payWith: 'wallet',
       }),
     ).rejects.toThrow(/insufficient balance/);
 

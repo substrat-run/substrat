@@ -1038,7 +1038,7 @@ const getVenueOp: OperationHandler<undefined, VenueSnapshot> = async (ctx) => {
  * 03:00 as free.
  */
 const availabilityOp: OperationHandler<
-  { resourceId: string; date: string; now?: string } & ListPage,
+  { resourceId: string; date: string } & ListPage,
   Page<SlotFit>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
@@ -1058,7 +1058,6 @@ const availabilityOp: OperationHandler<
     resourceId: input.resourceId,
     from: window.startsAt,
     to: window.endsAt,
-    ...(input.now !== undefined ? { now: input.now } : {}),
   });
 
   const out: SlotFit[] = [];
@@ -1143,7 +1142,7 @@ function courtPool(ctx: OperationContext, cover?: Cover[]): (CourtListing & { na
  * hours: the engine answers about one court, the vertical answers about a club.
  */
 const venueAvailabilityOp: OperationHandler<
-  { date: string; cover?: Cover[]; now?: string } & ListPage,
+  { date: string; cover?: Cover[] } & ListPage,
   Page<VenueSlot>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
@@ -1161,7 +1160,6 @@ const venueAvailabilityOp: OperationHandler<
       resourceId: court.id,
       from: window.startsAt,
       to: window.endsAt,
-      ...(input.now !== undefined ? { now: input.now } : {}),
     });
 
     const total = minutesBetween(window.startsAt, window.endsAt);
@@ -1228,7 +1226,7 @@ const playedWithOp: OperationHandler<
  */
 function pickCourt(
   ctx: OperationContext,
-  input: { cover?: Cover[]; date: string; time: string; duration: number; now?: string },
+  input: { cover?: Cover[]; date: string; time: string; duration: number },
 ): string {
   const startsAt = zonedToInstant(input.date, input.time, venue(ctx).timezone);
   const endsAt = addMinutes(startsAt, input.duration);
@@ -1240,7 +1238,6 @@ function pickCourt(
       resourceId: c.id,
       from: startsAt,
       to: endsAt,
-      ...(input.now !== undefined ? { now: input.now } : {}),
     });
     if (free.some((f) => f.startsAt <= startsAt && f.endsAt >= endsAt)) return c.id;
   }
@@ -1337,7 +1334,6 @@ const bookInput = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   time: z.string().regex(/^\d{2}:\d{2}$/),
   duration: z.number().int().positive(),
-  now: z.string().optional(),
 });
 
 /**
@@ -1387,7 +1383,9 @@ const bookCourtOp: OperationHandler<
     duration: input.duration,
   });
 
-  const now = input.now ?? ctx.now();
+  // The operation's own instant, never the caller's (#1065): the hold deadline,
+  // the side-table row and the engine's expiry judgement all read the same moment.
+  const now = ctx.now();
   const reservation = holdReservation(ctx, {
     resourceId,
     startsAt,
@@ -1429,7 +1427,7 @@ const bookCourtOp: OperationHandler<
  * anywhere else.
  */
 const confirmBookingOp: OperationHandler<
-  { reservationId: string; payWith?: 'wallet' | 'card'; now?: string },
+  { reservationId: string; payWith?: 'wallet' | 'card' },
   { reservation: Reservation; price: Money; paidFromWallet: boolean; balance: Money | null }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(BK.confirm, reservationRef(input.reservationId)));
@@ -1440,10 +1438,9 @@ const confirmBookingOp: OperationHandler<
   if (!booking) throw substratError('not_found', `no RallyPoint booking for ${input.reservationId}`);
 
   const price = moneyOf(booking.price_amount, booking.currency);
-  const reservation = confirmReservation(ctx, {
-    reservationId: input.reservationId,
-    ...(input.now !== undefined ? { now: input.now } : {}),
-  });
+  // No `now` — the engine judges the hold against `ctx.now()`, so a caller
+  // holding `booking:confirm` cannot back-date a lapsed hold into life (#1065).
+  const reservation = confirmReservation(ctx, { reservationId: input.reservationId });
 
   if (input.payWith !== 'wallet') {
     return { reservation, price, paidFromWallet: false, balance: null };
@@ -1505,7 +1502,7 @@ const createOpenMatchOp: OperationHandler<
     duration: input.duration,
   });
 
-  const now = input.now ?? ctx.now();
+  const now = ctx.now();
   const reservation = holdReservation(ctx, {
     resourceId,
     startsAt,
@@ -1554,7 +1551,7 @@ const createOpenMatchOp: OperationHandler<
  * in the engine.
  */
 const joinMatchOp: OperationHandler<
-  { reservationId: string; memberId: string; now?: string },
+  { reservationId: string; memberId: string },
   { reservation: Reservation; share: Money }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(BK.create));
@@ -1590,7 +1587,6 @@ const joinMatchOp: OperationHandler<
     reservationId: input.reservationId,
     partyRef: dataSubjectId.parse(member.party_ref),
     share,
-    ...(input.now !== undefined ? { now: input.now } : {}),
   });
   return { reservation: result.reservation, share };
 };
@@ -1601,13 +1597,13 @@ const joinMatchOp: OperationHandler<
  * calendar, and needs no second mechanism that could disagree with the first.
  */
 const blockMaintenanceOp: OperationHandler<
-  { resourceId: string; date: string; time: string; duration: number; reason: string; now?: string },
+  { resourceId: string; date: string; time: string; duration: number; reason: string },
   Reservation
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.manageVenue));
   const v = venue(ctx);
   const startsAt = zonedToInstant(input.date, input.time, v.timezone);
-  const now = input.now ?? ctx.now();
+  const now = ctx.now();
   const held = holdReservation(ctx, {
     resourceId: input.resourceId,
     startsAt,
@@ -1649,11 +1645,11 @@ export interface OpenMatchListing {
  * by participant events rather than read out of the club's scope.
  */
 const openMatchesOp: OperationHandler<
-  ({ now?: string } & ListPage) | undefined,
+  ListPage | undefined,
   Page<OpenMatchListing>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
-  const now = input?.now ?? ctx.now();
+  const now = ctx.now();
   const courts = new Map(listResources(ctx, 'court').map((r) => [r.id, r.name] as const));
   const out: OpenMatchListing[] = [];
 
@@ -1716,11 +1712,13 @@ export interface MatchLanding {
  * still reports counts and never identities.
  */
 const matchLandingOp: OperationHandler<
-  { reservationId: string; now?: string },
+  { reservationId: string },
   MatchLanding | null
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.browse));
-  const now = input.now ?? ctx.now();
+  // The landing page's whole job is to say whether the link is still good, so the
+  // instant it judges against is the operation's, never the tapper's (#1065).
+  const now = ctx.now();
   const r = listReservations(ctx, { now }).find((x) => x.id === input.reservationId);
   if (!r || r.fillTarget === null) return null;
 
@@ -1777,7 +1775,7 @@ const matchLandingOp: OperationHandler<
  * row — a decision worth making deliberately rather than in passing.
  */
 const addPlayerOp: OperationHandler<
-  { reservationId: string; memberId: string; now?: string },
+  { reservationId: string; memberId: string },
   { participants: number }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(BK.create, reservationRef(input.reservationId)));
@@ -1788,7 +1786,6 @@ const addPlayerOp: OperationHandler<
   joinReservation(ctx, {
     reservationId: input.reservationId,
     partyRef: dataSubjectId.parse(member.party_ref),
-    ...(input.now !== undefined ? { now: input.now } : {}),
   });
   return { participants: joinedCount(ctx, input.reservationId) };
 };
@@ -1810,13 +1807,13 @@ export interface Occupancy {
  * Occupancy and revenue over a date range. Staff-only (`booking:read`): unlike
  * free/busy, this reports what the club actually earned.
  */
-const occupancyOp: OperationHandler<{ from: string; to: string; now?: string }, Occupancy> = async (
+const occupancyOp: OperationHandler<{ from: string; to: string }, Occupancy> = async (
   ctx,
   input,
 ) => {
   assertAllowed(await ctx.check(BK.read));
   const v = venue(ctx);
-  const now = input.now ?? ctx.now();
+  const now = ctx.now();
   const fromInstant = zonedToInstant(input.from, '00:00', v.timezone);
   const toInstant = zonedToInstant(input.to, '23:59', v.timezone);
 
@@ -1916,7 +1913,7 @@ const canAdminOp: OperationHandler<undefined, { ok: true }> = async (ctx) => {
  * derived from it rather than asked for.
  */
 const openUpOp: OperationHandler<
-  { reservationId: string; spots: number; levelMin: string; levelMax: string; now?: string },
+  { reservationId: string; spots: number; levelMin: string; levelMax: string },
   { reservation: Reservation; share: Money }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(BK.confirm, reservationRef(input.reservationId)));
@@ -1932,7 +1929,6 @@ const openUpOp: OperationHandler<
   const reservation = openReservation(ctx, {
     reservationId: input.reservationId,
     fillTarget,
-    ...(input.now !== undefined ? { now: input.now } : {}),
   });
 
   ctx.sql.exec(
@@ -1948,10 +1944,10 @@ const openUpOp: OperationHandler<
 
 /** Portal listing: a proof walk per reservation, never a WHERE clause on the caller. */
 const portalBookingsOp: OperationHandler<
-  ({ now?: string } & ListPage) | undefined,
+  ListPage | undefined,
   Page<Reservation>
 > = async (ctx, input) => {
-  const all = listReservations(ctx, input?.now !== undefined ? { now: input.now } : {});
+  const all = listReservations(ctx, {});
   const visible: Reservation[] = [];
   for (const r of all) {
     const decision = await ctx.check(BK.read, reservationRef(r.id));
