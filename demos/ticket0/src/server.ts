@@ -24,11 +24,15 @@ import type { Context } from 'hono';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import type { ScopeHost } from '@substrat-run/kernel';
+import { createModelHost, type ModelAttribution, type ModelHost } from '@substrat-run/vertical-host/model';
+import { createAnthropic } from '@ai-sdk/anthropic';
+import { ticket0Manifest } from './manifest.js';
 import { API_DOCUMENT } from './api.js';
 import {
   answerConversation,
   errorText,
-  modelFromEnv,
+  describeModel,
+  modelFor,
   recordAssistantFailure,
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
@@ -49,7 +53,7 @@ import { mountWidgetSurface } from '../harness/widget-surface.js';
 try {
   process.loadEnvFile(new URL('../.env', import.meta.url).pathname);
 } catch {
-  /* no .env — the offline model handles it */
+  /* no .env — the extractive fallback handles it */
 }
 
 const DATA = process.env.DATA_DIR ?? '.data';
@@ -76,7 +80,14 @@ async function boot() {
   const port = Number(process.env.PORT ?? 8874);
   const apiOrigin = process.env.PUBLIC_ORIGIN ?? `http://localhost:${port}`;
   const desks: Desk[] = [world.substrat, world.kestrel];
-  const model = modelFromEnv(process.env);
+  // The platform's model host (#1054) over this process's environment — the dev server
+  // IS the platform here, so its .env holds what the platform would hold.
+  const modelHost = createModelHost({
+    env: process.env,
+    factories: { anthropic: createAnthropic },
+    sent: 'Customer messages and the knowledge-base excerpts they match',
+  });
+  const model = describeModel(modelHost, process.env.TICKET0_MODEL);
 
   const app = new Hono();
   const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
@@ -151,7 +162,7 @@ async function boot() {
       // Not awaited: the model is somebody else's latency, and the widget polls. Safe
       // to float HERE and nowhere else — node keeps the process alive; the worker has
       // to hand the same promise to `executionCtx.waitUntil`.
-      void answerFor(host, desk, { conversationId, messageId, body });
+      void answerFor(host, modelHost, desk, { conversationId, messageId, body });
     },
   });
 
@@ -161,8 +172,9 @@ async function boot() {
   process.stdout.write(`assistant model: ${model.label}\n`);
   if (model.label.startsWith('offline/')) {
     process.stdout.write(
-      '  (set CF_ACCOUNT_ID and CF_AI_TOKEN for Cloudflare Workers AI;\n' +
-        '   without them the assistant quotes the docs rather than generating)\n',
+      `  (the platform holds no credential for ${model.spec} — missing ${model.missing.join(', ')};\n` +
+        '   set it in demos/ticket0/.env, or pick another TICKET0_MODEL; until then the\n' +
+        '   assistant quotes the docs rather than generating)\n',
     );
   }
   /**
@@ -233,15 +245,24 @@ async function ingestFor(host: ScopeHost, desk: Desk): Promise<void> {
 /** Answer one customer message as the desk's assistant, out of band. */
 async function answerFor(
   host: ScopeHost,
+  modelHost: ModelHost,
   desk: Desk,
   m: { conversationId: string; messageId: string; body: string },
 ): Promise<void> {
+  const attribution: ModelAttribution = {
+    tenant: desk.tenant,
+    scope: desk.scope,
+    vertical: ticket0Manifest.id,
+    version: ticket0Manifest.version,
+    operation: 'ticket0/answer',
+  };
+  const chosen = modelFor({ spec: process.env.TICKET0_MODEL, host: modelHost, attribution });
   try {
     const assistant = await host.getScope(desk.assistant.principal, desk.tenant, desk.scope);
     const outcome = await answerConversation(
       { invoke: (op, input) => assistant.invoke(op, input) as Promise<never> },
       { conversationId: m.conversationId, messageId: m.messageId, question: m.body },
-      modelFromEnv(process.env),
+      chosen,
     );
     process.stdout.write(
       `assistant · ${desk.origin} · ${outcome.outcome}` +
@@ -262,7 +283,7 @@ async function answerFor(
         {
           conversationId: m.conversationId,
           messageId: m.messageId,
-          model: modelFromEnv(process.env).label,
+          model: chosen.label,
           error: err,
         },
       );

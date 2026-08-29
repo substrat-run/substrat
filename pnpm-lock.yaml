@@ -1123,6 +1123,9 @@ importers:
 
   demos/ticket0:
     dependencies:
+      '@ai-sdk/anthropic':
+        specifier: ^3.0.0
+        version: 3.0.110(zod@4.4.3)
       '@hono/node-server':
         specifier: ^1.13.0
         version: 1.19.14(hono@4.12.30)
@@ -1172,6 +1175,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.1
+      ai:
+        specifier: 7.0.62
+        version: 7.0.62(zod@4.4.3)
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3

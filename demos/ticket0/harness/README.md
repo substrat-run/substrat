@@ -13,7 +13,7 @@ making that trade.
 | File | What it is |
 |---|---|
 | `widget-surface.ts` | The public, unauthenticated, CORS'd widget surface. Belongs in `vertical-host` eventually; local until it exists there. |
-| `assistant.ts` | The model call — Workers AI, or an offline extractive fallback — plus the retrieve → record → try-to-send flow. |
+| `assistant.ts` | The model call — through the platform's model host (`@substrat-run/vertical-host/model`), or an offline extractive fallback — plus the retrieve → record → try-to-send flow. |
 | `kb-ingest.ts` | Fetches and parses a documentation corpus into citable articles. |
 | `demo-site.ts` | Two fake customer websites, so the widget's calls are genuinely cross-origin. |
 

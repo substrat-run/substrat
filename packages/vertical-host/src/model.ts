@@ -28,17 +28,19 @@ import { generateText, type LanguageModelUsage } from 'ai';
 import {
   createModel,
   credentialsFrom,
+  hostingInfo,
   listCostOfSteps,
   normalizeModelSpec,
   parseModelSpec,
   ProviderError,
   type CredentialEnv,
   type DirectFactories,
+  type HostingInfo,
   type StepTokens,
 } from '@substrat-run/model-providers';
 import { modelAttribution, modelUsageLine, type ModelAttribution, type ModelUsageLine } from '@substrat-run/contracts';
 
-export type { ModelAttribution, ModelUsageLine };
+export type { HostingInfo, ModelAttribution, ModelUsageLine };
 export { ProviderError };
 
 /** What the guard sees before anything is sent: which model, on whose behalf. */
@@ -73,6 +75,8 @@ export interface ModelStatus {
   readonly configured: boolean;
   /** The env vars it is missing, when not. */
   readonly missing: readonly string[];
+  /** Where inference runs and what is sent there — the disclosure a settings screen shows. */
+  readonly hosting: HostingInfo;
 }
 
 export interface ModelHostOptions {
@@ -91,6 +95,8 @@ export interface ModelHostOptions {
    * scenario can freeze it — which is what R6 is really protecting.
    */
   readonly now?: () => Date;
+  /** What this host sends to a model, for the disclosure: 'Customer messages and the excerpts they match'. */
+  readonly sent?: string;
   /**
    * Policy, before the call. Throw to refuse: the model never runs, nothing is
    * recorded, and the caller sees the throw. A budget lives here.
@@ -144,6 +150,7 @@ export function createModelHost(options: ModelHostOptions): ModelHost {
       modelId,
       configured: creds.missing.length === 0,
       missing: creds.missing,
+      hosting: hostingInfo(provider, options.env, options.sent ? { sent: options.sent } : {}),
     };
   };
 

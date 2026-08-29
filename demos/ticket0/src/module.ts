@@ -21,6 +21,7 @@ import {
   type EntityRow,
   type HandlerInput,
   type HandlerOutput,
+  MODEL_USAGE_KIND,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
@@ -1344,6 +1345,11 @@ const operations = {
       subject,
       dedupeKey: `${input.turnId}:out`,
     });
+    // The platform's copy (#1054): the same line the model host produced, handed to the
+    // platform ledger as an intent in THIS transaction — so a turn cannot be metered here
+    // without being reported there, and the early return above keeps a replay from
+    // reporting it twice. The drain refuses a line attributed to any other scope.
+    if (input.usage) ctx.requestPlatform({ kind: MODEL_USAGE_KIND, payload: input.usage });
 
     // The drafted answer is an INTERNAL message. Sending it is `post-public-reply`,
     // and that is a different permission on purpose.

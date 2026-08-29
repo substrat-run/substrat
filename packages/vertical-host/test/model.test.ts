@@ -159,6 +159,14 @@ describe('status', () => {
       modelId: '@cf/meta/llama-3.1-8b-instruct',
       configured: false,
       missing: ['CLOUDFLARE_AI_API_TOKEN'],
+      hosting: {
+        vendor: 'Cloudflare (Workers AI)',
+        location: 'global (Cloudflare network) · vendor/model ids partner-served',
+        host: 'x',
+        // A platform row is never local, whatever its endpoint says.
+        local: false,
+        dataNote: 'Inputs — sent to this provider.',
+      },
     });
     expect(host.status('claude-opus-5').spec).toBe('anthropic:claude-opus-5');
   });

@@ -79,36 +79,24 @@ export const TICKET0_ENV: EnvVarSpec[] = [
     group: 'Auth',
   },
   /**
-   * The assistant's model. Absent, the desk still works: `modelFromEnv` falls back to
-   * the extractive model, which retrieves the best-matching section and quotes it,
-   * labelled `offline/extractive` so a turn record can never be mistaken for a
-   * generated answer. That is why neither of these is `required` — a desk with no
-   * model credential is a supported configuration, not a broken install.
+   * The assistant's model (#1054): a `provider:model` from the platform's catalog, run
+   * on the PLATFORM's credential and billed to this desk at the platform's rate. Absent,
+   * the platform default answers; when the platform holds no credential for the chosen
+   * provider, `modelFor` falls back to the extractive model, which retrieves the
+   * best-matching section and quotes it, labelled `offline/extractive` so a turn record
+   * can never be mistaken for a generated answer. A desk with no runnable model is a
+   * supported configuration, not a broken install — which is why this is not `required`.
+   *
+   * What is deliberately NOT here any more: a per-install Workers AI token. The credential
+   * is the platform's and never the desk's, so nothing here is secret.
    */
-  {
-    key: 'CF_ACCOUNT_ID',
-    label: 'Cloudflare account id',
-    description:
-      'The account whose Workers AI runs the assistant. Without it (or without the token) answers are extractive quotes from the knowledge base rather than generated prose.',
-    placeholder: '0123456789abcdef0123456789abcdef',
-    required: false,
-    secret: false,
-    group: 'Assistant',
-  },
-  {
-    key: 'CF_AI_TOKEN',
-    label: 'Workers AI token',
-    description:
-      'API token with Workers AI read/run. Billed to the account above — which is why it is per-install and never a deployment-wide binding.',
-    required: false,
-    secret: true,
-    group: 'Assistant',
-  },
   {
     key: 'TICKET0_MODEL',
     label: 'Model',
-    description: 'Which Workers AI model answers. Defaults to the one `workersAiModel` picks.',
-    placeholder: '@cf/meta/llama-3.1-8b-instruct',
+    description:
+      "Which model answers, as `provider:model` from the platform catalog — e.g. `cloudflare:@cf/meta/llama-3.1-8b-instruct` (runs on Cloudflare's network), `scaleway:llama-3.3-70b-instruct` (EU-hosted), `anthropic:claude-sonnet-5`. Run on the platform's credential and metered to this desk; Settings → Assistant shows where inference runs.",
+    placeholder: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
+    default: 'cloudflare:@cf/meta/llama-3.1-8b-instruct',
     required: false,
     secret: false,
     group: 'Assistant',

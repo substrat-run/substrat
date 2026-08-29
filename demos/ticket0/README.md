@@ -134,8 +134,9 @@ a broken one left. Three things now happen, in this order:
    note the customer never sees. Both hosts do this; the worker also logs it, so the
    platform's observability tail has the reason too.
 3. **Settings → Assistant** shows which model this install would answer with — and
-   says plainly when it is `offline/extractive`, i.e. quoting the docs because no
-   `CF_ACCOUNT_ID`/`CF_AI_TOKEN` is set — beside the last day's turn and failure counts
+   says plainly when it is `offline/extractive`, i.e. quoting the docs because the
+   platform holds no credential for the chosen provider — and where inference runs —
+   beside the last day's turn and failure counts
    and the newest failures, each linked to its conversation. That read is
    `GET /api/assistant/status` (`harness/assistant-status.ts`), which wraps the declared
    `ticket0/assistant-health` and adds the one fact module code cannot know.
@@ -160,16 +161,22 @@ By default there is **no model**: the assistant retrieves the best-matching sect
 quotes it, labelled `offline/extractive` so a turn record can never be mistaken for a
 generated answer. The demo runs with no credentials at all.
 
-Give it Cloudflare Workers AI and it generates instead — copy `.env.example` to `.env`:
+Give the platform a credential for the chosen provider and it generates instead — copy
+`.env.example` to `.env` (the dev server is the platform here):
 
 ```sh
-CF_ACCOUNT_ID=…      # the token needs "Workers AI: Read"
-CF_AI_TOKEN=…
-# TICKET0_MODEL=@cf/meta/llama-3.1-8b-instruct   (the default)
+# TICKET0_MODEL=cloudflare:@cf/meta/llama-3.1-8b-instruct   (the default)
+CLOUDFLARE_AI_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<id>/ai/v1
+CLOUDFLARE_AI_API_TOKEN=…                                  # Workers AI run
 ```
 
-Token counts come from the provider where it reports them and are estimated otherwise —
-which is exactly why this demo prices usage for display and never for money.
+Any row of the platform's provider table works the same way — `scaleway:…` with
+`SCALEWAY_API_KEY`, `anthropic:…` with `ANTHROPIC_API_KEY`. The model call goes through
+the platform's model host (`@substrat-run/vertical-host/model`, #1054), which prices the
+provider's reported token counts from the rate card and hands the desk one usage line;
+the desk records it in its own meter and raises it to the platform's ledger in the same
+transaction. Counts the provider did not report stay zero and say so — never estimated
+into a bill.
 
 ## The screens
 
@@ -232,10 +239,13 @@ What a hosted desk does **not** get from a seed, and how it gets it instead:
   (`ticket0/record-kb-ingest-failure`), so the row shows the reason rather than
   spinning at `ingesting`.
 
-The model credentials are per-install (`CF_ACCOUNT_ID`, `CF_AI_TOKEN` in the dashboard's
-Env tab), never a deployment-wide binding — one serving script runs every desk, and a
-shared binding would bill them all to whoever set it last. A desk with neither still
-works: answers become extractive quotes, labelled `offline/extractive`.
+The model credential is the **platform's** (`CLOUDFLARE_AI_*`, `ANTHROPIC_API_KEY`, … as
+deployment-wide bindings, #1054), and the desk's setting is only *which* model
+(`TICKET0_MODEL` in the dashboard's Env tab). That inverts the earlier per-install token:
+the platform pays the provider and meters each desk by the five attribution keys on every
+line, so one serving script can run every desk without billing them to whoever set a
+token last. A desk whose provider the platform holds nothing for still works: answers
+become extractive quotes, labelled `offline/extractive`.
 
 `substrat.outbound` declares the two hosts this vertical may reach — `api.cloudflare.com`
 (Workers AI) and `substrat.net` (this desk's own documentation). A desk pointed at
