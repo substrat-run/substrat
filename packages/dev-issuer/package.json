@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dev-issuer",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "A local OpenID Connect provider whose only shortcut is that you pick a user instead of typing a password. Dev only — never deployed, never a dependency of a vertical's runtime.",
   "license": "AGPL-3.0-only",
   "repository": {
