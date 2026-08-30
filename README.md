@@ -74,7 +74,7 @@ platform's own applications are source-available but not licensed for reuse.
 | `engines/*` | `workorder`, `invoicing`, `protocol`, `booking`, `invites`, `absence`, `metering` | AGPL-3.0 + commercial |
 | `connectors/*` | `scrive` — e-signature (Swedish BankID) over the connector runtime | AGPL-3.0 + commercial |
 | `demos/*` | Reference verticals (below) | Apache-2.0, not published |
-| `apps/*` | The control plane, router, dashboard, console, builder studio and docs site | source-available, no grant |
+| `apps/*` | The control plane, router, dashboard, console, builder studio, egress hop and docs site | source-available, no grant |
 
 Engines are extracted at the second vertical that needs them, never designed ahead, and
 their surfaces evolve additively only; the rules a module must follow are in

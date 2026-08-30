@@ -7,20 +7,46 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 
 ## Layout
 
+Every directory in the repo, with the licence and publish state each one's `package.json`
+actually carries. **"private" below means `"private": true`** — the member is never
+published, whatever its licence field says. A vertical's browser app (`demos/*/app`,
+`apps/*/web`) is its own workspace member and inherits its parent's row.
+
 | Path | What | Published |
 |---|---|---|
 | `packages/contracts` | Zod schemas + branded IDs — the shared vocabulary | Apache-2.0 |
 | `packages/kernel` | Scope-host contract, permission checker, ulid | AGPL + commercial |
 | `packages/adapter-sqlite` | Pure-SQLite scope host (dev, CI, self-host, escrow) | AGPL + commercial |
+| `packages/adapter-cloudflare` | The hosted scope host — a Durable Object per scope | AGPL + commercial |
+| `packages/adapter-email` | Inbound/outbound email for a vertical that speaks it | AGPL, private |
 | `packages/contract-tests` | Suites every adapter must pass | AGPL + commercial |
 | `packages/control-plane-api` | HTTP surface over `HostAdmin` — the audited control-plane transport | AGPL + commercial |
-| `packages/dev-issuer` | A real local OIDC provider you sign into by picking a name — so a vertical needs no dev auth branch | unpublished (dev only; its signing key is checked in) |
-| `engines/*` | Domain engines (workorder, invoicing) | AGPL + commercial |
-| `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code | AGPL + commercial; unpublished while incomplete |
-| `demos/*` | Demo verticals (Callout = `demos/callout`) | Apache-2.0, not published to npm |
+| `packages/vertical-host` | The host a deployed vertical runs on — routing, guards, input parsing | AGPL + commercial |
+| `packages/vertical-auth` | One auth composition a vertical mounts (OIDC RP + session + identity) | AGPL + commercial |
+| `packages/oidc-rp` | The relying-party half, shared by the platform apps | AGPL + commercial |
+| `packages/dev-issuer` | A real local OIDC provider you sign into by picking a name — so a vertical needs no dev auth branch. **Published**: the scaffold template imports it, so it must resolve from npm. Its signing key is checked in, which is why it is for dev only | AGPL + commercial |
+| `packages/cli` | `substrat push`, `dev`, `secrets` — the builder's command line | Apache-2.0 |
+| `packages/create-substrat` | `npm create substrat` + its template (the template is not a workspace member) | Apache-2.0 |
+| `packages/template-check` | The template, materialized as a member so the compiler sees it (#878) | private |
+| `packages/model-emit` | `spec/model.ts` → `model.json`, `openapi.json`, migrations | Apache-2.0 |
+| `packages/boundary-lint` | The layer rules, as a package a scaffolded project can run | Apache-2.0 |
+| `packages/model-providers` | The model catalogue + rate card behind platform-provided models | AGPL + commercial |
+| `packages/psl` | The public suffix list, for hostname decisions | AGPL + commercial |
+| `packages/engine-test-kit` | What an engine's own suite is written against | AGPL, private |
+| `packages/builder-generator` · `packages/builder-workspace` | The builder studio's agent loop and its workspace/snapshot half | AGPL, private |
+| `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
+| `engines/*` | The seven domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence` | AGPL + commercial |
+| `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. `connector-scrive` is published | AGPL + commercial |
+| `demos/*` | The nine demo verticals — `callout`, `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `rally`, `handlebar`, and `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
+| `apps/control-plane` | The control plane, and the worker that serves the console | private |
 | `apps/console` | Control-plane admin console (tenants, fleet, admin log, permissions) | private |
+| `apps/dashboard` | The customer-facing dashboard — teams, verticals, deploys, data | private |
+| `apps/builder` | The builder studio | private |
+| `apps/vertical-egress` | The egress hop a vertical's outbound call takes (D-46) | private |
 | `apps/docs` | Docs site | private |
+| `examples/external-vertical` | A vertical built from PUBLISHED packages — deliberately **not** a workspace member, so it proves an npm install works | not a member |
+| `spikes/*` | Evidence for an RFC, kept because the argument cites it | not published |
 
 ## Commands
 
@@ -85,7 +111,7 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. The Vite
   proxy must NOT set `changeOrigin`: the API derives its OIDC `redirect_uri` from the
   forwarded Host header, and rewriting it sends the login callback to the wrong port.
-- **Callout, Meridian, Manyfold and Todo have no dev auth branch.** Their `… dev` scripts
+- **Callout, Meridian, Manyfold, Todo and ticket0 have no dev auth branch.** Their `… dev` scripts
   start `packages/dev-issuer` — a real OIDC provider whose only shortcut is that
   `/authorize` lists names instead of asking for a password — so the local login IS the
   production round-trip and changing issuer is a change of `OIDC_ISSUER`. Each vertical's
@@ -96,7 +122,7 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   the forwarded Host header, and rewriting it sends the callback to the wrong port.
   `ALLOW_DEV_NODE` still exists in the workers and is a different thing — it addresses an
   un-routed local instance and authenticates nobody.
-- **Callout, Meridian and Manyfold are OIDC-only** (`docs/architecture/oidc-only-demos.md`):
+- **Callout, Meridian, Manyfold, Todo and ticket0 are OIDC-only** (`docs/architecture/oidc-only-demos.md`):
   they run no credential store — login/sign-up/password/reset live at the OIDC issuer, and
   the vertical only maps the authenticated `sub` → a scope principal (owner-claim + invites
   in the per-tenant `IdentityDO`). `demos/auth-server` is the full Better Auth issuer for
@@ -108,9 +134,13 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   audience, never a second source of truth. Both origins must be trusted by Better Auth.
 - One vitest scenario per demo vertical: `pnpm --filter @substrat-run/demo-callout test`
 - `pnpm --filter @substrat-run/docs cf:deploy` — build + ship the docs site to
-  [substrat.net](https://substrat.net) (Cloudflare Pages). Every deployable
-  workspace uses the `cf:deploy` script name (dashboard, control-plane, router, docs, demos) —
-  chosen over `deploy` so `pnpm cf:deploy` never collides with pnpm's built-in `deploy` command.
+  [substrat.net](https://substrat.net) (Cloudflare Pages). Every **platform** workspace that
+  ships to Cloudflare directly uses the `cf:deploy` script name — router, control-plane,
+  dashboard, builder, vertical-egress, docs — chosen over `deploy` so `pnpm cf:deploy` never
+  collides with pnpm's built-in `deploy` command. A **vertical** does not: it reaches
+  production through `substrat push`, which is the whole point of the dispatch namespace.
+  `demos/callout` is the one demo that also carries a `cf:deploy`, because it predates that
+  path; meridian, manyfold and ticket0 are pushed.
 
 ## The three-layer rule (never violated)
 
@@ -257,10 +287,17 @@ generated while nothing re-emits it. So a generated file has all three of:
    the comment for a year and no gate, so a hand-edit to shipped SQL passed every check
    in the repo.
 
-The gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
+The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
 `lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
 `lint:connector-grants`.
+
+CI runs more than those. The checks that emit nothing and simply refuse — the ones that
+turn a rule in this file into a red build — are `lint:boundaries` (`node
+tools/boundary-lint.mjs`), `lint:cycles` (`tools/workspace-cycles.mjs`), `lint:deps`
+(`tools/declared-deps.mjs`: an import whose package the graph does not declare) and
+`lint:tests`. `lint:scaffold` is the exception that runs **off** the PR — post-release and
+weekly, for the reason its bullet above gives.
 
 **The one exception, stated rather than hidden:** a file generated from a *remote* source
 cannot be re-emitted hermetically in CI, so it gets marks 1 and 2 plus a `GENERATED_AT`
