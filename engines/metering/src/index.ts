@@ -1,3 +1,20 @@
+/**
+ * engine-metering — composed **by call**, not by event.
+ *
+ * The in-scope functions are the surface: `configureMeter`, `recordUsage`,
+ * `closePeriod`, `usageTotal`, `listMeters`, `listEntries`, `listPeriods`,
+ * `periodLines`. A vertical imports those into its own operations and runs them
+ * inside its own transaction — ticket0 calls `recordUsage` in the same transaction
+ * that produced the usage, so the ledger row and the work it bills for commit or
+ * roll back together. (The builder reaches the same ledger through the registered
+ * operations instead; both are callers, and neither composes by event.)
+ *
+ * By call rather than by event is deliberate. Usage arrives from the vertical's own
+ * work, and an event round-trip would put the ledger write outside the transaction
+ * that knows whether the work happened.
+ *
+ * There are no consumers here. Nothing composes this engine by emitting at it.
+ */
 import { z } from 'zod';
 import {
   addDecimal,

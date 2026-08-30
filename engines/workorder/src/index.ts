@@ -1,3 +1,22 @@
+/**
+ * engine-workorder — composed **by call**, not by event.
+ *
+ * The in-scope functions are the surface: `createWorkOrder`, `assignWorkOrder`,
+ * `startWorkOrder`, `reportTime`, `reportMaterial`, `completeWorkOrder`,
+ * `closeWorkOrder`, `getReportedLines`, `listOrders`. A vertical imports those into
+ * its OWN operations and runs them inside its own transaction — Callout's
+ * `callout/complete-workorder` is a permission check and one call.
+ *
+ * So the registered operations below are thin by design: each is
+ * `assertAllowed(await ctx.check(PERM.…))` plus the matching export, and it is the
+ * export that carries the invariant. That is what lets a vertical extend by
+ * composition rather than by forking — and why the lifecycle check lives with the
+ * in-scope function (`lifecycle.ts`), where both routes in pass through it.
+ *
+ * This engine emits events as every engine does, but nothing composes it by
+ * consuming them: `invoicing` is the by-event engine downstream of
+ * `workorder.completed`, which is a different relationship from being composed.
+ */
 import { z } from 'zod';
 import {
   addMoney,

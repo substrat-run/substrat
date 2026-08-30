@@ -1,3 +1,21 @@
+/**
+ * engine-protocol — composed **by call**, not by event.
+ *
+ * The in-scope functions are the surface: `defineTemplate`, `instantiateProtocol`,
+ * `fillProtocol`, `signProtocol`, `countersignProtocol`, `voidProtocol` and the
+ * reads beside them. A vertical imports those into its own operations and runs them
+ * inside its own transaction — Callout's `callout/instantiate-protocol` is a
+ * permission check and one call. The fourteen registered operations below are the
+ * engine's default HTTP-reachable bindings, not a second way in
+ * (`operations.ts` says the same thing about `defineEngineRoutes`).
+ *
+ * `predicates` is the other half of composing by call and is NOT an exception to it:
+ * the engine CONTRIBUTES `protocol/all-signed`, and a vertical's manifest WIRES it
+ * to whichever of the vertical's own operations it should gate (K-17). The engine
+ * never declares a guard, because what is mandatory when is vertical policy.
+ *
+ * There are no consumers here. Nothing composes this engine by emitting at it.
+ */
 import { z } from 'zod';
 import {
   dataSubjectId,

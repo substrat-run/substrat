@@ -1,3 +1,22 @@
+/**
+ * engine-booking — composed **by call**, not by event.
+ *
+ * The in-scope functions are the surface: `createResource`, `holdReservation`,
+ * `confirmReservation`, `joinReservation`, `openReservation`, `leaveReservation`,
+ * `cancelReservation`, `moveReservation`, `startReservation`, `completeReservation`,
+ * `markNoShow`, `expireReservation` and the reads beside them. A vertical imports
+ * those into its own operations and runs them inside its own transaction; the
+ * registered operations below are the engine's default HTTP-reachable bindings,
+ * not a second way in.
+ *
+ * The consequence is stated at length in `lifecycle.ts`: an engine composed by call
+ * takes its invariant from the callee, so `booking/join` is not declared as an edge
+ * to `confirmed` even though a join that fills the last place calls
+ * `confirmReservation` — the move is that function's, and it goes through the same
+ * check on the way.
+ *
+ * There are no consumers here. Nothing composes this engine by emitting at it.
+ */
 import { z } from 'zod';
 import {
   assertTransition,
