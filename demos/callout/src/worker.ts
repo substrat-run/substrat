@@ -23,7 +23,6 @@ import {
   readScopeTableInput,
   entitlementGrant,
   projectedIdentityLink,
-  resolveScopedEnvSpec,
   z,
 } from '@substrat-run/contracts';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
@@ -44,10 +43,11 @@ import { calloutModule } from './module.js';
 import { serveAsset } from './assets.js';
 import { mountApi } from './routes.js';
 import {
+  AUTH_CONFIG_KEY,
+  AuthConfigError,
   IdentityDO,
+  instanceAuthFor,
   mintOwnerClaimLink,
-  oidcAuthProvider,
-  oidcRpAuthProvider,
   sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
@@ -91,7 +91,7 @@ interface Env {
    * delivered per-scope `substrat:auth` (`mode: 'oidc'`) builds the relying-party flow;
    * absent that, `AUTH_PROVIDER=oidc` verifies a bearer token against `OIDC_ISSUER`
    * [+ `OIDC_AUDIENCE`]. There is no built-in credential store. Declared in CALLOUT_ENV
-   * (src/manifest.ts) and read ONLY through `resolveScopedEnvSpec` in `authWiringFor` — a
+   * (src/manifest.ts) and read ONLY through `instanceAuthFor`'s settings pass — a
    * delivered per-scope value overrides these deployment-wide bindings (#398). Typed here
    * so `wrangler dev --var` works.
    */
@@ -164,80 +164,38 @@ function identityDo(env: Env, node: DemoNode) {
   return env.AUTH.get(env.AUTH.idFromName(node.tenantId));
 }
 
-/**
- * The scope's DELIVERED auth choice (vertical-auth-detach.md §2.2/§2.3) — the
- * `substrat:auth` entry the dashboard configured at install or in Settings, stored in the
- * tenant's identity DO. Parsed leniently: an absent or malformed entry means "no choice
- * delivered" and the deployment-level default applies, so a bad delivery can never lock an
- * instance out. OIDC-only (oidc-only-demos.md): `oidc` is the only supported mode.
- */
-const authChoice = z.object({
-  mode: z.literal('oidc'),
-  issuer: z.string().url().optional(),
-  clientId: z.string().min(1).optional(),
-  clientSecret: z.string().optional(),
-  audience: z.string().optional(),
-  /** Share the login across every surface under this parent domain (K-26 multi-surface). */
-  cookieDomain: z.string().min(1).optional(),
-});
-export const AUTH_CONFIG_KEY = 'substrat:auth';
+export { AUTH_CONFIG_KEY };
 
 /**
- * The scope's auth wiring, in one DO hop: delivered config + the tenant's session secret.
- * `settings` is the ORDINARY declared environment (CALLOUT_ENV) resolved through
- * `resolveScopedEnvSpec` over the same delivered map — per-scope Env-tab value > worker
- * binding > manifest default (#398). No extra DO round-trip: the delivered map is in hand.
+ * Everything this instance was configured with, in one DO hop — delivered auth choice,
+ * declared settings (CALLOUT_ENV, resolved delivered > binding > manifest default, #398),
+ * and the tenant's session secret. The composition is `@substrat-run/vertical-auth`'s
+ * (#972); this only names the vertical's env spec and re-raises its refusals as Hono
+ * exceptions so the error envelope keeps the status.
  */
 async function authWiringFor(env: Env, node: DemoNode) {
-  const wiring = await identityDo(env, node).authWiring(node.scopeId);
-  const raw = wiring.config[AUTH_CONFIG_KEY];
-  let choice: z.infer<typeof authChoice> | null = null;
-  if (raw) {
-    try {
-      const parsed = authChoice.safeParse(JSON.parse(raw));
-      choice = parsed.success ? parsed.data : null;
-    } catch {
-      choice = null;
-    }
-  }
-  const settings = resolveScopedEnvSpec(CALLOUT_ENV, env as unknown as Record<string, unknown>, wiring.config).values;
-  return { choice, sessionSecret: wiring.sessionSecret, settings };
+  return instanceAuthFor({
+    directory: identityDo(env, node),
+    scopeId: node.scopeId,
+    envSpec: CALLOUT_ENV,
+    env: env as unknown as Record<string, unknown>,
+  });
 }
 
 /**
  * The `AuthProvider` for this request, chosen by CONFIG — the whole point of the contract.
- *
- * Per-SCOPE first (hosted): a delivered `substrat:auth` with `mode: 'oidc'` builds the full
- * relying-party provider (browser login at the issuer, cookie sessions signed with the
- * tenant's DO-minted secret, bearer fallback for API clients) — one script, many issuers.
- * Absent that, the DEPLOYMENT default: `AUTH_PROVIDER=oidc` verifies bearer tokens against a
- * fixed issuer (standalone deploys). Anything else is unconfigured — fail closed (no built-in
- * credential store any more, oidc-only-demos.md). The app never learns which; it only ever
- * holds an `AuthProvider`.
+ * Per-SCOPE first (a delivered `substrat:auth`), then the deployment default
+ * (`AUTH_PROVIDER=oidc`), then fail closed. The app never learns which; it only ever holds
+ * an `AuthProvider`.
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
-  const node = nodeFor(req, env);
-  const { choice, sessionSecret, settings } = await authWiringFor(env, node);
-  if (choice?.mode === 'oidc') {
-    if (!choice.issuer || !choice.clientId) {
-      throw new HTTPException(503, { message: "this instance's OIDC configuration is incomplete — set issuer and clientId" });
-    }
-    return oidcRpAuthProvider({
-      issuer: choice.issuer,
-      clientId: choice.clientId,
-      clientSecret: choice.clientSecret ?? '',
-      sessionSecret,
-      ...(choice.audience ? { audience: choice.audience } : {}),
-      ...(choice.cookieDomain ? { cookieDomain: choice.cookieDomain } : {}),
-    });
+  const instance = await authWiringFor(env, nodeFor(req, env));
+  try {
+    return instance.provider();
+  } catch (err) {
+    if (err instanceof AuthConfigError) throw new HTTPException(err.status, { message: err.message });
+    throw err;
   }
-  if (settings.AUTH_PROVIDER === 'oidc') {
-    if (!settings.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
-    return oidcAuthProvider({ issuer: settings.OIDC_ISSUER, ...(settings.OIDC_AUDIENCE ? { audience: settings.OIDC_AUDIENCE } : {}) });
-  }
-  throw new HTTPException(503, {
-    message: "this instance has no identity provider configured — deliver substrat:auth with mode 'oidc'",
-  });
 }
 
 /**

@@ -42,7 +42,6 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
   principalId,
-  resolveScopedEnvSpec,
   scopeId,
   tenantId,
   z,
@@ -56,10 +55,10 @@ import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import {
+  AuthConfigError,
   IdentityDO,
+  instanceAuthFor,
   mintOwnerClaimLink,
-  oidcAuthProvider,
-  oidcRpAuthProvider,
   sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
@@ -179,25 +178,6 @@ function identityDo(env: Env, node: DeskNode) {
 
 // ── Per-instance config ──────────────────────────────────────────────────────
 
-/**
- * The scope's DELIVERED auth choice — the `substrat:auth` entry the dashboard wrote at
- * install or in Settings. Parsed leniently: an absent or malformed entry means "no
- * choice delivered" and the deployment-level default applies, so a bad delivery can
- * never lock a desk out of its own login.
- */
-const authChoice = z.object({
-  // OIDC-only: ticket0 runs no credential store, so `oidc` is the only supported mode.
-  // Anything else fails this parse → treated as "no choice" → the deployment default or
-  // a fail-closed 503, never a local account store.
-  mode: z.literal('oidc'),
-  issuer: z.string().url().optional(),
-  clientId: z.string().min(1).optional(),
-  clientSecret: z.string().optional(),
-  audience: z.string().optional(),
-  /** Share the login across every surface under this parent domain (K-26 multi-surface). */
-  cookieDomain: z.string().min(1).optional(),
-});
-const AUTH_CONFIG_KEY = 'substrat:auth';
 
 /** Where the desk's three service principals are recorded, once, at provision. */
 const SERVICES_CONFIG_KEY = 'ticket0:services';
@@ -211,26 +191,16 @@ type ServicePrincipals = z.infer<typeof servicePrincipals>;
 /**
  * Everything this desk was configured with, in ONE DO hop: the declared settings
  * (`TICKET0_ENV`) resolved delivered > binding > manifest default, the structured
- * `substrat:auth` choice, and the tenant's session-signing secret.
+ * `substrat:auth` choice, and the tenant's session-signing secret. The composition is
+ * `@substrat-run/vertical-auth`'s (#972); this only names the desk's env spec.
  */
 async function instanceConfig(env: Env, node: DeskNode) {
-  const wiring = await identityDo(env, node).authWiring(node.scopeId);
-  let identity: z.infer<typeof authChoice> | null = null;
-  const raw = wiring.config[AUTH_CONFIG_KEY];
-  if (raw) {
-    try {
-      const parsed = authChoice.safeParse(JSON.parse(raw));
-      identity = parsed.success ? parsed.data : null;
-    } catch {
-      identity = null;
-    }
-  }
-  const settings = resolveScopedEnvSpec(
-    TICKET0_ENV,
-    env as unknown as Record<string, unknown>,
-    wiring.config,
-  ).values;
-  return { settings, identity, sessionSecret: wiring.sessionSecret, config: wiring.config };
+  return instanceAuthFor({
+    directory: identityDo(env, node),
+    scopeId: node.scopeId,
+    envSpec: TICKET0_ENV,
+    env: env as unknown as Record<string, unknown>,
+  });
 }
 
 /**
@@ -321,33 +291,13 @@ async function serviceStub(
  * ⇒ fail closed. The app never learns which; it only ever holds an `AuthProvider`.
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
-  const node = nodeFor(req, env);
-  const { identity, sessionSecret, settings } = await instanceConfig(env, node);
-  if (identity) {
-    if (!identity.issuer || !identity.clientId) {
-      throw new HTTPException(503, {
-        message: "this desk's OIDC configuration is incomplete — set issuer and clientId",
-      });
-    }
-    return oidcRpAuthProvider({
-      issuer: identity.issuer,
-      clientId: identity.clientId,
-      clientSecret: identity.clientSecret ?? '',
-      sessionSecret,
-      ...(identity.audience ? { audience: identity.audience } : {}),
-      ...(identity.cookieDomain ? { cookieDomain: identity.cookieDomain } : {}),
-    });
+  const instance = await instanceConfig(env, nodeFor(req, env));
+  try {
+    return instance.provider();
+  } catch (err) {
+    if (err instanceof AuthConfigError) throw new HTTPException(err.status, { message: err.message });
+    throw err;
   }
-  if (settings.AUTH_PROVIDER === 'oidc' && settings.OIDC_ISSUER) {
-    return oidcAuthProvider({
-      issuer: settings.OIDC_ISSUER,
-      ...(settings.OIDC_AUDIENCE ? { audience: settings.OIDC_AUDIENCE } : {}),
-    });
-  }
-  throw new HTTPException(503, {
-    message:
-      "this desk has no identity provider configured — bind an OIDC issuer, or set AUTH_PROVIDER=oidc and OIDC_ISSUER",
-  });
 }
 
 /**

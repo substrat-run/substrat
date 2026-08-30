@@ -1,4 +1,49 @@
-import { moduleManifest, permissionKey } from '@substrat-run/contracts';
+import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/contracts';
+
+/**
+ * Manyfold's ORDINARY declared environment — the deployment-default half of its auth
+ * config (the structured per-scope `substrat:auth` choice always wins over these; see
+ * worker.ts `authProviderFor`). OIDC-only (oidc-only-demos.md): the vertical runs no
+ * built-in credential store. Read exclusively through `instanceAuthFor`'s settings pass
+ * (delivered > env > default, #398), never via bare `env.X` — reading `env` directly is
+ * how a per-install issuer saved in the dashboard silently never arrived (#374/#972).
+ * Harness secrets (ROUTER_SECRET, PLATFORM_SECRET) are deliberately NOT declared.
+ *
+ * MIRRORED in `package.json` `substrat.envSpec` (what `substrat push` carries — it reads
+ * JSON, not TS); keep the two in sync.
+ */
+export const MANYFOLD_ENV: EnvVarSpec[] = [
+  {
+    key: 'AUTH_PROVIDER',
+    label: 'Auth provider',
+    description:
+      "OIDC-only: the vertical runs no built-in credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
+    placeholder: 'oidc',
+    default: 'oidc',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_ISSUER',
+    label: 'OIDC issuer',
+    description:
+      "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
+    placeholder: 'https://auth.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+  {
+    key: 'OIDC_AUDIENCE',
+    label: 'OIDC audience',
+    description: 'Expected `aud` claim of verified bearer tokens (optional; issuer-dependent).',
+    placeholder: 'https://api.example.com',
+    required: false,
+    secret: false,
+    group: 'Auth',
+  },
+];
 
 // ============================================================================
 // Manyfold's declarative surface: the permission keys and the manifest
@@ -52,4 +97,5 @@ export const manyfoldManifest = moduleManifest.parse({
   migrations: { journalDir: './migrations', compatibleFrom: '0.0.1' },
   attachmentTargets: [],
   entitlementKey: 'manyfold',
+  envSpec: MANYFOLD_ENV,
 });

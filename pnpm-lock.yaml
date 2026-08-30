@@ -1918,6 +1918,9 @@ importers:
 
   packages/vertical-auth:
     dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:^
+        version: link:../contracts
       '@substrat-run/oidc-rp':
         specifier: workspace:^
         version: link:../oidc-rp

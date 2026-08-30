@@ -16,7 +16,7 @@
  */
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { principalId, scopeId, tenantId, resolveScopedEnvSpec, z,
+import { principalId, scopeId, tenantId, z,
   isPage,
   nextPageLink,
   PAGE_LINK_HEADER,
@@ -36,10 +36,10 @@ import { MERIDIAN_ENV } from './manifest.js';
 import { API, API_DOCUMENT } from './api.js';
 import { DOCS_HTML } from './docs.js';
 import {
+  AuthConfigError,
   IdentityDO,
+  instanceAuthFor,
   mintOwnerClaimLink,
-  oidcAuthProvider,
-  oidcRpAuthProvider,
   sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
@@ -74,12 +74,13 @@ interface Env {
   SCOPE: DurableObjectNamespace;
   AUTH: DurableObjectNamespace<IdentityDO>;
   /**
-   * Which auth the app runs — the config section. `better-auth-do` (default): Better Auth
-   * in the per-tenant AUTH DO. `oidc`: verify a bearer token against an OIDC issuer
-   * (`OIDC_ISSUER` [+ `OIDC_AUDIENCE`]) — covers Supabase, Auth0, AuthHero, Keycloak, …
+   * Which auth the app runs — the config section. OIDC-only (oidc-only-demos.md): there is
+   * no builtin credential store, so `oidc` verifies a bearer token against an OIDC issuer
+   * (`OIDC_ISSUER` [+ `OIDC_AUDIENCE`]) — covers Supabase, Auth0, AuthHero, Keycloak, … —
+   * and anything else leaves the instance unconfigured, which fails closed.
    * The app never changes; only this config + the provider behind the contract does.
    * Declared in MERIDIAN_ENV (src/manifest.ts) and read ONLY through
-   * `resolveScopedEnvSpec` in `authWiringFor` — a delivered per-scope value overrides
+   * `instanceAuthFor`'s settings pass in `authWiringFor` — a delivered per-scope value overrides
    * these deployment-wide bindings (#398). Typed here so `wrangler dev --var` works.
    */
   AUTH_PROVIDER?: string;
@@ -147,90 +148,40 @@ function identityDo(env: Env, node: CompanyNode) {
 }
 
 /**
- * The scope's DELIVERED auth choice (vertical-auth-detach.md §2.2/§2.3) — the
- * `substrat:auth` entry the dashboard configured at install or in Settings, stored in the
- * tenant's identity DO. Parsed leniently: an absent or malformed entry means "no choice
- * delivered" and the deployment-level default below applies, so a bad delivery can never
- * lock an instance out.
- */
-const authChoice = z.object({
-  // OIDC-only (oidc-only-demos.md): the vertical runs no credential store, so `oidc` is the
-  // only supported mode. A delivered `builtin` (or anything else) fails this parse → treated
-  // as "no choice" → the deployment default / a fail-closed 503, never a local account store.
-  mode: z.literal('oidc'),
-  issuer: z.string().url().optional(),
-  clientId: z.string().min(1).optional(),
-  clientSecret: z.string().optional(),
-  audience: z.string().optional(),
-  /** Share the login across every surface under this parent domain (K-26 multi-surface;
-   *  `egeryds.se` covers `crm.` + `eka.`). Validated against the request host where the
-   *  cookie is set (vertical-auth); applies under either mode. */
-  cookieDomain: z.string().min(1).optional(),
-});
-const AUTH_CONFIG_KEY = 'substrat:auth';
-
-/**
- * The scope's auth wiring, in one DO hop: delivered config + the tenant's session secret.
- * `settings` is the ORDINARY declared environment (MERIDIAN_ENV) resolved through
- * `resolveScopedEnvSpec` over the same delivered map — per-scope Env-tab value > worker
- * binding > manifest default (#398). Every read of a declared key goes through it; a bare
- * `env.X` read would only ever see the deployment-wide default (the silent-defaults bug,
- * #374). No extra DO round-trip: the delivered map is already in hand.
+ * Everything this instance was configured with, in ONE DO hop — the delivered
+ * `substrat:auth` choice, the declared settings (MERIDIAN_ENV, resolved delivered >
+ * binding > manifest default, #398) and the tenant's session secret.
+ *
+ * Every read of a declared key goes through this; a bare `env.X` read would only ever
+ * see the deployment-wide default (the silent-defaults bug, #374). The composition
+ * itself is `@substrat-run/vertical-auth`'s (#972) — four demos used to carry a copy.
  */
 async function authWiringFor(env: Env, node: CompanyNode) {
-  const wiring = await identityDo(env, node).authWiring(node.scopeId);
-  const raw = wiring.config[AUTH_CONFIG_KEY];
-  let choice: z.infer<typeof authChoice> | null = null;
-  if (raw) {
-    try {
-      const parsed = authChoice.safeParse(JSON.parse(raw));
-      choice = parsed.success ? parsed.data : null;
-    } catch {
-      choice = null;
-    }
-  }
-  const settings = resolveScopedEnvSpec(MERIDIAN_ENV, env as unknown as Record<string, unknown>, wiring.config).values;
-  return { choice, sessionSecret: wiring.sessionSecret, settings };
+  return instanceAuthFor({
+    directory: identityDo(env, node),
+    scopeId: node.scopeId,
+    envSpec: MERIDIAN_ENV,
+    env: env as unknown as Record<string, unknown>,
+  });
 }
 
 /**
- * The `AuthProvider` for this request, chosen by CONFIG — the whole point of the contract.
- *
- * Per-SCOPE first (hosted): a delivered `substrat:auth` with `mode: 'oidc'` builds the
- * full relying-party provider (browser login at the issuer, cookie sessions signed with
- * the tenant's DO-minted secret, bearer fallback for API clients) — one script, many
- * issuers. `mode: 'builtin'` (or nothing delivered) falls through to the DEPLOYMENT
- * default: `AUTH_PROVIDER=oidc` env verifies bearer tokens against a fixed issuer
- * (standalone deploys), else Better Auth in the tenant's AUTH DO. The app never learns
- * which; it only ever holds an `AuthProvider`.
+ * The `AuthProvider` for this request, chosen by CONFIG — the whole point of the
+ * contract. Per-SCOPE first (a delivered `substrat:auth` issuer builds the full
+ * relying-party flow), then the DEPLOYMENT default (`AUTH_PROVIDER=oidc` verifies bearer
+ * tokens against a fixed issuer), then fail closed: there is no builtin credential store
+ * any more (oidc-only-demos.md), so an unconfigured instance refuses rather than silently
+ * minting local accounts. The app never learns which; it only ever holds an
+ * `AuthProvider`.
  */
 async function authProviderFor(env: Env, req: Request): Promise<AuthProvider> {
-  const node = nodeFor(req, env);
-  const { choice, sessionSecret, settings } = await authWiringFor(env, node);
-  if (choice?.mode === 'oidc') {
-    if (!choice.issuer || !choice.clientId) {
-      throw new HTTPException(503, { message: "this instance's OIDC configuration is incomplete — set issuer and clientId" });
-    }
-    return oidcRpAuthProvider({
-      issuer: choice.issuer,
-      clientId: choice.clientId,
-      clientSecret: choice.clientSecret ?? '',
-      sessionSecret,
-      ...(choice.audience ? { audience: choice.audience } : {}),
-      ...(choice.cookieDomain ? { cookieDomain: choice.cookieDomain } : {}),
-    });
+  const instance = await authWiringFor(env, nodeFor(req, env));
+  try {
+    return instance.provider();
+  } catch (err) {
+    if (err instanceof AuthConfigError) throw new HTTPException(err.status, { message: err.message });
+    throw err;
   }
-  if (settings.AUTH_PROVIDER === 'oidc') {
-    if (!settings.OIDC_ISSUER) throw new HTTPException(500, { message: 'AUTH_PROVIDER=oidc but OIDC_ISSUER is unset' });
-    return oidcAuthProvider({ issuer: settings.OIDC_ISSUER, ...(settings.OIDC_AUDIENCE ? { audience: settings.OIDC_AUDIENCE } : {}) });
-  }
-  // No builtin credential store any more (oidc-only-demos.md): the vertical owns no accounts.
-  // A scope authenticates either through a delivered `substrat:auth` issuer (the RP branch
-  // above) or a standalone `AUTH_PROVIDER=oidc` bearer issuer. Anything else is unconfigured —
-  // fail closed rather than silently minting local Better-Auth accounts.
-  throw new HTTPException(503, {
-    message: "this instance has no identity provider configured — deliver substrat:auth with mode 'oidc'",
-  });
 }
 
 /**
