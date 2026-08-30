@@ -9,6 +9,7 @@ import {
   pageOf,
   pageVisible,
   operationConcurrencyOf,
+  operationInputsOf,
   substratError,
   type CountedPage,
   type EntityRef,
@@ -531,6 +532,9 @@ export const calloutModule: ModuleRegistration = {
   // #129: the entity whose version an `If-Match` is compared against, derived
   // from the same declaration the routes and the document come from.
   operationConcurrency: operationConcurrencyOf(calloutOperations),
+  // …and the input schemas from that same declaration, so the host parses every
+  // invocation before the guards and the handler (#953).
+  operationInputs: operationInputsOf(calloutOperations),
   operations: {
     // ALL of them bound to the declaration (#707): input and return are checked
     // against `calloutOperations` at the exact method. The `as never` casts these

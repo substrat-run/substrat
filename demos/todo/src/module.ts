@@ -16,6 +16,7 @@ import {
   pageVisible,
   dataSubjectId,
   LIST_PAGE_DEFAULT,
+  operationInputsOf,
   substratError,
   type HandlerInput,
   type HandlerOutput,
@@ -412,5 +413,9 @@ const operations = {
 export const todoModule: ModuleRegistration = {
   manifest: todoManifest,
   migrations: todoMigrations,
+  // The host parses every invocation against the same declaration the routes and
+  // the document come from, so "parse, don't trust" holds on every path in — HTTP,
+  // test, seed — rather than in the handlers that remembered (#953).
+  operationInputs: operationInputsOf(todoOperations),
   operations: operations as ModuleRegistration['operations'],
 };

@@ -7,6 +7,7 @@ import {
   listsDeclaredBy,
   mapPage,
   moduleManifest,
+  operationInputsOf,
   pageOf,
   permissionKey,
   sealedCell,
@@ -2098,6 +2099,10 @@ export const protocolModule: ModuleRegistration = {
   predicates: {
     'protocol/all-signed': allSignedPredicate,
   },
+  // The host parses every invocation against the same declaration the manifest
+  // and the routes come from, so "parse, don't trust" holds on every path in
+  // rather than in the handlers that remembered (#953).
+  operationInputs: operationInputsOf(protocolOperations),
   operations: {
     'protocol/define-template': defineTemplateOp as OperationHandler<never, unknown>,
     'protocol/list-templates': listTemplatesOp as OperationHandler<never, unknown>,

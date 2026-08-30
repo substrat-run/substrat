@@ -6,6 +6,7 @@ import {
   entityRef,
   listLimitOf,
   moduleManifest,
+  operationInputsOf,
   pageOf,
   permissionKey,
   type EntityRef,
@@ -42,6 +43,7 @@ export { absenceEntities, leaveTypeRow } from './entities.js';
 // a composing vertical imports one module, as it did when these lived inline.
 export { ABSENCE_PERMISSIONS, absenceOperations } from './operations.js';
 export * from './schemas.js';
+import { absenceOperations } from './operations.js';
 import { leaveTypeRow } from './entities.js';
 import { columnsOf, returns } from './seam.js';
 import {
@@ -992,6 +994,10 @@ const listEntriesOp: OperationHandler<
 export const absenceModule: ModuleRegistration = {
   manifest: absenceManifest,
   migrations: absenceMigrations,
+  // The host parses every invocation against the same declaration the manifest
+  // and the routes come from, so "parse, don't trust" holds on every path in
+  // rather than in the handlers that remembered (#953).
+  operationInputs: operationInputsOf(absenceOperations),
   operations: {
     'absence/configure-leave-type': configureLeaveTypeOp as OperationHandler<never, unknown>,
     'absence/list-leave-types': listLeaveTypesOp as OperationHandler<never, unknown>,
