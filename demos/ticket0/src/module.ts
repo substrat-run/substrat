@@ -1034,6 +1034,27 @@ const operations = {
     return row;
   },
 
+  'ticket0/set-priority': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const next = step(conversation, 'ticket0/set-priority');
+    ctx.sql.exec('UPDATE ticket0_conversations SET priority = ? WHERE id = ?', [
+      input.priority,
+      conversation.id,
+    ]);
+    const row = settle(ctx, conversation, next);
+    ctx.emit({
+      type: 'ticket0.conversation-priority-set',
+      schemaVersion: 1,
+      entity: conversationRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, priority: row.priority, state: row.state },
+    });
+    return row;
+  },
+
   'ticket0/snooze': async (ctx, input) => {
     assertAllowed(
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),

@@ -1190,6 +1190,7 @@
             "ticket0/post-note",
             "ticket0/record-answer",
             "ticket0/record-assistant-failure",
+            "ticket0/set-priority",
             "ticket0/tag-conversation",
             "ticket0/widget-post"
           ]
@@ -1207,6 +1208,7 @@
             "ticket0/post-public-reply",
             "ticket0/record-answer",
             "ticket0/record-assistant-failure",
+            "ticket0/set-priority",
             "ticket0/tag-conversation",
             "ticket0/widget-post"
           ]
@@ -1220,6 +1222,7 @@
           },
           "allow": [
             "ticket0/post-note",
+            "ticket0/set-priority",
             "ticket0/submit-csat",
             "ticket0/tag-conversation"
           ]
@@ -1234,6 +1237,7 @@
           "allow": [
             "ticket0/assign",
             "ticket0/post-note",
+            "ticket0/set-priority",
             "ticket0/tag-conversation"
           ]
         }

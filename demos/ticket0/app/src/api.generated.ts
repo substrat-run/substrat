@@ -513,6 +513,13 @@ export interface Ticket0Client {
   setAgentProfile(input: { displayName: string; avatarUrl: string | null; signature: string | null }): Promise<AgentProfile>;
 
   /**
+   * Set a conversation's priority
+   *
+   * `POST /conversations/{conversationId}/priority` — `ticket0/set-priority`
+   */
+  setPriority(input: { conversationId: string; priority: "low" | "normal" | "urgent" }): Promise<Conversation>;
+
+  /**
    * Set the price of a meter from a date
    *
    * `POST /usage/rates` — `ticket0/set-usage-rate`
@@ -759,6 +766,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/kb/search", "GET", undefined, input),
     setAgentProfile: (input: Args) =>
       send("/agents/me", "PUT", input, undefined),
+    setPriority: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/priority`, "POST", omit(input, ["conversationId"]), undefined),
     setUsageRate: (input: Args) =>
       send("/usage/rates", "POST", input, undefined),
     snooze: (input: Args) =>
