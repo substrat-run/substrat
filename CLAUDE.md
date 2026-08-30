@@ -29,7 +29,8 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
   builder-studio scratch projects that are also workspace members. A half-built one
   otherwise reddens repo-wide gates and blocks every push (#769).
 - `node tools/boundary-lint.mjs` — the layer rules below, enforced mechanically (runs in CI)
-- `pnpm lint:cycles` — the declared workspace graph, read for import cycles. Runs BEFORE
+- `pnpm lint:cycles` — the declared workspace graph, checked for dependency cycles (the
+  package edges, not source-level imports). Runs BEFORE
   the build in CI, because a cycle makes the build's result a coin flip: pnpm cannot order
   one, so it builds the members in parallel and whether that passes depends on which `tsc`
   wins. A warm `dist` hides it locally.
