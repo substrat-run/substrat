@@ -9,6 +9,7 @@ import {
   mapPage,
   moduleManifest,
   moneyOf,
+  operationInputsOf,
   permissionKey,
   listsDeclaredBy,
   type EntityRef,
@@ -641,6 +642,10 @@ const closeOp: OperationHandler<{ orderId: string }, WorkOrder> = async (ctx, in
 export const workorderModule: ModuleRegistration = {
   manifest: workorderManifest,
   migrations: workorderMigrations,
+  // The host parses every invocation against the same declaration the manifest
+  // and the routes come from, so "parse, don't trust" holds on every path in
+  // rather than in the handlers that remembered (#953).
+  operationInputs: operationInputsOf(workorderOperations),
   operations: {
     'workorder/get': getOp as OperationHandler<never, unknown>,
     'workorder/list': listOp as OperationHandler<never, unknown>,

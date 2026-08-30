@@ -147,6 +147,33 @@ describe('engine-workorder', () => {
     expect(h.eventsOfType('workorder.time-reported')).toHaveLength(0);
   });
 
+  // #953: the engine hands the host `operationInputs`, so this holds for the
+  // operations whose handler parses nothing of its own — `workorder/get` reads
+  // `input.orderId` straight into an entity ref and a row lookup.
+  //
+  // A principal with NO permission is what makes the assertion mean something:
+  // the host parses BEFORE the permission check, so a malformed call is refused
+  // for being malformed. Drop `operationInputs` and the same call comes back
+  // "permission denied" — the handler was reached, and a permitted caller would
+  // have been handed the unparsed value.
+  it('the HOST parses an invocation, before the permission check and for handlers that do not', async () => {
+    const order = await create();
+    const nobody = await h.as([]);
+    await expect(nobody.invoke('workorder/get', { orderId: 42 })).rejects.toThrow(/invalid|expected/i);
+    await expect(nobody.invoke('workorder/get', {})).rejects.toThrow(/invalid|required|expected/i);
+    // The well-formed call is refused for the reason it should be.
+    await expect(nobody.invoke('workorder/get', { orderId: order.id })).rejects.toThrow(/permission denied/);
+
+    // What the parse DOES to the value once it applies — unknown keys stripped,
+    // declared defaults set, the page trio let through — is the host's behaviour
+    // and is asserted against every adapter in
+    // `packages/contract-tests/src/input-parse-suite.ts`. Restating it here would
+    // pass whether or not this engine declared anything, which is the one thing
+    // this test exists to detect.
+    const got = await staff.invoke<{ order: WorkOrder }>('workorder/get', { orderId: order.id });
+    expect(got.order.id).toBe(order.id);
+  });
+
   it('composes inside one transaction: assign, start and report together, and all of it rolls back together', async () => {
     const order = await create();
 

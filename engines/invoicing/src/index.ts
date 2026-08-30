@@ -31,6 +31,7 @@ import {
   money,
   moduleManifest,
   moneyOf,
+  operationInputsOf,
   permissionKey,
   transitionFor,
   type EntityRow,
@@ -683,6 +684,10 @@ export const invoicingLifecycles = defineLifecycles(
 export const invoicingModule: ModuleRegistration = {
   manifest: invoicingManifest,
   migrations: invoicingMigrations,
+  // The host parses every invocation against the same declaration the manifest
+  // and the routes come from, so "parse, don't trust" holds on every path in
+  // rather than in the handlers that remembered (#953).
+  operationInputs: operationInputsOf(invoicingOperations),
   operations: OPERATIONS,
   consumers: {
     'workorder.completed': onWorkOrderCompleted,

@@ -8,6 +8,7 @@ import {
   listLimitOf,
   mapPage,
   mulMoney,
+  operationInputsOf,
   pageOf,
   pageVisible,
   permissionKey,
@@ -470,6 +471,10 @@ const declaredOperations = {
 export const bikeShopModule: ModuleRegistration = {
   manifest: bikeShopManifest,
   migrations: bikeShopMigrations,
+  // The host parses every invocation against the same declaration the routes and
+  // the document come from, so "parse, don't trust" holds on every path in rather
+  // than in the handlers that remembered (#953).
+  operationInputs: operationInputsOf(handlebarOperations),
   operations: {
     // ALL of them bound to the declaration (#707): input and return checked at
     // the exact method. The `as never` casts these carried were never necessary

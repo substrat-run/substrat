@@ -14,6 +14,7 @@ import {
   assertTransition,
   LIST_PAGE_DEFAULT,
   mulDecimal,
+  operationInputsOf,
   pageOf,
   pageVisible,
   substratError,
@@ -1982,5 +1983,9 @@ const HEALTH_RECENT = 10;
 export const ticket0Module: ModuleRegistration = {
   manifest: ticket0Manifest,
   migrations: ticket0Migrations,
+  // The host parses every invocation against the same declaration the routes and
+  // the document come from, so "parse, don't trust" holds on every path in — HTTP,
+  // widget, test, seed — rather than in the handlers that remembered (#953).
+  operationInputs: operationInputsOf(ticket0Operations),
   operations: operations as ModuleRegistration['operations'],
 };
