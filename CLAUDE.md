@@ -10,8 +10,8 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 Every package, engine, connector, demo and app, plus `examples/` and `spikes/`. The licence
 and publish state in each row are the ones that directory's `package.json` actually carries;
 **"private" means `"private": true`** — the member is never published, whatever its licence
-field says. A vertical's browser app (`demos/*/app`, `apps/*/web`) is its own workspace
-member and inherits its parent's row.
+field says. A browser app (`demos/*/app`, `apps/*/web`) is its own workspace member but has
+no row: every one of them is `private`, and ships inside its parent's deploy.
 
 | Path | What | Published |
 |---|---|---|
