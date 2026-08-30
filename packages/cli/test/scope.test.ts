@@ -27,10 +27,10 @@ describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () =
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe('http://cp/tenants/acme/scopes/s-1/version');
-    expect(calls[0].init.method).toBe('POST');
+    expect(calls[0]!.url).toBe('http://cp/tenants/acme/scopes/s-1/version');
+    expect(calls[0]!.init.method).toBe('POST');
     // `snapshot` omitted (not opted in) — never sent as an explicit false.
-    expect(JSON.parse(calls[0].init.body as string)).toEqual({ versionId: 'v-9' });
+    expect(JSON.parse(calls[0]!.init.body as string)).toEqual({ versionId: 'v-9' });
     expect(log).toHaveBeenCalledWith(expect.stringContaining('now runs version v-9'));
   });
 

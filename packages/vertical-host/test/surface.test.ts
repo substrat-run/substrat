@@ -42,6 +42,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     settlePlatformRequest: async () => note('settlePlatformRequest', undefined),
     connectorInvokeLocal: async () => note('connectorInvokeLocal', { ok: true }),
     connectorAttachmentUploadLocal: async () => note('connectorAttachmentUploadLocal', { id: 'att1' }),
+    connectorAttachmentOpenLocal: async () => note('connectorAttachmentOpenLocal', null),
     connectorGrantLocal: async () => note('connectorGrantLocal', undefined),
   };
   return Object.assign(base, overrides, { calls }) as VerticalScopeHost & { calls: string[] };

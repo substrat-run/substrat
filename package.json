@@ -9,6 +9,7 @@
     "dev:connected": "SUBSTRAT_STACK=1 CONTROL_PLANE_URL=http://127.0.0.1:8788 CP_SKIP_SEED=1 concurrently -k -n control-plane,vertical,console -c yellow,blue,magenta \"pnpm --filter @substrat-run/control-plane-api dev\" \"pnpm --filter @substrat-run/demo-callout dev\" \"pnpm --filter @substrat-run/console dev\"",
     "build": "pnpm -r --filter='!./.builder/projects/**' build",
     "lint:boundaries": "node tools/boundary-lint.mjs",
+    "lint:cycles": "node tools/workspace-cycles.mjs",
     "lint:deps": "node tools/declared-deps.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:model": "tsx tools/model-diff.mts",

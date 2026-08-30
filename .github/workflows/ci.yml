@@ -27,7 +27,7 @@ jobs:
       # pnpm cannot order one, so it builds the members in parallel and whether
       # that passes depends on which tsc wins. Reading the declared graph gives
       # the same answer every time, and names the cycle instead of a stray TS2307.
-      - run: node tools/workspace-cycles.mjs
+      - run: pnpm lint:cycles
       - run: pnpm -r build
       # The layer rules run from packages/boundary-lint (published as
       # @substrat-run/boundary-lint), so they need the build above — the repo
@@ -144,6 +144,10 @@ jobs:
       # into a field nobody reads, and it surfaced as a legal document not reaching a
       # counterparty (#716, #841). A floor, not an equality: the catalog may carry more.
       - run: pnpm lint:connector-grants
+      # A scenario suite must not read the emitted model to decide what to assert — it
+      # would then agree with the generator rather than with the vertical, and a wrong
+      # model would pass its own test. The check existed and ran nowhere (#989).
+      - run: pnpm lint:tests
       # ── Scope ────────────────────────────────────────────────────────────
       # Everything above this line runs in full on every PR: the build is what
       # the lints import from, and the lints together take fifteen seconds. The
