@@ -47,8 +47,31 @@ export const moduleId = z
   .brand<'ModuleId'>();
 export type ModuleId = z.infer<typeof moduleId>;
 
-// ISO 8601 with timezone (Z or offset). Stamped kernel-side, never caller-side.
-export const instant = z.string().datetime({ offset: true }).brand<'Instant'>();
+/**
+ * ISO 8601 with timezone (Z or offset). Stamped kernel-side, never caller-side.
+ *
+ * An offset is accepted on the wire and NORMALISED to UTC on the way through
+ * (`+02:00` becomes the equivalent `Z` text), because every consumer of an
+ * `Instant` compares it LEXICOGRAPHICALLY — grant liveness is `expires_at > now`
+ * in JS and in SQL, in both adapters — and lexicographic order only agrees with
+ * chronological order when the texts share a zone and a shape. Stored verbatim,
+ * `2026-08-28T10:00:00+02:00` (08:00Z) sorts after `2026-08-28T09:00:00.000Z`
+ * and an expired grant reads as live (#963).
+ *
+ * `.overwrite` rather than `.transform`: it normalises the value while the schema
+ * stays a `ZodString`, so the brand, `.nullable()`, and the emitted JSON Schema
+ * (`format: date-time`) are all unchanged. It runs even when the `datetime` check
+ * above already failed, so it leaves an unparseable string alone — the caller must
+ * get that string's `ZodError`, never a `RangeError` from here.
+ */
+export const instant = z
+  .string()
+  .datetime({ offset: true })
+  .overwrite((s) => {
+    const ms = Date.parse(s);
+    return Number.isNaN(ms) ? s : new Date(ms).toISOString();
+  })
+  .brand<'Instant'>();
 export type Instant = z.infer<typeof instant>;
 
 // Module-namespaced permission key, e.g. 'workorder:create'
