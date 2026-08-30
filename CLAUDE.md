@@ -7,10 +7,11 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 
 ## Layout
 
-Every directory in the repo, with the licence and publish state each one's `package.json`
-actually carries. **"private" below means `"private": true`** — the member is never
-published, whatever its licence field says. A vertical's browser app (`demos/*/app`,
-`apps/*/web`) is its own workspace member and inherits its parent's row.
+Every package, engine, connector, demo and app, plus `examples/` and `spikes/`. The licence
+and publish state in each row are the ones that directory's `package.json` actually carries;
+**"private" means `"private": true`** — the member is never published, whatever its licence
+field says. A vertical's browser app (`demos/*/app`, `apps/*/web`) is its own workspace
+member and inherits its parent's row.
 
 | Path | What | Published |
 |---|---|---|
@@ -295,9 +296,11 @@ The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:cli
 CI runs more than those. The checks that emit nothing and simply refuse — the ones that
 turn a rule in this file into a red build — are `lint:boundaries` (`node
 tools/boundary-lint.mjs`), `lint:cycles` (`tools/workspace-cycles.mjs`), `lint:deps`
-(`tools/declared-deps.mjs`: an import whose package the graph does not declare) and
-`lint:tests`. `lint:scaffold` is the exception that runs **off** the PR — post-release and
-weekly, for the reason its bullet above gives.
+(`tools/declared-deps.mjs`: an import whose package the graph does not declare),
+`lint:tests`, and `lint:changelog --check` — which asserts a hand-written digest accounts
+for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`
+is the exception that runs **off** the PR — post-release and weekly, for the reason its
+bullet above gives.
 
 **The one exception, stated rather than hidden:** a file generated from a *remote* source
 cannot be re-emitted hermetically in CI, so it gets marks 1 and 2 plus a `GENERATED_AT`

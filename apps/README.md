@@ -15,7 +15,8 @@ genuinely exitable:
 
 - `packages/contracts`, `packages/cli`, `packages/create-substrat`,
   `packages/boundary-lint`, `packages/model-emit`, `demos/*` — **Apache-2.0**
-- `packages/kernel`, `packages/adapter-*`, `packages/control-plane-api`,
+- `packages/kernel`, `packages/adapter-sqlite`, `packages/adapter-cloudflare`,
+  `packages/control-plane-api`,
   `packages/vertical-host`, `packages/vertical-auth`, `packages/oidc-rp`,
   `packages/dev-issuer`, `packages/psl`, `packages/model-providers`, `engines/*`,
   `connectors/*` — **AGPL-3.0-only + commercial**

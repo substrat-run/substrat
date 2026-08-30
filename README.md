@@ -150,8 +150,10 @@ node tools/boundary-lint.mjs
 
 Beyond tests, the repo is held together by re-emit gates: a generated file is only
 generated if CI re-emits it with `--check`. `pnpm lint:permissions`, `lint:model`,
-`lint:api`, `lint:client`, `lint:migrations`, `lint:decisions`, `lint:docs`,
-`lint:changelog` and their siblings all follow that rule; `CLAUDE.md` lists them. Two
+`lint:api`, `lint:client`, `lint:migrations`, `lint:decisions`, `lint:docs` and their
+siblings all follow that rule; `CLAUDE.md` lists them, and lists the checks that emit
+nothing and simply refuse — `lint:changelog`, which asserts a hand-written digest accounts
+for every merge in its range, is one of those. Two
 things are never self-approved: a migration diff and a permission diff — CI going red is
 what makes a human read them.
 
