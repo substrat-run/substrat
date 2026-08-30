@@ -1,3 +1,16 @@
+/**
+ * engine-absence — composed **by call**, not by event.
+ *
+ * The in-scope functions are the surface: `configureLeaveType`, `recordEntry`,
+ * `requestAbsence`, `decideAbsence`, `cancelAbsence`, `expireStaleRequests`,
+ * `balanceAsOf`, `availability`, `entriesInWindow` and the reads beside them. A
+ * vertical imports those into its own operations and runs them inside its own
+ * transaction — Meridian composes exactly this way, which is why `operations.ts`
+ * declares no `http`: an engine owns no URL shape, and the bindings below are its
+ * default surface rather than the path any vertical serves.
+ *
+ * There are no consumers here. Nothing composes this engine by emitting at it.
+ */
 import { z } from 'zod';
 import {
   addDecimal,

@@ -1,3 +1,15 @@
+/**
+ * engine-invites — composed **by call**, not by event.
+ *
+ * The in-scope functions are the surface: `sendInvite`, `acceptInvite`,
+ * `revokeInvite`, `listInvites`, `expireOverdue`. A vertical imports those into its
+ * own operations and runs them inside its own transaction — the dashboard and every
+ * hosted vertical need the same invitation surface, which is D-31's "two consumers
+ * on day one" and the reason this is an engine at all
+ * (`docs/engines/invites.md`).
+ *
+ * There are no consumers here. Nothing composes this engine by emitting at it.
+ */
 import {
   entityRef,
   moduleManifest,
