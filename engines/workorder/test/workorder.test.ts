@@ -164,12 +164,13 @@ describe('engine-workorder', () => {
     // The well-formed call is refused for the reason it should be.
     await expect(nobody.invoke('workorder/get', { orderId: order.id })).rejects.toThrow(/permission denied/);
 
-    // Unknown keys are gone rather than forwarded, and the declared field still
-    // arrives — the operation itself is unaffected.
-    const got = await staff.invoke<{ order: WorkOrder }>('workorder/get', {
-      orderId: order.id,
-      sneak: 'not declared',
-    });
+    // What the parse DOES to the value once it applies — unknown keys stripped,
+    // declared defaults set, the page trio let through — is the host's behaviour
+    // and is asserted against every adapter in
+    // `packages/contract-tests/src/input-parse-suite.ts`. Restating it here would
+    // pass whether or not this engine declared anything, which is the one thing
+    // this test exists to detect.
+    const got = await staff.invoke<{ order: WorkOrder }>('workorder/get', { orderId: order.id });
     expect(got.order.id).toBe(order.id);
   });
 
