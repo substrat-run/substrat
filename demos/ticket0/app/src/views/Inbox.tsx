@@ -17,7 +17,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
-import { ApiError, api, type AgentProfile, type Contact, type Conversation, type Session } from '../api.js';
+import { api, type AgentProfile, type Contact, type Conversation, type Session } from '../api.js';
 import { agentName, agents } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
@@ -157,9 +157,9 @@ export function Inbox({
       api
         .assign({ conversationId, assignee })
         .then(() => load())
-        .catch((e: Error) =>
-          setAssignError(e instanceof ApiError ? e.message : e.message || String(e)),
-        );
+        // The client already turns this vertical's problem+json into `message`, so a
+        // refusal reads as the sentence the handler wrote rather than a status code.
+        .catch((e: Error) => setAssignError(e.message));
     },
     [load],
   );
