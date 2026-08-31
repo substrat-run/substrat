@@ -127,7 +127,9 @@ verification, not by an arbitrary principal.
 
 ## 5. The flows
 
-**Sign up (bootstrap).** Email/password (Better Auth, as the verticals use) → the platform creates
+**Sign up (bootstrap).** OIDC against AuthHero — the Dashboard is a relying party through
+`@substrat-run/oidc-rp` (`apps/dashboard/src/worker.ts`), and runs no credential store of its
+own, so login/sign-up/password/reset all live at the issuer → the platform creates
 a tenant, a dashboard scope running the Dashboard vertical, links the login to a new owner
 principal, and assigns the tenant-admin role. The customer lands in an empty Dashboard.
 
@@ -166,9 +168,15 @@ assignments; revoke tombstones (K-21).
 2. **Where the privileged seam lives** (§4): a new host capability granted to the Dashboard
    deployment, vs a control-plane connector. The connector route reuses #97's authority-narrowing;
    the host-capability route is more direct. Prototype both against one `provision-app` call.
-3. **The catalog is registry-fed.** The version registry (`registerVertical`/`publishVersion`/
-   `promoteVersion`/`bindScopeVersion`) exists in `HostAdmin` but is not exposed as API routes.
-   The Dashboard catalog needs those surfaced (also fixes the console's free-text-slug field).
+3. ~~**The catalog is registry-fed.**~~ **Answered — the registry is on the HTTP surface.**
+   `registerVertical`, `publishVersion`, `promoteVersion` and `bindScopeVersion` are all
+   routed by `packages/control-plane-api` (`POST /verticals`, `POST /verticals/:slug/versions`,
+   `POST /verticals/:slug/channels/:channel/promote`, `POST /tenants/:t/scopes/:s/version`),
+   and `apps/console` reaches them over HTTP through `src/lib/api.ts` rather than through
+   `HostAdmin` directly — all but `publishVersion`, which is deliberately a CI/CLI action
+   (`substrat push` carries the build's digests) rather than a form. What is left of this
+   question is a Dashboard one: which of those the customer-facing catalog surfaces, and
+   under which entitlement.
 4. **Sign-up guard rails.** Anyone-can-create-a-tenant is the SaaS default and an abuse vector —
    email verification, per-account quotas, and a soft-provision-then-confirm path (K-31 already
    models the two-phase state).

@@ -19,8 +19,18 @@ surface over `HostAdmin` (§4.5), and `apps/console` is the console: tenants, th
 directory, lifecycle, entitlements, the admin log with before/after diffs, and the review
 queue over runtime permission changes.
 
-§4.6's **staff access log** is decided (K-24) and not yet built — reads remain
-unaudited until it lands (#43).
+§4.6's **staff access log** is built (K-24, #43 closed): both adapters record every
+`HostAdmin` read into `_substrat_access_log` — actor, method, the tenant/scope asked
+about, a bounded parameter summary, and the result count — reading the log is itself
+logged, and the permission suite in `packages/contract-tests` holds all of that. K-35's
+refused checks are built too, in the scope-local `_substrat_denials` twin §4.6 describes,
+with the reader #867 gave it. So is the retention half: the
+platform sweep's last phase (`packages/kernel/src/platform-sweep.ts`) ships drained
+batches to Tier 2 as `access-log/<firstId>-<lastId>.ndjson` in R2 and prunes what it
+shipped, and old batches age out of R2 on their own window (#553). What is **not** built
+is a read surface: the log is queried through `HostAdmin.accessLog`, with no HTTP route
+on `packages/control-plane-api` and no console view — an incident is answered from the
+adapter today, not from the console.
 
 §4.7's **hostname map and router** are built: the directory data and its lifecycle in
 both adapters, and `apps/router` — the environment-wide worker that resolves a hostname
@@ -441,8 +451,8 @@ actor, method, the tenant/scope asked about, a bounded parameter summary, and th
 
 **Where it lives:** the directory, in the ControlPlaneDO's own SQLite, beside the admin
 log — the same store, because it is the same kind of fact about the same data. Not D1
-(that is Better Auth's store and the staff roster, an app concern), and not the outbox
-(that is per-scope, for domain events).
+(that is the staff roster, an app concern), and not the outbox (that is per-scope, for
+domain events).
 
 **Why not in the admin log:**
 
