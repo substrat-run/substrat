@@ -55,6 +55,9 @@ export const meteringEntities = defineEntities({
       created_by: z.string(),
       created_at: z.string(),
     }),
+    // `UNIQUE (meter_key, dedupe_key)` in the shipped DDL — the constraint the
+    // dedupe replay relies on, and the artifact of record should carry it (#976).
+    key: ['meter_key', 'dedupe_key'],
   },
   'metering-period': {
     table: 'metering_periods',

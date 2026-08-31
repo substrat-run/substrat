@@ -70,7 +70,11 @@
           "created_at"
         ],
         "additionalProperties": false
-      }
+      },
+      "key": [
+        "dedupe_key",
+        "meter_key"
+      ]
     },
     "metering-meter": {
       "table": "metering_meters",
