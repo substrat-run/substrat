@@ -71,8 +71,10 @@ point in the invoke** — before the guards, inside the transaction.
 - **`idempotencyKey`** has nothing to declare: it is honoured on every unsafe operation, since a
   retried write creating a second entity is a hazard on all of them. A first request under a key
   runs and its return value is recorded inside the operation's own transaction; a second under
-  the same key returns that recording without running the handler, and **`onIdempotentReplay`**
-  fires when it does.
+  the same key **and the same input** returns that recording without running the handler, and
+  **`onIdempotentReplay`** fires when it does. A key names one request, so the same key with a
+  different input is refused rather than answered — serving the first request's response to a
+  second one is a lie the caller would act on.
 
 **An option the operation cannot honour is refused, not ignored** — and refused before the
 invocation takes its turn, in both directions:
