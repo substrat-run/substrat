@@ -145,8 +145,9 @@ which denies by default until roles and grants say otherwise. See
 
 ### 2. Register a module
 
-A module is a manifest + migrations + operations + the schemas the host parses them
-against. Here's a minimal one (engines ship
+A module is a manifest + migrations + operations, and — optionally, though every engine and
+vertical in this repo does it — the schemas the host parses those operations against.
+Here's a minimal one (engines ship
 this structure for you — see [What is an engine?](/engines/)):
 
 ```ts
