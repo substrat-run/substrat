@@ -471,7 +471,7 @@ missing:
 ```json
 {
   "scripts": { "lint:boundaries": "substrat-boundary-lint" },
-  "devDependencies": { "@substrat-run/boundary-lint": "^0.2.1" }
+  "devDependencies": { "@substrat-run/boundary-lint": "latest" }
 }
 ```
 

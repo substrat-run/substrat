@@ -19,9 +19,10 @@
     }
   },
   "bin": {
-    "substrat-boundary-lint": "./dist/cli.js"
+    "substrat-boundary-lint": "./bin/substrat-boundary-lint.mjs"
   },
   "files": [
+    "bin",
     "dist"
   ],
   "scripts": {
