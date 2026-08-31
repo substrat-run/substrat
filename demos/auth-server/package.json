@@ -82,7 +82,7 @@
   },
   "scripts": {
     "gen:assets": "node scripts/gen-assets.mjs",
-    "pretypecheck": "node scripts/gen-assets.mjs && tsx scripts/gen-schema.mts",
+    "pretypecheck": "node scripts/gen-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
     "server": "tsx src/server.ts",

@@ -11,8 +11,10 @@
  * tables with six and forty-odd columns — hand-writing that once would have been merely
  * error-prone; hand-writing it every time the plugin evolves is a defect waiting for a
  * deploy. So the source of truth is `getAuthTables(auth.options)` — read off the REAL
- * `buildAuth` config, not a parallel one — and `test/schema-generated.test.ts` re-emits and
- * compares, which is what makes "do not edit by hand" true rather than merely requested.
+ * `buildAuth` config, not a parallel one — and `pnpm lint:auth-schema --check` in CI
+ * re-emits and refuses on drift, which is what makes "do not edit by hand" true rather
+ * than merely requested. `test/schema-generated.test.ts` answers the other half a diff
+ * cannot: whether the emitted DDL, run against a real database, satisfies the library.
  *
  * Columns stay snake_case (what live databases already have) and the Drizzle schema is what
  * maps them, so the adapter and the DDL cannot disagree about a name.

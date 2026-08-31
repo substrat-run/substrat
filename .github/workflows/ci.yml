@@ -137,6 +137,14 @@ jobs:
       # while the engine surface moved underneath it. `version-packages` runs
       # the write, so this only reddens on a hand edit.
       - run: pnpm lint:pins --check
+      # The issuer-schema checkpoint (#987). `demos/auth-server`'s Drizzle schema and
+      # raw DDL are emitted from Better Auth's own table declarations, and both carry
+      # "do not edit by hand" — but the only `--check` was inside a vitest case, while
+      # a `pretypecheck` hook re-emitted them on the way past. So a hand edit was
+      # silently OVERWRITTEN rather than caught, which is mark 3 in name only: the
+      # file that is supposed to be a gate was a rewrite. The hook now emits assets
+      # only, and this is the gate.
+      - run: pnpm lint:auth-schema --check
       # The connector-grant checkpoint (#726 gap 3). A connector declares the standing
       # grants its RETURN path needs; the dashboard's provider catalog is the only door
       # that can carry them. When those disagreed, nothing said so — `protocol:attach`

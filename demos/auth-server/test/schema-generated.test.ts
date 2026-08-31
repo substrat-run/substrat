@@ -12,7 +12,13 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth } from '../src/auth.js';
 
 /**
- * The gate that makes "GENERATED … do not edit by hand" true rather than requested.
+ * The half of "GENERATED … do not edit by hand" that a diff cannot answer.
+ *
+ * The drift half is `pnpm lint:auth-schema --check`, a CI step of its own (#987). It used
+ * to be only the first case below, which made it a gate a `pretypecheck` hook could — and
+ * did — cancel by re-emitting the files on the way past. Both checks are kept: the first
+ * is cheap and keeps the suite honest when run alone; the second is the one that cannot
+ * move to a diff.
  *
  * `db/ddl.generated.ts` and `src/auth-schema.generated.ts` are derived from Better Auth's own
  * table declarations. Nothing stops someone editing them, and nothing would notice — until a
