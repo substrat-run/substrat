@@ -18,6 +18,7 @@
  */
 import { Hono } from 'hono';
 import {
+  parsePlatformBaseDomains,
   platformActorId,
   tenantId,
   scopeId,
@@ -324,12 +325,9 @@ function deployVerticalFor(env: Env): DeployVerticalFn | undefined {
   });
 }
 
-/** The list of base domains a PLATFORM hostname is minted under (#305). */
+/** The list of base domains a PLATFORM hostname is minted under (#305), read once (#973). */
 function platformBaseDomains(env: Env): string[] {
-  return (env.PLATFORM_BASE_DOMAINS ?? '')
-    .split(',')
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean);
+  return parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
 }
 
 /** The Cloudflare-for-SaaS custom-hostname provisioner, when a SaaS zone is configured (#305). */

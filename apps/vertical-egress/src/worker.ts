@@ -44,7 +44,7 @@
  * corollary in D-46.
  */
 
-import { matchesOutboundHost } from '@substrat-run/contracts';
+import { isPlatformHost, matchesOutboundHost, parsePlatformBaseDomains } from '@substrat-run/contracts';
 
 /** What the router passes per dispatch (its `OutboundPolicy` — one shape, two ends). */
 export interface OutboundPolicy {
@@ -93,23 +93,8 @@ export interface Env {
   ANALYTICS?: AnalyticsEngineDataset;
 }
 
-/** Parse the platform base domains, mirroring the control plane's `platformBaseDomains`. */
-const baseDomains = (env: Env): string[] =>
-  (env.PLATFORM_BASE_DOMAINS ?? '')
-    .split(',')
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean);
-
-/**
- * A destination on our own platform zone — the case that must loop back through the router.
- * Matches the base domain itself or any subdomain of it (`substrat.run`,
- * `x.global.substrat.run`, `x.global.test.substrat.run` all match `substrat.run`). Exact-or-dot
- * boundary so `notsubstrat.run` never matches `substrat.run`.
- */
-function isPlatformHost(hostname: string, bases: string[]): boolean {
-  const h = hostname.toLowerCase();
-  return bases.some((b) => h === b || h.endsWith(`.${b}`));
-}
+/** The platform base domains this deployment mints under, from the shared reader (#973). */
+const baseDomains = (env: Env): string[] => parsePlatformBaseDomains(env.PLATFORM_BASE_DOMAINS);
 
 /** Where a subrequest ended up: the four verdicts the meter distinguishes. */
 type Verdict = 'platform' | 'allowed' | 'unenforced' | 'refused';

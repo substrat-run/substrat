@@ -35,6 +35,7 @@ export interface HostnameRow {
 }
 
 import { parseJsonBody, readAllEntries } from './http.js';
+import { parseHostname, withLabel } from '@substrat-run/contracts';
 
 async function request<T>(url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
@@ -126,11 +127,11 @@ export async function bindSurfaceHostname(opts: {
   if (!source || !source.hostname.includes('.')) {
     throw new Error(`no platform hostname to derive from — bind a --domain instead`);
   }
-  const [label, ...rest] = source.hostname.split('.');
+  const { label } = parseHostname(source.hostname)!;
   const candidates = [
     `${label}-${slugifyLabel(opts.surface)}`,
     `${label}-${slugifyLabel(opts.surface)}-${scopeId.toLowerCase().slice(-4)}`,
-  ].map((l) => `${l}.${rest.join('.')}`);
+  ].map((l) => withLabel(source.hostname, l)!);
   let lastError: Error | undefined;
   for (const hostname of candidates) {
     try {
