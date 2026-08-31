@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "invitation": {
+      "table": "invites_invitation",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "org_id": {
+            "type": "string"
+          },
+          "identifier_hash": {
+            "type": "string"
+          },
+          "role_key": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "invited_by": {
+            "type": "string"
+          },
+          "accepted_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "string"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "org_id",
+          "identifier_hash",
+          "role_key",
+          "state",
+          "invited_by",
+          "accepted_by",
+          "created_at",
+          "expires_at",
+          "settled_at"
+        ],
+        "additionalProperties": false
+      },
+      "erasable": [
+        "identifier_hash"
+      ]
+    }
+  }
+}
