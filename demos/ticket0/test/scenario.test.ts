@@ -973,6 +973,136 @@ describe('a signed-in customer, by contrast', () => {
 // ---------------------------------------------------------------------------
 
 /**
+ * Two facts the desk stored and could not read back (#1084).
+ *
+ * Tagging wrote a row nothing ever selected, so the rail said "None yet" whatever
+ * the conversation carried and nothing could take a tag off again. A rating was
+ * stored from the portal and no operation read it, which is not the same thing as
+ * storing it — the person who handled the conversation could not see what the
+ * customer thought of it.
+ *
+ * Written as one story on one fresh conversation so the reads are asserted against
+ * writes made here, not against whatever the seed happened to leave behind.
+ */
+describe('what the desk wrote down and could not read back', () => {
+  const desk = () => world.substrat;
+  let conversation = '';
+
+  it('a conversation arrives to hang the tags on', async () => {
+    const relay = await at(desk(), 'relay');
+    const m = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: desk().customer.email,
+      subject: 'The invoice does not match the plan',
+      bodyText: 'We were billed twice this month.',
+      emailMessageId: '<tags-1@mail.example>',
+    })) as Message;
+    conversation = m.conversation_id;
+  });
+
+  it('the tags an agent puts on are the tags the conversation reports', async () => {
+    const anna = await at(desk(), 'agent');
+    await anna.invoke('ticket0/tag-conversation', { conversationId: conversation, tag: 'billing' });
+    await anna.invoke('ticket0/tag-conversation', { conversationId: conversation, tag: 'vip' });
+
+    const { tags } = (await anna.invoke('ticket0/list-conversation-tags', {
+      conversationId: conversation,
+    })) as { tags: { conversation_id: string; tag: string; created_at: string }[] };
+    // Sorted by tag, so a rail renders the same chips in the same order every load.
+    expect(tags.map((t) => t.tag)).toEqual(['billing', 'vip']);
+    expect(tags.every((t) => t.conversation_id === conversation)).toBe(true);
+  });
+
+  it('the desk’s vocabulary is whatever has been typed, most-used first', async () => {
+    const anna = await at(desk(), 'agent');
+    const { tags } = (await anna.invoke('ticket0/list-tags', {})) as {
+      tags: { tag: string; count: number }[];
+    };
+    const billing = tags.find((t) => t.tag === 'billing');
+    expect(billing).toBeDefined();
+    expect(billing!.count).toBeGreaterThanOrEqual(1);
+    expect(tags.find((t) => t.tag === 'vip')?.count).toBe(1);
+    // Most-used first is the whole point of returning the count: autocomplete offers
+    // the tag people mean before the one somebody mistyped once.
+    const counts = tags.map((t) => t.count);
+    expect([...counts].sort((a, b) => b - a)).toEqual(counts);
+  });
+
+  it('a tag comes off again, and taking it off twice is not an error', async () => {
+    const anna = await at(desk(), 'agent');
+    const gone = (await anna.invoke('ticket0/untag-conversation', {
+      conversationId: conversation,
+      tag: 'vip',
+    })) as { removed: boolean };
+    expect(gone.removed).toBe(true);
+
+    const { tags } = (await anna.invoke('ticket0/list-conversation-tags', {
+      conversationId: conversation,
+    })) as { tags: { tag: string }[] };
+    expect(tags.map((t) => t.tag)).toEqual(['billing']);
+
+    // Idempotent, and it says which it was: removing nothing is a no-op that
+    // answers, not a 404 every caller would have to catch.
+    const again = (await anna.invoke('ticket0/untag-conversation', {
+      conversationId: conversation,
+      tag: 'vip',
+    })) as { removed: boolean };
+    expect(again.removed).toBe(false);
+  });
+
+  it('an unrated conversation reads as unrated rather than throwing', async () => {
+    const anna = await at(desk(), 'agent');
+    const { csat } = (await anna.invoke('ticket0/get-csat', {
+      conversationId: conversation,
+    })) as { csat: unknown };
+    expect(csat).toBeNull();
+  });
+
+  it('and the rating the customer leaves reaches the agent who handled it', async () => {
+    const anna = await at(desk(), 'agent');
+    // A conversation may not be resolved before a public reply has been sent.
+    await anna.invoke('ticket0/post-public-reply', {
+      conversationId: conversation,
+      body: 'Refunded — the duplicate charge was ours.',
+    });
+    await anna.invoke('ticket0/resolve', { conversationId: conversation });
+
+    const priya = await at(desk(), 'customer');
+    await priya.invoke('ticket0/submit-csat', {
+      conversationId: conversation,
+      score: 5,
+      comment: 'Sorted in an hour.',
+    });
+
+    const { csat } = (await anna.invoke('ticket0/get-csat', { conversationId: conversation })) as {
+      csat: { conversation_id: string; score: number; comment: string | null } | null;
+    };
+    expect(csat).not.toBeNull();
+    expect(csat!.conversation_id).toBe(conversation);
+    expect(csat!.score).toBe(5);
+    expect(csat!.comment).toBe('Sorted in an hour.');
+  });
+
+  it('a customer cannot read the staff side of any of it', async () => {
+    const priya = await at(desk(), 'customer');
+    // `conversation:read-own` reaches her thread and nothing else — the tag list and
+    // the rating read are `conversation:read`, which she does not hold at all.
+    await expect(
+      priya.invoke('ticket0/list-conversation-tags', { conversationId: conversation }),
+    ).rejects.toThrow(/permission denied/i);
+    await expect(
+      priya.invoke('ticket0/get-csat', { conversationId: conversation }),
+    ).rejects.toThrow(/permission denied/i);
+    await expect(priya.invoke('ticket0/list-tags', {})).rejects.toThrow(/permission denied/i);
+    await expect(
+      priya.invoke('ticket0/untag-conversation', { conversationId: conversation, tag: 'billing' }),
+    ).rejects.toThrow(/permission denied/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
  * Every mutation announces itself, and the announcement is checked here.
  *
  * Not because anything in this demo consumes these events — nothing does — but
@@ -1025,6 +1155,28 @@ describe('the audit spine', () => {
       tag: 'billing',
       created_at: expect.any(String),
     });
+  });
+
+  it('and taking it off announces the same conversation, once', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const page = (await anna.invoke('ticket0/list-conversations', {})) as CountedPage<Conversation>;
+    const target = page.entries[0]!;
+    await anna.invoke('ticket0/tag-conversation', { conversationId: target.id, tag: 'refund' });
+    await anna.invoke('ticket0/untag-conversation', { conversationId: target.id, tag: 'refund' });
+
+    const evt = outbox(world.substrat, 'ticket0.conversation-untagged')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_type).toBe('conversation');
+    expect(evt.entity_id).toBe(target.id);
+    // No `created_at`: the row is gone, and an event about a removal that carried
+    // the removed row's timestamp would be describing something that no longer is.
+    expect(JSON.parse(evt.payload!)).toEqual({ conversation_id: target.id, tag: 'refund' });
+
+    // Removing what is not there is not a removal, so it announces nothing. The
+    // outbox still shows the one above rather than a second, later row.
+    const before = evt;
+    await anna.invoke('ticket0/untag-conversation', { conversationId: target.id, tag: 'refund' });
+    expect(outbox(world.substrat, 'ticket0.conversation-untagged')).toEqual(before);
   });
 
   it('a saved reply announces itself', async () => {

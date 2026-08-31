@@ -939,6 +939,23 @@ const operations = {
     return { session };
   },
 
+  /**
+   * The rating, read by the people it is about.
+   *
+   * Null rather than a throw for an unrated conversation: not being rated is the
+   * ordinary case, and the rail simply shows no card.
+   */
+  'ticket0/get-csat': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
+    conversationOrThrow(ctx, input.conversationId);
+    const csat =
+      ctx.sql.query<CsatRow>(
+        'SELECT conversation_id, score, comment, submitted_at FROM ticket0_csat WHERE conversation_id = ?',
+        [input.conversationId],
+      )[0] ?? null;
+    return { csat };
+  },
+
   'ticket0/list-messages': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
     conversationOrThrow(ctx, input.conversationId);
@@ -1286,6 +1303,59 @@ const operations = {
       payload: { conversation_id: row.conversation_id, tag: row.tag, created_at: row.created_at },
     });
     return row;
+  },
+
+  'ticket0/untag-conversation': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    step(conversation, 'ticket0/untag-conversation');
+    const existing = ctx.sql.query<TagRow>(
+      'SELECT conversation_id, tag, created_at FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?',
+      [conversation.id, input.tag],
+    )[0];
+    // Nothing was removed, so nothing is announced - the mirror of tagging twice,
+    // which announces once. A consumer counting this event counts tags coming OFF.
+    if (!existing) return { conversation_id: conversation.id, tag: input.tag, removed: false };
+    ctx.sql.exec('DELETE FROM ticket0_conversation_tags WHERE conversation_id = ? AND tag = ?', [
+      conversation.id,
+      input.tag,
+    ]);
+    ctx.emit({
+      type: 'ticket0.conversation-untagged',
+      schemaVersion: 1,
+      entity: conversationRef(conversation.id),
+      piiClass: 'none',
+      payload: { conversation_id: conversation.id, tag: input.tag },
+    });
+    return { conversation_id: conversation.id, tag: input.tag, removed: true };
+  },
+
+  'ticket0/list-conversation-tags': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
+    conversationOrThrow(ctx, input.conversationId);
+    const tags = ctx.sql.query<TagRow>(
+      `SELECT conversation_id, tag, created_at FROM ticket0_conversation_tags
+        WHERE conversation_id = ? ORDER BY tag`,
+      [input.conversationId],
+    );
+    return { tags };
+  },
+
+  /**
+   * The vocabulary, which is whatever has been typed - there is no tag table anyone
+   * curates. Most-used first, so autocomplete offers the tag people actually mean
+   * and a typo used once sorts last.
+   */
+  'ticket0/list-tags': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    const tags = ctx.sql.query<{ tag: string; count: number }>(
+      `SELECT tag, COUNT(*) AS count FROM ticket0_conversation_tags
+        GROUP BY tag ORDER BY count DESC, tag`,
+      [],
+    );
+    return { tags };
   },
 
   // --- Saved replies -------------------------------------------------------

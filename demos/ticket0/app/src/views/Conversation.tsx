@@ -43,6 +43,13 @@ interface Usage {
 /** What `widget-session` returns: the browser behind a widget conversation, or nothing. */
 type WidgetSession = Awaited<ReturnType<typeof api.widgetSession>>['session'];
 
+/** The tags on this conversation, and the desk's whole vocabulary behind the input. */
+type ConversationTag = Awaited<ReturnType<typeof api.listConversationTags>>['tags'][number];
+type DeskTag = Awaited<ReturnType<typeof api.listTags>>['tags'][number];
+
+/** The rating the customer left, read back by the people it is about. */
+type Csat = Awaited<ReturnType<typeof api.getCsat>>['csat'];
+
 export function ConversationView({
   id,
   caps,
@@ -59,21 +66,32 @@ export function ConversationView({
   const [turns, setTurns] = useState<Turn[]>([]);
   const [usage, setUsage] = useState<Usage | null>(null);
   const [visitor, setVisitor] = useState<WidgetSession>(null);
+  const [tags, setTags] = useState<ConversationTag[]>([]);
+  const [vocabulary, setVocabulary] = useState<DeskTag[]>([]);
+  const [csat, setCsat] = useState<Csat>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [who, setWho] = useState<Contact | undefined>(undefined);
 
   const load = useCallback(async () => {
     try {
-      const [c, m, t] = await Promise.all([
+      const [c, m, t, tg, vocab, rating] = await Promise.all([
         api.getConversation({ conversationId: id }),
         api.listMessages({ conversationId: id }),
         api.listTurns({ conversationId: id }),
+        api.listConversationTags({ conversationId: id }),
+        api.listTags(),
+        // The staff half of `submit-csat`. Null for an unrated conversation, which
+        // is most of them — the card is simply absent rather than empty.
+        api.getCsat({ conversationId: id }),
       ]);
       setConv(c);
       setWho((await contacts()).get(c.contact_id));
       setMessages(m.entries as MessageWithCitations[]);
       setTurns(t.entries as Turn[]);
+      setTags(tg.tags);
+      setVocabulary(vocab.tags);
+      setCsat(rating.csat);
       // Only a widget conversation has a browser behind it; an email one is not asked.
       setVisitor(c.channel === 'widget' ? (await api.widgetSession({ conversationId: id })).session : null);
       // Constraint 2: the cost read is only attempted when the caller holds the key,
@@ -142,7 +160,18 @@ export function ConversationView({
           <Thread messages={messages} turnFor={turnFor} conv={conv} busy={busy} act={act} />
           <Composer conv={conv} busy={busy} act={act} session={session} />
         </div>
-        <Rail conv={conv} who={who} visitor={visitor} usage={usage} busy={busy} act={act} go={go} />
+        <Rail
+          conv={conv}
+          who={who}
+          visitor={visitor}
+          usage={usage}
+          tags={tags}
+          vocabulary={vocabulary}
+          csat={csat}
+          busy={busy}
+          act={act}
+          go={go}
+        />
       </div>
     </div>
   );
@@ -840,6 +869,9 @@ function Rail({
   who,
   visitor,
   usage,
+  tags,
+  vocabulary,
+  csat,
   busy,
   act,
   go,
@@ -848,6 +880,9 @@ function Rail({
   who: Contact | undefined;
   visitor: WidgetSession;
   usage: Usage | null;
+  tags: ConversationTag[];
+  vocabulary: DeskTag[];
+  csat: Csat;
   busy: boolean;
   act: (fn: () => Promise<unknown>) => Promise<void>;
   go: (v: View) => void;
@@ -926,12 +961,15 @@ function Rail({
 
       {visitor ? <VisitorCard session={visitor} /> : null}
 
-      <div>
-        <div className="micro" style={{ marginBottom: 8 }}>
-          Tags
-        </div>
-        <div className="t-small">None yet</div>
-      </div>
+      {/* Tagging has existed since the first release and nothing ever read the table
+          back, so this panel said "None yet" whatever the conversation carried
+          (#1084). It now shows the tags, takes one off, and offers the desk's own
+          vocabulary behind the input rather than inviting a fresh typo. */}
+      <TagPanel conv={conv} tags={tags} vocabulary={vocabulary} busy={busy} act={act} />
+
+      {/* The customer's rating, on the conversation it is about. Absent rather than
+          empty when nobody rated: an unrated conversation is the normal case. */}
+      {csat ? <CsatCard csat={csat} /> : null}
 
       {/**
        * Constraint 2, and the whole of it: when the caller does not hold `usage:read`
@@ -997,6 +1035,164 @@ function Rail({
         </button>
       </div>
     </aside>
+  );
+}
+
+/* ── Tags ───────────────────────────────────────────────────────────────── */
+
+/**
+ * The tags on this conversation, plus one input to add another.
+ *
+ * The `<datalist>` is the desk's whole vocabulary and is why `list-tags` returns a
+ * count: the browser offers the suggestions in the order given, so the tag five
+ * conversations already carry comes first and a one-off typo comes last. Free text
+ * stays free text — nothing here refuses a new tag, it only makes an existing one
+ * easier to reach than to misspell.
+ *
+ * `closed` is terminal, so the machine refuses both writes there and the controls
+ * say so rather than letting the desk find out from a red banner.
+ */
+function TagPanel({
+  conv,
+  tags,
+  vocabulary,
+  busy,
+  act,
+}: {
+  conv: Conversation;
+  tags: ConversationTag[];
+  vocabulary: DeskTag[];
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState('');
+  const frozen = busy || conv.state === 'closed';
+
+  const add = () => {
+    const tag = draft.trim();
+    if (!tag) return;
+    setDraft('');
+    void act(() => api.tagConversation({ conversationId: conv.id, tag }));
+  };
+
+  return (
+    <div>
+      <div className="micro" style={{ marginBottom: 8 }}>
+        Tags
+      </div>
+      {tags.length === 0 ? (
+        <div className="t-small" style={{ marginBottom: 8 }}>
+          None yet
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
+          {tags.map((t) => (
+            <span
+              key={t.tag}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                border: '1px solid var(--frame)',
+                borderRadius: 999,
+                padding: '2px 4px 2px 9px',
+                font: "400 11px 'Geist Mono', monospace",
+                color: 'var(--secondary)',
+              }}
+            >
+              {t.tag}
+              <button
+                type="button"
+                aria-label={`Remove tag ${t.tag}`}
+                title={`Remove tag ${t.tag}`}
+                disabled={frozen}
+                onClick={() =>
+                  void act(() => api.untagConversation({ conversationId: conv.id, tag: t.tag }))
+                }
+                style={{
+                  border: 'none',
+                  background: 'none',
+                  padding: '0 3px',
+                  font: "400 12px 'Geist', sans-serif",
+                  color: 'var(--muted)',
+                  cursor: frozen ? 'default' : 'pointer',
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <datalist id="ticket0-tag-vocabulary">
+        {vocabulary.map((v) => (
+          <option key={v.tag} value={v.tag}>
+            {`${v.count}`}
+          </option>
+        ))}
+      </datalist>
+      <input
+        list="ticket0-tag-vocabulary"
+        value={draft}
+        disabled={frozen}
+        placeholder="Add a tag…"
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return;
+          e.preventDefault();
+          add();
+        }}
+        onBlur={add}
+        style={{
+          width: '100%',
+          border: '1px solid var(--frame)',
+          borderRadius: 6,
+          background: 'var(--surface)',
+          font: "400 12px 'Geist Mono', monospace",
+          color: 'inherit',
+          padding: '3px 6px',
+        }}
+      />
+    </div>
+  );
+}
+
+/* ── The rating ─────────────────────────────────────────────────────────── */
+
+/**
+ * What the customer said about this conversation, to the person who handled it.
+ *
+ * The comment is erasable and so may be missing from a row that still has a score —
+ * an erasure leaves the rating and takes the words, and this renders exactly that.
+ */
+function CsatCard({ csat }: { csat: NonNullable<Csat> }) {
+  return (
+    <div
+      style={{
+        background: '#fafaf8',
+        border: '1px solid var(--hairline)',
+        borderRadius: 8,
+        padding: 12,
+      }}
+    >
+      <div className="micro" style={{ marginBottom: 8 }}>
+        Rating
+      </div>
+      <div style={{ font: "600 16px 'Geist Mono', monospace", letterSpacing: '-.01em' }}>
+        {csat.score}
+        <span className="t-small" style={{ marginLeft: 4 }}>
+          / 5
+        </span>
+      </div>
+      {csat.comment ? (
+        <div
+          className="t-small"
+          style={{ marginTop: 8, whiteSpace: 'pre-wrap', color: 'var(--secondary)' }}
+        >
+          “{csat.comment}”
+        </div>
+      ) : null}
+    </div>
   );
 }
 
