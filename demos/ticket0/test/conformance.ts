@@ -26,6 +26,7 @@ export const conformance = declareEntityChecks({
     'ticket0/set-priority': { priority: 'urgent' },
     'ticket0/snooze': { until: '2030-01-01T00:00:00.000Z' },
     'ticket0/tag-conversation': { tag: 'conformance' },
+    'ticket0/untag-conversation': { tag: 'conformance' },
     'ticket0/submit-csat': { score: 5 },
     'ticket0/record-assistant-failure': {
       turnId: 'conformance-failed-turn',

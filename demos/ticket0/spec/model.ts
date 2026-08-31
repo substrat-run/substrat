@@ -857,6 +857,26 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'GET', path: '/conversations/{conversationId}/widget-session' },
   },
 
+  /**
+   * The rating the customer left, read by the people it is about.
+   *
+   * `submit-csat` is a portal operation under `conversation:read-own`; this is its
+   * staff half, and without it a score was stored and then unreachable by anyone —
+   * which is not the same thing as storing it. Nullable rather than 404: an unrated
+   * conversation is the normal case, and a read that throws for it would make every
+   * caller catch. Same shape as `widget-session` above for that reason.
+   *
+   * Aggregates — an average, a leaderboard — are reporting and belong with the
+   * reporting issue. This is the one rating on the one conversation.
+   */
+  'ticket0/get-csat': {
+    summary: 'The satisfaction rating on a conversation, if there is one',
+    permission: { key: 'conversation:read', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ csat: ticket0Entities.csat.fields.nullable() }),
+    http: { method: 'GET', path: '/conversations/{conversationId}/csat' },
+  },
+
   'ticket0/post-note': {
     summary: 'Leave an internal note colleagues can see and the customer cannot',
     permission: { key: 'conversation:draft', entity: 'conversation', idFrom: 'conversationId' },
@@ -1063,6 +1083,70 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       piiClass: 'none',
       payload: ['conversation_id', 'tag', 'created_at'],
     },
+  },
+
+  /**
+   * Take a tag off again.
+   *
+   * The tag is in the PATH rather than the body because it is half of the row's
+   * identity — this is a DELETE of one composite-keyed row, and `todo/revoke-share`
+   * is the same shape. `removed` is the answer to "was there one": untagging
+   * something that was never tagged is not an error, it is a no-op that says so,
+   * which mirrors tagging twice announcing once.
+   */
+  'ticket0/untag-conversation': {
+    summary: 'Take a tag off a conversation',
+    permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string(), tag: z.string().min(1) }),
+    output: z.object({
+      conversation_id: z.string(),
+      tag: z.string(),
+      removed: z.boolean(),
+    }),
+    http: { method: 'DELETE', path: '/conversations/{conversationId}/tags/{tag}' },
+    emits: {
+      // About the conversation, for the same reason tagging is: a tag cannot be
+      // pointed at, and "this conversation lost a tag" is the fact downstream wants.
+      entity: 'conversation',
+      entityIdFrom: 'conversation_id',
+      type: 'ticket0.conversation-untagged',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['conversation_id', 'tag'],
+    },
+  },
+
+  /**
+   * The tags on one conversation.
+   *
+   * Deliberately not paged. A conversation carries a handful of tags and the rail
+   * renders all of them at once; a cursor here would be a page control over four
+   * chips, and a screen that had to walk it would be the only caller.
+   */
+  'ticket0/list-conversation-tags': {
+    summary: 'The tags on a conversation',
+    permission: { key: 'conversation:read', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string() }),
+    output: z.object({ tags: z.array(ticket0Entities.conversationTag.fields) }),
+    http: { method: 'GET', path: '/conversations/{conversationId}/tags' },
+  },
+
+  /**
+   * The desk's tag vocabulary — every tag in use, and how often.
+   *
+   * Tags are free text, so the vocabulary is not a table anyone maintains: it is
+   * whatever has been typed. Handing the count back with each one is what makes the
+   * list usable as autocomplete rather than as a wall — the tag five conversations
+   * carry is the one a person means, and a typo that was used once sorts last and
+   * reads as the mistake it is.
+   */
+  'ticket0/list-tags': {
+    summary: 'Every tag the desk uses, most-used first',
+    permission: 'conversation:read',
+    output: z.object({
+      tags: z.array(z.object({ tag: z.string(), count: z.number().int() })),
+    }),
+    http: { method: 'GET', path: '/tags' },
   },
 
   // ─── Saved replies ───────────────────────────────────────────────────────────
@@ -1678,6 +1762,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/ingest-message',
           'ticket0/widget-post',
           'ticket0/tag-conversation',
+          'ticket0/untag-conversation',
           'ticket0/set-priority',
           'ticket0/merge',
         ],
@@ -1696,6 +1781,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/widget-post',
           'ticket0/assign',
           'ticket0/tag-conversation',
+          'ticket0/untag-conversation',
           'ticket0/set-priority',
           'ticket0/merge',
         ],
@@ -1710,6 +1796,7 @@ export const ticket0Lifecycles = defineLifecycles(
         allow: [
           'ticket0/post-note',
           'ticket0/tag-conversation',
+          'ticket0/untag-conversation',
           'ticket0/assign',
           'ticket0/set-priority',
         ],
@@ -1724,6 +1811,7 @@ export const ticket0Lifecycles = defineLifecycles(
         allow: [
           'ticket0/post-note',
           'ticket0/tag-conversation',
+          'ticket0/untag-conversation',
           'ticket0/set-priority',
           'ticket0/submit-csat',
         ],

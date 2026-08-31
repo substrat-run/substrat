@@ -313,6 +313,13 @@ export interface Ticket0Client {
   getConversation(input: { conversationId: string }): Promise<Conversation>;
 
   /**
+   * The satisfaction rating on a conversation, if there is one
+   *
+   * `GET /conversations/{conversationId}/csat` — `ticket0/get-csat`
+   */
+  getCsat(input: { conversationId: string }): Promise<{ csat: Csat | null }>;
+
+  /**
    * The desk’s settings
    *
    * `GET /desk` — `ticket0/get-desk`
@@ -341,6 +348,13 @@ export interface Ticket0Client {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listContacts(): Promise<Paged<Contact>>;
+
+  /**
+   * The tags on a conversation
+   *
+   * `GET /conversations/{conversationId}/tags` — `ticket0/list-conversation-tags`
+   */
+  listConversationTags(input: { conversationId: string }): Promise<{ tags: ConversationTag[] }>;
 
   /**
    * The desk’s conversations
@@ -377,6 +391,13 @@ export interface Ticket0Client {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listSavedReplies(): Promise<Paged<SavedReply>>;
+
+  /**
+   * Every tag the desk uses, most-used first
+   *
+   * `GET /tags` — `ticket0/list-tags`
+   */
+  listTags(): Promise<{ tags: { tag: string; count: number }[] }>;
 
   /**
    * What the assistant produced on this conversation
@@ -548,6 +569,13 @@ export interface Ticket0Client {
   tagConversation(input: { conversationId: string; tag: string }): Promise<ConversationTag>;
 
   /**
+   * Take a tag off a conversation
+   *
+   * `DELETE /conversations/{conversationId}/tags/{tag}` — `ticket0/untag-conversation`
+   */
+  untagConversation(input: { conversationId: string; tag: string }): Promise<{ conversation_id: string; tag: string; removed: boolean }>;
+
+  /**
    * Token usage and what it cost
    *
    * `GET /usage` — `ticket0/usage-summary`
@@ -714,6 +742,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/saved-replies", "POST", input, undefined),
     getConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}`, "GET", undefined, omit(input, ["conversationId"])),
+    getCsat: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/csat`, "GET", undefined, omit(input, ["conversationId"])),
     getDesk: () =>
       send("/desk", "GET", undefined, undefined),
     ingestKbSource: (input: Args) =>
@@ -722,6 +752,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/relay/inbound", "POST", input, undefined),
     listContacts: () =>
       page("/contacts", "GET", undefined, undefined),
+    listConversationTags: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "GET", undefined, omit(input, ["conversationId"])),
     listConversations: (input: Args) =>
       page("/conversations", "GET", undefined, input),
     listKbSources: () =>
@@ -730,6 +762,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/messages`, "GET", undefined, omit(input, ["conversationId"])),
     listSavedReplies: () =>
       page("/saved-replies", "GET", undefined, undefined),
+    listTags: () =>
+      send("/tags", "GET", undefined, undefined),
     listTurns: (input: Args) =>
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/turns`, "GET", undefined, omit(input, ["conversationId"])),
     markNotificationRead: (input: Args) =>
@@ -776,6 +810,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/me/conversations/${encodeURIComponent(String(input.conversationId))}/csat`, "POST", omit(input, ["conversationId"]), undefined),
     tagConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "POST", omit(input, ["conversationId"]), undefined),
+    untagConversation: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags/${encodeURIComponent(String(input.tag))}`, "DELETE", undefined, omit(input, ["conversationId","tag"])),
     usageSummary: (input: Args) =>
       send("/usage", "GET", undefined, input),
     wake: (input: Args) =>

@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-46 operations · 21 narrowed checks · 21 conformance pairs driven
+50 operations · 24 narrowed checks · 24 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,14 +37,16 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**21 pairs driven** across 21 of this package's 21 narrowed checks.
+**24 pairs driven** across 24 of this package's 24 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
 | `ticket0/assign` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/close` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-conversation` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/get-csat` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/ingest-kb-source` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
+| `ticket0/list-conversation-tags` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-messages` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-turns` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/merge` | `conversation:merge` | `conversation`, id from `conversationId` | `conversation` |
@@ -60,6 +62,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/snooze` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/submit-csat` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/tag-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/untag-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/wake` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/widget-session` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 
@@ -93,7 +96,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 24 | `ticket0/add-kb-source`, `ticket0/assistant-health`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/create-saved-reply`, `ticket0/get-desk`, `ticket0/ingest-message`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-kb-sources`, `ticket0/list-saved-replies`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/read-outbound`, `ticket0/record-delivery`, `ticket0/rotate-verification-secret`, `ticket0/search-kb`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/usage-summary`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
+| Node-level check | 25 | `ticket0/add-kb-source`, `ticket0/assistant-health`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/create-saved-reply`, `ticket0/get-desk`, `ticket0/ingest-message`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-kb-sources`, `ticket0/list-saved-replies`, `ticket0/list-tags`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/read-outbound`, `ticket0/record-delivery`, `ticket0/rotate-verification-secret`, `ticket0/search-kb`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/usage-summary`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
 | Per-entity proof walk (`narrows`) | 1 | `ticket0/my-conversations` |
 
 ## 5. Not covered by this artifact
