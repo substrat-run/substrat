@@ -22,6 +22,12 @@ export const conformance = declareEntityChecks({
     'ticket0/record-kb-ingest-failure': { error: 'The conformance kit could not read it' },
     'ticket0/post-note': { body: 'A note from the conformance kit' },
     'ticket0/post-public-reply': { body: 'A reply from the conformance kit' },
+    // Nobody, and it has to be: `assignee` must now name a principal with a profile
+    // (#1079), and this file is a static declaration the trust page also reads — it
+    // has no way to name a principal a seed run invented. `null` is a legal
+    // assignment either way, and what this pair proves is the ENTITY check, not who
+    // may be assigned. `test/scenario.test.ts` drives the real person and the
+    // refusal.
     'ticket0/assign': { assignee: null },
     'ticket0/set-priority': { priority: 'urgent' },
     'ticket0/snooze': { until: '2030-01-01T00:00:00.000Z' },

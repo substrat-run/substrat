@@ -113,6 +113,65 @@ export function Unassigned({ size = 24 }: { size?: number }) {
   );
 }
 
+/* ── Owner ──────────────────────────────────────────────────────────────── */
+
+/**
+ * Who owns this conversation, and the control that changes it (#1079).
+ *
+ * Presentational on purpose: it is given the staff it may offer and hands back the
+ * choice, so the rail and the inbox both call `ticket0/assign` in their own
+ * `act(…)` and neither grows a second idea of what an error looks like.
+ *
+ * The options are the desk's directory and nothing else — the same rows the handler
+ * validates against — so the screen cannot offer a choice the server would refuse.
+ * "Unassigned" is first because dropping a conversation is a real move, not the
+ * absence of one.
+ */
+export function OwnerPicker({
+  value,
+  staff,
+  disabled,
+  onChange,
+  compact = false,
+}: {
+  value: string | null;
+  staff: { principal: string; display_name: string }[];
+  disabled?: boolean;
+  onChange: (assignee: string | null) => void;
+  compact?: boolean;
+}) {
+  // A conversation assigned to somebody who is not in the directory — a profile
+  // erased since, or a row that predates the rule — must still be selectable, or the
+  // control would silently reassign it on the next change of anything else.
+  const known = staff.some((a) => a.principal === value);
+  return (
+    <select
+      aria-label="Owner"
+      value={value ?? ''}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}
+      style={{
+        border: '1px solid var(--frame)',
+        borderRadius: 6,
+        background: 'var(--surface)',
+        font: `400 ${compact ? 11 : 12}px 'Geist', sans-serif`,
+        color: 'inherit',
+        padding: compact ? '1px 2px' : '2px 4px',
+        maxWidth: compact ? 84 : undefined,
+        cursor: disabled ? 'default' : 'pointer',
+      }}
+    >
+      <option value="">Unassigned</option>
+      {!known && value ? <option value={value}>{value.slice(-8)}</option> : null}
+      {staff.map((a) => (
+        <option key={a.principal} value={a.principal}>
+          {a.display_name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 /* ── Priority ───────────────────────────────────────────────────────────── */
 
 const PRIORITY: Record<string, string> = {

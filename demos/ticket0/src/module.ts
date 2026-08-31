@@ -110,6 +110,29 @@ function sourceOrThrow(ctx: OperationContext, id: string): KbSourceRow {
 }
 
 /**
+ * Somebody this desk can hand work to.
+ *
+ * The directory is `ticket0_agent_profiles`, for the reason the operation's
+ * docblock gives: it is the only in-scope record of a colleague, because nothing
+ * lets module code ask who else holds a permission. So a principal with no
+ * profile is refused here — `validation_failed` rather than a write, since a
+ * typo that sticks is exactly what this is for.
+ */
+function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
+  const row = ctx.sql.query<AgentProfileRow>(
+    'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
+    [principal],
+  )[0];
+  if (!row) {
+    throw substratError(
+      'validation_failed',
+      `not a member of this desk: ${principal} — they appear here once they have set a profile`,
+    );
+  }
+  return row;
+}
+
+/**
  * The desk's settings, seeded lazily on first read.
  *
  * User-shaped configuration is DATA: a row with defaults, not DDL and not a constant
@@ -722,6 +745,11 @@ const operations = {
     return row;
   },
 
+  'ticket0/list-agents': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    return ctx.page<AgentProfileRow>('agentProfile', input);
+  },
+
   // --- Knowledge base ------------------------------------------------------
 
   'ticket0/add-kb-source': async (ctx, input) => {
@@ -1034,6 +1062,14 @@ const operations = {
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
+    // Before the write, not after: an assignee nobody can resolve is a queue entry
+    // that never gets worked and a notification nobody receives.
+    //
+    // `!== null` rather than truthiness, because `''` is a string the schema accepts
+    // and truthiness would wave it through — and an empty assignee is the exact
+    // failure this check exists for: not null, so the row reads as assigned, and not
+    // a person, so nobody is told and nobody works it.
+    if (input.assignee !== null) staffOrThrow(ctx, input.assignee);
     const next = step(conversation, 'ticket0/assign');
     ctx.sql.exec('UPDATE ticket0_conversations SET assignee = ? WHERE id = ?', [
       input.assignee,

@@ -13,10 +13,11 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
 import type { Session } from '../api.js';
-import { ApiError, api, type Contact, type Conversation, type Message, type SavedReply } from '../api.js';
+import { ApiError, api, type AgentProfile, type Contact, type Conversation, type Message, type SavedReply } from '../api.js';
+import { agentName, agents } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
-import { Avatar, EventDivider, StateBadge, clock } from '../ui.js';
+import { Avatar, EventDivider, OwnerPicker, StateBadge, Unassigned, clock } from '../ui.js';
 
 interface Turn {
   id: string;
@@ -72,6 +73,8 @@ export function ConversationView({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [who, setWho] = useState<Contact | undefined>(undefined);
+  /** The desk's staff — what the owner picker offers and what turns a ULID into a name. */
+  const [staff, setStaff] = useState<Map<string, AgentProfile>>(new Map());
 
   const load = useCallback(async () => {
     try {
@@ -107,6 +110,13 @@ export function ConversationView({
   useEffect(() => {
     void load();
   }, [load]);
+
+  // The directory, once. It is not part of `load()` because it does not change when
+  // the conversation does, and a five-second poll re-reading the staff list would be
+  // a request per tick for an answer that is the same every time.
+  useEffect(() => {
+    void agents().then(setStaff);
+  }, []);
 
   // Faster than the inbox: somebody reading one conversation is waiting on this one.
   useLiveReload(() => void load(), 5000);
@@ -163,6 +173,7 @@ export function ConversationView({
         <Rail
           conv={conv}
           who={who}
+          staff={staff}
           visitor={visitor}
           usage={usage}
           tags={tags}
@@ -867,6 +878,7 @@ function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onC
 function Rail({
   conv,
   who,
+  staff,
   visitor,
   usage,
   tags,
@@ -878,6 +890,7 @@ function Rail({
 }: {
   conv: Conversation;
   who: Contact | undefined;
+  staff: Map<string, AgentProfile>;
   visitor: WidgetSession;
   usage: Usage | null;
   tags: ConversationTag[];
@@ -925,7 +938,31 @@ function Rail({
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 8px', alignItems: 'center' }}>
         {field('Channel', <span className="mono">{conv.channel}</span>)}
         {field('State', <StateBadge state={conv.state} />)}
-        {field('Owner', conv.assignee ? <Avatar name={conv.assignee} size={20} /> : '—')}
+        {/* The rail used to render the owner as read-only text over a ULID, and
+            `assign` had no caller in the app at all (#1079). This is that caller: the
+            options are the desk's own directory, so the avatar has a name behind it
+            and handing the conversation over is one choice rather than a seed script.
+            `closed` is terminal — the machine refuses the write there, so the control
+            says so rather than letting the desk find out. */}
+        {field(
+          'Owner',
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            {conv.assignee ? (
+              <Avatar name={agentName(staff, conv.assignee) ?? ''} size={18} />
+            ) : (
+              <Unassigned size={18} />
+            )}
+            <OwnerPicker
+              compact
+              value={conv.assignee}
+              staff={[...staff.values()]}
+              disabled={busy || conv.state === 'closed'}
+              onChange={(assignee) =>
+                void act(() => api.assign({ conversationId: conv.id, assignee }))
+              }
+            />
+          </div>,
+        )}
         {/* The inbox has always sorted and filtered on priority; this is where a
             person picks one. `closed` is terminal, so the machine refuses the write
             there and the control says so rather than letting the desk find out. */}
