@@ -306,6 +306,17 @@ export interface Ticket0Client {
   createSavedReply(input: { title: string; body: string }): Promise<SavedReply>;
 
   /**
+   * Delete a canned answer
+   *
+   * `DELETE /saved-replies/{savedReplyId}` — `ticket0/delete-saved-reply`
+   *
+   * Concurrency-checked over `savedReply`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  deleteSavedReply(input: { savedReplyId: string }): Promise<{ id: string; title: string }>;
+
+  /**
    * Volume, speed, backlog, satisfaction and what the assistant settled
    *
    * `GET /desk-metrics` — `ticket0/desk-metrics`
@@ -332,6 +343,17 @@ export interface Ticket0Client {
    * `GET /desk` — `ticket0/get-desk`
    */
   getDesk(): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; created_at: string; updated_at: string }>;
+
+  /**
+   * One canned answer
+   *
+   * `GET /saved-replies/{savedReplyId}` — `ticket0/get-saved-reply`
+   *
+   * Concurrency-checked over `savedReply`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  getSavedReply(input: { savedReplyId: string }): Promise<SavedReply>;
 
   /**
    * Re-read a documentation source
@@ -522,6 +544,13 @@ export interface Ticket0Client {
   recordKbIngestFailure(input: { sourceId: string; error: string }): Promise<KbSource>;
 
   /**
+   * A canned answer with this conversation’s facts filled in
+   *
+   * `GET /conversations/{conversationId}/saved-replies/{savedReplyId}/render` — `ticket0/render-saved-reply`
+   */
+  renderSavedReply(input: { conversationId: string; savedReplyId: string }): Promise<{ id: string; title: string; body: string; blank: string[]; unresolved: string[] }>;
+
+  /**
    * Mark a conversation resolved
    *
    * `POST /conversations/{conversationId}/resolve` — `ticket0/resolve`
@@ -592,6 +621,17 @@ export interface Ticket0Client {
   untagConversation(input: { conversationId: string; tag: string }): Promise<{ conversation_id: string; tag: string; removed: boolean }>;
 
   /**
+   * Change a canned answer
+   *
+   * `PATCH /saved-replies/{savedReplyId}` — `ticket0/update-saved-reply`
+   *
+   * Concurrency-checked over `savedReply`. The tag this answers with is
+   * remembered and sent as `If-Match` on the next write to the same entity, so a
+   * write that would overwrite someone else's change fails with 412 instead.
+   */
+  updateSavedReply(input: { savedReplyId: string; title?: string; body?: string }): Promise<SavedReply>;
+
+  /**
    * Token usage and what it cost
    *
    * `GET /usage` — `ticket0/usage-summary`
@@ -641,6 +681,17 @@ export interface Ticket0Client {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   widgetThread(input: { sessionId: string; token: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
+
+  /**
+   * The entity tags this client is holding, keyed `entityType:id` (#129).
+   *
+   * Populated from every concurrency-checked response and sent back as
+   * `If-Match` on the next write to that entity — an app writes no header code.
+   * Exposed rather than hidden so it can be inspected in a devtools session and
+   * cleared when a screen is abandoned; a stale tag causes a 412, never a silent
+   * overwrite, so clearing it is safe and keeping it is safe.
+   */
+  readonly versions: Map<string, string>;
 
   /**
    * Fetch the next page of any paged read, given a previous page's `next`.
@@ -701,15 +752,18 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
   const baseUrl = options.baseUrl ?? '/api';
   const doFetch = options.fetch ?? globalThis.fetch.bind(globalThis);
   const readMessage = options.errorMessage ?? defaultErrorMessage;
+  /** #129: entity tags seen on this client, keyed `entityType:id`. */
+  const versions = new Map<string, string>();
 
   /** One request, against a path that is ALREADY prefixed and query-stringed. */
-  const raw = async (fullPath: string, method: string, body: unknown): Promise<Response> => {
+  const raw = async (fullPath: string, method: string, body: unknown, extra?: Record<string, string>): Promise<Response> => {
     const hasBody = body !== undefined && method !== 'GET' && method !== 'DELETE';
     return await doFetch(fullPath, {
       method,
       headers: {
         ...(hasBody ? { 'content-type': 'application/json' } : {}),
         ...(options.headers?.() ?? {}),
+        ...(extra ?? {}),
       },
       ...(hasBody ? { body: JSON.stringify(body) } : {}),
     });
@@ -724,6 +778,51 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
 
   const send = async (path: string, method: string, body: unknown, params: unknown): Promise<unknown> =>
     await parse(await raw(`${baseUrl}${path}${query(params as Record<string, unknown>)}`, method, body));
+
+  /**
+   * A concurrency-checked call (#129): remember the tag a read hands back, send it
+   * as `If-Match` on the next write to that same entity.
+   *
+   * This is what makes the guarantee reachable without the app writing header code.
+   * The tag is per (entity type, id) rather than global — two facilities being
+   * edited in two tabs do not share one — and it lives on the CLIENT INSTANCE, so a
+   * page reload starts empty and the first write after it simply goes unconditional
+   * until something has been read.
+   *
+   * **A 412 evicts the tag rather than replacing it with the current one.** The
+   * tempting behaviour is to re-read and retry automatically; that would overwrite
+   * whatever change caused the refusal, which is the lost update this exists to
+   * prevent. Evicting means the app's own re-read is what re-arms the guard, and
+   * until it happens the next write is unconditional — visibly wrong rather than
+   * quietly wrong.
+   *
+   * `versions` is exposed on the client so an app can inspect or clear it. Nothing
+   * here is hidden state a caller cannot reach.
+   */
+  const guarded = async (
+    entityType: string,
+    entityId: unknown,
+    path: string,
+    method: string,
+    body: unknown,
+    params: unknown,
+  ): Promise<unknown> => {
+    const key = `${entityType}:${String(entityId)}`;
+    const held = versions.get(key);
+    const res = await raw(
+      `${baseUrl}${path}${query(params as Record<string, unknown>)}`,
+      method,
+      body,
+      held !== undefined && method !== 'GET' ? { 'If-Match': held } : undefined,
+    );
+    if (res.status === 412) versions.delete(key);
+    const parsed = await parse(res);
+    // Read AFTER `parse`, which throws on a failure — a tag from an error response
+    // describes nothing the caller now holds.
+    const tag = res.headers.get('ETag');
+    if (tag) versions.set(key, tag);
+    return parsed;
+  };
 
   /**
    * A paged read: the entries come from the body, the walk from the headers.
@@ -756,6 +855,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/desk", "PATCH", input, undefined),
     createSavedReply: (input: Args) =>
       send("/saved-replies", "POST", input, undefined),
+    deleteSavedReply: (input: Args) =>
+      guarded("savedReply", input.savedReplyId, `/saved-replies/${encodeURIComponent(String(input.savedReplyId))}`, "DELETE", undefined, omit(input, ["savedReplyId"])),
     deskMetrics: (input: Args) =>
       send("/desk-metrics", "GET", undefined, input),
     getConversation: (input: Args) =>
@@ -764,6 +865,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/csat`, "GET", undefined, omit(input, ["conversationId"])),
     getDesk: () =>
       send("/desk", "GET", undefined, undefined),
+    getSavedReply: (input: Args) =>
+      guarded("savedReply", input.savedReplyId, `/saved-replies/${encodeURIComponent(String(input.savedReplyId))}`, "GET", undefined, omit(input, ["savedReplyId"])),
     ingestKbSource: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/ingest`, "POST", omit(input, ["sourceId"]), undefined),
     ingestMessage: (input: Args) =>
@@ -812,6 +915,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/articles`, "POST", omit(input, ["sourceId"]), undefined),
     recordKbIngestFailure: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/failure`, "POST", omit(input, ["sourceId"]), undefined),
+    renderSavedReply: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/render`, "GET", undefined, omit(input, ["conversationId","savedReplyId"])),
     resolve: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/resolve`, "POST", omit(input, ["conversationId"]), undefined),
     rotateVerificationSecret: () =>
@@ -832,6 +937,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "POST", omit(input, ["conversationId"]), undefined),
     untagConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags/${encodeURIComponent(String(input.tag))}`, "DELETE", undefined, omit(input, ["conversationId","tag"])),
+    updateSavedReply: (input: Args) =>
+      guarded("savedReply", input.savedReplyId, `/saved-replies/${encodeURIComponent(String(input.savedReplyId))}`, "PATCH", omit(input, ["savedReplyId"]), undefined),
     usageSummary: (input: Args) =>
       send("/usage", "GET", undefined, input),
     wake: (input: Args) =>
@@ -846,6 +953,7 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/widget/sessions", "POST", input, undefined),
     widgetThread: (input: Args) =>
       page(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/messages`, "GET", undefined, omit(input, ["sessionId"])),
+    versions,
     follow: async (next: string) => {
       // The link names the API's OWN origin, which under a dev proxy is not the origin
       // this page was served from. So the path is kept and the origin is taken from

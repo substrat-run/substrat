@@ -45,6 +45,8 @@ import {
   DESK_METRICS_AGENTS,
   DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
+  SAVED_REPLY_VARIABLES,
+  savedReplyToken,
   SEARCH_OVERFETCH,
   ticket0Entities,
   ticket0Lifecycles,
@@ -133,6 +135,62 @@ function messageOrThrow(ctx: OperationContext, id: string): MessageRow {
 function sourceOrThrow(ctx: OperationContext, id: string): KbSourceRow {
   const row = ctx.sql.query<KbSourceRow>('SELECT * FROM ticket0_kb_sources WHERE id = ?', [id])[0];
   if (!row) throw substratError('not_found', `documentation source not found: ${id}`);
+  return row;
+}
+
+/**
+ * Every value a saved reply may substitute, and nothing else.
+ *
+ * Typed off `SAVED_REPLY_VARIABLES` so the closed set is closed in one place: adding
+ * a name to the declaration without resolving it here is a compile error, and
+ * resolving one the declaration does not list is too.
+ */
+type SavedReplyValues = Record<(typeof SAVED_REPLY_VARIABLES)[number], string | null>;
+
+/**
+ * Fill a canned answer in, and say what it could not fill.
+ *
+ * Three outcomes per token, and the screen needs all three apart:
+ *
+ *   - known and set     - substituted;
+ *   - known and empty   - substituted with nothing, named in `blank`, because "Hi ,"
+ *     is what an anonymous visitor's name renders as and an agent should see that
+ *     before the customer does;
+ *   - not known at all  - left in the text VERBATIM and named in `unresolved`. A
+ *     canned answer about CSS may legitimately contain braces, and neither deleting
+ *     the token nor refusing the whole reply is a reasonable thing to do to it.
+ */
+function renderSavedReplyBody(
+  body: string,
+  values: SavedReplyValues,
+): { body: string; blank: string[]; unresolved: string[] } {
+  const known = new Map<string, string | null>(Object.entries(values));
+  const blank = new Set<string>();
+  const unresolved = new Set<string>();
+  const rendered = body.replace(savedReplyToken(), (whole: string, name: string) => {
+    if (!known.has(name)) {
+      unresolved.add(name);
+      return whole;
+    }
+    const value = known.get(name) ?? '';
+    if (value === '') {
+      blank.add(name);
+      return '';
+    }
+    return value;
+  });
+  return {
+    body: rendered,
+    blank: [...blank].sort(),
+    unresolved: [...unresolved].sort(),
+  };
+}
+
+function savedReplyOrThrow(ctx: OperationContext, id: string): SavedReplyRow {
+  const row = ctx.sql.query<SavedReplyRow>('SELECT * FROM ticket0_saved_replies WHERE id = ?', [
+    id,
+  ])[0];
+  if (!row) throw substratError('not_found', `saved reply not found: ${id}`);
   return row;
 }
 
@@ -1678,6 +1736,118 @@ const operations = {
       },
     });
     return row;
+  },
+
+  /**
+   * One reply. The read an editor arms its guard with - a page is about many rows
+   * and so carries no entity tag, which would leave the first save unconditional.
+   */
+  'ticket0/get-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    return savedReplyOrThrow(ctx, input.savedReplyId);
+  },
+
+  /**
+   * Change the title, the text, or both.
+   *
+   * Absent means "leave it", which is why this is a PATCH and why the model makes it
+   * declare `concurrency`: the caller read the row, changed one field and sent the
+   * bag back, so an unguarded save would destroy a colleague's edit to the other
+   * field without either of them seeing anything.
+   *
+   * A rename onto a title another reply already holds is a `conflict` rather than a
+   * silent no-op - `savedReply.key` is `title`, and the caller plainly meant to end
+   * up with the name they typed. Changing nothing announces nothing, so a consumer
+   * counting this event counts real edits.
+   */
+  'ticket0/update-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    const existing = savedReplyOrThrow(ctx, input.savedReplyId);
+    const title = input.title ?? existing.title;
+    const body = input.body ?? existing.body;
+    const clash = ctx.sql.query<SavedReplyRow>(
+      'SELECT * FROM ticket0_saved_replies WHERE title = ? AND id <> ?',
+      [title, existing.id],
+    )[0];
+    if (clash) {
+      throw substratError('conflict', `another saved reply is already called "${title}"`);
+    }
+    if (title === existing.title && body === existing.body) return existing;
+    ctx.sql.exec('UPDATE ticket0_saved_replies SET title = ?, body = ? WHERE id = ?', [
+      title,
+      body,
+      existing.id,
+    ]);
+    const row = savedReplyOrThrow(ctx, existing.id);
+    ctx.emit({
+      type: 'ticket0.saved-reply-updated',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReply', entityId: row.id },
+      piiClass: 'none',
+      payload: {
+        id: row.id,
+        title: row.title,
+        body: row.body,
+        created_by: row.created_by,
+        created_at: row.created_at,
+      },
+    });
+    return row;
+  },
+
+  /**
+   * Take one out of the library.
+   *
+   * A ULID that names nothing is a stale client rather than a second deletion, so
+   * this refuses instead of answering emptily - the reverse of `untag-conversation`,
+   * whose identifier is a string a person typed. The title goes out with the answer
+   * and on the event because afterwards there is nowhere left to read it from.
+   */
+  'ticket0/delete-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft));
+    const existing = savedReplyOrThrow(ctx, input.savedReplyId);
+    ctx.sql.exec('DELETE FROM ticket0_saved_replies WHERE id = ?', [existing.id]);
+    ctx.emit({
+      type: 'ticket0.saved-reply-deleted',
+      schemaVersion: 1,
+      entity: { entityType: 'savedReply', entityId: existing.id },
+      piiClass: 'none',
+      payload: { id: existing.id, title: existing.title },
+    });
+    return { id: existing.id, title: existing.title };
+  },
+
+  /**
+   * The reply with this conversation's facts in it.
+   *
+   * Four reads behind one permission check narrowed to this conversation, which is
+   * the reason the substitution is here rather than in the browser: handing a client
+   * the contact's name so it can do its own replacement is the same read with
+   * nothing in front of it.
+   *
+   * A read - it writes nothing and emits nothing. Rendering a reply is not using
+   * one, and the agent may well look at the result and pick a different one.
+   */
+  'ticket0/render-saved-reply': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationDraft, conversationRef(input.conversationId)));
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const reply = savedReplyOrThrow(ctx, input.savedReplyId);
+    const contact = ctx.sql.query<ContactRow>('SELECT * FROM ticket0_contacts WHERE id = ?', [
+      conversation.contact_id,
+    ])[0];
+    // The caller's OWN profile, never a principal from the input: a saved reply
+    // signs itself with the name of whoever is pasting it.
+    const profile = ctx.sql.query<AgentProfileRow>(
+      'SELECT * FROM ticket0_agent_profiles WHERE principal = ?',
+      [String(ctx.principal)],
+    )[0];
+    const rendered = renderSavedReplyBody(reply.body, {
+      'agent.name': profile?.display_name ?? null,
+      'agent.signature': profile?.signature ?? null,
+      'contact.name': contact?.display_name ?? null,
+      'conversation.subject': conversation.subject,
+    });
+    return { id: reply.id, title: reply.title, ...rendered };
   },
 
   // --- The assistant -------------------------------------------------------

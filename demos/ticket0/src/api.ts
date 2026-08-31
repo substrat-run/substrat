@@ -60,6 +60,21 @@ export const API = apiCatalogFrom(SERVED, {
 
   'ticket0/list-saved-replies': { tag: 'Saved replies' },
   'ticket0/create-saved-reply': { tag: 'Saved replies' },
+  'ticket0/get-saved-reply': {
+    tag: 'Saved replies',
+    description: 'Answers with the `ETag` an edit of this reply is checked against.',
+  },
+  'ticket0/update-saved-reply': {
+    tag: 'Saved replies',
+    description:
+      'Send `If-Match` with the tag the last read handed back; without one, a colleague’s edit is overwritten silently.',
+  },
+  'ticket0/delete-saved-reply': { tag: 'Saved replies' },
+  'ticket0/render-saved-reply': {
+    tag: 'Saved replies',
+    description:
+      'Substitutes a closed set of four variables server-side. Unknown tokens are left in the text and named in `unresolved`.',
+  },
 
   'ticket0/list-turns': {
     tag: 'Assistant',
