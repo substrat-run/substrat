@@ -53,6 +53,16 @@ Beyond the base registry, a few capabilities have landed that are worth naming:
   the uploader already injects into every dispatch script; the relay re-derives *which* vertical is
   calling from the named `(tenant, scope)` and checks the grant against that, so holding the shared
   secret is not enough. The `from` address is always the platform's onboarded sender.
+- **Platform-mediated inference: the `AI` binding.** The one capability handed over as a real
+  runtime binding rather than a relay. A vertical still cannot *declare* `ai` — the allowlist
+  refuses it, exactly as above — but a version that declares `substrat.usesModels` (#1054) has
+  `{ type: 'ai', name: 'AI' }` appended to its bindings by the uploader, **after** the §4 check has
+  run on the declared set, and calls `env.AI` directly. Two switches gate it: the platform's own
+  fleet-wide `bindAi` kill-switch and this version's declaration — so a vertical that never asked
+  holds nothing, and asking is a manifest diff a human reads at admit rather than a default every
+  pushed script inherits. The credential is still never the vertical's: the binding draws on the
+  platform's AI account, and nothing about it lives in the bundle. The bound worth stating: a
+  vertical holding the binding can call `env.AI.run()` outside the metered path.
 - **Platform-mediated credential handover: the connection relay.** The inbound twin of the email
   relay. Connecting a provider (Scrive, Fortnox) is a *tenant admin's* act, so the natural place to
   paste a provider credential is the vertical's own admin screen — but a hosted vertical must never

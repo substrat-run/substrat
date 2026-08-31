@@ -184,11 +184,19 @@ deliberately won't let you bind for yourself:
   it does nothing until a staff member grants the `emailSender` capability in the console.
 - `provisions` — the verticals your manager app creates tenants of (the tenant-provisioner
   request), turned on the same way (`setVerticalTenantProvisioner`).
+- `usesModels` — set it (`"usesModels": true`) if your vertical answers with a language model.
+  This is the one request answered with a **binding** rather than a relay: the platform appends
+  `env.AI` — its own model runtime, on its own AI account — to your script. You still hold no
+  credential, and you still cannot bind `ai` yourself; the allowlist refuses that, and the
+  platform adds the binding after checking what *you* declared. Two switches have to agree for it
+  to appear: a platform-side kill-switch for the whole fleet, and this version having asked. A
+  version that never declared it gets no binding at all and falls back to whatever model key its
+  own env carries. `demos/ticket0` is the reference declaration.
 
-A capability request is refreshed on every push and confers nothing by itself; the matching
-grant is a directory flag your push can never set or keep — so shipping code can never quietly
-acquire outbound authority. This is the wiring model: **declare the request, get it granted,
-call the platform seam — never bind the raw resource.**
+A capability request is refreshed on every push and confers nothing by itself; what turns it on
+is a flag your push can never set or keep — so shipping code can never quietly acquire outbound
+authority. This is the wiring model: **declare the request, get it granted, call what the
+platform hands over — never bind the raw resource.**
 
 Entitlements are delivered to your vertical **with provisioning** and projected locally; your
 per-operation gate fails closed on anything the tenant doesn't hold. If a live install ever
