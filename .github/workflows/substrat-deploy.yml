@@ -48,6 +48,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           # 22+: corepack resolves the latest pnpm for lockfile-only repos, and pnpm 11
@@ -108,6 +110,8 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           # 22+: corepack resolves the latest pnpm for lockfile-only repos, and pnpm 11
