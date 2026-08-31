@@ -43,6 +43,7 @@ the only thing that can tell them apart, which is why this is a linter and not a
 | **R5** tables private | module code never references another module's tables in SQL |
 | **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
 | **R7** no bare catch | module code never catches an engine error outside `ctx.atomic` — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
+| **R8** no `SELECT *` | an **engine** never reads with a star — a read names its columns, so the shape it publishes is its schema's rather than its table's |
 
 **Module code** is everything reachable from a `ModuleRegistration` — operations and
 consumers. Composition roots (`server.ts`, `seed.ts`, `worker.ts`, …) are harness, and are
@@ -129,6 +130,31 @@ catch (e) { if (rare) { throw e } }     // flagged — braced, so the throw is n
 
 Widening any of these is a change to the linter with fixtures, not a change of character.
 
+## Star reads in an engine (R8)
+
+An engine publishes a shape. `SELECT *` publishes whatever columns the physical table
+happens to have today, so the two drift apart silently: a vertical compiled against 0.3
+and running against 0.4 reads a field that moved and puts **wrong data on a screen** — it
+never throws, because at runtime both spellings return rows.
+
+```ts
+// The seam: the schema says which columns to ask for, and parses the row on the way out.
+const rows = ctx.sql.query(`SELECT ${columnsOf(Order)} FROM workorder_orders`);
+return rows.map((r) => returns(Order, 'listOrders', r));
+
+// R8. Same rows today; a different shape after the next migration.
+const rows = ctx.sql.query('SELECT * FROM workorder_orders');
+```
+
+R8 is scoped to **engine** packages (`engines/*` in the monorepo, `"engine": true` in the
+config). A vertical starring its own table has no published seam to widen, and R5 already
+stops it starring somebody else's. `SELECT COUNT(*)` is a number rather than a row shape
+and is not flagged; `SELECT DISTINCT *` and the qualified `SELECT t.*` are.
+
+The other half of the seam — proving every row-returning export goes through `returns()` —
+is **not** linted. It needs the type checker this package deliberately does not carry, so
+it stays a convention with an engine-side `test/seam.test.ts` behind it.
+
 ## The escape hatch
 
 A one-time extraction handoff (decision 27) opts out of R5 explicitly, in a block a
@@ -140,9 +166,10 @@ const legacy = ctx.sql.query('SELECT * FROM workorder_time_entries');
 // boundary-lint-end R5
 ```
 
-R6 has the same block for code that must read the real clock. There is no escape hatch for
-R1–R4, and deliberately none for R7 — there is no legitimate reason to swallow an engine
-error unprotected, so a hatch would only ever silence the rule.
+R6 has the same block for code that must read the real clock, and R8 for a maintenance or
+migration read whose row never leaves the engine. There is no escape hatch for R1–R4, and
+deliberately none for R7 — there is no legitimate reason to swallow an engine error
+unprotected, so a hatch would only ever silence the rule.
 
 ## Exit codes
 

@@ -32,6 +32,7 @@ ambient env.
 | **R5** tables private | module code never references another module's tables in SQL |
 | **R6** no clock | module code never reads the wall clock (`new Date()`, `Date.now()`) — the operation's instant is `ctx.now()` |
 | **R7** no bare catch | module code never catches an engine error outside [`ctx.atomic`](/concepts/modules) — a `catch` around a raw engine call commits its partial writes (under-fires; see below) |
+| **R8** no `SELECT *` | an **engine** never reads with a star — `SELECT *` publishes whatever columns the physical table holds today, so a column that moves between two engine versions reaches a vertical as *wrong data on a screen* rather than a throw. A read names its columns (`columnsOf(schema)`) and returns through `returns(schema, …)` |
 
 R7 allows the two shapes that do not swallow: `try`/`finally` with no `catch`, and a catch
 that always rethrows (`catch (e) { log(e); throw e }`) — the operation still fails, so the
@@ -54,6 +55,14 @@ no engine error is swallowed.** Three shapes it does not catch:
 Widening any of these is a change to the linter with fixtures, not a change of character.
 :::
 
+R8 is scoped to **engine** packages — `engines/*` in the monorepo, `"engine": true` in the
+config. A vertical starring its own table has no published seam to widen, and R5 already
+stops it starring somebody else's. `SELECT COUNT(*)` is a number rather than a row shape and
+is not flagged; `SELECT DISTINCT *` and the qualified `SELECT t.*` are. The other half of the
+seam — proving every row-returning export goes through `returns()` — is deliberately **not**
+linted: it needs the type checker this package does not carry, so it stays a convention with
+an engine-side `test/seam.test.ts` behind it.
+
 Table ownership is **derived, never declared**: a table belongs to whichever module's
 `CREATE TABLE` migration created it, and that SQL survives compilation into `dist/`, so
 ownership resolves identically from a workspace checkout or from `node_modules` (keyed on the
@@ -62,9 +71,9 @@ would drift and wave a real violation through.
 
 ### The escape hatch
 
-R5 and R6 have an explicit, reviewable opt-out — R5 for a one-time extraction handoff
+R5, R6 and R8 have an explicit, reviewable opt-out — R5 for a one-time extraction handoff
 (decision 27), R6 for code that must read the *real* clock (a JWT whose `exp` a remote
-server judges):
+server judges), R8 for a maintenance or migration read whose row never leaves the engine:
 
 ```ts
 // boundary-lint-allow R5 — one-time extraction handoff, removed after the cutover

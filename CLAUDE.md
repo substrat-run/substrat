@@ -239,7 +239,13 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   is the reference conversion, and every other engine — booking, protocol, absence,
   invites, invoicing, metering — is converted the same way, each with a
   `test/seam.test.ts` that moves its tables under it and asserts a throw rather than
-  wrong data. A new engine is expected to do the same; there is no lint rule for it yet.
+  wrong data. The `SELECT *` half of that is now **mechanical**: boundary-lint **R8**
+  fires on a star read (`SELECT *`, `SELECT DISTINCT *`, `SELECT t.*`) anywhere in an
+  engine's module code, with the same reviewable `boundary-lint-allow R8` …
+  `boundary-lint-end R8` hatch R5 and R6 carry — for a maintenance read whose row never
+  leaves the engine. Going out through `returns()` is still convention: proving a
+  row-returning export is parsed needs the type checker the linter deliberately does
+  not carry, so a new engine is expected to do that half itself.
 - IDs come from `ulid()`; money/decimals are strings via `@substrat-run/contracts`
   helpers (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
 - **Time comes from `ctx.now()`** — module code has no other clock, and `new Date()` /
