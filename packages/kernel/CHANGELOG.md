@@ -1,5 +1,25 @@
 # @substrat-run/kernel
 
+## 0.94.0
+
+### Minor Changes
+
+- 1fc01d3: `ctx.sql` now refuses to write the platform spine. "Never write `_substrat_*`" was a
+  source rule only, and the source scan does not run on the hosted push path — so a
+  module could forge a grant, rewrite an announced event or drop the migration journal
+  through the same connection the kernel writes them with. Both adapters wrap their
+  module-facing connection in the kernel's new `guardSpine`; reads of the spine,
+  including the ones that feed a timeline projection, are unchanged.
+
+### Patch Changes
+
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+
 ## 0.93.0
 
 ### Minor Changes
@@ -3600,7 +3620,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

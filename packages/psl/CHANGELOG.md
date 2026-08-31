@@ -1,5 +1,14 @@
 # @substrat-run/psl
 
+## 0.2.4
+
+### Patch Changes
+
+- 733469b: These packages' `test/` directories are now typechecked. Nothing they ship changes — the
+  build tsconfig already emitted from `src` alone — but their `typecheck` script now compiles
+  the tests too, which caught a `vertical-host` test fixture that had drifted from
+  `VerticalScopeHost` and stayed green for months.
+
 ## 0.2.3
 
 ### Patch Changes

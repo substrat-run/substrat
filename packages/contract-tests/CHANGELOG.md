@@ -1,5 +1,37 @@
 # @substrat-run/contract-tests
 
+## 0.94.0
+
+### Minor Changes
+
+- 1fc01d3: `ctx.sql` now refuses to write the platform spine. "Never write `_substrat_*`" was a
+  source rule only, and the source scan does not run on the hosted push path — so a
+  module could forge a grant, rewrite an announced event or drop the migration journal
+  through the same connection the kernel writes them with. Both adapters wrap their
+  module-facing connection in the kernel's new `guardSpine`; reads of the spine,
+  including the ones that feed a timeline projection, are unchanged.
+
+### Patch Changes
+
+- 692cb92: An expiry written with a UTC offset no longer outlives itself. `Instant` accepts an
+  offset on the wire and now normalises it to the equivalent `Z` text at the parse, so
+  the lexicographic comparison every expiry check uses agrees with chronological order —
+  a grant that expired an hour ago is refused whichever zone it was written in.
+- 24b6855: Hostname resolution now filters `status = 'active'` in SQL on the Cloudflare adapter too,
+  the way the SQLite adapter already did. The router's read (`readRoute`) is separate from
+  the admin read and carries no scope status, so a suspension re-check cannot creep into the
+  router; a new contract test covers refusing a name a live scope holds and reclaiming one an
+  archived scope released.
+- 35147a9: Hosted verticals reach Workers AI through a **binding**, not a credential (#1054). A provider row may declare `binding`, meaning it is also reachable through a runtime capability rather than over HTTP with a token; `createModelHost({ aiBinding: env.AI })` supplies it, and the control plane binds `env.AI` on every pushed script. The `cloudflare` row is then runnable with no `CLOUDFLARE_AI_*` set anywhere — nothing on the script to read, leak or rotate, and Workers AI bills the account that owns it. The HTTP transport is unchanged for hosts that have a token (the local builder studio). Also replaces the default model: `@cf/meta/llama-3.1-8b-instruct` was deprecated on 2026-05-30 and fails at runtime; the default is now `@cf/meta/llama-3.1-8b-instruct-fast`.
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [1fc01d3]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/kernel@0.94.0
+
 ## 0.93.0
 
 ### Minor Changes
@@ -3389,7 +3421,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,5 +1,47 @@
 # @substrat-run/engine-metering
 
+## 0.5.0
+
+### Minor Changes
+
+- d8c5ca9: `metering/record` now bounds `occurredAt` on both sides. It already refused an instant behind the close horizon; it now also refuses one more than five minutes ahead of the operation's own instant, with a new `occurred_at_ahead` conflict reason. The close horizon only ever advances, so an entry post-dated past it was aggregated into no period and left the billing stream with no error raised anywhere.
+
+  **This tightens what the operation accepts**, and only at the far end: an `occurredAt` at or before `ctx.now()`, or up to five minutes past it, records exactly as before. Only a value beyond that tolerance now conflicts. No caller in this repo passes `occurredAt` at all — `apps/builder/src/metering.ts` and `demos/ticket0/src/module.ts` both default to `ctx.now()`, and the engine's own suite is the only place that supplies one — but a vertical that records usage with a caller-supplied future instant will start receiving a `conflict`. Recording at observation time, which is what the horizon rule already asked for, is unaffected; so is back-dating inside the open period, and so is a replay on an existing `dedupeKey` (answered from the existing row before either bound is consulted).
+
+- e6dbb7b: **Non-additive: five list operations now answer a page instead of an array.**
+  `invites/list`, `metering/list-meters`, `metering/list-entries`,
+  `metering/list-periods` and `metering/period-lines` each declared a single entity as
+  `output` while their handler returned an unbounded array — so the gate that refuses a
+  bare list never saw one, and the OpenAPI document and the generated client both
+  described one object where the runtime sent every row. Each now declares `paged` and
+  returns `Page<T>`; a caller takes `.entries` and walks `nextCursor`.
+
+  The **in-scope** functions (`listInvites`, `listMeters`, `listEntries`, `listPeriods`,
+  `periodLines`) are unchanged and still return arrays — a vertical composing one inside
+  its own transaction is folding it, not rendering a table. `listInvites` does now order
+  by `id` (a ULID, so the same "newest first") rather than by `created_at`, which is not
+  unique and cannot carry a keyset cursor.
+
+  `@substrat-run/contracts` gains `pageOverFold` and `CURSOR_FIELD_SEPARATOR` — the
+  handler-composed paging helper `engines/absence` had written locally, now shared rather
+  than copied into two more engines.
+
+### Patch Changes
+
+- b91753e: Each engine now states in its own header whether it is composed by call or by event, and
+  what follows from that — which functions a vertical imports, and why the registered
+  operations are the default bindings rather than a second way in. Only invoicing said so
+  before; the fact was scattered across `lifecycle.ts`, `operations.ts` and the docs, and two
+  engines said it nowhere. Comments only, no behaviour change.
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [1fc01d3]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/kernel@0.94.0
+
 ## 0.4.3
 
 ### Patch Changes

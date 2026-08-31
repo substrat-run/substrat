@@ -1,5 +1,30 @@
 # @substrat-run/engine-booking
 
+## 0.7.1
+
+### Patch Changes
+
+- b91753e: Each engine now states in its own header whether it is composed by call or by event, and
+  what follows from that — which functions a vertical imports, and why the registered
+  operations are the default bindings rather than a second way in. Only invoicing said so
+  before; the fact was scattered across `lifecycle.ts`, `operations.ts` and the docs, and two
+  engines said it nowhere. Comments only, no behaviour change.
+- 568ba88: The engine seam helpers now have one home. `returns(schema, surface, value)` and
+  `columnsOf(schema)` — the pair that parses a value on its way out of an engine and
+  derives a SELECT list from the published schema — are exported from
+  `@substrat-run/contracts` as `engineSeam(name)`, and an engine binds them to its own
+  name in a line. Four engines carried byte-identical copies of the implementation,
+  differing only in the name each put into a seam failure. Behaviour is unchanged,
+  including the message a seam refusal carries.
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [1fc01d3]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/kernel@0.94.0
+
 ## 0.7.0
 
 ### Minor Changes
