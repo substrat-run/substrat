@@ -153,6 +153,35 @@ describe('a snooze is a promise about the future, and something has to keep it',
   });
 });
 
+describe('the alarm is an instant, because a timer compares it as text', () => {
+  it('normalises an offset to UTC rather than sorting it wrong', async () => {
+    const desk = world.substrat;
+    const id = await openAndAssigned(desk);
+    const agent = await host.getScope(desk.agent.principal, desk.tenant, desk.scope);
+
+    // 11:00+02:00 is 09:00 UTC. Stored verbatim it sorts as though it were 11:00 UTC
+    // — two hours late — and every comparison the sweep makes is wrong by the offset.
+    const snoozed = (await agent.invoke('ticket0/snooze', {
+      conversationId: id,
+      until: '2026-03-09T11:00:00+02:00',
+    })) as Conversation;
+    expect(snoozed.snoozed_until).toBe('2026-03-09T09:00:00.000Z');
+  });
+
+  it('refuses a value that is not a timestamp at all', async () => {
+    const desk = world.substrat;
+    const id = await openAndAssigned(desk);
+    const agent = await host.getScope(desk.agent.principal, desk.tenant, desk.scope);
+
+    // Not a pedantic refusal: an unparseable alarm either sorts before every instant
+    // and wakes at once, or after every instant and never wakes. Both are silent.
+    await expect(
+      agent.invoke('ticket0/snooze', { conversationId: id, until: 'next tuesday' }),
+    ).rejects.toThrow();
+    expect((await readConversation(desk, id)).state).toBe('open');
+  });
+});
+
 describe('the platform sweep is the caller, and one desk never reaches another', () => {
   it('fires the declared schedule, and it does the same thing', async () => {
     const desk = world.substrat;

@@ -38,6 +38,7 @@ import {
   defineLifecycles,
   defineOperations,
   emitModel,
+  instant,
   z,
   modelUsageLine,
 } from '@substrat-run/contracts';
@@ -1009,10 +1010,19 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
   },
 
+  /**
+   * `until` is an `instant`, not a string, and that is load-bearing now that a timer
+   * reads it (#1082). It validates ISO-8601 and NORMALISES to UTC, so the sweep's
+   * `snoozed_until <= ctx.now()` is comparing two canonical instants as text. Left as
+   * a bare string, `…T11:00:00+02:00` sorts as though it were 11:00 UTC and the
+   * conversation comes back two hours early, while a value that is not a timestamp at
+   * all either wakes immediately or never — none of which any test would have caught
+   * while the column was only ever displayed.
+   */
   'ticket0/snooze': {
     summary: 'Park a conversation until a time',
     permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
-    input: z.object({ conversationId: z.string(), until: z.string() }),
+    input: z.object({ conversationId: z.string(), until: instant }),
     output: ticket0Entities.conversation.fields,
     http: { method: 'POST', path: '/conversations/{conversationId}/snooze' },
     emits: {
