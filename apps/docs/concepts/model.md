@@ -240,7 +240,7 @@ Add the manifest fragment once, derived rather than written:
 lists: listsDeclaredBy(acmeOperations, acmeEntities),
 ```
 
-#### You compose it — `sortKey`
+#### You compose it — `sortKey` {#compose-sortkey}
 
 Some reads cannot be kernel-composed, and saying so is not a failure — it is how the
 declaration stays honest. A read over a **kernel table** (`_substrat_outbox`), one whose
@@ -262,6 +262,33 @@ return pageOf(rows, limit, (row) => row.article);
 For the permission-walk case, `pageVisible` over-fetches and advances the cursor by the last
 row **examined** — so rows the walk rejects still move it forward. Its pages may come back
 short, and a short page does **not** end the walk: only the absence of a `Link` header does.
+
+For the third case — a list the handler has **already folded in memory**, because the read
+is a projection, a correlated subquery or a join the kernel cannot compose —
+`pageOverFold(rows, input, key)` cuts the page off the folded result and hands back the
+same `Page<Entry>`. It does not make the read bounded at the database; it bounds what
+crosses the seam and gives the caller a cursor, which is what lets a screen stop asking for
+the whole table. A read that grows without limit still wants `paged.over` and an index.
+
+**The cursor key must be unique and ordered the same way the SQL is.** A keyset walk
+resumes at "the row after this key", so a key that repeats makes the walk skip the rest of
+the tie or return it twice. `created_at` is the trap: it comes from `ctx.now()`, which is
+stable for the whole invocation, so every row written by one operation carries the identical
+instant. Where the ordering column is not unique, make the cursor the **pair** the
+`ORDER BY` already uses and join it with `CURSOR_FIELD_SEPARATOR` — a separator chosen
+because it cannot occur in an ISO instant, a ULID or a key:
+
+```ts
+paged: { sortKey: 'occurredAt' },
+```
+
+```ts
+return pageOverFold(entries, input, (e) => `${e.occurredAt}${CURSOR_FIELD_SEPARATOR}${e.id}`);
+```
+
+`engines/metering` walks `(occurredAt, id)` and `(from, id)` that way. Spell the separator
+through the constant, never inline at the call site: the two ends of one cursor cannot then
+drift apart, and it appears in a search for "cursor".
 
 #### What follows from the declaration
 

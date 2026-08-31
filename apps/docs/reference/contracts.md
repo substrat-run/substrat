@@ -92,6 +92,35 @@ The failure vocabulary, one closed taxonomy for every layer (D-22 / RFC 9457):
 
 See [Failures are data](/concepts/api-design#_5-failures-are-data).
 
+## Engine seam (`seam.ts`)
+
+"Parse, don't trust" in the other direction (#771): a value crossing an engine's published
+surface is parsed on the way **out**, not merely typed. The failure that catches is a
+vertical compiled against engine 0.3 and running against 0.4, whose row shape moved — the
+vertical reads a field that is now `null` and the first symptom is wrong data on a screen
+rather than a throw.
+
+`engineSeam(name)` binds both halves to the name one engine answers under, in one line
+(#970 — four engines previously carried byte-identical copies that differed only in that
+name):
+
+```ts
+const { returns, columnsOf } = engineSeam('engine-workorder');
+```
+
+- `returns(schema, surface, value)` — parses a value against the schema the engine
+  publishes, or refuses to publish it. Parse **always**, including bulk reads: dev-only
+  validation is absent exactly where the version skew lives. Every read behind the helper
+  is one row or one page, so the parsed set is bounded by construction.
+- `columnsOf(schema)` — the `SELECT` list *derived* from that schema, so a read asks for
+  exactly the columns the seam promises. `SELECT *` pinned the published shape to whatever
+  the physical table happened to hold.
+
+A mismatch throws **`internal`**, deliberately, not `validation_failed`: the caller's input
+was already parsed and is not what went wrong, a 400 would blame the caller for a fault on
+the engine's side, and `toProblem` drops `internal`'s detail from the body — so the drift is
+logged rather than handed to a client that can do nothing with it.
+
 ## Pagination (`pagination.ts`)
 
 The one list convention: keyset pages over the list's own sort key, `{ entries,
@@ -103,8 +132,22 @@ unset limit meaning *unbounded* for an internal caller), `listPageQuery` /
 (`LIST_PAGE_DEFAULT` 20, `LIST_PAGE_MAX` 200 — one resolution for the HTTP layer,
 `ctx.page` and handler-composed reads), the `Link` and `X-Total-Count` headers
 (`PAGE_LINK_HEADER`, `PAGE_TOTAL_HEADER`, `PAGE_EXPOSED_HEADERS`, `nextPageLink`),
-`LIST_SORT_PARAM`, and `pageVisible` — the over-fetch loop a per-row-filtered read owns.
-See [Lists are pages, not dumps](/concepts/api-design#_4-lists-are-pages-not-dumps).
+`LIST_SORT_PARAM`, `pageVisible` — the over-fetch loop a per-row-filtered read owns — and
+`pageOverFold`, which cuts a page off a list the handler **already folded in memory** (the
+`paged: { sortKey }` half of #811, as a function).
+
+The cursor key `pageOf` / `pageOverFold` reads must be **unique** and ordered the same way
+the query is, or the walk skips or repeats the tie. `CURSOR_FIELD_SEPARATOR` is what joins
+the halves of a composite cursor when the ordering column is not unique — `U+0000`, chosen
+because it cannot occur in an ISO instant, a ULID or a key. Name it rather than spelling the
+byte inline, so the two ends of one cursor cannot drift apart:
+
+```ts
+pageOverFold(entries, input, (e) => `${e.occurredAt}${CURSOR_FIELD_SEPARATOR}${e.id}`);
+```
+
+See [Lists are pages, not dumps](/concepts/api-design#_4-lists-are-pages-not-dumps) and
+[You compose it — `sortKey`](/concepts/model#compose-sortkey).
 
 ## Concurrency (`concurrency.ts`)
 
@@ -229,6 +272,38 @@ published contract cannot drift from the enforcement (D-22).
 sanctioned arithmetic: `addMoney`, `mulMoney`, `moneyOf`, `addDecimal`, `mulDecimal`,
 `compareDecimal` — exact micro-unit (6 dp) bigint arithmetic, half-up rounding. See
 [Money](/concepts/money).
+
+## Model usage (`model-usage.ts`)
+
+The one fact a platform-provided model call produces, and the meter built from it:
+
+- `modelUsageLine` / `ModelUsageLine` — token counts **as the provider reported them**
+  (`reported: false` and zeros when it reported none, never an estimate that becomes a
+  bill), `listUsd` computed on our side from the generated rate card (`null` for a model
+  the card does not know — *unpriced*, not $0), `elapsedMs`, and `attribution`.
+  `UNREPORTED_MESSAGE` is what refuses a line that claims tokens it also says were
+  unreported.
+- `modelAttribution` / `ModelAttribution` — **fixed at five keys**: `tenant`, `scope`,
+  `vertical`, `version`, `operation`. Five is the smallest per-request metadata limit
+  among the providers we route through, so a sixth key would drop silently on the wire and
+  break the reconciliation join for that provider only.
+- `MODEL_USAGE_KIND` (`'model-usage'`) — the platform-intent kind a vertical raises to hand
+  a line to the platform's ledger (`ctx.requestPlatform({ kind: MODEL_USAGE_KIND, payload:
+  line })`). The drain refuses a line whose attribution names a different tenant or scope
+  than the one being drained, and records it under the intent's own id, which is what makes
+  a retried drain write nothing twice.
+- `modelUsageEntry` / `ModelUsageEntry` — a line as the ledger holds it, plus the
+  platform's two stamps (`id`, `requestId`).
+- `modelUsageSummary` / `modelUsageSummaryRow` — meter 3, one row per (tenant, vertical,
+  model). Money is folded with `addDecimal`, never floated, and `unpriced` counts the calls
+  the rate card did not know: shown beside the money, never folded into it as $0.
+- `marginFactor(percent)` — a whole-percent margin as the exact decimal factor `mulDecimal`
+  takes (`20` → `'1.2'`). `billedUsd` is `listUsd × marginFactor` applied at **read** time,
+  so a margin change re-prices history consistently instead of leaving two rates in one
+  table.
+
+The producer side is `createModelHost` in
+[`@substrat-run/vertical-host`](/reference/vertical-host).
 
 ## Attachments (`attachments.ts`)
 
