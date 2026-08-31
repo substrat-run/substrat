@@ -108,7 +108,14 @@ consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
    handler that runs outside the transaction. An integration is never impossible because
    of this rule — it has an answer.
 3. **Never write `_substrat_*` tables.** Reads are fine (timelines are projections);
-   writes forge the audit spine.
+   writes forge the audit spine. Do the read with `readTimeline` / `readHistory` from
+   `@substrat-run/kernel` rather than a `SELECT` of your own: both take an `EntityRef`,
+   page like a list read, and decode the envelope for you. `readHistory` also returns the
+   payload, the authorization chain (which checks the operation passed, and under which
+   grant), the impersonation stamp and the PII class. On the first three, a `null` is a
+   *fact* rather than data you failed to fetch — the payload was erased, the row predates
+   authorization recording, nobody was impersonating — so render it as that. Neither
+   helper checks a permission; you do, before you call it.
 4. **Another module's tables are private.** Never `SELECT` from `workorder_*` etc. — use
    the engine's exported in-scope functions. This is the rule with no runtime equivalent:
    the shortcut *works* and silently welds you to an engine's private schema forever. Need
