@@ -45,3 +45,4 @@ export * from './operations.js';
 export * from './lifecycle.js';
 export * from './client-context.js';
 export * from './model-usage.js';
+export * from './seam.js';

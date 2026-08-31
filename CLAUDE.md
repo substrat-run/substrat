@@ -229,11 +229,12 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   the physical table currently holds. Without it, a vertical compiled against 0.3 and
   running against 0.4 reads a field that moved and gets *wrong data on a screen*, never a
   throw. Parse **always**, including bulk reads: dev-only validation is absent exactly
-  where the version skew lives. `engines/workorder` is the reference (`src/seam.ts`:
-  `returns(schema, surface, value)` + `columnsOf(schema)`) and `engines/booking`,
-  `engines/protocol` and `engines/absence` are converted the same way; invites,
-  invoicing and metering have not been converted yet, so their seams are still typed
-  by assertion.
+  where the version skew lives. The two helpers — `returns(schema, surface, value)` and
+  `columnsOf(schema)` — are in `@substrat-run/contracts`, and an engine binds them to
+  its own name in one line (`engineSeam('engine-workorder')`, #970); `engines/workorder`
+  is the reference conversion, and `engines/booking`, `engines/protocol` and
+  `engines/absence` are converted the same way. Invites, invoicing and metering have
+  not been converted yet, so their seams are still typed by assertion.
 - IDs come from `ulid()`; money/decimals are strings via `@substrat-run/contracts`
   helpers (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
 - **Time comes from `ctx.now()`** — module code has no other clock, and `new Date()` /
