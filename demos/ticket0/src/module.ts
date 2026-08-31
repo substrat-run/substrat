@@ -702,6 +702,9 @@ function shiftDays(at: string, days: number): string {
  * `julianday` is the comparison, not text ordering, so this is correct for any instant
  * SQLite can parse — including the trailing `Z` every column here carries. It rounds to
  * a whole second because nothing on the report is measured finer than that.
+ *
+ * Both arguments are column names or `?` written in this file. Nothing a caller sends
+ * reaches here — a caller's instants are bound as parameters, as everywhere else.
  */
 const elapsed = (from: string, to: string) =>
   `CAST(ROUND((julianday(${to}) - julianday(${from})) * 86400) AS INTEGER)`;
@@ -713,6 +716,9 @@ const elapsed = (from: string, to: string) =>
  * every answer is a duration that actually happened rather than an interpolation between
  * two that did. Three queries and constant memory — the durations are never materialized,
  * which is what keeps a report over a busy year from being a page of its own.
+ *
+ * `select` is a query literal written above, wrapped rather than concatenated with
+ * anything a caller sent; the caller's window arrives in `params` and is bound.
  */
 function percentiles(
   ctx: OperationContext,

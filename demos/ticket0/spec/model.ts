@@ -1508,9 +1508,18 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   'ticket0/desk-metrics': {
     summary: 'Volume, speed, backlog, satisfaction and what the assistant settled',
     permission: 'usage:read',
-    // Both ends optional and defaulted, the same shape `usage-summary` takes: a caller
-    // that asks for nothing gets the trailing window rather than an error.
-    input: z.object({ from: z.string().optional(), to: z.string().optional() }),
+    // Both ends optional and defaulted: a caller that asks for nothing gets the trailing
+    // window rather than an error.
+    //
+    // `instant`, not `string`, and that is load-bearing for the same reason it is on
+    // `ticket0/snooze`. Every timestamp this reads is canonical UTC text, so the window
+    // is applied as a TEXT comparison — which is only the same as comparing instants
+    // while both ends are canonical too. A `from` of `''`, `'0'` or `…T11:00:00-02:00`
+    // sorts arbitrarily against real timestamps, and the failure is not an error: it is
+    // a plausible-looking report with the wrong rows in it. The host parses this before
+    // the handler, so a string that is not an instant is refused at the door and one
+    // written with an offset is converted rather than compared as it was typed.
+    input: z.object({ from: instant.optional(), to: instant.optional() }),
     output: z.object({
       from: z.string(),
       to: z.string(),

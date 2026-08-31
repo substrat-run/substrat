@@ -279,6 +279,33 @@ describe('a desk that cannot be measured is a desk nobody can run', () => {
     expect(m.assistant.cost).toBe('0');
   });
 
+  /**
+   * The window is applied as a TEXT comparison over canonical UTC — which is only the
+   * same as comparing instants while both ends are canonical too. A window end that is
+   * not would not throw; it would sort arbitrarily and produce a plausible report with
+   * the wrong rows in it. So the shape is refused at the door instead.
+   */
+  it('refuses a window end that is not an instant at all', async () => {
+    const admin = await at(desk(), 'admin');
+    for (const from of ['', '0', 'last tuesday', '2026-04-06']) {
+      await expect(admin.invoke('ticket0/desk-metrics', { from })).rejects.toThrow();
+    }
+  });
+
+  it('…and converts one written with an offset rather than comparing it as text', async () => {
+    const admin = await at(desk(), 'admin');
+    // 11:00−02:00 is 13:00Z. As TEXT it sorts before 14:00Z and before 09:00Z, so a
+    // window that started there un-normalised would sweep in the whole morning; as an
+    // instant it starts at B's resolution and catches only what came after.
+    const m = (await admin.invoke('ticket0/desk-metrics', {
+      from: '2026-04-06T11:00:00-02:00',
+      to: WINDOW_TO,
+    })) as Metrics;
+    expect(m.from).toBe('2026-04-06T13:00:00.000Z');
+    expect(m.volume.opened).toBe(1); // C, at 14:00Z
+    expect(m.volume.resolved).toBe(1); // B, resolved exactly on the boundary
+  });
+
   it('defaults to a trailing window when the caller names neither end', async () => {
     clock.set('2026-04-08T09:00:00.000Z');
     const m = (await (await at(desk(), 'admin')).invoke('ticket0/desk-metrics', {})) as Metrics;
