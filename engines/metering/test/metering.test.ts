@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import type { Page } from '@substrat-run/contracts';
 import { manualClock } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
@@ -12,6 +13,10 @@ import {
   closePeriod,
   recordUsage,
   usageTotal,
+  type Meter,
+  type MeteringPeriod,
+  type PeriodLine,
+  type UsageEntry,
 } from '../src/index.js';
 
 /**
@@ -364,6 +369,83 @@ describe('engine-metering', () => {
       expect(mine).toHaveLength(1);
       expect(mine[0]!.subject).toEqual(project);
     }, ALL);
+  });
+
+  // -------------------------------------------------------------------------
+  // The reads answer PAGES (#959)
+  // -------------------------------------------------------------------------
+
+  it('the ledger read is bounded, and its composite cursor walks every entry once', async () => {
+    // #959: these four reads declared a single entity as `output` while
+    // returning an array, so `assertListsArePaged` — which only fires on a
+    // declared `z.array()` — never saw a list. `metering/list-entries` is the
+    // sharpest of them: one row per observation, for the life of the meter.
+    const staff = await h.as(ALL);
+    await h.run((ctx) => {
+      // Two entries share an instant, which is what the composite cursor is for:
+      // `occurred_at` is caller-supplied, so a keyset over it alone skips ties.
+      for (let i = 0; i < 7; i++) {
+        recordUsage(ctx, {
+          meter: 'ai.tokens.input',
+          qty: '1',
+          occurredAt: t(2, i < 2 ? 0 : i),
+          dedupeKey: `page-${i}`,
+        });
+      }
+    }, ALL);
+
+    const first = await staff.invoke<Page<UsageEntry>>('metering/list-entries', { limit: 3 });
+    expect(first.entries).toHaveLength(3);
+    expect(first.nextCursor).not.toBeNull();
+
+    const seen = [...first.entries];
+    let cursor = first.nextCursor;
+    while (cursor !== null) {
+      const next = await staff.invoke<Page<UsageEntry>>('metering/list-entries', {
+        limit: 3,
+        cursor,
+      });
+      seen.push(...next.entries);
+      cursor = next.nextCursor;
+    }
+    // Every entry exactly once — including the tied pair, which an
+    // `occurredAt`-only cursor would have skipped or repeated.
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen.map((e) => e.id)).size).toBe(7);
+  });
+
+  it('the meter, period and line reads answer pages too', async () => {
+    const staff = await h.as(ALL);
+    await h.run((ctx) => {
+      // Two entries in the first period, from two meters, so `period-lines` has
+      // a second line to page to. `ai.tokens.input` and `storage.bytes` are
+      // already configured by the suite's `beforeEach`.
+      recordUsage(ctx, { meter: 'ai.tokens.input', qty: '1', occurredAt: t(2), dedupeKey: 'a' });
+      recordUsage(ctx, { meter: 'storage.bytes', qty: '1', occurredAt: t(2), dedupeKey: 'b' });
+      closePeriod(ctx, { from: t(1), to: t(3) });
+      recordUsage(ctx, { meter: 'ai.tokens.input', qty: '1', occurredAt: t(4), dedupeKey: 'a2' });
+      closePeriod(ctx, { from: t(3), to: t(5) });
+    }, ALL);
+
+    // Ordered by `key`, which is the primary key — the order and a unique cursor.
+    const meters = await staff.invoke<Page<Meter>>('metering/list-meters', { limit: 1 });
+    expect(meters.entries.map((m) => m.key)).toEqual(['ai.tokens.input']);
+    expect(meters.nextCursor).not.toBeNull();
+
+    const periods = await staff.invoke<Page<MeteringPeriod>>('metering/list-periods', {
+      limit: 1,
+    });
+    expect(periods.entries).toHaveLength(1);
+    expect(periods.nextCursor).not.toBeNull();
+
+    const all = await staff.invoke<Page<MeteringPeriod>>('metering/list-periods', {});
+    const lines = await staff.invoke<Page<PeriodLine>>('metering/period-lines', {
+      periodId: all.entries[0]!.id,
+      limit: 1,
+    });
+    expect(lines.entries).toHaveLength(1);
+    // Two meters had usage in the first period, so there is a second line.
+    expect(lines.nextCursor).not.toBeNull();
   });
 
   // -------------------------------------------------------------------------

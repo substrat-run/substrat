@@ -125,6 +125,11 @@ export const meteringOperations = defineOperations(meteringEntities, METERING_PE
     summary: 'Every configured meter, by key',
     permission: 'metering:read',
     output: meter,
+    // Handler-composed (#959): what is answered is the PROJECTION of the row
+    // (`active` as a boolean, `createdAt` renamed), not the stored row, so
+    // `paged.over` has nothing to walk. `key` is the primary key — the order and
+    // a unique cursor at once.
+    paged: { sortKey: 'key' },
   },
 
   'metering/record': {
@@ -181,6 +186,13 @@ export const meteringOperations = defineOperations(meteringEntities, METERING_PE
     }),
     inputOptional: true,
     output: usageEntry,
+    // The ledger is the read most obviously unbounded — one row per observation,
+    // for as long as the meter has run. Handler-composed: the entry is a
+    // projection (two columns folded into one `subject` ref) and the `WHERE` is
+    // built from four optional filters. `occurredAt` is caller-supplied and NOT
+    // unique, so the cursor is the (occurredAt, id) pair the SQL already orders
+    // by — see the handler.
+    paged: { sortKey: 'occurredAt' },
   },
 
   'metering/close-period': {
@@ -194,6 +206,11 @@ export const meteringOperations = defineOperations(meteringEntities, METERING_PE
     summary: 'Closed periods, oldest first',
     permission: 'metering:read',
     output: meteringPeriod,
+    // Handler-composed: `from`/`to` are the projection of `from_at`/`to_at`.
+    // Closes are non-overlapping so `from` is in practice unique, but the SQL
+    // orders by (from_at, id) and the cursor matches it rather than relying on
+    // that.
+    paged: { sortKey: 'from' },
   },
 
   'metering/period-lines': {
@@ -201,5 +218,9 @@ export const meteringOperations = defineOperations(meteringEntities, METERING_PE
     permission: 'metering:read',
     input: z.object({ periodId: z.string().min(1) }),
     output: periodLine,
+    // Handler-composed: the line is a projection, and the read 404s on an unknown
+    // period before it lists anything. One line per meter per period, so
+    // `meterKey` is unique within the period and is the order.
+    paged: { sortKey: 'meterKey' },
   },
 });

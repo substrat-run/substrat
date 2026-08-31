@@ -8,13 +8,18 @@ below.
 | Operation | Permission | Does |
 |---|---|---|
 | `metering/configure-meter` | `metering:configure` | register a meter (kind/unit frozen thereafter); update description/active |
-| `metering/list-meters` | `metering:read` | list registered meters |
+| `metering/list-meters` | `metering:read` | list registered meters — a **page**, walked by `key` |
 | `metering/record` | `metering:record` | append a usage entry — idempotent on `(meter, dedupeKey)` |
 | `metering/total` | `metering:read` | window aggregate for one meter — the same code path a close freezes |
-| `metering/list-entries` | `metering:read` | raw entries, filterable by meter / subject / window |
+| `metering/list-entries` | `metering:read` | raw entries, filterable by meter / subject / window — a **page**, walked by `(occurredAt, id)` |
 | `metering/close-period` | `metering:close` | freeze `[from, to)` into lines, advance the horizon, emit the fat event |
-| `metering/list-periods` | `metering:read` | the close journal |
-| `metering/period-lines` | `metering:read` | a closed period's frozen lines |
+| `metering/list-periods` | `metering:read` | the close journal — a **page**, walked by `(from, id)` |
+| `metering/period-lines` | `metering:read` | a closed period's frozen lines — a **page**, walked by `meterKey` |
+
+The four reads answer `Page<T>`, not a bare array (#959). The **in-scope** functions beside
+them stay unpaged: a vertical composing one inside its own transaction is folding it —
+pricing a period's lines, summing a window — not rendering a table. A caller that needs the
+whole ledger walks the cursor.
 
 ## In-scope functions
 
