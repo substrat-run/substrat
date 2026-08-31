@@ -331,6 +331,28 @@ describe('a desk that cannot be measured is a desk nobody can run', () => {
   });
 
   /**
+   * The rate card is append-only and keyed by the date a price takes effect, which is
+   * what makes a closed month reproducible at the price it was closed under. A report
+   * that read one rate and applied it to the whole window would undo that: last month's
+   * number would move every time somebody changed a price.
+   */
+  it('prices each turn at the rate in force when it happened, not the rate in force now', async () => {
+    const admin = await at(desk(), 'admin');
+    // Double the input price from 10:00 — an hour AFTER every turn in this story ran.
+    await admin.invoke('ticket0/set-usage-rate', {
+      meterKey: 'ai.tokens.input',
+      unitPrice: '0.000006',
+      currency: 'EUR',
+      effectiveFrom: '2026-04-06T10:00:00.000Z',
+    });
+    // Unchanged. Priced at the current rate instead, 1800 tokens would cost 0.0108 and
+    // the total would read 0.01605 — a re-pricing reaching a month backwards.
+    const m = await report();
+    expect(m.assistant.cost).toBe('0.01065');
+    expect(m.assistant.costPerResolved).toBe('0.005325');
+  });
+
+  /**
    * The desk prices its two token meters independently, so it CAN price them in
    * different currencies. Adding one to the other and labelling the sum with whichever
    * was read first is the quiet kind of wrong — a number that looks right on the screen.
@@ -344,7 +366,7 @@ describe('a desk that cannot be measured is a desk nobody can run', () => {
       effectiveFrom: '2026-04-06T00:00:00.000Z',
     });
     await expect(admin.invoke('ticket0/desk-metrics', { from: WINDOW_FROM, to: WINDOW_TO })).rejects.toThrow(
-      /different currencies/i,
+      /more than one currency \(EUR, USD\)/i,
     );
     // Put it back, so this case does not decide what the ones after it see.
     await admin.invoke('ticket0/set-usage-rate', {

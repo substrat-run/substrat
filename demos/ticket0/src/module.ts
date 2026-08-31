@@ -668,6 +668,51 @@ function ensureMeters(ctx: OperationContext): void {
 }
 
 /**
+ * One meter's tokens over a window, priced by the rate in force when each turn happened.
+ *
+ * The rate card is append-only and keyed by the date a price takes effect, which is what
+ * makes a closed month reproducible at the price it was closed under. Reading one rate —
+ * the current one — and applying it to a whole window throws that away: a re-pricing
+ * today would silently move last month's number. So each turn is joined to the latest
+ * rate that had taken effect by its own `created_at`, and the segments are summed.
+ *
+ * Tokens recorded before any price existed contribute nothing, which is the same answer
+ * as pricing them at zero and an honest one — nobody had said what they were worth.
+ *
+ * `column` is one of two literals written at the call sites below, never caller input.
+ */
+function meterCost(
+  ctx: OperationContext,
+  meterKey: string,
+  column: 'input_tokens' | 'output_tokens',
+  from: string,
+  to: string,
+): { amount: string; currencies: string[] } {
+  const rows = ctx.sql.query<{ unit_price: string; currency: string; qty: number | null }>(
+    `SELECT r.unit_price, r.currency, SUM(t.${column}) AS qty
+       FROM ticket0_ai_turns t
+       JOIN ticket0_usage_rates r
+         ON r.meter_key = ?
+        AND r.effective_from = (
+              SELECT MAX(r2.effective_from)
+                FROM ticket0_usage_rates r2
+               WHERE r2.meter_key = r.meter_key AND r2.effective_from <= t.created_at)
+      WHERE t.created_at >= ? AND t.created_at <= ?
+      GROUP BY r.unit_price, r.currency`,
+    [meterKey, from, to],
+  );
+  return {
+    amount: rows.reduce(
+      (sum, r) => addDecimal(sum, mulDecimal(String(Number(r.qty ?? 0)), r.unit_price)),
+      '0',
+    ),
+    // A segment nobody spent a token in does not get a vote on the currency — otherwise
+    // an old price in another currency, never used, would refuse a report about today.
+    currencies: rows.filter((r) => Number(r.qty ?? 0) > 0).map((r) => r.currency),
+  };
+}
+
+/**
  * `total / divisor`, half-up at 6 dp, as a decimal string.
  *
  * `@substrat-run/contracts` gives a sum and a product on 6-dp decimal strings and no
@@ -2075,27 +2120,29 @@ const operations = {
     const turnCount = Number(turns?.turns ?? 0);
     const share = (n: number) => (turnCount === 0 ? null : round(n / turnCount, 4));
 
-    // Priced the way `usage-summary` prices, from the desk's own rate card at the end of
-    // the window — the same door, the same numbers. Decimal strings throughout: a token
-    // price has more places than a float has patience for, and dividing by a count does
-    // not change that.
-    const inputRate = rateFor(ctx, METERS.inputTokens, to);
-    const outputRate = rateFor(ctx, METERS.outputTokens, to);
-    // The two meters are priced independently, so they CAN carry different currencies.
-    // Adding one to the other and labelling the sum with whichever was read first is
-    // the quiet kind of wrong — a number that looks right on the screen — so it refuses
-    // instead. The fix is a `ticket0/set-usage-rate` call, and the message says so.
-    if (inputRate && outputRate && inputRate.currency !== outputRate.currency)
+    // Priced from the desk's own rate card, each turn at the rate in force WHEN IT
+    // HAPPENED — not at the rate in force now. The card is append-only and keyed by the
+    // date a price takes effect precisely so a re-pricing does not reach backwards; a
+    // report that read one rate and applied it to the whole window would undo that, and
+    // last month's number would move every time somebody changed a price.
+    const priced = [
+      meterCost(ctx, METERS.inputTokens, 'input_tokens', from, to),
+      meterCost(ctx, METERS.outputTokens, 'output_tokens', from, to),
+    ];
+    // The two meters are priced independently and each price carries its own currency,
+    // so a desk CAN hold EUR input and USD output — across meters or across periods of
+    // one meter. Adding those and labelling the sum with whichever was read first is the
+    // quiet kind of wrong, a number that looks right on the screen, so it refuses
+    // instead. The fix is one `ticket0/set-usage-rate` call, and the message says so.
+    const currencies = [...new Set(priced.flatMap((p) => p.currencies))];
+    if (currencies.length > 1)
       throw substratError(
         'conflict',
-        `the token meters are priced in different currencies (${inputRate.currency} and ` +
-          `${outputRate.currency}); re-price one of them before this desk can be costed`,
+        `the tokens in this window are priced in more than one currency ` +
+          `(${currencies.join(', ')}); re-price them in one before this desk can be costed`,
         { reason: 'mixed_currency' },
       );
-    const cost = addDecimal(
-      mulDecimal(String(Number(turns?.input_tokens ?? 0)), inputRate?.unit_price ?? '0'),
-      mulDecimal(String(Number(turns?.output_tokens ?? 0)), outputRate?.unit_price ?? '0'),
-    );
+    const cost = priced.reduce((sum, p) => addDecimal(sum, p.amount), '0');
     const resolved = channels.reduce((sum, c) => sum + c.resolved, 0);
 
     return {
@@ -2129,7 +2176,7 @@ const operations = {
         deflectionRate: share(Number(turns?.answered ?? 0)),
         escalationRate: share(Number(turns?.escalated ?? 0)),
         failureRate: share(Number(turns?.failed ?? 0)),
-        currency: inputRate?.currency ?? outputRate?.currency ?? 'EUR',
+        currency: currencies[0] ?? rateFor(ctx, METERS.inputTokens, to)?.currency ?? 'EUR',
         cost,
         costPerResolved: resolved === 0 ? null : divDecimal(cost, resolved),
       },
