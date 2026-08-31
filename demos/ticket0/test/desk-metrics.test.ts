@@ -306,6 +306,57 @@ describe('a desk that cannot be measured is a desk nobody can run', () => {
     expect(m.volume.resolved).toBe(1); // B, resolved exactly on the boundary
   });
 
+  /**
+   * A report is a question about a period. Every aggregate is bounded only by the range
+   * the caller picked, so an unbounded range is a full history scan behind a key the
+   * admin holds — refused rather than served slowly.
+   */
+  it('refuses a window wider than a year, and one that runs backwards', async () => {
+    const admin = await at(desk(), 'admin');
+    await expect(
+      admin.invoke('ticket0/desk-metrics', {
+        from: '2020-01-01T00:00:00.000Z',
+        to: WINDOW_TO,
+      }),
+    ).rejects.toThrow(/at most 366 days/i);
+    await expect(
+      admin.invoke('ticket0/desk-metrics', { from: WINDOW_TO, to: WINDOW_FROM }),
+    ).rejects.toThrow(/before/i);
+    // A year exactly is still a report, so the cap is a cap and not an off-by-one.
+    const m = (await admin.invoke('ticket0/desk-metrics', {
+      from: '2025-04-06T00:00:00.000Z',
+      to: '2026-04-07T00:00:00.000Z',
+    })) as Metrics;
+    expect(m.volume.opened).toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * The desk prices its two token meters independently, so it CAN price them in
+   * different currencies. Adding one to the other and labelling the sum with whichever
+   * was read first is the quiet kind of wrong — a number that looks right on the screen.
+   */
+  it('refuses to cost a desk whose two meters are priced in different currencies', async () => {
+    const admin = await at(desk(), 'admin');
+    await admin.invoke('ticket0/set-usage-rate', {
+      meterKey: 'ai.tokens.output',
+      unitPrice: '0.000015',
+      currency: 'USD',
+      effectiveFrom: '2026-04-06T00:00:00.000Z',
+    });
+    await expect(admin.invoke('ticket0/desk-metrics', { from: WINDOW_FROM, to: WINDOW_TO })).rejects.toThrow(
+      /different currencies/i,
+    );
+    // Put it back, so this case does not decide what the ones after it see.
+    await admin.invoke('ticket0/set-usage-rate', {
+      meterKey: 'ai.tokens.output',
+      unitPrice: '0.000015',
+      currency: 'EUR',
+      effectiveFrom: '2026-04-06T00:00:00.000Z',
+    });
+    const m = await report();
+    expect(m.assistant.currency).toBe('EUR');
+  });
+
   it('defaults to a trailing window when the caller names neither end', async () => {
     clock.set('2026-04-08T09:00:00.000Z');
     const m = (await (await at(desk(), 'admin')).invoke('ticket0/desk-metrics', {})) as Metrics;

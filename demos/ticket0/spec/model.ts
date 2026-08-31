@@ -75,6 +75,17 @@ export const DESK_METRICS_AGENTS = 25;
 export const DESK_METRICS_WINDOW_DAYS = 30;
 
 /**
+ * The widest window it will report at all.
+ *
+ * The operation runs half a dozen aggregates over the conversation, message, CSAT and
+ * turn tables, and every one of them is bounded only by the range the caller picked. A
+ * report is a question about a period — a year at the outside — so an unbounded one is
+ * a full history scan behind a key an admin holds, and it is refused rather than served
+ * slowly. A caller who genuinely wants more asks for it a year at a time.
+ */
+export const DESK_METRICS_MAX_DAYS = 366;
+
+/**
  * What the HOST knew about the browser when the widget opened — `ClientContext`
  * flattened into columns. Shared by `widgetOpening` (where `widget-start` records it)
  * and `widgetSession` (where the first message carries it), so the two tables cannot
@@ -1503,7 +1514,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    *
    * `agents` is capped at `DESK_METRICS_AGENTS`. A desk has staff, not a population,
    * and an uncapped group-by in an aggregate is a page waiting to be discovered in
-   * production.
+   * production. The **window** is capped too, at `DESK_METRICS_MAX_DAYS`: every
+   * aggregate below is bounded only by the range the caller picked, so an unbounded
+   * range is a full history scan and is refused rather than served slowly.
+   *
+   * `currency` is one code because the answer is one number. The desk prices its input
+   * and output meters independently, so it *can* price them in different currencies —
+   * and if it has, this refuses rather than adding one to the other and labelling the
+   * sum with whichever it saw first.
    */
   'ticket0/desk-metrics': {
     summary: 'Volume, speed, backlog, satisfaction and what the assistant settled',

@@ -43,6 +43,7 @@ import {
 } from '@substrat-run/engine-metering';
 import {
   DESK_METRICS_AGENTS,
+  DESK_METRICS_MAX_DAYS,
   DESK_METRICS_WINDOW_DAYS,
   SEARCH_OVERFETCH,
   ticket0Entities,
@@ -1959,6 +1960,20 @@ const operations = {
     const now = ctx.now();
     const to = input.to ?? now;
     const from = input.from ?? shiftDays(to, -DESK_METRICS_WINDOW_DAYS);
+    // Every aggregate below is bounded only by this range, so the range is bounded here
+    // — an unbounded one is a full history scan, and a report that takes a minute is a
+    // report nobody opens twice. Refused rather than served slowly.
+    const span = Date.parse(to) - Date.parse(from);
+    if (span < 0)
+      throw substratError('validation_failed', '`to` is before `from`', {
+        errors: [{ path: 'to', message: 'the window ends before it begins' }],
+      });
+    if (span > DESK_METRICS_MAX_DAYS * 86_400_000)
+      throw substratError(
+        'validation_failed',
+        `a report window is at most ${DESK_METRICS_MAX_DAYS} days; ask for a year at a time`,
+        { errors: [{ path: 'from', message: `at most ${DESK_METRICS_MAX_DAYS} days before \`to\`` }] },
+      );
 
     // Volume, per channel and in total, in one pass.
     //
@@ -2066,6 +2081,17 @@ const operations = {
     // not change that.
     const inputRate = rateFor(ctx, METERS.inputTokens, to);
     const outputRate = rateFor(ctx, METERS.outputTokens, to);
+    // The two meters are priced independently, so they CAN carry different currencies.
+    // Adding one to the other and labelling the sum with whichever was read first is
+    // the quiet kind of wrong — a number that looks right on the screen — so it refuses
+    // instead. The fix is a `ticket0/set-usage-rate` call, and the message says so.
+    if (inputRate && outputRate && inputRate.currency !== outputRate.currency)
+      throw substratError(
+        'conflict',
+        `the token meters are priced in different currencies (${inputRate.currency} and ` +
+          `${outputRate.currency}); re-price one of them before this desk can be costed`,
+        { reason: 'mixed_currency' },
+      );
     const cost = addDecimal(
       mulDecimal(String(Number(turns?.input_tokens ?? 0)), inputRate?.unit_price ?? '0'),
       mulDecimal(String(Number(turns?.output_tokens ?? 0)), outputRate?.unit_price ?? '0'),
