@@ -142,7 +142,7 @@ export function ConversationView({
           <Thread messages={messages} turnFor={turnFor} conv={conv} busy={busy} act={act} />
           <Composer conv={conv} busy={busy} act={act} session={session} />
         </div>
-        <Rail conv={conv} who={who} visitor={visitor} usage={usage} go={go} />
+        <Rail conv={conv} who={who} visitor={visitor} usage={usage} busy={busy} act={act} go={go} />
       </div>
     </div>
   );
@@ -840,12 +840,16 @@ function Rail({
   who,
   visitor,
   usage,
+  busy,
+  act,
   go,
 }: {
   conv: Conversation;
   who: Contact | undefined;
   visitor: WidgetSession;
   usage: Usage | null;
+  busy: boolean;
+  act: (fn: () => Promise<unknown>) => Promise<void>;
   go: (v: View) => void;
 }) {
   const field = (k: string, v: React.ReactNode) => (
@@ -887,7 +891,37 @@ function Rail({
         {field('Channel', <span className="mono">{conv.channel}</span>)}
         {field('State', <StateBadge state={conv.state} />)}
         {field('Owner', conv.assignee ? <Avatar name={conv.assignee} size={20} /> : '—')}
-        {field('Priority', <span className="mono">{conv.priority}</span>)}
+        {/* The inbox has always sorted and filtered on priority; this is where a
+            person picks one. `closed` is terminal, so the machine refuses the write
+            there and the control says so rather than letting the desk find out. */}
+        {field(
+          'Priority',
+          <select
+            value={conv.priority}
+            disabled={busy || conv.state === 'closed'}
+            onChange={(e) =>
+              void act(() =>
+                api.setPriority({
+                  conversationId: conv.id,
+                  priority: e.target.value as Conversation['priority'],
+                }),
+              )
+            }
+            style={{
+              border: '1px solid var(--frame)',
+              borderRadius: 6,
+              background: 'var(--surface)',
+              font: "400 12px 'Geist Mono', monospace",
+              color: 'inherit',
+              padding: '2px 4px',
+              cursor: busy || conv.state === 'closed' ? 'default' : 'pointer',
+            }}
+          >
+            <option value="low">low</option>
+            <option value="normal">normal</option>
+            <option value="urgent">urgent</option>
+          </select>,
+        )}
       </div>
 
       {visitor ? <VisitorCard session={visitor} /> : null}

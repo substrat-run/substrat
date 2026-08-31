@@ -23,6 +23,7 @@ export const conformance = declareEntityChecks({
     'ticket0/post-note': { body: 'A note from the conformance kit' },
     'ticket0/post-public-reply': { body: 'A reply from the conformance kit' },
     'ticket0/assign': { assignee: null },
+    'ticket0/set-priority': { priority: 'urgent' },
     'ticket0/snooze': { until: '2030-01-01T00:00:00.000Z' },
     'ticket0/tag-conversation': { tag: 'conformance' },
     'ticket0/submit-csat': { score: 5 },

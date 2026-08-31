@@ -40,6 +40,7 @@ interface Conversation {
   contact_id: string;
   first_public_reply_at: string | null;
   assignee: string | null;
+  priority: string;
   merged_into: string | null;
 }
 interface Message {
@@ -405,6 +406,40 @@ describe('the lifecycle, and the two things it will not do', () => {
     expect(after.state).toBe('open');
   });
 
+  /**
+   * Priority was declared sortable and filterable from the start and no operation
+   * ever set it, so every conversation was born `normal` and stayed there — the
+   * inbox offered a filter that could only ever match everything (#1084).
+   */
+  it('priority is settable, and the inbox filter then finds it', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const before = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: story.conversation,
+    })) as Conversation;
+    expect(before.priority).toBe('normal');
+
+    const urgent = (await anna.invoke('ticket0/set-priority', {
+      conversationId: story.conversation,
+      priority: 'urgent',
+    })) as Conversation;
+    expect(urgent.priority).toBe('urgent');
+    // Triage, not workflow: ranking the work does not move the conversation.
+    expect(urgent.state).toBe(before.state);
+
+    // Read back through the operation the inbox actually calls, not the row.
+    const page = (await anna.invoke('ticket0/list-conversations', {
+      priority: 'urgent',
+    })) as CountedPage<Conversation>;
+    expect(page.entries.map((c) => c.id)).toContain(story.conversation);
+
+    // And back down again, so 'urgent' is not a one-way door.
+    const calm = (await anna.invoke('ticket0/set-priority', {
+      conversationId: story.conversation,
+      priority: 'normal',
+    })) as Conversation;
+    expect(calm.priority).toBe('normal');
+  });
+
   it('a closed conversation is closed — the machine has no edge out', async () => {
     const anna = await at(world.substrat, 'agent');
     await anna.invoke('ticket0/post-public-reply', {
@@ -422,6 +457,15 @@ describe('the lifecycle, and the two things it will not do', () => {
     await expect(
       anna.invoke('ticket0/assign', { conversationId: story.conversation, assignee: null }),
     ).rejects.toThrow(/invalid transition.*'closed'.*requires new \| open \| snoozed/i);
+
+    // Priority is triage, so it is legal wherever the conversation is still alive —
+    // and nowhere else. `closed` is terminal for it too.
+    await expect(
+      anna.invoke('ticket0/set-priority', {
+        conversationId: story.conversation,
+        priority: 'urgent',
+      }),
+    ).rejects.toThrow(/invalid transition.*'closed'/i);
   });
 });
 

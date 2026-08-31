@@ -928,6 +928,33 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
   },
 
+  /**
+   * Priority is triage, not workflow: it moves the conversation nowhere and is legal
+   * in every state the conversation is still alive in.
+   *
+   * It shares `conversation:assign` with the operations beside it deliberately —
+   * routing work to a person and ranking that work are the same act by the same
+   * people, and a second key would be a permission nobody ever grants separately.
+   */
+  'ticket0/set-priority': {
+    summary: "Set a conversation's priority",
+    permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({
+      conversationId: z.string(),
+      priority: z.enum(['low', 'normal', 'urgent']),
+    }),
+    output: ticket0Entities.conversation.fields,
+    http: { method: 'POST', path: '/conversations/{conversationId}/priority' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'id',
+      type: 'ticket0.conversation-priority-set',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'priority', 'state'],
+    },
+  },
+
   'ticket0/snooze': {
     summary: 'Park a conversation until a time',
     permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
@@ -1651,6 +1678,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/ingest-message',
           'ticket0/widget-post',
           'ticket0/tag-conversation',
+          'ticket0/set-priority',
           'ticket0/merge',
         ],
       },
@@ -1668,6 +1696,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/widget-post',
           'ticket0/assign',
           'ticket0/tag-conversation',
+          'ticket0/set-priority',
           'ticket0/merge',
         ],
       },
@@ -1678,7 +1707,12 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/widget-post': 'open',
           'ticket0/resolve': 'resolved',
         },
-        allow: ['ticket0/post-note', 'ticket0/tag-conversation', 'ticket0/assign'],
+        allow: [
+          'ticket0/post-note',
+          'ticket0/tag-conversation',
+          'ticket0/assign',
+          'ticket0/set-priority',
+        ],
       },
       resolved: {
         on: {
@@ -1687,7 +1721,12 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/widget-post': 'open',
           'ticket0/post-public-reply': 'open',
         },
-        allow: ['ticket0/post-note', 'ticket0/tag-conversation', 'ticket0/submit-csat'],
+        allow: [
+          'ticket0/post-note',
+          'ticket0/tag-conversation',
+          'ticket0/set-priority',
+          'ticket0/submit-csat',
+        ],
       },
       closed: { terminal: true },
     },
