@@ -8,6 +8,7 @@ import {
   scopeId,
   tenantId,
   type EntityRef,
+  type Instant,
   type PermissionKey,
   type OrgId,
   type PrincipalId,
@@ -20,6 +21,15 @@ const PERM_USE = permissionKey.parse('perm:use');
 const PERM_READ = permissionKey.parse('perm:read');
 const PERM_ADMIN = permissionKey.parse('perm:admin');
 const ENGINE_SOURCE = moduleId.parse('@substrat-run/engine-workorder');
+
+/**
+ * The same instant, written with a `+14:00` offset and deliberately NOT parsed —
+ * the shape a value has when it arrives as JSON and is cast rather than validated.
+ * The cast is the point: it is how an un-normalised offset used to reach the store,
+ * where liveness is a lexicographic comparison against a `Z` now-string (#963).
+ */
+const atOffsetPlus14 = (at: Date): Instant =>
+  `${new Date(at.getTime() + 14 * 3_600_000).toISOString().slice(0, -1)}+14:00` as Instant;
 
 /**
  * Contract suite for the default (tuple) permission checker (design doc §4.2,
@@ -40,6 +50,7 @@ export function permissionContractSuite(
     const bob: PrincipalId = principalId.parse(ulid()); // scope role at s1 only
     const carol: PrincipalId = principalId.parse(ulid()); // entity-narrowed grant
     const dave: PrincipalId = principalId.parse(ulid()); // expired grant
+    const dora: PrincipalId = principalId.parse(ulid()); // expired grant written with a +14:00 offset
     const erin: PrincipalId = principalId.parse(ulid()); // via org membership
     // Orgs are real records with branded ULID ids (K-22) — `acme` as a bare string
     // used to BE the org, so a typo silently addressed a different one.
@@ -108,6 +119,17 @@ export function permissionContractSuite(
         permission: PERM_READ,
         node: { tenantId: t1, scopeId: s1 },
         expiresAt: (await import('@substrat-run/contracts')).instant.parse('2000-01-01T00:00:00Z'),
+        grantedBy: alice,
+      });
+      // #963: the same expired grant, written in a zone the checker never runs in.
+      // An hour ago at +14:00 is TOMORROW's date in text, so stored verbatim it
+      // sorts after the checker's `Z` now-string and the dead grant reads as live.
+      // The offset is normalised at the parse, so it is dead here as dave's is.
+      await host.admin.grant(staff, {
+        principalId: dora,
+        permission: PERM_READ,
+        node: { tenantId: t1, scopeId: s1 },
+        expiresAt: atOffsetPlus14(new Date(Date.now() - 3_600_000)),
         grantedBy: alice,
       });
       await host.admin.createOrg(staff, { id: acme, tenantId: t1, slug: 'acme', name: 'Acme' });
@@ -198,6 +220,10 @@ export function permissionContractSuite(
 
     it('expired grants are dead', async () => {
       await expect(probe(dave, s1, PERM_READ)).resolves.toMatchObject({ allowed: false });
+    });
+
+    it('an expiry written with a UTC offset is dead too (#963)', async () => {
+      await expect(probe(dora, s1, PERM_READ)).resolves.toMatchObject({ allowed: false });
     });
 
     // -- event authorization + denial log (K-34, K-35) --------------------

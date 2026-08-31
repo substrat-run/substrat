@@ -26,6 +26,7 @@ import {
   identityPool,
   instant,
   connection,
+  capabilityGrant,
   connectionGrant,
   connectionGrantRecord,
   connectionSecret,
@@ -4347,7 +4348,11 @@ export class SqliteScopeHost implements ScopeHost {
           null,
         );
       },
-      grant: async (actor: PlatformActorId, grant: CapabilityGrant) => {
+      grant: async (actor: PlatformActorId, raw: CapabilityGrant) => {
+        // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
+        // trust: the parse is where an `expiresAt` carrying a UTC offset is normalised
+        // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
+        const grant = capabilityGrant.parse(raw);
         writeGrant(
           `principal:${grant.principalId}`,
           grant.permission,

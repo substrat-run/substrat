@@ -24,6 +24,7 @@ import {
   verticalChannel,
   verticalVersion,
   connection,
+  capabilityGrant,
   connectionGrant,
   connectionGrantRecord,
   connectionSecret,
@@ -2794,7 +2795,11 @@ export class CloudflareScopeHost implements ScopeHost {
         // A tenant-level revoke changes the projected set — the tombstone must reach scopes.
         if (!assignment.node.scopeId) await this.fanOut(assignment.node.tenantId);
       },
-      grant: async (actor, grant: CapabilityGrant) => {
+      grant: async (actor, raw: CapabilityGrant) => {
+        // Parsed like its `grantToConnection`/`grantToSystem` siblings, not taken on
+        // trust: the parse is where an `expiresAt` carrying a UTC offset is normalised
+        // to Z text (#963), and liveness here is a lexicographic `expires_at > ?`.
+        const grant = capabilityGrant.parse(raw);
         await writeGrant(
           `principal:${grant.principalId}`,
           grant.permission,
