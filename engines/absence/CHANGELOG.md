@@ -1,5 +1,21 @@
 # @substrat-run/engine-absence
 
+## 0.5.7
+
+### Patch Changes
+
+- 301ac66: absence, invites, metering and protocol now emit a checked-in `model.json`, so
+  `lint:model --check` covers all seven engines instead of three — a changed table or a
+  renamed field on any of them has to appear in a PR diff. Three declarations gained a
+  constraint the shipped DDL already had, so the artifact records it rather than freezing
+  the omission: `absence-leave-type` and `metering-meter` declare the primary key they are
+  keyed by, and `metering-entry` declares the `(meter_key, dedupe_key)` unique key its
+  dedupe replay relies on. No migration, no DDL change, no runtime behaviour changes.
+- Updated dependencies [f065a84]
+- Updated dependencies [7bf77df]
+  - @substrat-run/contracts@0.95.0
+  - @substrat-run/kernel@0.95.0
+
 ## 0.5.6
 
 ### Patch Changes

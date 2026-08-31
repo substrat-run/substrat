@@ -1,5 +1,21 @@
 # @substrat-run/engine-protocol
 
+## 0.11.12
+
+### Patch Changes
+
+- 301ac66: absence, invites, metering and protocol now emit a checked-in `model.json`, so
+  `lint:model --check` covers all seven engines instead of three — a changed table or a
+  renamed field on any of them has to appear in a PR diff. Three declarations gained a
+  constraint the shipped DDL already had, so the artifact records it rather than freezing
+  the omission: `absence-leave-type` and `metering-meter` declare the primary key they are
+  keyed by, and `metering-entry` declares the `(meter_key, dedupe_key)` unique key its
+  dedupe replay relies on. No migration, no DDL change, no runtime behaviour changes.
+- Updated dependencies [f065a84]
+- Updated dependencies [7bf77df]
+  - @substrat-run/contracts@0.95.0
+  - @substrat-run/kernel@0.95.0
+
 ## 0.11.11
 
 ### Patch Changes
@@ -1619,7 +1635,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

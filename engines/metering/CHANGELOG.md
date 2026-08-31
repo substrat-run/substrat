@@ -1,5 +1,28 @@
 # @substrat-run/engine-metering
 
+## 0.5.1
+
+### Patch Changes
+
+- 301ac66: absence, invites, metering and protocol now emit a checked-in `model.json`, so
+  `lint:model --check` covers all seven engines instead of three — a changed table or a
+  renamed field on any of them has to appear in a PR diff. Three declarations gained a
+  constraint the shipped DDL already had, so the artifact records it rather than freezing
+  the omission: `absence-leave-type` and `metering-meter` declare the primary key they are
+  keyed by, and `metering-entry` declares the `(meter_key, dedupe_key)` unique key its
+  dedupe replay relies on. No migration, no DDL change, no runtime behaviour changes.
+- 4f641a7: Invites, invoicing and metering now parse the rows they return instead of trusting
+  a TypeScript assertion that is not there at runtime. Each read names the columns its
+  published schema describes rather than `SELECT *`, so a column that moved is a throw
+  naming itself instead of a field quietly missing from a screen — and a column added
+  upstream never crosses the seam at all. Nothing about the published shapes changed;
+  what changed is that a stored row which stops matching one is now refused, and blamed
+  on the engine rather than reported to the caller as a bad request.
+- Updated dependencies [f065a84]
+- Updated dependencies [7bf77df]
+  - @substrat-run/contracts@0.95.0
+  - @substrat-run/kernel@0.95.0
+
 ## 0.5.0
 
 ### Minor Changes
