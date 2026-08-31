@@ -15,18 +15,22 @@ your operation. You never import this engine to do it.
 
 ## Extending it
 
-Today, barely — and this is the honest gap in this engine.
+**By event, not by call** — and that is the shape, not a shortfall.
 
-There are **no in-scope functions** ([surface](./surface#in-scope-functions)), so the
-composition pattern the other engines offer isn't available here. You cannot wrap `export` in
-your own vocabulary, and you cannot export a basis and write to your own tables in one
-transaction, without re-implementing the operation.
+There are **no in-scope functions** ([surface](./surface#in-scope-functions)), because this
+engine being the only writer of its rows is what makes `exported` immutable. So the
+wrap-the-function pattern the by-call engines offer does not apply here: you cannot wrap
+`export` in your own vocabulary, and you cannot export a basis and write to your own tables
+in one transaction. You extend invoicing by changing **what you emit**, and you read its
+answers back through `invoicing/list` / `invoicing/get` or by consuming
+`invoicing.underlag-updated`.
 
-What you *can* do:
+What that looks like:
 
 | You want | Use |
 |---|---|
 | billing from a new domain | emit an event; add a consumer upstream — the `commerce.order-placed` path is the worked example |
+| the basis on your own screens | `invoicing/list` / `invoicing/get`, or consume `invoicing.underlag-updated` — never a read of this engine's tables |
 | extra fields on an underlag | your own side table keyed by the underlag id — **never** a column upstream |
 | to hide export from most roles | keep `invoicing:export` off the role; it's already a separate key |
 | the engine off for a tenant | revoke the `invoicing` entitlement — but read the caveat in [surface](./surface#entitlement) first |
