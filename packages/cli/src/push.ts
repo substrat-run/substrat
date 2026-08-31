@@ -22,7 +22,8 @@ import {
   type VersionOrigin,
 } from '@substrat-run/contracts';
 import { warnIfStale } from './version.js';
-import { explainPlatformFault, parseJsonBody, readAllEntries } from './http.js';
+import { parseJsonBody, readAllEntries } from './http.js';
+import { failureMessage } from './problem.js';
 
 /**
  * Where this push runs: the generated deploy workflow runs THIS SAME CLI inside GitHub
@@ -716,16 +717,10 @@ export async function push(
   warnIfStale(res.headers);
   const body = await res.text();
   if (!res.ok) {
-    // Surface the control plane's own `error` line when the body is its JSON shape —
-    // e.g. the #388 fork refusal reads as guidance, not as a wall of escaped JSON.
-    let detail = body;
-    try {
-      const parsed = JSON.parse(body) as { error?: string };
-      if (typeof parsed.error === 'string') detail = parsed.error;
-    } catch {
-      // not JSON — keep the raw body
-    }
-    throw new Error(`push failed (${res.status}): ${detail}${explainPlatformFault(res.status, detail)}`);
+    // Surface what the control plane said — its problem document's `detail`, `code` and
+    // field errors (#971), or the older `{ error }` line — so e.g. the #388 fork refusal
+    // reads as guidance, not as a wall of escaped JSON.
+    throw new Error(failureMessage('push failed', res.status, body));
   }
   return parseJsonBody<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }>(body, url);
 }

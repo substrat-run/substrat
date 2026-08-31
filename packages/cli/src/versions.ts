@@ -7,6 +7,7 @@
  */
 import { listVerticalHostnames } from './hostnames.js';
 import { readAllEntries, readJson } from './http.js';
+import { failureMessage } from './problem.js';
 
 interface Version {
   id: string;
@@ -22,10 +23,13 @@ interface Channel {
   servingVersionId?: string | null;
 }
 
+/** GET one control-plane page, reading a refusal as the problem document it is. */
 async function getJson<T>(url: string, header: Record<string, string>): Promise<T> {
   const res = await fetch(url, { headers: header });
   if (!res.ok) {
-    throw new Error(`${res.status} ${(await res.text().catch(() => res.statusText)).slice(0, 200)}`);
+    // The control plane answers a refused read with a problem document; print what it
+    // says — the code and the detail — instead of a slice of the raw body (#971).
+    throw new Error(failureMessage('control-plane read failed', res.status, await res.text().catch(() => res.statusText)));
   }
   return readJson<T>(res, url);
 }
