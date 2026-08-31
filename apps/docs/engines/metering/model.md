@@ -80,7 +80,9 @@ unit is a new meter key.
   `metering_entries`. Corrections compensate; history survives.
 - **One observation, one row, one event** — `recordUsage` with a seen
   `(meter, dedupeKey)` and the same qty returns the existing entry and emits nothing;
-  with a different qty it **throws**.
+  with a different qty it **throws**. That branch returns *before* either `occurred_at`
+  bound below is consulted, so a retry of an already-recorded key never starts failing
+  because the horizon moved in the meantime.
 - **One aggregation code path** — `usageTotal` (the preview read) and `closePeriod`
   (the freeze) share the same internal aggregation, so a preview can never disagree with
   the eventual line.
