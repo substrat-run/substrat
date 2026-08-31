@@ -31,18 +31,84 @@ kernel](/concepts/permissions) — roles, grants and tenancy are never this pack
 Mapping `sub` to a Substrat `PrincipalId` is a **separate, per-scope** step (the identity
 directory below), which is what lets the implementation swap without touching the app.
 
-## Choosing an implementation
+## `instanceAuthFor` — what a vertical actually mounts
 
-| Export | Login happens | Use when |
+A vertical does not pick a provider at build time. One serving script runs every install, and
+each install may have been given a different issuer in the dashboard, so the provider is a
+function of *this scope's* delivered configuration. `instanceAuthFor` is that whole step —
+read the delivered config, parse `substrat:auth`, resolve the declared settings, and hand
+back the selector for a provider — in one DO hop. Nothing is *selected* during the hop:
+`provider()` is a closure, and the selection (and any `AuthConfigError`) happens when it is
+called.
+
+```ts
+import { instanceAuthFor, AuthConfigError } from '@substrat-run/vertical-auth';
+
+const instance = await instanceAuthFor({
+  directory: identityDo(env, node), // the tenant's IdentityDO stub
+  scopeId: node.scopeId,
+  envSpec: TICKET0_ENV,             // the vertical's declared env spec
+  env,                              // the worker's own bindings
+});
+
+// { identity, sessionSecret, settings, config, provider() }
+```
+
+| Field | What it is |
+|---|---|
+| `identity` | the parsed `substrat:auth` choice, or `null` when nothing usable was delivered |
+| `sessionSecret` | the tenant's DO-minted session-signing secret |
+| `settings` | the declared env spec, resolved **delivered > binding > manifest default** |
+| `config` | the whole delivered map, for a vertical's own non-declared keys |
+| `provider()` | the `AuthProvider` this instance's configuration selects |
+
+Three things it owns, each of which a caller assembling this by hand gets wrong:
+
+- **`provider` is a function, not a field.** A route that only reads `settings` must not fail
+  because nobody has configured a login yet, so selection — and its throw — happens when the
+  provider is asked for, not when the config is read.
+- **Settings resolve delivered > binding > default.** A spec `default` rides as a binding
+  shared by every install of one serving script, so reading `env.OIDC_ISSUER` directly hands
+  every tenant the same string no matter what any of them saved in the dashboard. That was a
+  real bug in one of the four hand-written copies this replaces.
+- **`AuthConfigError` carries its HTTP status with the throw.** An instance nobody has
+  configured yet is a `503`; `AUTH_PROVIDER=oidc` with no `OIDC_ISSUER` is a `500`, because a
+  deployment that asked for a provider and did not finish configuring it is an operator's
+  mistake, not a tenant's missing choice. A plain `Error` would have arrived as a 500 by
+  accident. Each worker re-raises it in its own framework's exception:
+
+```ts
+try {
+  return instance.provider();
+} catch (err) {
+  if (err instanceof AuthConfigError) throw new HTTPException(err.status, { message: err.message });
+  throw err;
+}
+```
+
+`callout`, `meridian`, `manyfold` and `ticket0` all mount it. The `create-substrat` template
+deliberately does **not**: its `config-do.ts` mirrors the same `scope_config` table shape so a
+project can swap the binding and adopt vertical-auth later, which is why the scaffold and a
+demo look different here.
+
+## What it selects between
+
+The composition is OIDC-only, so `provider()` picks between the first two. `doAuthProvider` is
+never selected by it — a vertical that owns credentials constructs one directly.
+
+| Export | Login happens | Selected when |
 |---|---|---|
-| `oidcAuthProvider` | at the issuer; the app verifies a presented JWT | an SPA already holds a token from Supabase, Auth0, AuthHero, Keycloak, Zitadel |
-| `oidcRpAuthProvider` | server-side, in your worker | you want the full browser redirect flow and a session cookie you control |
-| `doAuthProvider` | in your own Durable Object | the vertical owns credentials rather than delegating to an issuer |
+| `oidcRpAuthProvider` | server-side, in your worker | a `substrat:auth` choice was delivered with `mode: 'oidc'` and both an `issuer` and a `clientId` — the hosted path, one script and many issuers |
+| `oidcAuthProvider` | at the issuer; the app verifies a presented JWT | nothing usable was delivered and `AUTH_PROVIDER=oidc` names a fixed `OIDC_ISSUER` — standalone deploys, or an SPA already holding a token from Supabase, Auth0, AuthHero, Keycloak, Zitadel |
+| `doAuthProvider` | in your own Durable Object | never by the composition; construct it yourself when the vertical owns credentials rather than delegating to an issuer |
 
 `oidcAuthProvider` is discovery-driven: the issuer URL is the only wired-in value, and the ID
 token is signature-verified against the issuer's JWKS. `oidcRpAuthProvider` runs
 Authorization-Code + PKCE through [`@substrat-run/oidc-rp`](/reference/oidc-rp), so verticals
 and the platform share one verifier rather than two copies of the security-critical path.
+With neither — no usable delivered OIDC choice, and no `AUTH_PROVIDER=oidc` with an
+`OIDC_ISSUER` — the composition fails closed: `provider()` throws `AuthConfigError` with a
+`503`. A delivered choice missing its `issuer` or `clientId` is the same `503`.
 
 ## The identity directory
 
