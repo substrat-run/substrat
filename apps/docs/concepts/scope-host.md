@@ -24,7 +24,7 @@ interface ScopeHost {
 interface ScopeStub {
   readonly tenantId: TenantId;
   readonly scopeId: ScopeId;
-  invoke<O, I>(operation: string, input?: I): Promise<O>;
+  invoke<O, I>(operation: string, input?: I, options?: InvokeOptions): Promise<O>;
 }
 ```
 
@@ -42,6 +42,50 @@ the rest of these docs introduce where they belong.
 for a non-human caller. Where a connection's stub stamps `{ connection }` on its events, a
 system stub stamps `{ system: moduleId }` and checks against `system:<moduleId>` grants — so
 a scheduled operation is attributable to the schedule, and `ctx.check` stays its one gate.
+
+### Preconditions travel per invocation, not in the input
+
+`invoke`'s third argument carries facts about the **request**, never about the domain. A
+handler's declared input is what the operation *means*; threading a retry token or an entity
+tag through it would make every in-process caller state something it does not have.
+`mountOperations` reads these off headers — a test, a seed or a schedule omits them entirely.
+
+```ts
+interface InvokeOptions {
+  readonly ifMatch?: string;                                   // the caller's `If-Match`
+  readonly onEntityVersion?: (version: string | null) => void; // the `ETag` to hand back
+  readonly idempotencyKey?: string;                            // the caller's `Idempotency-Key`
+  readonly onIdempotentReplay?: () => void;                    // sets `Idempotency-Replayed`
+}
+```
+
+One bag rather than a parameter per concern, because the two are **one precondition pass at one
+point in the invoke** — before the guards, inside the transaction.
+
+- **`ifMatch`** is the version the caller believes it is writing over, verbatim from the header
+  (quoted, and possibly a list). **`onEntityVersion`** is called after a guarded operation
+  *commits*, with the entity's version as the caller's own write left it — read after the
+  handler and inside the same transaction, because a client that echoed back the tag it sent
+  would loop on its own stale value. Neither runs for an operation that declares no
+  `concurrency`, and neither runs for one that rolled back.
+- **`idempotencyKey`** has nothing to declare: it is honoured on every unsafe operation, since a
+  retried write creating a second entity is a hazard on all of them. A first request under a key
+  runs and its return value is recorded inside the operation's own transaction; a second under
+  the same key returns that recording without running the handler, and **`onIdempotentReplay`**
+  fires when it does.
+
+**An option the operation cannot honour is refused, not ignored** — and refused before the
+invocation takes its turn, in both directions:
+
+- `ifMatch` sent to an operation that declares no `concurrency`. Nothing would have been
+  compared, and a caller who believes its write is protected while it is not is the single
+  failure this mechanism exists to prevent. Silence is how that belief survives.
+- `idempotencyKey` sent to an operation that declared `idempotency: false`. Its response is
+  deliberately never recorded, so the retry would do the work a second time — while the caller
+  reads its `200` as proof that retrying was safe.
+
+The HTTP half of both — the headers, the `412`, the replay window — is
+[§7 and §7b of API design](/concepts/api-design#_7-writes-are-safe-to-retry).
 
 ## What a handler sees
 
@@ -95,7 +139,9 @@ interface OperationContext {
 - **`versionOf`** is an entity's version — the ULID of the last event about it, read
   from the outbox; there is no version column. It is what a read-modify-write's
   `If-Match` is checked against, and it survives a shred, so an erased entity can still
-  refuse a stale write. See
+  refuse a stale write. The caller's side of that comparison is
+  [`InvokeOptions.ifMatch`](#preconditions-travel-per-invocation-not-in-the-input); the
+  transport's side is
   [A read-modify-write says what it is writing over](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over).
 - **`entitlement`** / **`entitlements`** read the tenant's currently-held
   entitlements at request time — the sanctioned way a hosted vertical gates a feature
