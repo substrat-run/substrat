@@ -3,10 +3,15 @@
 ---
 
 The generated deploy workflow now gates the push. Between the build and `substrat push` it
-runs whichever of `typecheck`, `test` and `lint:boundaries` your package.json declares — the
-three a scaffolded project ships with — from the package's own directory, falling back to the
-repo root in a monorepo for one the package does not declare. A non-zero exit fails the job
-before anything is uploaded.
+runs whichever of `typecheck`, `test` and `lint:boundaries` the deployed package declares — the
+three a scaffolded project ships with — from that package's own directory. A non-zero exit
+fails the job before anything is uploaded.
+
+Only the package's own scripts, never the repo root's: the build step ahead of it builds the
+vertical's dependency closure and nothing more, so a root script is free to need a tool the job
+never built. A monorepo package that wants the layer rules gated declares them itself,
+`"lint:boundaries": "substrat-boundary-lint"` beside a devDependency on
+`@substrat-run/boundary-lint`.
 
 Outside the Substrat monorepo the hosted push path is the only path there is, so this is the
 first place the layer rules, the type checker and the suite actually run for a project. A repo

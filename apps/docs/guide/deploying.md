@@ -460,12 +460,25 @@ upload — whichever of `typecheck`, `test` and `lint:boundaries` your package.j
 three a [scaffolded project](/guide/getting-started) ships with), from the package's directory. A
 non-zero exit fails the job, and nothing is uploaded.
 
+Only *your package's* scripts, never the repo root's, even in a monorepo: the build step ahead of
+it builds the vertical's dependency closure and nothing more, so a root script is free to need a
+tool this job never built.
+
 This is the *only* place those rules run for a project that is not developed inside the Substrat
-monorepo, so it is worth having all three: `lint:boundaries` is
-[`substrat-boundary-lint`](/reference/boundary-lint) from `@substrat-run/boundary-lint`, and it is
-what catches a module reaching for `cloudflare:workers`, another module's tables, or `Date.now()`
-before that code is serving traffic. A repo that declares none of the three still deploys — the
-file is regenerated into projects that predate the gate — but the run says so, loudly.
+monorepo, so it is worth having all three. `lint:boundaries` is the one you are most likely to be
+missing:
+
+```json
+{
+  "scripts": { "lint:boundaries": "substrat-boundary-lint" },
+  "devDependencies": { "@substrat-run/boundary-lint": "^0.2.1" }
+}
+```
+
+[`substrat-boundary-lint`](/reference/boundary-lint) is what catches a module reaching for
+`cloudflare:workers`, another module's tables, or `Date.now()` before that code is serving
+traffic. A repo that declares none of the three still deploys — the file is regenerated into
+projects that predate the gate — but the run says so, loudly.
 
 If you never connect the GitHub App — you own your CI, you are not on GitHub-hosted runners, or
 you want the release-train shape instead of merge-deploys-prod — generate the same file locally:

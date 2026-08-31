@@ -219,10 +219,14 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   // that is not this repo.
   //
   // The three names are the gates a scaffolded project ships with (`npm create substrat`
-  // writes `test`, `typecheck` and `lint:boundaries`). Each runs from the PACKAGE directory
-  // when the package declares it; in a monorepo a gate the package does not declare falls
-  // back to the repo root, which is where a workspace usually keeps `lint:boundaries`. A
-  // non-zero exit fails the job before `push` is reached.
+  // writes `test`, `typecheck` and `lint:boundaries`), and each runs only if THIS package
+  // declares it — never the repo root, even in a monorepo. The step above builds the
+  // vertical's dependency closure and nothing else, so a root script is free to need a tool
+  // this job never built: falling back to the root `lint:boundaries` is how the first
+  // version of this gate died, on a `packages/boundary-lint/dist` that was correctly absent.
+  // A monorepo package that wants the layer rules gated declares them itself —
+  // `"lint:boundaries": "substrat-boundary-lint"` beside a devDependency on
+  // @substrat-run/boundary-lint, which then IS in the closure the build step covers.
   //
   // A project that declares none of the three is still pushed — this file is regenerated
   // into repos that predate the gate, and refusing there would break their deploy on an
@@ -230,7 +234,7 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   const pkgRelRef = path ? `${path}/package.json` : 'package.json';
   const gate = `
       - name: Gate the push (typecheck, tests, layer rules)
-        # Runs the gates the package declares — a violation fails the job before anything
+        # Runs the gates ${pkgRelRef} declares — a violation fails the job before anything
         # is uploaded. Add \`test\`, \`typecheck\` and \`lint:boundaries\` scripts to gate more;
         # \`lint:boundaries\` is \`substrat-boundary-lint\` from @substrat-run/boundary-lint.
         run: |
@@ -239,16 +243,15 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
           elif [ -f yarn.lock ]; then PM=yarn
           else PM=npm
           fi
-          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" "$1" "$2"; }
+          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" '${pkgRelRef}' "$1"; }
           RAN=''
           for s in typecheck test lint:boundaries; do
-            if declares '${pkgRelRef}' "$s"; then ( cd ${dir} && $PM run "$s" ); RAN="$RAN $s"
-            elif declares 'package.json' "$s"; then $PM run "$s"; RAN="$RAN $s"
+            if declares "$s"; then ( cd ${dir} && $PM run "$s" ); RAN="$RAN $s"
             else echo "no '$s' script in ${pkgRelRef} — skipped"
             fi
           done
           if [ -z "$RAN" ]; then
-            echo "::warning::no typecheck, test or lint:boundaries script — this push is UNGATED. See https://substrat.net/guide/deploying"
+            echo "::warning::no typecheck, test or lint:boundaries script in ${pkgRelRef} — this push is UNGATED. See https://substrat.net/guide/deploying"
           else
             echo "gates passed:$RAN"
           fi`;

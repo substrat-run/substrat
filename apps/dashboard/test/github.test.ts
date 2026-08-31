@@ -287,12 +287,17 @@ describe('GitHub App client', () => {
       // The reap job uploads nothing and never checks the repo out — nothing to gate.
       expect(cleanupJob).not.toContain(GATE);
 
-      // The three names are the gates `npm create substrat` writes into a scaffold, run from
-      // the PACKAGE directory; in a monorepo one the package does not declare falls back to
-      // the repo root, which is where a workspace usually keeps `lint:boundaries`.
+      // The three names are the gates `npm create substrat` writes into a scaffold, and each
+      // runs only if THIS package declares it — read from the package's manifest, run from
+      // the package's directory.
       expect(yaml).toContain('for s in typecheck test lint:boundaries; do');
-      expect(yaml).toContain(`if declares 'demos/auth-server/package.json' "$s"; then ( cd demos/auth-server && $PM run "$s" )`);
-      expect(yaml).toContain(`elif declares 'package.json' "$s"; then $PM run "$s"`);
+      expect(yaml).toContain(`'demos/auth-server/package.json' "$1"; }`);
+      expect(yaml).toContain(`if declares "$s"; then ( cd demos/auth-server && $PM run "$s" )`);
+      // Never the repo root, even in a monorepo: the build step above builds the vertical's
+      // dependency closure and nothing else, so a root script is free to need a tool this job
+      // never built. Falling back to the root `lint:boundaries` is how the first version of
+      // this gate died, on a `packages/boundary-lint/dist` that was correctly absent.
+      expect(yaml.slice(yaml.indexOf(GATE))).not.toContain(`declares 'package.json'`);
       // `set -e` is what turns a violation into a failed job rather than a logged one.
       expect(yaml.slice(yaml.indexOf(GATE))).toContain('set -euo pipefail');
       // A repo that declares none of them still deploys — this file is regenerated into
@@ -303,7 +308,8 @@ describe('GitHub App client', () => {
       const root = wf();
       expect(root).toContain(GATE);
       expect(root.indexOf(GATE)).toBeLessThan(root.indexOf('cli push . --slug hr-portal --promote prod'));
-      expect(root).toContain(`if declares 'package.json' "$s"; then ( cd . && $PM run "$s" )`);
+      expect(root).toContain(`'package.json' "$1"; }`);
+      expect(root).toContain(`if declares "$s"; then ( cd . && $PM run "$s" )`);
     });
 
     it('never hard-codes a fabricated version coordinate', () => {

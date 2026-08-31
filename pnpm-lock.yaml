@@ -1166,6 +1166,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
         version: 4.20260702.1
+      '@substrat-run/boundary-lint':
+        specifier: workspace:^
+        version: link:../../packages/boundary-lint
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests

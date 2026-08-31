@@ -79,7 +79,7 @@ jobs:
           else npm run build --workspaces --if-present
           fi
       - name: Gate the push (typecheck, tests, layer rules)
-        # Runs the gates the package declares — a violation fails the job before anything
+        # Runs the gates demos/ticket0/package.json declares — a violation fails the job before anything
         # is uploaded. Add `test`, `typecheck` and `lint:boundaries` scripts to gate more;
         # `lint:boundaries` is `substrat-boundary-lint` from @substrat-run/boundary-lint.
         run: |
@@ -88,16 +88,15 @@ jobs:
           elif [ -f yarn.lock ]; then PM=yarn
           else PM=npm
           fi
-          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" "$1" "$2"; }
+          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" 'demos/ticket0/package.json' "$1"; }
           RAN=''
           for s in typecheck test lint:boundaries; do
-            if declares 'demos/ticket0/package.json' "$s"; then ( cd demos/ticket0 && $PM run "$s" ); RAN="$RAN $s"
-            elif declares 'package.json' "$s"; then $PM run "$s"; RAN="$RAN $s"
+            if declares "$s"; then ( cd demos/ticket0 && $PM run "$s" ); RAN="$RAN $s"
             else echo "no '$s' script in demos/ticket0/package.json — skipped"
             fi
           done
           if [ -z "$RAN" ]; then
-            echo "::warning::no typecheck, test or lint:boundaries script — this push is UNGATED. See https://substrat.net/guide/deploying"
+            echo "::warning::no typecheck, test or lint:boundaries script in demos/ticket0/package.json — this push is UNGATED. See https://substrat.net/guide/deploying"
           else
             echo "gates passed:$RAN"
           fi
@@ -164,7 +163,7 @@ jobs:
           else npm run build --workspaces --if-present
           fi
       - name: Gate the push (typecheck, tests, layer rules)
-        # Runs the gates the package declares — a violation fails the job before anything
+        # Runs the gates demos/ticket0/package.json declares — a violation fails the job before anything
         # is uploaded. Add `test`, `typecheck` and `lint:boundaries` scripts to gate more;
         # `lint:boundaries` is `substrat-boundary-lint` from @substrat-run/boundary-lint.
         run: |
@@ -173,16 +172,15 @@ jobs:
           elif [ -f yarn.lock ]; then PM=yarn
           else PM=npm
           fi
-          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" "$1" "$2"; }
+          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" 'demos/ticket0/package.json' "$1"; }
           RAN=''
           for s in typecheck test lint:boundaries; do
-            if declares 'demos/ticket0/package.json' "$s"; then ( cd demos/ticket0 && $PM run "$s" ); RAN="$RAN $s"
-            elif declares 'package.json' "$s"; then $PM run "$s"; RAN="$RAN $s"
+            if declares "$s"; then ( cd demos/ticket0 && $PM run "$s" ); RAN="$RAN $s"
             else echo "no '$s' script in demos/ticket0/package.json — skipped"
             fi
           done
           if [ -z "$RAN" ]; then
-            echo "::warning::no typecheck, test or lint:boundaries script — this push is UNGATED. See https://substrat.net/guide/deploying"
+            echo "::warning::no typecheck, test or lint:boundaries script in demos/ticket0/package.json — this push is UNGATED. See https://substrat.net/guide/deploying"
           else
             echo "gates passed:$RAN"
           fi
