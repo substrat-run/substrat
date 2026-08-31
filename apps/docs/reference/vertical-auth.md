@@ -36,8 +36,10 @@ directory below), which is what lets the implementation swap without touching th
 A vertical does not pick a provider at build time. One serving script runs every install, and
 each install may have been given a different issuer in the dashboard, so the provider is a
 function of *this scope's* delivered configuration. `instanceAuthFor` is that whole step —
-read the delivered config, parse `substrat:auth`, resolve the declared settings, select a
-provider — in one DO hop:
+read the delivered config, parse `substrat:auth`, resolve the declared settings, and hand
+back the selector for a provider — in one DO hop. Nothing is *selected* during the hop:
+`provider()` is a closure, and the selection (and any `AuthConfigError`) happens when it is
+called.
 
 ```ts
 import { instanceAuthFor, AuthConfigError } from '@substrat-run/vertical-auth';
@@ -91,20 +93,22 @@ demo look different here.
 
 ## What it selects between
 
-`instanceAuthFor` picks one of these; a vertical that runs its own composition can also
-construct one directly.
+The composition is OIDC-only, so `provider()` picks between the first two. `doAuthProvider` is
+never selected by it — a vertical that owns credentials constructs one directly.
 
 | Export | Login happens | Selected when |
 |---|---|---|
-| `oidcRpAuthProvider` | server-side, in your worker | a `substrat:auth` choice was delivered — the hosted path, one script and many issuers |
-| `oidcAuthProvider` | at the issuer; the app verifies a presented JWT | nothing was delivered and `AUTH_PROVIDER=oidc` names a fixed issuer — standalone deploys, or an SPA already holding a token from Supabase, Auth0, AuthHero, Keycloak, Zitadel |
-| `doAuthProvider` | in your own Durable Object | the vertical owns credentials rather than delegating to an issuer (not selected by the composition, which is OIDC-only) |
+| `oidcRpAuthProvider` | server-side, in your worker | a `substrat:auth` choice was delivered with `mode: 'oidc'` and both an `issuer` and a `clientId` — the hosted path, one script and many issuers |
+| `oidcAuthProvider` | at the issuer; the app verifies a presented JWT | nothing usable was delivered and `AUTH_PROVIDER=oidc` names a fixed `OIDC_ISSUER` — standalone deploys, or an SPA already holding a token from Supabase, Auth0, AuthHero, Keycloak, Zitadel |
+| `doAuthProvider` | in your own Durable Object | never by the composition; construct it yourself when the vertical owns credentials rather than delegating to an issuer |
 
 `oidcAuthProvider` is discovery-driven: the issuer URL is the only wired-in value, and the ID
 token is signature-verified against the issuer's JWKS. `oidcRpAuthProvider` runs
 Authorization-Code + PKCE through [`@substrat-run/oidc-rp`](/reference/oidc-rp), so verticals
 and the platform share one verifier rather than two copies of the security-critical path.
-Neither delivered nor defaulted is unconfigured, and the composition fails closed.
+With neither — no usable delivered OIDC choice, and no `AUTH_PROVIDER=oidc` with an
+`OIDC_ISSUER` — the composition fails closed: `provider()` throws `AuthConfigError` with a
+`503`. A delivered choice missing its `issuer` or `clientId` is the same `503`.
 
 ## The identity directory
 
