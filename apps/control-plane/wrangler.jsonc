@@ -15,9 +15,11 @@
 	// cheap when nothing is due (one directory read per phase).
 	//
 	// Storage reap is OFF until a retention window is chosen — the reap is
-	// irreversible, so opt in explicitly:  wrangler secret put SCOPE_RETENTION_DAYS
-	// (or a `vars` entry), e.g. "30". Unset ⇒ the sweep never auto-deletes app data;
-	// manual reap from the console is unaffected.
+	// irreversible, so opt in explicitly: set CP_SCOPE_RETENTION_DAYS in
+	// secrets/platform.<env>.env and `node scripts/secrets.mjs push`, e.g. "30".
+	// Declared in that map (#990) so `secrets.mjs check` shows it unset rather than
+	// showing nothing at all. Unset ⇒ the sweep never auto-deletes app data; manual
+	// reap from the console is unaffected. Same for CP_TENANT_RETENTION_DAYS (§4.8).
 	//
 	// The same scheduled pass also reconciles custom-hostname issuance (#305, §4.7):
 	// it polls every `verifying` domain via Cloudflare for SaaS and retries stuck
@@ -98,7 +100,8 @@
 	// `emailSender` POSTs to /internal/email/send and the CP sends through this binding. Onboard
 	// the dedicated sending SUBDOMAIN once — `wrangler email sending enable send.substrat.net`
 	// (auto-configures SPF/DKIM; never the apex, whose MX carries live inbound mail) — and set
-	// the sender with `wrangler secret put EMAIL_FROM` (default no-reply@send.substrat.net).
+	// the sender with CP_EMAIL_FROM in secrets/platform.<env>.env (default
+	// no-reply@send.substrat.net), which `secrets.mjs` maps onto this worker's EMAIL_FROM.
 	// Absent this binding (local dev) the relay degrades to a drop-mock, so a reset never crashes.
 	"send_email": [{ "name": "EMAIL" }],
 
@@ -127,9 +130,10 @@
 	// (unmasked) — a masked dump cannot restore — so this bucket is as sensitive as the
 	// scopes it backs: no public access, and it is deliberately NOT bound on any vertical.
 	// Retention (#557): opt-in, enforced by the sweep rather than an R2 lifecycle rule so
-	// the policy is visible in the repo —  wrangler secret put SCOPE_BACKUP_RETENTION_DAYS
-	// (scopes/ reap copies) and ACCESS_LOG_RETENTION_DAYS (the access-log/ batches in the
-	// directory bucket below). Unset ⇒ every copy kept forever: the platform never deletes
+	// the policy is visible in the repo — CP_SCOPE_BACKUP_RETENTION_DAYS (scopes/ reap
+	// copies) and CP_ACCESS_LOG_RETENTION_DAYS (the access-log/ batches in the directory
+	// bucket below) in secrets/platform.<env>.env, both declared in the secrets map (#990)
+	// so an unchosen policy reads as unchosen. Unset ⇒ every copy kept forever: the platform never deletes
 	// evidence on a schedule a human did not choose.
 	// Absent this binding, a reap that asks for a backup is refused 501 rather than
 	// silently wiping (the asymmetry is in ControlPlaneApiOptions.scopeBackups).

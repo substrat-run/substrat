@@ -36,10 +36,26 @@ those already complete and stepping past a provider error on any one.
 ## Using it
 
 ```ts
-import { registerScriveConnector, sweepScriveReconciliations } from '@substrat-run/connector-scrive';
+import {
+  declareScriveConnector,
+  registerScriveConnector,
+  sweepScriveReconciliations,
+  SCRIVE_TESTBED,
+  SCRIVE_PRODUCTION,
+} from '@substrat-run/connector-scrive';
+
+// 0. ONE provider base for this deployment. Everything below takes it — registration,
+//    the sweep, the callback ingress — so a deployment cannot dispatch to production
+//    and poll the testbed.
+const baseUrl = SCRIVE_TESTBED; // or SCRIVE_PRODUCTION
 
 // 1. Register the connector on the scope host (host code, like an engine module).
-registerScriveConnector(host, { baseUrl: SCRIVE_TESTBED /* or SCRIVE_PRODUCTION */ });
+//    `baseUrl` is REQUIRED — there is no default, deliberately: the old fallback was the
+//    testbed, and a production credential sent there comes back 401, indistinguishable
+//    from a mistyped key. A CP-less vertical, which registers only so its host knows
+//    which events are connector deliveries, uses `declareScriveConnector(host)` instead —
+//    it never calls the provider, so it names no base.
+registerScriveConnector(host, { baseUrl });
 
 // 2. Open a connection with the OAuth1 credential, and grant it the one permission
 //    that lets it write a signature back — held by NO human role.
@@ -52,7 +68,9 @@ await host.admin.grantToConnection(actor, {
 });
 
 // 3. Schedule the poll — YOUR deployment calls the sweep on a timer. Both triggers ship:
-//    Node:        startPlatformSweeper(host, { sweepers: { scrive: sweepScriveReconciliations }, intervalMs })
+//    The sweeper is bound to the SAME `baseUrl` step 1 registered with:
+const sweeper = (h, id, o) => sweepScriveReconciliations(h, id, { ...o, baseUrl });
+//    Node:        startPlatformSweeper(host, { sweepers: { scrive: sweeper }, intervalMs })
 //    Cloudflare:  definePlatformSweeperDO (@substrat-run/adapter-cloudflare) — a self-re-arming
 //                 Durable Object alarm whose pass calls runPlatformSweep(host, { sweepers: { scrive: … } }).
 //                 An alarm rather than a cron because a vertical pushed into a Workers-for-Platforms

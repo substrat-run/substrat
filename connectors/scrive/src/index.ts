@@ -82,8 +82,17 @@ export { renderPdf } from './pdf.js';
  *   deployment mounts `SCRIVE_CALLBACK_ROUTE` and configures `callbackUrl`.
  */
 export interface ScriveConnectorOptions {
-  /** `SCRIVE_TESTBED` by default; production needs a paid licence. */
-  baseUrl?: string;
+  /**
+   * The provider base, REQUIRED (#990). `SCRIVE_TESTBED` or `SCRIVE_PRODUCTION` — the
+   * latter needs a paid licence.
+   *
+   * Deliberately not defaulted. It used to fall back to the testbed, which is right for a
+   * developer and wrong for a deployment: a production credential sent to the testbed
+   * comes back 401, indistinguishable from a mistyped key, and that is exactly how
+   * production called the testbed for weeks (#610). A deployment now names its
+   * environment in the type system, not in a comment.
+   */
+  baseUrl: string;
   /**
    * What `authLevel: 'basic'` means for THIS connection (#620) — the Scrive
    * authentication method a party gets when the request asks for no more than
@@ -362,7 +371,7 @@ function scriveAuthMethod(
  * another provider emits the same event, and this must not answer for it.
  */
 export function scriveConnector(options: ScriveConnectorOptions): ConnectorHandler {
-  const baseUrl = options.baseUrl ?? SCRIVE_TESTBED;
+  const baseUrl = options.baseUrl;
   const defaultAuthMethod = options.defaultAuthMethod ?? 'standard';
 
   return async (ctx, event: DomainEvent) => {
@@ -635,13 +644,44 @@ export function registerScriveConnector(
     options.id ?? 'scrive',
     'protocol.signatures-requested',
     scriveConnector(options),
-    {
-      maxAttempts: 8,
-      baseDelayMs: 5_000,
-      maxDelayMs: 900_000,
-      timeoutMs: 30_000,
-      ...options.retry,
+    { ...SCRIVE_RETRY, ...options.retry },
+  );
+}
+
+/** The retry policy both registrations share — see `registerScriveConnector`. */
+const SCRIVE_RETRY: ConnectorOptions = {
+  maxAttempts: 8,
+  baseDelayMs: 5_000,
+  maxDelayMs: 900_000,
+  timeoutMs: 30_000,
+};
+
+/**
+ * Register the connector for ROUTING ONLY — a CP-less host that will never run the
+ * handler (`demos/meridian/src/worker.ts`).
+ *
+ * A dispatch vertical registers so its host knows which events are connector
+ * deliveries: the drain then routes each one onto the platform-requests surface as a
+ * `connector:scrive` intent, and the control plane — which holds the directory, the
+ * sealed credential and the egress — is what dispatches it.
+ *
+ * Its own function rather than `registerScriveConnector(host, {})` (#990). Now that
+ * `baseUrl` is required, "no provider base" is a statement — this host does not call
+ * the provider — instead of an omission that used to silently mean the testbed.
+ */
+export function declareScriveConnector(
+  host: ScopeHost,
+  options: { id?: string; retry?: ConnectorOptions } = {},
+): void {
+  host.registerConnector(
+    options.id ?? 'scrive',
+    'protocol.signatures-requested',
+    async () => {
+      throw new Error(
+        'scrive: this host registered the connector for routing only — the dispatching host runs it',
+      );
     },
+    { ...SCRIVE_RETRY, ...options.retry },
   );
 }
 
@@ -702,7 +742,7 @@ export async function reconcileScriveDispatch(
   host: ScopeHost,
   connectionId: ConnectionId,
   instanceId: string,
-  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number },
 ): Promise<ScriveReconcileResult> {
   const admin = host.admin;
   const key = dispatchKey(instanceId);
@@ -723,7 +763,7 @@ export async function reconcileScriveDispatch(
     state.vertical,
     options.timeoutMs ?? 30_000,
   );
-  const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  const api = new ScriveApi(conn, options.baseUrl);
   const doc = await api.get(state.documentId);
 
   // The connection acting as itself (#97). Refuses a scope in another tenant or
@@ -889,7 +929,7 @@ export interface ScriveConnectionRef {
 export async function probeScriveConnection(
   host: ScopeHost,
   connection: ScriveConnectionRef,
-  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number },
 ): Promise<ConnectionProbe> {
   const conn = await openScriveConnection(
     host.admin,
@@ -898,7 +938,7 @@ export async function probeScriveConnection(
     connection.vertical,
     options.timeoutMs ?? 15_000,
   );
-  return probeWith(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  return probeWith(conn, options.baseUrl);
 }
 
 /**
@@ -919,7 +959,7 @@ export async function probeScriveConnection(
  */
 export async function probeScriveSecret(
   secret: Record<string, string>,
-  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number },
 ): Promise<ConnectionProbe> {
   const parsed = scriveSecret.safeParse(secret);
   if (!parsed.success) {
@@ -944,7 +984,7 @@ export async function probeScriveSecret(
     expiresAt: null,
     fetch: (input, init) => options.fetch(input, { ...init, signal: AbortSignal.timeout(timeoutMs) }),
   };
-  return probeWith(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  return probeWith(conn, options.baseUrl);
 }
 
 /** The shared probe body: one `getprofile`, mapped to the platform's declared shape. */
@@ -1047,7 +1087,7 @@ export async function scriveConnectionActivity(
   connection: ScriveConnectionRef,
   options: {
     fetch: FetchLike;
-    baseUrl?: string;
+    baseUrl: string;
     timeoutMs?: number;
     live?: boolean;
     /** `provider` lists Scrive's own archive instead; see {@link scriveProviderDocuments}. */
@@ -1068,7 +1108,7 @@ export async function scriveConnectionActivity(
         connection.vertical,
         options.timeoutMs ?? 15_000,
       );
-      const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+      const api = new ScriveApi(conn, options.baseUrl);
       const list = await api.listDocuments({ max: 100 });
       provider = new Map(
         list.documents.map((d) => [d.id, { title: d.title, status: d.status, mtime: d.mtime }]),
@@ -1147,7 +1187,7 @@ export async function scriveConnectionActivity(
 export async function scriveProviderDocuments(
   host: ScopeHost,
   connection: ScriveConnectionRef,
-  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number; max?: number },
+  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number; max?: number },
 ): Promise<ConnectionActivity> {
   const conn = await openScriveConnection(
     host.admin,
@@ -1156,7 +1196,7 @@ export async function scriveProviderDocuments(
     connection.vertical,
     options.timeoutMs ?? 15_000,
   );
-  const api = new ScriveApi(conn, options.baseUrl ?? SCRIVE_TESTBED);
+  const api = new ScriveApi(conn, options.baseUrl);
   const list = await api.listDocuments({ max: options.max ?? 50 });
 
   // Which of them this platform sent — read from the ledger, so the marking is ours to
@@ -1270,7 +1310,7 @@ export interface ScriveSweepResult {
 export async function sweepScriveReconciliations(
   host: ScopeHost,
   connectionId: ConnectionId,
-  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number },
 ): Promise<ScriveSweepResult> {
   const entries = await host.admin.listConnectorState(connectionId, DISPATCH_PREFIX);
   const result: ScriveSweepResult = {
@@ -1364,7 +1404,7 @@ export type ScriveCallbackOutcome =
 export async function handleScriveCallback(
   host: ScopeHost,
   ref: ScriveCallbackRef,
-  options: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number },
+  options: { fetch: FetchLike; baseUrl: string; timeoutMs?: number },
 ): Promise<ScriveCallbackOutcome> {
   const parsedConnection = connectionId.safeParse(ref.connectionId);
   if (!parsedConnection.success) return { accepted: false, reason: 'malformed connection id' };

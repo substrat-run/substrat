@@ -102,6 +102,21 @@ const MANIFEST = {
       // entry (#423), and a secret cannot share a name with a var.)
       CF_SAAS_ROUTING_TARGET: 'CF_SAAS_ROUTING_TARGET',
       CF_SAAS_SSL_METHOD: 'CF_SAAS_SSL_METHOD',
+      // #990: the four retention windows and the sender address. Read by the worker,
+      // documented only in a wrangler.jsonc comment until now — so `check` reported
+      // full coverage on a deployment that had never chosen a retention policy, and
+      // the only way to see what a plane was actually configured with was to read the
+      // worker's source. Every one of them is opt-in and unset by default (each reap
+      // is irreversible), which is exactly why the map has to NAME them: an
+      // unnamed-and-unset var and a deliberately-unset one print the same nothing.
+      SCOPE_RETENTION_DAYS: 'CP_SCOPE_RETENTION_DAYS',
+      TENANT_RETENTION_DAYS: 'CP_TENANT_RETENTION_DAYS',
+      SCOPE_BACKUP_RETENTION_DAYS: 'CP_SCOPE_BACKUP_RETENTION_DAYS',
+      ACCESS_LOG_RETENTION_DAYS: 'CP_ACCESS_LOG_RETENTION_DAYS',
+      // The From address on mail the plane sends on a vertical's behalf (the
+      // `emailSender` relay). Its own key, not the dashboard's DASH_EMAIL_FROM:
+      // different senders, and a shared key would make one worker's choice the other's.
+      EMAIL_FROM: 'CP_EMAIL_FROM',
     },
   },
   builder: {

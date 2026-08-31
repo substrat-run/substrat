@@ -29,7 +29,7 @@ import {
   RouterAssertionError,
   ulid,
 } from '@substrat-run/kernel';
-import { registerScriveConnector } from '@substrat-run/connector-scrive';
+import { declareScriveConnector } from '@substrat-run/connector-scrive';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 import { EMPLOYEE_SELF, MODULES, ROLES } from './provision.js';
 import { MERIDIAN_ENV } from './manifest.js';
@@ -135,8 +135,9 @@ function hostFor(env: Env): CloudflareScopeHost {
   // platform-requests surface as a `connector:scrive` intent and the platform (which
   // holds the directory, the sealed credential and the egress) dispatches it. Options
   // like `baseUrl`/`callbackUrl` are deliberately absent: they are the DISPATCHING
-  // host's concern, configured where the handler actually executes.
-  registerScriveConnector(host, {});
+  // host's concern, configured where the handler actually executes — which is why this
+  // is `declare…` and not `register…` with an empty options bag (#990).
+  declareScriveConnector(host);
   return host;
 }
 

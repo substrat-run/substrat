@@ -5,7 +5,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Page } from '@substrat-run/contracts';
 import { platformActorId, type ScopeId } from '@substrat-run/contracts';
 import { runPlatformSweep, ulid } from '@substrat-run/kernel';
-import { ScriveMock, sweepScriveReconciliations } from '@substrat-run/connector-scrive';
+import { SCRIVE_TESTBED, ScriveMock, sweepScriveReconciliations } from '@substrat-run/connector-scrive';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import type { ProtocolSummary } from '@substrat-run/engine-protocol';
 import { buildDemoHost, seedDemo, type DemoWorld, type ScriveCredential } from '../src/index.js';
@@ -32,12 +32,14 @@ describe('Meridian — Scrive signature loop (Gate 1)', () => {
   let world: DemoWorld;
 
   const SECRET: ScriveCredential = { clientId: 'ci', clientSecret: 'cs', tokenId: 'ti', tokenSecret: 'ts' };
+  // The mock answers whatever origin it is handed; naming one is required (#990).
+  const BASE = SCRIVE_TESTBED;
 
   beforeAll(async () => {
     dir = mkdtempSync(join(tmpdir(), 'meridian-scrive-'));
     mock = new ScriveMock();
     // Scrive enabled with the mock as egress — the exact shape server.ts builds.
-    host = buildDemoHost(dir, { fetch: mock.fetch, secret: SECRET });
+    host = buildDemoHost(dir, { fetch: mock.fetch, secret: SECRET, baseUrl: BASE });
     world = await seedDemo(host, dir, SECRET);
   });
 
@@ -62,7 +64,9 @@ describe('Meridian — Scrive signature loop (Gate 1)', () => {
     runPlatformSweep(host, {
       actor: platformActorId.parse(ulid()),
       fetch: mock.fetch,
-      sweepers: { scrive: sweepScriveReconciliations },
+      sweepers: {
+        scrive: (h, id, o) => sweepScriveReconciliations(h, id, { ...o, baseUrl: BASE }),
+      },
     });
 
   it('dispatches the contract to Scrive during seeding', () => {

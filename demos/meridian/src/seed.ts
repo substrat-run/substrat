@@ -37,7 +37,12 @@ import { DEV_PROVIDER, PERSONAS } from './personas.js';
  */
 export interface ScriveConfig {
   fetch?: FetchLike;
-  baseUrl?: string;
+  /**
+   * The provider base — required, with no default (#990). `SCRIVE_TESTBED` is the
+   * developer's answer and `server.ts` resolves it; naming it here is what stops a
+   * production credential being sent to the testbed (#610).
+   */
+  baseUrl: string;
   secret: ScriveCredential;
   /**
    * Public base for the webhook ingress (#96) — set, and every dispatch mints a
