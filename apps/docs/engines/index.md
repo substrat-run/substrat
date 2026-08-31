@@ -121,7 +121,7 @@ of two ways, and which one it is decides whether in-scope functions exist at all
 | Engines | work orders, bookings, protocols, absence, invites, metering | [invoicing](/engines/invoicing/) |
 | Operations are | thin — a permission check plus one exported function | the surface itself; the logic lives in them |
 | A vertical | wraps the exported functions in its own transaction | *emits* a fact its consumers pick up |
-| Reads results | from the function's return value | back through the engine's own operations, or by consuming its events into a side table keyed by the engine's id |
+| Reads results | from the function's return value | back through the engine's own operations. Its events announce that something changed and carry the change, not the whole entity, so a vertical projects them into a side table keyed by the engine's id and reads the operation when it needs the entity |
 | In-scope exports | yes, that is the whole point | **none, deliberately** — the engine stays the only writer of its rows, which is what keeps an invariant like immutable-after-export safe from a half-finished caller |
 
 The mode is a fact about an engine's exports, and the by-event one says so in its package

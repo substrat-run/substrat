@@ -42,8 +42,11 @@ wrap them.
 :::
 
 So a vertical reaches the result by reading it back, not by calling in: through
-`invoicing/list` / `invoicing/get`, or by consuming `invoicing.underlag-updated` into its own
-side table keyed by the underlag's id (decision 28). The cost is real and worth stating
+`invoicing/list` / `invoicing/get`. `invoicing.underlag-updated` is the *notification* that
+there is something new to read — it carries `{ underlagId, addedLines, source }`, not the
+whole basis — so a vertical projects it into its own side table keyed by the underlag's id
+(decision 28) and calls `invoicing/get` when it needs the basis and its computed total. The
+cost is real and worth stating
 plainly: a vertical **cannot** export an underlag and touch its own tables in one
 transaction, and cannot wrap export in its own vocabulary. That is what the immutability
 guarantee is bought with.

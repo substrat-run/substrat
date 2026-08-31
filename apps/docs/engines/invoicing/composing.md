@@ -22,15 +22,16 @@ engine being the only writer of its rows is what makes `exported` immutable. So 
 wrap-the-function pattern the by-call engines offer does not apply here: you cannot wrap
 `export` in your own vocabulary, and you cannot export a basis and write to your own tables
 in one transaction. You extend invoicing by changing **what you emit**, and you read its
-answers back through `invoicing/list` / `invoicing/get` or by consuming
-`invoicing.underlag-updated`.
+answers back through `invoicing/list` / `invoicing/get` — with
+`invoicing.underlag-updated` as the notification that there is something new to read.
 
 What that looks like:
 
 | You want | Use |
 |---|---|
-| billing from a new domain | emit an event; add a consumer upstream — the `commerce.order-placed` path is the worked example |
-| the basis on your own screens | `invoicing/list` / `invoicing/get`, or consume `invoicing.underlag-updated` — never a read of this engine's tables |
+| billing from a new domain | emit an event this engine already consumes — the `commerce.order-placed` path is the worked example. A genuinely new event *type* means adding its consumer to `invoicingModule`, in this engine; there is nothing to wire on your side |
+| the basis on your own screens | `invoicing/list` / `invoicing/get` — never a read of this engine's tables |
+| to know the moment it changes | consume `invoicing.underlag-updated`. It is a change notification (`{ underlagId, addedLines, source }`), not a snapshot: project it into a side table keyed by the underlag id, and read `invoicing/get` when you need the whole basis and its total |
 | extra fields on an underlag | your own side table keyed by the underlag id — **never** a column upstream |
 | to hide export from most roles | keep `invoicing:export` off the role; it's already a separate key |
 | the engine off for a tenant | revoke the `invoicing` entitlement — but read the caveat in [surface](./surface#entitlement) first |
