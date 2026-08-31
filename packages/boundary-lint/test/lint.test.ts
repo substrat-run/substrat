@@ -841,6 +841,167 @@ describe('R7 — the masking pass', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// R8 — `SELECT *` in an engine (#970)
+//
+// The mechanical half of #771's seam: `returns()` parses on the way out and
+// `columnsOf()` says which columns to ask for, but nothing stopped the next
+// engine from starring again. These fixtures use the MONOREPO shape, because
+// `engine: true` is what scopes the rule and that is where it comes from.
+// ---------------------------------------------------------------------------
+
+/** A monorepo engine at `engines/<name>/src/index.ts`. */
+function monorepoEngine(name: string, body: string): Record<string, string> {
+  return {
+    'package.json': JSON.stringify({ name: '@substrat-run/substrat', type: 'module' }),
+    [`engines/${name}/package.json`]: JSON.stringify({ name: `@substrat-run/engine-${name}` }),
+    [`engines/${name}/src/index.ts`]: body,
+  };
+}
+
+describe('R8 — star reads in an engine', () => {
+  it('fires on a star read, anchored at the SELECT', () => {
+    const root = project(
+      monorepoEngine(
+        'workorder',
+        `
+        export const migrations = [{ version: '0001', sql: \`CREATE TABLE workorder_orders (id TEXT);\` }];
+        export function listOrders(ctx) {
+          return ctx.sql.query('SELECT * FROM workorder_orders');
+        }
+      `,
+      ),
+    );
+
+    const violations = lint(root);
+    expect(rules(violations)).toEqual(['R8']);
+    expect(violations[0]!.line).toBe(4);
+    expect(violations[0]!.file).toBe('engines/workorder/src/index.ts');
+  });
+
+  it('a named-column read passes', () => {
+    const root = project(
+      monorepoEngine(
+        'workorder',
+        `
+        export const migrations = [{ version: '0001', sql: \`CREATE TABLE workorder_orders (id TEXT, state TEXT);\` }];
+        export function listOrders(ctx) {
+          return ctx.sql.query('SELECT id, state FROM workorder_orders');
+        }
+      `,
+      ),
+    );
+
+    expect(lint(root)).toEqual([]);
+  });
+
+  it('the prose warning against the star is not the star — comments are stripped', () => {
+    // Every engine in this repo carries this docblock directly above the read it
+    // is describing. A rule that fires on its own description gets deleted.
+    const root = project(
+      monorepoEngine(
+        'workorder',
+        `
+        /**
+         * Never \`SELECT *\`: that pins the shape a read returns to whatever the
+         * physical table holds. // SELECT * FROM anything
+         */
+        export function listOrders(ctx) {
+          return ctx.sql.query('SELECT id FROM workorder_orders');
+        }
+      `,
+      ),
+    );
+
+    expect(lint(root)).toEqual([]);
+  });
+
+  it('catches the multi-line and DISTINCT and qualified spellings', () => {
+    const root = project(
+      monorepoEngine(
+        'booking',
+        `
+        export function a(ctx) {
+          return ctx.sql.query(\`
+            SELECT
+              *
+            FROM booking_slots
+          \`);
+        }
+        export function b(ctx) { return ctx.sql.query('SELECT DISTINCT * FROM booking_slots'); }
+        export function c(ctx) { return ctx.sql.query('SELECT s.* FROM booking_slots s'); }
+      `,
+      ),
+    );
+
+    const violations = lint(root);
+    expect(rules(violations)).toEqual(['R8', 'R8', 'R8']);
+    expect(violations.map((v) => v.line)).toEqual([4, 9, 10]);
+  });
+
+  it('COUNT(*) is a number, not a row shape', () => {
+    const root = project(
+      monorepoEngine(
+        'metering',
+        `
+        export function total(ctx) {
+          return ctx.sql.query('SELECT COUNT(*) AS n FROM metering_events');
+        }
+      `,
+      ),
+    );
+
+    expect(lint(root)).toEqual([]);
+  });
+
+  it('the allow block suppresses it, and only within the block', () => {
+    const root = project(
+      monorepoEngine(
+        'absence',
+        `
+        export function backfill(ctx) {
+          // boundary-lint-allow R8 — maintenance read, the row never leaves the engine
+          const rows = ctx.sql.query('SELECT * FROM absence_requests');
+          // boundary-lint-end R8
+          const leaked = ctx.sql.query('SELECT * FROM absence_requests');
+          return [rows, leaked];
+        }
+      `,
+      ),
+    );
+
+    const violations = lint(root);
+    expect(rules(violations)).toEqual(['R8']);
+    expect(violations[0]!.line).toBe(6);
+  });
+
+  it('is scoped to engines — a vertical starring its OWN table is not R8', () => {
+    // A vertical has no published seam for a star to widen, and R5 already stops
+    // it starring somebody else's table.
+    const root = project({
+      'package.json': VERTICAL_PKG,
+      'src/module.ts': `
+        export const migrations = [{ version: '0001', sql: \`CREATE TABLE shop_customers (id TEXT);\` }];
+        export function all(ctx) { return ctx.sql.query('SELECT * FROM shop_customers'); }
+      `,
+    });
+
+    expect(lint(root)).toEqual([]);
+  });
+
+  it('an engine declared through config is an engine too', () => {
+    const root = project({
+      'package.json': JSON.stringify({ name: '@acme/engine-thing', type: 'module' }),
+      'boundary-lint.config.json': JSON.stringify({
+        packages: [{ name: '@acme/engine-thing', src: 'src', engine: true }],
+      }),
+      'src/index.ts': `export function all(ctx) { return ctx.sql.query('SELECT * FROM thing_rows'); }`,
+    });
+
+    expect(rules(lint(root))).toEqual(['R8']);
+  });
+});
+
 describe('config', () => {
   it('honours explicit packages and externals', () => {
     const root = project({

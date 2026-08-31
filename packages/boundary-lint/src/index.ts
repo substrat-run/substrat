@@ -72,6 +72,20 @@
  *                      handoff or R6's real-clock JWT, there is no legitimate
  *                      reason to swallow an engine error unprotected, and a
  *                      hatch here would only ever be used to silence the rule.
+ *   R8 no SELECT *     an ENGINE never reads with a star (#970, the mechanical
+ *                      half of #771's seam). `SELECT *` pins the shape an engine
+ *                      publishes to whatever its physical table currently holds,
+ *                      so a vertical compiled against 0.3 and running against
+ *                      0.4 reads a field that moved and gets WRONG DATA on a
+ *                      screen — never a throw. A read names its columns
+ *                      (`columnsOf(schema)`) and the value goes out through
+ *                      `returns(schema, …)`. Engine packages only: a vertical
+ *                      starring its own table has no seam to break, and R5
+ *                      already stops it starring somebody else's. The reviewable
+ *                      `boundary-lint-allow R8` … `boundary-lint-end R8` hatch
+ *                      exists for the one shape that is not a seam — a migration
+ *                      or maintenance read of the engine's own table where the
+ *                      row never leaves the engine.
  *
  * NUMBERING. Rule numbers are claimed WHEN THEY SHIP, not when they are
  * proposed. #786's "catch outside ctx.atomic" rule was drafted as R6 while
@@ -134,7 +148,7 @@ export interface Violation {
   file: string;
   /** 1-indexed, when the rule is line-anchored. */
   line?: number;
-  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7';
+  rule: 'R1' | 'R2' | 'R3' | 'R4' | 'R5' | 'R6' | 'R7' | 'R8';
   message: string;
 }
 
@@ -413,8 +427,17 @@ function regexAllowed(masked: string[], at: number): boolean {
  * Template literals keep their `${…}` expressions — an engine call can live in
  * one, and the braces are balanced either way — and blank only the literal text
  * between them, which is where a stray `{` or quote would otherwise come from.
+ *
+ * `{ literals: false }` blanks the COMMENTS only and leaves every string body
+ * standing. That is what R8 needs: SQL lives in string literals, so blanking
+ * them would blank the only text the rule looks at, while the prose warning
+ * against `SELECT *` lives in the docblock right above it and must not fire the
+ * rule that the prose describes. The scanner still walks strings, template
+ * literals and regexes the same way — it has to, or a `//` inside a string would
+ * read as a comment — it just does not erase them.
  */
-function maskSource(src: string): string {
+function maskSource(src: string, opts: { literals?: boolean } = {}): string {
+  const maskLiterals = opts.literals !== false;
   const out = src.split('');
   const n = src.length;
   const blank = (from: number, to: number): void => {
@@ -429,10 +452,10 @@ function maskSource(src: string): string {
 
     if (templates.length > 0 && templates[templates.length - 1] === 0) {
       // Inside the literal text of a template — blank until `${`, `` ` `` or an escape.
-      if (c === '\\') { blank(i, i + 2); i += 2; continue; }
+      if (c === '\\') { if (maskLiterals) blank(i, i + 2); i += 2; continue; }
       if (c === '`') { templates.pop(); i++; continue; }
       if (c === '$' && next === '{') { templates[templates.length - 1] = 1; i += 2; continue; }
-      blank(i, i + 1);
+      if (maskLiterals) blank(i, i + 1);
       i++;
       continue;
     }
@@ -458,7 +481,7 @@ function maskSource(src: string): string {
         if (src[j] === c || src[j] === '\n') break;
         j++;
       }
-      blank(i + 1, j);
+      if (maskLiterals) blank(i + 1, j);
       i = j + 1;
       continue;
     }
@@ -480,7 +503,7 @@ function maskSource(src: string): string {
         j++;
       }
       if (j < n && src[j] === '/') {
-        blank(i + 1, j);
+        if (maskLiterals) blank(i + 1, j);
         i = j + 1;
         continue;
       }
@@ -743,6 +766,68 @@ function checkEngineCatch(rel: string, source: string, out: Violation[]): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// R8 — `SELECT *` in an engine (#970)
+// ---------------------------------------------------------------------------
+
+/**
+ * `SELECT *`, `SELECT DISTINCT *` and the qualified `SELECT t.*` — every
+ * spelling that hands back whatever columns the table happens to have today.
+ *
+ * `SELECT COUNT(*)` and `SELECT max(*)` do not match: after `SELECT` comes an
+ * identifier followed by `(`, not a star, and a count returns a number rather
+ * than a row shape. `\s` spans newlines, so the formatted
+ * `SELECT\n  *\n  FROM …` is caught too and anchors on the `SELECT`.
+ */
+const SELECT_STAR = /\bselect\s+(?:distinct\s+)?(?:[A-Za-z_][\w$]*\s*\.\s*)?\*/gi;
+
+/**
+ * R8 — an engine read names its columns.
+ *
+ * The counterpart to #771's runtime seam: `returns(schema, surface, value)`
+ * parses on the way out, and `columnsOf(schema)` is what the SELECT should list,
+ * so the published shape is the schema's rather than the table's. A star defeats
+ * both — the parse sees whatever the physical row holds, and a column that moved
+ * between two engine versions reaches a vertical's screen as wrong data instead
+ * of a throw.
+ *
+ * Runs on a COMMENT-STRIPPED copy with the strings intact (`maskSource(source,
+ * { literals: false })`), for the reason that function's docblock gives: every
+ * engine in this repo warns against `SELECT *` in prose sitting directly above
+ * the read it is warning about, and a rule that fires on its own description is
+ * a rule people delete. Offsets survive masking, so the reported line is the
+ * line in the original file.
+ */
+function checkSelectStar(rel: string, source: string, out: Violation[]): void {
+  if (!/select/i.test(source)) return;
+
+  const lines = source.split('\n');
+  const allowed = new Set<number>();
+  let on = false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    if (line.includes('boundary-lint-allow R8')) on = true;
+    else if (line.includes('boundary-lint-end R8')) on = false;
+    if (on) allowed.add(i + 1);
+  }
+
+  const stripped = maskSource(source, { literals: false });
+  SELECT_STAR.lastIndex = 0;
+  for (let m: RegExpExecArray | null; (m = SELECT_STAR.exec(stripped)); ) {
+    const line = lineAt(source, m.index);
+    if (allowed.has(line)) continue;
+    out.push({
+      file: rel,
+      line,
+      rule: 'R8',
+      message:
+        `star read in an engine — '${m[0].replace(/\s+/g, ' ')}' publishes whatever columns the ` +
+        `table currently holds, so a moved column reaches a vertical as wrong data rather than a ` +
+        `throw. Name the columns (columnsOf(schema)) and return through returns(schema, …)`,
+    });
+  }
+}
+
 function checkModuleFile(
   file: string,
   rel: string,
@@ -755,6 +840,7 @@ function checkModuleFile(
   checkForeignTables(rel, source, pkg.name, tableOwners, out);
   checkClock(rel, source, out);
   checkEngineCatch(rel, source, out);
+  if (pkg.engine) checkSelectStar(rel, source, out);
 
   for (const spec of importsOf(source)) {
     if (pkg.engine && spec.startsWith('@substrat-run/engine-') && spec !== pkg.name) {
@@ -989,7 +1075,13 @@ export function resolvePackages(root: string, config?: BoundaryLintConfig): Pack
         dir: join(root, p.src),
         lint: true,
         engine: p.engine ?? false,
-        harness: p.harness ?? harness,
+        // An engine is module code all the way down — no harness exemptions, the
+        // same as `discoverMonorepo` gives `engines/*`. The default list exempts
+        // `index.ts`, which in an engine is not a composition root but the whole
+        // surface, so a config-declared engine was skipping the one file every
+        // rule is about. An explicit `harness` still wins: saying so is a
+        // declaration, and this only fills in the default.
+        harness: p.harness ?? (p.engine ? [] : harness),
       }))
     : [...discoverMonorepo(root, harness), ...discoverStandalone(root, harness)].filter(
         // A monorepo root with its own src/ would double-count; monorepo wins.
