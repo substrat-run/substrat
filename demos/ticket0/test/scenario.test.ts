@@ -1380,6 +1380,59 @@ describe('the audit spine', () => {
     expect(outbox(world.substrat, 'ticket0.saved-reply-updated')).toEqual(evt);
   });
 
+  /**
+   * The guard the declaration buys, driven rather than assumed.
+   *
+   * `update-saved-reply` declares `concurrency`, which does nothing on its own: a
+   * caller that sends no tag is unconditional by design, and the whole mechanism
+   * would have passed every test in this file while being wired to nothing. So this
+   * plays the two-agent story out — read, both edit, second one refused.
+   */
+  it('an edit over a version somebody else moved is refused, and changes nothing', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const markus = await at(world.substrat, 'admin');
+    const reply = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Two editors',
+      body: 'The first version.',
+    })) as { id: string };
+
+    // Both open it. The tag is the ETag the transport would hand each browser.
+    let held: string | null = null;
+    await anna.invoke(
+      'ticket0/get-saved-reply',
+      { savedReplyId: reply.id },
+      { onEntityVersion: (v) => (held = v) },
+    );
+    expect(held).not.toBeNull();
+    const stale = `"${held!}"`;
+
+    // Anna saves first, against the version they both read.
+    await anna.invoke(
+      'ticket0/update-saved-reply',
+      { savedReplyId: reply.id, body: 'Anna’s version.' },
+      { ifMatch: stale },
+    );
+
+    // Markus saves second, still holding the version Anna moved. Without the guard
+    // this would land and Anna's edit would be gone with nothing said.
+    await expect(
+      markus.invoke(
+        'ticket0/update-saved-reply',
+        { savedReplyId: reply.id, body: 'Markus’ version.' },
+        { ifMatch: stale },
+      ),
+    ).rejects.toThrow(/changed since you read it/);
+
+    // The refusal is a refusal: the row still says what Anna wrote, and the second
+    // save announced nothing.
+    const row = (await anna.invoke('ticket0/get-saved-reply', {
+      savedReplyId: reply.id,
+    })) as { body: string };
+    expect(row.body).toBe('Anna’s version.');
+    const evt = outbox(world.substrat, 'ticket0.saved-reply-updated')!;
+    expect(JSON.parse(evt.payload!).body).toBe('Anna’s version.');
+  });
+
   it('a rename onto a title somebody else holds is refused', async () => {
     const anna = await at(world.substrat, 'agent');
     await anna.invoke('ticket0/create-saved-reply', { title: 'Taken', body: 'Mine.' });

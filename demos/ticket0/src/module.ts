@@ -14,6 +14,7 @@ import {
   assertTransition,
   LIST_PAGE_DEFAULT,
   mulDecimal,
+  operationConcurrencyOf,
   operationInputsOf,
   pageOf,
   pageVisible,
@@ -2717,5 +2718,10 @@ export const ticket0Module: ModuleRegistration = {
   // the document come from, so "parse, don't trust" holds on every path in — HTTP,
   // widget, test, seed — rather than in the handlers that remembered (#953).
   operationInputs: operationInputsOf(ticket0Operations),
+  // #129, and the same reasoning one line up: the DECLARATION is what a reader
+  // trusts, so the host has to be handed it rather than the handlers remembering.
+  // Without this the `concurrency` on the saved-reply operations is a promise
+  // nothing keeps — the header arrives, nothing compares it, and every write lands.
+  operationConcurrency: operationConcurrencyOf(ticket0Operations),
   operations: operations as ModuleRegistration['operations'],
 };

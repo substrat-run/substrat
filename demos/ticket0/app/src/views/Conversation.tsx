@@ -826,11 +826,23 @@ function SavedReplies({
    *  and the button sits next to Edit, so one stray click must not be enough. */
   const [confirming, setConfirming] = useState<string | null>(null);
 
+  /**
+   * A failed load says so and keeps what it had.
+   *
+   * Emptying the list on a failure renders "Nothing saved yet." over a library that
+   * exists — a wrong answer told confidently, and the worst kind after a save or a
+   * delete, where it would read as the write having destroyed everything.
+   */
   const reload = () =>
     api
       .listSavedReplies()
-      .then((p) => setItems(p.entries))
-      .catch(() => setItems([]));
+      .then((p) => {
+        setItems(p.entries);
+        setError(null);
+      })
+      .catch((e: unknown) =>
+        setError(e instanceof ApiError ? e.message : 'Could not load the saved replies.'),
+      );
 
   useEffect(() => {
     void reload();
@@ -885,6 +897,9 @@ function SavedReplies({
    */
   const edit = (reply: SavedReply) => {
     setError(null);
+    // An armed Delete must not survive the trip through the editor: click Delete,
+    // click Edit, cancel, and the next single click would delete without asking.
+    setConfirming(null);
     setBusy(true);
     void api
       .getSavedReply({ savedReplyId: reply.id })
@@ -1007,7 +1022,12 @@ function SavedReplies({
         </div>
         {draft ? (
           <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* Focused on open, and not only for convenience: the Edit button
+                unmounts with the preview pane, so focus would otherwise fall back
+                to the body and the container's keydown handler would never see
+                Escape — leaving "esc cancels the edit" a hint that does nothing. */}
             <input
+              autoFocus
               className="input"
               value={draft.title}
               onChange={(e) => setDraft({ ...draft, title: e.target.value })}
