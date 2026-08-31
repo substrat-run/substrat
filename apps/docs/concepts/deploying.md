@@ -34,15 +34,21 @@ capability — sending transactional email, answering with a language model, pro
 it *declares a request* in its manifest (`substrat.sendsEmail`, `substrat.usesModels`,
 `substrat.provisions`) and something outside the bundle turns it on: a **staff grant** for email
 and provisioning (`setVerticalEmailSender`, `setVerticalTenantProvisioner`), a fleet-wide platform
-switch for models. The request is refreshed on every push and grants nothing by itself; what turns
-it on is a flag a push can never set or keep, so pushing new code can never acquire authority.
+switch for models. The request is refreshed on every push, grants nothing by itself, and no push
+can set the flag it needs — but what that buys differs, and the difference is worth stating
+plainly. For email and provisioning the flag is **per vertical**, so a push can never acquire the
+capability at all. For models the switch is **fleet-wide**: a version that adds
+`substrat.usesModels` while the platform has models on does get the binding, and what a push
+cannot do is turn models on for a fleet that has them off. That declaration reaches a human at
+admission on a listed vertical; on a private one — auto-admitted, blast radius its own tenant —
+it is on the record rather than reviewed.
 
 What the platform hands back differs by capability, and the difference is worth naming:
 
 - **A relay, for a capability that rides a credential.** Email is the reference: the vertical POSTs
   to `POST /internal/email/send` on the control plane — the one worker holding an outbound-mail
   credential — which sends on its behalf and re-checks the grant on every call. The vertical holds
-  nothing and reaches nothing.
+  no outbound credential and reaches no third party directly.
 - **A real runtime binding, for models.** `substrat.usesModels` is the one request answered with a
   binding instead of a relay: the uploader appends `{ type: 'ai', name: 'AI' }` to the script's
   bindings *after* the allowlist check has run on the declared set, so a vertical still cannot

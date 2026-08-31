@@ -194,9 +194,13 @@ deliberately won't let you bind for yourself:
   own env carries. `demos/ticket0` is the reference declaration.
 
 A capability request is refreshed on every push and confers nothing by itself; what turns it on
-is a flag your push can never set or keep — so shipping code can never quietly acquire outbound
-authority. This is the wiring model: **declare the request, get it granted, call what the
-platform hands over — never bind the raw resource.**
+is a flag your push can never set or keep. For `sendsEmail` and `provisions` that flag is
+per-vertical, so shipping code can never quietly acquire outbound authority. `usesModels` is the
+one where the platform's switch is fleet-wide rather than per vertical: with models on, adding
+the declaration and pushing is enough to get `env.AI` — which is exactly why the declaration
+lives in the version rather than in a setting, so it shows up in the diff. This is the wiring
+model: **declare the request, get it granted, call what the platform hands over — never bind the
+raw resource.**
 
 Entitlements are delivered to your vertical **with provisioning** and projected locally; your
 per-operation gate fails closed on anything the tenant doesn't hold. If a live install ever

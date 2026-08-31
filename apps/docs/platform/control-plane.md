@@ -59,10 +59,14 @@ Beyond the base registry, a few capabilities have landed that are worth naming:
   `{ type: 'ai', name: 'AI' }` appended to its bindings by the uploader, **after** the §4 check has
   run on the declared set, and calls `env.AI` directly. Two switches gate it: the platform's own
   fleet-wide `bindAi` kill-switch and this version's declaration — so a vertical that never asked
-  holds nothing, and asking is a manifest diff a human reads at admit rather than a default every
-  pushed script inherits. The credential is still never the vertical's: the binding draws on the
-  platform's AI account, and nothing about it lives in the bundle. The bound worth stating: a
-  vertical holding the binding can call `env.AI.run()` outside the metered path.
+  holds nothing, and asking is recorded on the version rather than inherited by every pushed
+  script. Note what each switch does and does not buy: the platform's is fleet-wide, so with it
+  on, a push that adds the declaration is enough to get the binding. The declaration is a
+  manifest diff a human reads at admission when the version needs human admission — a listed
+  vertical — and simply on the record for an auto-admitted private one. The credential is still
+  never the vertical's: the binding draws on the platform's AI account, and nothing about it
+  lives in the bundle. One bound is worth stating: a vertical holding the binding can call
+  `env.AI.run()` outside the metered path.
 - **Platform-mediated credential handover: the connection relay.** The inbound twin of the email
   relay. Connecting a provider (Scrive, Fortnox) is a *tenant admin's* act, so the natural place to
   paste a provider credential is the vertical's own admin screen — but a hosted vertical must never
