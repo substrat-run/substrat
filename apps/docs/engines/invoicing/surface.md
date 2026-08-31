@@ -21,23 +21,37 @@ a basis nobody can hand-write is a basis nobody can forge.
 
 ## In-scope functions
 
-**This engine exports none.** All three operations carry their logic inline.
+**This engine exports none, deliberately.** All three operations carry their logic inline.
 
-::: warning No composable surface — an artifact, not a decision
-The convention is that engine operations are thin (a permission check plus one exported
-in-scope function) so verticals extend by composition rather than forking. This engine doesn't
-meet it: `list`, `get`, and `export` have no exported function behind them.
+::: tip Composed by event, not by call — the absence is the design
+An engine is composed one of two ways, and that decides its shape. A **by-call** engine —
+work orders, bookings, protocols — keeps its logic in exported in-scope functions, and its
+operations are thin, so a vertical wraps the functions inside its own transaction. Invoicing
+is the **by-event** one: a vertical does not build an invoice basis, it emits a billable fact
+and this engine's consumers build the basis from that event's payload. Here the operations
+*are* the surface, and their logic living in them is correct rather than an omission.
 
-The practical consequence: a vertical **cannot** export an underlag and touch its own tables
-in the same transaction, and cannot wrap export in its own vocabulary without re-implementing
-it. Compare the [work-order engine](/engines/workorder/surface#in-scope-functions), which
-exports `createWorkOrder`, `completeWorkOrder`, and friends.
-
-Unlike the work-order engine's deliberately missing `create`, there is no design reason for
-this gap. Extracting `exportUnderlag(ctx, …)` would be a purely additive change.
+The missing exports are load-bearing. This engine is the **only writer of its rows**, which
+is what keeps `exported` genuinely immutable: a caller cannot export an underlag half-way
+through a delivery that is still appending lines to it. Extracting `exportUnderlag(ctx, …)`
+for a vertical to call would hand out exactly that race, so it is not a purely additive
+change — it is a change of who owns the invariant. Compare the
+[work-order engine](/engines/workorder/surface#in-scope-functions), which exports
+`createWorkOrder`, `completeWorkOrder`, and friends precisely because a vertical is meant to
+wrap them.
 :::
 
-What *is* exported today: `INVOICING_PERM`, `invoicingManifest`, `invoicingMigrations`, the
+So a vertical reaches the result by reading it back, not by calling in: through
+`invoicing/list` / `invoicing/get`. `invoicing.underlag-updated` is the *notification* that
+there is something new to read — it carries `{ underlagId, addedLines, source }`, not the
+whole basis — so a vertical projects it into its own side table keyed by the underlag's id
+(decision 28) and calls `invoicing/get` when it needs the basis and its computed total. The
+cost is real and worth stating
+plainly: a vertical **cannot** export an underlag and touch its own tables in one
+transaction, and cannot wrap export in its own vocabulary. That is what the immutability
+guarantee is bought with.
+
+What *is* exported: `INVOICING_PERM`, `invoicingManifest`, `invoicingMigrations`, the
 `UnderlagRow` / `UnderlagLine` row types, and `invoicingModule`.
 
 ## Permissions

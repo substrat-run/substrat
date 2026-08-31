@@ -17,7 +17,7 @@ orders — with zero imports from either producer.
 | **Emits** | `invoicing.underlag-updated` (v1), `invoicing.underlag-exported` (**v2**) |
 | **Consumes** | `workorder.completed`, `commerce.order-placed` — with zero imports from either |
 | **Permissions** | 2 (`invoicing:read` · `invoicing:export`) |
-| **Extends by composition** | not yet — [no in-scope functions](./surface#in-scope-functions) |
+| **Composed** | **by event** — you emit, it consumes, you read back; [no in-scope functions, by design](./surface#in-scope-functions) |
 | **Status** | product seed (0.x) — surfaces change until the first vertical ships |
 
 ## What it owns
