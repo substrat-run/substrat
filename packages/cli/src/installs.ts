@@ -22,6 +22,7 @@ interface ScopeRow {
   createdAt: string;
 }
 
+/** GET one control-plane page, reading a refusal as the problem document it is. */
 async function getJson<T>(url: string, header: Record<string, string>): Promise<T> {
   const res = await fetch(url, { headers: header });
   if (!res.ok) {
