@@ -74,7 +74,7 @@ platform's own applications are source-available but not licensed for reuse.
 | `engines/*` | `workorder`, `invoicing`, `protocol`, `booking`, `invites`, `absence`, `metering` | AGPL-3.0 + commercial |
 | `connectors/*` | `scrive` — e-signature (Swedish BankID) over the connector runtime | AGPL-3.0 + commercial |
 | `demos/*` | Reference verticals (below) | Apache-2.0, not published |
-| `apps/*` | The control plane, router, dashboard, console, builder studio and docs site | source-available, no grant |
+| `apps/*` | The control plane, router, dashboard, console, builder studio, egress hop and docs site | source-available, no grant |
 
 Engines are extracted at the second vertical that needs them, never designed ahead, and
 their surfaces evolve additively only; the rules a module must follow are in
@@ -150,8 +150,10 @@ node tools/boundary-lint.mjs
 
 Beyond tests, the repo is held together by re-emit gates: a generated file is only
 generated if CI re-emits it with `--check`. `pnpm lint:permissions`, `lint:model`,
-`lint:api`, `lint:client`, `lint:migrations`, `lint:decisions`, `lint:docs`,
-`lint:changelog` and their siblings all follow that rule; `CLAUDE.md` lists them. Two
+`lint:api`, `lint:client`, `lint:migrations`, `lint:decisions`, `lint:docs` and their
+siblings all follow that rule; `CLAUDE.md` lists them, and lists the checks that emit
+nothing and simply refuse — `lint:changelog`, which asserts a hand-written digest accounts
+for every merge in its range, is one of those. Two
 things are never self-approved: a migration diff and a permission diff — CI going red is
 what makes a human read them.
 
