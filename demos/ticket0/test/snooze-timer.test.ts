@@ -78,6 +78,11 @@ async function openAndAssigned(desk: Desk): Promise<string> {
   return assigned.id;
 }
 
+/**
+ * The conversation as an agent sees it — read back through the operation the app
+ * calls, never out of the table. What the sweep wrote and what a person would see
+ * have to be the same thing for any of this to mean anything.
+ */
 async function readConversation(desk: Desk, id: string): Promise<Conversation> {
   const agent = await host.getScope(desk.agent.principal, desk.tenant, desk.scope);
   return (await agent.invoke('ticket0/get-conversation', {
