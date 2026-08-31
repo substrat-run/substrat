@@ -1,0 +1,37 @@
+{
+  "entities": {
+    "leave-type": {
+      "table": "absence_leave_types",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "floor": {
+            "type": "string"
+          },
+          "active": {
+            "type": "number"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "floor",
+          "active",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "key"
+      ],
+      "key": [
+        "key"
+      ]
+    }
+  }
+}

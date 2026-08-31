@@ -1,0 +1,156 @@
+{
+  "entities": {
+    "metering-entry": {
+      "table": "metering_entries",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "meter_key": {
+            "type": "string"
+          },
+          "qty": {
+            "type": "string"
+          },
+          "subject_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subject_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_at": {
+            "type": "string"
+          },
+          "dedupe_key": {
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "meter_key",
+          "qty",
+          "subject_type",
+          "subject_id",
+          "occurred_at",
+          "dedupe_key",
+          "note",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "metering-meter": {
+      "table": "metering_meters",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "counter",
+              "gauge"
+            ]
+          },
+          "unit": {
+            "type": "string"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "active": {
+            "type": "number"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "kind",
+          "unit",
+          "description",
+          "active",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "key"
+      ]
+    },
+    "metering-period": {
+      "table": "metering_periods",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "from_at": {
+            "type": "string"
+          },
+          "to_at": {
+            "type": "string"
+          },
+          "closed_by": {
+            "type": "string"
+          },
+          "closed_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "from_at",
+          "to_at",
+          "closed_by",
+          "closed_at"
+        ],
+        "additionalProperties": false
+      }
+    }
+  }
+}

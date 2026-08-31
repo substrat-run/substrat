@@ -24,6 +24,9 @@ export const absenceEntities = defineEntities({
       active: z.number(),
       created_at: z.string(),
     }),
+    // The shipped DDL is `key TEXT PRIMARY KEY` — this row has no `id`, so the
+    // fact has to be declared or `emitModel` cannot state it (#976).
+    primaryKey: ['key'],
     key: ['key'],
   },
 });
