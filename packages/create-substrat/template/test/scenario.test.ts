@@ -257,4 +257,27 @@ describe('bike-shop scenario', () => {
       /invalid transition/,
     );
   });
+
+  // #953: the module hands the host `operationInputs`, so a malformed call is
+  // refused at the scope door — none of these handlers parses anything itself.
+  //
+  // A principal with NO permission is what makes the assertion mean something:
+  // the host parses BEFORE the permission check, so the refusal is about the
+  // shape. Drop `operationInputs` and the same call comes back "permission
+  // denied" — the handler was reached, and a permitted caller would have been
+  // handed the unparsed value.
+  it('10. the HOST parses an invocation, before the permission check', async () => {
+    const rutger = await host.getScope(w.rutger, w.t1, w.s1);
+    await expect(rutger.invoke('shop/create-customer', { number: 42, name: 'x' })).rejects.toThrow(
+      /invalid|expected/i,
+    );
+    await expect(rutger.invoke('shop/create-customer', { name: 'x' })).rejects.toThrow(
+      /invalid|required|expected/i,
+    );
+    // The control: a WELL-FORMED call from the same principal is refused for the
+    // reason it should be, so the two refusals are telling us different things.
+    await expect(
+      rutger.invoke('shop/create-customer', { number: '9001', name: 'x' }),
+    ).rejects.toThrow(/permission denied/);
+  });
 });
