@@ -46,7 +46,12 @@ function sweepJson(value: unknown, kind: PiiKind | undefined, visit: Visit): unk
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = sweepJson(v, kind ?? kindOf(k), visit);
+      // The child's OWN key wins when it is recognised: in `{ contact: { email } }`,
+      // `contact` reads as `person`, and inheriting that would render a full name into
+      // a field a consumer parses as an email. The inherited kind is the fallback for
+      // keys the heuristic does not classify — and for array elements, which have no
+      // key of their own, so `{ email: [a, b] }` still sweeps both.
+      out[k] = sweepJson(v, kindOf(k) ?? kind, visit);
     }
     return out;
   }

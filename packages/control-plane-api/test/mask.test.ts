@@ -147,9 +147,14 @@ describe('a masked dump', () => {
   /**
    * Two people who happen to share a name must not share an address, or a natural key
    * on `email` turns a masked round trip into a UNIQUE violation at `importScope`.
+   *
+   * The cardinality is the point. A generator built from a name pair and three digits
+   * has ~4M outputs, which passes a 60-row check and collides with ~11% probability
+   * across a thousand addresses — a size a real scope reaches easily. So this runs at a
+   * scale where a too-small output space fails rather than gets lucky.
    */
-  it('does not collapse distinct values onto one', async () => {
-    const rows = Array.from({ length: 60 }, (_, i) => {
+  it('does not collapse distinct values onto one, at a real scope\'s cardinality', async () => {
+    const rows = Array.from({ length: 5_000 }, (_, i) => {
       const row = [...ROW];
       row[0] = `c${i}`;
       row[1] = `person${i}@example.se`;
@@ -158,6 +163,47 @@ describe('a masked dump', () => {
     const out = await maskDump(dumpOf(rows), await createPseudonymizer('salt-a'));
     const emails = out[0]!.rows.map((r) => r[1]);
     expect(new Set(emails).size).toBe(emails.length);
+  });
+
+  /**
+   * `reshape` used to copy every non-digit through, so a Canadian `K1A 0B1` came back
+   * still carrying its `K`, `A` and `B` — real characters of a real address, in the one
+   * file that promises to hold none. Half the world's postal codes are alphanumeric.
+   *
+   * Asserted over a set rather than one value: every input here has `K` in position 0,
+   * so if letters were being copied the outputs would all start `K` too.
+   */
+  it('replaces the letters of an alphanumeric postal code, keeping the layout', async () => {
+    const codes = [...'ABCDEFGHIJKLMNOPQRSTUVWX'].map((c) => `K1${c} 0B1`);
+    const rows = codes.map((code, i) => {
+      const row = [...ROW];
+      row[0] = `c${i}`;
+      row[6] = code;
+      return row;
+    });
+    const out = await maskDump(dumpOf(rows), await createPseudonymizer('salt-a'));
+    const postals = out[0]!.rows.map((r) => r[6] as string);
+    for (const postal of postals) expect(postal).toMatch(/^[A-Z]\d[A-Z] \d[A-Z]\d$/);
+    expect(new Set(postals.map((p) => p[0])).size).toBeGreaterThan(1);
+    for (const code of codes) expect(postals).not.toContain(code);
+  });
+
+  /**
+   * `{ contact: { email } }`: `contact` reads as `person`, and inheriting that kind into
+   * the child rendered a full name where a consumer parses an email. The child's own key
+   * wins; the inherited kind is only the fallback for keys the heuristic cannot read.
+   */
+  it('lets a recognised nested key beat the kind it inherited', async () => {
+    const row = [...ROW];
+    row[9] = JSON.stringify({
+      contact: { email: 'anna@example.com', phone: '+46 70-123 45 67', ref: 'Anna Ek' },
+    });
+    const out = (await masked('salt-a', [row]))[9] as string;
+    const { contact } = JSON.parse(out) as { contact: Record<string, string> };
+    expect(contact.email).toMatch(/^[a-z0-9.]+@example\.(com|org|net|edu)$/);
+    expect(contact.phone).toMatch(/^\+46 \d\d-\d\d\d \d\d \d\d$/);
+    // `ref` is not a kind of its own, so it still inherits `person` from `contact`.
+    expect(contact.ref).toMatch(/^[A-Z]\S+ [A-Z]\S+$/);
   });
 
   it('leaves a JSON column that is not JSON alone', async () => {

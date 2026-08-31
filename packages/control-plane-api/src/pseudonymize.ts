@@ -24,8 +24,10 @@
  *    better than `[masked]`.
  *
  * Uniqueness comes from the hash rather than from a collision pass: every generated
- * value carries hash-derived digits, so two distinct inputs practically never land on
- * one output and a natural key on `email` survives `importScope`.
+ * value carries hash-derived characters, so two distinct inputs practically never land
+ * on one output and a natural key on `email` survives `importScope`. "Practically
+ * never" is sized, not hoped for — an address carries a 48-bit tag, so a scope holding
+ * a million distinct addresses collides with probability ~1e-7.
  *
  * **This is pseudonymization, not anonymization.** Rare combinations, amounts and
  * dates can still re-identify a subject, so nothing about §6's gate relaxes because
@@ -90,6 +92,9 @@ const CITY = [
 
 const DOMAIN = ['example.com', 'example.org', 'example.net', 'example.edu'] as const;
 
+// The alphabet `reshape` draws a replacement letter from (an alphanumeric postal code).
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
 /**
  * The column-name → kind heuristic. Order matters: the most specific pattern wins, and
  * the free-text catch-all is last so `note` never reads as a person's name.
@@ -126,29 +131,35 @@ interface Seed {
 const pick = <T>(list: readonly T[], seed: Seed, at: number): T =>
   list[((seed.bytes[at]! << 8) | seed.bytes[at + 1]!) % list.length]!;
 
-/** `n` decimal digits from the digest, starting at byte `at`. */
-function digits(seed: Seed, at: number, n: number): string {
-  let out = '';
-  for (let i = 0; i < n; i += 1) out += String(seed.bytes[(at + i) % seed.bytes.length]! % 10);
-  return out;
-}
-
 /**
- * Replace every digit and letter of `original` with a hash-derived one, keeping every
- * other character exactly where it was — so `+46 70-123 45 67` stays a Swedish mobile
- * and `114 51` stays a Swedish postal code. The leading country code (the first two
- * digits after a `+`) is preserved: it is a fact about the country, not about the
- * person, and a validator that checks it must still pass.
+ * Replace every digit AND letter of `original` with a hash-derived one, keeping every
+ * other character exactly where it was — so `+46 70-123 45 67` stays a Swedish mobile,
+ * `114 51` stays a Swedish postal code, and `K1A 0B1` stays a Canadian one without
+ * keeping any of its original characters. Letters matter: a postal code is alphanumeric
+ * in half the world, and copying its letters through would leave real fragments of a
+ * real address in a file whose whole promise is that it holds none.
+ *
+ * Case and layout survive; the character CLASS is what is preserved, not the character.
+ * Only ASCII letters are substituted — the formats this is applied to (phone numbers,
+ * postal codes) are ASCII by specification, and a stray `ö` is layout, not identity.
+ *
+ * The leading country code (the first `keepLeadingDigits` digits, used for the two after
+ * a `+`) is preserved: it is a fact about the country, not about the person, and a
+ * validator that checks it must still pass.
  */
 function reshape(original: string, seed: Seed, keepLeadingDigits: number): string {
   let out = '';
   let seen = 0;
   let at = 0;
+  const next = (): number => seed.bytes[at++ % seed.bytes.length]!;
   for (const ch of original) {
     if (/[0-9]/.test(ch)) {
       seen += 1;
       if (seen <= keepLeadingDigits) out += ch;
-      else out += String(seed.bytes[at++ % seed.bytes.length]! % 10);
+      else out += String(next() % 10);
+    } else if (/[A-Za-z]/.test(ch)) {
+      const letter = LETTERS[next() % LETTERS.length]!;
+      out += ch === ch.toUpperCase() ? letter : letter.toLowerCase();
     } else {
       out += ch;
     }
@@ -160,8 +171,9 @@ const looksLikeEmail = (value: string): boolean => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.
 
 const slug = (value: string): string => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
-const hex = (seed: Seed, n: number): string =>
-  [...seed.bytes.slice(0, n)].map((b) => b.toString(16).padStart(2, '0')).join('');
+/** `2n` hex characters from the digest, starting at byte `at`. */
+const hex = (seed: Seed, at: number, n: number): string =>
+  [...seed.bytes.slice(at, at + n)].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 /** Render one value of one kind from its digest. */
 function render(kind: PiiKind, original: string, seed: Seed): string {
@@ -169,9 +181,15 @@ function render(kind: PiiKind, original: string, seed: Seed): string {
   const family = pick(FAMILY, seed, 2);
   switch (kind) {
     case 'email':
-      // `.email()`-parseable, at a reserved domain, with hash digits so two people who
-      // share a name do not share an address (a natural key on email survives).
-      return `${slug(given)}.${slug(family)}${digits(seed, 4, 3)}@${pick(DOMAIN, seed, 8)}`;
+      // `.email()`-parseable, at a reserved domain, with a 48-bit hash tag so two people
+      // who share a name do not share an address. The tag is what makes the no-collision
+      // claim true at a real scope's cardinality rather than a test's: name+domain alone
+      // is 4,096 combinations, and three digits on top of that collide with ~11%
+      // probability across a mere 1,000 addresses — which is a UNIQUE violation at
+      // `importScope`, not a cosmetic clash. It reads machine-generated because it is;
+      // that is the honest trade against a round trip that fails. The tag's bytes start
+      // past the ones the name and domain use, so it adds entropy instead of echoing it.
+      return `${slug(given)}.${slug(family)}.${hex(seed, 16, 6)}@${pick(DOMAIN, seed, 8)}`;
     case 'phone':
       // Keep the shape: a `+46 70-…` stays that, and a bare 10-digit string stays ten
       // digits, so a length or prefix check on the way back in still passes.
@@ -194,7 +212,7 @@ function render(kind: PiiKind, original: string, seed: Seed): string {
       // and as an opaque token when it does not.
       return looksLikeEmail(original)
         ? render('email', original, seed)
-        : `pseudo-${hex(seed, 8)}`;
+        : `pseudo-${hex(seed, 0, 8)}`;
     case 'redact':
       return MASKED;
   }

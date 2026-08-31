@@ -36,7 +36,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat scope domain <scopeId> --domain <d>` | Bind a custom domain to **any** owned scope (a prod app, a preview, a test env). |
 | `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
 | `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
-| `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — pseudonymized by default (plausible fake names, emails and phones, stable across the whole pull), `--full` is break-glass. |
+| `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — pseudonymized by default (recognised PII columns get plausible fake values, stable across the whole pull; free text stays `[masked]`), `--full` is break-glass. |
 
 Options on any command: `--cp <url>` (control-plane API base), `--token <tok>` (a service
 credential), `--tenant <id-or-slug>` (which workspace to act for).
@@ -287,9 +287,15 @@ a notice instead.
 
 The pull crosses the platform's trust boundary on purpose, so the server side is the gate:
 
-- **Masked by default** — PII-named columns and payload fields are redacted; ids and numbers
-  pass through, which is what keeps the copy debuggable. `--full` is the explicit break-glass
-  for full fidelity, and the CLI prints a treat-as-production warning.
+- **Pseudonymized by default** — a column or payload field whose *name* the PII heuristic
+  recognises (`email`, `phone`, `postal`, `street`, `city`, `name`, `external_id`) gets a
+  deterministic fake value of the same kind, stable across the whole pull so joins and
+  timelines still line up. Free text (`note`, `description`, `body`, `comment`, `message`,
+  `subject`) and national identifiers (`ssn`, `personnummer`) get the literal `[masked]`
+  instead: there is nothing honest to generate for either. A column the heuristic does not
+  recognise is not touched, so the file stays personal data — ids and numbers pass through
+  too, which is what keeps the copy debuggable. `--full` is the explicit break-glass for
+  full fidelity, and the CLI prints a treat-as-production warning.
 - **Audited** — every pull writes an access-log entry against your actor.
 - **Jurisdiction-checked** — a scope pinned tighter than `global` is refused: pulling would
   move its data outside the pin.

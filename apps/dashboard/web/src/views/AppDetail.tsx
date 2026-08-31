@@ -1777,7 +1777,7 @@ function ExportImport({ app }: { app: AppRow }) {
       const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
       setNote(
         dump.masked
-          ? `Exported ${dump.tables.length} tables (${rows} rows). Personal data is redacted in this file — full-fidelity export is a CLI/staff affordance.`
+          ? `Exported ${dump.tables.length} tables (${rows} rows). Recognized personal data is pseudonymized — plausible fake values, not real ones — and free text reads [masked]. It is not anonymized: a rare combination can still re-identify, so treat the file as personal data. Full-fidelity export is a CLI/staff affordance.`
           : `Exported ${dump.tables.length} tables (${rows} rows), full fidelity — treat the file as production data.`,
       );
     } catch (e) {
