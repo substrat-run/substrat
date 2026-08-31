@@ -143,6 +143,33 @@ describe('engine-metering — the seam is parsed, not asserted', () => {
     await expect(staff.invoke<Page<UsageEntry>>('metering/list-entries')).rejects.toThrow(
       /does not match the shape this engine publishes/,
     );
+    // The fold reads `occurred_at` too — it is what CHOSE these summands — so
+    // refusing it only on the entry read would parse the number and trust the
+    // thing that decided which numbers there were.
+    await expect(total()).rejects.toThrow(
+      /does not match the shape this engine publishes.*occurred_at/s,
+    );
+    // And the close, which freezes that choice into an immutable line.
+    await expect(h.run((ctx) => closePeriod(ctx, { from: t(1), to: t(10) }), ALL)).rejects.toThrow(
+      /does not match the shape this engine publishes.*occurred_at/s,
+    );
+    expect(await h.run((ctx) => listPeriods(ctx), ALL)).toEqual([]);
+  });
+
+  it('the gauge carry-forward is chosen by a parsed instant too', async () => {
+    await h.run((ctx) => {
+      configureMeter(ctx, { key: 'storage.bytes', kind: 'gauge', unit: 'bytes' });
+      recordUsage(ctx, { meter: 'storage.bytes', qty: '10', dedupeKey: 'g1', occurredAt: t(2) });
+    }, ALL);
+    // No sample inside [t(5), t(10)), so the aggregate carries the LATEST
+    // earlier one forward — a row picked by `occurred_at` and nothing else.
+    await drift(
+      `UPDATE metering_entries SET occurred_at = '2030-01-02T00:00:00.000+00:00' WHERE meter_key = 'storage.bytes'`,
+    );
+
+    await expect(
+      h.run((ctx) => usageTotal(ctx, { meter: 'storage.bytes', from: t(5), to: t(10) }), ALL),
+    ).rejects.toThrow(/does not match the shape this engine publishes.*occurred_at/s);
   });
 
   it('a retyped `active` is caught BEFORE it is normalised to a boolean', async () => {

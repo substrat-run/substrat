@@ -177,12 +177,28 @@ describe('engine-invoicing — the seam is parsed, not asserted', () => {
     await expect(exporter.invoke('invoicing/get', { underlagId: id })).rejects.toThrow(
       /line_total_amount/,
     );
-    // And the export did NOT happen: the refusal is before the state change.
+    // And the export did NOT happen. `exportOp` writes `status` BEFORE the total
+    // is folded, so this has to be read while the drift is still in place — the
+    // question is whether the transaction rolled back, and a repaired row cannot
+    // answer it. Read the column directly, since every operation-level read is
+    // (correctly) refusing right now.
+    const stillOpen = await h.run(
+      (ctx) =>
+        ctx.sql.query<{ status: string }>('SELECT status FROM invoicing_underlag WHERE id = ?', [
+          id,
+        ])[0]?.status,
+      [PERM.read],
+    );
+    expect(stillOpen).toBe('open');
+
+    // Repaired, the basis is intact and still exportable — a refused export left
+    // nothing half-done behind it.
     await drift(`UPDATE invoicing_lines SET line_total_amount = '100'`);
     const detail = await exporter.invoke<{ underlag: UnderlagRow }>('invoicing/get', {
       underlagId: id,
     });
     expect(detail.underlag.status).toBe('open');
+    await exporter.invoke('invoicing/export', { underlagId: id });
   });
 
   it('a drifted qty refuses the detail read it would have rendered', async () => {

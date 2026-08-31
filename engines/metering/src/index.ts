@@ -280,8 +280,16 @@ const ENTRY_COLUMNS = columnsOf(entryRowShape);
 const PERIOD_COLUMNS = columnsOf(periodRowShape);
 const PERIOD_LINE_COLUMNS = columnsOf(periodLineRow);
 
-/** The single column both aggregates fold — a projection, not a table. */
-const entryQty = entryRowShape.pick({ qty: true });
+/**
+ * What both aggregates read — a projection of `entryRowShape`, not a table.
+ *
+ * `occurred_at` is in it even though the fold never sums it, because it is what
+ * DECIDES the fold: the window is a string comparison, and an instant in a shape
+ * this engine never promised sorts into or out of it silently. Leaving it out
+ * would have parsed the summand and trusted the thing that chose which summands
+ * there were — and a close freezes that choice into an immutable line.
+ */
+const entryFold = entryRowShape.pick({ qty: true, occurred_at: true });
 
 /** A stored row, parsed BEFORE anything is made of it. */
 const storedMeter = (r: MeterRow): MeterRow => returns(meterRowShape, `meter row ${r.key}`, r);
@@ -387,13 +395,13 @@ function aggregateMeter(
   // summand that drifted crosses as a NUMBER nobody questions, and this one is
   // frozen into a period line and billed.
   const rows = ctx.sql
-    .query<{ qty: string }>(
-      `SELECT ${columnsOf(entryQty)} FROM metering_entries
+    .query<{ qty: string; occurred_at: string }>(
+      `SELECT ${columnsOf(entryFold)} FROM metering_entries
       WHERE meter_key = ? AND occurred_at >= ? AND occurred_at < ?
       ORDER BY occurred_at, id`,
       [meter.key, from, to],
     )
-    .map((r) => returns(entryQty, `usage qty on meter '${meter.key}'`, r));
+    .map((r) => returns(entryFold, `usage entry on meter '${meter.key}'`, r));
   if (meter.kind === 'counter') {
     if (rows.length === 0) return null;
     return { qty: rows.reduce((sum, r) => addDecimal(sum, r.qty), '0'), entryCount: rows.length };
@@ -402,14 +410,19 @@ function aggregateMeter(
     const max = rows.reduce((m, r) => (compareDecimal(r.qty, m) > 0 ? r.qty : m), rows[0]!.qty);
     return { qty: max, entryCount: rows.length };
   }
-  const carried = ctx.sql.query<{ qty: string }>(
-    `SELECT ${columnsOf(entryQty)} FROM metering_entries
+  const carried = ctx.sql.query<{ qty: string; occurred_at: string }>(
+    `SELECT ${columnsOf(entryFold)} FROM metering_entries
       WHERE meter_key = ? AND occurred_at < ?
       ORDER BY occurred_at DESC, id DESC LIMIT 1`,
     [meter.key, from],
   )[0];
+  // The carry-forward is chosen by `occurred_at` too — it is the LATEST earlier
+  // sample — so the same parse decides it.
   return carried
-    ? { qty: returns(entryQty, `carried qty on meter '${meter.key}'`, carried).qty, entryCount: 0 }
+    ? {
+        qty: returns(entryFold, `carried entry on meter '${meter.key}'`, carried).qty,
+        entryCount: 0,
+      }
     : null;
 }
 
