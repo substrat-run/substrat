@@ -32,6 +32,7 @@ import {
   type ModuleRegistration,
   type OperationContext,
   type OperationHandler,
+  type SqlValue,
 } from '@substrat-run/kernel';
 import {
   closePeriod,
@@ -41,6 +42,9 @@ import {
   usageTotal,
 } from '@substrat-run/engine-metering';
 import {
+  DESK_METRICS_AGENTS,
+  DESK_METRICS_MAX_DAYS,
+  DESK_METRICS_WINDOW_DAYS,
   SEARCH_OVERFETCH,
   ticket0Entities,
   ticket0Lifecycles,
@@ -661,6 +665,171 @@ function ensureMeters(ctx: OperationContext): void {
     unit: 'token',
     description: 'Tokens the model produced',
   });
+}
+
+/**
+ * One meter's tokens over a window, priced by the rate in force when each turn happened.
+ *
+ * The rate card is append-only and keyed by the date a price takes effect, which is what
+ * makes a closed month reproducible at the price it was closed under. Reading one rate —
+ * the current one — and applying it to a whole window throws that away: a re-pricing
+ * today would silently move last month's number. So each turn is joined to the latest
+ * rate that had taken effect by its own `created_at`, and the segments are summed.
+ *
+ * Tokens recorded before any price existed contribute nothing, which is the same answer
+ * as pricing them at zero and an honest one — nobody had said what they were worth.
+ *
+ * `column` is one of two literals written at the call sites below, never caller input.
+ */
+function meterCost(
+  ctx: OperationContext,
+  meterKey: string,
+  column: 'input_tokens' | 'output_tokens',
+  from: string,
+  to: string,
+): { amount: string; currencies: string[] } {
+  const rows = ctx.sql.query<{ unit_price: string; currency: string; qty: number | null }>(
+    `SELECT r.unit_price, r.currency, SUM(t.${column}) AS qty
+       FROM ticket0_ai_turns t
+       JOIN ticket0_usage_rates r
+         ON r.meter_key = ?
+        AND r.effective_from = (
+              SELECT MAX(r2.effective_from)
+                FROM ticket0_usage_rates r2
+               WHERE r2.meter_key = r.meter_key AND r2.effective_from <= t.created_at)
+      WHERE t.created_at >= ? AND t.created_at <= ?
+      GROUP BY r.unit_price, r.currency`,
+    [meterKey, from, to],
+  );
+  return {
+    amount: rows.reduce(
+      (sum, r) => addDecimal(sum, mulDecimal(String(Number(r.qty ?? 0)), r.unit_price)),
+      '0',
+    ),
+    // A segment nobody spent a token in does not get a vote on the currency — otherwise
+    // an old price in another currency, never used, would refuse a report about today.
+    currencies: rows.filter((r) => Number(r.qty ?? 0) > 0).map((r) => r.currency),
+  };
+}
+
+/**
+ * `total / divisor`, half-up at 6 dp, as a decimal string.
+ *
+ * `@substrat-run/contracts` gives a sum and a product on 6-dp decimal strings and no
+ * quotient — the ledger never needs one, because a bill is a sum of priced quantities.
+ * A *rate* — what one resolved conversation cost — is a quotient, so this computes it in
+ * the same representation and the same rounding, in BigInt, so the money reaches the
+ * screen without passing through a float. Only non-negative totals occur here; a cost is
+ * a sum of priced token counts.
+ */
+function divDecimal(total: string, divisor: number): string {
+  const [whole = '0', frac = ''] = total.split('.');
+  const micro = BigInt(whole) * 1_000_000n + BigInt(frac.padEnd(6, '0').slice(0, 6));
+  const d = BigInt(divisor);
+  const quotient = (micro * 2n + d) / (d * 2n);
+  const fraction = (quotient % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '');
+  return `${quotient / 1_000_000n}${fraction ? `.${fraction}` : ''}`;
+}
+
+/** A rate, rounded to a fixed number of places so a screen is not shown 0.3333333333. */
+function round(value: number, places: number): number {
+  const scale = 10 ** places;
+  return Math.round(value * scale) / scale;
+}
+
+/** An instant `days` away from `at`, as the same canonical ISO text every column holds. */
+function shiftDays(at: string, days: number): string {
+  return new Date(Date.parse(at) + days * 86_400_000).toISOString();
+}
+
+/**
+ * Whole seconds between two SQL timestamp expressions, as SQL.
+ *
+ * `julianday` is the comparison, not text ordering, so this is correct for any instant
+ * SQLite can parse — including the trailing `Z` every column here carries. It rounds to
+ * a whole second because nothing on the report is measured finer than that.
+ *
+ * Both arguments are column names or `?` written in this file. Nothing a caller sends
+ * reaches here — a caller's instants are bound as parameters, as everywhere else.
+ */
+const elapsed = (from: string, to: string) =>
+  `CAST(ROUND((julianday(${to}) - julianday(${from})) * 86400) AS INTEGER)`;
+
+/**
+ * Median and p90 of a query that yields one `seconds` column.
+ *
+ * By **nearest rank**: the p-th percentile is the value at position `ceil(p × n)`, so
+ * every answer is a duration that actually happened rather than an interpolation between
+ * two that did. Three queries and constant memory — the durations are never materialized,
+ * which is what keeps a report over a busy year from being a page of its own.
+ *
+ * `select` is a query literal written above, wrapped rather than concatenated with
+ * anything a caller sent; the caller's window arrives in `params` and is bound.
+ */
+function percentiles(
+  ctx: OperationContext,
+  select: string,
+  params: readonly SqlValue[],
+): { measured: number; medianSeconds: number | null; p90Seconds: number | null } {
+  const measured = Number(
+    ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM (${select})`, params)[0]?.n ?? 0,
+  );
+  if (measured === 0) return { measured: 0, medianSeconds: null, p90Seconds: null };
+  const at = (fraction: number): number | null => {
+    const offset = Math.max(0, Math.ceil(fraction * measured) - 1);
+    const row = ctx.sql.query<{ seconds: number }>(
+      `SELECT seconds FROM (${select}) ORDER BY seconds ASC LIMIT 1 OFFSET ?`,
+      [...params, offset],
+    )[0];
+    return row ? Number(row.seconds) : null;
+  };
+  return { measured, medianSeconds: at(0.5), p90Seconds: at(0.9) };
+}
+
+/**
+ * Who carried the window: conversations resolved, and public replies sent.
+ *
+ * Two different facts about the same people, so they are counted separately and unioned
+ * rather than joined — a join between "conversations they resolved" and "messages they
+ * sent" multiplies one by the other. Only **public** agent messages count as replies: an
+ * internal note is a note to a colleague, and counting it as customer contact is the one
+ * way this number could flatter somebody who never wrote to a customer at all.
+ */
+function deskAgents(
+  ctx: OperationContext,
+  from: string,
+  to: string,
+): { principal: string; displayName: string | null; resolved: number; replies: number }[] {
+  return ctx.sql
+    .query<{ principal: string; display_name: string | null; resolved: number; replies: number }>(
+      `SELECT a.principal, p.display_name,
+              SUM(a.resolved) AS resolved, SUM(a.replies) AS replies
+         FROM (
+           SELECT assignee AS principal, COUNT(*) AS resolved, 0 AS replies
+             FROM ticket0_conversations
+            WHERE assignee IS NOT NULL
+              AND resolved_at IS NOT NULL AND resolved_at >= ? AND resolved_at <= ?
+            GROUP BY assignee
+           UNION ALL
+           SELECT author_principal AS principal, 0 AS resolved, COUNT(*) AS replies
+             FROM ticket0_messages
+            WHERE author_kind = 'agent' AND visibility = 'public'
+              AND author_principal IS NOT NULL
+              AND created_at >= ? AND created_at <= ?
+            GROUP BY author_principal
+         ) a
+         LEFT JOIN ticket0_agent_profiles p ON p.principal = a.principal
+        GROUP BY a.principal, p.display_name
+        ORDER BY resolved DESC, replies DESC, a.principal ASC
+        LIMIT ?`,
+      [from, to, from, to, DESK_METRICS_AGENTS],
+    )
+    .map((r) => ({
+      principal: r.principal,
+      displayName: r.display_name,
+      resolved: Number(r.resolved),
+      replies: Number(r.replies),
+    }));
 }
 
 function overfetch(limit: number): number {
@@ -1826,6 +1995,191 @@ const operations = {
       from: closed.period.from,
       to: closed.period.to,
       lines: closed.lines.length,
+    };
+  },
+
+  // --- The desk, measured --------------------------------------------------
+
+  'ticket0/desk-metrics': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.usageRead));
+    const now = ctx.now();
+    const to = input.to ?? now;
+    const from = input.from ?? shiftDays(to, -DESK_METRICS_WINDOW_DAYS);
+    // Every aggregate below is bounded only by this range, so the range is bounded here
+    // — an unbounded one is a full history scan, and a report that takes a minute is a
+    // report nobody opens twice. Refused rather than served slowly.
+    const span = Date.parse(to) - Date.parse(from);
+    if (span < 0)
+      throw substratError('validation_failed', '`to` is before `from`', {
+        errors: [{ path: 'to', message: 'the window ends before it begins' }],
+      });
+    if (span > DESK_METRICS_MAX_DAYS * 86_400_000)
+      throw substratError(
+        'validation_failed',
+        `a report window is at most ${DESK_METRICS_MAX_DAYS} days; ask for a year at a time`,
+        { errors: [{ path: 'from', message: `at most ${DESK_METRICS_MAX_DAYS} days before \`to\`` }] },
+      );
+
+    // Volume, per channel and in total, in one pass.
+    //
+    // A merged conversation is not a second arrival — it is the same customer's thread
+    // wearing another id — so it is excluded from `opened`. `resolved` counts a
+    // `resolved_at` wherever it is, merged or not: a thread somebody resolved and later
+    // folded into another really was resolved, and dropping it would move a past
+    // window's number every time an old thread was tidied up.
+    //
+    // Every channel the desk has ever used gets a row, including one that saw nothing in
+    // this window. That is deliberate: a report whose rows appear and vanish with the
+    // range is one nobody can compare two ranges of.
+    const channels = ctx.sql.query<{ channel: 'widget' | 'email'; opened: number; resolved: number }>(
+      `SELECT channel,
+              SUM(CASE WHEN created_at >= ? AND created_at <= ? AND merged_into IS NULL
+                       THEN 1 ELSE 0 END) AS opened,
+              SUM(CASE WHEN resolved_at IS NOT NULL AND resolved_at >= ? AND resolved_at <= ?
+                       THEN 1 ELSE 0 END) AS resolved
+         FROM ticket0_conversations
+        GROUP BY channel
+        ORDER BY channel`,
+      [from, to, from, to],
+    ).map((r) => ({ channel: r.channel, opened: Number(r.opened), resolved: Number(r.resolved) }));
+
+    // Speed. Both are measured over the conversations whose EVENT lands in the window —
+    // a first reply that happened this week counts this week, whenever the conversation
+    // arrived. Anchoring on `created_at` instead would make the current window's median
+    // move every time an old thread was finally answered.
+    const firstResponse = percentiles(
+      ctx,
+      `SELECT ${elapsed('created_at', 'first_public_reply_at')} AS seconds
+         FROM ticket0_conversations
+        WHERE first_public_reply_at IS NOT NULL
+          AND first_public_reply_at >= ? AND first_public_reply_at <= ?`,
+      [from, to],
+    );
+    const resolution = percentiles(
+      ctx,
+      `SELECT ${elapsed('created_at', 'resolved_at')} AS seconds
+         FROM ticket0_conversations
+        WHERE resolved_at IS NOT NULL AND resolved_at >= ? AND resolved_at <= ?`,
+      [from, to],
+    );
+
+    // Backlog is a fact about NOW and deliberately ignores the window: what is waiting
+    // does not care which dates the reader picked. `new` counts as open — nobody has
+    // touched it, which is the worst kind of open there is.
+    const backlogCounts = ctx.sql.query<{ open: number; snoozed: number; unassigned: number }>(
+      `SELECT SUM(CASE WHEN state IN ('new', 'open') THEN 1 ELSE 0 END) AS open,
+              SUM(CASE WHEN state = 'snoozed' THEN 1 ELSE 0 END) AS snoozed,
+              SUM(CASE WHEN state IN ('new', 'open') AND assignee IS NULL THEN 1 ELSE 0 END)
+                AS unassigned
+         FROM ticket0_conversations
+        WHERE merged_into IS NULL`,
+    )[0];
+    // "Oldest untouched" is by `updated_at`, not `created_at`: a week-old thread somebody
+    // replied to an hour ago is not the one going stale.
+    const oldest = ctx.sql.query<{ id: string; seconds: number }>(
+      `SELECT id, ${elapsed('updated_at', '?')} AS seconds
+         FROM ticket0_conversations
+        WHERE state IN ('new', 'open') AND merged_into IS NULL
+        ORDER BY updated_at ASC, id ASC
+        LIMIT 1`,
+      [now],
+    )[0];
+
+    const agents = deskAgents(ctx, from, to);
+
+    const csat = ctx.sql.query<{ responses: number; total: number | null }>(
+      `SELECT COUNT(*) AS responses, SUM(score) AS total
+         FROM ticket0_csat
+        WHERE submitted_at >= ? AND submitted_at <= ?`,
+      [from, to],
+    )[0];
+    const responses = Number(csat?.responses ?? 0);
+
+    // The assistant, which is the reason this operation exists. Outcomes and tokens come
+    // off the same rows, so the rate and the bill it produced cannot disagree.
+    const turns = ctx.sql.query<{
+      turns: number;
+      answered: number | null;
+      drafted: number | null;
+      escalated: number | null;
+      failed: number | null;
+      input_tokens: number | null;
+      output_tokens: number | null;
+    }>(
+      `SELECT COUNT(*) AS turns,
+              SUM(CASE WHEN outcome = 'answered' THEN 1 ELSE 0 END) AS answered,
+              SUM(CASE WHEN outcome = 'drafted' THEN 1 ELSE 0 END) AS drafted,
+              SUM(CASE WHEN outcome = 'escalated' THEN 1 ELSE 0 END) AS escalated,
+              SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
+              SUM(input_tokens) AS input_tokens,
+              SUM(output_tokens) AS output_tokens
+         FROM ticket0_ai_turns
+        WHERE created_at >= ? AND created_at <= ?`,
+      [from, to],
+    )[0];
+    const turnCount = Number(turns?.turns ?? 0);
+    const share = (n: number) => (turnCount === 0 ? null : round(n / turnCount, 4));
+
+    // Priced from the desk's own rate card, each turn at the rate in force WHEN IT
+    // HAPPENED — not at the rate in force now. The card is append-only and keyed by the
+    // date a price takes effect precisely so a re-pricing does not reach backwards; a
+    // report that read one rate and applied it to the whole window would undo that, and
+    // last month's number would move every time somebody changed a price.
+    const priced = [
+      meterCost(ctx, METERS.inputTokens, 'input_tokens', from, to),
+      meterCost(ctx, METERS.outputTokens, 'output_tokens', from, to),
+    ];
+    // The two meters are priced independently and each price carries its own currency,
+    // so a desk CAN hold EUR input and USD output — across meters or across periods of
+    // one meter. Adding those and labelling the sum with whichever was read first is the
+    // quiet kind of wrong, a number that looks right on the screen, so it refuses
+    // instead. The fix is one `ticket0/set-usage-rate` call, and the message says so.
+    const currencies = [...new Set(priced.flatMap((p) => p.currencies))];
+    if (currencies.length > 1)
+      throw substratError(
+        'conflict',
+        `the tokens in this window are priced in more than one currency ` +
+          `(${currencies.join(', ')}); re-price them in one before this desk can be costed`,
+        { reason: 'mixed_currency' },
+      );
+    const cost = priced.reduce((sum, p) => addDecimal(sum, p.amount), '0');
+    const resolved = channels.reduce((sum, c) => sum + c.resolved, 0);
+
+    return {
+      from,
+      to,
+      volume: {
+        opened: channels.reduce((sum, c) => sum + c.opened, 0),
+        resolved,
+        byChannel: channels,
+      },
+      firstResponse,
+      resolution,
+      backlog: {
+        open: Number(backlogCounts?.open ?? 0),
+        snoozed: Number(backlogCounts?.snoozed ?? 0),
+        unassigned: Number(backlogCounts?.unassigned ?? 0),
+        oldestUntouchedId: oldest?.id ?? null,
+        oldestUntouchedAgeSeconds: oldest ? Number(oldest.seconds) : null,
+      },
+      agents,
+      csat: {
+        responses,
+        average: responses === 0 ? null : round(Number(csat?.total ?? 0) / responses, 2),
+      },
+      assistant: {
+        turns: turnCount,
+        answered: Number(turns?.answered ?? 0),
+        drafted: Number(turns?.drafted ?? 0),
+        escalated: Number(turns?.escalated ?? 0),
+        failed: Number(turns?.failed ?? 0),
+        deflectionRate: share(Number(turns?.answered ?? 0)),
+        escalationRate: share(Number(turns?.escalated ?? 0)),
+        failureRate: share(Number(turns?.failed ?? 0)),
+        currency: currencies[0] ?? rateFor(ctx, METERS.inputTokens, to)?.currency ?? 'EUR',
+        cost,
+        costPerResolved: resolved === 0 ? null : divDecimal(cost, resolved),
+      },
     };
   },
 

@@ -1356,6 +1356,426 @@
         }
       }
     },
+    "/api/desk-metrics": {
+      "get": {
+        "operationId": "ticket0-desk-metrics",
+        "summary": "Volume, speed, backlog, satisfaction and what the assistant settled",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            }
+          }
+        ],
+        "description": "The desk over a window — volume, speed, backlog, CSAT and what the assistant settled. Under `usage:read` because its headline is cost with a denominator.",
+        "tags": [
+          "Usage"
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    },
+                    "volume": {
+                      "type": "object",
+                      "properties": {
+                        "opened": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "resolved": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "byChannel": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "channel": {
+                                "type": "string",
+                                "enum": [
+                                  "widget",
+                                  "email"
+                                ]
+                              },
+                              "opened": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              },
+                              "resolved": {
+                                "type": "integer",
+                                "minimum": -9007199254740991,
+                                "maximum": 9007199254740991
+                              }
+                            },
+                            "required": [
+                              "channel",
+                              "opened",
+                              "resolved"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "opened",
+                        "resolved",
+                        "byChannel"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "firstResponse": {
+                      "type": "object",
+                      "properties": {
+                        "measured": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "medianSeconds": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "p90Seconds": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "measured",
+                        "medianSeconds",
+                        "p90Seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "resolution": {
+                      "type": "object",
+                      "properties": {
+                        "measured": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "medianSeconds": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "p90Seconds": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "measured",
+                        "medianSeconds",
+                        "p90Seconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "backlog": {
+                      "type": "object",
+                      "properties": {
+                        "open": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "snoozed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "unassigned": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "oldestUntouchedId": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "oldestUntouchedAgeSeconds": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "open",
+                        "snoozed",
+                        "unassigned",
+                        "oldestUntouchedId",
+                        "oldestUntouchedAgeSeconds"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "principal": {
+                            "type": "string"
+                          },
+                          "displayName": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "resolved": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "replies": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "principal",
+                          "displayName",
+                          "resolved",
+                          "replies"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "csat": {
+                      "type": "object",
+                      "properties": {
+                        "responses": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "average": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "responses",
+                        "average"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "assistant": {
+                      "type": "object",
+                      "properties": {
+                        "turns": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "answered": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "drafted": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "escalated": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "failed": {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        "deflectionRate": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "escalationRate": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "failureRate": {
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "currency": {
+                          "type": "string"
+                        },
+                        "cost": {
+                          "type": "string"
+                        },
+                        "costPerResolved": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "turns",
+                        "answered",
+                        "drafted",
+                        "escalated",
+                        "failed",
+                        "deflectionRate",
+                        "escalationRate",
+                        "failureRate",
+                        "currency",
+                        "cost",
+                        "costPerResolved"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to",
+                    "volume",
+                    "firstResponse",
+                    "resolution",
+                    "backlog",
+                    "agents",
+                    "csat",
+                    "assistant"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
     "/api/conversations/{conversationId}": {
       "get": {
         "operationId": "ticket0-get-conversation",
