@@ -145,7 +145,9 @@ which denies by default until roles and grants say otherwise. See
 
 ### 2. Register a module
 
-A module is a manifest + migrations + operations. Here's a minimal one (engines ship
+A module is a manifest + migrations + operations, and — optionally, though every engine and
+vertical in this repo does it — the schemas the host parses those operations against.
+Here's a minimal one (engines ship
 this structure for you — see [What is an engine?](/engines/)):
 
 ```ts
@@ -182,9 +184,8 @@ export const notesModule: ModuleRegistration = {
     },
   ],
   operations: {
-    'notes/create': async (ctx, input) => {
+    'notes/create': async (ctx, { text }: z.infer<typeof noteInput>) => {
       assertAllowed(await ctx.check('notes:write' as never));
-      const { text } = noteInput.parse(input);
       const id = ulid();
       ctx.sql.exec(
         'INSERT INTO notes (id, text, created_by, created_at) VALUES (?, ?, ?, ?)',
@@ -200,6 +201,7 @@ export const notesModule: ModuleRegistration = {
       return { id };
     },
   },
+  operationInputs: { 'notes/create': noteInput },
 };
 
 host.registerModule(notesModule);
@@ -207,7 +209,15 @@ host.registerModule(notesModule);
 
 Things to notice:
 
-- **The handler parses its input.** Zod at every trust boundary — "parse, don't trust".
+- **The host parses the input, not the handler.** `operationInputs` names the schema for
+  each operation, and the host applies it before the guards and the handler on every path
+  in — HTTP, in-process `invoke`, a seed, a schedule. A handler that parsed its own input
+  would be a trust boundary each new operation has to remember; this one cannot be
+  forgotten. A vertical with a declared operation surface hands the whole map over at once
+  with `operationInputsOf(ops)` rather than listing names — see
+  [Modules & the manifest](/concepts/modules#the-parse-the-host-owns). Leaving the map out
+  is legal and means nothing was declared to parse, so the Zod object above would be
+  compile-time only.
 - **The permission check is the first line.** `assertAllowed` throws `PermissionDenied`
   unless the decision is an allow.
 - **`ctx.emit` takes no origin fields.** Tenant, scope, actor, id, and timestamp are
