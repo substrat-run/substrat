@@ -47,9 +47,21 @@ Notes worth knowing:
 - **The dedupe key is a contract, not a suggestion.** Derive it from the observation's
   own identity — a turn id, an aggregation-bucket id (`requests:2026-08-14T13`) — never
   from a random value, or the idempotency is theatre.
-- **`occurredAt` defaults to now** and must be at or after the close horizon. Record
-  late usage at observation time; never backdate into a closed window (the engine
-  refuses).
+- **`occurredAt` defaults to now and is bounded on _both_ sides**, for two different
+  reasons.
+  - *Behind*: never before the close horizon. The period covering that instant is
+    frozen, and a late entry landing inside it would change a line already billed — a
+    closed period stays reproducible from its own entries forever. Refused as
+    `period_closed`.
+  - *Ahead*: never more than **five minutes** past the operation's own `ctx.now()`.
+    That is a clock-skew tolerance, not a feature: the horizon only ever moves forward,
+    so an entry post-dated past every period anyone will close is aggregated into none
+    of them and leaves the billing stream silently. Refused as `occurred_at_ahead`.
+
+  Either way the answer is the same: record usage at observation time. A caller with a
+  legitimately future observation does not have an observation, it has a plan. Note that
+  the dedupe branch returns *before* either bound is consulted, so retrying an already
+  recorded `dedupeKey` never turns into an error just because the horizon moved.
 - **Gauges reject negative samples**; counters take signed deltas — a correction is a
   compensating negative entry.
 - **`usageTotal` returning `null`** means the meter has nothing to say for the window: a
