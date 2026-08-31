@@ -28,36 +28,39 @@ function inline(text: string): ReactNode[] {
 
 export function renderMarkdown(src: string): ReactNode {
   const lines = src.split('\n');
+  // Every read is already guarded by `i < lines.length`, but an index signature
+  // cannot say so — so read through one helper rather than assert at each site.
+  const at = (n: number) => lines[n] ?? '';
   const blocks: ReactNode[] = [];
   let i = 0;
   let k = 0;
   while (i < lines.length) {
-    const line = lines[i];
+    const line = at(i);
     if (line.startsWith('```')) {
       const buf: string[] = [];
       i++;
-      while (i < lines.length && !lines[i].startsWith('```')) buf.push(lines[i++]);
+      while (i < lines.length && !at(i).startsWith('```')) buf.push(at(i++));
       i++;
       blocks.push(<pre key={k++} style={{ margin: '10px 0', padding: 12, background: 'var(--code-bg)', color: 'var(--code-ink)', fontFamily: 'var(--mono)', fontSize: 12, borderRadius: 'var(--r-input)', overflow: 'auto' }}>{buf.join('\n')}</pre>);
       continue;
     }
     const h = /^(#{1,4})\s+(.*)$/.exec(line);
     if (h) {
-      const level = h[1].length;
-      const size = [20, 17, 15, 13.5][level - 1] ?? 13.5;
-      blocks.push(<div key={k++} style={{ fontSize: size, fontWeight: 600, margin: '14px 0 6px' }}>{inline(h[2])}</div>);
+      const [, hashes = '', text = ''] = h;
+      const size = [20, 17, 15, 13.5][hashes.length - 1] ?? 13.5;
+      blocks.push(<div key={k++} style={{ fontSize: size, fontWeight: 600, margin: '14px 0 6px' }}>{inline(text)}</div>);
       i++;
       continue;
     }
     if (/^\s*[-*]\s+/.test(line)) {
       const items: string[] = [];
-      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*[-*]\s+/, ''));
+      while (i < lines.length && /^\s*[-*]\s+/.test(at(i))) items.push(at(i++).replace(/^\s*[-*]\s+/, ''));
       blocks.push(<ul key={k++} style={{ margin: '6px 0', paddingLeft: 20 }}>{items.map((it, j) => <li key={j} style={{ margin: '2px 0' }}>{inline(it)}</li>)}</ul>);
       continue;
     }
     if (line.trim() === '') { i++; continue; }
     const buf: string[] = [];
-    while (i < lines.length && lines[i].trim() !== '' && !/^(#{1,4})\s|^```|^\s*[-*]\s+/.test(lines[i])) buf.push(lines[i++]);
+    while (i < lines.length && at(i).trim() !== '' && !/^(#{1,4})\s|^```|^\s*[-*]\s+/.test(at(i))) buf.push(at(i++));
     blocks.push(<p key={k++} style={{ margin: '6px 0', lineHeight: 1.6 }}>{inline(buf.join(' '))}</p>);
   }
   return <div>{blocks}</div>;
@@ -111,7 +114,7 @@ export function MarkdownEditor({ value, onChange, invalid }: { value: string; on
     if (!el) return;
     const a = el.selectionStart;
     const lineStart = value.lastIndexOf('\n', a - 1) + 1;
-    const empty = value.slice(lineStart).split('\n')[0].trim() === '';
+    const empty = (value.slice(lineStart).split('\n')[0] ?? '').trim() === '';
     const next = value.slice(0, lineStart) + prefix + (empty ? placeholder : '') + value.slice(lineStart);
     onChange(next);
   };

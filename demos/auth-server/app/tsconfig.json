@@ -1,15 +1,22 @@
 {
+  "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
-    "target": "ES2022",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
-    "moduleResolution": "bundler",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx",
-    "strict": true,
+    "noEmit": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noEmit": true,
-    "skipLibCheck": true,
+    // The one narrowed override in the fifteen browser projects, and it is about
+    // declaration EMIT, which a `noEmit` app never does. Better Auth's
+    // `createAuthClient` infers a type that names zod's internal `$strip`, so with
+    // the base's `declaration: true` inherited, tsc reports TS2883 ("cannot be
+    // named without a reference to …") on a declaration file nothing asks for.
+    // Writing the annotation by hand would mean spelling out the whole inferred
+    // admin-plugin surface. Everything else in the base still applies.
+    "declaration": false,
+    "declarationMap": false,
     "types": ["vite/client"]
   },
   "include": ["src"]

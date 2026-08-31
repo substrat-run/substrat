@@ -41,7 +41,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "typescript": "^7.0.0",
+    "typescript": "catalog:",
     "zod": "catalog:"
   },
   "publishConfig": {

@@ -120,7 +120,9 @@ export function Inbox({ d, onDecideLeave, onDecideExpense }: ManageProps) {
         <DeclineDialog
           onCancel={() => setDeclining(null)}
           onConfirm={async (reason) => {
-            const [kind, id] = declining.split(':');
+            const sep = declining.indexOf(':');
+            const kind = declining.slice(0, sep);
+            const id = declining.slice(sep + 1);
             if (kind === 'leave') await onDecideLeave(id, 'reject', reason);
             else await onDecideExpense(id, 'reject');
             setDeclining(null);

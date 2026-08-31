@@ -38,7 +38,7 @@
     "@cloudflare/vitest-pool-workers": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/contract-tests": "workspace:^",
-    "typescript": "^7.0.0",
+    "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"
   },

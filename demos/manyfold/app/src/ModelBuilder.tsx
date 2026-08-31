@@ -271,7 +271,9 @@ export function ModelEditorView(props: { typeKey: string | null; canAdmin: boole
 
           <MicroLabel>Fields</MicroLabel>
           {draft.fields.map(([name, f], i) => {
-            const st = isNew ? ({ kind: 'unchanged' } as RowStatus) : statuses[i];
+            // `statuses` is mapped from `draft.fields`, so the index always hits —
+            // the fallback is what says so to the compiler.
+            const st: RowStatus = isNew ? { kind: 'unchanged' } : (statuses[i] ?? { kind: 'unchanged' });
             const bg = st.kind === 'new' ? 'var(--diff-add-bg)' : st.kind === 'modified' ? 'var(--st-review-bg)' : 'transparent';
             return (
               <div
@@ -285,6 +287,7 @@ export function ModelEditorView(props: { typeKey: string | null; canAdmin: boole
                   if (from === null || from === i) return;
                   const next = [...draft.fields];
                   const [moved] = next.splice(from, 1);
+                  if (!moved) return;
                   next.splice(i, 0, moved);
                   set({ fields: next });
                 }}
@@ -317,7 +320,10 @@ export function ModelEditorView(props: { typeKey: string | null; canAdmin: boole
                   <Mono style={{ fontSize: 12, color: 'inherit', textDecoration: 'line-through' }}>{n}</Mono>
                   <span style={{ color: 'var(--muted)' }}>v{nextVersion} simply doesn't carry the column</span>
                   <button
-                    onClick={() => set({ fields: [...draft.fields, [n, baseline!.fields[n]]] })}
+                    onClick={() => {
+                      const f = baseline?.fields[n];
+                      if (f) set({ fields: [...draft.fields, [n, f]] });
+                    }}
                     style={{ font: 'inherit', fontSize: 11.5, color: 'var(--link)', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
                   >
                     restore
@@ -355,8 +361,8 @@ export function ModelEditorView(props: { typeKey: string | null; canAdmin: boole
       {editing !== null && (
         <FieldEditorModal
           ownerTitle={draft.title || 'New model'}
-          fieldName={editing === 'add' ? null : draft.fields[editing][0]}
-          initial={editing === 'add' ? null : draft.fields[editing][1]}
+          fieldName={editing === 'add' ? null : (draft.fields[editing]?.[0] ?? null)}
+          initial={editing === 'add' ? null : (draft.fields[editing]?.[1] ?? null)}
           existingNames={fieldNames}
           targets={types.map((t) => t.def).filter((d) => d.key !== draft.key)}
           onClose={() => setEditing(null)}

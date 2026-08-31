@@ -7,16 +7,17 @@ import { Avatar, Button, Card, ColHead, Empty, MicroLabel, Mono, relativeTime } 
 // signed-in member plus pending invites; the rail proves the per-site story with the
 // caller's real role in every site.
 
+const VIEWER_COLOR = { fg: 'var(--st-draft-fg)', bg: 'var(--st-draft-bg)' };
 const ROLE_COLOR: Record<string, { fg: string; bg: string }> = {
   admin: { fg: 'var(--accent)', bg: 'var(--accent-soft)' },
   publisher: { fg: 'var(--st-published-fg)', bg: 'var(--st-published-bg)' },
   editor: { fg: 'var(--st-approved-fg)', bg: 'var(--st-approved-bg)' },
   author: { fg: 'var(--st-review-fg)', bg: 'var(--st-review-bg)' },
-  viewer: { fg: 'var(--st-draft-fg)', bg: 'var(--st-draft-bg)' },
+  viewer: VIEWER_COLOR,
 };
 function RoleChip({ role }: { role?: string | null }) {
   if (!role) return <span style={{ color: 'var(--faint)', fontSize: 12 }}>—</span>;
-  const c = ROLE_COLOR[role] ?? ROLE_COLOR.viewer;
+  const c = ROLE_COLOR[role] ?? VIEWER_COLOR;
   return <span style={{ fontSize: 11.5, fontWeight: 600, padding: '2px 9px', borderRadius: 'var(--r-pill)', color: c.fg, background: c.bg, textTransform: 'capitalize' }}>{role}</span>;
 }
 

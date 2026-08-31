@@ -39,7 +39,7 @@
     "workers-ai-provider": "^4.0.0"
   },
   "devDependencies": {
-    "typescript": "^7.0.0",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "publishConfig": {
