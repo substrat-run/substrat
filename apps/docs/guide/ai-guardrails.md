@@ -85,23 +85,43 @@ maintains — and worth less than nothing if it *says* it is generated while not
 it. So a generated file carries all three of:
 
 1. **The filename** — a `.generated.ts` suffix (or, for a document, a `<!-- GENERATED … -->`
-   first line). This is the signal a reviewer reads in a diff without opening the file.
+   marker at the top. On a page with VitePress frontmatter it goes **directly after** the
+   closing `---`, never above it: frontmatter has to be the first thing in the file, and a
+   marker pushed above it stops being frontmatter and starts being rendered prose.
+   [`agent-rules`](/guide/agent-rules) is the page on this site that obeys the rule).
+   This is the signal a reviewer reads in a diff without opening the file.
 2. **A header naming the producer and the source** — so "where does this come from" is
    answered in the file itself.
 3. **A `--check` re-emit in CI.** This is the only one that enforces anything. "Do not edit"
    is a request; the gate is what makes it true.
 
 `src/migrations.generated.ts` carried the comment for a year with no gate, and a hand-edit
-to shipped SQL passed every check in the repo. The gates that exist today: `lint:model`,
+to shipped SQL passed every check in the repo. The **re-emit gates** today — the ones that
+regenerate a derived file and fail if the checked-in copy differs — are `lint:model`,
 `lint:permissions`, `lint:migrations`, `lint:api`, `lint:client`, `lint:conformance`,
-`lint:tests`,
-`lint:boundaries`, `lint:decisions`, `lint:playbook`, `lint:docs`, `lint:llms`,
-`lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`, `lint:connector-grants`,
-`lint:deps` and `lint:scaffold`.
+`lint:decisions`, `lint:playbook`, `lint:docs`, `lint:llms`, `lint:agent-rules`,
+`lint:launch`, `lint:plugin`, `lint:pins`, `lint:connector-grants` and `lint:auth-schema`.
+
+CI runs more than those, and the difference matters when you are looking for the gate that
+holds a particular file: the checks that **emit nothing and simply refuse** are
+`lint:boundaries` (`tools/boundary-lint.mjs`), `lint:cycles`, `lint:deps` (an import whose
+package the workspace graph does not declare), `lint:tests`, and `lint:changelog --check` —
+which asserts a hand-written digest accounts for every merge in its range and could not
+re-emit prose if it wanted to. `lint:scaffold` refuses too, and is the one that runs **off**
+the PR: post-release and weekly, because between a merge and the release that publishes it
+the scaffold template legitimately runs ahead of npm.
+
+A gate must also be the *only* thing that touches the file. A `pre*` hook that regenerates a
+gated artifact on the way past cancels its own gate — the hand edit is overwritten instead of
+caught, and the diff a reviewer would have read never appears. Emit on demand, and let CI be
+the one that says no.
 
 **The one exception, stated rather than hidden:** a file generated from a *remote* source
 cannot be re-emitted hermetically in CI, so it gets marks 1 and 2 plus a `GENERATED_AT`
-stamp instead of mark 3. An in-repo source with no gate is a defect, not a style.
+stamp instead of mark 3. And one accepted shape, not a category: a **JSON** artifact cannot
+carry a comment, so `model.json`, `openapi.json` and `.claude/launch.json` have mark 3 only,
+with their producer named in the gate list above and in the tool that emits them. An in-repo
+source with no gate is a defect, not a style.
 
 ## Guard 04: two descriptions that are allowed to disagree
 
