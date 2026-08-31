@@ -5,20 +5,28 @@ description: "Engines and verticals join a scope host the same way — as module
 # Modules & the manifest
 
 Engines and verticals join a scope host the same way: as **modules**. A module is one
-registration object bundling a manifest, migrations, operations, and event consumers:
+registration object bundling a manifest, migrations, operations, the schemas and
+preconditions the host enforces around them, and event consumers:
 
 ```ts
+import { operationInputsOf, operationConcurrencyOf } from '@substrat-run/contracts';
 import type { ModuleRegistration } from '@substrat-run/kernel';
 
 const registration: ModuleRegistration = {
   manifest,      // self-describing metadata (validated Zod document)
   migrations,    // ordered SQL, journaled per module, applied lazily per scope
   operations,    // 'workorder/create' → handler
+  operationInputs: operationInputsOf(workorderOperations),        // name → input schema
+  operationConcurrency: operationConcurrencyOf(workorderOperations), // name → If-Match target
   consumers,     // 'workorder.completed' → handler
 };
 
 host.registerModule(registration);
 ```
+
+The two maps are derived from the declared operation surface rather than written a second
+time, and both are **optional** — see [the parse the host owns](#the-parse-the-host-owns)
+for what their absence means.
 
 ## The manifest
 
@@ -217,11 +225,40 @@ Semantics:
 
 - **`operations`** — the module's invokable surface, namespaced
   (`'workorder/create'`). Each default binding starts with its own permission check.
+- **`operationInputs`** — name → the Zod schema the host parses an invocation's input
+  against, before the guards and the handler see it.
+- **`operationConcurrency`** — name → the entity whose version an `If-Match` is compared
+  against, and the input field carrying its id. The host compares, between `BEGIN` and the
+  guards; a precondition a handler evaluates is a precondition a handler can forget.
 - **`consumers`** — event handlers keyed by event type; the types must appear in
   `manifest.events.consumes`. Idempotency required (at-least-once delivery).
 - **In-scope functions** — plain exports (not registered anywhere) that a vertical's own
   operations can call to compose engine behavior in the same transaction. See
   [Operations & the scope host](/concepts/scope-host#in-scope-functions-vs-registered-operations).
+
+### The parse the host owns
+
+`operationInputs` is where **"parse, don't trust" is kept, rather than in every handler**.
+The host parses an invocation against the named schema before the guards and the handler
+run, on every path in — HTTP, in-process `invoke`, a seed, a schedule — so a handler
+receives a value that has already been validated and does not parse again.
+
+```ts
+operations: { 'rally/book': bookOp, /* … */ },
+operationInputs: operationInputsOf(rallyOperations),
+```
+
+The map is derived from the declared operation surface, never written a second time: a
+declared `input` that the handler was supposed to re-parse is the same schema stated twice,
+and across the fleet the two drifted — rally declared 32 inputs and parsed 2.
+
+Both maps are optional on the interface, and the two directions are not symmetric:
+
+- **A name in the map that no operation binds is an error.** It is a schema enforcing
+  nothing while reading as coverage.
+- **A bound operation with no entry is allowed**, and means what it always meant — nothing
+  was declared to parse. So a module that declares Zod inputs but omits the map has
+  compile-time types and no runtime check anywhere, with nothing to say so.
 
 ## Attachment contracts and opaque refs
 
