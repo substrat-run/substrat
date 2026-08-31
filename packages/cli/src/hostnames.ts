@@ -124,14 +124,17 @@ export async function bindSurfaceHostname(opts: {
   // Platform mint: the install's default label + the surface, on the same base domain.
   const source =
     own.find((h) => h.canonical && h.surface === 'app') ?? own.find((h) => h.canonical) ?? own[0];
-  if (!source || !source.hostname.includes('.')) {
+  // The parse IS the guard: `includes('.')` passes for `.example.com` and for a bare `.`,
+  // both of which `parseHostname` rejects — and the CLI's job here is to say so, not to
+  // throw a TypeError off a non-null assertion on a row the control plane handed back.
+  const parsed = source ? parseHostname(source.hostname) : undefined;
+  if (!parsed) {
     throw new Error(`no platform hostname to derive from — bind a --domain instead`);
   }
-  const { label } = parseHostname(source.hostname)!;
   const candidates = [
-    `${label}-${slugifyLabel(opts.surface)}`,
-    `${label}-${slugifyLabel(opts.surface)}-${scopeId.toLowerCase().slice(-4)}`,
-  ].map((l) => withLabel(source.hostname, l)!);
+    `${parsed.label}-${slugifyLabel(opts.surface)}`,
+    `${parsed.label}-${slugifyLabel(opts.surface)}-${scopeId.toLowerCase().slice(-4)}`,
+  ].map((l) => withLabel(parsed, l));
   let lastError: Error | undefined;
   for (const hostname of candidates) {
     try {

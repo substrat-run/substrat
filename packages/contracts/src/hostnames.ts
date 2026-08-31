@@ -70,10 +70,16 @@ export function isDerivedLabel(label: string): boolean {
 /**
  * Mint a sibling of `hostname` under a new first label: same zone, same everything else.
  *
- * `undefined` when the input has no dot, for the same reason `parseHostname` does.
+ * From a raw string it is partial — `undefined` when the input has no dot, for the same
+ * reason `parseHostname` is. From an already-parsed hostname it is **total**, and that
+ * overload is the one to reach for: a call site that guarded with `parseHostname` and then
+ * wrote `withLabel(host, l)!` is asserting something the types could have known. The
+ * assertion is what rots — the guard moves, the `!` stays.
  */
-export function withLabel(hostname: string, label: string): string | undefined {
-  const parsed = parseHostname(hostname);
+export function withLabel(hostname: ParsedHostname, label: string): string;
+export function withLabel(hostname: string, label: string): string | undefined;
+export function withLabel(hostname: string | ParsedHostname, label: string): string | undefined {
+  const parsed = typeof hostname === 'string' ? parseHostname(hostname) : hostname;
   return parsed ? `${label}.${parsed.rest}` : undefined;
 }
 
@@ -96,8 +102,17 @@ export function parsePlatformBaseDomains(value: string | undefined | null): stri
  * Matches a base domain itself or any subdomain of it — `substrat.run`,
  * `x.global.substrat.run` and `x.global.test.substrat.run` all match `substrat.run`.
  * The dot boundary is the whole point: a bare `endsWith` would match `notsubstrat.run`.
+ *
+ * BOTH sides are normalized, not just the hostname. `parsePlatformBaseDomains` already
+ * trims and lowercases, but this is an exported guard and a caller that assembles its
+ * bases some other way — a literal, a config object, a hostname's own `rest` — must not
+ * get a silent `false` on `('x.substrat.run', ['SUBSTRAT.RUN'])`. A classification guard
+ * that fails open on capitalization is worse than no guard.
  */
 export function isPlatformHost(hostname: string, bases: readonly string[]): boolean {
   const h = hostname.trim().toLowerCase();
-  return bases.some((b) => h === b || h.endsWith(`.${b}`));
+  return bases.some((raw) => {
+    const b = raw.trim().toLowerCase();
+    return b !== '' && (h === b || h.endsWith(`.${b}`));
+  });
 }

@@ -26,6 +26,15 @@ describe('parseHostname', () => {
     expect(parseHostname('crm')).toBeUndefined();
     expect(parseHostname('')).toBeUndefined();
   });
+
+  /**
+   * The reason call sites guard on this rather than on `hostname.includes('.')`: both of
+   * these pass an `includes` check and neither has a first label to derive from.
+   */
+  it('refuses a hostname with an EMPTY first label', () => {
+    expect(parseHostname('.example.com')).toBeUndefined();
+    expect(parseHostname('.')).toBeUndefined();
+  });
 });
 
 describe('withLabel', () => {
@@ -42,6 +51,18 @@ describe('withLabel', () => {
 
   it('is undefined where parseHostname is', () => {
     expect(withLabel('crm', 'x')).toBeUndefined();
+    expect(withLabel('.example.com', 'x')).toBeUndefined();
+  });
+
+  /**
+   * The total overload. A caller that already guarded with `parseHostname` gets a `string`
+   * back and needs no non-null assertion — the assertion is the thing that rots when the
+   * guard above it moves.
+   */
+  it('is total when handed a hostname already parsed', () => {
+    const parsed = parseHostname('crm.global.substrat.run')!;
+    const minted: string = withLabel(parsed, 'crm--pr-7');
+    expect(minted).toBe('crm--pr-7.global.substrat.run');
   });
 });
 
@@ -92,6 +113,16 @@ describe('isPlatformHost', () => {
 
   it('is case-insensitive on both sides', () => {
     expect(isPlatformHost('X.Global.Substrat.Run', ['substrat.run'])).toBe(true);
+    // The BASE side too. `parsePlatformBaseDomains` normalizes, but a caller that
+    // assembles its bases some other way must not get a silent `false` here: a
+    // classification guard that fails open on capitalization is worse than none.
+    expect(isPlatformHost('x.substrat.run', ['SUBSTRAT.RUN'])).toBe(true);
+    expect(isPlatformHost('x.substrat.run', ['  Substrat.Run  '])).toBe(true);
+  });
+
+  it('ignores an empty base rather than matching everything with it', () => {
+    expect(isPlatformHost('anything.example.com', [''])).toBe(false);
+    expect(isPlatformHost('anything.example.com', ['   '])).toBe(false);
   });
 
   it('names the default base rather than spelling the brand at each call site', () => {

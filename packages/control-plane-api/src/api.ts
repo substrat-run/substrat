@@ -4279,7 +4279,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   ): Promise<string> => {
     const parsed = parseHostname(baseHostname);
     if (!parsed) throw new ControlPlaneError(400, `'${baseHostname}' is not a hostname a preview can be minted beside`);
-    const hostname = withLabel(baseHostname, `${parsed.label}${RESERVED_LABEL_SEPARATOR}${tag}`)!;
+    const hostname = withLabel(parsed, `${parsed.label}${RESERVED_LABEL_SEPARATOR}${tag}`);
     const existing = (await admin.listHostnames(actor, { scopeId: previewId })).find(
       (h) => h.hostname === hostname,
     );

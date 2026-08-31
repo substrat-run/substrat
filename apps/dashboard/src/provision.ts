@@ -816,12 +816,13 @@ async function bindSnapshotHostname(
   },
   snapId: ScopeId,
 ): Promise<string | null> {
-  if (!input.appHostname || !input.appHostname.includes('.')) return null;
-  const { label } = parseHostname(input.appHostname)!;
+  // The parse is the guard — `includes('.')` passes for `.example.com` and a bare `.`.
+  const parsed = input.appHostname ? parseHostname(input.appHostname) : undefined;
+  if (!parsed) return null;
   const hostname = withLabel(
-    input.appHostname,
-    `${label}${RESERVED_LABEL_SEPARATOR}s${snapId.toLowerCase().slice(-4)}`,
-  )!;
+    parsed,
+    `${parsed.label}${RESERVED_LABEL_SEPARATOR}s${snapId.toLowerCase().slice(-4)}`,
+  );
   // The copy fronts whatever the SOURCE hostname fronts. Hard-coding `app` bound the
   // preview to a surface the vertical may not declare at all (a vertical whose first
   // declared surface is `portal` gets its clean URL there — see `primarySurface`), so
@@ -1270,7 +1271,8 @@ export async function reconcileSurfaceHostnames(
     controlPlane?: TenantNarrowedControlPlane;
   },
 ): Promise<void> {
-  if (!input.appHostname || !input.appHostname.includes('.')) return;
+  const parsedApp = input.appHostname ? parseHostname(input.appHostname) : undefined;
+  if (!parsedApp) return;
   const surfaces = await declaredSurfacesFor({ host, controlPlane: input.controlPlane }, input.verticalSlug);
   if (surfaces.length < 2) return; // nothing beyond the primary to bind
   const existing = await listAppHostnames(host, {
@@ -1279,7 +1281,7 @@ export async function reconcileSurfaceHostnames(
     ...(input.controlPlane ? { controlPlane: input.controlPlane } : {}),
   });
   const alreadyBound = new Set(existing.filter((h) => h.status === 'active').map((h) => h.surface));
-  const { label: base, rest: suffix } = parseHostname(input.appHostname)!;
+  const { label: base, rest: suffix } = parsedApp;
   const bind = input.controlPlane
     ? async (hostname: string, surface: string): Promise<void> => {
         await input.controlPlane!.bindHostname({ hostname, scopeId: input.appScopeId, surface, canonical: true });
@@ -1547,14 +1549,14 @@ export async function addAppHostname(
   // Platform mint. The app's default label carries the tenant suffix already
   // (`crm-sesamy`), so the surface rides between label and domain; the scope tail is
   // the collision belt, same ladder as the default hostname's.
-  if (!input.appHostname || !input.appHostname.includes('.')) {
+  const parsedApp = input.appHostname ? parseHostname(input.appHostname) : undefined;
+  if (!parsedApp) {
     throw new Error('the app has no platform hostname to derive a surface hostname from');
   }
-  const { label } = parseHostname(input.appHostname)!;
   const surfaceLabel = slugify(surface);
   const tail = input.appScopeId.toLowerCase().slice(-4);
-  const candidates = [`${label}-${surfaceLabel}`, `${label}-${surfaceLabel}-${tail}`].map(
-    (l) => withLabel(input.appHostname!, l)!,
+  const candidates = [`${parsedApp.label}-${surfaceLabel}`, `${parsedApp.label}-${surfaceLabel}-${tail}`].map(
+    (l) => withLabel(parsedApp, l),
   );
   await scope.invoke('dashboard/bind-app-hostname', {
     appScopeId: input.appScopeId,
