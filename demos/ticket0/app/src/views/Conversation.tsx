@@ -1073,6 +1073,11 @@ function TagPanel({
   const [draft, setDraft] = useState('');
   const frozen = busy || conv.state === 'closed';
 
+  /**
+   * Commit the draft. Trimmed, because ` billing` and `billing` are one tag to a
+   * person and two rows to a composite key; empty is a no-op rather than a refusal,
+   * since Enter on an empty box means nothing rather than meaning an error.
+   */
   const add = () => {
     const tag = draft.trim();
     if (!tag) return;
