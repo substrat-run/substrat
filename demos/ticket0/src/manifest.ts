@@ -145,6 +145,27 @@ export const ticket0Manifest = moduleManifest.parse({
     searchables: [{ entityType: 'kbArticle', fields: ['title', 'body'] }],
   }),
   lists: listsDeclaredBy(ticket0Operations, ticket0Entities),
+  /**
+   * The desk's one time-driven rule (#1082): a snooze that has elapsed brings the
+   * conversation back on its own. Everything else here happens because a person
+   * clicked, and should.
+   *
+   * Five minutes is the cadence a person perceives as "it came back when I said",
+   * and it is a floor rather than a promise — a schedule can never fire more often
+   * than the platform's own sweep runs.
+   *
+   * The declared permission is what the scope's system principal is granted at
+   * provisioning, so it is also the whole of what this schedule may do: wake
+   * conversations, nothing else. Revoking that grant on one scope turns the timer
+   * off for that desk with no "off" code path.
+   */
+  schedules: [
+    {
+      operation: 'ticket0/wake-snoozed',
+      cadence: { everyMinutes: 5 },
+      permissions: ['conversation:assign'],
+    },
+  ],
   entitlementKey: 'ticket0',
   envSpec: TICKET0_ENV,
   // The desk DELEGATES sign-in (manifest `requires`, #427): at install the dashboard

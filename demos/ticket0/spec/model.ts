@@ -1044,6 +1044,31 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   /**
+   * The timer `snooze` promises.
+   *
+   * Snooze is the one thing in this desk that is a claim about the FUTURE: park it
+   * and it comes back. Without a schedule it came back only when somebody
+   * remembered, which is the opposite of what it says — and `notification.kind`
+   * declared `snooze-woke` for an event nothing minted (#1082).
+   *
+   * It is deliberately not an HTTP operation. The schedule the manifest declares is
+   * its only caller, invoked under the module's own system actor on the cadence
+   * there; a person changing their mind has `ticket0/wake`, which is per-conversation
+   * and entity-checked. So the permission is a NODE check of the same key: a sweep
+   * acts on whatever is due and cannot name the conversations in advance.
+   *
+   * `output` is a count, not a conversation, so this declares no `emits` — it emits
+   * `ticket0.conversation-woke` per woken conversation instead, the same event
+   * `ticket0/wake` publishes. A consumer must not have to care which of the two
+   * doors a conversation came back through.
+   */
+  'ticket0/wake-snoozed': {
+    summary: 'Wake every conversation whose snooze has elapsed',
+    permission: 'conversation:assign',
+    output: z.object({ woke: z.number().int() }),
+  },
+
+  /**
    * Resolve.
    *
    * The lifecycle says which states admit this; it deliberately cannot say the other
@@ -1823,6 +1848,7 @@ export const ticket0Lifecycles = defineLifecycles(
       snoozed: {
         on: {
           'ticket0/wake': 'open',
+          'ticket0/wake-snoozed': 'open',
           'ticket0/ingest-message': 'open',
           'ticket0/widget-post': 'open',
           'ticket0/resolve': 'resolved',

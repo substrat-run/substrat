@@ -72,6 +72,10 @@ const sourceRef = (id: string) => ({ entityType: 'kbSource', entityId: id });
 /** The desk is a singleton per scope, and this is its id. */
 const DESK = 'desk';
 
+/** How many lapsed snoozes one run of `ticket0/wake-snoozed` takes. The rest wait
+ *  for the next tick — a batch bounds the transaction, it does not cap the feature. */
+const WAKE_BATCH = 200;
+
 /**
  * The meters this desk records against.
  *
@@ -1147,6 +1151,49 @@ const operations = {
       payload: { id: row.id, state: row.state },
     });
     return row;
+  },
+
+  /**
+   * The timer behind `snooze` — the schedule's only caller, never a route.
+   *
+   * It does exactly what `ticket0/wake` does, per conversation, and it does it
+   * through the same declared edge: `step()` is what says a snoozed conversation may
+   * become open, so a sweep cannot move one the machine would refuse. The event is
+   * the same too, so nothing downstream has to know which door a conversation came
+   * back through.
+   *
+   * Capped, and ordered by when the snooze lapsed. The cap is not a limit on how many
+   * conversations may wake — the schedule fires again — it is a bound on how much one
+   * transaction does, so a desk that snoozed ten thousand conversations to the same
+   * minute wakes them in batches instead of holding the scope open.
+   */
+  'ticket0/wake-snoozed': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationAssign));
+    const due = ctx.sql.query<ConversationRow>(
+      `SELECT * FROM ticket0_conversations
+        WHERE state = 'snoozed' AND snoozed_until IS NOT NULL AND snoozed_until <= ?
+        ORDER BY snoozed_until LIMIT ?`,
+      [ctx.now(), WAKE_BATCH],
+    );
+    for (const conversation of due) {
+      const next = step(conversation, 'ticket0/wake-snoozed');
+      ctx.sql.exec('UPDATE ticket0_conversations SET snoozed_until = NULL WHERE id = ?', [
+        conversation.id,
+      ]);
+      const row = settle(ctx, conversation, next);
+      ctx.emit({
+        type: 'ticket0.conversation-woke',
+        schemaVersion: 1,
+        entity: conversationRef(row.id),
+        piiClass: 'none',
+        payload: { id: row.id, state: row.state },
+      });
+      // Whoever is holding it. An unassigned conversation is nobody's to be told
+      // about — it is back in the inbox, which is where an unassigned conversation
+      // is looked for anyway.
+      if (row.assignee) notify(ctx, row.assignee, 'snooze-woke', row.id);
+    }
+    return { woke: due.length };
   },
 
   /**
