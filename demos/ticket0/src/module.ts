@@ -77,6 +77,25 @@ const DESK = 'desk';
 const WAKE_BATCH = 200;
 
 /**
+ * `2026-03-09T09:00:00.000Z`, as a SQLite GLOB — the shape `instant` normalises to.
+ *
+ * The sweep compares `snoozed_until` as TEXT, which is only the same as comparing
+ * instants while every value is canonical UTC. `ticket0/snooze` guarantees that from
+ * now on, but the column is older than the timer and used to accept any string, so a
+ * desk may hold rows this vertical never wrote. Those sort arbitrarily: `…T11:00:00
+ * -02:00` is 13:00Z and sorts BEFORE 11:00Z, and `''` or `'0'` sort before every
+ * timestamp there is — each of them waking a conversation the agent did not ask for,
+ * which is the one failure worse than not waking at all.
+ *
+ * So the sweep only ever wakes what it can compare. A non-canonical row stays
+ * snoozed, exactly as it did before the timer existed, and `ticket0/wake` is still
+ * the door out — a repair, not a silent misfire. This is a guard rather than a
+ * migration on purpose: repairing shipped rows is a human checkpoint.
+ */
+const CANONICAL_INSTANT =
+  '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9].[0-9][0-9][0-9]Z';
+
+/**
  * The meters this desk records against.
  *
  * Registered lazily rather than in a migration: meter rows are the ENGINE's tables,
@@ -1171,9 +1190,11 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.conversationAssign));
     const due = ctx.sql.query<ConversationRow>(
       `SELECT * FROM ticket0_conversations
-        WHERE state = 'snoozed' AND snoozed_until IS NOT NULL AND snoozed_until <= ?
+        WHERE state = 'snoozed'
+          AND snoozed_until GLOB ?
+          AND snoozed_until <= ?
         ORDER BY snoozed_until LIMIT ?`,
-      [ctx.now(), WAKE_BATCH],
+      [CANONICAL_INSTANT, ctx.now(), WAKE_BATCH],
     );
     for (const conversation of due) {
       const next = step(conversation, 'ticket0/wake-snoozed');

@@ -18,6 +18,7 @@
  *     A handler nobody ever calls would pass the first and fail the second.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -88,6 +89,24 @@ async function readConversation(desk: Desk, id: string): Promise<Conversation> {
   return (await agent.invoke('ticket0/get-conversation', {
     conversationId: id,
   })) as Conversation;
+}
+
+/**
+ * Put a value in `snoozed_until` that no operation would accept — the only way to
+ * stand in for a row written before `until` was an `instant`. Harness code, so the
+ * scope's own SQLite file is fair game; `SqliteScopeHost` names it after the pair.
+ */
+function writeSnoozedUntil(desk: Desk, conversationId: string, value: string): void {
+  const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`));
+  try {
+    db.prepare('UPDATE ticket0_conversations SET snoozed_until = ?, state = ? WHERE id = ?').run(
+      value,
+      'snoozed',
+      conversationId,
+    );
+  } finally {
+    db.close();
+  }
 }
 
 beforeAll(async () => {
@@ -171,6 +190,45 @@ describe('the alarm is an instant, because a timer compares it as text', () => {
       until: '2026-03-09T11:00:00+02:00',
     })) as Conversation;
     expect(snoozed.snoozed_until).toBe('2026-03-09T09:00:00.000Z');
+  });
+
+  /**
+   * The rows the contract cannot reach back and fix.
+   *
+   * `snoozed_until` is older than the timer, and until this change `until` was a bare
+   * string, so a desk may hold a value no operation would accept today. Those are
+   * written straight into the scope's database here, because that is the only way the
+   * state exists — and the point is precisely that the timer meets data it did not
+   * write. Each of these sorts BEFORE a canonical instant, so a text comparison alone
+   * would wake a conversation the agent never asked to see: `-02:00` is 13:00Z but
+   * sorts as 11:00-something, and `''` and `'0'` sort before every timestamp there is.
+   */
+  it('refuses to wake a legacy value it cannot compare, rather than waking it early', async () => {
+    const desk = world.substrat;
+    const legacy = ['2026-03-09T11:00:00-02:00', '', '0'];
+    const parked: string[] = [];
+    for (const value of legacy) {
+      const id = await openAndAssigned(desk);
+      writeSnoozedUntil(desk, id, value);
+      parked.push(id);
+    }
+
+    // And a canonical one beside them, so a sweep that woke nothing for the wrong
+    // reason — a broken predicate, say — fails here too.
+    const proper = await openAndAssigned(desk);
+    const agent = await host.getScope(desk.agent.principal, desk.tenant, desk.scope);
+    await agent.invoke('ticket0/snooze', {
+      conversationId: proper,
+      until: new Date(Date.parse(clock.now()) + 10 * 60_000).toISOString(),
+    });
+    clock.advance(20 * 60_000);
+
+    const swept = (await (await timer(desk)).invoke('ticket0/wake-snoozed')) as { woke: number };
+    expect(swept.woke).toBe(1);
+    expect((await readConversation(desk, proper)).state).toBe('open');
+    for (const id of parked) {
+      expect((await readConversation(desk, id)).state).toBe('snoozed');
+    }
   });
 
   it('refuses a value that is not a timestamp at all', async () => {
