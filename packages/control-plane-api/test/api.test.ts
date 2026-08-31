@@ -1906,12 +1906,21 @@ describe('control-plane API', () => {
     const dump = (await res.json()) as { masked: boolean; tables: { name: string; rows: unknown[][] }[] };
     expect(dump.masked).toBe(true);
     const customers = dump.tables.find((t) => t.name === 'customers')!;
-    // email + name masked; id and the count untouched (ids keep the copy debuggable).
-    expect(customers.rows[0]).toEqual(['c1', '[masked]', '[masked]', 7]);
-    // The fat event payload keeps its SHAPE; the PII key inside is masked.
+    const [id, email, name, visits] = customers.rows[0]! as [string, string, string, number];
+    // Ids and counts untouched — they are what keep the copy debuggable and joinable.
+    expect(id).toBe('c1');
+    expect(visits).toBe(7);
+    // #1034: PII is PSEUDONYMIZED, not blanked — a plausible value of the same kind,
+    // at a reserved domain, and never the original.
+    expect(email).not.toBe('anna@example.com');
+    expect(email).toMatch(/^[^@\s]+@example\.(com|org|net|edu)$/);
+    expect(name).not.toBe('Anna Ek');
+    expect(name).toMatch(/^\S+ \S+$/);
+    // The fat event payload keeps its SHAPE, and the customer reads the SAME there as
+    // in their own row — the property that keeps timelines and joins lining up.
     const outbox = dump.tables.find((t) => t.name === '_substrat_outbox')!;
     expect(JSON.parse(outbox.rows[0]![1] as string)).toEqual({
-      customerEmail: '[masked]',
+      customerEmail: email,
       total: '120.00',
     });
 
@@ -2022,19 +2031,21 @@ describe('control-plane API', () => {
 
       // Masking covers BOTH halves by the same rule. The directory half: the tenant's
       // display name and the identity link's external id (which is an email here).
-      expect(out.tenant.name).toBe('[masked]');
-      expect(out.orgs[0]!.name).toBe('[masked]');
-      expect(out.identityLinks[0]!.externalId).toBe('[masked]');
+      expect(out.tenant.name).not.toBe('export-co AB');
+      expect(out.orgs[0]!.name).not.toBe('Main Office');
+      expect(out.identityLinks[0]!.externalId).not.toBe('anna@example.com');
+      expect(out.identityLinks[0]!.externalId).toMatch(/^[^@\s]+@example\.(com|org|net|edu)$/);
       // ...while the ids that make the file intelligible survive.
       expect(out.tenant.slug).toBe('export-co');
       expect(out.identityLinks[0]!.provider).toBe('oidc:https://auth.export-co.example.com');
-      // And the scope-data half, by the same sweep the per-scope pull uses.
-      expect(out.data[0]!.tables.find((x) => x.name === 'customers')!.rows[0]).toEqual([
-        'c1',
-        '[masked]',
-        '[masked]',
-        7,
-      ]);
+      // And the scope-data half, by the same sweep AND the same generator the per-scope
+      // pull uses — so `anna@example.com` reads identically in the directory half and in
+      // the scope's own table (#1034).
+      const customerRow = out.data[0]!.tables.find((x) => x.name === 'customers')!.rows[0]!;
+      expect(customerRow[0]).toBe('c1');
+      expect(customerRow[3]).toBe(7);
+      expect(customerRow[1]).toBe(out.identityLinks[0]!.externalId);
+      expect(customerRow[2]).not.toBe('Anna Ek');
 
       // The admin log is the platform's record of STAFF action, not the customer's
       // data — absent unless asked for.

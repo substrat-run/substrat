@@ -1849,7 +1849,7 @@ function ExportImport({ app }: { app: AppRow }) {
           Importing <span style={{ fontFamily: 'var(--font-mono)' }}>{pending?.name}</span> ({pending?.tables.length} tables, {pending?.rows} rows):
           <div>→ ALL current data in {app.name} is replaced by the file’s</div>
           <div>→ a preview of today’s data is created first (kept 7 days)</div>
-          <div>→ a PII-masked export restores <span style={{ fontFamily: 'var(--font-mono)' }}>[masked]</span> over real values</div>
+          <div>→ a pseudonymized export restores fake names, emails and phones over real ones</div>
         </div>
       </Dialog>
     </div>

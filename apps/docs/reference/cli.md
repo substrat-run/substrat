@@ -36,7 +36,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | `substrat scope domain <scopeId> --domain <d>` | Bind a custom domain to **any** owned scope (a prod app, a preview, a test env). |
 | `substrat publish <slug>` | Request a listing on the public marketplace (a staff operator reviews). |
 | `substrat unpublish <slug>` | Remove a vertical from the public marketplace (staff). |
-| `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — masked by default, `--full` is break-glass. |
+| `substrat scope pull <scopeId>` | Pull a scope's data to a local SQLite file — pseudonymized by default (plausible fake names, emails and phones, stable across the whole pull), `--full` is break-glass. |
 
 Options on any command: `--cp <url>` (control-plane API base), `--token <tok>` (a service
 credential), `--tenant <id-or-slug>` (which workspace to act for).

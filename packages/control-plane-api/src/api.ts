@@ -69,6 +69,7 @@ import { provisionSiblingScope } from './platform-drain.js';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { mapError, type ApiError } from './errors.js';
 import { maskDump, maskRecords } from './mask.js';
+import { createPseudonymizer } from './pseudonymize.js';
 import { openDump, sealDump, type SubjectSealer } from './seal.js';
 import {
   assertSandboxContract,
@@ -286,6 +287,17 @@ export interface ControlPlaneApiOptions {
    * token; set once, out of routine rotation (rotating it revokes every issued token).
    */
   pushTokenSecret?: string;
+  /**
+   * Keys the pseudonymizer behind a masked export (#1034, `pseudonymize.ts`). The salt
+   * never reaches the dump and no mapping is stored, so it is not a decryption key —
+   * what it buys is STABILITY: with one configured, two pulls of the same scope read
+   * the same, which is what makes a masked copy usable as a standing preview.
+   *
+   * Absent ⇒ a fresh random salt per export. Still deterministic within one response
+   * (a customer reads the same on every screen and in the timeline) and strictly
+   * safer, since two exports cannot be correlated — just not stable across pulls.
+   */
+  maskSalt?: string;
   /**
    * Cloudflare-native observability reads (design/observability.md §4.1) —
    * host-injected like `deployVertical`, so this package holds no credential and the
@@ -2517,7 +2529,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       const dump = await admin.exportScope(actor, tenantId, scopeId);
       const vertical = await verticalForScope(c, scope);
       const tables = vertical ? await vertical.exportScope(scopeId) : dump.tables;
-      return c.json({ ...dump, tables: full ? tables : maskDump(tables), masked: !full });
+      if (full) return c.json({ ...dump, tables, masked: false });
+      // One pseudonymizer for the whole response (#1034): the same customer has to read
+      // the same in their own row, in every event payload that quoted them, and in the
+      // timeline — a per-table generator would break exactly the joins that make a
+      // masked copy worth pulling.
+      const mask = await createPseudonymizer(options.maskSalt ?? crypto.randomUUID());
+      return c.json({ ...dump, tables: await maskDump(tables, mask), masked: true });
     } catch (e) {
       if (e instanceof ControlPlaneError) {
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
@@ -2599,13 +2617,17 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // a vertical-held scope's real tables overlay it. A reaped scope has no storage
       // left to read, so it is skipped here while its RECORD stays above — the tombstone
       // is honest, an error would not be.
+      // ONE pseudonymizer for the whole export (#1034), shared by the directory half
+      // and every scope's tables: the person named in `members` has to read the same in
+      // the scope row that references them and in the event payload that quoted them.
+      const mask = full ? undefined : await createPseudonymizer(options.maskSalt ?? crypto.randomUUID());
       const live = scopes.filter((s) => s.status !== 'reaped');
       const data: ScopeDump[] = [];
       for (const scope of live) {
         const dump = await admin.exportScope(actor, tenantId, scope.id);
         const vertical = await verticalForScope(c, scope);
         const tables = vertical ? await vertical.exportScope(scope.id) : dump.tables;
-        data.push({ ...dump, tables: full ? tables : maskDump(tables) });
+        data.push({ ...dump, tables: mask ? await maskDump(tables, mask) : tables });
       }
 
       // The admin log is FULL-only (#36): it records what STAFF did, so it is not the
@@ -2618,19 +2640,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         tenantId,
         capturedAt: new Date().toISOString(),
         masked: !full,
-        tenant: full ? tenant : maskRecords([tenant])[0]!,
-        scopes: full ? scopes : maskRecords(scopes),
-        orgs: full ? orgs : maskRecords(orgs),
-        members: full ? members : maskRecords(members),
+        tenant: mask ? (await maskRecords([tenant], mask))[0]! : tenant,
+        scopes: mask ? await maskRecords(scopes, mask) : scopes,
+        orgs: mask ? await maskRecords(orgs, mask) : orgs,
+        members: mask ? await maskRecords(members, mask) : members,
         // Roles, entitlements and hostnames are configuration rather than personal data,
         // so they read the same in both fidelities — but they still go through the sweep,
         // because deciding per-collection what "cannot contain PII" means is exactly the
         // assumption that ages badly. One rule, applied everywhere.
-        roles: full ? roles : maskRecords(roles),
-        entitlements: full ? entitlements : maskRecords(entitlements),
+        roles: mask ? await maskRecords(roles, mask) : roles,
+        entitlements: mask ? await maskRecords(entitlements, mask) : entitlements,
         // Identity links are the sharpest item here: `externalId` is usually an email.
-        identityLinks: full ? identityLinks : maskRecords(identityLinks),
-        hostnames: full ? hostnames : maskRecords(hostnames),
+        identityLinks: mask ? await maskRecords(identityLinks, mask) : identityLinks,
+        hostnames: mask ? await maskRecords(hostnames, mask) : hostnames,
         stores: [...stores, ...blobStores].map((s) => ({
           kind: s.kind,
           vertical: s.vertical,
@@ -2638,7 +2660,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ref: s.ref,
           createdAt: s.createdAt,
         })),
-        connections: full ? connections : maskRecords(connections),
+        connections: mask ? await maskRecords(connections, mask) : connections,
         adminLog,
         data,
       };
