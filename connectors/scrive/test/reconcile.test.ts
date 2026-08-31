@@ -352,7 +352,10 @@ describe('scrive connector — return path (record signatures back)', () => {
     const report = await runPlatformSweep(host, {
       actor: staff,
       fetch: scrive.fetch,
-      sweepers: { scrive: sweepScriveReconciliations },
+      // The deployment binds its provider base into the sweeper — `baseUrl` is
+      // required with no default (#990), so a plane cannot poll the testbed by
+      // omission the way production once did (#610).
+      sweepers: { scrive: (h, id, o) => sweepScriveReconciliations(h, id, { ...o, baseUrl: BASE }) },
     });
 
     expect(report.connectionsSwept).toBe(1);

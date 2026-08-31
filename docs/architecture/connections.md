@@ -471,6 +471,24 @@ sweep's `sweepers` — so `control-plane-api` still imports no connector. An unr
 **501s**: "this platform cannot verify a Fortnox key yet" is true, and an empty `200` would read
 as "your Fortnox key is fine".
 
+On the control plane those keyed maps are no longer written by hand ([#990](https://github.com/substrat-run/substrat/issues/990)).
+`apps/control-plane/src/connectors.ts` holds one `ConnectorRegistration` per connector — inspector,
+dispatch handler, sweeper, declared grants, callback route — and `worker.ts` derives every map from
+that array. The reason is the failure mode of the old shape: of the six sites a connector had to be
+added to, five are a silent no-op when missed. An unwired sweeper simply never polls, an unwired
+inspector 501s as though the provider were unsupported, an undeclared grant heals nothing — so a
+half-added connector looked exactly like a connector that was not there yet. Present or absent is
+now a property of one array entry. The dashboard's `PROVIDERS` catalog stays separate on purpose:
+it is a different worker answering a different question (the credential FORM a human fills in), and
+`pnpm lint:connector-grants` is what holds the two declarations to each other.
+
+The same change made a connector's provider base **required** rather than defaulted. The connector
+used to fall back to Scrive's testbed, which is right for a developer and wrong for a deployment: a
+production credential sent to the testbed comes back 401, indistinguishable from a mistyped key, and
+that is exactly how production called the testbed for weeks ([#610](https://github.com/substrat-run/substrat/issues/610)).
+Unset now throws, naming the variable, inside the call rather than at wiring time — so one
+connector's missing config fails that connector's dispatch and not the whole drain pass.
+
 #### 3.8.1 Who refused, recorded rather than assumed (#841)
 
 A dispatch crosses two authorities. On the way to the bytes the connector calls back into the

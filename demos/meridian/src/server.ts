@@ -107,6 +107,9 @@ function resolveScrive(): { config: ScriveConfig; egress: FetchLike; mock: Scriv
       config: {
         secret: { clientId: 'ci', clientSecret: 'cs', tokenId: 'ti', tokenSecret: 'ts' },
         fetch: mock.fetch,
+        // The mock answers whatever origin it is asked for; naming it is still
+        // required (#990), so the mocked path and the real one have one shape.
+        baseUrl: SCRIVE_TESTBED,
         callbackBaseUrl: process.env.SCRIVE_CALLBACK_BASE ?? `http://localhost:${PORT}`,
       },
       egress: mock.fetch,
@@ -316,7 +319,14 @@ if (scrive) {
   startPlatformSweeper(host, {
     actor: platformActorId.parse(ulid()),
     fetch: scrive?.egress ?? (globalThis.fetch as unknown as FetchLike),
-    sweepers: scrive ? { scrive: sweepScriveReconciliations } : {},
+    // The deployment binds its own provider base into the sweeper (#990): the
+    // connector defaults nowhere, so the poll cannot silently hit the testbed.
+    sweepers: scrive
+      ? {
+          scrive: (h, id, o) =>
+            sweepScriveReconciliations(h, id, { ...o, baseUrl: scrive.config.baseUrl }),
+        }
+      : {},
     intervalMs: pollMs,
     onPass: (o) => {
       if ('error' in o) console.error('[platform-sweep]', o.error);

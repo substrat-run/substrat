@@ -48,18 +48,6 @@ import {
   type ConnectorDelegation,
 } from '@substrat-run/adapter-cloudflare';
 import {
-  SCRIVE_CALLBACK_ROUTE,
-  handleScriveCallback,
-  probeScriveConnection,
-  probeScriveSecret,
-  scriveCallbackPath,
-  scriveConnectionActivity,
-  scriveConnector,
-  SCRIVE_CONNECTION_GRANTS,
-  scriveCredentialSummary,
-  sweepScriveReconciliations,
-} from '@substrat-run/connector-scrive';
-import {
   createControlPlaneApi,
   createWfpUploader,
   createWfpBindingsPatcher,
@@ -109,12 +97,19 @@ import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roste
 import { mountCliAuthRoutes } from './cli-auth.js';
 import { studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
 import { dispatchNamespaceOf } from './dispatch-namespace.js';
+import {
+  CONNECTORS,
+  connectionInspectorsFor,
+  connectorGrantsFor,
+  connectorSweepersFor,
+  type ConnectorEnv,
+} from './connectors.js';
 
 /** The placeholder scope-DO class: kernel only, no modules. */
 export const ScopeDO = defineScopeDO([], {});
 export { ControlPlaneDO };
 
-interface Env extends OidcEnv {
+interface Env extends OidcEnv, ConnectorEnv {
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /** The staff roster's D1 store (#42). Absent in the workerd test (dev-actor path only). */
@@ -272,17 +267,6 @@ interface Env extends OidcEnv {
    */
   SECRET_BOX_KEY?: string;
   SECRET_BOX_KEY_ID?: string;
-  /**
-   * Scrive API base for the platform-run connector pass (#574/#96) — the sweep, the
-   * webhook ingress and the inspection reads (#605) all go through it.
-   *
-   * Unset ⇒ the connector's default, which is the TESTBED. That default is right for a
-   * developer and wrong for a deployment: a production credential sent to the testbed
-   * comes back 401, indistinguishable from a mistyped key. So both environments set this
-   * var explicitly in `wrangler.jsonc` — production `https://scrive.com` (the API lives
-   * under /api/v2 on the main host; `api.scrive.com` does not resolve), TEST the testbed.
-   */
-  SCRIVE_BASE_URL?: string;
   /**
    * Service bindings to vertical deployments, `VERTICAL_<SLUG>` with dashes as
    * underscores — the same convention and the same static-map shape the router
@@ -568,32 +552,6 @@ function secretBoxFor(env: Env): SecretBox | undefined {
 }
 
 /**
- * What each connector can ANSWER about a connection (#605) — the third role the same
- * closures play, next to dispatch and sweep. Defined once because two callers need it:
- * the control-plane API's inspection routes, and the `/internal/connections/upsert`
- * relay, whose connect-time gate must be the same check the dashboard's connect makes.
- *
- * `probeCandidate` is the one that runs BEFORE a write — see `relayConnectionUpsert`.
- */
-function connectionInspectorsFor(env: Env): Record<string, ConnectionInspector> {
-  const fetchImpl = globalThis.fetch as unknown as FetchLike;
-  return {
-    scrive: {
-      probe: (h, row) => probeScriveConnection(h, row, { fetch: fetchImpl, baseUrl: env.SCRIVE_BASE_URL }),
-      activity: (h, row, opts) =>
-        scriveConnectionActivity(h, row, {
-          fetch: fetchImpl,
-          baseUrl: env.SCRIVE_BASE_URL,
-          live: opts.live,
-          source: opts.source,
-        }),
-      credential: (h, row) => scriveCredentialSummary(h, row),
-      probeCandidate: (secret) => probeScriveSecret(secret, { fetch: fetchImpl, baseUrl: env.SCRIVE_BASE_URL }),
-    },
-  };
-}
-
-/**
  * The connector write-back's platform half (#574): a connector running ON this worker
  * (the sweep, later the ingress) writes into a scope that lives in a vertical's dispatch
  * deployment — this routes `getConnectorScope().invoke` / attachment upload / grant
@@ -795,25 +753,17 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
       // #1054: a vertical's model host produced a usage line; the platform's ledger (meter 3).
       [MODEL_USAGE_KIND]: modelUsageHandler({ host }),
       // #574 phase 3: the outbound half of the platform-run connector pass. A CP-less
-      // vertical routed a `protocol.signatures-requested` delivery here as an intent;
-      // this host holds the directory, the sealed credential, and (via its
-      // connectorDelegation) the scope write-back seam, so the SAME `scriveConnector`
-      // closure a self-host registers runs unchanged. The callback URL terminates on
-      // THIS worker's phase-2 ingress — minted only when the deployment knows its own
-      // public origin; without it the dispatch is poll-only, which is complete, just
-      // slower (the sweep is the floor).
-      [connectorDispatchKind('scrive')]: connectorDispatchHandler({
-        host,
-        connector: scriveConnector({
-          baseUrl: env.SCRIVE_BASE_URL,
-          ...(env.PLATFORM_CP_URL
-            ? {
-                callbackUrl: (ref) =>
-                  `${env.PLATFORM_CP_URL!.replace(/\/+$/, '')}${scriveCallbackPath(ref)}`,
-              }
-            : {}),
-        }),
-      }),
+      // vertical routed a connector delivery here as an intent; this host holds the
+      // directory, the sealed credential, and (via its connectorDelegation) the scope
+      // write-back seam, so the SAME closure a self-host registers runs unchanged.
+      // One handler per registered connector (#990) — an added connector cannot be
+      // dispatchable-but-unregistered here.
+      ...Object.fromEntries(
+        CONNECTORS.map((connector) => [
+          connectorDispatchKind(connector.provider),
+          connectorDispatchHandler({ host, connector: connector.dispatch(env) }),
+        ]),
+      ),
     },
     {
       // #570: the drain's attempt-ceiling give-up lands a durable ops-failure row
@@ -905,10 +855,7 @@ export default {
       // the provider, and writes back through the vertical's /internal/connector-*
       // surface (the host's connectorDelegation). A connection whose secret cannot be
       // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly into report.errors.
-      sweepers: {
-        scrive: (h, id, o) =>
-          sweepScriveReconciliations(h, id, { ...o, baseUrl: env.SCRIVE_BASE_URL }),
-      },
+      sweepers: connectorSweepersFor(env),
       drainRetries: false,
       deleteSnapshotFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
@@ -1262,40 +1209,41 @@ export default {
       }
     });
 
-    // The Scrive webhook ingress (#574 phase 2, #96): for a CP-less dispatch vertical the
-    // capability URL terminates HERE, not on the vertical — the dispatch ledger the token is
-    // verified against lives in THIS directory (ControlPlaneDO connector state), and a pushed
-    // script must never hold it. Unauthenticated by design: Scrive signs nothing, so the
-    // per-dispatch token minted into the URL is the entire authentication, compared in
-    // constant time against the ledger row. On a match the same reconcile the sweep runs
-    // re-reads the provider's truth and records it back through the vertical's
-    // `/internal/connector-*` surface (the host's connectorDelegation) — push collapses the
-    // sweep's latency, never replaces it. Every rejection is one uniform 404 (the WHY stays
-    // in the log), so the response is no oracle for probing which instances exist, and
-    // nothing short of a verified token causes provider egress.
-    app.post(SCRIVE_CALLBACK_ROUTE, async (c) => {
-      const ref = c.req.param();
-      try {
-        const outcome = await handleScriveCallback(hostFor(c.env), ref, {
-          fetch: globalThis.fetch as unknown as FetchLike,
-          baseUrl: c.env.SCRIVE_BASE_URL,
-        });
-        if (!outcome.accepted) {
-          console.log(`[scrive-callback] rejected (${outcome.reason})`);
-          return c.json({ error: 'not found' }, 404);
+    // The connector webhook ingresses (#574 phase 2, #96): for a CP-less dispatch vertical
+    // the capability URL terminates HERE, not on the vertical — the dispatch ledger the token
+    // is verified against lives in THIS directory (ControlPlaneDO connector state), and a
+    // pushed script must never hold it. Unauthenticated by design where the provider signs
+    // nothing (Scrive does not), so the per-dispatch token minted into the URL is the entire
+    // authentication, compared in constant time against the ledger row by the connector's own
+    // handler. On a match the same reconcile the sweep runs re-reads the provider's truth and
+    // records it back through the vertical's `/internal/connector-*` surface (the host's
+    // connectorDelegation) — push collapses the sweep's latency, never replaces it. Every
+    // rejection is one uniform 404 (the WHY stays in the log), so the response is no oracle
+    // for probing which instances exist, and nothing short of a verified token causes
+    // provider egress. Mounted from the registry (#990): a connector that declares a
+    // callback gets its route, and one that does not is poll-only, which is complete.
+    for (const connector of CONNECTORS) {
+      const callback = connector.callback;
+      if (!callback) continue;
+      const tag = `${connector.provider}-callback`;
+      app.post(callback.route, async (c) => {
+        const ref = c.req.param() as Record<string, string | undefined>;
+        try {
+          const outcome = await callback.handle(c.env, hostFor(c.env), ref);
+          if (!outcome.accepted) {
+            console.log(`[${tag}] rejected (${outcome.reason})`);
+            return c.json({ error: 'not found' }, 404);
+          }
+          console.log(`[${tag}] ${outcome.log}`);
+          return c.json({ ok: true });
+        } catch (err) {
+          // Verified but the reconcile failed (provider hiccup, a vertical deployment out
+          // of reach): 500 so the provider retries; the poll floor covers what push drops.
+          console.error(`[${tag}] reconcile failed`, err);
+          return c.json({ error: 'reconcile failed' }, 500);
         }
-        const { recorded, complete, documentStatus } = outcome.result;
-        console.log(
-          `[scrive-callback] ${ref.instanceId}: recorded ${recorded.length}, status ${documentStatus}${complete ? ', complete' : ''}`,
-        );
-        return c.json({ ok: true });
-      } catch (err) {
-        // Verified but the reconcile failed (provider hiccup, a vertical deployment out of
-        // reach): 500 so Scrive retries; the poll floor covers whatever push drops.
-        console.error('[scrive-callback] reconcile failed', err);
-        return c.json({ error: 'reconcile failed' }, 500);
-      }
-    });
+      });
+    }
 
     // The audited control-plane API under /api (the console's baseUrl).
     app.route(
@@ -1321,7 +1269,7 @@ export default {
         // exported constant rather than a list here — a second copy is how the dashboard
         // catalog came to disagree with the connector for months (#716), and
         // `lint:connector-grants` holds that catalog to this same declaration.
-        connectorGrants: { scrive: SCRIVE_CONNECTION_GRANTS },
+        connectorGrants: connectorGrantsFor(),
         resolveVertical: resolveVerticalFor(env),
         resolveVerticalVersion: resolveVerticalVersionFor(env),
         resolveVerticalRef: resolveVerticalRefFor(env),
