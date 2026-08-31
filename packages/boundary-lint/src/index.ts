@@ -782,6 +782,24 @@ function checkEngineCatch(rel: string, source: string, out: Violation[]): void {
 const SELECT_STAR = /\bselect\s+(?:distinct\s+)?(?:[A-Za-z_][\w$]*\s*\.\s*)?\*/gi;
 
 /**
+ * Does this line carry `marker` as a DIRECTIVE — in a comment, where a reviewer
+ * reads it — rather than as data?
+ *
+ * An opt-out is a statement to the next human, so `const help = 'write
+ * boundary-lint-allow R8 above it'` must not open one. Decided by position
+ * against the comment-stripped line, which is the same length and offsets as the
+ * original: text a comment held is blank there, text a string held is not. R5
+ * and R6 still scan the raw line, because neither builds a stripped copy —
+ * tightening them is a change to those rules with their own fixtures.
+ */
+function marks(line: string, stripped: string, marker: string): boolean {
+  for (let at = line.indexOf(marker); at >= 0; at = line.indexOf(marker, at + 1)) {
+    if (stripped.slice(at, at + marker.length).trim() === '') return true;
+  }
+  return false;
+}
+
+/**
  * R8 — an engine read names its columns.
  *
  * The counterpart to #771's runtime seam: `returns(schema, surface, value)`
@@ -801,17 +819,20 @@ const SELECT_STAR = /\bselect\s+(?:distinct\s+)?(?:[A-Za-z_][\w$]*\s*\.\s*)?\*/g
 function checkSelectStar(rel: string, source: string, out: Violation[]): void {
   if (!/select/i.test(source)) return;
 
+  const stripped = maskSource(source, { literals: false });
   const lines = source.split('\n');
+  const strippedLines = stripped.split('\n');
+
   const allowed = new Set<number>();
   let on = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? '';
-    if (line.includes('boundary-lint-allow R8')) on = true;
-    else if (line.includes('boundary-lint-end R8')) on = false;
+    const bare = strippedLines[i] ?? '';
+    if (marks(line, bare, 'boundary-lint-allow R8')) on = true;
+    else if (marks(line, bare, 'boundary-lint-end R8')) on = false;
     if (on) allowed.add(i + 1);
   }
 
-  const stripped = maskSource(source, { literals: false });
   SELECT_STAR.lastIndex = 0;
   for (let m: RegExpExecArray | null; (m = SELECT_STAR.exec(stripped)); ) {
     const line = lineAt(source, m.index);

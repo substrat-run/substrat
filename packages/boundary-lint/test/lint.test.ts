@@ -975,6 +975,25 @@ describe('R8 — star reads in an engine', () => {
     expect(violations[0]!.line).toBe(6);
   });
 
+  it('the marker only opens the hatch from a COMMENT, never from a string', () => {
+    // An opt-out is a statement to the next reviewer. A string that happens to
+    // quote the directive — a help message, a test fixture, a docs example —
+    // must not silence the rule for everything after it.
+    const root = project(
+      monorepoEngine(
+        'absence',
+        `
+        export const HELP = 'write boundary-lint-allow R8 above the read';
+        export function all(ctx) { return ctx.sql.query('SELECT * FROM absence_requests'); }
+      `,
+      ),
+    );
+
+    const violations = lint(root);
+    expect(rules(violations)).toEqual(['R8']);
+    expect(violations[0]!.line).toBe(3);
+  });
+
   it('is scoped to engines — a vertical starring its OWN table is not R8', () => {
     // A vertical has no published seam for a star to widen, and R5 already stops
     // it starring somebody else's table.
