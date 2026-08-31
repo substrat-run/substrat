@@ -27,7 +27,8 @@ refused checks are built too, in the scope-local `_substrat_denials` twin §4.6 
 with the reader #867 gave it. So is the retention half: the
 platform sweep's last phase (`packages/kernel/src/platform-sweep.ts`) ships drained
 batches to Tier 2 as `access-log/<firstId>-<lastId>.ndjson` in R2 and prunes what it
-shipped, and old batches age out of R2 on their own window (#553). What is **not** built
+shipped, and old batches age out of R2 on their own window
+([#557](https://github.com/substrat-run/substrat/issues/557)). What is **not** built
 is a read surface: the log is queried through `HostAdmin.accessLog`, with no HTTP route
 on `packages/control-plane-api` and no console view — an incident is answered from the
 adapter today, not from the console.
