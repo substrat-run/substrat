@@ -538,6 +538,18 @@ const forgeQuoted: OperationHandler<undefined, void> = (ctx) => {
   ctx.sql.exec('DELETE FROM "_substrat_tuples"');
 };
 
+/**
+ * The second table a statement reaches past the one it names first: a trigger ON the
+ * outbox makes every LATER kernel write fail with SQLITE_CONSTRAINT. Denial of the
+ * spine rather than forgery of it, and just as much a reach past `ctx.sql`.
+ */
+const forgeTrigger: OperationHandler<undefined, void> = (ctx) => {
+  ctx.sql.exec(
+    "CREATE TRIGGER block_outbox BEFORE INSERT ON _substrat_outbox " +
+      "BEGIN SELECT RAISE(ABORT, 'blocked'); END",
+  );
+};
+
 const forgeReturning: OperationHandler<undefined, unknown[]> = (ctx) =>
   ctx.sql.query('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?) RETURNING subject', [
     'principal:forged',
@@ -851,6 +863,7 @@ export const testMod: ModuleRegistration = {
     'testmod/forge-outbox': forgeOutbox as OperationHandler<never, unknown>,
     'testmod/forge-drop-journal': forgeDropJournal as OperationHandler<never, unknown>,
     'testmod/forge-quoted': forgeQuoted as OperationHandler<never, unknown>,
+    'testmod/forge-trigger': forgeTrigger as OperationHandler<never, unknown>,
     'testmod/forge-returning': forgeReturning as OperationHandler<never, unknown>,
     'testmod/forge-after-write': forgeAfterWrite as OperationHandler<never, unknown>,
     'testmod/project-journal': projectJournal as OperationHandler<never, unknown>,

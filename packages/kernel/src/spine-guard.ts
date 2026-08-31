@@ -16,7 +16,9 @@
  * this never sees.
  *
  * What is refused: a statement whose write TARGET is a `_substrat_*` table —
- * `INSERT`/`REPLACE INTO`, `UPDATE`, `DELETE FROM`, `DROP`, `ALTER`, `CREATE`.
+ * `INSERT`/`REPLACE INTO`, `UPDATE`, `DELETE FROM`, `DROP`, `ALTER`, `CREATE` — and
+ * the second table a statement can reach past the one it names first: `CREATE
+ * TRIGGER … ON`, `CREATE INDEX … ON`, `ALTER TABLE … RENAME TO`.
  * What is allowed, deliberately: every read of the spine, including one that feeds
  * a write — `INSERT INTO my_timeline SELECT … FROM _substrat_events` is the
  * projection pattern CLAUDE.md explicitly blesses, and only the target is judged.
@@ -85,9 +87,27 @@ function tokenize(sql: string): Token[] {
     } else {
       tokens.push({ text, quoted });
     }
-    // Look ahead past whitespace for the dot that joins this name to the next part.
+    // Look ahead for the dot that joins this name to the next part. SQLite treats a
+    // COMMENT as whitespace, so `main /* … */ . _substrat_tuples` is one qualified
+    // name — skipping only spaces here would record `main` as the target and miss it.
     let j = i;
-    while (j < n && /\s/.test(sql[j]!)) j += 1;
+    for (;;) {
+      if (j < n && /\s/.test(sql[j]!)) {
+        j += 1;
+        continue;
+      }
+      if (sql[j] === '-' && sql[j + 1] === '-') {
+        while (j < n && sql[j] !== '\n') j += 1;
+        continue;
+      }
+      if (sql[j] === '/' && sql[j + 1] === '*') {
+        j += 2;
+        while (j < n && !(sql[j] === '*' && sql[j + 1] === '/')) j += 1;
+        j += 2;
+        continue;
+      }
+      break;
+    }
     if (sql[j] === '.') {
       continues = true;
       i = j + 1;
@@ -164,6 +184,32 @@ function namesSpine(token: Token): boolean {
 }
 
 /**
+ * A SECOND table a statement can reach, past the one it names first.
+ *
+ * `CREATE TRIGGER t BEFORE INSERT ON _substrat_outbox …` and `CREATE INDEX ix ON
+ * _substrat_tuples (…)` both name a harmless new object first and the spine table
+ * after `ON`; a trigger installed there makes every later kernel write fail with
+ * `SQLITE_CONSTRAINT`, which is denial of the spine rather than forgery of it, and
+ * just as much a reach past `ctx.sql`. `ALTER TABLE todos RENAME TO _substrat_x` is
+ * the same shape with `TO`.
+ */
+const SECOND_TARGET: Readonly<Record<string, string>> = { create: 'on', alter: 'to' };
+
+/** The first token at or after `from` that names the spine, following this verb's grammar. */
+function spineTargetFrom(tokens: Token[], from: number, verb: string): Token | undefined {
+  const first = tokens[from];
+  if (first && namesSpine(first)) return first;
+  const keyword = SECOND_TARGET[verb];
+  if (!keyword) return undefined;
+  for (let k = from; k < tokens.length; k += 1) {
+    if (tokens[k]!.quoted || tokens[k]!.text.toLowerCase() !== keyword) continue;
+    const after = tokens[k + 1];
+    return after && namesSpine(after) ? after : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Refuse a statement whose write target is a `_substrat_*` table.
  *
  * Throws a `forbidden` (`reason: 'spine_write'`) — module code reaching the spine
@@ -182,8 +228,8 @@ export function assertNoSpineWrite(sql: string): void {
     while (j < tokens.length && !tokens[j]!.quoted && modifiers.has(tokens[j]!.text.toLowerCase())) {
       j += 1;
     }
-    const target = tokens[j];
-    if (!target || !namesSpine(target)) continue;
+    const target = spineTargetFrom(tokens, j, verb);
+    if (!target) continue;
     throw substratError(
       'forbidden',
       `ctx.sql cannot write the platform spine: ${verb.toUpperCase()} on '${target.text}'. ` +

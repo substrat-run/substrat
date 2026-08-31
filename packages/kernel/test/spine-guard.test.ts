@@ -33,9 +33,21 @@ describe('assertNoSpineWrite: refuses', () => {
     'insert into _SUBSTRAT_TUPLES (subject) values (?)',
     // A forge chained after a legitimate write: the DO's `sql.exec` runs both.
     "INSERT INTO todos (id) VALUES ('t1'); INSERT INTO _substrat_tuples VALUES (?, ?, ?)",
-    // A comment is not a hiding place either way round.
+    // A comment is not a hiding place either way round — including INSIDE a qualified
+    // name, where SQLite reads a comment as whitespace and joins the parts anyway.
     '/* harmless */ UPDATE _substrat_tuples SET object = ?',
     'UPDATE -- comment\n _substrat_tuples SET object = ?',
+    'UPDATE main /* qualifier */ . _substrat_tuples SET relation = ?',
+    'DELETE FROM main -- qualifier\n . _substrat_tuples',
+    'UPDATE main . /* after the dot */ _substrat_tuples SET relation = ?',
+    // The second table a statement reaches past the one it names first. A trigger on
+    // the outbox is denial of the spine rather than forgery of it, and just as reachable.
+    "CREATE TRIGGER block BEFORE INSERT ON _substrat_outbox BEGIN SELECT RAISE(ABORT, 'no'); END",
+    'CREATE INDEX ix ON _substrat_tuples (subject)',
+    'CREATE UNIQUE INDEX IF NOT EXISTS ix ON _substrat_tuples (subject)',
+    'ALTER TABLE todos RENAME TO _substrat_shadow',
+    // A trigger BODY that forges is caught by the ordinary verb scan.
+    'CREATE TRIGGER t AFTER INSERT ON todos BEGIN INSERT INTO _substrat_tuples VALUES (?, ?, ?); END',
     // `RETURNING` makes a write look like a read to a naive query/exec split.
     'INSERT INTO _substrat_tuples (subject) VALUES (?) RETURNING subject',
   ];
@@ -79,6 +91,10 @@ describe('assertNoSpineWrite: allows', () => {
     'SELECT created_at, updated_at FROM todos WHERE deleted_at IS NULL',
     // `replace()` the builtin, not `REPLACE INTO`.
     "SELECT replace(body, 'a', 'b') FROM _substrat_outbox",
+    // A module's own trigger and index on its own tables.
+    'CREATE INDEX ix_todos_owner ON todos (owner)',
+    'CREATE TRIGGER touch AFTER UPDATE ON todos BEGIN UPDATE todos SET n = n + 1; END',
+    'ALTER TABLE todos RENAME TO tasks',
   ];
 
   for (const sql of allowed) {

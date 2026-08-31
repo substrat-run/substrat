@@ -64,6 +64,7 @@ export function spineGuardContractSuite(
       ['a dropped migration journal (DROP)', 'testmod/forge-drop-journal'],
       ['a quoted identifier (DELETE FROM "_substrat_tuples")', 'testmod/forge-quoted'],
       ['a write dressed as a read (INSERT … RETURNING via ctx.sql.query)', 'testmod/forge-returning'],
+      ['a trigger ON the outbox (CREATE TRIGGER … ON)', 'testmod/forge-trigger'],
     ];
 
     for (const [what, operation] of refused) {
