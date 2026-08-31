@@ -80,16 +80,23 @@ unit is a new meter key.
   `metering_entries`. Corrections compensate; history survives.
 - **One observation, one row, one event** — `recordUsage` with a seen
   `(meter, dedupeKey)` and the same qty returns the existing entry and emits nothing;
-  with a different qty it **throws**.
+  with a different qty it **throws**. That branch returns *before* either `occurred_at`
+  bound below is consulted, so a retry of an already-recorded key never starts failing
+  because the horizon moved in the meantime.
 - **One aggregation code path** — `usageTotal` (the preview read) and `closePeriod`
   (the freeze) share the same internal aggregation, so a preview can never disagree with
   the eventual line.
 - **Closes are monotonic and non-overlapping** — a new period's `from` must be at or
   after the latest closed `to`. Gaps are allowed (metering may start mid-life); rewinds
   are not.
-- **Nothing lands behind the horizon** — `recordUsage` refuses an `occurred_at` before
-  the latest closed `to`, so closed lines stay reproducible from their entries forever.
-  Late-arriving usage is recorded at observation time (`occurred_at` defaults to now).
+- **Nothing lands outside the window around now** — `recordUsage` bounds `occurred_at` on
+  both sides. Behind, it refuses anything before the latest closed `to` (`period_closed`),
+  so closed lines stay reproducible from their entries forever. Ahead, it refuses anything
+  more than five minutes past the operation's own instant (`occurred_at_ahead`) — because
+  the horizon only ever moves forward, an entry post-dated beyond it is aggregated by no
+  close at all and would leave the billing stream with no error anywhere. The forward bound
+  is a clock-skew tolerance, deliberately small. Either way, usage is recorded at
+  observation time (`occurred_at` defaults to now).
 - **Every mutation emits a fat event; every operation checks a permission.**
 
 ## Instants, not days
