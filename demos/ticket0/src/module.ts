@@ -1305,6 +1305,13 @@ const operations = {
     return row;
   },
 
+  /**
+   * Take a tag off, and answer whether there was one.
+   *
+   * A DELETE of one composite-keyed row, so `removed` is the whole return value that
+   * matters: untagging what was never tagged is a no-op that says so rather than a
+   * `not_found` every caller would have to catch to render a chip disappearing.
+   */
   'ticket0/untag-conversation': async (ctx, input) => {
     assertAllowed(
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
@@ -1332,6 +1339,10 @@ const operations = {
     return { conversation_id: conversation.id, tag: input.tag, removed: true };
   },
 
+  /**
+   * The tags on one conversation, sorted by tag so the rail renders the same chips
+   * in the same order on every load. Unpaged: a conversation carries a handful.
+   */
   'ticket0/list-conversation-tags': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead, conversationRef(input.conversationId)));
     conversationOrThrow(ctx, input.conversationId);

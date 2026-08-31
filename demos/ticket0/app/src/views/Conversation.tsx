@@ -1051,6 +1051,11 @@ function Rail({
  *
  * `closed` is terminal, so the machine refuses both writes there and the controls
  * say so rather than letting the desk find out from a red banner.
+ *
+ * Enter commits and nothing else does — deliberately. Committing on blur reads as
+ * convenient and is not: a person who typed half a tag and clicked away into the
+ * thread has just tagged the conversation `bil`, and the only way back is to notice
+ * and remove it.
  */
 function TagPanel({
   conv,
@@ -1135,14 +1140,13 @@ function TagPanel({
         list="ticket0-tag-vocabulary"
         value={draft}
         disabled={frozen}
-        placeholder="Add a tag…"
+        placeholder="Add a tag, then Enter…"
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => {
           if (e.key !== 'Enter') return;
           e.preventDefault();
           add();
         }}
-        onBlur={add}
         style={{
           width: '100%',
           border: '1px solid var(--frame)',
