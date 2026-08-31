@@ -103,6 +103,16 @@ export const invitesOperations = defineOperations(invitesEntities, INVITES_PERMI
     // publish the identifier hash, which is the one thing hashing exists to keep
     // unreadable.
     output: invitation,
+    /**
+     * Handler-composed, not `paged.over` (#959). The read answers the PROJECTION
+     * — the row minus the identifier hash — and it expires overdue invitations on
+     * the way past, which the kernel's walk has no place for.
+     *
+     * Newest first, so the page descends. `id` is the cursor rather than
+     * `created_at`: it is a ULID, so it is unique AND ordered the same way
+     * `created_at` is, and a keyset over a non-unique column skips ties.
+     */
+    paged: { sortKey: 'id', order: 'desc' },
   },
 
   'invites/revoke': {

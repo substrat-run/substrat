@@ -19,11 +19,15 @@ import { z } from 'zod';
 import {
   addDecimal,
   compareDecimal,
+  CURSOR_FIELD_SEPARATOR,
   entityRef,
   moduleManifest,
   operationInputsOf,
+  pageOverFold,
   permissionKey,
   type EntityRef,
+  type ListPage,
+  type Page,
   substratError,
 } from '@substrat-run/contracts';
 
@@ -678,9 +682,14 @@ const configureMeterOp: OperationHandler<ConfigureMeterInput, Meter> = async (ct
   return configureMeter(ctx, input);
 };
 
-const listMetersOp: OperationHandler<undefined, Meter[]> = async (ctx) => {
+// Paged (#959). The in-scope `listMeters`/`listEntries`/`listPeriods`/`periodLines`
+// above stay unpaged: a vertical composing one inside its own transaction is
+// folding it — pricing a period's lines, summing a window — not rendering a table.
+// The same split `listOrders` kept in #811.
+const listMetersOp: OperationHandler<ListPage | undefined, Page<Meter>> = async (ctx, page) => {
   assertAllowed(await ctx.check(PERM.read));
-  return listMeters(ctx);
+  // `key` is the primary key, so it is both the order and a unique cursor.
+  return pageOverFold(listMeters(ctx), page ?? {}, (m) => m.key);
 };
 
 const recordOp: OperationHandler<RecordUsageInput, { entry: UsageEntry; deduped: boolean }> =
@@ -698,11 +707,18 @@ const totalOp: OperationHandler<
 };
 
 const listEntriesOp: OperationHandler<
-  { meter?: string; subject?: EntityRef; from?: string; to?: string } | undefined,
-  UsageEntry[]
+  ({ meter?: string; subject?: EntityRef; from?: string; to?: string } & ListPage) | undefined,
+  Page<UsageEntry>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.read));
-  return listEntries(ctx, input);
+  // `occurredAt` is the order and is NOT unique — it is caller-supplied, so two
+  // observations can share an instant. The cursor is the (occurredAt, id) pair the
+  // SQL already orders by, joined by `CURSOR_FIELD_SEPARATOR`.
+  return pageOverFold(
+    listEntries(ctx, input),
+    input ?? {},
+    (e) => `${e.occurredAt}${CURSOR_FIELD_SEPARATOR}${e.id}`,
+  );
 };
 
 const closePeriodOp: OperationHandler<
@@ -713,14 +729,28 @@ const closePeriodOp: OperationHandler<
   return closePeriod(ctx, input);
 };
 
-const listPeriodsOp: OperationHandler<undefined, MeteringPeriod[]> = async (ctx) => {
+const listPeriodsOp: OperationHandler<ListPage | undefined, Page<MeteringPeriod>> = async (
+  ctx,
+  page,
+) => {
   assertAllowed(await ctx.check(PERM.read));
-  return listPeriods(ctx);
+  // Oldest first. The SQL orders by (from_at, id), so the cursor is that pair —
+  // closes do not overlap, but the cursor matches the ORDER BY rather than
+  // relying on that.
+  return pageOverFold(
+    listPeriods(ctx),
+    page ?? {},
+    (p) => `${p.from}${CURSOR_FIELD_SEPARATOR}${p.id}`,
+  );
 };
 
-const periodLinesOp: OperationHandler<{ periodId: string }, PeriodLine[]> = async (ctx, input) => {
+const periodLinesOp: OperationHandler<{ periodId: string } & ListPage, Page<PeriodLine>> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(PERM.read));
-  return periodLines(ctx, input);
+  // One line per meter per period, so `meterKey` is unique within the period.
+  return pageOverFold(periodLines(ctx, input), input, (l) => l.meterKey);
 };
 
 export const meteringModule: ModuleRegistration = {

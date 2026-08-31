@@ -13,12 +13,17 @@
 ```
 invites/send    { orgId, identifier, roleKey, ttlMs? }  → { id }
 invites/accept  { invitationId, identifier }            → Invitation
-invites/list    { orgId }                               → Invitation[]
+invites/list    { orgId, limit?, cursor? }              → Page<Invitation>
 invites/revoke  { invitationId }                        → void
 ```
 
 Each is the thin binding the engine convention requires: a permission check plus one
 exported in-scope function.
+
+`invites/list` answers a **page**, newest first, walked by `id` — a ULID, so it carries
+the same instant `created_at` does and is unique, which a cursor must be. The in-scope
+`listInvites` stays unpaged: a vertical composing it is reading one org's invitations to
+decide something, not rendering a table.
 
 ## `invites/accept` checks no permission
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { orgId as orgIdSchema, type OrgId } from '@substrat-run/contracts';
+import { orgId as orgIdSchema, type OrgId, type Page } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
@@ -66,7 +66,9 @@ describe('invites engine', () => {
 
   it('never returns the identifier or its hash', async () => {
     const id = await send('secret@example.com');
-    const listed = await (await sender()).invoke<Invitation[]>('invites/list', { orgId: org });
+    const listed = (
+      await (await sender()).invoke<Page<Invitation>>('invites/list', { orgId: org })
+    ).entries;
     const row = listed.find((i) => i.id === id)!;
     // A leaked hash lets its holder confirm an address offline, which is the
     // enumeration this engine exists to prevent.
@@ -80,7 +82,9 @@ describe('invites engine', () => {
     const first = await send('twice@example.com');
     const second = await send('twice@example.com');
     expect(second).toBe(first);
-    const listed = await (await sender()).invoke<Invitation[]>('invites/list', { orgId: org });
+    const listed = (
+      await (await sender()).invoke<Page<Invitation>>('invites/list', { orgId: org })
+    ).entries;
     expect(listed.filter((i) => i.state === 'invited')).toHaveLength(1);
   });
 
@@ -151,7 +155,9 @@ describe('invites engine', () => {
     await expect(
       slow.invoke('invites/accept', { invitationId: id, identifier: 'slow@example.com' }),
     ).rejects.toThrow(/not acceptable/);
-    const listed = await (await sender()).invoke<Invitation[]>('invites/list', { orgId: org });
+    const listed = (
+      await (await sender()).invoke<Page<Invitation>>('invites/list', { orgId: org })
+    ).entries;
     expect(listed.find((i) => i.id === id)?.state).toBe('expired');
     expect(h.eventsOfType('member.add-requested')).toHaveLength(0);
   });
@@ -160,7 +166,7 @@ describe('invites engine', () => {
     const id = await send('gone@example.com');
     const s = await sender();
     await s.invoke('invites/revoke', { invitationId: id });
-    let listed = await s.invoke<Invitation[]>('invites/list', { orgId: org });
+    let listed = (await s.invoke<Page<Invitation>>('invites/list', { orgId: org })).entries;
     expect(listed.find((i) => i.id === id)?.state).toBe('revoked');
 
     // Revoking again is silent and changes nothing — idempotent, and no second event.
@@ -184,11 +190,44 @@ describe('invites engine', () => {
     ).rejects.toThrow(/rate limit/);
     // Settling one frees a slot — the limit is on OPEN invitations, not on
     // lifetime sends, or a busy admin would eventually be locked out forever.
-    const listed = await s.invoke<Invitation[]>('invites/list', { orgId: org });
+    const listed = (await s.invoke<Page<Invitation>>('invites/list', { orgId: org })).entries;
     await s.invoke('invites/revoke', { invitationId: listed[0]!.id });
     await expect(
       s.invoke('invites/send', { orgId: org, identifier: 'ok@example.com', roleKey: 'm' }),
     ).resolves.toBeDefined();
+  });
+
+  it('answers a PAGE, not the whole book — and the cursor walks it', async () => {
+    // #959: this read declared `output: invitation` while returning
+    // `Invitation[]`, so `assertListsArePaged` — which only fires on a declared
+    // `z.array()` — never saw a list. The declaration said one object, the
+    // runtime returned every invitation an org had ever had, and the OpenAPI
+    // document and the generated client both described the object.
+    const s = await sender();
+    for (let i = 0; i < 7; i++) {
+      await s.invoke('invites/send', { orgId: org, identifier: `w${i}@example.com`, roleKey: 'm' });
+    }
+
+    const first = await s.invoke<Page<Invitation>>('invites/list', { orgId: org, limit: 3 });
+    expect(first.entries).toHaveLength(3);
+    expect(first.nextCursor).not.toBeNull();
+
+    // Walking the cursor reaches every row exactly once. Newest first, so the
+    // walk descends — and the ids come back strictly decreasing.
+    const seen = [...first.entries];
+    let cursor = first.nextCursor;
+    while (cursor !== null) {
+      const next = await s.invoke<Page<Invitation>>('invites/list', {
+        orgId: org,
+        limit: 3,
+        cursor,
+      });
+      seen.push(...next.entries);
+      cursor = next.nextCursor;
+    }
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen.map((i) => i.id)).size).toBe(7);
+    expect([...seen].sort((a, b) => (a.id < b.id ? 1 : -1))).toEqual(seen);
   });
 
   it('emits sent and accepted events with no personal data in them', async () => {

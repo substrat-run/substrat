@@ -15,7 +15,15 @@
  * metering outage must never fail the turn; a miss is logged, and the dedupe
  * key makes any retry safe.
  */
-import { addDecimal, permissionKey, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import {
+	addDecimal,
+	LIST_PAGE_MAX,
+	permissionKey,
+	principalId,
+	scopeId,
+	tenantId,
+	type Page,
+} from '@substrat-run/contracts';
 import { CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
 import {
@@ -294,7 +302,20 @@ export async function studioUsage(env: StudioEnv, windowDays = 30): Promise<Usag
 		STUDIO_NODE.tenantId,
 		STUDIO_NODE.scopeId,
 	);
-	const entries = (await scope.invoke('metering/list-entries', undefined)) as EntryView[];
+	// The ledger read is PAGED (#959), and this report is a fold over all of it:
+	// `totals` and `byModel` are lifetime figures, not windowed ones, so taking
+	// the first page would quietly under-report every number on the usage screen.
+	// Harness code, so the walk is a plain loop over the cursor.
+	const entries: EntryView[] = [];
+	for (let cursor: string | null = null; ; ) {
+		const page = (await scope.invoke('metering/list-entries', {
+			limit: LIST_PAGE_MAX,
+			...(cursor === null ? {} : { cursor }),
+		})) as Page<EntryView>;
+		entries.push(...page.entries);
+		if (page.nextCursor === null) break;
+		cursor = page.nextCursor;
+	}
 
 	const totals = { input: 0, output: 0 };
 	const byDay = new Map<string, UsageDay>();

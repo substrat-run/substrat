@@ -21,6 +21,7 @@ import {
   moduleManifest,
   operationInputsOf,
   pageOf,
+  pageOverFold,
   permissionKey,
   type EntityRef,
   type ListPage,
@@ -863,37 +864,19 @@ export function availability(
 // ---------------------------------------------------------------------------
 
 /**
- * Take a page off a fold (#811).
+ * Why all three of this engine's list reads take their page off a fold (#811).
  *
- * None of this engine's three list reads is kernel-composed, and the reason is
+ * `pageOverFold` is `@substrat-run/contracts`'; what is particular to this engine
+ * is that none of its three reads CAN be kernel-composed, and the reason is
  * structural rather than a shortcut: `absenceEntities` declares exactly one
  * entity, `leave-type`. The ledger and the request book are ROWS this engine
  * owns — an accrual is not something a grant narrows to — so `paged.over` has
  * nothing to name for them, and the leave-type read answers the PROJECTION
- * (`active` as a boolean) rather than the stored row. So the read runs and the
- * page is taken off it, exactly as rally's folds do.
+ * (`active` as a boolean) rather than the stored row.
  *
- * `key` must be UNIQUE among the rows and must move in the direction they are
- * sorted; each declaration in `operations.ts` says which field that is.
+ * The cursor must be UNIQUE among the rows and must move in the direction they
+ * are sorted; each declaration in `operations.ts` says which field that is.
  */
-function pageOverFold<T>(
-  rows: T[],
-  page: ListPage,
-  key: (row: T) => string,
-  direction: 'asc' | 'desc' = 'asc',
-): Page<T> {
-  const limit = listLimitOf(page.limit);
-  const cursor = page.cursor;
-  const past = (row: T) => (direction === 'asc' ? key(row) > cursor! : key(row) < cursor!);
-  const after =
-    cursor === undefined
-      ? 0
-      : (() => {
-          const i = rows.findIndex(past);
-          return i < 0 ? rows.length : i;
-        })();
-  return pageOf(rows.slice(after, after + limit), limit, key);
-}
 
 const configureLeaveTypeOp: OperationHandler<ConfigureLeaveTypeInput, LeaveType> = async (
   ctx,

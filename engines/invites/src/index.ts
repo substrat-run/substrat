@@ -14,9 +14,12 @@ import {
   entityRef,
   moduleManifest,
   operationInputsOf,
+  pageOverFold,
   permissionKey,
   substratError,
+  type ListPage,
   type OrgId,
+  type Page,
 } from '@substrat-run/contracts';
 
 /**
@@ -364,8 +367,15 @@ export function revokeInvite(ctx: OperationContext, invitationId: string): void 
  */
 export function listInvites(ctx: OperationContext, orgId: OrgId): Invitation[] {
   expireOverdue(ctx, orgId);
+  // Newest first, ordered by `id` rather than `created_at` (#959). Same intent —
+  // the id is a ULID, so it carries the same instant — but TOTAL: `created_at`
+  // comes from `ctx.now()`, which is stable for a whole invocation, so a seed or
+  // a batch that sends several invitations in one operation gives them all the
+  // same value and leaves their relative order to SQLite. That is fine for a
+  // whole-list read and fatal for the keyset walk `invites/list` now does, where
+  // a cursor over a column with ties skips or repeats rows.
   return ctx.sql.query<Invitation>(
-    `SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE org_id = ? ORDER BY created_at DESC`,
+    `SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE org_id = ? ORDER BY id DESC`,
     [orgId],
   );
 }
@@ -387,9 +397,17 @@ const acceptOp: OperationHandler<{ invitationId: string; identifier: string }, I
   return acceptInvite(ctx, input);
 };
 
-const listOp: OperationHandler<{ orgId: OrgId }, Invitation[]> = async (ctx, input) => {
+// Paged (#959). `listInvites` above stays unpaged: a vertical composing it inside
+// its own operation is reading one org's invitations to decide something, not
+// rendering a table — the same split `listOrders` kept in #811.
+const listOp: OperationHandler<{ orgId: OrgId } & ListPage, Page<Invitation>> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(INVITES_PERM.read));
-  return listInvites(ctx, input.orgId);
+  // Newest first, so the walk descends; the id is a ULID, unique and ordered the
+  // same way `created_at` is.
+  return pageOverFold(listInvites(ctx, input.orgId), input, (i) => i.id, 'desc');
 };
 
 const revokeOp: OperationHandler<{ invitationId: string }, void> = async (ctx, input) => {
