@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
+  parseHostname,
+  withLabel,
+  RESERVED_LABEL_SEPARATOR,
   adminAction,
   ASSET_PART_PREFIX,
   assetHash,
@@ -4296,8 +4299,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     tag: string,
     surface: string,
   ): Promise<string> => {
-    const [label, ...rest] = baseHostname.split('.');
-    const hostname = `${label}--${tag}.${rest.join('.')}`;
+    const parsed = parseHostname(baseHostname);
+    if (!parsed) throw new ControlPlaneError(400, `'${baseHostname}' is not a hostname a preview can be minted beside`);
+    const hostname = withLabel(parsed, `${parsed.label}${RESERVED_LABEL_SEPARATOR}${tag}`);
     const existing = (await admin.listHostnames(actor, { scopeId: previewId })).find(
       (h) => h.hostname === hostname,
     );
