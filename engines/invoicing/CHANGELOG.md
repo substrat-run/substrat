@@ -1,5 +1,23 @@
 # @substrat-run/engine-invoicing
 
+## 0.9.10
+
+### Patch Changes
+
+- 3e7445e: The workorder, absence, invoicing and protocol engines now hand the host their declared
+  operation inputs, so every invocation is parsed against the engine's own schemas before
+  the guards and the handler — on every path in, not only over HTTP. Unknown keys are
+  dropped and a declared field arrives with its declared type, which is what the four
+  engines' handlers had been assuming without checking.
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [1fc01d3]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/kernel@0.94.0
+
 ## 0.9.9
 
 ### Patch Changes
@@ -1224,7 +1242,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

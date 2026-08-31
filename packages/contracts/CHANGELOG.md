@@ -1,5 +1,59 @@
 # @substrat-run/contracts
 
+## 0.94.0
+
+### Minor Changes
+
+- c9f3bac: One hostname module. `parseHostname`, `withLabel`, `isPlatformHost`,
+  `parsePlatformBaseDomains`, `RESERVED_LABEL_SEPARATOR` and
+  `DEFAULT_PLATFORM_BASE_DOMAIN` now live in `@substrat-run/contracts`, and the seven
+  sites that each restated `host.split('.')` and their own idea of "a platform host"
+  call them instead. Both were load-bearing guards, not conveniences: the first-label
+  convention is what makes a derived name a sibling in the same zone, and the `--`
+  reservation is what keeps a tenant's own label from colliding with one.
+
+  Behaviour is unchanged at the six call sites that only restated the parse. The seventh
+  changes, deliberately: a **preview mint** off a base hostname with no dot used to build
+  `<label>--<tag>.` and bind that, and now returns a 400 saying the hostname is not one a
+  preview can be minted beside. Deriving a name from something that is not a hostname was
+  never a success. For the same reason, the four sites that guarded with
+  `hostname.includes('.')` now guard on the parse itself — `.example.com` and a bare `.`
+  both pass an `includes` check and are both rejected by `parseHostname`.
+
+- e6dbb7b: **Non-additive: five list operations now answer a page instead of an array.**
+  `invites/list`, `metering/list-meters`, `metering/list-entries`,
+  `metering/list-periods` and `metering/period-lines` each declared a single entity as
+  `output` while their handler returned an unbounded array — so the gate that refuses a
+  bare list never saw one, and the OpenAPI document and the generated client both
+  described one object where the runtime sent every row. Each now declares `paged` and
+  returns `Page<T>`; a caller takes `.entries` and walks `nextCursor`.
+
+  The **in-scope** functions (`listInvites`, `listMeters`, `listEntries`, `listPeriods`,
+  `periodLines`) are unchanged and still return arrays — a vertical composing one inside
+  its own transaction is folding it, not rendering a table. `listInvites` does now order
+  by `id` (a ULID, so the same "newest first") rather than by `created_at`, which is not
+  unique and cannot carry a keyset cursor.
+
+  `@substrat-run/contracts` gains `pageOverFold` and `CURSOR_FIELD_SEPARATOR` — the
+  handler-composed paging helper `engines/absence` had written locally, now shared rather
+  than copied into two more engines.
+
+- 568ba88: The engine seam helpers now have one home. `returns(schema, surface, value)` and
+  `columnsOf(schema)` — the pair that parses a value on its way out of an engine and
+  derives a SELECT list from the published schema — are exported from
+  `@substrat-run/contracts` as `engineSeam(name)`, and an engine binds them to its own
+  name in a line. Four engines carried byte-identical copies of the implementation,
+  differing only in the name each put into a seam failure. Behaviour is unchanged,
+  including the message a seam refusal carries.
+- 35147a9: The model runtime is bound only for a vertical that declares it (#1054). `substrat.usesModels` in package.json travels with the version, like `outbound` and `sendsEmail`, and the control plane binds `env.AI` only when the platform allows it AND the version asked — so the capability appears in a manifest diff a human reads at admit, rather than being granted to every pushed script. `ModelHost.status()` now applies exactly `createModel()`'s rule: only a row declaring a binding transport is credential-free, so a direct row's factory no longer reports a keyless provider as configured.
+
+### Patch Changes
+
+- 692cb92: An expiry written with a UTC offset no longer outlives itself. `Instant` accepts an
+  offset on the wire and now normalises it to the equivalent `Z` text at the parse, so
+  the lexicographic comparison every expiry check uses agrees with chronological order —
+  a grant that expired an hour ago is refused whichever zone it was written in.
+
 ## 0.93.0
 
 ### Minor Changes
@@ -4432,7 +4486,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

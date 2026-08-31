@@ -1,5 +1,35 @@
 # @substrat-run/engine-workorder
 
+## 0.10.2
+
+### Patch Changes
+
+- b91753e: Each engine now states in its own header whether it is composed by call or by event, and
+  what follows from that — which functions a vertical imports, and why the registered
+  operations are the default bindings rather than a second way in. Only invoicing said so
+  before; the fact was scattered across `lifecycle.ts`, `operations.ts` and the docs, and two
+  engines said it nowhere. Comments only, no behaviour change.
+- 3e7445e: The workorder, absence, invoicing and protocol engines now hand the host their declared
+  operation inputs, so every invocation is parsed against the engine's own schemas before
+  the guards and the handler — on every path in, not only over HTTP. Unknown keys are
+  dropped and a declared field arrives with its declared type, which is what the four
+  engines' handlers had been assuming without checking.
+- 568ba88: The engine seam helpers now have one home. `returns(schema, surface, value)` and
+  `columnsOf(schema)` — the pair that parses a value on its way out of an engine and
+  derives a SELECT list from the published schema — are exported from
+  `@substrat-run/contracts` as `engineSeam(name)`, and an engine binds them to its own
+  name in a line. Four engines carried byte-identical copies of the implementation,
+  differing only in the name each put into a seam failure. Behaviour is unchanged,
+  including the message a seam refusal carries.
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [1fc01d3]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/kernel@0.94.0
+
 ## 0.10.1
 
 ### Patch Changes
@@ -1285,7 +1315,7 @@ active`, `unknown tenant/scope/table`). Those are next, and they are the ones th
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

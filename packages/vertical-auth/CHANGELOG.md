@@ -1,5 +1,27 @@
 # @substrat-run/vertical-auth
 
+## 0.10.0
+
+### Minor Changes
+
+- 225bb69: New `instanceAuthFor` — the composition four verticals were each writing for themselves:
+  read an instance's delivered config in one DO hop, parse the `substrat:auth` choice,
+  resolve the declared settings (delivered > binding > manifest default), and select the
+  `AuthProvider`. Exported alongside `parseAuthChoice`, `selectAuthProvider`,
+  `AUTH_CONFIG_KEY` and `AuthConfigError` (which carries the status an unconfigured instance
+  should answer with). Purely additive — the primitives it composes are unchanged.
+
+### Patch Changes
+
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [733469b]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/psl@0.2.4
+
 ## 0.9.0
 
 ### Minor Changes

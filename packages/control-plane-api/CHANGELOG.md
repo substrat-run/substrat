@@ -1,5 +1,59 @@
 # @substrat-run/control-plane-api
 
+## 0.94.0
+
+### Minor Changes
+
+- 04e4d68: A masked scope export is now **pseudonymized** rather than blanked. Every PII cell used
+  to become the literal `[masked]`, which made a pulled scope structurally valid and
+  factually useless — every screen read `[masked]`, so nobody could drive a preview, a demo
+  or a local repro from one. Now a cell whose column name the PII heuristic _recognises_
+  gets a deterministic fake value of the right kind: an email at a reserved domain, a name,
+  a phone or postal code that keeps its country code and its digit-and-letter layout. The
+  same real value reads the same everywhere in one export — its own row, every event
+  payload that quoted it, the timeline — so joins and screens line up. A column the
+  heuristic does not recognise is untouched, which is why the file is still personal data.
+
+  Free text and national identifiers still read `[masked]`: a hash cannot invent a
+  sentence, and a generated personnummer may belong to a real person. This is
+  pseudonymization, not anonymization — the pull stays staff-only, audited and
+  jurisdiction-gated, and the CLI now says so.
+
+  `maskSalt` on `createControlPlaneApi` keys the generator; absent, each export gets a
+  fresh random salt (still stable within one response, uncorrelated across two).
+
+- 35147a9: The model runtime is bound only for a vertical that declares it (#1054). `substrat.usesModels` in package.json travels with the version, like `outbound` and `sendsEmail`, and the control plane binds `env.AI` only when the platform allows it AND the version asked — so the capability appears in a manifest diff a human reads at admit, rather than being granted to every pushed script. `ModelHost.status()` now applies exactly `createModel()`'s rule: only a row declaring a binding transport is credential-free, so a direct row's factory no longer reports a keyless provider as configured.
+- 35147a9: Hosted verticals reach Workers AI through a **binding**, not a credential (#1054). A provider row may declare `binding`, meaning it is also reachable through a runtime capability rather than over HTTP with a token; `createModelHost({ aiBinding: env.AI })` supplies it, and the control plane binds `env.AI` on every pushed script. The `cloudflare` row is then runnable with no `CLOUDFLARE_AI_*` set anywhere — nothing on the script to read, leak or rotate, and Workers AI bills the account that owns it. The HTTP transport is unchanged for hosts that have a token (the local builder studio). Also replaces the default model: `@cf/meta/llama-3.1-8b-instruct` was deprecated on 2026-05-30 and fails at runtime; the default is now `@cf/meta/llama-3.1-8b-instruct-fast`.
+
+### Patch Changes
+
+- c9f3bac: One hostname module. `parseHostname`, `withLabel`, `isPlatformHost`,
+  `parsePlatformBaseDomains`, `RESERVED_LABEL_SEPARATOR` and
+  `DEFAULT_PLATFORM_BASE_DOMAIN` now live in `@substrat-run/contracts`, and the seven
+  sites that each restated `host.split('.')` and their own idea of "a platform host"
+  call them instead. Both were load-bearing guards, not conveniences: the first-label
+  convention is what makes a derived name a sibling in the same zone, and the `--`
+  reservation is what keeps a tenant's own label from colliding with one.
+
+  Behaviour is unchanged at the six call sites that only restated the parse. The seventh
+  changes, deliberately: a **preview mint** off a base hostname with no dot used to build
+  `<label>--<tag>.` and bind that, and now returns a 400 saying the hostname is not one a
+  preview can be minted beside. Deriving a name from something that is not a hostname was
+  never a success. For the same reason, the four sites that guarded with
+  `hostname.includes('.')` now guard on the parse itself — `.example.com` and a bare `.`
+  both pass an `includes` check and are both rejected by `parseHostname`.
+
+- Updated dependencies [692cb92]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [568ba88]
+- Updated dependencies [1fc01d3]
+- Updated dependencies [733469b]
+- Updated dependencies [35147a9]
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/kernel@0.94.0
+  - @substrat-run/psl@0.2.4
+
 ## 0.93.0
 
 ### Minor Changes

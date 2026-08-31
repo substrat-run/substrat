@@ -1,5 +1,32 @@
 # @substrat-run/demo-ticket0
 
+## 0.3.1
+
+### Patch Changes
+
+- 35147a9: The model runtime is bound only for a vertical that declares it (#1054). `substrat.usesModels` in package.json travels with the version, like `outbound` and `sendsEmail`, and the control plane binds `env.AI` only when the platform allows it AND the version asked — so the capability appears in a manifest diff a human reads at admit, rather than being granted to every pushed script. `ModelHost.status()` now applies exactly `createModel()`'s rule: only a row declaring a binding transport is credential-free, so a direct row's factory no longer reports a keyless provider as configured.
+- 35147a9: Hosted verticals reach Workers AI through a **binding**, not a credential (#1054). A provider row may declare `binding`, meaning it is also reachable through a runtime capability rather than over HTTP with a token; `createModelHost({ aiBinding: env.AI })` supplies it, and the control plane binds `env.AI` on every pushed script. The `cloudflare` row is then runnable with no `CLOUDFLARE_AI_*` set anywhere — nothing on the script to read, leak or rotate, and Workers AI bills the account that owns it. The HTTP transport is unchanged for hosts that have a token (the local builder studio). Also replaces the default model: `@cf/meta/llama-3.1-8b-instruct` was deprecated on 2026-05-30 and fails at runtime; the default is now `@cf/meta/llama-3.1-8b-instruct-fast`.
+- Updated dependencies [b91753e]
+- Updated dependencies [225bb69]
+- Updated dependencies [692cb92]
+- Updated dependencies [d8c5ca9]
+- Updated dependencies [c9f3bac]
+- Updated dependencies [e6dbb7b]
+- Updated dependencies [24b6855]
+- Updated dependencies [568ba88]
+- Updated dependencies [1fc01d3]
+- Updated dependencies [733469b]
+- Updated dependencies [35147a9]
+- Updated dependencies [35147a9]
+  - @substrat-run/engine-metering@0.5.0
+  - @substrat-run/vertical-auth@0.10.0
+  - @substrat-run/contracts@0.94.0
+  - @substrat-run/adapter-sqlite@0.94.0
+  - @substrat-run/adapter-cloudflare@0.94.0
+  - @substrat-run/kernel@0.94.0
+  - @substrat-run/dev-issuer@0.1.8
+  - @substrat-run/vertical-host@0.94.0
+
 ## 0.3.0
 
 ### Minor Changes

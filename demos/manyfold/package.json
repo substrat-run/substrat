@@ -1,9 +1,9 @@
 {
   "name": "@substrat-run/demo-manyfold",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "private": true,
   "license": "Apache-2.0",
-  "description": "CMS demo vertical (Manyfold) \u2014 multi-scope headless CMS, see spec/concept.md",
+  "description": "CMS demo vertical (Manyfold) — multi-scope headless CMS, see spec/concept.md",
   "substrat": {
     "slug": "manyfold",
     "name": "Manyfold",
@@ -39,7 +39,7 @@
       {
         "key": "OIDC_ISSUER",
         "label": "OIDC issuer",
-        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, \u2026",
+        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
         "placeholder": "https://auth.example.com",
         "required": false,
         "secret": false,
