@@ -89,7 +89,9 @@ export {
 import { meteringOperations } from './operations.js';
 // The value formats, shared with the declared surface above so a caller cannot be
 // told a value is acceptable and then have the handler refuse it.
-import { isoInstant, nonNegDecimal, signedDecimal } from './formats.js';
+import { isoInstant, isoInstantIn, nonNegDecimal, signedDecimal } from './formats.js';
+import { entryRow, meterRow, periodRow } from './entities.js';
+import { columnsOf, returns } from './seam.js';
 
 export const PERM = {
   read: permissionKey.parse('metering:read'),
@@ -180,130 +182,182 @@ export const meteringMigrations = [
 // above — the same rules the declared inputs enforce, so a value the operation
 // contract accepts is one these handlers can also parse.
 
-export type MeterKind = 'counter' | 'gauge';
+const meterKind = z.enum(['counter', 'gauge']);
+export type MeterKind = z.infer<typeof meterKind>;
 
-export interface Meter {
-  key: string;
-  kind: MeterKind;
-  unit: string;
-  description: string | null;
-  active: boolean;
-  createdAt: string;
-}
+/**
+ * The STORED rows (#771/#970).
+ *
+ * `entities.ts` describes what the journal comparison checks against, so its
+ * quantities and instants are bare strings. Here they are narrowed to the formats
+ * this engine actually depends on — `signedDecimal` because a `qty` is folded
+ * into a billed line, `isoInstantIn` because every window in this engine is a
+ * string comparison over instants at one precision. Validating rather than
+ * transforming: normalising is the WRITE's decision (`isoInstant`), and a read
+ * that quietly rewrote a stored value would hide the drift it is here to catch.
+ */
+const meterRowShape = meterRow;
+type MeterRow = z.infer<typeof meterRowShape>;
 
-interface MeterRow {
-  key: string;
-  kind: MeterKind;
-  unit: string;
-  description: string | null;
-  active: number;
-  created_at: string;
-}
+const entryRowShape = entryRow.extend({ qty: signedDecimal, occurred_at: isoInstantIn });
+type EntryRow = z.infer<typeof entryRowShape>;
 
-interface EntryRow {
-  id: string;
-  meter_key: string;
-  qty: string;
-  subject_type: string | null;
-  subject_id: string | null;
-  occurred_at: string;
-  dedupe_key: string;
-  note: string | null;
-  created_by: string;
-  created_at: string;
-}
+const periodRowShape = periodRow.extend({ from_at: isoInstantIn, to_at: isoInstantIn });
+type PeriodRow = z.infer<typeof periodRowShape>;
 
-export interface UsageEntry {
-  id: string;
-  meterKey: string;
-  qty: string;
-  subject: EntityRef | null;
-  occurredAt: string;
-  dedupeKey: string;
-  note: string | null;
-  createdBy: string;
-  createdAt: string;
-}
+/**
+ * A period's frozen line, as stored. NOT in the entity registry, deliberately —
+ * a line has no identity outside the close that made it (`entities.ts`) — so its
+ * row shape is declared here, where the reads of it are.
+ */
+const periodLineRow = z.object({
+  id: z.string(),
+  period_id: z.string(),
+  meter_key: z.string(),
+  kind: meterKind,
+  unit: z.string(),
+  qty: signedDecimal,
+  entry_count: z.number(),
+});
+type PeriodLineRow = z.infer<typeof periodLineRow>;
 
-interface PeriodRow {
-  id: string;
-  from_at: string;
-  to_at: string;
-  closed_by: string;
-  closed_at: string;
-}
+/** The PUBLISHED shapes — what a composing vertical declares its `output` with. */
+const meterShape = z.object({
+  key: z.string(),
+  kind: meterKind,
+  unit: z.string(),
+  description: z.string().nullable(),
+  active: z.boolean(),
+  createdAt: z.string(),
+});
+export type Meter = z.infer<typeof meterShape>;
 
-export interface MeteringPeriod {
-  id: string;
-  from: string;
-  to: string;
-  closedBy: string;
-  closedAt: string;
-}
+const usageEntryShape = z.object({
+  id: z.string(),
+  meterKey: z.string(),
+  qty: signedDecimal,
+  subject: entityRef.nullable(),
+  occurredAt: isoInstantIn,
+  dedupeKey: z.string(),
+  note: z.string().nullable(),
+  createdBy: z.string(),
+  createdAt: z.string(),
+});
+export type UsageEntry = z.infer<typeof usageEntryShape>;
 
-interface PeriodLineRow {
-  id: string;
-  period_id: string;
-  meter_key: string;
-  kind: MeterKind;
-  unit: string;
-  qty: string;
-  entry_count: number;
-}
+const meteringPeriodShape = z.object({
+  id: z.string(),
+  from: isoInstantIn,
+  to: isoInstantIn,
+  closedBy: z.string(),
+  closedAt: z.string(),
+});
+export type MeteringPeriod = z.infer<typeof meteringPeriodShape>;
 
 /** One meter's frozen aggregate for a closed period. Unpriced, by design (D-E). */
-export interface PeriodLine {
-  meterKey: string;
-  kind: MeterKind;
-  unit: string;
-  qty: string;
-  entryCount: number;
-}
-
-const toMeter = (r: MeterRow): Meter => ({
-  key: r.key,
-  kind: r.kind,
-  unit: r.unit,
-  description: r.description,
-  active: r.active === 1,
-  createdAt: r.created_at,
+const periodLineShape = z.object({
+  meterKey: z.string(),
+  kind: meterKind,
+  unit: z.string(),
+  qty: signedDecimal,
+  entryCount: z.number(),
 });
+export type PeriodLine = z.infer<typeof periodLineShape>;
 
-const toEntry = (r: EntryRow): UsageEntry => ({
-  id: r.id,
-  meterKey: r.meter_key,
-  qty: r.qty,
-  subject:
-    r.subject_type !== null && r.subject_id !== null
-      ? { entityType: r.subject_type, entityId: r.subject_id }
-      : null,
-  occurredAt: r.occurred_at,
-  dedupeKey: r.dedupe_key,
-  note: r.note,
-  createdBy: r.created_by,
-  createdAt: r.created_at,
-});
+/** A window aggregate — the shape `usageTotal` publishes and a close freezes. */
+const usageAggregate = z.object({ qty: signedDecimal, entryCount: z.number() });
 
-const toPeriod = (r: PeriodRow): MeteringPeriod => ({
-  id: r.id,
-  from: r.from_at,
-  to: r.to_at,
-  closedBy: r.closed_by,
-  closedAt: r.closed_at,
-});
+/**
+ * The SELECT lists, derived from the row schemas (#771).
+ *
+ * Never `SELECT *`: that pins the shape a read returns to whatever the physical
+ * table currently holds, which is the same trust-TypeScript hole `returns` closes
+ * from the other side. A column dropped from the table is then a SQL error naming
+ * it; a column added to the table is simply never read.
+ */
+const METER_COLUMNS = columnsOf(meterRowShape);
+const ENTRY_COLUMNS = columnsOf(entryRowShape);
+const PERIOD_COLUMNS = columnsOf(periodRowShape);
+const PERIOD_LINE_COLUMNS = columnsOf(periodLineRow);
 
-const toLine = (r: PeriodLineRow): PeriodLine => ({
-  meterKey: r.meter_key,
-  kind: r.kind,
-  unit: r.unit,
-  qty: r.qty,
-  entryCount: r.entry_count,
-});
+/** The single column both aggregates fold — a projection, not a table. */
+const entryQty = entryRowShape.pick({ qty: true });
+
+/** A stored row, parsed BEFORE anything is made of it. */
+const storedMeter = (r: MeterRow): MeterRow => returns(meterRowShape, `meter row ${r.key}`, r);
+const storedEntry = (r: EntryRow): EntryRow => returns(entryRowShape, `usage entry row ${r.id}`, r);
+const storedPeriod = (r: PeriodRow): PeriodRow => returns(periodRowShape, `period row ${r.id}`, r);
+const storedLine = (r: PeriodLineRow): PeriodLineRow =>
+  returns(periodLineRow, `period line row ${r.id}`, r);
+
+/**
+ * A stored row, published (#771) — the projection AND the parse in one place,
+ * because every path out of this engine goes through one of these four.
+ */
+const toMeter = (raw: MeterRow): Meter => {
+  const r = storedMeter(raw);
+  return returns(meterShape, `meter ${r.key}`, {
+    key: r.key,
+    kind: r.kind,
+    unit: r.unit,
+    description: r.description,
+    // Parsed BEFORE this normalisation: `active` is 0/1 and read with `=== 1`,
+    // so a retyped one would not throw — it would publish every meter as
+    // inactive and refuse every `recordUsage` against it as `meter_inactive`.
+    active: r.active === 1,
+    createdAt: r.created_at,
+  });
+};
+
+const toEntry = (raw: EntryRow): UsageEntry => {
+  const r = storedEntry(raw);
+  return returns(usageEntryShape, `usage entry ${r.id}`, {
+    id: r.id,
+    meterKey: r.meter_key,
+    qty: r.qty,
+    subject:
+      r.subject_type !== null && r.subject_id !== null
+        ? { entityType: r.subject_type, entityId: r.subject_id }
+        : null,
+    occurredAt: r.occurred_at,
+    dedupeKey: r.dedupe_key,
+    note: r.note,
+    createdBy: r.created_by,
+    createdAt: r.created_at,
+  });
+};
+
+const toPeriod = (raw: PeriodRow): MeteringPeriod => {
+  const r = storedPeriod(raw);
+  return returns(meteringPeriodShape, `metering period ${r.id}`, {
+    id: r.id,
+    from: r.from_at,
+    to: r.to_at,
+    closedBy: r.closed_by,
+    closedAt: r.closed_at,
+  });
+};
+
+const toLine = (raw: PeriodLineRow): PeriodLine => {
+  const r = storedLine(raw);
+  return returns(periodLineShape, `period line ${r.id}`, {
+    meterKey: r.meter_key,
+    kind: r.kind,
+    unit: r.unit,
+    qty: r.qty,
+    entryCount: r.entry_count,
+  });
+};
 
 function getMeterRow(ctx: OperationContext, key: string): MeterRow {
-  const row = ctx.sql.query<MeterRow>('SELECT * FROM metering_meters WHERE key = ?', [key])[0];
+  const row = ctx.sql.query<MeterRow>(`SELECT ${METER_COLUMNS} FROM metering_meters WHERE key = ?`, [
+    key,
+  ])[0];
   if (!row) throw substratError('not_found', `meter not found: ${key}`);
-  return row;
+  // Parsed here rather than at each caller: `kind` decides counter-versus-gauge
+  // aggregation and `active` decides whether usage may be recorded at all, so
+  // every path through this engine reads a meter row it has already checked.
+  return storedMeter(row);
 }
 
 /** The latest closed `to` — nothing may be recorded behind it (D-D). */
@@ -329,12 +383,17 @@ function aggregateMeter(
   from: string,
   to: string,
 ): { qty: string; entryCount: number } | null {
-  const rows = ctx.sql.query<{ qty: string }>(
-    `SELECT qty FROM metering_entries
+  // Parsed on the way into the fold, the way absence parses a ledger delta: a
+  // summand that drifted crosses as a NUMBER nobody questions, and this one is
+  // frozen into a period line and billed.
+  const rows = ctx.sql
+    .query<{ qty: string }>(
+      `SELECT ${columnsOf(entryQty)} FROM metering_entries
       WHERE meter_key = ? AND occurred_at >= ? AND occurred_at < ?
       ORDER BY occurred_at, id`,
-    [meter.key, from, to],
-  );
+      [meter.key, from, to],
+    )
+    .map((r) => returns(entryQty, `usage qty on meter '${meter.key}'`, r));
   if (meter.kind === 'counter') {
     if (rows.length === 0) return null;
     return { qty: rows.reduce((sum, r) => addDecimal(sum, r.qty), '0'), entryCount: rows.length };
@@ -344,12 +403,14 @@ function aggregateMeter(
     return { qty: max, entryCount: rows.length };
   }
   const carried = ctx.sql.query<{ qty: string }>(
-    `SELECT qty FROM metering_entries
+    `SELECT ${columnsOf(entryQty)} FROM metering_entries
       WHERE meter_key = ? AND occurred_at < ?
       ORDER BY occurred_at DESC, id DESC LIMIT 1`,
     [meter.key, from],
   )[0];
-  return carried ? { qty: carried.qty, entryCount: 0 } : null;
+  return carried
+    ? { qty: returns(entryQty, `carried qty on meter '${meter.key}'`, carried).qty, entryCount: 0 }
+    : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,9 +435,14 @@ export type ConfigureMeterInput = z.infer<typeof configureMeterInput>;
  */
 export function configureMeter(ctx: OperationContext, rawInput: ConfigureMeterInput): Meter {
   const input = configureMeterInput.parse(rawInput);
-  const existing = ctx.sql.query<MeterRow>('SELECT * FROM metering_meters WHERE key = ?', [
-    input.key,
-  ])[0];
+  const stored = ctx.sql.query<MeterRow>(
+    `SELECT ${METER_COLUMNS} FROM metering_meters WHERE key = ?`,
+    [input.key],
+  )[0];
+  // `kind` and `unit` are FROZEN, and this is the read that judges them — a
+  // drifted one would either wave through a change the invariant forbids or
+  // refuse a legitimate one with a message naming a value nothing declared.
+  const existing = stored ? storedMeter(stored) : undefined;
   if (existing) {
     if (existing.kind !== input.kind || existing.unit !== input.unit) {
       throw conflict('definition_frozen', 
@@ -417,7 +483,9 @@ export function configureMeter(ctx: OperationContext, rawInput: ConfigureMeterIn
 }
 
 export function listMeters(ctx: OperationContext): Meter[] {
-  return ctx.sql.query<MeterRow>('SELECT * FROM metering_meters ORDER BY key').map(toMeter);
+  return ctx.sql
+    .query<MeterRow>(`SELECT ${METER_COLUMNS} FROM metering_meters ORDER BY key`)
+    .map(toMeter);
 }
 
 /**
@@ -476,10 +544,15 @@ export function recordUsage(
   if (meter.active !== 1) throw conflict('meter_inactive', `meter '${meter.key}' is inactive`);
   if (meter.kind === 'gauge') nonNegDecimal.parse(input.qty);
 
-  const existing = ctx.sql.query<EntryRow>(
-    'SELECT * FROM metering_entries WHERE meter_key = ? AND dedupe_key = ?',
+  const priorRow = ctx.sql.query<EntryRow>(
+    `SELECT ${ENTRY_COLUMNS} FROM metering_entries WHERE meter_key = ? AND dedupe_key = ?`,
     [meter.key, input.dedupeKey],
   )[0];
+  // Parsed before the dedupe comparison: `existing.qty` is compared as a decimal
+  // to decide replay-versus-upstream-bug, so a drifted one would answer the
+  // wrong question — a silent second bill, or a `dedupe_mismatch` naming a
+  // quantity that is not one.
+  const existing = priorRow ? storedEntry(priorRow) : undefined;
   if (existing) {
     if (compareDecimal(existing.qty, input.qty) !== 0) {
       throw conflict('dedupe_mismatch', 
@@ -526,7 +599,7 @@ export function recordUsage(
     ],
   );
   const entry = toEntry(
-    ctx.sql.query<EntryRow>('SELECT * FROM metering_entries WHERE id = ?', [id])[0]!,
+    ctx.sql.query<EntryRow>(`SELECT ${ENTRY_COLUMNS} FROM metering_entries WHERE id = ?`, [id])[0]!,
   );
   ctx.emit({
     type: 'metering.usage-recorded',
@@ -559,7 +632,8 @@ export function usageTotal(
   const from = isoInstant.parse(input.from);
   const to = isoInstant.parse(input.to);
   if (to <= from) throw substratError('validation_failed', `to ${to} must be after from ${from}`);
-  return aggregateMeter(ctx, getMeterRow(ctx, input.meter), from, to);
+  const agg = aggregateMeter(ctx, getMeterRow(ctx, input.meter), from, to);
+  return agg && returns(usageAggregate, `usage total for '${input.meter}'`, agg);
 }
 
 export function listEntries(
@@ -584,7 +658,7 @@ export function listEntries(
     where.push('occurred_at < ?');
     params.push(isoInstant.parse(input.to));
   }
-  const sql = `SELECT * FROM metering_entries${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY occurred_at, id`;
+  const sql = `SELECT ${ENTRY_COLUMNS} FROM metering_entries${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY occurred_at, id`;
   return ctx.sql.query<EntryRow>(sql, params).map(toEntry);
 }
 
@@ -624,7 +698,10 @@ export function closePeriod(
   );
 
   const lines: PeriodLine[] = [];
-  for (const meter of ctx.sql.query<MeterRow>('SELECT * FROM metering_meters ORDER BY key')) {
+  for (const raw of ctx.sql.query<MeterRow>(
+    `SELECT ${METER_COLUMNS} FROM metering_meters ORDER BY key`,
+  )) {
+    const meter = storedMeter(raw);
     const agg = aggregateMeter(ctx, meter, input.from, input.to);
     if (!agg) continue;
     ctx.sql.exec(
@@ -632,13 +709,15 @@ export function closePeriod(
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [ulid(), id, meter.key, meter.kind, meter.unit, agg.qty, agg.entryCount],
     );
-    lines.push({
-      meterKey: meter.key,
-      kind: meter.kind,
-      unit: meter.unit,
-      qty: agg.qty,
-      entryCount: agg.entryCount,
-    });
+    lines.push(
+      returns(periodLineShape, `period line for '${meter.key}'`, {
+        meterKey: meter.key,
+        kind: meter.kind,
+        unit: meter.unit,
+        qty: agg.qty,
+        entryCount: agg.entryCount,
+      }),
+    );
   }
 
   ctx.emit({
@@ -649,25 +728,32 @@ export function closePeriod(
     payload: { periodId: id, from: input.from, to: input.to, lines },
   });
   return {
-    period: { id, from: input.from, to: input.to, closedBy: String(ctx.principal), closedAt: now },
+    period: returns(meteringPeriodShape, `metering period ${id}`, {
+      id,
+      from: input.from,
+      to: input.to,
+      closedBy: String(ctx.principal),
+      closedAt: now,
+    }),
     lines,
   };
 }
 
 export function listPeriods(ctx: OperationContext): MeteringPeriod[] {
   return ctx.sql
-    .query<PeriodRow>('SELECT * FROM metering_periods ORDER BY from_at, id')
+    .query<PeriodRow>(`SELECT ${PERIOD_COLUMNS} FROM metering_periods ORDER BY from_at, id`)
     .map(toPeriod);
 }
 
 export function periodLines(ctx: OperationContext, input: { periodId: string }): PeriodLine[] {
-  const period = ctx.sql.query<PeriodRow>('SELECT * FROM metering_periods WHERE id = ?', [
-    input.periodId,
-  ])[0];
+  const period = ctx.sql.query<PeriodRow>(
+    `SELECT ${PERIOD_COLUMNS} FROM metering_periods WHERE id = ?`,
+    [input.periodId],
+  )[0];
   if (!period) throw substratError('not_found', `metering period not found: ${input.periodId}`);
   return ctx.sql
     .query<PeriodLineRow>(
-      'SELECT * FROM metering_period_lines WHERE period_id = ? ORDER BY meter_key',
+      `SELECT ${PERIOD_LINE_COLUMNS} FROM metering_period_lines WHERE period_id = ? ORDER BY meter_key`,
       [input.periodId],
     )
     .map(toLine);
