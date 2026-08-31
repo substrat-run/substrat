@@ -10,6 +10,7 @@ import { problemResponse } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
   SCRIVE_TESTBED,
+  SCRIVE_PRODUCTION,
   SCRIVE_CALLBACK_ROUTE,
   handleScriveCallback,
   sweepScriveReconciliations,
@@ -58,7 +59,9 @@ const WEB_PORT = Number(process.env.WEB_PORT ?? 5275);
 
 /**
  * Scrive wiring, opt-in from the environment. Three modes:
- *   - real testbed: SCRIVE_CLIENT_ID/SECRET + SCRIVE_TOKEN_ID/SECRET set → global fetch
+ *   - real provider: SCRIVE_CLIENT_ID/SECRET + SCRIVE_TOKEN_ID/SECRET set → global fetch.
+ *     SCRIVE_BASE_URL is then required, not defaulted: a credential does not say which
+ *     Scrive issued it, and the wrong guess comes back 401 (#610).
  *   - mock:         MERIDIAN_SCRIVE_MOCK=1 → ScriveMock, offline, with a dev sign endpoint
  *   - off (default): no connection, no sweeper — the contract sits pending, honest
  *     without a provider.
@@ -80,12 +83,23 @@ function resolveScrive(): { config: ScriveConfig; egress: FetchLike; mock: Scriv
       tokenId: SCRIVE_TOKEN_ID,
       tokenSecret: SCRIVE_TOKEN_SECRET,
     };
-    // Real testbed: the runtime's global fetch is the egress (host default), so
+    // Real credentials ⇒ name the provider they belong to, explicitly (#990). A
+    // fallback here would just move the #610 default one file out: nothing about a
+    // credential says which Scrive issued it, so a production key with no base set
+    // would go to the testbed and come back 401, reading as a mistyped key.
+    const baseUrl = process.env.SCRIVE_BASE_URL;
+    if (!baseUrl) {
+      throw new Error(
+        'SCRIVE_BASE_URL must be set when Scrive credentials are configured — ' +
+          `the testbed is ${SCRIVE_TESTBED}, production is ${SCRIVE_PRODUCTION}`,
+      );
+    }
+    // Real provider: the runtime's global fetch is the egress (host default), so
     // pass no `fetch` and hand the sweeper the same global.
     return {
       config: {
         secret,
-        baseUrl: process.env.SCRIVE_BASE_URL ?? SCRIVE_TESTBED,
+        baseUrl,
         ...(process.env.SCRIVE_CALLBACK_BASE
           ? { callbackBaseUrl: process.env.SCRIVE_CALLBACK_BASE }
           : {}),

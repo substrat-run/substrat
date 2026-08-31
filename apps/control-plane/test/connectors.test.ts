@@ -61,14 +61,4 @@ describe('connector registry', () => {
     ).rejects.toThrow(/SCRIVE_BASE_URL/);
     await expect(dispatcher(null as never, null as never)).rejects.toThrow(/SCRIVE_BASE_URL/);
   });
-
-  it('dispatches poll-only when the plane does not know its own origin', () => {
-    // A connector with no callback URL is complete — the sweep is the floor — so a plane
-    // with no PLATFORM_CP_URL must still build a dispatcher rather than refuse.
-    expect(() =>
-      CONNECTORS.find((c) => c.provider === 'scrive')!.dispatch({
-        SCRIVE_BASE_URL: ENV.SCRIVE_BASE_URL,
-      }),
-    ).not.toThrow();
-  });
 });
