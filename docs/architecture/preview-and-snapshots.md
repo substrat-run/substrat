@@ -268,7 +268,12 @@ over verticals, but reads/writes domain data across the boundary only through §
    **pseudonymization, not anonymization** — rare combinations, amounts and dates still
    re-identify — so none of §6's gates relax. Free text and national identifiers keep
    `[masked]` (a hash cannot invent a sentence, and a generated personnummer may belong
-   to a real person). Still open underneath: per-vertical declarative rules, driven by
+   to a real person). The claim that a pseudonymized dump is still a *working scope* is
+   held by `demos/callout/test/masked-round-trip.test.ts`: a real seed is exported,
+   pseudonymized, imported into a fresh scope and read back through the vertical's own
+   operations, so a fake that breaks `importScope`, throws at an engine seam, or leaves a
+   derived search index pointing at the real name is a red build rather than a discovery
+   on someone's laptop. Still open underneath: per-vertical declarative rules, driven by
    `erasable` on `defineEntities` rather than by a column-name regex.
 3. Does a same-scope **code-only canary** (§2, top row) earn a `hostnames.vertical_version_id`
    override, or do we always fork? (Override reintroduces the "code B on data A" hazard unless
