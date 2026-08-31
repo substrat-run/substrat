@@ -341,6 +341,15 @@ export interface Ticket0Client {
   ingestMessage(input: { conversationId: string | null; contactEmail: string; contactName?: string | null; subject: string; bodyText: string; bodyHtml?: string | null; emailMessageId: string; emailInReplyTo?: string | null }): Promise<Message>;
 
   /**
+   * The staff of this desk
+   *
+   * `GET /agents` — `ticket0/list-agents`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listAgents(): Promise<Paged<AgentProfile>>;
+
+  /**
    * The people who have asked something
    *
    * `GET /contacts` — `ticket0/list-contacts`
@@ -750,6 +759,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/ingest`, "POST", omit(input, ["sourceId"]), undefined),
     ingestMessage: (input: Args) =>
       send("/relay/inbound", "POST", input, undefined),
+    listAgents: () =>
+      page("/agents", "GET", undefined, undefined),
     listContacts: () =>
       page("/contacts", "GET", undefined, undefined),
     listConversationTags: (input: Args) =>

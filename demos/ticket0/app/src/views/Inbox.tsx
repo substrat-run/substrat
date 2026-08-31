@@ -17,12 +17,15 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
-import { api, type Contact, type Conversation, type Session } from '../api.js';
+import { ApiError, api, type AgentProfile, type Contact, type Conversation, type Session } from '../api.js';
+import { agentName, agents } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
-import { Avatar, Empty, Priority, StateBadge, Unassigned, ago } from '../ui.js';
+import { Avatar, Empty, OwnerPicker, Priority, StateBadge, Unassigned, ago } from '../ui.js';
 
-const COLUMNS = '220px 1fr 84px 96px 44px 72px 56px';
+// Owner is 150px rather than the 44px an avatar needed: since #1079 the cell is a
+// control, and a picker crushed to an avatar's width is one nobody can read.
+const COLUMNS = '220px 1fr 84px 96px 150px 72px 56px';
 
 /**
  * Each chip is one declared filter column.
@@ -93,6 +96,10 @@ export function Inbox({
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
   const [people, setPeople] = useState<Map<string, Contact>>(new Map());
+  /** The desk's staff — the owner column's names, and what its picker may offer. */
+  const [staff, setStaff] = useState<Map<string, AgentProfile>>(new Map());
+  /** A failed assignment, said out loud. A row that silently snaps back is worse. */
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   /**
    * The newest request wins.
@@ -133,7 +140,29 @@ export function Inbox({
   useLiveReload(load);
   useEffect(() => {
     void contacts().then(setPeople);
+    void agents().then(setStaff);
   }, []);
+
+  /**
+   * Hand one conversation over from the list — the bulk control, in the sense that
+   * matters: a triage pass reassigns a dozen rows without opening any of them.
+   *
+   * It reloads rather than patching the row in place, because assignment can move
+   * the conversation's state (`new → open`) and a row showing the new owner beside
+   * the old badge would be half true.
+   */
+  const reassign = useCallback(
+    (conversationId: string, assignee: string | null) => {
+      setAssignError(null);
+      api
+        .assign({ conversationId, assignee })
+        .then(() => load())
+        .catch((e: Error) =>
+          setAssignError(e instanceof ApiError ? e.message : e.message || String(e)),
+        );
+    },
+    [load],
+  );
 
   // J/K/O, exactly as the footer advertises. A hint that does not work is worse than
   // no hint, so the keys are wired rather than drawn.
@@ -247,12 +276,28 @@ export function Inbox({
                 key={c.id}
                 c={c}
                 who={people.get(c.contact_id)}
+                staff={staff}
                 focused={i === cursor}
                 onOpen={() => go({ name: 'conversation', id: c.id })}
+                onAssign={(assignee) => reassign(c.id, assignee)}
               />
             ))
           )}
         </div>
+
+        {assignError ? (
+          <div
+            style={{
+              padding: '9px 20px',
+              background: 'var(--danger-bg)',
+              borderTop: '1px solid var(--danger-border)',
+              font: "400 12px 'Geist', sans-serif",
+              color: 'var(--danger-2)',
+            }}
+          >
+            {assignError}
+          </div>
+        ) : null}
 
         <div
           style={{
@@ -360,13 +405,17 @@ function Select({
 function Row({
   c,
   who,
+  staff,
   focused,
   onOpen,
+  onAssign,
 }: {
   c: Conversation;
   who: Contact | undefined;
+  staff: Map<string, AgentProfile>;
   focused: boolean;
   onOpen: () => void;
+  onAssign: (assignee: string | null) => void;
 }) {
   // "Unread" in the design is a warm tint. Here it means nobody has replied yet, which
   // is the fact the colour is standing for.
@@ -413,7 +462,26 @@ function Row({
       <div>
         <StateBadge state={c.state} />
       </div>
-      <div>{c.assignee ? <Avatar name={c.assignee} size={22} /> : <Unassigned size={22} />}</div>
+      {/* The owner cell, which used to be an avatar over a raw ULID and nothing else
+          (#1079). The click must not open the conversation: the whole point of
+          reassigning from the list is not having to. */}
+      <div
+        style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {c.assignee ? (
+          <Avatar name={agentName(staff, c.assignee) ?? ''} size={22} />
+        ) : (
+          <Unassigned size={22} />
+        )}
+        <OwnerPicker
+          compact
+          value={c.assignee}
+          staff={[...staff.values()]}
+          disabled={c.state === 'closed'}
+          onChange={onAssign}
+        />
+      </div>
       <div>
         <Priority value={c.priority} />
       </div>

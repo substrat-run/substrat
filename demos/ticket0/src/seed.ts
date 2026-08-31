@@ -298,6 +298,15 @@ async function seedDesk(
   });
 
   // --- Staff profiles: the source of every human-readable name on outbound mail --
+  // Since #1079 they are also the desk's DIRECTORY: `ticket0/list-agents` returns
+  // these rows and `ticket0/assign` refuses a principal that has none. So the admin
+  // gets one too — they work the desk, and a desk-admin nobody could hand a
+  // conversation to would be a hole the seed itself dug.
+  await adminStub.invoke('ticket0/set-agent-profile', {
+    displayName: spec.admin.name,
+    avatarUrl: null,
+    signature: `${spec.admin.name}\n${spec.name} Support`,
+  });
   const agentStub = await host.getScope(spec.agent.principal, tenant, scope);
   await agentStub.invoke('ticket0/set-agent-profile', {
     displayName: spec.agent.name,

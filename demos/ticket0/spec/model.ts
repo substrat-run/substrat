@@ -605,6 +605,33 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
   },
 
+  /**
+   * The desk's staff — the directory an assignee picker reads, and the one the
+   * `assign` handler validates against.
+   *
+   * A profile is what makes someone assignable. That is a deliberate reading of
+   * "staff of this desk" and not a shortcut: nothing in a scope lets module code
+   * ask who else holds `conversation:read`, so the only in-scope record of a
+   * colleague is the row they wrote about themselves. It also gives the rule a
+   * shape a person can act on — an agent who cannot be found in the picker sets
+   * their profile and appears — where a hidden role table would only produce a
+   * name that is missing for no visible reason.
+   *
+   * Read under `conversation:read`, the same key the inbox already needs: knowing
+   * the names of the people whose queue you are looking at is not a second
+   * decision from being allowed to look at it.
+   *
+   * Sorted by name by default because this list is read by a human choosing from
+   * it, not by a feed.
+   */
+  'ticket0/list-agents': {
+    summary: 'The staff of this desk',
+    permission: 'conversation:read',
+    output: ticket0Entities.agentProfile.fields,
+    paged: { over: { entity: 'agentProfile', sortable: ['display_name', 'created_at'] } },
+    http: { method: 'GET', path: '/agents' },
+  },
+
   // ─── Knowledge base ──────────────────────────────────────────────────────────
 
   'ticket0/add-kb-source': {
@@ -932,6 +959,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
   },
 
+  /**
+   * `assignee` is a principal that must already be in the desk's directory — one
+   * of the rows `ticket0/list-agents` returns. The handler refuses anything else
+   * rather than writing it (#1079): an unchecked string here sticks silently, and
+   * the `assigned` notification it mints is addressed to somebody who will never
+   * read it. `null` is the other legal value, and means nobody.
+   */
   'ticket0/assign': {
     summary: 'Assign a conversation to someone (or nobody)',
     permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },

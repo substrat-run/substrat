@@ -440,6 +440,71 @@ describe('the lifecycle, and the two things it will not do', () => {
     expect(calm.priority).toBe('normal');
   });
 
+  /**
+   * Handing work to a colleague — the operation a desk uses every hour, which until
+   * #1079 nothing but the seed could reach and which took any string at all.
+   */
+  it('a conversation is handed to a named colleague, and a stranger is refused', async () => {
+    const anna = await at(world.substrat, 'agent');
+
+    // The directory the picker reads. It is people, not principals: the ULID on a
+    // conversation only becomes a name because these rows exist.
+    const staff = (await anna.invoke('ticket0/list-agents', {})) as Page<{
+      principal: string;
+      display_name: string;
+    }>;
+    const markus = staff.entries.find(
+      (a) => a.principal === world.substrat.admin.principal,
+    );
+    expect(markus?.display_name).toBe('Markus');
+
+    const handed = (await anna.invoke('ticket0/assign', {
+      conversationId: story.conversation,
+      assignee: world.substrat.admin.principal,
+    })) as Conversation;
+    expect(handed.assignee).toBe(world.substrat.admin.principal);
+
+    // The point of assigning: it lands in the other person's queue, and they are
+    // told. Both are read back through the operations the app calls.
+    const theirs = (await (
+      await at(world.substrat, 'admin')
+    ).invoke('ticket0/list-conversations', {
+      assignee: world.substrat.admin.principal,
+    })) as CountedPage<Conversation>;
+    expect(theirs.entries.map((c) => c.id)).toContain(story.conversation);
+
+    const told = (await (
+      await at(world.substrat, 'admin')
+    ).invoke('ticket0/my-notifications', {})) as Page<{ kind: string; conversation_id: string | null }>;
+    expect(
+      told.entries.some((n) => n.kind === 'assigned' && n.conversation_id === story.conversation),
+    ).toBe(true);
+
+    // A principal with no profile is not staff of this desk. Refused, not written:
+    // a typo that sticks is a conversation nobody works and a notification nobody
+    // receives.
+    const stranger = principalId.parse(ulid());
+    await expect(
+      anna.invoke('ticket0/assign', {
+        conversationId: story.conversation,
+        assignee: stranger,
+      }),
+    ).rejects.toThrow(/not a member of this desk/);
+
+    // And the refusal left the previous owner alone — it threw before the write.
+    const unchanged = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: story.conversation,
+    })) as Conversation;
+    expect(unchanged.assignee).toBe(world.substrat.admin.principal);
+
+    // Nobody is always legal: dropping a conversation needs no directory entry.
+    const dropped = (await anna.invoke('ticket0/assign', {
+      conversationId: story.conversation,
+      assignee: null,
+    })) as Conversation;
+    expect(dropped.assignee).toBeNull();
+  });
+
   it('a closed conversation is closed — the machine has no edge out', async () => {
     const anna = await at(world.substrat, 'agent');
     await anna.invoke('ticket0/post-public-reply', {
