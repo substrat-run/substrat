@@ -105,6 +105,7 @@ export function RefChipRow({ ids, byId, onChange }: { ids: string[]; byId: Map<s
             if (from === null || from === i) return;
             const next = [...ids];
             const [moved] = next.splice(from, 1);
+            if (moved === undefined) return;
             next.splice(i, 0, moved);
             onChange(next);
           }}

@@ -211,10 +211,10 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
 
   // The install block repeats across jobs (self-contained file, see above). `fetch-depth: 2`
   // is what lets the changesets release gate diff package.json against the previous commit.
-  const setup = (fetchDepth?: number): string => `      - uses: actions/checkout@v4${
+  const setup = (fetchDepth?: number): string => `      - uses: actions/checkout@v7${
     fetchDepth ? `\n        with:\n          fetch-depth: ${fetchDepth}` : ''
   }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           # 22+: corepack resolves the latest pnpm for lockfile-only repos, and pnpm 11
           # needs Node >= 22.13 (node:sqlite).
@@ -338,7 +338,7 @@ ${cpEnv}
     runs-on: ubuntu-latest
     concurrency: substrat-preview-\${{ github.event.number }}
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: Reap the preview

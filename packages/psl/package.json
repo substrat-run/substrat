@@ -26,7 +26,7 @@
     "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "^7.0.0",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "publishConfig": {

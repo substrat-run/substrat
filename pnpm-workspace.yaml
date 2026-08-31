@@ -72,6 +72,15 @@ catalog:
   wrangler: ^4.110.0
   '@types/node': ^22.0.0
 
+  # The compiler. Here for the same reason as the rest, and it had already
+  # drifted: 55 members on ^7.0.0, two on ^7.0.2, and `apps/dashboard` still on
+  # ^5.6.0 — a whole major behind, so the one app whose type errors nobody would
+  # see was the one checked by a different compiler than the gate that reviews
+  # it. `examples/external-vertical`, `spikes/*` and
+  # `packages/create-substrat/template` keep literal ranges: they are outside the
+  # workspace on purpose, and `catalog:` does not resolve there.
+  typescript: ^7.0.0
+
 onlyBuiltDependencies:
   - esbuild
   - workerd

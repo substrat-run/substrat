@@ -409,7 +409,7 @@ export function Me({
                   fontWeight: theme === t ? 600 : 500,
                 }}
               >
-                {t[0].toUpperCase() + t.slice(1)}
+                {t.slice(0, 1).toUpperCase() + t.slice(1)}
               </button>
             ))}
           </div>

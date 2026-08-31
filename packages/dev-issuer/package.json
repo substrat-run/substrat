@@ -40,10 +40,10 @@
   },
   "devDependencies": {
     "@substrat-run/oidc-rp": "workspace:^",
-    "@types/node": "^22.0.0",
+    "@types/node": "catalog:",
     "hono": "^4.6.0",
     "tsx": "^4.19.0",
-    "typescript": "^7.0.0",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   }
 }

@@ -267,7 +267,7 @@ export function SubmitExpense({ d, onClose, onDone }: FlowProps) {
             run(async () => {
               await api.submitExpense({
                 employeeId: eid,
-                description: note || `${category[0].toUpperCase()}${category.slice(1)} expense`,
+                description: note || `${category.slice(0, 1).toUpperCase()}${category.slice(1)} expense`,
                 amount: String(Number(amount)),
                 currency,
                 category,
