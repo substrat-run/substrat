@@ -33,6 +33,7 @@ import {
   listContractSuite,
   permMod,
   inputParseContractSuite,
+  spineGuardContractSuite,
 } from '@substrat-run/contract-tests';
 import { CloudflareScopeHost } from '../src/host.js';
 
@@ -1084,6 +1085,20 @@ inputParseContractSuite('adapter-cloudflare', async () => {
     scope: env.SCOPE,
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+  });
+  return { host, cleanup: async () => host.close() };
+});
+
+// #954: the spine guard on ctx.sql. `testMod` is in `contractTestModules`, so the
+// ScopeDO already carries the forge operations at code time — and it is THIS host
+// the guard has to hold on, since a vertical is written against the pure adapter
+// and deployed onto the DO.
+spineGuardContractSuite('adapter-cloudflare', async () => {
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+    checker: UNSAFE_allowAllChecker,
   });
   return { host, cleanup: async () => host.close() };
 });

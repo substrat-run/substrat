@@ -16,6 +16,7 @@ import {
   idempotencyContractSuite,
   listContractSuite,
   inputParseContractSuite,
+  spineGuardContractSuite,
 } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
@@ -175,6 +176,21 @@ listContractSuite('adapter-sqlite', async () => {
 inputParseContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-parse-'));
   const host = new SqliteScopeHost({ dir });
+  return {
+    host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #954: the spine guard on ctx.sql. Allow-all checker — the module's forge
+// operations check nothing, because what is being pinned is the connection, not
+// the permission in front of it.
+spineGuardContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-spine-'));
+  const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,
     cleanup: async () => {

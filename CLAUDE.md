@@ -174,7 +174,11 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   reaches another scope's data, where `ctx.sql` cannot. Capabilities come from `ctx`.
 - No `fetch`/network in module code; connectors handle the outside world.
 - Never write to `_substrat_*` tables (reads for projections like timelines are fine —
-  writes forge the spine).
+  writes forge the spine). This one is a **mechanism**, not only a lint rule (#954):
+  `ctx.sql` itself refuses a write whose target is a `_substrat_*` table, on both
+  adapters, so the rule holds on the hosted push path too — where boundary-lint never
+  runs. Only the write's target is judged, so `INSERT INTO my_timeline SELECT … FROM
+  _substrat_events` still works.
 - Every operation's first line: `assertAllowed(await ctx.check(PERM))`; per-entity
   checks (`ctx.check(perm, entityRef)`) for portal-style walks.
 - Every mutation emits a **fat** event (consumer must never need a cross-module read);

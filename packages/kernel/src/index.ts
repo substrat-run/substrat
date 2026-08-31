@@ -140,6 +140,7 @@ export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
 export { ulid } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
+export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';
 export type { RoutedNode, HeaderReader, ReadRoutedNodeOptions } from './routed-node.js';
 export {
