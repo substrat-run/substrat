@@ -1,4 +1,4 @@
-import type { ScopedSql, SqlValue } from '@substrat-run/kernel';
+import { guardSpine, type ScopedSql, type SqlValue } from '@substrat-run/kernel';
 
 /**
  * Adapts a Durable Object's `SqlStorage` to the kernel's `ScopedSql` contract
@@ -13,14 +13,19 @@ import type { ScopedSql, SqlValue } from '@substrat-run/kernel';
  * commit or roll back together, with read-your-own-writes intact and no buffering.
  * (`transactionSync` also exists but is synchronous-only — it commits at the first
  * await, so it is not used for the async operation body.)
+ *
+ * `guardSpine` wraps it because this is the connection MODULE code holds (#954):
+ * "never write `_substrat_*`" was a lint rule only, and lint never runs on the
+ * hosted push path. The DO's own spine writes go through `this.sql` directly and
+ * never pass through here.
  */
 export function doScopedSql(sql: SqlStorage): ScopedSql {
-  return {
+  return guardSpine({
     query: <T = Record<string, SqlValue>>(q: string, params: readonly SqlValue[] = []): T[] =>
       sql.exec(q, ...(params as SqlValue[])).toArray() as T[],
     exec: (q: string, params: readonly SqlValue[] = []) => {
       const cursor = sql.exec(q, ...(params as SqlValue[]));
       return { changes: cursor.rowsWritten };
     },
-  };
+  });
 }

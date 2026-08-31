@@ -508,6 +508,82 @@ const readTuples: OperationHandler<
   { subject: string; relation: string; object: string }[]
 > = (ctx) => ctx.sql.query('SELECT subject, relation, object FROM _substrat_tuples ORDER BY subject');
 
+/**
+ * The forges (#954). Each one is a statement a module could reach the spine with
+ * before `ctx.sql` was guarded — a granted tuple, a rewritten event, a dropped
+ * migration journal — plus the two evasions a naive scanner hands through: a
+ * quoted identifier, and a write dressed as a read with `RETURNING`.
+ *
+ * `forgeAfterWrite` is the one that proves the refusal is not merely a no-op: the
+ * operation writes a legitimate row first, so if the throw did not take the whole
+ * transaction with it, the item would survive.
+ */
+const forgeTuple: OperationHandler<undefined, void> = (ctx) => {
+  ctx.sql.exec('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', [
+    'principal:forged',
+    'granted:testmod:use',
+    'scope:forged',
+  ]);
+};
+
+const forgeOutbox: OperationHandler<undefined, void> = (ctx) => {
+  ctx.sql.exec("UPDATE _substrat_outbox SET payload = '{\"forged\":true}'");
+};
+
+const forgeDropJournal: OperationHandler<undefined, void> = (ctx) => {
+  ctx.sql.exec('DROP TABLE IF EXISTS _substrat_migrations');
+};
+
+const forgeQuoted: OperationHandler<undefined, void> = (ctx) => {
+  ctx.sql.exec('DELETE FROM "_substrat_tuples"');
+};
+
+/**
+ * The second table a statement reaches past the one it names first: a trigger ON the
+ * outbox makes every LATER kernel write fail with SQLITE_CONSTRAINT. Denial of the
+ * spine rather than forgery of it, and just as much a reach past `ctx.sql`.
+ */
+const forgeTrigger: OperationHandler<undefined, void> = (ctx) => {
+  ctx.sql.exec(
+    "CREATE TRIGGER block_outbox BEFORE INSERT ON _substrat_outbox " +
+      "BEGIN SELECT RAISE(ABORT, 'blocked'); END",
+  );
+};
+
+const forgeReturning: OperationHandler<undefined, unknown[]> = (ctx) =>
+  ctx.sql.query('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?) RETURNING subject', [
+    'principal:forged',
+    'granted:testmod:use',
+    'scope:forged',
+  ]);
+
+const forgeAfterWrite: OperationHandler<{ id: string }, void> = (ctx, input) => {
+  ctx.sql.exec('INSERT INTO testmod_items (id, box) VALUES (?, ?)', [input.id, 'b-forge']);
+  ctx.sql.exec('INSERT INTO _substrat_tuples (subject, relation, object) VALUES (?, ?, ?)', [
+    'principal:forged',
+    'granted:testmod:use',
+    'scope:forged',
+  ]);
+};
+
+/**
+ * The projection CLAUDE.md blesses — a spine READ feeding a domain write. The
+ * guard judges the write's target only, so this has to keep working; a guard that
+ * refused it would be a rule against timelines rather than against forging.
+ */
+const projectJournal: OperationHandler<undefined, void> = (ctx) => {
+  ctx.sql.exec(
+    "INSERT OR REPLACE INTO testmod_notes (id, body) " +
+      "SELECT module_id || '@' || version, version FROM _substrat_migrations",
+  );
+};
+
+const readItems: OperationHandler<undefined, { id: string }[]> = (ctx) =>
+  ctx.sql.query('SELECT id FROM testmod_items ORDER BY id');
+
+const readNotes: OperationHandler<undefined, { id: string; body: string }[]> = (ctx) =>
+  ctx.sql.query('SELECT id, body FROM testmod_notes ORDER BY id');
+
 const linkOp: OperationHandler<{ child: EntityRef; parent: EntityRef }, void> = (ctx, input) => {
   ctx.link(input.child, input.parent);
 };
@@ -782,6 +858,17 @@ export const testMod: ModuleRegistration = {
     'testmod/link-undeclared': linkUndeclared as OperationHandler<never, unknown>,
     'testmod/read-journal': readJournal as OperationHandler<never, unknown>,
     'testmod/read-tuples': readTuples as OperationHandler<never, unknown>,
+    // #954 — the spine guard's fixtures.
+    'testmod/forge-tuple': forgeTuple as OperationHandler<never, unknown>,
+    'testmod/forge-outbox': forgeOutbox as OperationHandler<never, unknown>,
+    'testmod/forge-drop-journal': forgeDropJournal as OperationHandler<never, unknown>,
+    'testmod/forge-quoted': forgeQuoted as OperationHandler<never, unknown>,
+    'testmod/forge-trigger': forgeTrigger as OperationHandler<never, unknown>,
+    'testmod/forge-returning': forgeReturning as OperationHandler<never, unknown>,
+    'testmod/forge-after-write': forgeAfterWrite as OperationHandler<never, unknown>,
+    'testmod/project-journal': projectJournal as OperationHandler<never, unknown>,
+    'testmod/read-items': readItems as OperationHandler<never, unknown>,
+    'testmod/read-notes': readNotes as OperationHandler<never, unknown>,
   },
 };
 

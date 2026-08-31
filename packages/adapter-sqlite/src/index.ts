@@ -153,6 +153,7 @@ import {
   attachmentBlobKey,
   entitlementDenial,
   foldMeterReading,
+  guardSpine,
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
@@ -7757,13 +7758,18 @@ function cellToJson(v: unknown): unknown {
   return v;
 }
 
+/**
+ * The connection module code holds. `guardSpine` is what makes "never write
+ * `_substrat_*`" a mechanism rather than a lint rule (#954) — the kernel's own
+ * spine writes use `rt.db` directly and never pass through here.
+ */
 function scopedSql(db: Database.Database): ScopedSql {
-  return {
+  return guardSpine({
     query: <T>(sql: string, params: readonly SqlValue[] = []): T[] =>
       db.prepare(sql).all(...params) as T[],
     exec: (sql: string, params: readonly SqlValue[] = []) => {
       const info = db.prepare(sql).run(...params);
       return { changes: info.changes };
     },
-  };
+  });
 }
