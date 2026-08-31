@@ -3,9 +3,9 @@ import {
   compareDecimal,
   moneyOf,
   mulMoney,
+  operationInputsOf,
   pageVisible,
   z,
-  type EntityRef,
   type Money,
   type Page,
 } from '@substrat-run/contracts';
@@ -66,10 +66,20 @@ export interface PriceRow {
   internal: number;
 }
 
-const createCustomerOp: OperationHandler<
-  { number: string; name: string; phone?: string },
-  CustomerRow
-> = async (ctx, input) => {
+// Every operation that takes an input declares it as a Zod object here, and the
+// handler's input type is `z.infer` of that object — one description of the
+// shape, so the schema and the type cannot drift apart. `bikeShopOperations` at
+// the bottom of this file hands the whole set to the host.
+const createCustomerInput = z.object({
+  number: z.string().min(1),
+  name: z.string().min(1),
+  phone: z.string().min(1).optional(),
+});
+
+const createCustomerOp: OperationHandler<z.infer<typeof createCustomerInput>, CustomerRow> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(SHOP_PERM.customerManage));
   const id = ulid();
   ctx.sql.exec(
@@ -92,10 +102,16 @@ const listCustomersOp: OperationHandler<undefined, (CustomerRow & { bikes: BikeR
   }));
 };
 
-const registerBikeOp: OperationHandler<
-  { customerId: string; label: string; frameNo?: string },
-  BikeRow
-> = async (ctx, input) => {
+const registerBikeInput = z.object({
+  customerId: z.string().min(1),
+  label: z.string().min(1),
+  frameNo: z.string().min(1).optional(),
+});
+
+const registerBikeOp: OperationHandler<z.infer<typeof registerBikeInput>, BikeRow> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(SHOP_PERM.bikeManage));
   const customer = ctx.sql.query<CustomerRow>('SELECT * FROM shop_customers WHERE id = ?', [
     input.customerId,
@@ -112,18 +128,20 @@ const registerBikeOp: OperationHandler<
   return ctx.sql.query<BikeRow>('SELECT * FROM shop_bikes WHERE id = ?', [id])[0]!;
 };
 
-const upsertPriceOp: OperationHandler<
-  {
-    article: string;
-    description: string;
-    unit: string;
-    priceAmount: string;
-    currency?: string;
-    minQty?: string;
-    internal?: boolean;
-  },
-  PriceRow
-> = async (ctx, input) => {
+const upsertPriceInput = z.object({
+  article: z.string().min(1),
+  description: z.string().min(1),
+  unit: z.string().min(1),
+  priceAmount: z.string().min(1),
+  currency: z.string().min(1).optional(),
+  minQty: z.string().min(1).optional(),
+  internal: z.boolean().optional(),
+});
+
+const upsertPriceOp: OperationHandler<z.infer<typeof upsertPriceInput>, PriceRow> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(SHOP_PERM.customerManage));
   ctx.sql.exec(
     `INSERT OR REPLACE INTO shop_price_list
@@ -154,10 +172,17 @@ const priceListOp: OperationHandler<undefined, PriceRow[]> = async (ctx) => {
  * The vertical resolves its own vocabulary (a bike, its owner) into the engine's
  * `facility`/`customer` refs; the engine owns the number, the state, the event.
  */
-const createRepairOp: OperationHandler<
-  { bikeId: string; kind: string; title: string; description?: string },
-  WorkOrder
-> = async (ctx, input) => {
+const createRepairInput = z.object({
+  bikeId: z.string().min(1),
+  kind: z.string().min(1),
+  title: z.string().min(1),
+  description: z.string().optional(),
+});
+
+const createRepairOp: OperationHandler<z.infer<typeof createRepairInput>, WorkOrder> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(WO.create));
   const bike = ctx.sql.query<BikeRow>('SELECT * FROM shop_bikes WHERE id = ?', [input.bikeId])[0];
   if (!bike) throw new Error(`bike not found: ${input.bikeId}`);
@@ -179,8 +204,10 @@ const createRepairOp: OperationHandler<
  * The engine's `workorder.completed` event carries these lines, and the
  * invoicing engine consumes it — no import between the two.
  */
+const repairIdInput = z.object({ orderId: z.string().min(1) });
+
 const completeRepairOp: OperationHandler<
-  { orderId: string },
+  z.infer<typeof repairIdInput>,
   { order: WorkOrder; billable: BillableLine[]; total: Money }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(WO.complete));
@@ -237,7 +264,10 @@ const completeRepairOp: OperationHandler<
  * engine's in-scope `closeWorkOrder`; the vertical owns the vocabulary
  * ("pickup"), the engine owns the transition.
  */
-const closeRepairOp: OperationHandler<{ orderId: string }, WorkOrder> = async (ctx, input) => {
+const closeRepairOp: OperationHandler<z.infer<typeof repairIdInput>, WorkOrder> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(WO.close));
   return closeWorkOrder(ctx, { orderId: input.orderId });
 };
@@ -276,12 +306,14 @@ const timelineInput = z.object({
  * An entity's event timeline, read straight off the spine (a read of `_substrat_*`
  * for a projection is allowed; writing it is not). Gated by a per-entity
  * `workorder:read` check, so it obeys the same walk as the portal.
+ *
+ * No `.parse` in here: the host already parsed `entity` against
+ * `timelineInput` before this line ran, on whichever path the call came in by.
  */
 const timelineOp: OperationHandler<
   z.infer<typeof timelineInput>,
   { type: string; occurred_at: string; actor: string }[]
-> = async (ctx, rawInput) => {
-  const entity: EntityRef = timelineInput.parse(rawInput);
+> = async (ctx, entity) => {
   assertAllowed(await ctx.check(WO.read, entity));
   // Append order is authoritative — rowid, not ULID (ids minted in the same
   // millisecond are not mutually ordered).
@@ -292,9 +324,33 @@ const timelineOp: OperationHandler<
   );
 };
 
+/**
+ * What each operation accepts. A complete census of the ten below: an entry with
+ * no `input` takes nothing, and `paged: true` is how the portal read says the
+ * platform supplies the page trio (`limit`/`cursor`/`order`/`sort`) — declaring
+ * those four by hand is how the two descriptions of one page come to disagree.
+ */
+const bikeShopOperations = {
+  'shop/create-customer': { input: createCustomerInput },
+  'shop/list-customers': {},
+  'shop/register-bike': { input: registerBikeInput },
+  'shop/upsert-price': { input: upsertPriceInput },
+  'shop/price-list': {},
+  'shop/create-repair': { input: createRepairInput },
+  'shop/complete-repair': { input: repairIdInput },
+  'shop/close-repair': { input: repairIdInput },
+  'shop/portal-repairs': { paged: true },
+  'shop/timeline': { input: timelineInput },
+};
+
 export const bikeShopModule: ModuleRegistration = {
   manifest: bikeShopManifest,
   migrations: bikeShopMigrations,
+  // The host parses every invocation against these before the guards, the
+  // permission check and the handler — so "parse, don't trust" holds on every
+  // path in (HTTP, test, seed, schedule) rather than in the handlers that
+  // remembered to do it themselves.
+  operationInputs: operationInputsOf(bikeShopOperations),
   operations: {
     'shop/create-customer': createCustomerOp as never,
     'shop/list-customers': listCustomersOp as never,
