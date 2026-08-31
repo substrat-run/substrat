@@ -11,6 +11,7 @@
  */
 import { warnIfStale } from './version.js';
 import { parseJsonBody } from './http.js';
+import { failureMessage } from './problem.js';
 
 export interface PromoteOptions {
   controlPlaneUrl: string;
@@ -55,6 +56,8 @@ export async function promote(opts: PromoteOptions): Promise<PromoteResult> {
   });
   warnIfStale(res.headers);
   const body = await res.text();
-  if (!res.ok) throw new Error(`promote failed (${res.status}): ${body.slice(0, 300)}`);
+  // A refused promote is exactly where the problem document earns its keep: the two
+  // checkpoints answer 4xx with the diff that needs acknowledging (#971).
+  if (!res.ok) throw new Error(failureMessage('promote failed', res.status, body));
   return parseJsonBody<PromoteResult>(body, url);
 }
