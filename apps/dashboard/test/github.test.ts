@@ -262,6 +262,50 @@ describe('GitHub App client', () => {
       expect(yaml).toContain("if: github.event_name == 'push'");
     });
 
+    it('gates every push and preview on the project own checks (#955)', () => {
+      // A push IS a release. Outside this monorepo the hosted push path is the only path a
+      // customer has, so a workflow that goes checkout → install → build → push leaves every
+      // mechanical rule the platform advertises — the layer rules, the type checker, the
+      // suite — advisory. The gate has to sit BEFORE the upload in each job that uploads.
+      const GATE = '- name: Gate the push (typecheck, tests, layer rules)';
+      const yaml = deployWorkflowYaml({
+        branch: 'main',
+        slug: 'auth-server',
+        cpUrl: 'https://console.example/api',
+        path: 'demos/auth-server',
+      });
+      const [deployJob = '', previewJobs = ''] = yaml.split('\n  preview:\n');
+      const [previewJob = '', cleanupJob = ''] = previewJobs.split('\n  preview_cleanup:\n');
+      for (const [job, upload] of [
+        [deployJob, 'push demos/auth-server --slug auth-server --promote prod'],
+        [previewJob, 'preview create demos/auth-server --slug auth-server --tag'],
+      ] as const) {
+        const gate = job.indexOf(GATE);
+        expect(gate).toBeGreaterThan(job.indexOf('- name: Build workspace dependencies'));
+        expect(job.indexOf(upload)).toBeGreaterThan(gate);
+      }
+      // The reap job uploads nothing and never checks the repo out — nothing to gate.
+      expect(cleanupJob).not.toContain(GATE);
+
+      // The three names are the gates `npm create substrat` writes into a scaffold, run from
+      // the PACKAGE directory; in a monorepo one the package does not declare falls back to
+      // the repo root, which is where a workspace usually keeps `lint:boundaries`.
+      expect(yaml).toContain('for s in typecheck test lint:boundaries; do');
+      expect(yaml).toContain(`if declares 'demos/auth-server/package.json' "$s"; then ( cd demos/auth-server && $PM run "$s" )`);
+      expect(yaml).toContain(`elif declares 'package.json' "$s"; then $PM run "$s"`);
+      // `set -e` is what turns a violation into a failed job rather than a logged one.
+      expect(yaml.slice(yaml.indexOf(GATE))).toContain('set -euo pipefail');
+      // A repo that declares none of them still deploys — this file is regenerated into
+      // repos that predate the gate — but it must never report itself as gated.
+      expect(yaml).toContain('this push is UNGATED');
+
+      // The single-package shape gates too, against its own package.json.
+      const root = wf();
+      expect(root).toContain(GATE);
+      expect(root.indexOf(GATE)).toBeLessThan(root.indexOf('cli push . --slug hr-portal --promote prod'));
+      expect(root).toContain(`if declares 'package.json' "$s"; then ( cd . && $PM run "$s" )`);
+    });
+
     it('never hard-codes a fabricated version coordinate', () => {
       // Regression on #509 ask (e): the first generated workflow pushed
       // `--version 0.1.${{ github.run_number }}`, which claimed a real registry patch

@@ -209,6 +209,50 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
           fi`
     : '';
 
+  // The gate, between the build and every push (#955).
+  //
+  // A push IS a release: it uploads a bundle the platform admits and serves. So everything
+  // the project enforces mechanically has to hold BEFORE the upload, not in a CI job running
+  // beside this one that goes red on code prod is already serving. Outside this monorepo
+  // nothing else ever runs those rules — the hosted push path is the only path a customer
+  // has — which is what made R2's ambient-env ban, R5, R6 and R7 advisory for every project
+  // that is not this repo.
+  //
+  // The three names are the gates a scaffolded project ships with (`npm create substrat`
+  // writes `test`, `typecheck` and `lint:boundaries`). Each runs from the PACKAGE directory
+  // when the package declares it; in a monorepo a gate the package does not declare falls
+  // back to the repo root, which is where a workspace usually keeps `lint:boundaries`. A
+  // non-zero exit fails the job before `push` is reached.
+  //
+  // A project that declares none of the three is still pushed — this file is regenerated
+  // into repos that predate the gate, and refusing there would break their deploy on an
+  // upgrade — but it says so loudly instead of passing quietly.
+  const pkgRelRef = path ? `${path}/package.json` : 'package.json';
+  const gate = `
+      - name: Gate the push (typecheck, tests, layer rules)
+        # Runs the gates the package declares — a violation fails the job before anything
+        # is uploaded. Add \`test\`, \`typecheck\` and \`lint:boundaries\` scripts to gate more;
+        # \`lint:boundaries\` is \`substrat-boundary-lint\` from @substrat-run/boundary-lint.
+        run: |
+          set -euo pipefail
+          if [ -f pnpm-lock.yaml ]; then PM=pnpm
+          elif [ -f yarn.lock ]; then PM=yarn
+          else PM=npm
+          fi
+          declares() { node -e "const s=require(process.cwd()+'/'+process.argv[1]).scripts||{};process.exit(s[process.argv[2]]?0:1)" "$1" "$2"; }
+          RAN=''
+          for s in typecheck test lint:boundaries; do
+            if declares '${pkgRelRef}' "$s"; then ( cd ${dir} && $PM run "$s" ); RAN="$RAN $s"
+            elif declares 'package.json' "$s"; then $PM run "$s"; RAN="$RAN $s"
+            else echo "no '$s' script in ${pkgRelRef} — skipped"
+            fi
+          done
+          if [ -z "$RAN" ]; then
+            echo "::warning::no typecheck, test or lint:boundaries script — this push is UNGATED. See https://substrat.net/guide/deploying"
+          else
+            echo "gates passed:$RAN"
+          fi`;
+
   // The install block repeats across jobs (self-contained file, see above). `fetch-depth: 2`
   // is what lets the changesets release gate diff package.json against the previous commit.
   //
@@ -235,7 +279,7 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
           elif [ -f yarn.lock ]; then corepack enable && yarn install --frozen-lockfile
           elif [ -f package-lock.json ]; then npm ci
           else npm install
-          fi${buildDeps}`;
+          fi${buildDeps}${gate}`;
 
   const cpEnv = `        env:
           SUBSTRAT_SERVICE_TOKEN: \${{ secrets.SUBSTRAT_SERVICE_TOKEN }}
