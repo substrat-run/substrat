@@ -1,5 +1,34 @@
 # @substrat-run/contracts
 
+## 0.95.0
+
+### Minor Changes
+
+- 7bf77df: The generated deploy workflow now gates the push. Between the build and `substrat push` it
+  runs whichever of `typecheck`, `test` and `lint:boundaries` the deployed package declares — the
+  three a scaffolded project ships with — from that package's own directory. A non-zero exit
+  fails the job before anything is uploaded.
+
+  Only the package's own scripts, never the repo root's: the build step ahead of it builds the
+  vertical's dependency closure and nothing more, so a root script is free to need a tool the job
+  never built. A monorepo package that wants the layer rules gated declares them itself,
+  `"lint:boundaries": "substrat-boundary-lint"` beside a devDependency on
+  `@substrat-run/boundary-lint`.
+
+  Outside the Substrat monorepo the hosted push path is the only path there is, so this is the
+  first place the layer rules, the type checker and the suite actually run for a project. A repo
+  that declares none of the three still deploys — the workflow is regenerated into projects that
+  predate the gate — but the run reports itself as ungated rather than passing quietly.
+
+### Patch Changes
+
+- f065a84: `substrat init --ci github` now pins `actions/checkout@v7` and
+  `actions/setup-node@v6` instead of `@v4` of both, and passes
+  `persist-credentials: false` to the checkout. A scaffolded project no longer
+  arrives on action majors two releases behind, and the workflow token no longer
+  sits in `.git/config` while the job installs and builds — nothing in the
+  generated workflow speaks git over the network after the checkout.
+
 ## 0.94.0
 
 ### Minor Changes
@@ -4486,7 +4515,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

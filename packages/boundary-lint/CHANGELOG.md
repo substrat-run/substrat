@@ -1,5 +1,29 @@
 # @substrat-run/boundary-lint
 
+## 0.3.0
+
+### Minor Changes
+
+- 382f697: R8: an engine may not read with a star. `SELECT *`, `SELECT DISTINCT *` and the qualified
+  `SELECT t.*` in an engine's module code are now violations — a star publishes whatever
+  columns the physical table currently holds, so a column that moves between two engine
+  versions reaches a vertical as wrong data on a screen rather than a throw. A read names
+  its columns (`columnsOf(schema)`) and returns through `returns(schema, …)`. Scoped to
+  engine packages, with the reviewable `boundary-lint-allow R8` … `boundary-lint-end R8`
+  hatch R5 and R6 carry. `SELECT COUNT(*)` is untouched.
+
+  A config-declared package with `"engine": true` now defaults to no harness exemptions, the
+  same as `engines/*` in the monorepo — an engine's `index.ts` is its whole surface, not a
+  composition root, so it was the one file every rule skipped.
+
+### Patch Changes
+
+- 7bf77df: `substrat-boundary-lint` is now a checked-in launcher rather than `dist/cli.js` directly. A
+  package manager creates the bin symlink at **install** time, when a workspace copy of this
+  package has no `dist` yet — so in any repo that installs before it builds, the bin was silently
+  never linked and `substrat-boundary-lint` came back "not found" later in the same job. Published
+  installs are unaffected; the tarball carries `dist` and the launcher just forwards to it.
+
 ## 0.2.1
 
 ### Patch Changes

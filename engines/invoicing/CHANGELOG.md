@@ -1,5 +1,21 @@
 # @substrat-run/engine-invoicing
 
+## 0.9.11
+
+### Patch Changes
+
+- 4f641a7: Invites, invoicing and metering now parse the rows they return instead of trusting
+  a TypeScript assertion that is not there at runtime. Each read names the columns its
+  published schema describes rather than `SELECT *`, so a column that moved is a throw
+  naming itself instead of a field quietly missing from a screen — and a column added
+  upstream never crosses the seam at all. Nothing about the published shapes changed;
+  what changed is that a stored row which stops matching one is now refused, and blamed
+  on the engine rather than reported to the caller as a bad request.
+- Updated dependencies [f065a84]
+- Updated dependencies [7bf77df]
+  - @substrat-run/contracts@0.95.0
+  - @substrat-run/kernel@0.95.0
+
 ## 0.9.10
 
 ### Patch Changes
@@ -1242,7 +1258,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
