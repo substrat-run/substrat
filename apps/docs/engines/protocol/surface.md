@@ -61,6 +61,24 @@ checking the same thing. The multi-party question is answered by the state machi
 
 None of these check permissions — that is the caller's job.
 
+**What they return is parsed, not asserted.** Every value crossing back out of this engine
+goes through the schema the engine publishes in `src/schemas.ts` — `protocolTemplateRow`,
+`protocolInstanceRow`, `protocolResponseRow`, `protocolSignatureRow`,
+`protocolSignatureRequestRow`, and the composites the operations answer with (`signResult`,
+`requestSignaturesResult`, `protocolDetail`, `protocolSummary`) — the same schema the
+matching operation points its `output` at. Engine surfaces evolve additively (D-28), but that
+rule is held by review; the parse is what makes the failure it prevents *loud*. A vertical
+compiled against 0.3 and running against 0.4, whose row shape moved, used to read a field
+that had become `null` and render it — now the read throws at the seam. The reads name their
+columns for the same reason: the SELECT list is derived from the row schema (`columnsOf`),
+where `SELECT *` would publish whatever the physical table happens to hold.
+
+This engine is the sharper case for having the seam at all. A signature attests to a hash
+over the stored rows, so a row that quietly changed shape is a row whose hash no longer says
+what the signatory was shown — silence there is worse than a throw.
+`engines/protocol/src/seam.ts` is one line, `engineSeam('engine-protocol')`; the helpers
+themselves live in `@substrat-run/contracts`.
+
 `signProtocol`, `countersignProtocol`, `requestSignatures`, `recordSignature` and
 `protocolContentHash` are **async** because Web Crypto is; the rest are synchronous. That `protocolContentHash` is exported at all is the
 point of the invariant: the recipe is a contract you can replay, not a black box.

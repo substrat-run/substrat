@@ -58,6 +58,23 @@ subject: {
 
 **Reads** take the bare `ref` — no erasure key is needed to look.
 
+**What they return is parsed, not asserted.** Every value crossing back out of this engine
+goes through the schema the engine publishes in `src/schemas.ts` — `leaveType`,
+`absenceEntry`, `absenceRequest`, `absenceDay` — the same schema the matching operation
+points its `output` at. Engine surfaces evolve additively (D-28), but that rule is held by
+review; the parse is what makes the failure it prevents *loud*. A vertical compiled against
+0.3 and running against 0.4, whose row shape moved, used to read a field that had become
+`null` and render it — now the read throws at the seam. The reads name their columns for the
+same reason: the SELECT list is derived from the row schema (`columnsOf`), where `SELECT *`
+would publish whatever the physical table happens to hold.
+
+The **fold** is parsed too, and here that is the point. A balance is the sum of every `delta`
+in the ledger, so a `delta` that drifted is the one value that would otherwise cross as a
+*number nobody questions* — wrong on a screen, never a throw. `balanceAsOf` parses each
+`delta` as it folds and the answer as a signed decimal, and `availability` parses the day
+series it computes. `engines/absence/src/seam.ts` is one line,
+`engineSeam('engine-absence')`; the helpers themselves live in `@substrat-run/contracts`.
+
 Notes worth knowing:
 
 - `decideAbsence(approve)` **re-folds at decision time** and enforces the leave type's

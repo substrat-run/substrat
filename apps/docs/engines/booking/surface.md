@@ -58,6 +58,25 @@ availabilityPage(ctx, { resourceId, from, to,
                         limit?, cursor? })         → Page<FreeInterval>   // cursor is a segment's startsAt
 ```
 
+**What they return is parsed, not asserted.** Every value crossing back out of this engine
+goes through the schema the engine publishes in `src/schemas.ts` — `resource`,
+`reservation`, `participant`, `freeInterval` — the same schema the matching operation points
+its `output` at. Engine surfaces evolve additively (D-28), but that rule is held by review;
+the parse is what makes the failure it prevents *loud*. A vertical compiled against 0.3 and
+running against 0.4, whose row shape moved, used to read a field that had become `null` and
+render it — now the read throws at the seam. The reads name their columns for the same
+reason: the SELECT list is derived from the row schema (`columnsOf`), where `SELECT *` would
+publish whatever the physical table happens to hold.
+
+That covers the **computed** answers too, not only stored rows. `availability` merges every
+live reservation in the window into free intervals and parses the fold before handing it
+back, so a segment that stopped matching `freeInterval` is a throw rather than a wrong gap
+drawn on a calendar. Every read here is one row, one reservation's roster, one page, or one
+resource's calendar window, so the parsed set is bounded by the caller's own window — which
+is why there is no dev-only shortcut, the skew being guarded against lives in production.
+`engines/booking/src/seam.ts` is one line, `engineSeam('engine-booking')`; the helpers
+themselves live in `@substrat-run/contracts`.
+
 ### The paged twins
 
 Each list operation answers with a `Page<T>` — `{ entries, nextCursor }` — and the function
