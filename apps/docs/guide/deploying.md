@@ -384,7 +384,7 @@ The staff gate returns only when you **widen the audience**: `substrat publish <
 vertical on the marketplace, and from then on its pushes land pending and its prod promotion is a
 staff decision again — because now *other* tenants can run your code against *their* data.
 
-## Preview a pull request — `substrat preview`
+## Preview a pull request — `substrat preview` {#preview-a-pull-request}
 
 Before a change is merged you can see it running — the PR's code against a **fork of your
 production data**, on its own URL:
@@ -449,7 +449,7 @@ dependencies (your lockfile picks the package manager), builds the workspace pac
 vertical imports when it lives in a monorepo (install only *links* a sibling; its `dist/` is
 what the bundle resolves), gates the push (below), and runs
 `substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; opening
-or updating a PR creates its [preview](#preview-a-pull-request-—-substrat-preview) and comments the URL; closing
+or updating a PR creates its [preview](#preview-a-pull-request) and comments the URL; closing
 the PR reaps it. A manual copy-paste path shows the same file if you'd rather commit it yourself.
 
 ### The gate before the push
