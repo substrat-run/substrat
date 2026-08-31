@@ -25,6 +25,7 @@ function router() {
 const envWith = (over: Partial<Env> = {}): Env => ({
   ROUTER: router().fetcher,
   PLATFORM_BASE_DOMAINS: 'substrat.run',
+  PLATFORM_CP_URL: 'https://console.substrat.net',
   ...over,
 });
 
@@ -217,6 +218,51 @@ describe('outbound policy (#303)', () => {
     expect(internet).not.toHaveBeenCalled();
   });
 
+  it('never refuses the platform relay, whatever the vertical declared (#981)', async () => {
+    const r = router();
+    const internet = vi.fn(async () => new Response('relayed', { status: 200 }));
+    vi.stubGlobal('fetch', internet);
+
+    // `outbound: []` is what the current CLI pushes by default, so this IS the live case.
+    const res = await worker.fetch(
+      new Request('https://console.substrat.net/internal/email/send', { method: 'POST' }),
+      envWith({ ROUTER: r.fetcher, OUTBOUND_POLICY: policy([]) }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('relayed');
+    // Straight out, NOT through the router: the relay is a custom domain on the control
+    // plane, and the router resolves tenant hostnames — it would 404 for this one.
+    expect(internet).toHaveBeenCalledTimes(1);
+    expect(r.calls).toHaveLength(0);
+  });
+
+  it('exempts the relay HOST only — a third party is still refused, and a lookalike is not the relay', async () => {
+    const internet = vi.fn();
+    vi.stubGlobal('fetch', internet);
+    const env = envWith({ OUTBOUND_POLICY: policy([]) });
+
+    expect((await worker.fetch(new Request('https://exfil.example.com/x'), env)).status).toBe(403);
+    // `console.substrat.net.evil.com` ends with the relay host as a STRING but is not it.
+    expect(
+      (await worker.fetch(new Request('https://console.substrat.net.evil.com/x'), env)).status,
+    ).toBe(403);
+    expect(internet).not.toHaveBeenCalled();
+  });
+
+  it('with no PLATFORM_CP_URL there is no exemption — a missing var never widens a policy', async () => {
+    const internet = vi.fn();
+    vi.stubGlobal('fetch', internet);
+
+    const res = await worker.fetch(
+      new Request('https://console.substrat.net/internal/email/send', { method: 'POST' }),
+      envWith({ PLATFORM_CP_URL: undefined, OUTBOUND_POLICY: policy([]) }),
+    );
+
+    expect(res.status).toBe(403);
+    expect(internet).not.toHaveBeenCalled();
+  });
+
   it('meters every verdict: index = slug, blobs = [hostname, verdict, tenant]', async () => {
     const points: unknown[] = [];
     const analytics = { writeDataPoint: (p: unknown) => points.push(p) } as AnalyticsEngineDataset;
@@ -227,11 +273,15 @@ describe('outbound policy (#303)', () => {
     await worker.fetch(new Request('https://api.scrive.com/x'), env);
     await worker.fetch(new Request('https://exfil.example.com/x'), env);
     await worker.fetch(new Request('https://a.global.substrat.run/x'), env);
+    await worker.fetch(new Request('https://console.substrat.net/internal/email/send'), env);
 
     expect(points).toEqual([
       { indexes: ['egeryds-crm'], blobs: ['api.scrive.com', 'allowed', '01TENANT'] },
       { indexes: ['egeryds-crm'], blobs: ['exfil.example.com', 'refused', '01TENANT'] },
       { indexes: ['egeryds-crm'], blobs: ['a.global.substrat.run', 'platform', '01TENANT'] },
+      // `relay` is its own verdict, not folded into `platform` (which means the router
+      // loopback) or `allowed` (which means the vertical declared it).
+      { indexes: ['egeryds-crm'], blobs: ['console.substrat.net', 'relay', '01TENANT'] },
     ]);
   });
 

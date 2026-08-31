@@ -312,15 +312,36 @@ two can skew mid-promote; the policy follows the bundle). It rides `RouteTarget.
 to the dispatch call, which passes `{ slug, tenant, hosts }` as the `OUTBOUND_POLICY`
 outbound parameter (`dispatch_namespaces[].outbound.parameters`); the egress worker
 (`apps/vertical-egress`) enforces: platform hosts loop back through the router (#442, K-27 —
-the destination vertical's own auth is the gate), declared hosts pass untouched, anything
-else is a **403** whose body names the host and says what to declare. The router never
-inspects the list; the control plane never sees the traffic.
+the destination vertical's own auth is the gate), the platform's own relay origin is
+exempt (below), declared hosts pass untouched, anything else is a **403** whose body names
+the host and says what to declare. The router never inspects the list; the control plane
+never sees the traffic.
+
+**The relay is not part of the declared surface (#981).** The control plane injects its own
+origin into every pushed vertical as `CONTROL_PLANE_URL` — the address a vertical granted
+`emailSender` POSTs to for `/internal/email/send`, and the same address behind
+`/internal/connections/upsert`. That origin is on a **different zone** from the tenant apps
+(`console.substrat.net`, not `*.substrat.run`), so `PLATFORM_BASE_DOMAINS` does not cover it
+and the loopback in (1) never applied. The egress worker therefore reads the same
+`PLATFORM_CP_URL` var the control plane carries and exempts that one hostname by name.
+Without it, a vertical that declares *any* outbound surface is refused when calling the
+relay it was handed the address of — and the current CLI pushes `outbound: []` by default,
+so declaring nothing is exactly the case that broke. A builder could not fix it by
+declaring the host either: the vertical never chose that address, and an origin that
+changes per environment has no place in a version's manifest.
+
+The relay is allowed **straight out**, not through the router: it is a Custom Domain on the
+control-plane worker, which a Worker subrequest reaches directly, and the router resolves
+tenant hostnames — it would answer 404 for the control plane's own. Being allowed here is
+reachability, not authorization: the relay authenticates its own callers and checks the
+`emailSender` grant exactly as before. With `PLATFORM_CP_URL` unset there is no exemption,
+so a missing var can never silently widen a policy.
 
 **Legacy is unenforced, never broken — and never invisible.** A version pushed by a
 pre-#303 CLI has no `outbound` field, resolves `hosts: null`, and passes through
 unenforced; the next push always carries the field, so the fleet converges to enforced as
-it re-deploys. Every verdict — `platform` / `allowed` / `unenforced` / `refused` — writes
-one Analytics Engine datapoint (`substrat_egress`: index = slug, blobs = [hostname,
+it re-deploys. Every verdict — `platform` / `relay` / `allowed` / `unenforced` /
+`refused` — writes one Analytics Engine datapoint (`substrat_egress`: index = slug, blobs = [hostname,
 verdict, tenant]; D-30 *meter, don't bill*), so the unenforced tail is a chart, not a
 guess, and a refusal spike or an exfiltration attempt shows up attributed to a vertical.
 

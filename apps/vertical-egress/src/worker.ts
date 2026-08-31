@@ -16,6 +16,23 @@
  *    (a service binding — a direct in-process call), re-entering resolution + dispatch.
  *    This keeps K-27 intact: the vertical reaches the platform *only through the router*.
  *
+ * 1b. **Is the destination the platform's own relay?** (#981) The control plane injects
+ *    its own origin into every pushed vertical as `CONTROL_PLANE_URL`, and that origin is
+ *    on a DIFFERENT zone from the tenant apps — `console.substrat.net`, not
+ *    `*.substrat.run` — so `PLATFORM_BASE_DOMAINS` does not cover it. Without an explicit
+ *    exemption, a vertical granted `emailSender` POSTing to `/internal/email/send` is
+ *    refused by its own outbound policy the moment it declares one, and a push from the
+ *    current CLI declares `outbound: []` by default. The relay is the platform's own
+ *    surface reached over the platform's own address, not part of the vertical's outbound
+ *    surface, so it can no more be a builder's declaration than the router loopback can.
+ *
+ *    It is allowed straight through rather than looped through `env.ROUTER`: the relay is
+ *    a Custom Domain on the control-plane worker, which a Worker subrequest reaches
+ *    directly (the same-zone 522 in (1) is a property of zone *routes*), and the router
+ *    resolves tenant hostnames — it would answer 404 for the control plane's own. The
+ *    verdict is metered as `relay`, distinct from `platform` and from `allowed`, so the
+ *    egress report can still tell a call to us from a call to a third party.
+ *
  * 2. **May this vertical call this third party?** (#303, D-46) The router passes the
  *    dispatched version's DECLARED outbound surface — package.json `substrat.outbound`,
  *    carried in the deploy manifest, reviewed at the admit checkpoint — as the
@@ -76,6 +93,17 @@ export interface Env {
    */
   PLATFORM_BASE_DOMAINS?: string;
   /**
+   * The control plane's own public origin (e.g. `https://console.substrat.net`) — the same
+   * `PLATFORM_CP_URL` var the control plane injects into every pushed vertical as
+   * `CONTROL_PLANE_URL` (#303). Set here so this worker knows the one non-`substrat.run`
+   * host that is still ours, and does not refuse a vertical's call to the relay it was
+   * handed the address of (#981). Only the HOSTNAME is compared; the scheme and path are
+   * the relay's own concern. Absent ⇒ no relay exemption, and a vertical with a declared
+   * surface is refused as before — the same fail-open-on-plumbing choice `OUTBOUND_POLICY`
+   * makes, inverted, because a missing var must never silently widen a policy.
+   */
+  PLATFORM_CP_URL?: string;
+  /**
    * The per-dispatch outbound policy (#303, D-46) — NOT a deploy-time var: the router sets
    * it on every `DISPATCH.get(…, { outbound: { OUTBOUND_POLICY } })`, and the dispatch
    * binding's `parameters` list is what lets it land here. Absent when the dispatcher
@@ -111,8 +139,23 @@ function isPlatformHost(hostname: string, bases: string[]): boolean {
   return bases.some((b) => h === b || h.endsWith(`.${b}`));
 }
 
-/** Where a subrequest ended up: the four verdicts the meter distinguishes. */
-type Verdict = 'platform' | 'allowed' | 'unenforced' | 'refused';
+/**
+ * The platform relay's hostname, from `PLATFORM_CP_URL` (#981). Unparseable or unset ⇒
+ * `null`, i.e. no exemption: a misconfigured var must read as "we have no relay", never as
+ * a host that matches everything.
+ */
+function relayHost(env: Env): string | null {
+  const raw = env.PLATFORM_CP_URL?.trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/** Where a subrequest ended up: the five verdicts the meter distinguishes. */
+type Verdict = 'platform' | 'relay' | 'allowed' | 'unenforced' | 'refused';
 
 /** One datapoint per decision — append-only shape, like the router's request meter:
  *  index [slug]; blobs [hostname, verdict, tenant]. */
@@ -138,6 +181,15 @@ export default {
       // router's own resolution + the destination vertical's auth are the gate.
       meter(env, hostname, 'platform');
       return env.ROUTER.fetch(request);
+    }
+    if (hostname.toLowerCase() === relayHost(env)) {
+      // The platform's own relay (#981), on a different zone from the tenant apps. The
+      // vertical did not choose this address — the control plane injected it as
+      // `CONTROL_PLANE_URL` — so it is not part of the outbound surface a builder
+      // declares, and the policy below never gets to see it. The relay authenticates
+      // its own callers; being allowed here is reachability, not authorization.
+      meter(env, hostname, 'relay');
+      return fetch(request);
     }
     const policy = env.OUTBOUND_POLICY;
     if (!policy || policy.hosts === null) {
