@@ -236,9 +236,10 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   where the version skew lives. The two helpers — `returns(schema, surface, value)` and
   `columnsOf(schema)` — are in `@substrat-run/contracts`, and an engine binds them to
   its own name in one line (`engineSeam('engine-workorder')`, #970); `engines/workorder`
-  is the reference conversion, and `engines/booking`, `engines/protocol` and
-  `engines/absence` are converted the same way. Invites, invoicing and metering have
-  not been converted yet, so their seams are still typed by assertion.
+  is the reference conversion, and every other engine — booking, protocol, absence,
+  invites, invoicing, metering — is converted the same way, each with a
+  `test/seam.test.ts` that moves its tables under it and asserts a throw rather than
+  wrong data. A new engine is expected to do the same; there is no lint rule for it yet.
 - IDs come from `ulid()`; money/decimals are strings via `@substrat-run/contracts`
   helpers (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
 - **Time comes from `ctx.now()`** — module code has no other clock, and `new Date()` /

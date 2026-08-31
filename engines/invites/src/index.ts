@@ -44,10 +44,13 @@ const conflict = (reason: InvitesConflictReason, message: string) => substratErr
 // entity-type constants its relation edges name, and the row schema to declare
 // an operation's output against without retyping this engine's shape.
 export { invitation, invitesEntities, invitationRow } from './entities.js';
+import { invitation, invitationRow } from './entities.js';
 // The declared operation surface (#865): what each operation checks and takes,
 // readable by the conformance kit and by a composing vertical's routes.
 export { invitesOperations, INVITES_PERMISSIONS } from './operations.js';
 import { invitesOperations } from './operations.js';
+import { columnsOf, returns } from './seam.js';
+import { z } from 'zod';
 import {
   assertAllowed,
   ulid,
@@ -140,26 +143,47 @@ export const invitesMigrations = [
   },
 ];
 
-export type InviteState = 'invited' | 'accepted' | 'revoked' | 'expired';
+/**
+ * The seam schemas (#771/#970).
+ *
+ * `entities.ts` describes what is STORED, which is what the journal comparison
+ * checks against, so `state` is a bare string there. The engine's own machine is
+ * narrower than that, and the narrowing is the point: `state` decides whether an
+ * invitation is acceptable, so a row that drifted to a state this engine does not
+ * know must be a throw at the seam rather than a value `acceptInvite` compares
+ * against and silently refuses.
+ */
+const inviteState = z.enum(['invited', 'accepted', 'revoked', 'expired']);
+export type InviteState = z.infer<typeof inviteState>;
 
-export interface InvitationRow {
-  id: string;
-  org_id: string;
-  identifier_hash: string;
-  role_key: string;
-  state: InviteState;
-  invited_by: string;
-  accepted_by: string | null;
-  created_at: string;
-  expires_at: string;
-  settled_at: string | null;
-}
+/** The stored row, hash included — never returned, only matched against. */
+const invitationStored = invitationRow.extend({ state: inviteState });
+export type InvitationRow = z.infer<typeof invitationStored>;
+
+/** What crosses the seam: the row minus the hash (`entities.ts` omits it). */
+const invitationPublished = invitation.extend({ state: inviteState });
 
 /** Public shape: the hash never leaves the engine. */
-export type Invitation = Omit<InvitationRow, 'identifier_hash'>;
+export type Invitation = z.infer<typeof invitationPublished>;
 
-const PUBLIC_COLUMNS =
-  'id, org_id, role_key, state, invited_by, accepted_by, created_at, expires_at, settled_at';
+/**
+ * The SELECT lists, DERIVED from those schemas rather than transcribed (#771).
+ *
+ * `PUBLIC_COLUMNS` was a hand-written string, and it was the only thing keeping
+ * the hash out of a read — one `SELECT *` and the property this engine exists to
+ * hold would have been gone with nothing to notice. Deriving it from the schema
+ * that already omits `identifier_hash` makes the omission structural.
+ */
+const PUBLIC_COLUMNS = columnsOf(invitationPublished);
+const ROW_COLUMNS = columnsOf(invitationStored);
+
+/** A stored row, parsed BEFORE anything is made of it. */
+const storedInvitation = (r: InvitationRow): InvitationRow =>
+  returns(invitationStored, `invitation row ${r.id}`, r);
+
+/** A row on its way OUT, parsed by the shape a composing vertical declared. */
+const publishedInvitation = (r: Invitation): Invitation =>
+  returns(invitationPublished, `invitation ${r.id}`, r);
 
 /** How long an unaccepted invitation stands. Bounded, because a standing offer should be. */
 const DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -285,13 +309,19 @@ export async function acceptInvite(
   ctx: OperationContext,
   input: { invitationId: string; identifier: string },
 ): Promise<Invitation> {
-  const row = ctx.sql.query<InvitationRow>('SELECT * FROM invites_invitation WHERE id = ?', [
-    input.invitationId,
-  ])[0];
+  const raw = ctx.sql.query<InvitationRow>(
+    `SELECT ${ROW_COLUMNS} FROM invites_invitation WHERE id = ?`,
+    [input.invitationId],
+  )[0];
   // One message for every failure mode — wrong id, wrong person, already settled,
   // expired. Distinguishing them would turn this into an oracle.
   const refuse = () => new Error('invitation is not acceptable');
-  if (!row || row.state !== 'invited') throw refuse();
+  if (!raw) throw refuse();
+  // Parsed before the state machine reads it: a `state` this engine does not know
+  // is an engine fault, and answering `refuse()` for it would file that fault
+  // under "not acceptable" — indistinguishable from a wrong identifier forever.
+  const row = storedInvitation(raw);
+  if (row.state !== 'invited') throw refuse();
   if (row.expires_at <= ctx.now()) {
     ctx.sql.exec(`UPDATE invites_invitation SET state = 'expired', settled_at = ? WHERE id = ?`, [
       ctx.now(),
@@ -337,10 +367,11 @@ export async function acceptInvite(
     },
   });
 
-  return ctx.sql.query<Invitation>(
-    `SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE id = ?`,
-    [row.id],
-  )[0]!;
+  return publishedInvitation(
+    ctx.sql.query<Invitation>(`SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE id = ?`, [
+      row.id,
+    ])[0]!,
+  );
 }
 
 /** Withdraw an unaccepted invitation. Settled invitations are left alone. */
@@ -374,10 +405,12 @@ export function listInvites(ctx: OperationContext, orgId: OrgId): Invitation[] {
   // same value and leaves their relative order to SQLite. That is fine for a
   // whole-list read and fatal for the keyset walk `invites/list` now does, where
   // a cursor over a column with ties skips or repeats rows.
-  return ctx.sql.query<Invitation>(
-    `SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE org_id = ? ORDER BY id DESC`,
-    [orgId],
-  );
+  return ctx.sql
+    .query<Invitation>(
+      `SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE org_id = ? ORDER BY id DESC`,
+      [orgId],
+    )
+    .map(publishedInvitation);
 }
 
 // -- operations: the permission check plus one exported function (D-28) -------

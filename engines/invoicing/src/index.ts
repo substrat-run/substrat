@@ -58,7 +58,9 @@ export type InvoicingConflictReason = (typeof INVOICING_CONFLICT_REASONS)[number
 /** `conflict(reason, message)` — reason first, so the classification reads before the prose. */
 const conflict = (reason: InvoicingConflictReason, message: string) => substratError('conflict', message, { reason });
 
-import { invoicingEntities, underlagLine } from './entities.js';
+import { invoicingEntities, underlagLine, underlagRow } from './entities.js';
+import { underlagDetail, underlagListRow } from './schemas.js';
+import { columnsOf, returns } from './seam.js';
 
 // The entity registry is PUBLIC: every demo composes this engine, and a vertical
 // declaring an operation that returns an invoice basis needs the schema rather
@@ -305,6 +307,47 @@ export interface UnderlagDetail {
 }
 
 /**
+ * The SELECT lists, derived from the schemas (#771/#970).
+ *
+ * Never `SELECT *`: that pins the shape a read returns to whatever the physical
+ * table currently holds, which is the same trust-TypeScript hole `returns` closes
+ * from the other side. Migration 0002 rebuilt `invoicing_lines` — a table this
+ * engine has already reshaped once, under a vertical that compiled against the
+ * shape before it.
+ */
+const UNDERLAG_COLUMNS = columnsOf(underlagRow);
+const LINE_COLUMNS = columnsOf(underlagLine);
+
+/**
+ * The stored line, narrowed to the formats this engine folds (#771).
+ *
+ * `entities.ts` publishes `underlagLine` for a vertical to declare a return
+ * against, and it describes those columns as strings — which is what they are.
+ * What it cannot say is that three of them are DECIMALS this engine sums into a
+ * financial artifact: `moneyOf` would refuse them eventually, with a raw Zod
+ * issue naming `amount` and no mention of which row or which engine. Narrowing
+ * them here moves the refusal to the seam, where it names both. The TypeScript
+ * shape is unchanged (a regex on a string infers a string), so this is not a
+ * change to the published contract.
+ */
+const decimalAmount = z.string().regex(/^-?\d+(\.\d+)?$/, 'must be a decimal amount');
+const storedLineShape = underlagLine.extend({
+  qty: decimalAmount,
+  unit_price_amount: decimalAmount,
+  line_total_amount: decimalAmount,
+  currency: z.string().regex(/^[A-Z]{3}$/, 'must be an ISO-4217 currency code'),
+});
+
+/** The two columns the total folds — a projection of the line, not a table. */
+const lineAmount = storedLineShape.pick({ line_total_amount: true, currency: true });
+
+/** A stored row, parsed BEFORE anything is made of it. */
+const storedUnderlag = (r: UnderlagRow): UnderlagRow =>
+  returns(underlagRow, `underlag row ${r.id}`, r);
+const storedLine = (r: UnderlagLine): UnderlagLine =>
+  returns(storedLineShape, `underlag line ${r.id}`, r);
+
+/**
  * The underlag's total, as Money.
  *
  * Uses `addMoney`, not `addDecimal`: an invoice basis that sums 100 SEK and
@@ -314,10 +357,15 @@ export interface UnderlagDetail {
  * the real guard — this is defence in depth behind it.
  */
 function underlagTotalMoney(ctx: OperationContext, underlagId: string): Money {
-  const rows = ctx.sql.query<{ line_total_amount: string; currency: string }>(
-    'SELECT line_total_amount, currency FROM invoicing_lines WHERE underlag_id = ?',
-    [underlagId],
-  );
+  const rows = ctx.sql
+    .query<{ line_total_amount: string; currency: string }>(
+      `SELECT ${columnsOf(lineAmount)} FROM invoicing_lines WHERE underlag_id = ?`,
+      [underlagId],
+    )
+    // Parsed on the way into the fold, for the reason absence parses a ledger
+    // delta: a summand that drifted crosses as a number nobody questions, and
+    // this one ends up on an exported invoice.
+    .map((r) => returns(lineAmount, `line amount on underlag ${underlagId}`, r));
   // An underlag with no lines is unreachable in practice — find-or-create and
   // the line inserts share one transaction — but a zero total must still have a
   // currency to be Money at all. Attributing a currency to an empty document is
@@ -381,10 +429,12 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
   // Find-or-create the OPEN underlag for this customer; an exported underlag
   // is immutable — late deliveries open a new one (engine invariant on top of
   // the kernel's delivery journal).
-  let underlag = ctx.sql.query<UnderlagRow>(
-    `SELECT * FROM invoicing_underlag WHERE customer_type = ? AND customer_id = ? AND status = 'open'`,
+  const open = ctx.sql.query<UnderlagRow>(
+    `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag
+      WHERE customer_type = ? AND customer_id = ? AND status = 'open'`,
     [p.customer.entityType, p.customer.entityId],
   )[0];
+  let underlag = open ? storedUnderlag(open) : undefined;
   if (!underlag) {
     const id = ulid();
     const number =
@@ -396,7 +446,12 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
        VALUES (?, ?, ?, ?, 'open', ?)`,
       [id, number, p.customer.entityType, p.customer.entityId, ctx.now()],
     );
-    underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [id])[0]!;
+    underlag = storedUnderlag(
+      ctx.sql.query<UnderlagRow>(
+        `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag WHERE id = ?`,
+        [id],
+      )[0]!,
+    );
   }
 
   assertSingleCurrency(ctx, underlag.id, p.billable);
@@ -455,10 +510,12 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
   )[0];
   if (already) return;
 
-  let underlag = ctx.sql.query<UnderlagRow>(
-    `SELECT * FROM invoicing_underlag WHERE customer_type = ? AND customer_id = ? AND status = 'open'`,
+  const open = ctx.sql.query<UnderlagRow>(
+    `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag
+      WHERE customer_type = ? AND customer_id = ? AND status = 'open'`,
     [p.customer.entityType, p.customer.entityId],
   )[0];
+  let underlag = open ? storedUnderlag(open) : undefined;
   if (!underlag) {
     const id = ulid();
     const number =
@@ -470,7 +527,12 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
        VALUES (?, ?, ?, ?, 'open', ?)`,
       [id, number, p.customer.entityType, p.customer.entityId, ctx.now()],
     );
-    underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [id])[0]!;
+    underlag = storedUnderlag(
+      ctx.sql.query<UnderlagRow>(
+        `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag WHERE id = ?`,
+        [id],
+      )[0]!,
+    );
   }
 
   assertSingleCurrency(ctx, underlag.id, p.billable);
@@ -525,10 +587,12 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
   )[0];
   if (already) return;
 
-  let underlag = ctx.sql.query<UnderlagRow>(
-    `SELECT * FROM invoicing_underlag WHERE customer_type = ? AND customer_id = ? AND status = 'open'`,
+  const open = ctx.sql.query<UnderlagRow>(
+    `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag
+      WHERE customer_type = ? AND customer_id = ? AND status = 'open'`,
     [p.customer.entityType, p.customer.entityId],
   )[0];
+  let underlag = open ? storedUnderlag(open) : undefined;
   if (!underlag) {
     const id = ulid();
     const number =
@@ -540,7 +604,12 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
        VALUES (?, ?, ?, ?, 'open', ?)`,
       [id, number, p.customer.entityType, p.customer.entityId, ctx.now()],
     );
-    underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [id])[0]!;
+    underlag = storedUnderlag(
+      ctx.sql.query<UnderlagRow>(
+        `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag WHERE id = ?`,
+        [id],
+      )[0]!,
+    );
   }
 
   assertSingleCurrency(ctx, underlag.id, p.billable);
@@ -597,28 +666,46 @@ const listOp: OperationHandler<
     ...input,
     filters: { status: input?.status },
   });
-  return mapPage(page, (r) => ({ ...r, total: underlagTotal(ctx, r.id) }));
+  // The page walk is the kernel's, so the rows arrive shaped by whatever the
+  // physical table holds; `returns` is what pins them back to the shape a
+  // composing vertical declared its `output` with.
+  return mapPage(page, (r) =>
+    returns(underlagListRow, `underlag ${r.id}`, {
+      ...storedUnderlag(r),
+      total: underlagTotal(ctx, r.id),
+    }),
+  );
 };
 
 const getOp: OperationHandler<{ underlagId: string }, UnderlagDetail> = async (ctx, input) => {
   assertAllowed(await ctx.check(INVOICING_PERM.read));
-  const underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [
-    input.underlagId,
-  ])[0];
+  const underlag = ctx.sql.query<UnderlagRow>(
+    `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag WHERE id = ?`,
+    [input.underlagId],
+  )[0];
   if (!underlag) throw substratError('not_found', `underlag not found: ${input.underlagId}`);
   const lines = ctx.sql.query<UnderlagLine>(
-    'SELECT * FROM invoicing_lines WHERE underlag_id = ? ORDER BY id',
+    `SELECT ${LINE_COLUMNS} FROM invoicing_lines WHERE underlag_id = ? ORDER BY id`,
     [input.underlagId],
   );
-  return { underlag, lines, total: underlagTotal(ctx, input.underlagId) };
+  return returns(underlagDetail, `underlag ${input.underlagId}`, {
+    underlag: storedUnderlag(underlag),
+    lines: lines.map(storedLine),
+    total: underlagTotal(ctx, input.underlagId),
+  });
 };
 
 const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (ctx, input) => {
   assertAllowed(await ctx.check(INVOICING_PERM.export));
-  const underlag = ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [
-    input.underlagId,
-  ])[0];
-  if (!underlag) throw substratError('not_found', `underlag not found: ${input.underlagId}`);
+  const stored = ctx.sql.query<UnderlagRow>(
+    `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag WHERE id = ?`,
+    [input.underlagId],
+  )[0];
+  if (!stored) throw substratError('not_found', `underlag not found: ${input.underlagId}`);
+  // Parsed before the transition is judged: `status` IS the
+  // immutable-after-export invariant, so a drifted one must refuse rather than
+  // fall through `transitionFor` as an unknown state.
+  const underlag = storedUnderlag(stored);
   // `transitionFor`, not `assertTransition` (#844): the declaration answers
   // whether the verb is legal here, and this engine keeps its OWN reason for
   // the refusal. `immutable_after_export` is the invariant a caller needs to
@@ -643,9 +730,11 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
       total: underlagTotalMoney(ctx, underlag.id),
     },
   });
-  return ctx.sql.query<UnderlagRow>('SELECT * FROM invoicing_underlag WHERE id = ?', [
-    underlag.id,
-  ])[0]!;
+  return storedUnderlag(
+    ctx.sql.query<UnderlagRow>(`SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag WHERE id = ?`, [
+      underlag.id,
+    ])[0]!,
+  );
 };
 
 const OPERATIONS = {
