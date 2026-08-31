@@ -65,6 +65,16 @@ export const TICKET0_SEARCH_MAX = Math.floor(MAX_SEARCH_LIMIT / SEARCH_OVERFETCH
 export const ASSISTANT_ERROR_MAX = 2000;
 
 /**
+ * How many people the desk report names. A desk has staff, not a population, and the
+ * per-agent breakdown is a leaderboard rather than a directory — an uncapped group-by
+ * inside an aggregate is a page nobody declared, discovered in production.
+ */
+export const DESK_METRICS_AGENTS = 25;
+
+/** The window `ticket0/desk-metrics` reports when the caller names neither end. */
+export const DESK_METRICS_WINDOW_DAYS = 30;
+
+/**
  * What the HOST knew about the browser when the widget opened — `ClientContext`
  * flattened into columns. Shared by `widgetOpening` (where `widget-start` records it)
  * and `widgetSession` (where the first message carries it), so the two tables cannot
@@ -1465,6 +1475,106 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     input: z.object({ from: z.string(), to: z.string() }),
     output: z.object({ periodId: z.string(), from: z.string(), to: z.string(), lines: z.number() }),
     http: { method: 'POST', path: '/usage/periods' },
+  },
+
+  // ─── The desk, measured ──────────────────────────────────────────────────────
+
+  /**
+   * What the desk did over a window: how much came in, how fast it was answered,
+   * what is still waiting, and what the assistant actually settled.
+   *
+   * **Under `usage:read`, and that is a decision rather than convenience.** The
+   * headline here is cost per resolved conversation, which is the cost number with a
+   * denominator — so it is the same fact `ticket0/usage-summary` guards, and giving it
+   * a second, weaker key would mean an agent could divide their way to the money.
+   * Everything else in the answer travels with it because it is one screen.
+   *
+   * Every input is a column something already writes. `first_public_reply_at` and
+   * `resolved_at` were stamped on every conversation from the first migration and read
+   * by nothing but an unread dot; `aiTurn.outcome` has always been the difference
+   * between the assistant answering and a human having to. So there is no new table
+   * here and no new write — only the reads nobody had written yet.
+   *
+   * **Rates, not raw counts, are what a reader can act on**, so the assistant panel
+   * answers in fractions of the turns in the window: deflection is `answered / turns`,
+   * escalation `escalated / turns`, failure `failed / turns`. A turn the assistant only
+   * drafted is neither — a human still sent it — which is why `drafted` is reported and
+   * not folded into deflection.
+   *
+   * `agents` is capped at `DESK_METRICS_AGENTS`. A desk has staff, not a population,
+   * and an uncapped group-by in an aggregate is a page waiting to be discovered in
+   * production.
+   */
+  'ticket0/desk-metrics': {
+    summary: 'Volume, speed, backlog, satisfaction and what the assistant settled',
+    permission: 'usage:read',
+    // Both ends optional and defaulted, the same shape `usage-summary` takes: a caller
+    // that asks for nothing gets the trailing window rather than an error.
+    input: z.object({ from: z.string().optional(), to: z.string().optional() }),
+    output: z.object({
+      from: z.string(),
+      to: z.string(),
+      volume: z.object({
+        opened: z.number().int(),
+        resolved: z.number().int(),
+        byChannel: z.array(
+          z.object({
+            channel: z.enum(['widget', 'email']),
+            opened: z.number().int(),
+            resolved: z.number().int(),
+          }),
+        ),
+      }),
+      // `measured` is the population each percentile was taken over, and it is part of
+      // the answer rather than a footnote: "median 4 minutes" over two conversations is
+      // a different claim from the same number over four hundred.
+      firstResponse: z.object({
+        measured: z.number().int(),
+        medianSeconds: z.number().int().nullable(),
+        p90Seconds: z.number().int().nullable(),
+      }),
+      resolution: z.object({
+        measured: z.number().int(),
+        medianSeconds: z.number().int().nullable(),
+        p90Seconds: z.number().int().nullable(),
+      }),
+      // Backlog is a fact about NOW, not about the window — what is waiting does not
+      // care which dates the reader picked. Stated here so the screen can say so.
+      backlog: z.object({
+        open: z.number().int(),
+        snoozed: z.number().int(),
+        unassigned: z.number().int(),
+        oldestUntouchedId: z.string().nullable(),
+        oldestUntouchedAgeSeconds: z.number().int().nullable(),
+      }),
+      agents: z.array(
+        z.object({
+          principal: z.string(),
+          displayName: z.string().nullable(),
+          resolved: z.number().int(),
+          replies: z.number().int(),
+        }),
+      ),
+      csat: z.object({
+        responses: z.number().int(),
+        average: z.number().nullable(),
+      }),
+      assistant: z.object({
+        turns: z.number().int(),
+        answered: z.number().int(),
+        drafted: z.number().int(),
+        escalated: z.number().int(),
+        failed: z.number().int(),
+        deflectionRate: z.number().nullable(),
+        escalationRate: z.number().nullable(),
+        failureRate: z.number().nullable(),
+        // Money is a decimal string here as everywhere, including the quotient.
+        currency: z.string(),
+        cost: z.string(),
+        costPerResolved: z.string().nullable(),
+      }),
+    }),
+    http: { method: 'GET', path: '/desk-metrics' },
   },
 
   // ─── The email relay ─────────────────────────────────────────────────────────

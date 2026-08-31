@@ -913,6 +913,11 @@ function Usage({ money }: { money: boolean }) {
   return (
     <>
       <Head title="Usage & cost" note={`${month} · what the assistant has spent`} />
+      {/* Spend alone is half a sentence — the other half is what it settled, which is a
+          screen of its own under the same key (#1085). */}
+      <div className="t-small" style={{ marginTop: -10, marginBottom: 14 }}>
+        <a href="#/reports">Reports</a> puts this number over what the assistant resolved.
+      </div>
       <div className="card" style={{ overflow: 'hidden', marginBottom: 18 }}>
         <div
           className="micro-6"

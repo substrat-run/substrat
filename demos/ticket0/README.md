@@ -192,6 +192,15 @@ product rather than styling are each marked in the code where they live:
    DRAFT gets the special card: dashed border, `DRAFT · NOT SENT`, confidence bar,
    checkable citations, Send / Edit / Discard.
 
+**Reports** (`app/src/views/Reports.tsx`) is the second screen behind `usage:read`, and
+it is behind that key rather than a gentler one on purpose: its headline is cost per
+resolved conversation, which is the money with a denominator. `ticket0/desk-metrics`
+answers the whole screen in one read over rows the desk already had — volume by channel,
+median and p90 first-response and resolution time, the backlog and its oldest untouched
+thread, who resolved and replied, CSAT, and the assistant's deflection, escalation and
+failure rates. Constraint 2 above applies here too: signed in as Anna the nav item is
+absent, because the API refused.
+
 The inbox filters narrow the read **on the server**: `state`, `assignee`, `channel` and
 `priority` are declared inputs on `ticket0/list-conversations`, and the kernel composes
 the `WHERE` and provisions the indexes from the same operation's `filterable`. A chip

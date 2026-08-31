@@ -16,11 +16,13 @@ import { Inbox } from './views/Inbox.js';
 import { ConversationView } from './views/Conversation.js';
 import { Settings } from './views/Settings.js';
 import { Portal } from './views/Portal.js';
+import { Reports } from './views/Reports.js';
 
 export type View =
   | { name: 'inbox' }
   | { name: 'conversation'; id: string }
   | { name: 'settings'; tab: 'desk' | 'identity' | 'knowledge' | 'assistant' | 'usage' }
+  | { name: 'reports' }
   | { name: 'portal' }
   | { name: 'portal-conversation'; id: string };
 
@@ -31,6 +33,7 @@ function parseHash(): View {
   if (a === 'c' && b) return { name: 'conversation', id: b };
   if (a === 'settings')
     return { name: 'settings', tab: (b as 'desk') || 'desk' };
+  if (a === 'reports') return { name: 'reports' };
   if (a === 'portal') return b ? { name: 'portal-conversation', id: b } : { name: 'portal' };
   return { name: 'inbox' };
 }
@@ -41,6 +44,8 @@ export function viewToHash(v: View): string {
       return `#/c/${v.id}`;
     case 'settings':
       return `#/settings/${v.tab}`;
+    case 'reports':
+      return '#/reports';
     case 'portal':
       return '#/portal';
     case 'portal-conversation':
@@ -196,6 +201,8 @@ export function App() {
           <Portal view={view} go={go} session={session} />
         ) : view.name === 'settings' ? (
           <Settings tab={view.tab} caps={caps} go={go} />
+        ) : view.name === 'reports' ? (
+          <Reports caps={caps} />
         ) : view.name === 'conversation' ? (
           <ConversationView id={view.id} caps={caps} session={session} go={go} />
         ) : (
@@ -254,6 +261,9 @@ function TopBar({
       <Brand />
       <nav style={{ display: 'flex', gap: 4 }}>
         {caps?.inbox ? tab('Inbox', view.name === 'inbox' || view.name === 'conversation', () => go({ name: 'inbox' })) : null}
+        {/* The report is the money with a denominator, so it appears for the same
+            capability the money does — learned by asking, exactly as above. */}
+        {caps?.money ? tab('Reports', view.name === 'reports', () => go({ name: 'reports' })) : null}
         {caps?.configure
           ? tab('Settings', view.name === 'settings', () => go({ name: 'settings', tab: 'desk' }))
           : null}

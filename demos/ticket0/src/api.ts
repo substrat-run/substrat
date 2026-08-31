@@ -74,6 +74,11 @@ export const API = apiCatalogFrom(SERVED, {
   'ticket0/usage-summary': { tag: 'Usage', description: 'Checks `usage:read` — held by the desk admin alone.' },
   'ticket0/set-usage-rate': { tag: 'Usage' },
   'ticket0/close-usage-period': { tag: 'Usage', description: 'Freezes the window into immutable lines.' },
+  'ticket0/desk-metrics': {
+    tag: 'Usage',
+    description:
+      'The desk over a window — volume, speed, backlog, CSAT and what the assistant settled. Under `usage:read` because its headline is cost with a denominator.',
+  },
 
   'ticket0/ingest-message': { tag: 'Relay', description: 'Idempotent on the provider message id.' },
   'ticket0/read-outbound': { tag: 'Relay', description: 'The body the event could not carry, read at send time.' },

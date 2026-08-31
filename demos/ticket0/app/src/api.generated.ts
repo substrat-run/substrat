@@ -306,6 +306,13 @@ export interface Ticket0Client {
   createSavedReply(input: { title: string; body: string }): Promise<SavedReply>;
 
   /**
+   * Volume, speed, backlog, satisfaction and what the assistant settled
+   *
+   * `GET /desk-metrics` — `ticket0/desk-metrics`
+   */
+  deskMetrics(input: { from?: string; to?: string }): Promise<{ from: string; to: string; volume: { opened: number; resolved: number; byChannel: ({ channel: "widget" | "email"; opened: number; resolved: number })[] }; firstResponse: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; resolution: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; backlog: { open: number; snoozed: number; unassigned: number; oldestUntouchedId: string | null; oldestUntouchedAgeSeconds: number | null }; agents: ({ principal: string; displayName: string | null; resolved: number; replies: number })[]; csat: { responses: number; average: number | null }; assistant: { turns: number; answered: number; drafted: number; escalated: number; failed: number; deflectionRate: number | null; escalationRate: number | null; failureRate: number | null; currency: string; cost: string; costPerResolved: string | null } }>;
+
+  /**
    * One conversation
    *
    * `GET /conversations/{conversationId}` — `ticket0/get-conversation`
@@ -749,6 +756,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/desk", "PATCH", input, undefined),
     createSavedReply: (input: Args) =>
       send("/saved-replies", "POST", input, undefined),
+    deskMetrics: (input: Args) =>
+      send("/desk-metrics", "GET", undefined, input),
     getConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}`, "GET", undefined, omit(input, ["conversationId"])),
     getCsat: (input: Args) =>
