@@ -29,16 +29,38 @@ held to quotas. If the bundle satisfies the contract, nothing else is in questio
 
 **Reaching the outside world is not a binding — it is a granted capability.** The allowlist
 deliberately excludes egress-shaped bindings (`send_email`, `ai`, `browser`, …): a hosted vertical
-never talks to a third party by declaring a binding. When a vertical genuinely needs a platform
-capability — sending transactional email, provisioning tenants — it *declares a request* in its
-manifest (`substrat.sendsEmail`, `substrat.provisions`) and a **staff grant** turns it on
-(`setVerticalEmailSender`, `setVerticalTenantProvisioner`). The request is refreshed on every push
-and grants nothing by itself; the grant is a directory flag a push can never set or keep, so pushing
-new code can never acquire authority. At runtime the platform provides the capability behind a
-credential the vertical never holds — for email, a `POST /internal/email/send` relay on the control
-plane that sends on the vertical's behalf and checks the grant on every call. This is why "how a
-vertical gets a dependency" is: declare the request, get it granted, call the platform seam — never
-bind the raw resource.
+never talks to a third party by *declaring* one. When a vertical genuinely needs a platform
+capability — sending transactional email, answering with a language model, provisioning tenants —
+it *declares a request* in its manifest (`substrat.sendsEmail`, `substrat.usesModels`,
+`substrat.provisions`) and something outside the bundle turns it on: a **staff grant** for email
+and provisioning (`setVerticalEmailSender`, `setVerticalTenantProvisioner`), a fleet-wide platform
+switch for models. The request is refreshed on every push, grants nothing by itself, and no push
+can set the flag it needs — but what that buys differs, and the difference is worth stating
+plainly. For email and provisioning the flag is **per vertical**, so a push can never acquire the
+capability at all. For models the switch is **fleet-wide**: a version that adds
+`substrat.usesModels` while the platform has models on does get the binding, and what a push
+cannot do is turn models on for a fleet that has them off. That declaration reaches a human at
+admission on a listed vertical; on a private one — auto-admitted, blast radius its own tenant —
+it is on the record rather than reviewed.
+
+What the platform hands back differs by capability, and the difference is worth naming:
+
+- **A relay, for a capability that rides a credential.** Email is the reference: the vertical POSTs
+  to `POST /internal/email/send` on the control plane — the one worker holding an outbound-mail
+  credential — which sends on its behalf and re-checks the grant on every call. The vertical holds
+  no outbound credential and reaches no third party directly.
+- **A real runtime binding, for models.** `substrat.usesModels` is the one request answered with a
+  binding instead of a relay: the uploader appends `{ type: 'ai', name: 'AI' }` to the script's
+  bindings *after* the allowlist check has run on the declared set, so a vertical still cannot
+  declare `ai` for itself — it can only be handed one. It takes **both** halves to appear: the
+  platform willing to bind at all (a fleet kill-switch), and *this version* having asked. A
+  vertical that never declared it gets no binding and falls back to whatever key its own env
+  carries. The credential stays the platform's — the binding runs on the platform's own AI
+  account, and nothing about it is in the bundle — but the honest bound is that a vertical
+  holding it can call `env.AI.run()` outside the metered path.
+
+Either way, "how a vertical gets a dependency" is: declare the request, get it granted, call what
+the platform hands over — never bind the raw resource yourself.
 
 Who has to *vouch* for a version depends on who will be exposed to it (decision D-36):
 
