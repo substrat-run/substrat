@@ -181,10 +181,10 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   _substrat_events` still works. The allowed read has a **helper, and it is the one to
   use**: `readTimeline` / `readHistory` from `@substrat-run/kernel` take an `EntityRef`,
   page like an HTTP list read, and decode the envelope. `readHistory` adds the payload,
-  the K-34 authorization chain and the PII class — where each `null` is a *fact* (the
-  payload was erased, the row predates authorization recording, nobody was impersonating)
-  that a hand-rolled `SELECT` reads as missing data instead. Neither checks a permission;
-  the caller does, first, as always.
+  the K-34 authorization chain, the K-42 impersonation stamp and the PII class — and on
+  the first three a `null` is a *fact* (the payload was erased, the row predates
+  authorization recording, nobody was impersonating), which a hand-rolled `SELECT` reads
+  as missing data instead. Neither checks a permission; the caller does, first, as always.
 - Every operation's first line: `assertAllowed(await ctx.check(PERM))`; per-entity
   checks (`ctx.check(perm, entityRef)`) for portal-style walks.
 - Every mutation emits a **fat** event (consumer must never need a cross-module read);
