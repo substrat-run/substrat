@@ -491,6 +491,13 @@ describe('the lifecycle, and the two things it will not do', () => {
       }),
     ).rejects.toThrow(/not a member of this desk/);
 
+    // The empty string is a string the schema accepts and nobody's principal. It is
+    // the worst of the two failures — not null, so the row reads as assigned; not a
+    // person, so nobody is told and nobody works it — so it is refused too.
+    await expect(
+      anna.invoke('ticket0/assign', { conversationId: story.conversation, assignee: '' }),
+    ).rejects.toThrow(/not a member of this desk/);
+
     // And the refusal left the previous owner alone — it threw before the write.
     const unchanged = (await anna.invoke('ticket0/get-conversation', {
       conversationId: story.conversation,

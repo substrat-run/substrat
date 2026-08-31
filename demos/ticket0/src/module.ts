@@ -1064,7 +1064,12 @@ const operations = {
     const conversation = conversationOrThrow(ctx, input.conversationId);
     // Before the write, not after: an assignee nobody can resolve is a queue entry
     // that never gets worked and a notification nobody receives.
-    if (input.assignee) staffOrThrow(ctx, input.assignee);
+    //
+    // `!== null` rather than truthiness, because `''` is a string the schema accepts
+    // and truthiness would wave it through — and an empty assignee is the exact
+    // failure this check exists for: not null, so the row reads as assigned, and not
+    // a person, so nobody is told and nobody works it.
+    if (input.assignee !== null) staffOrThrow(ctx, input.assignee);
     const next = step(conversation, 'ticket0/assign');
     ctx.sql.exec('UPDATE ticket0_conversations SET assignee = ? WHERE id = ?', [
       input.assignee,

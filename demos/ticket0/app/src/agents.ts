@@ -14,11 +14,33 @@ import { api, type AgentProfile } from './api.js';
 
 let cache: Promise<Map<string, AgentProfile>> | null = null;
 
+/**
+ * The WHOLE directory, not its first page.
+ *
+ * A picker is the one read where a truncated answer is invisible: it does not look
+ * short, it looks like the person you wanted does not work here. So this follows
+ * `page.next` to the end rather than mapping the first response, which is also the
+ * only way the app's options stay the same set the handler validates against.
+ */
+async function everyAgent(): Promise<Map<string, AgentProfile>> {
+  const all = new Map<string, AgentProfile>();
+  let page = await api.listAgents();
+  for (;;) {
+    for (const a of page.entries) all.set(a.principal, a);
+    if (!page.next) return all;
+    page = await api.follow<AgentProfile>(page.next);
+  }
+}
+
 export function agents(): Promise<Map<string, AgentProfile>> {
-  cache ??= api
-    .listAgents()
-    .then((p) => new Map(p.entries.map((a) => [a.principal, a])))
-    .catch(() => new Map<string, AgentProfile>());
+  cache ??= everyAgent().catch(() => {
+    // A caller who may not read the desk gets the empty map — but the failure is not
+    // remembered. Caching it would turn one bad response into a picker that stays
+    // empty for the life of the tab, and a 403 and a dropped connection look the
+    // same from here.
+    cache = null;
+    return new Map<string, AgentProfile>();
+  });
   return cache;
 }
 

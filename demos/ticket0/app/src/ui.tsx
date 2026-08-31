@@ -146,6 +146,7 @@ export function OwnerPicker({
   const known = staff.some((a) => a.principal === value);
   return (
     <select
+      aria-label="Owner"
       value={value ?? ''}
       disabled={disabled}
       onChange={(e) => onChange(e.target.value === '' ? null : e.target.value)}

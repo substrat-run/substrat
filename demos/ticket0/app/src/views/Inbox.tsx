@@ -100,6 +100,15 @@ export function Inbox({
   const [staff, setStaff] = useState<Map<string, AgentProfile>>(new Map());
   /** A failed assignment, said out loud. A row that silently snaps back is worse. */
   const [assignError, setAssignError] = useState<string | null>(null);
+  /**
+   * The row whose assignment is in flight.
+   *
+   * Two choices on one row are two requests and nothing orders them, so the earlier
+   * one can land last and set an owner the person had already moved off. The list's
+   * own reads solve that with a sequence number; a write cannot, because the loser
+   * would still have been written. So the picker is closed until its write settles.
+   */
+  const [assigning, setAssigning] = useState<string | null>(null);
 
   /**
    * The newest request wins.
@@ -154,12 +163,14 @@ export function Inbox({
   const reassign = useCallback(
     (conversationId: string, assignee: string | null) => {
       setAssignError(null);
+      setAssigning(conversationId);
       api
         .assign({ conversationId, assignee })
         .then(() => load())
         // The client already turns this vertical's problem+json into `message`, so a
         // refusal reads as the sentence the handler wrote rather than a status code.
-        .catch((e: Error) => setAssignError(e.message));
+        .catch((e: Error) => setAssignError(e.message))
+        .finally(() => setAssigning(null));
     },
     [load],
   );
@@ -278,6 +289,7 @@ export function Inbox({
                 who={people.get(c.contact_id)}
                 staff={staff}
                 focused={i === cursor}
+                assigning={assigning === c.id}
                 onOpen={() => go({ name: 'conversation', id: c.id })}
                 onAssign={(assignee) => reassign(c.id, assignee)}
               />
@@ -407,6 +419,7 @@ function Row({
   who,
   staff,
   focused,
+  assigning,
   onOpen,
   onAssign,
 }: {
@@ -414,6 +427,7 @@ function Row({
   who: Contact | undefined;
   staff: Map<string, AgentProfile>;
   focused: boolean;
+  assigning: boolean;
   onOpen: () => void;
   onAssign: (assignee: string | null) => void;
 }) {
@@ -478,7 +492,7 @@ function Row({
           compact
           value={c.assignee}
           staff={[...staff.values()]}
-          disabled={c.state === 'closed'}
+          disabled={assigning || c.state === 'closed'}
           onChange={onAssign}
         />
       </div>
