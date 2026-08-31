@@ -1235,6 +1235,7 @@
             "ticket0/ingest-message": "open",
             "ticket0/resolve": "resolved",
             "ticket0/wake": "open",
+            "ticket0/wake-snoozed": "open",
             "ticket0/widget-post": "open"
           },
           "allow": [

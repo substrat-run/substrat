@@ -10,7 +10,21 @@ import { apiCatalogFrom, buildOpenApiDocument } from '@substrat-run/contracts';
 import { ticket0Operations } from '../spec/model.js';
 import { ticket0Manifest } from './manifest.js';
 
-export const API = apiCatalogFrom(ticket0Operations, {
+/**
+ * The operations this desk actually SERVES.
+ *
+ * Scheduled work is not an API (#1082). `ticket0/wake-snoozed` declares no `http`
+ * and the schedule is its only caller, so `mountOperations` mounts nothing for it —
+ * and absent `http` the builder would document the platform's `/api/op/{name}`
+ * invoke convention, a URL this vertical does not answer on. A document naming a
+ * route nobody serves is worse than one that is an operation short, so the filter
+ * is on the declaration rather than on a list of names to remember.
+ */
+const SERVED = Object.fromEntries(
+  Object.entries(ticket0Operations).filter(([, op]) => 'http' in op),
+);
+
+export const API = apiCatalogFrom(SERVED, {
   'ticket0/get-desk': { tag: 'Desk' },
   'ticket0/configure-desk': { tag: 'Desk' },
   'ticket0/rotate-verification-secret': {

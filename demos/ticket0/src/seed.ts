@@ -17,7 +17,7 @@
  */
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { principalId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
+import { ulid, type Clock, type ScopeHost } from '@substrat-run/kernel';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
 import { ASSISTANT_NAME } from './module.js';
 // The module set and the role table live in `provision.ts` — the ONE place both this
@@ -65,8 +65,14 @@ export interface World {
   readonly kestrel: Desk;
 }
 
-export function buildHost(dir: string): ScopeHost {
-  const host = new SqliteScopeHost({ dir });
+/**
+ * `clock` is what a suite about ELAPSED time needs (#812): the snooze timer's whole
+ * behaviour is a function of `ctx.now()` moving past `snoozed_until`, and a test that
+ * waited for the wall clock would either sleep or assert nothing. Omitted — every
+ * other caller, including the dev server — the host reads the wall clock.
+ */
+export function buildHost(dir: string, clock?: Clock): ScopeHost {
+  const host = new SqliteScopeHost(clock ? { dir, clock } : { dir });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }
