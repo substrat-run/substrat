@@ -84,9 +84,16 @@ keeps only the catalog card: where the copy came from, when, and when it expires
 crosses to the platform** for any of it.
 
 The one deliberate exception is [`scope pull`](/reference/cli#scope-pull), whose whole point is
-moving data out — so it is staff-gated, audited, **masked by default** (PII columns and
-payload fields are redacted; `--full` is an explicit break-glass), and refused entirely for
-data pinned to a jurisdiction.
+moving data out — so it is staff-gated, audited, **pseudonymized by default** and refused
+entirely for data pinned to a jurisdiction. Columns and payload fields a name heuristic
+*recognises* as PII carry deterministic fake values — the same customer reads the same on
+every screen — while free text and national identifiers stay `[masked]` and a column the
+heuristic does not recognise is untouched. `--full` is an explicit break-glass.
+
+The guarantee is therefore about the recognised fields, not about the file: it is
+pseudonymization, not anonymization, and a heuristic one at that. Rare combinations,
+amounts, dates and anything the sweep did not claim can still re-identify a subject, so
+the copy is handled as personal data either way.
 
 ## What a snapshot is *not*
 

@@ -259,6 +259,17 @@ over verticals, but reads/writes domain data across the boundary only through §
    that the platform sweep enforces as the backstop for an abandoned one. Archives remain
    the deliberately-kept case.
 2. Masking: declarative per-vertical redaction rules, or a generic PII-column sweep?
+   **Partly answered (#1034):** the sweep stays generic and name-based, but it now
+   *pseudonymizes* rather than blanks — a PII cell gets a deterministic fake value of
+   the right kind (`HMAC(exportSalt, value)` → a name, an email at a reserved domain, a
+   phone that keeps its country code), so the same real value reads the same in its own
+   row, in every event payload that quoted it, and in the timeline. That is what makes a
+   masked pull usable as a preview instead of a page of `[masked]`. It is
+   **pseudonymization, not anonymization** — rare combinations, amounts and dates still
+   re-identify — so none of §6's gates relax. Free text and national identifiers keep
+   `[masked]` (a hash cannot invent a sentence, and a generated personnummer may belong
+   to a real person). Still open underneath: per-vertical declarative rules, driven by
+   `erasable` on `defineEntities` rather than by a column-name regex.
 3. Does a same-scope **code-only canary** (§2, top row) earn a `hostnames.vertical_version_id`
    override, or do we always fork? (Override reintroduces the "code B on data A" hazard unless
    guarded on `migration_digest` equality — leaning: always fork.)

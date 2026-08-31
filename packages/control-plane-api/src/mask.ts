@@ -1,4 +1,5 @@
 import type { ScopeDumpTable } from '@substrat-run/contracts';
+import { MASKED, kindOf, type PiiKind, type Pseudonymizer } from './pseudonymize.js';
 
 /**
  * The default masking pass over a scope dump (preview-and-snapshots.md §6/§8).
@@ -9,67 +10,67 @@ import type { ScopeDumpTable } from '@substrat-run/contracts';
  * column heuristic, with declarative per-vertical redaction rules as the later
  * refinement. Two rules:
  *
- * 1. A string cell in a column whose name matches the PII heuristic is replaced
- *    with `[masked]`. Non-strings (ids, counts, flags) pass through — the sweep
+ * 1. A string cell in a column whose name matches the PII heuristic is **pseudonymized**
+ *    — replaced with a deterministic fake value of the same kind (#1034,
+ *    `pseudonymize.ts`). Non-strings (ids, counts, flags) pass through — the sweep
  *    targets free text, and ids are what make the copy debuggable at all.
  * 2. A string cell in a JSON-carrying column (`payload`, `detail`, `before`,
  *    `after`, `data`) that parses as JSON is swept RECURSIVELY by key with the
  *    same heuristic, then re-serialized — fat event payloads keep their shape
  *    (consumers and timelines stay debuggable) while the PII fields inside them
- *    are masked.
+ *    are pseudonymized.
  *
- * Deliberately lossy and deliberately dumb: a heuristic sweep can miss a column
- * named `x7`, which is why the pull is ALSO staff-gated, audited, and
- * jurisdiction-checked — masking is one layer of §6's defense, not the gate.
+ * What changed with #1034 is only what the masked branch WRITES. It used to be the
+ * literal `[masked]` in every cell, which made a pulled scope structurally valid and
+ * factually useless — every screen read `[masked]`, so nobody could drive a preview,
+ * a demo or a local repro from one. Now the same cell gets a plausible fake of the
+ * right kind, deterministic per export, so the copy reads like a tenant. Free text and
+ * national identifiers still get `[masked]`, for the reasons `pseudonymize.ts` states.
+ *
+ * The output is **pseudonymized, not anonymized**: rare combinations, amounts and dates
+ * can still re-identify a subject. Nothing about the gate relaxes because the values now
+ * look fake — a heuristic sweep can still miss a column named `x7`, which is why the pull
+ * is ALSO staff-gated, audited, and jurisdiction-checked. Masking is one layer of §6's
+ * defense, not the gate.
  */
-
-// Free-text/PII column names. `name` is included on purpose: entity names
-// (customers, properties, contacts) are customer data even when they look benign.
-//
-// `external_id` earns its place from the platform's OWN schema (#36): an identity link's
-// `externalId` is the provider's subject, which in practice is very often the person's
-// email address — so a tenant export that swept only the obvious columns would hand out
-// the one field most likely to name a human. It is the deliberately lossy direction of
-// the trade: an opaque third-party id (a document ref, an upstream order number) gets
-// masked too, which costs a masked pull some fidelity and costs a leak nothing.
-const PII_COLUMN = /(^|_)(email|e?mail_address|phone|mobile|tel|address|street|city|postal|zip|ssn|personnummer|name|first_name|last_name|full_name|contact|external_id|note|notes|comment|comments|message|subject|body|description)($|_)/i;
 
 // Columns that carry JSON documents worth sweeping by key rather than blanking.
 const JSON_COLUMN = /(^|_)(payload|detail|details|data|before|after)($|_)/i;
 
-const MASKED = '[masked]';
+/** What a sweep does with one PII string: collect it, or replace it. */
+type Visit = (kind: PiiKind, original: string) => string;
 
-// Column names are snake_case but JSON payload keys are camelCase — normalize to
-// snake before testing so `customerEmail` matches the same heuristic as `email`.
-const matchesPii = (name: string): boolean =>
-  PII_COLUMN.test(name.replace(/([a-z0-9])([A-Z])/g, '$1_$2'));
-
-function maskJsonValue(value: unknown, keyMatched: boolean): unknown {
-  if (typeof value === 'string') return keyMatched ? MASKED : value;
-  if (Array.isArray(value)) return value.map((v) => maskJsonValue(v, keyMatched));
+function sweepJson(value: unknown, kind: PiiKind | undefined, visit: Visit): unknown {
+  if (typeof value === 'string') return kind && value ? visit(kind, value) : value;
+  if (Array.isArray(value)) return value.map((v) => sweepJson(v, kind, visit));
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = maskJsonValue(v, keyMatched || matchesPii(k));
+      // The child's OWN key wins when it is recognised: in `{ contact: { email } }`,
+      // `contact` reads as `person`, and inheriting that would render a full name into
+      // a field a consumer parses as an email. The inherited kind is the fallback for
+      // keys the heuristic does not classify — and for array elements, which have no
+      // key of their own, so `{ email: [a, b] }` still sweeps both.
+      out[k] = sweepJson(v, kindOf(k) ?? kind, visit);
     }
     return out;
   }
   return value;
 }
 
-/** Mask one dump in place-shape (returns new arrays; never mutates the input). */
-export function maskDump(tables: ScopeDumpTable[]): ScopeDumpTable[] {
+function sweepTables(tables: ScopeDumpTable[], visit: Visit): ScopeDumpTable[] {
   return tables.map((t) => {
-    const piiCols = t.columns.map((c) => matchesPii(c));
+    const kinds = t.columns.map((c) => kindOf(c));
     const jsonCols = t.columns.map((c) => JSON_COLUMN.test(c));
-    if (!piiCols.some(Boolean) && !jsonCols.some(Boolean)) return t;
+    if (!kinds.some(Boolean) && !jsonCols.some(Boolean)) return t;
     const rows = t.rows.map((row) =>
       row.map((cell, i) => {
-        if (typeof cell !== 'string') return cell;
-        if (piiCols[i]) return MASKED;
+        if (typeof cell !== 'string' || cell === '') return cell;
+        const kind = kinds[i];
+        if (kind) return visit(kind, cell);
         if (jsonCols[i]) {
           try {
-            return JSON.stringify(maskJsonValue(JSON.parse(cell), false));
+            return JSON.stringify(sweepJson(JSON.parse(cell), undefined, visit));
           } catch {
             return cell; // not JSON — leave it; the column heuristic did not claim it
           }
@@ -82,6 +83,28 @@ export function maskDump(tables: ScopeDumpTable[]): ScopeDumpTable[] {
 }
 
 /**
+ * Two passes rather than one, because HMAC is async and a dump is a lot of cells: the
+ * first walk collects every distinct value the sweep would touch, one batch of digests
+ * is computed, and the second walk substitutes. A customer's email quoted in two
+ * hundred event payloads costs exactly one digest.
+ */
+const collector = (into: Set<string>): Visit => (kind, original) => {
+  if (kind !== 'redact') into.add(original);
+  return original;
+};
+
+/** Mask one dump in place-shape (returns new arrays; never mutates the input). */
+export async function maskDump(
+  tables: ScopeDumpTable[],
+  mask: Pseudonymizer,
+): Promise<ScopeDumpTable[]> {
+  const values = new Set<string>();
+  sweepTables(tables, collector(values));
+  await mask.prepare(values);
+  return sweepTables(tables, (kind, original) => mask.valueFor(kind, original));
+}
+
+/**
  * The same heuristic applied to plain JSON records — the directory half of a tenant
  * export (#36).
  *
@@ -91,10 +114,16 @@ export function maskDump(tables: ScopeDumpTable[]): ScopeDumpTable[] {
  * must be masked by the SAME rule, or the default-masked promise is only half true and
  * the leak is in the half nobody looked at.
  *
- * So this reuses `maskJsonValue` rather than growing a second heuristic: one PII column
- * list, one recursive sweep, two entry points. Ids and timestamps pass through — the
- * sweep targets free text, and ids are what keep an export intelligible.
+ * So this reuses `sweepJson` rather than growing a second heuristic: one PII column
+ * list, one recursive sweep, one generator, two entry points. Ids and timestamps pass
+ * through — the sweep targets free text, and ids are what keep an export intelligible.
  */
-export function maskRecords<T>(records: readonly T[]): T[] {
-  return records.map((r) => maskJsonValue(r, false) as T);
+export async function maskRecords<T>(records: readonly T[], mask: Pseudonymizer): Promise<T[]> {
+  const values = new Set<string>();
+  const collect = collector(values);
+  for (const r of records) sweepJson(r, undefined, collect);
+  await mask.prepare(values);
+  return records.map((r) => sweepJson(r, undefined, (k, o) => mask.valueFor(k, o)) as T);
 }
+
+export { MASKED };

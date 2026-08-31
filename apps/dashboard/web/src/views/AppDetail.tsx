@@ -1777,7 +1777,7 @@ function ExportImport({ app }: { app: AppRow }) {
       const rows = dump.tables.reduce((n, t) => n + t.rows.length, 0);
       setNote(
         dump.masked
-          ? `Exported ${dump.tables.length} tables (${rows} rows). Personal data is redacted in this file — full-fidelity export is a CLI/staff affordance.`
+          ? `Exported ${dump.tables.length} tables (${rows} rows). Recognized personal data is pseudonymized — plausible fake values, not real ones — and free text reads [masked]. It is not anonymized: a rare combination can still re-identify, so treat the file as personal data. Full-fidelity export is a CLI/staff affordance.`
           : `Exported ${dump.tables.length} tables (${rows} rows), full fidelity — treat the file as production data.`,
       );
     } catch (e) {
@@ -1849,7 +1849,7 @@ function ExportImport({ app }: { app: AppRow }) {
           Importing <span style={{ fontFamily: 'var(--font-mono)' }}>{pending?.name}</span> ({pending?.tables.length} tables, {pending?.rows} rows):
           <div>→ ALL current data in {app.name} is replaced by the file’s</div>
           <div>→ a preview of today’s data is created first (kept 7 days)</div>
-          <div>→ a PII-masked export restores <span style={{ fontFamily: 'var(--font-mono)' }}>[masked]</span> over real values</div>
+          <div>→ a pseudonymized export restores fake names, emails and phones over real ones</div>
         </div>
       </Dialog>
     </div>

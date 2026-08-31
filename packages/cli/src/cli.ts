@@ -114,8 +114,9 @@ Usage:
                                               version, serving script, role health
   substrat scope pull <scopeId> [--full] [--out <dir>]
                                               pull a scope's data to a local SQLite file
-                                              (masked by default; --full is break-glass,
-                                              audited server-side; 'global' scopes only)
+                                              (pseudonymized by default; --full is
+                                              break-glass, audited server-side;
+                                              'global' scopes only)
   substrat scope restore <scopeId> --file <backup>
                                               load a backup into an existing hosted scope,
                                               REPLACING its data (a pull's .sqlite, a local

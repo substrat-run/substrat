@@ -122,7 +122,11 @@ export async function pullScope(opts: {
     console.log('  (JSON fallback — node 22.13+ writes a ready-to-run .sqlite instead)');
   }
   if (dump.masked) {
-    console.log('  masked: PII columns are redacted — pass --full for a break-glass full pull');
+    console.log('  pseudonymized: recognized PII columns carry deterministic fake values,');
+    console.log('    not real ones. Free text and national identifiers read [masked], and a');
+    console.log('    column the heuristic does not recognize is untouched.');
+    console.log('    Still personal data — a rare combination can re-identify. Pass --full');
+    console.log('    for a break-glass pull of the real values.');
   } else {
     console.log('  ⚠ FULL-FIDELITY pull: this file contains real customer data.');
     console.log('    Treat it as production data — do not share it, delete it when done.');

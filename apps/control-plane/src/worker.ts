@@ -144,6 +144,14 @@ interface Env extends OidcEnv {
    * push tokens simply never authenticate.
    */
   PUSH_TOKEN_SECRET?: string;
+  /**
+   * Keys the pseudonymizer behind a MASKED scope export (#1034). Not a decryption key —
+   * it never reaches the dump and no mapping is stored — so what it buys is stability:
+   * with it set, two pulls of the same scope read the same, which is what makes a masked
+   * copy usable as a standing preview. Unset ⇒ a fresh random salt per export, which is
+   * still deterministic within one response and strictly less correlatable across two.
+   */
+  MASK_SALT?: string;
   /** Local dev / test only: trust the `x-platform-actor` header. NEVER on a real deploy. */
   ALLOW_DEV_ACTOR?: string;
   /**
@@ -1308,6 +1316,7 @@ export default {
           ...(env.PUSH_TOKEN_SECRET ? [pushTokenBuilderAuth(env.PUSH_TOKEN_SECRET)] : []),
         ),
         pushTokenSecret: env.PUSH_TOKEN_SECRET,
+        maskSalt: env.MASK_SALT,
         verticals: verticalsFor(env),
         // #726 gap 2: what each connector this platform operates DECLARES it needs, so
         // every reconcile heals a connection toward it. Wired from the connector's own
