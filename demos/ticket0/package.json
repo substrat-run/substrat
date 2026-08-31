@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
     "test": "vitest run",
+    "lint:boundaries": "substrat-boundary-lint",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "server": "tsx src/server.ts",
     "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
+    "@substrat-run/boundary-lint": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",

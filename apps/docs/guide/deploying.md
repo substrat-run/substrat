@@ -447,10 +447,38 @@ view has a **one-click CI setup**: connect the GitHub App, pick a repository and
 The committed workflow is the whole loop from this page: a push to the chosen branch installs
 dependencies (your lockfile picks the package manager), builds the workspace packages the
 vertical imports when it lives in a monorepo (install only *links* a sibling; its `dist/` is
-what the bundle resolves), and runs
+what the bundle resolves), gates the push (below), and runs
 `substrat push --promote prod` — for a private vertical, merge-to-main *is* the deploy; opening
 or updating a PR creates its [preview](#preview-a-pull-request-—-substrat-preview) and comments the URL; closing
 the PR reaps it. A manual copy-paste path shows the same file if you'd rather commit it yourself.
+
+### The gate before the push
+
+A push *is* a release: it uploads a bundle the platform admits and starts serving. So the
+workflow runs your own checks first, in a **Gate the push** step between the build and the
+upload — whichever of `typecheck`, `test` and `lint:boundaries` your package.json declares (the
+three a [scaffolded project](/guide/getting-started) ships with), from the package's directory. A
+non-zero exit fails the job, and nothing is uploaded.
+
+Only *your package's* scripts, never the repo root's, even in a monorepo: the build step ahead of
+it builds the vertical's dependency closure and nothing more, so a root script is free to need a
+tool this job never built.
+
+This is the *only* place those rules run for a project that is not developed inside the Substrat
+monorepo, so it is worth having all three. `lint:boundaries` is the one you are most likely to be
+missing:
+
+```json
+{
+  "scripts": { "lint:boundaries": "substrat-boundary-lint" },
+  "devDependencies": { "@substrat-run/boundary-lint": "latest" }
+}
+```
+
+[`substrat-boundary-lint`](/reference/boundary-lint) is what catches a module reaching for
+`cloudflare:workers`, another module's tables, or `Date.now()` before that code is serving
+traffic. A repo that declares none of the three still deploys — the file is regenerated into
+projects that predate the gate — but the run says so, loudly.
 
 If you never connect the GitHub App — you own your CI, you are not on GitHub-hosted runners, or
 you want the release-train shape instead of merge-deploys-prod — generate the same file locally:
