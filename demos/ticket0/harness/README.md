@@ -12,7 +12,7 @@ making that trade.
 
 | File | What it is |
 |---|---|
-| `widget-surface.ts` | The public, unauthenticated, CORS'd widget surface. Belongs in `vertical-host` eventually; local until it exists there. |
+| `widget-surface.ts` | ticket0's three `/widget/*` routes, mounted on `vertical-host`'s `mountPublicSurface` — which owns the platform half (unauthenticated mount as a declared service, async CORS, the preflight, refusing an unlisted origin before the handler) since #936. |
 | `assistant.ts` | The model call — through the platform's model host (`@substrat-run/vertical-host/model`), or an offline extractive fallback — plus the retrieve → record → try-to-send flow. |
 | `kb-ingest.ts` | Fetches and parses a documentation corpus into citable articles. |
 | `demo-site.ts` | Two fake customer websites, so the widget's calls are genuinely cross-origin. |

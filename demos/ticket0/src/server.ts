@@ -5,9 +5,9 @@
  *
  *   1. `/api/*` — the staff and portal surface, behind an ordinary OIDC login.
  *   2. `/widget/*` — the PUBLIC widget surface: unauthenticated, CORS'd, running as
- *      each desk's own widget service. Mounted from `harness/widget-surface.ts`, which
- *      `src/worker.ts` mounts too — it is the piece `vertical-host` does not have yet,
- *      so this vertical's two hosts share one copy rather than keeping one each.
+ *      each desk's own widget service. The routes come from `harness/widget-surface.ts`,
+ *      which `src/worker.ts` mounts too; the platform half beneath them is
+ *      `vertical-host`'s `mountPublicSurface` (#936).
  *   3. Two fake customer websites on their own ports, so the widget's calls are
  *      genuinely cross-origin rather than same-origin against their own API.
  *

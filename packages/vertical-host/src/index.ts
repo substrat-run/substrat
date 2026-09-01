@@ -744,6 +744,7 @@ export function mountPlatformSurface<Env extends object>(
 }
 
 export * from './operations-routes.js';
+export * from './public-surface.js';
 export {
   classifyError,
   isPlatformFault,
