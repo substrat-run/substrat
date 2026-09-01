@@ -234,10 +234,22 @@ Everything else is shared code: the `/api` table comes from `spec/model.ts` thro
 
 What a hosted desk does **not** get from a seed, and how it gets it instead:
 
-- **Three service accounts.** `/internal/provision` mints the desk's `widget`,
-  `assistant` and `relay` principals once and records them in the tenant's identity DO.
-  The assistant is minted SUPERVISED (`assistant` — drafts, never sends); handing it
-  `assistant-autonomous` is a decision an admin makes on purpose.
+- **Four service accounts.** `/internal/provision` mints the desk's `widget`,
+  `assistant`, `assistant-autonomous` and `relay` principals once and records them in
+  the tenant's identity DO. BOTH assistants exist from the start, each holding exactly
+  its own keys, and the desk's `assistant_autonomous` setting decides which one the host
+  answers as — Settings → Assistant, "Let it answer" / "Put it back under review". A new
+  desk is supervised, and so is one that has never decided.
+
+  A drafted turn stops being a draft when the reply that carries it goes out —
+  `post-public-reply` takes an optional `turnId` and moves the row in the same
+  transaction, whether the assistant sent it or a person did from the draft card.
+
+  Two principals rather than one principal moved between roles, because `assignScopeRole`
+  writes a role tuple and the platform has nothing that takes one back (#1161): promoting
+  the one account would be a one-way door. The setting picks who is asked; the kernel
+  still decides what that account may do, so turning the flag on grants nothing by
+  itself — `test/scenario.test.ts` pins exactly that.
 - **Teammates and portal customers.** `POST /api/invites` — `desk-admin` / `agent` at
   scope level, or `customer` with a `contactId`, which grants `conversation:read-own`
   on that one contact and nothing else.

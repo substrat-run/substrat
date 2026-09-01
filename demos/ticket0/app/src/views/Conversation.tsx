@@ -637,7 +637,14 @@ function DraftCard({
             disabled={busy}
             onClick={() =>
               void act(() =>
-                api.postPublicReply({ conversationId: conv.id, body: message.body_text }),
+                // Naming the turn is what takes it off the "waiting for a person" list:
+                // a draft a human sends has been sent, and the row has to say so or the
+                // desk keeps offering it and keeps counting it as undelivered.
+                api.postPublicReply({
+                  conversationId: conv.id,
+                  body: message.body_text,
+                  turnId: turn.id,
+                }),
               )
             }
           >

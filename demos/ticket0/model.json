@@ -444,6 +444,16 @@
               }
             ]
           },
+          "assistant_autonomous": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -458,6 +468,7 @@
           "allowed_origins",
           "verification_secret",
           "business_hours",
+          "assistant_autonomous",
           "created_at",
           "updated_at"
         ],

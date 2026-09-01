@@ -550,6 +550,14 @@
                       "minimum": -9007199254740991,
                       "maximum": 9007199254740991
                     },
+                    "drafted": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "supervised": {
+                      "type": "boolean"
+                    },
                     "recent": {
                       "type": "array",
                       "items": {
@@ -591,13 +599,95 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "waiting": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "conversation_id": {
+                            "type": "string"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "conversation_id",
+                          "subject",
+                          "model",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
                     }
                   },
                   "required": [
                     "since",
                     "turns",
                     "failed",
-                    "recent"
+                    "drafted",
+                    "supervised",
+                    "recent",
+                    "waiting"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/widget/assistant-mode": {
+      "get": {
+        "operationId": "ticket0-assistant-mode",
+        "summary": "Whether this desk’s assistant sends its own answers",
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "autonomous": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "autonomous"
                   ],
                   "additionalProperties": false
                 }
@@ -965,6 +1055,9 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "assistantAutonomous": {
+                    "type": "boolean"
                   }
                 }
               }
@@ -1001,6 +1094,16 @@
                         }
                       ]
                     },
+                    "assistant_autonomous": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -1014,6 +1117,7 @@
                     "greeting",
                     "allowed_origins",
                     "business_hours",
+                    "assistant_autonomous",
                     "created_at",
                     "updated_at"
                   ],
@@ -1081,6 +1185,16 @@
                         }
                       ]
                     },
+                    "assistant_autonomous": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -1094,6 +1208,7 @@
                     "greeting",
                     "allowed_origins",
                     "business_hours",
+                    "assistant_autonomous",
                     "created_at",
                     "updated_at"
                   ],
@@ -5123,6 +5238,9 @@
                     "items": {
                       "type": "string"
                     }
+                  },
+                  "turnId": {
+                    "type": "string"
                   }
                 },
                 "required": [

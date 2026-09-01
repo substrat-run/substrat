@@ -398,6 +398,21 @@ export const ticket0Entities = defineEntities({
       allowed_origins: z.string(),
       verification_secret: z.string(),
       business_hours: z.string().nullable(),
+      /**
+       * May the assistant answer a customer directly, or does a person send?
+       *
+       * 1 = the desk answers as `assistant-autonomous`; anything else = SUPERVISED,
+       * the default and what a desk that has never decided gets. Nullable because it
+       * arrived after the table shipped and SQLite cannot add a required column to a
+       * table holding rows — and the null reads correctly: nobody has decided yet, so
+       * the desk keeps a human in the loop.
+       *
+       * The column does not itself enforce anything. It picks WHICH service principal
+       * the host answers as, and the kernel then decides what that principal may do —
+       * `assistant` holds no `conversation:reply-public` and `assistant-autonomous`
+       * does. A flipped flag with no matching principal grants nothing.
+       */
+      assistant_autonomous: z.number().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
     }),
@@ -586,6 +601,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       greeting: z.string().min(1).optional(),
       allowedOrigins: z.array(z.string().url()).optional(),
       businessHours: z.string().nullable().optional(),
+      /**
+       * Hand the assistant the autonomous role, or take it back. Optional with a
+       * behaviour-preserving absence, like every other field here: a desk that does
+       * not mention it keeps whatever it had, and one that has never mentioned it is
+       * supervised.
+       */
+      assistantAutonomous: z.boolean().optional(),
     }),
     output: ticket0Entities.deskSettings.fields.omit({ verification_secret: true }),
     http: { method: 'PATCH', path: '/desk' },
@@ -595,7 +617,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       type: 'ticket0.desk-configured',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'from_address', 'allowed_origins'],
+      // `assistant_autonomous` is on the payload because "this desk was allowed to
+      // answer customers unattended" is exactly the kind of thing a trail should
+      // carry. Additive to a shipped payload, so no schemaVersion bump.
+      payload: ['id', 'from_address', 'allowed_origins', 'assistant_autonomous'],
     },
   },
 
@@ -1091,6 +1116,22 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       bodyHtml: z.string().nullable().optional(),
       /** What this answer drew on. Optional: a human reply usually cites nothing. */
       citedArticleIds: z.array(z.string()).optional(),
+      /**
+       * The drafted turn this reply is sending, if it is sending one.
+       *
+       * The turn is recorded BEFORE the send and must be — a turn that has been paid
+       * for has to survive a refused send. What was missing is the other half: nothing
+       * marked it sent afterwards, so an answer the customer had already read stayed
+       * `drafted` forever. The draft card offered to send it again, the deflection
+       * report counted it unsent, and a "waiting for a person" list would list it.
+       *
+       * It rides on THIS operation rather than a second one because the two facts must
+       * not come apart: a follow-up call that failed after the reply went out would
+       * leave the desk saying an answer is waiting that the customer has already read.
+       * Same transaction, one act. Optional and behaviour-preserving — a human reply
+       * that is not sending a draft names no turn.
+       */
+      turnId: z.string().optional(),
     }),
     output: ticket0Entities.message.fields,
     http: { method: 'POST', path: '/conversations/{conversationId}/replies' },
@@ -1632,6 +1673,18 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       since: z.string(),
       turns: z.number().int(),
       failed: z.number().int(),
+      /**
+       * Turns the assistant wrote and was not allowed to send.
+       *
+       * Reported beside `failed` because a supervised desk produces NOTHING ELSE, and
+       * counting only failures is what let a desk withhold every answer while this
+       * read called it healthy. A drafted turn is not an error — it is the desk
+       * working as configured — but it is the difference between a customer who has
+       * an answer and one who is still waiting.
+       */
+      drafted: z.number().int(),
+      /** The desk answers through the supervised principal: it drafts, a person sends. */
+      supervised: z.boolean(),
       recent: z.array(
         z.object({
           id: z.string(),
@@ -1639,6 +1692,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
           subject: z.string(),
           model: z.string(),
           error: z.string().nullable(),
+          created_at: z.string(),
+        }),
+      ),
+      /** The newest drafted answers, so the panel can send somebody to them. */
+      waiting: z.array(
+        z.object({
+          id: z.string(),
+          conversation_id: z.string(),
+          subject: z.string(),
+          model: z.string(),
           created_at: z.string(),
         }),
       ),
@@ -1975,6 +2038,25 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     permission: 'conversation:widget',
     output: z.object({ origins: z.array(z.string()) }),
     http: { method: 'GET', path: '/widget/origins' },
+  },
+
+  /**
+   * Which assistant principal this desk answers as — the host's second pre-flight
+   * read, and it sits beside `widget-origins` because it is the same kind of thing:
+   * a fact about the desk that the HOST needs before it can act, read as the desk's
+   * own widget service rather than as anybody's session.
+   *
+   * It is deliberately not `desk:configure`. The host reads this on the path where a
+   * customer has just said something and nobody is signed in; gating it on the admin
+   * key would mean the answer path could not ask the question. It says nothing a
+   * visitor could use — whether a person reviews answers is not a secret, and the flag
+   * grants nothing on its own: the principal it selects is where the authority lives.
+   */
+  'ticket0/assistant-mode': {
+    summary: 'Whether this desk’s assistant sends its own answers',
+    permission: 'conversation:widget',
+    output: z.object({ autonomous: z.boolean() }),
+    http: { method: 'GET', path: '/widget/assistant-mode' },
   },
 
   /**

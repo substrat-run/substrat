@@ -194,6 +194,17 @@ const SERVICES_CONFIG_KEY = 'ticket0:services';
 const servicePrincipals = z.object({
   widget: principalId,
   assistant: principalId,
+  /**
+   * OPTIONAL, and it has to stay that way.
+   *
+   * `servicesOf` parses this record with `safeParse` and reads a failure as "this desk
+   * is not provisioned" — which `resolveDesk` turns into a dead widget. Every desk
+   * provisioned before the autonomous assistant existed has three keys, so requiring a
+   * fourth would take down every live widget the moment this shipped, until each was
+   * reconciled. Absent means the same thing here as a null column: not decided, so
+   * supervised.
+   */
+  'assistant-autonomous': principalId.optional(),
   relay: principalId,
 });
 type ServicePrincipals = z.infer<typeof servicePrincipals>;
@@ -244,11 +255,20 @@ async function servicesOf(env: Env, node: DeskNode): Promise<ServicePrincipals |
  */
 async function mintServices(env: Env, node: DeskNode): Promise<ServicePrincipals> {
   const existing = await servicesOf(env, node);
-  const services =
-    existing ??
-    servicePrincipals.parse(
-      Object.fromEntries(SERVICE_ROLES.map((role) => [role, principalId.parse(ulid())])),
-    );
+  /**
+   * Mint what is MISSING, rather than the whole set or nothing.
+   *
+   * The original read "reuse all three, or mint all three", which is correct exactly
+   * until a service role is added: every desk already provisioned then has an
+   * `existing` record, takes the reuse path forever, and never receives the new
+   * principal — the feature ships and reaches no desk that predates it. Filling gaps
+   * makes the platform's reconcile the thing that repairs them.
+   */
+  const minted = SERVICE_ROLES.filter((role) => !existing?.[role]);
+  const services = servicePrincipals.parse({
+    ...(existing ?? {}),
+    ...Object.fromEntries(minted.map((role) => [role, principalId.parse(ulid())])),
+  });
 
   /**
    * WRITE THE IDS DOWN FIRST, then grant the roles — and note that this is the opposite
@@ -267,14 +287,18 @@ async function mintServices(env: Env, node: DeskNode): Promise<ServicePrincipals
    * reuse path re-run unconditionally rather than trusting that a previous call got
    * past this loop.
    */
-  if (!existing) {
+  if (minted.length > 0) {
     await identityDo(env, node).setScopeConfig(node.scopeId, [
       { key: SERVICES_CONFIG_KEY, value: JSON.stringify(services) },
     ]);
   }
   const host = hostFor(env);
   for (const role of SERVICE_ROLES) {
-    await host.assignScopeRole(node.scopeId, services[role], role);
+    // Present for every role by construction — the fill above minted whatever the
+    // record was missing — but the schema cannot say so, since the key is optional
+    // for the desks that predate it.
+    const principal = services[role];
+    if (principal) await host.assignScopeRole(node.scopeId, principal, role);
   }
   return services;
 }
@@ -286,8 +310,9 @@ async function serviceStub(
   role: ServiceRole,
 ): Promise<ScopeStub | null> {
   const services = await servicesOf(env, node);
-  if (!services) return null;
-  return hostFor(env).getScope(services[role], node.tenantId, node.scopeId);
+  const principal = services?.[role];
+  if (!principal) return null;
+  return hostFor(env).getScope(principal, node.tenantId, node.scopeId);
 }
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
@@ -592,10 +617,37 @@ async function answerFor(
       attribution: attributionFor(node),
     });
     model = chosen.label;
-    const assistant = await serviceStub(env, node, 'assistant');
-    if (!assistant) {
+    /**
+     * WHICH assistant answers — the desk's own policy, read as the widget service.
+     *
+     * A supervised desk answers as `assistant`, which holds no `conversation:reply-public`:
+     * `answerConversation` writes the answer, is refused the send, and records the turn
+     * as `drafted` for a person to send. An autonomous desk answers as the principal
+     * that holds the key. Nothing here decides whether the answer may go out — the
+     * kernel does, on the principal's keys — and that is the point: this only picks who
+     * asks.
+     *
+     * Read through the widget principal because that is the one this path is already
+     * holding when a stranger has just said something and nobody is signed in.
+     */
+    const widget = await serviceStub(env, node, 'widget');
+    if (!widget) {
       throw new Error(
-        'this desk has no assistant service principal — provision never minted one, so nothing can answer',
+        'this desk has no widget service principal — provision never minted one, so nothing can answer',
+      );
+    }
+    const { autonomous } = await (widget.invoke('ticket0/assistant-mode', {}) as Promise<{
+      autonomous: boolean;
+    }>);
+    const role: ServiceRole = autonomous ? 'assistant-autonomous' : 'assistant';
+    const assistant = await serviceStub(env, node, role);
+    if (!assistant) {
+      // A desk that turned autonomy on before its reconcile minted the principal lands
+      // here. Recorded as a failure rather than quietly answered by the supervised one:
+      // the desk asked for an answer to reach the customer, and it will not.
+      throw new Error(
+        `this desk has no '${role}' service principal — provision never minted one, so nothing can answer` +
+          (autonomous ? ' (autonomy is on; a reconcile mints it)' : ''),
       );
     }
     const outcome = await answerConversation(

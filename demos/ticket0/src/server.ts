@@ -296,7 +296,28 @@ async function answerFor(
   };
   const chosen = modelFor({ spec: process.env.TICKET0_MODEL, host: modelHost, attribution });
   try {
-    const assistant = await host.getScope(desk.assistant.principal, desk.tenant, desk.scope);
+    /**
+     * WHICH assistant answers — read from the desk, exactly as the worker reads it, so
+     * Settings → Assistant means the same thing on both hosts. The seed sets it
+     * (Substrat's desk autonomous, Kestrel's supervised); the toggle changes it; the
+     * kernel is what enforces it, since the two principals hold different keys.
+     */
+    const widget = await host.getScope(desk.widget.principal, desk.tenant, desk.scope);
+    const { autonomous } = (await widget.invoke('ticket0/assistant-mode', {})) as {
+      autonomous: boolean;
+    };
+    /**
+     * Fall back to the supervised account when there is no autonomous one.
+     *
+     * `.data/cast.json` is written once and read verbatim on every later boot, so a
+     * checkout that ran this demo before the second assistant existed has a world with
+     * three service people and no `assistantAutonomous`. Reaching for `.principal`
+     * there would throw, and the desk would record a failed turn for a model that
+     * worked. Drafting instead is the honest degradation — and `rm -rf .data` re-seeds
+     * a world that has both.
+     */
+    const who = autonomous ? (desk.assistantAutonomous ?? desk.assistant) : desk.assistant;
+    const assistant = await host.getScope(who.principal, desk.tenant, desk.scope);
     const outcome = await answerConversation(
       { invoke: (op, input) => assistant.invoke(op, input) as Promise<never> },
       { conversationId: m.conversationId, messageId: m.messageId, question: m.body },

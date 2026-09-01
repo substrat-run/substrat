@@ -27,7 +27,14 @@ let dir: string;
 let host: ScopeHost;
 let world: World;
 
-type Role = 'admin' | 'agent' | 'assistant' | 'customer' | 'relay' | 'widget';
+type Role =
+  | 'admin'
+  | 'agent'
+  | 'assistant'
+  | 'assistantAutonomous'
+  | 'customer'
+  | 'relay'
+  | 'widget';
 
 /** Everyone addresses their OWN desk. Nobody is handed another's coordinates. */
 const at = (desk: Desk, role: Role): Promise<ScopeStub> =>
@@ -236,7 +243,10 @@ describe('what a turn costs, counted once', () => {
 
 describe('the assistant’s authority is a grant, not a setting', () => {
   it('Substrat’s desk lets its assistant answer the customer', async () => {
-    const assistant = await at(world.substrat, 'assistant');
+    // The AUTONOMOUS principal — which is what Substrat's desk answers as, because its
+    // `assistant_autonomous` setting says so. The setting picks who asks; the grant is
+    // what lets the answer out. The next three cases are the other half of that.
+    const assistant = await at(world.substrat, 'assistantAutonomous');
     const reply = (await assistant.invoke('ticket0/post-public-reply', {
       conversationId: story.conversation,
       body: 'Append a new migration — a shipped one is never edited.',
@@ -283,6 +293,40 @@ describe('the assistant’s authority is a grant, not a setting', () => {
       outcome: 'drafted',
     })) as { id: string };
     expect(turn.id).toBe('kestrel-turn-1');
+  });
+
+  /**
+   * The setting is not the authority — turning it on grants nothing.
+   *
+   * Kestrel's desk is flipped to autonomous and its SUPERVISED principal tries the same
+   * send again. It is refused exactly as before, because what changed is a column and
+   * what decides is the principal's keys. This is the case that would go quiet if
+   * somebody ever "simplified" the two principals into an `if` on the setting.
+   */
+  it('flipping the setting grants the supervised assistant nothing', async () => {
+    const dana = await at(world.kestrel, 'admin');
+    await dana.invoke('ticket0/configure-desk', { assistantAutonomous: true });
+
+    const supervised = await at(world.kestrel, 'assistant');
+    await expect(
+      supervised.invoke('ticket0/post-public-reply', {
+        conversationId: story.kestrelConversation,
+        body: 'Rotate the key; the old one stays valid for 24 hours.',
+      }),
+    ).rejects.toThrow(/permission denied/i);
+
+    // ...while the principal the flipped setting actually selects may send — so the
+    // desk is not merely broken, it is pointed at a different account.
+    const autonomous = await at(world.kestrel, 'assistantAutonomous');
+    const sent = (await autonomous.invoke('ticket0/post-public-reply', {
+      conversationId: story.kestrelConversation,
+      body: 'Rotate the key; the old one stays valid for 24 hours.',
+    })) as Message;
+    expect(sent.visibility).toBe('public');
+
+    // Put Kestrel back the way the seed had it: the later cases in this file are
+    // written against a supervised desk.
+    await dana.invoke('ticket0/configure-desk', { assistantAutonomous: false });
   });
 
   it('a human at Kestrel sends it, and that is the only way it goes out', async () => {
