@@ -49,6 +49,20 @@ const read = (p) => readFileSync(join(ROOT, p), 'utf8');
 // ---------------------------------------------------------------------------
 
 /**
+ * The declaration forms an exported function can take, each capturing
+ * `(name, firstParameter)`. A false negative here is the expensive kind — the
+ * function silently stops being checked and the page may omit it — so every
+ * form the codebase could plausibly grow is matched, generics included, not
+ * just the one the seven engines happen to use today.
+ */
+const CTX_FIRST = [
+  // export function f(ctx, …) · export async function f<T>(ctx, …)
+  /^export\s+(?:async\s+)?function\s+(\w+)\s*(?:<[^<>(]*>)?\s*\(\s*([\w$]*)/gm,
+  // export const f = (ctx, …) => … · = async (ctx, …) => … · = function (ctx, …)
+  /^export\s+const\s+(\w+)\s*(?::[^=\n]*)?=\s*(?:async\s+)?(?:function\s*\w*\s*)?(?:<[^<>(]*>\s*)?\(\s*([\w$]*)/gm,
+];
+
+/**
  * Every name `src/index.ts` exports, plus the subset that is an in-scope
  * function. "In-scope function" is not a list we keep: it is `export function
  * f(ctx, …)`, which is precisely the shape a vertical composes inside its own
@@ -74,9 +88,11 @@ function exportsOf(engineDir) {
     seen.add(key);
     const src = read(rel);
 
-    for (const m of src.matchAll(/^export\s+(?:async\s+)?function\s+(\w+)\s*\(\s*([\w$]*)/gm)) {
-      if (starred) all.add(m[1]);
-      if (m[2] === 'ctx') ctxFns.add(m[1]);
+    for (const re of CTX_FIRST) {
+      for (const m of src.matchAll(re)) {
+        if (starred) all.add(m[1]);
+        if (m[2] === 'ctx') ctxFns.add(m[1]);
+      }
     }
     if (starred) {
       for (const m of src.matchAll(/^export\s+(?:const|let|class|type|interface|enum)\s+(\w+)/gm)) {
