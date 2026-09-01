@@ -67,9 +67,9 @@ desk omits it, and rotating invalidates every signature the customer's site is c
 producing.
 
 **Which sites may embed is the desk's decision.** `configure-desk` holds an origin
-allowlist (Settings → Widget origins), and `harness/widget-surface.ts` checks the
-request's `Origin` **header** against it — never a body field, which would be a
-suggestion rather than a fact. The check runs in middleware — it answers the preflight
+allowlist (Settings → Widget origins), and `vertical-host`'s `mountPublicSurface` —
+which `harness/widget-surface.ts` mounts its routes on — checks the request's `Origin`
+**header** against it, never a body field, which would be a suggestion rather than a fact. The check runs in middleware — it answers the preflight
 itself, and it refuses the request *before* the handler, because withholding
 `access-control-allow-origin` stops a browser *reading* a response and does nothing to
 stop the write behind it. An origin removed from
@@ -230,7 +230,9 @@ Three things differ from `pnpm dev`, and all three live in `worker.ts`:
 
 Everything else is shared code: the `/api` table comes from `spec/model.ts` through
 `src/routes.ts`, and the public `/widget/*` surface is the same
-`harness/widget-surface.ts` both hosts mount.
+`harness/widget-surface.ts` both hosts mount — itself now three routes on
+`vertical-host`'s `mountPublicSurface`, which owns the unauthenticated mount and the
+CORS gate for every vertical that needs one (#936).
 
 What a hosted desk does **not** get from a seed, and how it gets it instead:
 

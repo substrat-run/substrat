@@ -110,6 +110,58 @@ the same shape.
 A vertical that never calls `mountPlatformSurface` has no `/internal/provision`, so it fails
 to provision on first deploy and in its scenario test — louder than any lint could be.
 
+## `mountPublicSurface(app, options)`
+
+A surface anybody's browser may call, from a page you never served — a support widget, an
+embeddable booking form. The other two mounts both assume a caller: `mountPlatformSurface`
+is gated by the platform secret, `mountOperations` resolves a stub from whatever the vertical
+authenticated. A visitor in a chat bubble has neither, and never gets a principal.
+
+```ts
+import { mountPublicSurface } from '@substrat-run/vertical-host';
+
+mountPublicSurface(app, {
+  service: 'widget',          // the service principal this surface runs as, named by you
+  basePath: '/widget',
+  resolveActor: async (c, { origin, service }) => {
+    const desk = await deskFor(c, origin);           // which install — from the request, never the body
+    if (!desk) return null;                          // → 403, same answer as an unlisted page
+    const stub = await stubFor(desk, service);
+    const invoke = <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T>;
+    const { origins } = await invoke<{ origins: string[] }>('desk/widget-origins', {});
+    return { invoke, allowedOrigins: origins };      // read LIVE, per request
+  },
+  routes: (route) => {
+    route.post('/sessions', async (c, { actor, origin }) =>
+      c.json(await actor.invoke('desk/widget-start', { origin })),
+    );
+  },
+});
+```
+
+Three properties, and they are the reason this is platform code rather than a snippet:
+
+1. **It runs as a declared service principal, and only that.** No header, cookie or body
+   field on a public request selects an actor — you name one service at mount, and every
+   call is invoked as whatever `resolveActor` answers for it. A public surface that can be
+   talked into a different principal is not public, it is unauthenticated privilege.
+2. **CORS is answered in middleware, from an async resolver, per request.** Not
+   `hono/cors`: its `origin` callback is synchronous, so an allowlist living in a scope has
+   to be cached at boot — and the cached copy disagrees with the live one the moment an
+   admin edits it. The **preflight** is the first place the live list has to be true, since
+   a browser that cached a permissive one never sends the request.
+3. **The refusal happens before the handler.** Withholding `access-control-allow-origin`
+   stops a browser *reading* a response; it does nothing to stop the write behind it. So an
+   unlisted origin never reaches a route, and a page holding a leaked session token cannot
+   post from an origin the install never listed.
+
+The `Origin` **header** is what is checked — a browser sets it and a page cannot forge it —
+never a body field, which would be a suggestion. Refusals are *thrown*, so they go through
+the same `onError` every other refusal on the worker does. Paths are relative to `basePath`,
+so a route cannot be declared outside the middleware guarding it, and the preflight
+advertises exactly the methods the surface registered. `demos/ticket0` is the worked
+reference. Rate limiting is not here yet.
+
 ## `createModelHost(options)` — from `@substrat-run/vertical-host/model`
 
 The platform's model host: governance around one language-model call, provider-neutral.
