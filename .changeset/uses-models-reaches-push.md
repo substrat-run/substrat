@@ -9,7 +9,7 @@ and honoured by the control plane — but `cli.ts` never passed it from the meta
 either call site (`push`, `preview create`). So the upload always carried nothing, every
 version's manifest recorded nothing, and the control plane's binding injection — which
 requires the version to have ASKED — never fired for any vertical, on any push, from
-#1072 until now. Nothing was red, because every link in the chain was correct on its own.
+`#1072` until now. Nothing was red, because every link in the chain was correct on its own.
 
 The visible symptom was a hosted ticket0 desk answering `offline/extractive` with
 Settings → Assistant reporting a missing `CLOUDFLARE_AI_API_TOKEN` — accurate, since with
