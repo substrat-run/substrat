@@ -53,6 +53,11 @@ export const adminAction = z.enum([
   'setVerticalEmailSender', // #303 — grant/revoke the email-sender capability (relay-sends transactional mail)
   'deleteVertical', // remove a vertical + its versions/channels; refused while any scope is bound
   'bindScopeVersion',
+  // #1172 — the receipt that a scope's provision hook ran against a given version. Its
+  // own action, not folded into `bindScopeVersion`: pointing a scope at code and having
+  // run the vertical's own provision against that code are different facts, and the
+  // whole feature exists because they can be out of step.
+  'markScopeProvisioned',
   'promoteVersion',
   // #286 — in-place deploys: the stable serving script's state moves, and a scope's
   // routing is pointed at the script its data now lives in (provision / adopt-serving).

@@ -218,6 +218,23 @@ export const scope = z.object({
    * survives a version being superseded is worth more than one join.
    */
   verticalVersionId: z.string().min(1).nullable(),
+  /**
+   * The version this scope's PROVISION last ran against (#1172), or null for one
+   * provisioned before the platform recorded it.
+   *
+   * Not the same fact as `verticalVersionId`, and the gap between them is the point. A
+   * vertical's `onProvision` runs once per scope — at install — so anything the vertical
+   * mints for ITSELF there (a service principal, a site registration) never reaches an
+   * install that predates it: the new code deploys, and the thing it depends on was
+   * never created. The two ids differing is exactly "this scope is serving code whose
+   * provision hook has not run", which is what the sweep reconciles.
+   *
+   * Null reads as "unknown, so reconcile once" rather than "up to date": a scope from
+   * before this field existed genuinely has no record of what it was provisioned
+   * against, and assuming the optimistic answer would leave precisely the broken installs
+   * this exists to heal.
+   */
+  provisionedVersionId: z.string().min(1).nullable(),
   // The scope's migration state: the count of applied (module, version) pairs,
   // as a string. Written host-side after migrations apply — never caller-supplied.
   // '0' means "provisioned, nothing applied yet". Comparing it against the host's

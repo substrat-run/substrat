@@ -1877,6 +1877,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       });
       // The reconcile succeeded; a store that did not mint rides back as a diagnosis
       // (`substrat scope provision` prints it, and `/health` keeps reporting the gap
+      // #1172: the reconcile succeeded, so record WHICH version it ran against. Without
+      // this the sweep would come back and do it again on the next pass — the console
+      // button and the automatic phase have to write the same receipt, or pressing the
+      // button means nothing to the thing that watches.
+      if (scope.verticalVersionId) {
+        await admin.markScopeProvisioned(actor, tenantId, scopeId, scope.verticalVersionId);
+      }
       // until it closes). Absent when nothing failed, so the response is unchanged for
       // every scope that has no declared store or already has them all.
       return c.json(storeErrors.length ? { ...result, storeError: storeErrors.join('; ') } : result);
@@ -3003,6 +3010,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ...(tenantStores.length ? { tenantStores } : {}),
         }),
       );
+      // #1172: the hook has just run, so record what it ran against — WHEN the scope is
+      // already bound to a version. Often it is not: this route does not bind, and the
+      // usual install order binds afterwards (adopt-serving), in which case there is
+      // nothing truthful to record yet and the sweep's first pass reconciles once. That
+      // is the right trade — a receipt written before a bind would name no version, and
+      // one guessed from the serving pointer would claim a hook ran against code this
+      // scope was not running.
+      const provisioned = await admin.getScopeRecord(c.get('actor'), input.tenantId, input.scopeId);
+      if (provisioned?.verticalVersionId) {
+        await admin.markScopeProvisioned(
+          c.get('actor'),
+          input.tenantId,
+          input.scopeId,
+          provisioned.verticalVersionId,
+        );
+      }
       return c.json(instance, 201);
     } catch (e) {
       // Propagate the vertical's own status rather than collapsing it to a 500. A

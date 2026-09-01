@@ -122,6 +122,7 @@ export interface ScopeRow {
   status: string;
   schema_version: string;
   vertical_version_id: string | null;
+  provisioned_version_id: string | null;
   migration_failed_version: string | null;
   migration_error: string | null;
   migration_attempts: number;
@@ -817,6 +818,7 @@ const SCOPE_COLUMNS_ADDED = [
   'name TEXT',
   'vertical TEXT',
   'vertical_version_id TEXT',
+  'provisioned_version_id TEXT',
   'migration_failed_version TEXT',
   'migration_error TEXT',
   'migration_attempts INTEGER NOT NULL DEFAULT 0',
@@ -2045,6 +2047,20 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec(
       'UPDATE scopes SET vertical_version_id = ?, vertical = ? WHERE scope_id = ?',
       versionId, verticalSlug, scopeId,
+    );
+  }
+
+  /**
+   * Record which version this scope's provision last ran against (#1172).
+   *
+   * Written after a provision or a reconcile SUCCEEDS, never before: the whole value of
+   * the field is that it is a receipt. Marked optimistically it would silence the sweep
+   * for a repair that failed, which is the one outcome that must keep being retried.
+   */
+  markScopeProvisioned(scopeId: string, versionId: string): void {
+    this.sql.exec(
+      'UPDATE scopes SET provisioned_version_id = ? WHERE scope_id = ?',
+      versionId, scopeId,
     );
   }
 

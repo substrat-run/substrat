@@ -42,6 +42,206 @@ function fakeHost(opts: {
   } as unknown as ScopeHost;
 }
 
+/**
+ * The #1172 phase, with fakes.
+ *
+ * A vertical's `onProvision` runs once per scope, at install — so a scope serving code
+ * whose provision hook never ran against it is missing whatever that hook mints, and no
+ * other path delivers it. The phase compares the two versions and re-runs the provision;
+ * these hold it to the four things that make it a backstop rather than a nuisance: it
+ * acts only on scopes that are behind, it records a receipt, a failure stays unmarked so
+ * the next pass retries, and it leaves forks alone.
+ */
+describe('runPlatformSweep · provision reconcile (#1172)', () => {
+  type FakeScope = {
+    id: ReturnType<typeof sid>;
+    tenantId: typeof T;
+    verticalVersionId: string | null;
+    provisionedVersionId: string | null;
+    forkedFrom?: string | null;
+    kind?: string;
+  };
+
+  function hostWithScopes(scopes: FakeScope[]) {
+    const marked: { id: string; versionId: string }[] = [];
+    const admin = {
+      listScopes: async () => scopes.map((s) => ({ ...s, status: 'active' })),
+      listConnections: async () => [],
+      markScopeProvisioned: async (
+        _a: unknown,
+        _t: unknown,
+        scope: string,
+        versionId: string,
+      ) => {
+        marked.push({ id: scope, versionId });
+        const row = scopes.find((s) => s.id === scope);
+        if (row) row.provisionedVersionId = versionId;
+      },
+    };
+    const host = {
+      admin,
+      drainDue: async () => ({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 }),
+    } as unknown as ScopeHost;
+    return { host, marked };
+  }
+
+  const sweep = (host: ScopeHost, fn: (t: unknown, s: unknown) => Promise<void>) =>
+    runPlatformSweep(host, {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: {},
+      reconcileScopeFn: fn as never,
+    });
+
+  it('reconciles a scope whose bound version is ahead of its provisioned one, then marks it', async () => {
+    const behind: FakeScope = {
+      id: sid(),
+      tenantId: T,
+      verticalVersionId: 'v2',
+      provisionedVersionId: 'v1',
+    };
+    const { host, marked } = hostWithScopes([behind]);
+    const seen: string[] = [];
+
+    const report = await sweep(host, async (_t, s) => {
+      seen.push(s as string);
+    });
+
+    expect(seen).toEqual([behind.id]);
+    expect(report.provisionReconcile).toEqual({ behind: 1, reconciled: 1, failed: 0 });
+    // The receipt names the version it reconciled AGAINST, which is what makes the next
+    // pass a no-op rather than a second attempt.
+    expect(marked).toEqual([{ id: behind.id, versionId: 'v2' }]);
+
+    // And the second pass does nothing, which is the whole difference between a backstop
+    // and a scope re-provisioned every quarter of an hour forever.
+    const again = await sweep(host, async () => {
+      throw new Error('a scope already provisioned against its version must not be touched');
+    });
+    expect(again.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+  });
+
+  /**
+   * A null receipt is "unknown", not "up to date". Every scope that existed before the
+   * platform recorded this has one, including the broken installs the phase exists to
+   * heal — assuming the optimistic answer would skip exactly them.
+   */
+  it('treats a scope with no receipt at all as behind', async () => {
+    const { host, marked } = hostWithScopes([
+      { id: sid(), tenantId: T, verticalVersionId: 'v1', provisionedVersionId: null },
+    ]);
+    const report = await sweep(host, async () => {});
+    expect(report.provisionReconcile?.reconciled).toBe(1);
+    expect(marked).toHaveLength(1);
+  });
+
+  it('leaves a scope alone when its provision already ran against the version it serves', async () => {
+    const { host, marked } = hostWithScopes([
+      { id: sid(), tenantId: T, verticalVersionId: 'v3', provisionedVersionId: 'v3' },
+    ]);
+    const report = await sweep(host, async () => {
+      throw new Error('must not reconcile a scope that is up to date');
+    });
+    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+    expect(marked).toEqual([]);
+  });
+
+  it('does not reconcile a scope bound to no version — there is nothing to reconcile against', async () => {
+    const { host } = hostWithScopes([
+      { id: sid(), tenantId: T, verticalVersionId: null, provisionedVersionId: null },
+    ]);
+    const report = await sweep(host, async () => {
+      throw new Error('must not reconcile a scope with no bound version');
+    });
+    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+  });
+
+  /**
+   * A fork is a preview or an archive of somebody else's data. Re-provisioning one runs
+   * the vertical's hook against a COPY — minting a second set of whatever it mints.
+   */
+  it('skips forks', async () => {
+    const { host } = hostWithScopes([
+      {
+        id: sid(),
+        tenantId: T,
+        verticalVersionId: 'v2',
+        provisionedVersionId: 'v1',
+        forkedFrom: sid(),
+      },
+    ]);
+    const report = await sweep(host, async () => {
+      throw new Error('must not reconcile a fork');
+    });
+    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+  });
+
+  /**
+   * A CLEAN-ROOM preview (#509) is an empty scope with no source to copy, so it has
+   * `kind: 'preview'` and NO `forkedFrom` — the reap sweep keys on `kind` for the same
+   * reason. Filtering on lineage alone would let precisely these through, and a preview
+   * is the one place a vertical's install-side hook is least wanted.
+   */
+  it('skips a clean-room preview, which has no lineage to filter on', async () => {
+    const { host } = hostWithScopes([
+      {
+        id: sid(),
+        tenantId: T,
+        verticalVersionId: 'v2',
+        provisionedVersionId: 'v1',
+        kind: 'preview',
+      },
+    ]);
+    const report = await sweep(host, async () => {
+      throw new Error('must not reconcile a clean-room preview');
+    });
+    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+  });
+
+  /**
+   * The case that separates a backstop from a one-shot: a reconcile that threw leaves the
+   * scope UNMARKED, so the next pass tries again rather than recording a repair that
+   * never happened.
+   */
+  it('leaves a failed reconcile unmarked, and reports it', async () => {
+    const stubborn: FakeScope = {
+      id: sid(),
+      tenantId: T,
+      verticalVersionId: 'v2',
+      provisionedVersionId: 'v1',
+    };
+    const { host, marked } = hostWithScopes([stubborn]);
+
+    const report = await sweep(host, async () => {
+      throw new Error('the vertical refused');
+    });
+
+    expect(report.provisionReconcile).toEqual({ behind: 1, reconciled: 0, failed: 1 });
+    expect(marked).toEqual([]);
+    expect(report.errors).toContainEqual({
+      kind: 'provision-reconcile',
+      id: stubborn.id,
+      error: 'the vertical refused',
+    });
+
+    // Still behind on the next pass.
+    let retried = 0;
+    const after = await sweep(host, async () => {
+      retried += 1;
+    });
+    expect(retried).toBe(1);
+    expect(after.provisionReconcile?.reconciled).toBe(1);
+  });
+
+  it('reports null when no reconcile fn is supplied — nobody looked is not nothing to do', async () => {
+    const { host } = hostWithScopes([
+      { id: sid(), tenantId: T, verticalVersionId: 'v2', provisionedVersionId: 'v1' },
+    ]);
+    const report = await runPlatformSweep(host, { actor: ACTOR, fetch: FETCH, sweepers: {} });
+    expect(report.provisionReconcile).toBeNull();
+  });
+});
+
 describe('runPlatformSweep', () => {
   it('drains active scopes and sweeps live connections, summing drain totals', async () => {
     const scopes = [{ id: sid(), tenantId: T }, { id: sid(), tenantId: T }];

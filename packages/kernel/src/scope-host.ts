@@ -1497,6 +1497,27 @@ export interface HostAdmin {
     opts?: { snapshot?: boolean },
   ): Promise<void>;
 
+  /**
+   * Record that this scope's PROVISION has run against `versionId` (#1172).
+   *
+   * The receipt behind `provisionedVersionId`, and the reason that field is not just
+   * `verticalVersionId` under another name: binding a version is the platform pointing a
+   * scope at code, while this is the vertical's own `onProvision` hook having actually
+   * run against it. A vertical mints its service principals there, and that hook fires
+   * once per scope — at install — so without a receipt the platform cannot tell an
+   * install whose hook has run from one serving code it has never provisioned for.
+   *
+   * Written only after a provision or reconcile SUCCEEDS. Marking optimistically would
+   * silence the sweep for a repair that failed, which is the one case that must keep
+   * being retried.
+   */
+  markScopeProvisioned(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    versionId: string,
+  ): Promise<void>;
+
   // -- the stable serving script (#286) ---------------------------------------
   //
   // One script per vertical serves in place: a Durable Object namespace belongs to

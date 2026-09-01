@@ -52,6 +52,8 @@ export {
   type ProvisionSiblingInput,
   type ProvisionSiblingResult,
 } from './platform-drain.js';
+export { reconcilePayloadFor } from './reconcile.js';
+export type { ReconcilePayload, ReconcileGatherAdmin } from './reconcile.js';
 export { attributeFailure, terminalFailureNote } from './failure-attribution.js';
 export type {
   VerticalClientOptions,

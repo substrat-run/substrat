@@ -61,6 +61,7 @@ import {
   pruneAccessLogBatches,
   pruneScopeBackups,
   createCustomHostnameProvisioner,
+  reconcilePayloadFor,
   reconcilePendingHostnames,
   isCustomHostname,
   firstBuilderAuth,
@@ -732,6 +733,52 @@ function resolveVerticalForScopeFor(
  * nothing. The identity is inherent: the tenant/vertical come from THIS directory's record
  * for the scope, never from the caller, so the intents executed are only ever the scope's own.
  */
+/**
+ * Re-run one scope's provision in the vertical's own deployment (#1172).
+ *
+ * The sweep decides WHICH scopes (bound version ahead of the one their provision last
+ * ran against) and records the receipt; this is only the reach — the same
+ * `/internal/reconcile` hop the console's "Re-run provisioning" button takes, carrying
+ * the same authoritative platform state.
+ *
+ * Throws on refusal rather than swallowing: the sweep counts a failure, leaves the scope
+ * unmarked, and retries it next pass. A silent success here would mark a scope
+ * provisioned that never was.
+ */
+async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<void> {
+  const host = hostFor(env);
+  const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
+  /**
+   * Both of these THROW rather than returning quietly, and the difference matters more
+   * than it looks: the sweep marks a scope provisioned when this resolves. A silent
+   * return would therefore write a receipt for a reconcile that never ran — and the
+   * scope would stop retrying once its deployment finally appeared, which is the exact
+   * failure this whole feature exists to prevent, reintroduced one layer down.
+   *
+   * An active scope whose vertical resolves no deployment is genuinely broken (it
+   * cannot serve a request either), so saying so once per pass is a diagnosis rather
+   * than noise.
+   */
+  if (!rec?.vertical) throw new Error(`scope ${s} is bound to no vertical — nothing to reconcile`);
+  const client = await resolveVerticalForScopeFor(env)(rec);
+  if (!client) {
+    throw new Error(`no deployment is bound for vertical '${rec.vertical}' — cannot reconcile`);
+  }
+  const payload = await reconcilePayloadFor(
+    host.admin as unknown as Parameters<typeof reconcilePayloadFor>[0],
+    SWEEP_ACTOR,
+    { tenantId: t, id: s, vertical: rec.vertical },
+  );
+  await client.reconcileInstance({
+    tenantId: t,
+    scopeId: s,
+    entitlements: payload.entitlements as never,
+    identityLinks: payload.identityLinks as never,
+    connectionGrants: payload.connectionGrants as never,
+    connectionKeys: payload.connectionKeys as never,
+  });
+}
+
 async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<PlatformDrainReport> {
   const empty: PlatformDrainReport = { drained: 0, done: 0, failed: 0, pending: 0 };
   const host = hostFor(env);
@@ -905,6 +952,10 @@ export default {
       // execute each with platform authority, and settle back. The same `drainOneScope` the router
       // kick calls on demand — the sweep is the reliability backstop, the kick is the latency path.
       drainPlatformRequestsFn: (t, s) => drainOneScope(env, t, s),
+      // #1172 — a push repairs its own installs. `onProvision` runs once per scope, at
+      // install, so a scope serving code whose provision hook never ran against it is
+      // missing whatever that hook mints, and nothing else would ever deliver it.
+      reconcileScopeFn: (t, s) => reconcileOneScope(env, t, s),
       // K-24 §4.4 — ship the staff access log to Tier 2, then prune what was shipped.
       // Rides the DIRECTORY backup bucket rather than a binding of its own: this is the
       // platform's own record (no tenant owns it), the `access-log/` prefix cannot collide
@@ -921,6 +972,11 @@ export default {
     // drain that silently never converges is visible in the tail instead of invisible.
     const pr = report.platformRequestTotals;
     const al = report.accessLog;
+    // #1172: a pass that re-provisioned anything says so, and so does one that tried and
+    // failed — a scope that stays behind pass after pass is the shape of a repair that
+    // never converges, and it should be visible in the tail rather than only in a report
+    // nobody reads.
+    const rc = report.provisionReconcile;
     if (
       report.snapshotsReaped > 0 ||
       report.archivedScopesReaped > 0 ||
@@ -929,6 +985,7 @@ export default {
       pr.drained > 0 ||
       pr.failed > 0 ||
       pr.pending > 0 ||
+      (rc !== null && rc.behind > 0) ||
       (al !== null && (al.shipped > 0 || al.pruned > 0))
     ) {
       console.log('platform-sweep', {
@@ -936,6 +993,7 @@ export default {
         archivedScopesReaped: report.archivedScopesReaped,
         tenantsReaped: report.tenantsReaped,
         platformRequests: pr,
+        ...(rc && rc.behind > 0 ? { provisionReconcile: rc } : {}),
         // An egress leaves a trace in the tail as well as the admin log: `ref` is the
         // object the rows landed in, so a question about a pruned row has an address.
         ...(al ? { accessLog: al } : {}),

@@ -85,6 +85,21 @@ export interface PlatformSweepOptions {
     scopeId: ScopeId,
   ) => Promise<{ drained: number; done: number; failed: number; pending: number }>;
   /**
+   * Re-run one scope's provision in the vertical's own deployment (#1172).
+   *
+   * Injected like `drainPlatformRequestsFn` and for the same reason: the kernel cannot
+   * reach a vertical (its scope DO lives in the vertical's deployment), so the control
+   * plane supplies the fn that goes over `/internal/reconcile`. UNSET skips the phase.
+   *
+   * What makes the phase necessary: a vertical's `onProvision` runs ONCE per scope, at
+   * install. Anything the vertical mints for itself there — a service principal, a site
+   * registration — therefore never reaches an install that predates it. The new code
+   * deploys, and the thing it depends on was never created. Comparing the scope's bound
+   * version against the one its provision last ran against is how the platform sees that,
+   * and this fn is how it fixes it.
+   */
+  reconcileScopeFn?: (tenantId: TenantId, scopeId: ScopeId) => Promise<void>;
+  /**
    * Also reap expired snapshots (preview-and-snapshots.md §3/§9): any FORK
    * (`forkedFrom` set) whose `expiresAt` has passed is hard-deleted via
    * `deleteSnapshot`. Default `true` — an expiry is only ever present because the
@@ -226,6 +241,16 @@ export interface ScheduleSweepReport {
   failed: number;
 }
 
+/** What the #1172 phase did — see `reconcileScopeFn`. */
+export interface ProvisionReconcileReport {
+  /** Scopes whose bound version was ahead of their provisioned one this pass. */
+  behind: number;
+  /** Of those, the ones whose reconcile succeeded and were marked. */
+  reconciled: number;
+  /** Of those, the ones whose reconcile threw. They stay behind and retry next pass. */
+  failed: number;
+}
+
 export interface PlatformSweepReport {
   /** Active scopes `drainDue` ran on. */
   scopesDrained: number;
@@ -243,6 +268,14 @@ export interface PlatformSweepReport {
   tenantsReaped: number;
   /** Platform-intent drain outcomes summed across scopes (platform-intents.md). */
   platformRequestTotals: PlatformRequestDrainTotals;
+  /**
+   * Scopes whose provision was re-run because their bound version had moved past the one
+   * it last ran against (#1172), or null when no `reconcileScopeFn` was supplied.
+   *
+   * Null and `{ reconciled: 0 }` are different facts, as everywhere else in this report:
+   * the first is "nobody looked".
+   */
+  provisionReconcile: ProvisionReconcileReport | null;
   /**
    * The migration-reconciliation phase's report (§5.3, #49), or null when the
    * phase was disabled or the host predates `migrateScope`. Note null vs a
@@ -274,6 +307,7 @@ export interface PlatformSweepReport {
       | 'reap-tenant'
       | 'migrate'
       | 'platform-request'
+      | 'provision-reconcile'
       | 'schedule'
       | 'access-log';
     id: string;
@@ -360,6 +394,7 @@ export async function runPlatformSweep(
     archivedScopesReaped: 0,
     tenantsReaped: 0,
     platformRequestTotals: { scopes: 0, drained: 0, done: 0, failed: 0, pending: 0 },
+    provisionReconcile: null,
     migrations: null,
     schedules: null,
     accessLog: null,
@@ -505,6 +540,58 @@ export async function runPlatformSweep(
         report.errors.push({ kind: 'platform-request', id: s.id, error: message(err) });
       }
     });
+  }
+
+  // -- provision reconcile (#1172) --------------------------------------------
+  // A vertical's `onProvision` runs once per scope, at install. So a scope serving code
+  // whose provision hook never ran against it is missing whatever that hook creates —
+  // and no other path will ever deliver it. This phase is what makes a push repair its
+  // own installs: bound version != provisioned version ⇒ reconcile once, then record it.
+  //
+  // AFTER the migration phase and skipping what failed there, like every phase that
+  // touches a vertical: a fail-closed scope would only re-throw its migration error.
+  if (options.reconcileScopeFn) {
+    const reconcile = options.reconcileScopeFn;
+    const provisionReconcile: ProvisionReconcileReport = { behind: 0, reconciled: 0, failed: 0 };
+    /**
+     * Primaries only — and that takes BOTH tests, not one.
+     *
+     * A fork is an archive or a preview of somebody else's data, and re-provisioning one
+     * runs the vertical's install-side hook against a copy, minting a second set of
+     * whatever it mints. But a CLEAN-ROOM preview (#509) is an empty scope with no source
+     * to copy, so it carries `kind: 'preview'` and NO `forkedFrom` — the reap sweep keys
+     * on `kind` for exactly that reason. Filtering on lineage alone would let those
+     * through, which is the one shape of scope where the hook's effects are least wanted.
+     */
+    const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+      (s) => !s.forkedFrom && s.kind !== 'preview',
+    );
+    await mapBounded(scopes, concurrency, async (s) => {
+      if (failedThisPass.has(s.id)) return;
+      // No bound version ⇒ nothing to compare, and nothing a reconcile could target.
+      if (!s.verticalVersionId) return;
+      // A null receipt is "unknown", NOT "up to date": a scope provisioned before the
+      // platform recorded this has no evidence either way, and guessing the optimistic
+      // answer leaves exactly the broken installs this phase exists to heal. It costs
+      // one reconcile per pre-existing scope, once, and then the receipt is there.
+      if (s.provisionedVersionId === s.verticalVersionId) return;
+      provisionReconcile.behind += 1;
+      const target = s.verticalVersionId;
+      try {
+        await reconcile(s.tenantId, s.id);
+        // Marked with the version we RECONCILED against, read before the call — not
+        // whatever the scope happens to be bound to now. A push that lands mid-pass must
+        // not have its new version marked by a reconcile that ran against the old one.
+        await host.admin.markScopeProvisioned(options.actor, s.tenantId, s.id, target);
+        provisionReconcile.reconciled += 1;
+      } catch (err) {
+        // Left unmarked on purpose: it stays behind and is retried next pass, which is
+        // the whole difference between a backstop and a one-shot.
+        provisionReconcile.failed += 1;
+        report.errors.push({ kind: 'provision-reconcile', id: s.id, error: message(err) });
+      }
+    });
+    report.provisionReconcile = provisionReconcile;
   }
 
   // -- recurring schedules (#383) ---------------------------------------------
