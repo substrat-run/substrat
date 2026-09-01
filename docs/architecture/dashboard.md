@@ -183,13 +183,18 @@ vertical, version, status, hostname — with live status if realtime is wired.
 assignments; revoke tombstones (K-21).
 
 **Connect a provider / bind a domain / plan.** Thin operations over the connection store,
-`bindHostname`, and entitlements — each authorized in-scope, effected tenant-narrowed.
+`bindHostname`, and entitlements — each authorized in-scope, effected tenant-narrowed (with the
+caller-side qualification §4 records).
 
 ## 6. Staged plan
 
 - **M0 — the real flow (this is the walkthrough):** sign-up → tenant + dashboard scope → catalog →
   provision a Meridian app-scope → My apps + URL. Proves the bootstrap, the catalog, and the
-  tenant-narrowed provisioning authority end to end.
+  provisioning authority end to end — the *narrowing* half of that authority only as far as the
+  caller, per §4.
+- **M0.1 — close §4's server half:** a tenant-scoped credential class on the control-plane side,
+  so the narrowing is refused by the server and the audit row names the customer's principal
+  (#977). Until this lands, §4's move 2 is the target, not a property of the deployed system.
 - **M1 — team:** invite members, roles, roster (grant/revoke).
 - **M2 — ops:** custom domains, connections (connect Scrive from the Dashboard), settings.
 - **M3 — plan:** entitlements surfaced read-only. **Billing stays out** (control-plane.md is
