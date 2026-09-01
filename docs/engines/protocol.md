@@ -168,17 +168,23 @@ open ──requestSignatures──> pending_signature ──all parties signed�
 `method`/`evidence_ref` were reserved slots with no code path able to write them. They now
 have one.
 
-### 5.2 What is still missing, and where
+### 5.2 The return path, and what is still missing
 
-The engine emits `protocol.signatures-requested` and an executor can dispatch it. The **return
-path does not exist**, and the gap is in the kernel rather than here:
+The engine emits `protocol.signatures-requested`, a connector dispatches it, and the return
+path now exists — both kernel gaps this section used to list are closed:
 
-- **no webhook ingress** — the router has no such surface (#96)
-- **no inbound authority seam** — `ScopeHost.getScope` demands a `PrincipalId`, and
-  `ExecutorHandler` has no return path into a scope (#97)
+- **ingress** — a capability URL minted per dispatch and mounted on the control plane, with a
+  poll floor underneath it when no callback URL is configured (#96)
+- **inbound authority seam** — `getConnectorScope(connectionId, scopeId)` opens a scope stub
+  whose authority is the connection's own grants, so a provider's callback needs no
+  `PrincipalId` (#97)
 
-`recordSignature` is shaped to be callable by that ingress and is gated by its own permission
-key, `protocol:record-signature`, held by **no human role** in any demo. eIDAS
+What is still missing is outside the engine: the consuming vertical must schedule the
+reconciliation poll itself, and BankID-to-sign is disabled on the Scrive testbed account, so
+the real signing round-trip is unverified.
+
+`recordSignature` is called across that seam and is gated by its own permission key,
+`protocol:record-signature`, held by **no human role** in any demo — a connection holds it. eIDAS
 advanced/qualified remains an evidence-quality upgrade — but only once the flow producing it
 exists. The engine never imports a vendor SDK.
 

@@ -116,23 +116,26 @@ The external signing flow is split across that boundary deliberately:
 3. Days later the provider reports a signature, and something invokes
    `recordSignature(ctx, { requestId, signatory, signedAt, contentHash, evidenceRef })`.
 
-::: warning Step 3 has no caller yet
-Steps 1 and 2 are buildable today — the outbox and `ExecutorHandler` are real. Step 3 is not,
-and the gap is in the **kernel**, not this engine:
+::: info Step 3 has a caller now
+Both kernel gaps this section used to name are closed, so all three steps run end to end:
 
-- there is **no webhook ingress** anywhere. `apps/router` resolves hostname → target and has
-  no such surface; `kernel-design.md` reserves the idea and nothing implements it. No
-  signature verification, no replay protection, no connection store.
-- there is **no inbound authority seam**. `ExecutorHandler` has no return path into a scope,
-  and the only stub minter — `ScopeHost.getScope(principal, …)` — demands a `PrincipalId`. A
-  provider callback is not a principal.
+- the **inbound authority seam** exists. `getConnectorScope(connectionId, scopeId)` opens a
+  scope stub whose authority is the connection's own grants, narrowed by construction to that
+  tenant and vertical — so a provider's callback acts *as the connection* rather than as a
+  person it cannot name ([#97](https://github.com/substrat-run/substrat/issues/97)).
+- the **ingress** exists, as a capability URL the platform mints per dispatch and mounts on
+  the control plane, with a poll floor underneath it: no callback URL configured means
+  reconciliation is poll-only, which is complete and merely slower
+  ([#96](https://github.com/substrat-run/substrat/issues/96)).
 
-So `recordSignature` is reachable only by a principal holding `protocol:record-signature`, a
-key deliberately held by **no human role** in any demo. It is shaped to be callable by that
-ingress when it lands; it is not a claim that BankID works today.
+The [Scrive connector](/connectors/scrive) is the worked example — `reconcileScriveDispatch`
+reads the provider's result and calls step 3 across that seam. Two caveats travel with it,
+both outside this engine: the consuming vertical must schedule the reconciliation poll, and
+BankID-to-sign is off on the testbed account, so the real signing round-trip is still
+unverified.
 
-Tracked as [#96](https://github.com/substrat-run/substrat/issues/96) (webhook ingress) and
-[#97](https://github.com/substrat-run/substrat/issues/97) (inbound authority seam).
+`recordSignature` remains reachable by **no human role** in any demo, which is the design and
+not a gap: `protocol:record-signature` is a key a *connection* holds.
 :::
 
 A worked example of steps 1 and the shape of 3:

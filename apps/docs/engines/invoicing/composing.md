@@ -84,15 +84,18 @@ A connector is a **fourth bucket** — not kernel, not engine, not vertical. It 
 integrations hub, and the hub itself is kernel-owned while the connectors in it are not. The
 test that decides it: *effects on the outside world are connectors.*
 
-::: warning Connectors are not built yet
-The connector interface, connection store, token refresh, webhook ingress, and per-tenant
-connection config are **planned, not implemented** — there is no connector code in the repo.
-The `_substrat_outbox` is real and transactional, but it drains only to in-process consumers;
-there is no external sink and `drained_at` is written nowhere.
+::: info The seam is built; an accounting connector is not
+The [connector seam](/connectors/) is real and running in production — `registerConnector`
+binds a handler to an event type, the per-tenant connection store holds the credential sealed
+at rest, delivery is at-least-once with retry and a dead letter, and a provider's write-back
+comes home through the inbound authority seam. The [Scrive connector](/connectors/scrive) uses
+all four.
 
-Today, "export to Fortnox" in the demos is a **file-write stub**. This engine is pre-shaped
-for a seam that doesn't have a floor under it yet — which is deliberate sequencing, but don't
-read `underlag-exported` as something you can wire Stripe to this afternoon.
+What is missing is an **accounting** connector. Nothing consumes
+`invoicing.underlag-exported` today — no Fortnox, no Visma, no Stripe — so the event fires,
+carries its `Money`, and reaches no bookkeeping system until somebody writes the consumer. The
+engine is pre-shaped for a connector it does not yet have, which is deliberate sequencing; it
+is not an invitation to read `underlag-exported` as something already wired to Stripe.
 :::
 
 Note also what *doesn't* belong behind that seam: reskontra and avisering (ledger, dunning)

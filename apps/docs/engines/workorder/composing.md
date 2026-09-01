@@ -87,9 +87,13 @@ The seam is `workorder.completed` on the event spine. A **connector** — a thir
 capability living in the kernel-owned integrations hub, neither engine nor vertical — is what
 would carry it outward.
 
-::: warning Connectors are not built yet
-The connector interface, webhook ingress, and per-tenant connection config are **planned, not
-implemented** — there is no connector code in the repo today. The `_substrat_outbox` is real
-and transactional, but it drains only to in-process consumers; there is no external sink.
-Engines are pre-shaped for a seam that doesn't have a floor under it yet.
+::: info The seam is built; nothing consumes this event yet
+The [connector seam](/connectors/) is real and running in production — `registerConnector`
+binds a handler to an event type, the per-tenant connection store holds the credential sealed
+at rest, delivery is at-least-once with retry and a dead letter, and a provider's callback
+comes home through the inbound authority seam. The [Scrive connector](/connectors/scrive) uses
+all four.
+
+What is missing here is a **consumer**: nothing subscribes to `workorder.completed` today. This
+seam is an opening nobody has taken yet, not a floor that hasn't been poured.
 :::
