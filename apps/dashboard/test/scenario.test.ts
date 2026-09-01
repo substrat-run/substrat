@@ -40,16 +40,19 @@ import { listDeploymentsFromHost, verticalDeploymentFromHost, verticalDeployment
 import { ControlPlaneError } from '../src/authority.js';
 
 /**
- * M0 — the central claim of docs/architecture/dashboard.md, cashed out: a tenant admin
+ * The central claim of docs/architecture/dashboard.md, cashed out: a tenant admin
  * self-provisions an app in THEIR OWN tenant, authorized by an in-scope permission
  * check, and cannot reach another tenant because the tenant is ambient (their
  * dashboard node), never a request argument.
  *
- * Apps here run the protocol engine — enough to prove a provisioned app is a real,
- * live scope, not a directory row. (In production each app is a separate vertical
- * deployment; this single-process host stands in for the platform.)
+ * This is a HARNESS, not the deployment. A single-process SqliteScopeHost stands in for
+ * the whole platform, so `provision.ts`'s orchestration is testable without Cloudflare:
+ * the app verticals below are registered into it exactly so a provisioned app can be
+ * shown to be a real, live scope rather than a directory row. The dashboard WORKER
+ * bundles none of them — it is the privileged deployment, so it carries no vertical
+ * module code and reaches every app through the control plane (#978).
  */
-describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
+describe('Dashboard — tenant-narrowed self-service provisioning', () => {
   let dir: string;
   let host: SqliteScopeHost;
   let staff = platformActorId.parse(ulid());
@@ -58,7 +61,8 @@ describe('Dashboard M0 — tenant-narrowed self-service provisioning', () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-dashboard-'));
     host = new SqliteScopeHost({ dir });
     for (const m of MODULES) host.registerModule(m); // the dashboard vertical
-    // The verticals an app can run, bundled in-process (M0), mirroring worker.ts.
+    // The verticals an app can run, registered in-process so this host can stand in
+    // for their separate deployments. Test-only: see the harness note above.
     for (const m of [protocolModule, absenceModule, workorderModule, invoicingModule, calloutModule, meridianModule]) {
       host.registerModule(m);
     }
