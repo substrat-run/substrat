@@ -237,12 +237,18 @@ export type Decision = z.infer<typeof decision>;
  * act on: "you cannot assign `owner` — you do not hold `billing:manage`".
  *
  * `missing` is empty if and only if `covered`, and is ordered as the request was so an
- * error message reads predictably.
+ * error message reads predictably. That is a **discriminated union rather than a
+ * sentence**, for the same reason `Decision` above is one: written as
+ * `{ covered: boolean; missing: PermissionKey[] }`, a `covered: true` carrying names in
+ * `missing` type-checks and parses, and the caller that reads `covered` and the caller
+ * that reads `missing` get opposite answers about the same bound — a refusal that reads
+ * as an allow. A producer must now commit to one side, and an empty `missing` beside a
+ * `covered: false` is unrepresentable too.
  */
-export const coverage = z.object({
-  covered: z.boolean(),
-  missing: z.array(permissionKey),
-});
+export const coverage = z.discriminatedUnion('covered', [
+  z.object({ covered: z.literal(true), missing: z.tuple([]) }),
+  z.object({ covered: z.literal(false), missing: z.array(permissionKey).min(1) }),
+]);
 export type Coverage = z.infer<typeof coverage>;
 
 /**

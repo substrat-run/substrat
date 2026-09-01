@@ -220,7 +220,7 @@ export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {
       for (const p of required) {
         if (!held.has(p) && !missing.includes(p)) missing.push(p);
       }
-      return { covered: missing.length === 0, missing };
+      return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
     },
 
     async check(

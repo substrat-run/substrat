@@ -113,10 +113,10 @@ export const denyAllChecker: PermissionChecker = {
   // Holds nothing, so it covers nothing — every required permission comes back missing.
   // A role with no permissions is still coverable, which is not a special case: the
   // empty set is a subset of the empty set, and conferring nothing confers nothing.
-  covers: async (_subject, required) => ({
-    covered: required.length === 0,
-    missing: [...required],
-  }),
+  covers: async (_subject, required) =>
+    required.length === 0
+      ? { covered: true, missing: [] }
+      : { covered: false, missing: [...required] },
 };
 
 /**

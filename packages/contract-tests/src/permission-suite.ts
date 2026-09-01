@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  coverage,
   moduleId,
   permissionKey,
   platformActorId,
@@ -150,9 +151,13 @@ export function permissionContractSuite(
      * `defineRole`, and appears in no permission diff.
      */
     describe('ctx.canAssign bounds assignment by the assigner’s own authority', () => {
+      // Parsed, never cast. `covered` and `missing` are two readings of one answer, and
+      // an adapter returning them inconsistent — names in `missing` beside a
+      // `covered: true` — would refuse for the caller that reads one and allow for the
+      // caller that reads the other. The union refuses it here, on both adapters.
       const bound = async (who: PrincipalId, scope: typeof s1, roleKey: string) => {
         const stub = await host.getScope(who, t1, scope);
-        return stub.invoke<{ covered: boolean; missing: string[] }>('perm/can-assign', { roleKey });
+        return coverage.parse(await stub.invoke('perm/can-assign', { roleKey }));
       };
 
       it('covers a role whose permissions the assigner holds', async () => {
