@@ -57,6 +57,12 @@ const t = (subject: string, relation: string, object: string): RelationTuple => 
   object: objectRef.parse(object),
 });
 
+/**
+ * Build the evaluator described above over one host's directory, scope databases
+ * and role table. Stateless per call: everything it knows it reads at check time,
+ * which is what makes check-after-write consistent and what lets `deps.clock`
+ * decide expiry rather than the wall clock.
+ */
 export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
   const readNow: () => string = deps.clock ?? (() => new Date().toISOString());
 
