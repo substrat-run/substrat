@@ -311,8 +311,9 @@ async function cmdPush(): Promise<void> {
   // that picks the next version. `push()` runs them too (the gate belongs to the push, not to
   // one command's argument handling); running them here as well is what keeps a violating
   // tree from spending a network call first, where a failed one would stand in place of the
-  // diagnostic. The second call is a no-op — see assertLayerRules.
-  assertLayerRules(dir, argv.includes('--skip-lint'));
+  // diagnostic. The receipt is what keeps the two calls from being two scans — see
+  // assertLayerRules.
+  const linted = assertLayerRules(dir, argv.includes('--skip-lint'));
 
   const meta = readVerticalMeta(dir);
   const slug = flag('slug') ?? meta.slug;
@@ -360,8 +361,10 @@ async function cmdPush(): Promise<void> {
     // is deliberately not part of this deploy.
     allowUnservedUi: argv.includes('--allow-unserved-ui'),
     // The layer rules run on every push (#955); this deploys code they never saw, and
-    // says so in the push's own output.
+    // says so in the push's own output. `linted` is the pre-flight above, so `push()`
+    // does not scan the same tree twice.
     skipLint: argv.includes('--skip-lint'),
+    linted,
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,
@@ -746,7 +749,7 @@ async function cmdPreview(): Promise<void> {
     }
     // Same gate, same reason as `cmdPush` (#955): a preview runs the same code on the same
     // runtime, and the refusal should arrive before the registry round-trip below.
-    assertLayerRules(dir, argv.includes('--skip-lint'));
+    const linted = assertLayerRules(dir, argv.includes('--skip-lint'));
     const meta = readVerticalMeta(dir);
     const slug = flag('slug') ?? meta.slug;
     if (!slug) {
@@ -771,8 +774,10 @@ async function cmdPreview(): Promise<void> {
     console.log(`pushing ${slug}@${version} for preview '${tag}' …`);
     const pushed = await push({
       dir, slug, version, name: meta.name, tenant,
-      // A preview runs the same code on the same runtime, so it is gated the same (#955).
+      // A preview runs the same code on the same runtime, so it is gated the same (#955),
+      // by the pre-flight above — whose receipt keeps this from re-scanning the tree.
       skipLint: argv.includes('--skip-lint'),
+      linted,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,
       entitlements: meta.entitlements,

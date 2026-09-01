@@ -415,20 +415,26 @@ export function assertUiIsServed(
  * CALLED TWICE, ON PURPOSE. `cli.ts` runs it as the FIRST thing a push does — before the
  * registry round-trip that picks the next version — so a violating tree costs one local
  * scan and not a network error standing where the diagnostic should be. `push()` runs it
- * too, so the gate belongs to the push rather than to one command's argument handling. A
- * root that already passed in this process is a no-op the second time: the CLI is one
- * process per push, so the tree cannot have changed between the two calls, and repeating
- * the all-clear would only teach a reader that the line means nothing.
+ * too, so the gate belongs to the push rather than to one command's argument handling.
+ *
+ * The RECEIPT is how those two stop being two scans and two all-clears. It is deliberately
+ * not a cache: nothing is remembered between calls, so a tree that changes is re-checked,
+ * and only a caller passing back the receipt it just got for THIS directory — the CLI's own
+ * handoff, three statements later — skips the second run. A `push()` reached any other way
+ * lints, which is the behaviour that matters: the platform does not lint the uploaded
+ * bundle (#861), so the CLI's own check is the only one there is.
  */
-const gated = new Set<string>();
+export interface LayerRulesChecked {
+  /** The absolute directory this check covered. */
+  readonly root: string;
+}
 
-export function assertLayerRules(dir: string, skipLint = false): void {
+export function assertLayerRules(dir: string, skipLint = false): LayerRulesChecked {
+  const root = resolve(dir);
   if (skipLint) {
     console.log('note: --skip-lint — the layer rules were NOT checked; this push is ungated');
-    return;
+    return { root };
   }
-  const root = resolve(dir);
-  if (gated.has(root)) return;
   const config = loadBoundaryLintConfig(root);
   const packages = resolvePackages(root, config);
   const linted = packages.filter((p) => p.lint);
@@ -437,8 +443,7 @@ export function assertLayerRules(dir: string, skipLint = false): void {
       'note: boundary-lint found no module code to check (expected `src/`, or a ' +
         '`boundary-lint.config.json` naming it) — this push is ungated',
     );
-    gated.add(root);
-    return;
+    return { root };
   }
   if (packages.every((p) => p.lint) && declaredEngines(root, config).length > 0) {
     console.log(
@@ -449,8 +454,7 @@ export function assertLayerRules(dir: string, skipLint = false): void {
   const violations = lint(root, config);
   if (violations.length === 0) {
     console.log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
-    gated.add(root);
-    return;
+    return { root };
   }
   throw new Error(
     [
@@ -528,6 +532,12 @@ export interface PushOptions {
    * self-announcing way past it.
    */
   skipLint?: boolean;
+  /**
+   * The receipt from a check the caller already ran on THIS directory (#955) — the CLI's
+   * pre-flight, which gates before the registry round-trip so a violation never costs a
+   * network call first. Anything else, including a receipt for another directory, lints.
+   */
+  linted?: LayerRulesChecked;
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -630,8 +640,9 @@ export async function push(
 ): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
   // The layer rules, before anything is built or uploaded (#955). First, because it reads
   // the source tree and needs nothing else — a violation is refused in a second rather than
-  // after a wrangler build whose output was never going to be admissible.
-  assertLayerRules(opts.dir, opts.skipLint);
+  // after a wrangler build whose output was never going to be admissible. Skipped only for
+  // the caller that just ran it on this same directory (`opts.linted`, the CLI's pre-flight).
+  if (opts.linted?.root !== resolve(opts.dir)) assertLayerRules(opts.dir, opts.skipLint);
 
   // Substrate-vocabulary path (D-38): when `substrat.runtimeNeeds` is present the builder
   // authored no wrangler config, so none is read — the CLI derives it. The generated file

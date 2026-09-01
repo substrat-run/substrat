@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { assertLayerRules, push } from '../src/push.js';
 
 /**
@@ -129,19 +129,41 @@ describe('push() — the gate is ON the push path, before anything is built', ()
   });
 });
 
-describe('assertLayerRules — the same tree, checked twice in one process', () => {
+describe('the receipt — a handoff, deliberately not a cache', () => {
   /**
    * The CLI gates before the version lookup AND inside `push()`. Both are wanted — one so a
    * violating tree never spends a network call first, one so the gate belongs to the push
-   * rather than to argument handling — but the all-clear must be said once. A line a reader
-   * sees twice per push is a line they stop reading.
+   * rather than to argument handling — and the receipt is what stops that being two scans.
+   *
+   * What it must NOT become is a memo of "this directory is clean": nothing here is
+   * remembered between calls, so a tree that changes after a passing check is checked again
+   * and refused. The alternative — a process-wide set of clean roots — would upload
+   * unchecked code the moment anything edited a file between two pushes, and the platform
+   * does not lint the bundle it receives.
    */
-  it('says the all-clear once and re-scans nothing', () => {
+  it('re-checks a tree that changed after it passed', () => {
     captureLog();
     const dir = vertical(CLEAN);
-    assertLayerRules(dir);
-    assertLayerRules(dir);
-    expect(logs.filter((l) => l.includes('all layer rules hold')).length).toBe(1);
+    expect(() => assertLayerRules(dir)).not.toThrow();
+    writeFileSync(join(dir, 'src', 'module.ts'), DIRTY);
+    expect(() => assertLayerRules(dir)).toThrow(/layer-rule violation/);
+  });
+
+  it('honours a receipt for this directory, and only for this one', async () => {
+    captureLog();
+    const dir = vertical(DIRTY);
+    const opts = { slug: 'crm', version: '1.0.0', controlPlaneUrl: 'http://cp', authHeader: {} };
+
+    // Honoured: the push walks past the gate and dies on the NEXT thing a tree with no
+    // runtimeNeeds and no wrangler.jsonc hits. (Nothing is built — that refusal is first.)
+    await expect(push({ ...opts, dir, linted: { root: resolve(dir) } })).rejects.toThrow(
+      /nothing to build/,
+    );
+
+    // A receipt for another directory is not this directory's, so the rules run.
+    await expect(
+      push({ ...opts, dir, linted: { root: join(resolve(dir), 'elsewhere') } }),
+    ).rejects.toThrow(/layer-rule violation/);
   });
 });
 
