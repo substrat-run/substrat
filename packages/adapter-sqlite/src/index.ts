@@ -145,6 +145,7 @@ import {
   outboundOfManifestJson,
   listLimitOf,
   substratError,
+  assertReplayableDump,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -2448,7 +2449,12 @@ export class SqliteScopeHost implements ScopeHost {
       // A dump written before indexes were excluded may still carry them; skip those
       // too rather than failing a restore over data that is about to be recomputed.
       const replayable = dumped.filter((t) => !isSearchIndexTable(t.name));
-      for (const t of replayable) db.exec(t.ddl);
+      // The dump is untrusted input (#1143): its names reach SQL as identifiers, and
+      // `db.exec` would run every statement its `ddl` contains, not just the CREATE
+      // TABLE. Judged as a whole before any of it executes — a check interleaved with
+      // the replay has already let the earlier tables happen.
+      assertReplayableDump(replayable);
+      for (const t of replayable) db.prepare(t.ddl).run();
       for (const t of replayable) {
         if (t.rows.length === 0) continue;
         const cols = t.columns.map((c) => `"${c}"`).join(', ');

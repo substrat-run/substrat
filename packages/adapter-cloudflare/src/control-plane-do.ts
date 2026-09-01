@@ -20,6 +20,7 @@ import type {
   Tenant,
   TenantStatus,
 } from '@substrat-run/contracts';
+import { assertReplayableDump } from '@substrat-run/contracts';
 
 /**
  * The durable directory (control-plane.md §4). One singleton DO, backed by its
@@ -1052,6 +1053,10 @@ export class ControlPlaneDO extends DurableObject {
         .exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
         .toArray() as unknown as { name: string }[];
       for (const { name } of existing) this.sql.exec(`DROP TABLE IF EXISTS "${name}"`);
+      // Same untrusted dump, same two holes as the scope path (#1143): names reaching
+      // SQL as identifiers, and `exec` running everything a `ddl` contains. Judged
+      // before the first statement of it runs.
+      assertReplayableDump(tables);
       for (const t of tables) this.sql.exec(t.ddl);
       for (const t of tables) {
         if (t.rows.length === 0) continue;

@@ -1,3 +1,4 @@
+import { assertDumpIdentifiers, assertReplayableDump, assertSqlIdentifier } from '@substrat-run/contracts';
 /**
  * `substrat scope pull <scopeId>` — bring a scope's data to the local inner loop
  * (preview-and-snapshots.md §8; the substrat analog of `vercel env pull`).
@@ -34,78 +35,6 @@ interface PulledDump {
 }
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
-
-/**
- * A backup names its own tables and columns, and both are interpolated into SQL —
- * a bind parameter can stand in for a value but never for an identifier. So the
- * quoting is the only thing between a `.dump.json` / `.sqlite` a builder was handed
- * and arbitrary SQL: a table named `x") ; ATTACH DATABASE '/tmp/out' AS e; --` closes
- * the double quote and the rest of the statement runs. Refuse the whole backup
- * instead of quoting harder — every table a substrat scope holds is a plain word,
- * so a name that is not one is either corruption or an attack, and neither is worth
- * loading. This is the CLI's own guard; the control plane gates the server side.
- */
-const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-/** Throw a CLI-readable error naming the offending identifier, or return it. */
-function sqlIdentifier(name: string, what: string): string {
-  if (!SQL_IDENTIFIER.test(name)) {
-    throw new Error(
-      `refusing this backup: ${what} ${JSON.stringify(name)} is not a plain SQL identifier ` +
-        '(letters, digits and underscore, not starting with a digit). A scope dump whose ' +
-        'names do not read like table names is corrupt or crafted — it is not loaded.',
-    );
-  }
-  return name;
-}
-
-/** Every table and column name in a dump, checked before any of them reaches SQL. */
-export function assertDumpIdentifiers(tables: { name: string; columns?: string[] }[]): void {
-  const seen = new Set<string>();
-  for (const t of tables) {
-    sqlIdentifier(t.name, 'table name');
-    // A dump lists each table once. A REPEATED name is how a crafted one hides: the
-    // honest entry creates the table, and a second entry under the same name carries
-    // the payload while every per-entry check still sees a table that exists.
-    // Compared case-insensitively, because SQLite resolves table names that way —
-    // `Users` and `users` are one table, so two entries would otherwise merge into
-    // it. `sqlIdentifier` above has already limited the name to ASCII, so lowercasing
-    // is the same fold SQLite applies rather than an approximation of it.
-    const key = t.name.toLowerCase();
-    if (seen.has(key)) {
-      throw new Error(
-        `refusing this backup: table ${JSON.stringify(t.name)} is listed twice (SQLite resolves table ` +
-          'names case-insensitively, so names differing only in case are one table). A scope dump names ' +
-          'each of its tables once — a repeat is corrupt or crafted, and it is not loaded.',
-      );
-    }
-    seen.add(key);
-    for (const c of t.columns ?? []) sqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
-  }
-}
-
-/**
- * A table's DDL opens with `CREATE TABLE <the name the dump declared> (` — checked
- * BEFORE the statement runs, because a check that runs afterwards has already let
- * the statement happen. `prepare` compiles only the first statement of a string, so
- * pinning that first statement's opening is what makes the ONE statement that
- * executes the one the dump claims it is. This reads the head of the text and
- * nothing more; the rest of the CREATE TABLE is SQLite's business, not ours.
- */
-const CREATE_TABLE_HEAD =
-  /^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))\s*\(/i;
-
-function assertCreatesDeclaredTable(ddl: string, name: string): void {
-  const head = CREATE_TABLE_HEAD.exec(ddl);
-  const creates = head ? (head[1] ?? head[2] ?? head[3] ?? head[4]) : undefined;
-  if (creates !== name) {
-    throw new Error(
-      `refusing this backup: the schema given for table ${JSON.stringify(name)} does not begin with ` +
-        `\`CREATE TABLE ${name} (\` — it begins ${JSON.stringify(ddl.slice(0, 60))}. A scope dump's schema ` +
-        'and its own table list have to agree; one that does not is corrupt or crafted, and it is not loaded.',
-    );
-  }
-}
 
 /** Resolve `--tenant` (id or slug) / the stored default slug to a tenant ID. */
 export async function resolveTenantId(
@@ -146,8 +75,7 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   // DDL. Checked here rather than only at the caller because this is the site that
   // interpolates and executes them — and checked ahead of the `rmSync` so a refused
   // dump leaves the previous pull's file where it was instead of deleting it first.
-  assertDumpIdentifiers(dump.tables);
-  for (const t of dump.tables) assertCreatesDeclaredTable(t.ddl, t.name);
+  assertReplayableDump(dump.tables);
   rmSync(path, { force: true });
   const db = new DatabaseSync(path);
   try {
@@ -247,9 +175,9 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
     for (const t of rows) {
       // `sqlite_master` is data in the file we were handed, so its names are as
       // untrusted as a JSON dump's — check before interpolating, not after.
-      sqlIdentifier(t.name, 'table name');
+      assertSqlIdentifier(t.name, 'table name');
       const cols = (db.prepare(`PRAGMA table_info("${t.name}")`).all() as { name: string }[]).map((c) => c.name);
-      for (const c of cols) sqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
+      for (const c of cols) assertSqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
       tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])) });
     }

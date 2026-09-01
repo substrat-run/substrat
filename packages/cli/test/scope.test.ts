@@ -2,7 +2,8 @@ import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertDumpIdentifiers, bindScopeVersion, pullScope, restoreScope } from '../src/scope.js';
+import { assertDumpIdentifiers } from '@substrat-run/contracts';
+import { bindScopeVersion, pullScope, restoreScope } from '../src/scope.js';
 
 describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () => {
   const orig = globalThis.fetch;
@@ -108,11 +109,11 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
 
     await expect(
       restoreScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', file }),
-    ).rejects.toThrow(/refusing this backup/);
+    ).rejects.toThrow(/refusing this dump/);
     expect(called).toBe(0); // refused locally — the dump never left the machine
   });
 
-  it('a second statement appended to a table DDL never executes', async () => {
+  it('a second statement appended to a table DDL is refused, not silently dropped', async () => {
     // The names here are all plain — this is the hole `assertDumpIdentifiers` does
     // NOT cover: the DDL text itself, which `exec` would have run in full.
     globalThis.fetch = (async () =>
@@ -136,21 +137,16 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const outDir = join(dir, 'compound');
 
-    await pullScope({
-      controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-2', full: false, outDir,
-    });
-
-    const { DatabaseSync } = await import('node:sqlite');
-    const db = new DatabaseSync(join(outDir, 'acme__s-2.sqlite'), { readOnly: true });
-    try {
-      const names = (
-        db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all() as { name: string }[]
-      ).map((t) => t.name);
-      expect(names).toEqual(['crm_vendors']); // 'smuggled' was compiled away, not run
-      expect(db.prepare('SELECT id FROM crm_vendors').all()).toEqual([{ id: 'v1' }]);
-    } finally {
-      db.close();
-    }
+    // Refused rather than half-loaded. `prepare` compiling only the first statement
+    // made the appended one inert HERE, but there is no prepare step on a Durable
+    // Object — so the rule that has to hold on the hosted path is that the text is
+    // one statement, and a dump carrying two is not loaded at all.
+    await expect(
+      pullScope({
+        controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-2', full: false, outDir,
+      }),
+    ).rejects.toThrow(/more than one statement/);
+    expect(existsSync(join(outDir, 'acme__s-2.sqlite'))).toBe(false);
   });
 
   /** A pull whose response is exactly these tables. */
@@ -263,7 +259,7 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
         full: false,
         outDir,
       }),
-    ).rejects.toThrow(/refusing this backup/);
+    ).rejects.toThrow(/refusing this dump/);
     expect(existsSync(join(outDir, 'acme__s-1.sqlite'))).toBe(false);
     expect(existsSync(join(outDir, 'acme__s-1.dump.json'))).toBe(false);
   });
