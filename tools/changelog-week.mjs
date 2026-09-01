@@ -29,6 +29,14 @@
  * relation is checked rather than commented: `--check` derives the heading's span
  * from the declared range and refuses if they part company, in either direction.
  *
+ * The third is the absence the first two cannot see. Coverage is asserted *inside*
+ * a declared range, so a week nobody wrote has no range and draws no complaint —
+ * #988 was filed because a reader noticed a missing week and CI could not. So
+ * `--check` also holds the entries to a contiguous run of **settled** weeks: a week
+ * is settled once the week after it has ended too, which exempts the newest complete
+ * week and therefore never argues with the Monday parking rule. See the comment at
+ * the check itself for why this is a week grid rather than a staleness threshold.
+ *
  *   node tools/changelog-week.mjs                 # the last complete week, as raw material
  *   node tools/changelog-week.mjs --week 2026-w34 # a named week
  *   node tools/changelog-week.mjs --check         # CI: every entry accounts for its range
@@ -71,6 +79,11 @@ function mondayOfIsoWeek(year, week) {
 /** `2026-08-17` → `2026-08-24`. Ranges are half-open: Monday to Monday. */
 function addDays(iso, days) {
   return new Date(Date.parse(`${iso}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The week before `id`. `2026-w01` → `2025-w52`, off the calendar rather than a table. */
+function previousWeek(id) {
+  return isoWeekOf(addDays(weekRange(id).start, -7));
 }
 
 /** The ISO week id — `2026-w34` — a date falls in. */
@@ -313,13 +326,77 @@ function check() {
     }
   }
 
+  // ── the week that is not there ──────────────────────────────────────────────
+  //
+  // Everything above judges an entry that exists. The one failure none of it can
+  // see is an entry that does not: coverage is asserted *inside* each declared
+  // range, so a week nobody wrote has no range, no page and no complaint — which
+  // is how #988 came to be filed by a reader rather than by CI.
+  //
+  // The obvious shape — "the newest entry is younger than N days" — collides head
+  // on with how these are written. The Monday playbook opens a PR and never merges
+  // it, and an entry must not merge before its week has ended, so the newest week
+  // is *legitimately* absent from `main` for however long that review takes. Any N
+  // is then a guess about review latency, and a wrong guess reddens `main` on a
+  // schedule, which is the one thing a gate must never do.
+  //
+  // So the question asked here has no tunable in it: **which weeks are settled?** A
+  // week is settled once the week after it has also ended — by then its Monday run
+  // has been and gone with a full week to spare, and no entry still in review can
+  // be the one accounting for it. Every settled week from the first entry onward
+  // must be on disk. The newest complete week is exempt by construction, and that
+  // is exactly the week parking is about.
+  //
+  // Two costs, stated rather than hidden. A missing week is reported up to two
+  // weeks late — late is still infinitely sooner than never. And this is the only
+  // assertion in this file whose answer depends on the day it runs; it is the
+  // irreducible part of noticing an absence, not an oversight.
+  const weeks = files
+    .map((f) => f.replace(/\.md$/, ''))
+    .filter((id) => {
+      try {
+        weekRange(id);
+        return true;
+      } catch {
+        return false; // not a week id; the per-file pass above is what reports it
+      }
+    })
+    .sort();
+
+  if (weeks.length) {
+    const present = new Set(weeks);
+    const settledThrough = previousWeek(lastCompleteWeek());
+    const stop = weekRange(settledThrough).start;
+    const missing = [];
+    for (let cursor = weekRange(weeks[0]).start; cursor <= stop; cursor = addDays(cursor, 7)) {
+      const id = isoWeekOf(cursor);
+      if (!present.has(id)) missing.push(id);
+    }
+    if (missing.length) {
+      problems.push(
+        `${missing.length} settled week(s) have no entry: ${missing.join(', ')}\n` +
+          `      Every week from ${weeks[0]} through ${settledThrough} should have one. ` +
+          `${settledThrough} is the\n` +
+          `      newest *settled* week — the week after it has ended too, so no entry ` +
+          `still in review\n` +
+          `      can be the one covering it. Write each with \`node tools/changelog-week.mjs ` +
+          `--week <id>\`\n` +
+          `      for the raw material; a week that genuinely had nothing to say still gets ` +
+          `a page saying so.`,
+      );
+    }
+  }
+
   if (problems.length) {
     console.error(`changelog: ${problems.length} problem(s)\n`);
     for (const p of problems) console.error(`  ✗ ${p}`);
     console.error('');
     process.exit(1);
   }
-  console.log(`changelog: ${files.length} entr(ies), every merge in range accounted for.`);
+  console.log(
+    `changelog: ${files.length} entr(ies), every merge in range accounted for, ` +
+      `no settled week missing through ${previousWeek(lastCompleteWeek())}.`,
+  );
 }
 
 const args = process.argv.slice(2);

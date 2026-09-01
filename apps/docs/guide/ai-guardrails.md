@@ -108,8 +108,9 @@ CI runs more than those, and the difference matters when you are looking for the
 holds a particular file: the checks that **emit nothing and simply refuse** are
 `lint:boundaries` (`tools/boundary-lint.mjs`), `lint:cycles`, `lint:deps` (an import whose
 package the workspace graph does not declare), `lint:tests`, and `lint:changelog --check` —
-which asserts a hand-written digest accounts for every merge in its range and could not
-re-emit prose if it wanted to. `lint:scaffold` refuses too, and is the one that runs **off**
+which asserts a hand-written digest accounts for every merge in its range — and that no
+settled week is missing a digest altogether — while it could not re-emit the prose if it
+wanted to. `lint:scaffold` refuses too, and is the one that runs **off**
 the PR: post-release and weekly, because between a merge and the release that publishes it
 the scaffold template legitimately runs ahead of npm.
 
