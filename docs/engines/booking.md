@@ -230,7 +230,7 @@ their own reservation through an entity-narrowed grant, holding **no role**.
 
 ## 6. Events (frozen once shipped)
 
-The twelve payloads are documented, field by field, at
+All twelve — each with what it announces, its `piiClass` and what its payload carries — are at
 [`apps/docs/engines/booking/events.md`](../../apps/docs/engines/booking/events.md)
 (published at [substrat.net/engines/booking/events](https://substrat.net/engines/booking/events)).
 The list this page used to carry named eleven of them — `booking.opened` was added with
