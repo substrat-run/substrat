@@ -121,6 +121,12 @@ export const createMemberInput = z.object({
   name: z.string().min(1),
   phone: z.string().optional(),
   level: z.string().optional(),
+  /**
+   * The login this member IS, when the desk already knows it (0003). OPTIONAL, and
+   * additively so: a member registered for someone who has never signed in simply has
+   * no principal yet, which is the ordinary case at a counter.
+   */
+  principalRef: z.string().optional(),
 });
 
 // --- reads ------------------------------------------------------------------

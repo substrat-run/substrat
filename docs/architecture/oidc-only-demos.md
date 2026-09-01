@@ -6,10 +6,10 @@ description: Remove the credential store from the verticals.
 
 # OIDC-only demos: remove the credential store from the verticals
 
-**Status:** **built** — every demo but Rally is OIDC-only
+**Status:** **built** — every demo vertical is OIDC-only
 **Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`; later `demos/todo`,
 `demos/ticket0`, `demos/shop`
-**Author:** design pass, 2026-08-04 · shop and handlebar added 2026-09-01
+**Author:** design pass, 2026-08-04 · shop, handlebar and rally added 2026-09-01
 
 ## Motivation
 
@@ -117,6 +117,45 @@ declaration was decorative. Every other vertical and engine in the workspace alr
 line. Fixed here, because a migration that leaves a main screen broken has not been verified.
 
 **Callout has the same gap** and is not fixed here.
+
+## Rally, added last — the deferral was real, and cost one column
+
+Rally was the only one of the three whose deferral held up: the player app centres on a
+`memberId`, and there was genuinely no way for a signed-in player to find their own.
+`rally_members.party_ref` is a `dataSubjectId` — it ties the same human's member records
+together ACROSS clubs, which is a different question from "which login is this" — and
+`rally/list-members` requires `manage-members`, which a player deliberately does not hold.
+The dev server papered over it by shipping a hardcoded persona → member map inside
+`/api/cast`, so the player app was correct here and broken anywhere else.
+
+**The seam is one nullable column.** Migration `0003-member-principal` adds
+`principal_ref` to `rally_members`, `rally/create-member` takes an optional `principalRef`
+(additive, behaviour-preserving), and `rally/whoami` returns the caller's own row. It stays
+nullable on purpose: a member registered at the desk for someone who has never signed in has
+no principal yet, and that is a normal state rather than a value to backfill. It is the
+LOGIN that is optional here, not the member.
+
+**Resolution is per venue, and that is rally's whole shape.** Clubs are tenants, the pool is
+central, and one login is legitimately a different principal — and a different member — at
+each club. So this vertical uses `login.subject` plus its own
+`resolveIdentity(venue.tenantId, …)`, never `login.caller`, which answers "which tenant is
+this login in" by taking the first. Two routes had to learn the same lesson: `/api/my-venues`
+resolved once and probed every club with that one principal, which the `x-principal` header
+had made invisible because the header named a principal directly and no tenant was ever
+consulted.
+
+### Two things that got stricter on the way
+
+`/api/invites/accept` used to take the identifier it is checked against **from the request
+body** on the dev-header path. The proof now comes from the caller's own verified token and
+nowhere else, so an acceptor cannot name the address they are being checked against. The
+player app's "type the email you were invited as" field is gone with it — it could only ever
+have been a second, ignorable answer to a question the issuer already settled.
+
+`/api/clubs` used to call the venue-scoped resolver, which demands a principal in the
+selected venue's tenant. The club directory is the one read for which that is the wrong
+question: someone browsing for a club to join is by definition not in it yet. It now
+requires only a valid session.
 
 ## `packages/vertical-auth`
 
