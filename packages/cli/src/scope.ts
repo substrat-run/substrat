@@ -35,6 +35,38 @@ interface PulledDump {
 
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i;
 
+/**
+ * A backup names its own tables and columns, and both are interpolated into SQL —
+ * a bind parameter can stand in for a value but never for an identifier. So the
+ * quoting is the only thing between a `.dump.json` / `.sqlite` a builder was handed
+ * and arbitrary SQL: a table named `x") ; ATTACH DATABASE '/tmp/out' AS e; --` closes
+ * the double quote and the rest of the statement runs. Refuse the whole backup
+ * instead of quoting harder — every table a substrat scope holds is a plain word,
+ * so a name that is not one is either corruption or an attack, and neither is worth
+ * loading. This is the CLI's own guard; the control plane gates the server side.
+ */
+const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Throw a CLI-readable error naming the offending identifier, or return it. */
+function sqlIdentifier(name: string, what: string): string {
+  if (!SQL_IDENTIFIER.test(name)) {
+    throw new Error(
+      `refusing this backup: ${what} ${JSON.stringify(name)} is not a plain SQL identifier ` +
+        '(letters, digits and underscore, not starting with a digit). A scope dump whose ' +
+        'names do not read like table names is corrupt or crafted — it is not loaded.',
+    );
+  }
+  return name;
+}
+
+/** Every table and column name in a dump, checked before any of them reaches SQL. */
+export function assertDumpIdentifiers(tables: { name: string; columns?: string[] }[]): void {
+  for (const t of tables) {
+    sqlIdentifier(t.name, 'table name');
+    for (const c of t.columns ?? []) sqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
+  }
+}
+
 /** Resolve `--tenant` (id or slug) / the stored default slug to a tenant ID. */
 export async function resolveTenantId(
   controlPlaneUrl: string,
@@ -69,6 +101,9 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   } catch {
     return false; // node < 22.13 — the caller falls back to JSON
   }
+  // The names below are interpolated into the INSERT — check them first, and check
+  // them here rather than only at the caller, because this is the interpolation site.
+  assertDumpIdentifiers(dump.tables);
   rmSync(path, { force: true });
   const db = new DatabaseSync(path);
   try {
@@ -105,6 +140,9 @@ export async function pullScope(opts: {
     throw new Error(body?.error ?? `pull refused: ${res.status} ${res.statusText}`);
   }
   const dump = await readJson<PulledDump>(res, url);
+  // Checked before EITHER writer, so the node-<22.13 JSON fallback cannot leave a
+  // dump on disk that a later `scope restore` would then have to refuse.
+  assertDumpIdentifiers(dump.tables);
 
   mkdirSync(opts.outDir, { recursive: true });
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
@@ -138,6 +176,9 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
   if (!file.endsWith('.sqlite')) {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as { tables?: DumpTable[] };
     if (!Array.isArray(parsed.tables)) throw new Error(`${file} is not a scope dump (no tables)`);
+    // The file is whatever the builder passed to --file, and its names end up in SQL
+    // on the server's loader — refuse a crafted one here rather than forwarding it.
+    assertDumpIdentifiers(parsed.tables);
     // FK-order before we POST — the server inserts in the order it receives, and an
     // older control plane defers no FK check, so parents must arrive before children.
     return { tables: orderTablesByForeignKeys(parsed.tables) };
@@ -155,7 +196,11 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
       .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
       .all() as { name: string; sql: string }[];
     for (const t of rows) {
+      // `sqlite_master` is data in the file we were handed, so its names are as
+      // untrusted as a JSON dump's — check before interpolating, not after.
+      sqlIdentifier(t.name, 'table name');
       const cols = (db.prepare(`PRAGMA table_info("${t.name}")`).all() as { name: string }[]).map((c) => c.name);
+      for (const c of cols) sqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
       const data = db.prepare(`SELECT * FROM "${t.name}"`).all() as Record<string, unknown>[];
       tables.push({ name: t.name, ddl: t.sql, columns: cols, rows: data.map((r) => cols.map((c) => r[c])) });
     }

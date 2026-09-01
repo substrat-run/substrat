@@ -1,5 +1,8 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { bindScopeVersion } from '../src/scope.js';
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { assertDumpIdentifiers, bindScopeVersion, pullScope, restoreScope } from '../src/scope.js';
 
 describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () => {
   const orig = globalThis.fetch;
@@ -57,5 +60,83 @@ describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () =
     await expect(
       bindScopeVersion({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', versionId: 'v-9' }),
     ).rejects.toThrow(/pending, not admitted/);
+  });
+});
+
+describe('a backup names its own tables — and those names reach SQL (#1143)', () => {
+  const orig = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-dump-'));
+  afterEach(() => {
+    globalThis.fetch = orig;
+    vi.restoreAllMocks();
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  // What a crafted dump would carry: the quote closes and a second statement runs.
+  const HOSTILE = 'x") ; ATTACH DATABASE \'/tmp/pwned.db\' AS e; --';
+
+  it('accepts the names a real scope actually holds', () => {
+    expect(() =>
+      assertDumpIdentifiers([
+        { name: '_substrat_outbox', columns: ['id', 'payload_json', 'emitted_at'] },
+        { name: 'crm_vendors', columns: ['id'] },
+      ]),
+    ).not.toThrow();
+  });
+
+  it('refuses a table name that escapes its quoting, naming the offender', () => {
+    expect(() => assertDumpIdentifiers([{ name: HOSTILE, columns: ['id'] }])).toThrow(/table name .*ATTACH DATABASE/s);
+  });
+
+  it('refuses a crafted COLUMN name too — the INSERT interpolates those as well', () => {
+    expect(() => assertDumpIdentifiers([{ name: 'crm_vendors', columns: ['id', 'a") , ("b'] }])).toThrow(
+      /column name in table "crm_vendors"/,
+    );
+  });
+
+  it('restore refuses a crafted .dump.json instead of forwarding it to the control plane', async () => {
+    const file = join(dir, 'hostile.dump.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ tables: [{ name: HOSTILE, ddl: 'CREATE TABLE x (id TEXT)', columns: ['id'], rows: [['1']] }] }),
+    );
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      restoreScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', file }),
+    ).rejects.toThrow(/refusing this backup/);
+    expect(called).toBe(0); // refused locally — the dump never left the machine
+  });
+
+  it('pull refuses a crafted dump instead of writing it to disk', async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          tenantId: 'acme',
+          scopeId: 's-1',
+          capturedAt: '2026-09-01T00:00:00.000Z',
+          masked: true,
+          tables: [{ name: HOSTILE, ddl: 'CREATE TABLE x (id TEXT)', columns: ['id'], rows: [['1']] }],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const outDir = join(dir, 'pull');
+
+    await expect(
+      pullScope({
+        controlPlaneUrl: 'http://cp',
+        header: {},
+        tenantId: 'acme',
+        scopeId: 's-1',
+        full: false,
+        outDir,
+      }),
+    ).rejects.toThrow(/refusing this backup/);
+    expect(existsSync(join(outDir, 'acme__s-1.sqlite'))).toBe(false);
+    expect(existsSync(join(outDir, 'acme__s-1.dump.json'))).toBe(false);
   });
 });
