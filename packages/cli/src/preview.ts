@@ -11,7 +11,8 @@
  * tenant-scoped push token CI already carries.
  */
 import { warnIfStale } from './version.js';
-import { explainPlatformFault, parseJsonBody } from './http.js';
+import { parseJsonBody } from './http.js';
+import { failureMessage } from './problem.js';
 
 export interface PreviewCreated {
   scopeId: string;
@@ -31,26 +32,19 @@ export interface PreviewRow {
   url: string | null;
 }
 
-async function request<T>(url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
+/**
+ * One request, and one reader for what a refusal said (#971).
+ *
+ * `failureMessage` is the CLI's shared reader: a problem document, the deprecated
+ * `{ error }` duplicate, and the pre-#113 `{ error, issues }` Zod refusal all arrive as
+ * the same message here as they do from `push` or `promote` — so a preview 400 names the
+ * field it refused, and which command a builder ran stops changing the shape of the answer.
+ */
+async function request<T>(action: string, url: string, header: Record<string, string>, init?: RequestInit): Promise<T> {
   const res = await fetch(url, { ...init, headers: { 'content-type': 'application/json', ...header } });
   warnIfStale(res.headers);
   const body = await res.text();
-  if (!res.ok) {
-    let message = body.slice(0, 400);
-    try {
-      const parsed = JSON.parse(body) as { error?: string; issues?: unknown[] };
-      message = parsed.error ?? message;
-      // A control-plane Zod refusal (`{ error: 'invalid request', issues }`) is useless
-      // without the issues: 'invalid request' alone gives the operator nothing to fix.
-      // Append the failing path(s) so a preview 400 names the field instead of hiding it.
-      if (Array.isArray(parsed.issues) && parsed.issues.length > 0) {
-        message += ` — ${JSON.stringify(parsed.issues)}`;
-      }
-    } catch {
-      // Not JSON — the raw body is the message.
-    }
-    throw new Error(`${res.status}: ${message}${explainPlatformFault(res.status, message)}`);
-  }
+  if (!res.ok) throw new Error(failureMessage(action, res.status, body));
   return parseJsonBody<T>(body, url);
 }
 
@@ -73,19 +67,24 @@ export async function createPreview(opts: {
   refresh?: boolean;
 }): Promise<PreviewCreated> {
   const base = opts.controlPlaneUrl.replace(/\/$/, '');
-  return request<PreviewCreated>(`${base}/verticals/${encodeURIComponent(opts.slug)}/previews`, opts.header, {
-    method: 'POST',
-    body: JSON.stringify({
-      tag: opts.tag,
-      versionId: opts.versionId,
-      ...(opts.empty ? { empty: true } : {}),
-      ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
-      // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
-      ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
-      ...(opts.surface ? { surface: opts.surface } : {}),
-      ...(opts.refresh ? { refresh: true } : {}),
-    }),
-  });
+  return request<PreviewCreated>(
+    'preview create failed',
+    `${base}/verticals/${encodeURIComponent(opts.slug)}/previews`,
+    opts.header,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        tag: opts.tag,
+        versionId: opts.versionId,
+        ...(opts.empty ? { empty: true } : {}),
+        ...(opts.sourceScopeId ? { sourceScopeId: opts.sourceScopeId } : {}),
+        // `null` (pinned) must reach the wire, so send whenever a value was given — not just truthy.
+        ...(opts.ttlHours !== undefined ? { ttlHours: opts.ttlHours } : {}),
+        ...(opts.surface ? { surface: opts.surface } : {}),
+        ...(opts.refresh ? { refresh: true } : {}),
+      }),
+    },
+  );
 }
 
 /** Reap a preview by tag. Idempotent: an already-gone preview is a no-op success, so a
@@ -98,6 +97,7 @@ export async function deletePreview(opts: {
 }): Promise<{ deleted: string | null }> {
   const base = opts.controlPlaneUrl.replace(/\/$/, '');
   return request<{ deleted: string | null }>(
+    'preview delete failed',
     `${base}/verticals/${encodeURIComponent(opts.slug)}/previews/${encodeURIComponent(opts.tag)}`,
     opts.header,
     { method: 'DELETE' },
@@ -110,7 +110,11 @@ export async function listPreviews(opts: {
   slug: string;
 }): Promise<PreviewRow[]> {
   const base = opts.controlPlaneUrl.replace(/\/$/, '');
-  return request<PreviewRow[]>(`${base}/verticals/${encodeURIComponent(opts.slug)}/previews`, opts.header);
+  return request<PreviewRow[]>(
+    'preview list failed',
+    `${base}/verticals/${encodeURIComponent(opts.slug)}/previews`,
+    opts.header,
+  );
 }
 
 /** Render previews as an aligned table (the `substrat preview ls` output). */

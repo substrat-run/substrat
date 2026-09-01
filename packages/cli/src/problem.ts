@@ -14,7 +14,9 @@
  *
  * 1. a problem document — `detail` (else `title`), the `code`, and the field errors;
  * 2. `{ error }` — the pre-#113 body, still what an older deployed control plane and
- *    several hand-rolled `onError`s answer with;
+ *    several hand-rolled `onError`s answer with, including its top-level `issues` array
+ *    (the raw Zod refusal: `{ error: 'invalid request', issues }`, where the `error`
+ *    alone names nothing a builder can fix);
  * 3. anything else — a slice of the raw body, which is at least the truth.
  */
 import { problem as problemSchema } from '@substrat-run/contracts';
@@ -33,6 +35,29 @@ export interface ProblemSummary {
   title?: string;
   /** Field-level complaints from a `validation_failed`, in the order the server sent. */
   errors?: Array<{ path: string; message: string }>;
+}
+
+/**
+ * The pre-#113 validation body's field complaints, in the shape a problem document uses.
+ *
+ * A control plane that has not adopted `toProblem` answers a Zod refusal with
+ * `{ error: 'invalid request', issues: [...] }` — the sentence says nothing and the array
+ * says everything. `issues` entries are Zod's own (`path: ['tag']`, `message`), so they
+ * map onto `errors` one for one; an entry in some other shape is kept as its own text
+ * rather than dropped, because a message nobody can read still beats one nobody sees.
+ */
+function legacyIssues(parsed: unknown): Array<{ path: string; message: string }> | undefined {
+  if (parsed === null || typeof parsed !== 'object') return undefined;
+  const raw = (parsed as Record<string, unknown>).issues;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  return raw.map((issue) => {
+    if (issue !== null && typeof issue === 'object') {
+      const o = issue as Record<string, unknown>;
+      const path = Array.isArray(o.path) ? o.path.join('.') : typeof o.path === 'string' ? o.path : '';
+      if (typeof o.message === 'string' && o.message) return { path, message: o.message };
+    }
+    return { path: '', message: typeof issue === 'string' ? issue : JSON.stringify(issue) };
+  });
 }
 
 /**
@@ -55,14 +80,19 @@ export function readProblem(body: string): ProblemSummary {
     return { detail: raw.slice(0, RAW_BODY_LIMIT) };
   }
 
+  // The field complaints, wherever this body happens to carry them: `errors` is the
+  // contract's member, `issues` the pre-#113 one, and a body may carry either.
+  const issues = legacyIssues(parsed);
+
   const strict = problemSchema.safeParse(parsed);
   if (strict.success) {
     const p = strict.data;
+    const errors = p.errors && p.errors.length > 0 ? p.errors : issues;
     return {
       detail: p.detail ?? p.error ?? p.title,
       code: p.code,
       title: p.title,
-      ...(p.errors && p.errors.length > 0 ? { errors: p.errors } : {}),
+      ...(errors ? { errors } : {}),
     };
   }
 
@@ -73,8 +103,13 @@ export function readProblem(body: string): ProblemSummary {
     const o = parsed as Record<string, unknown>;
     const str = (k: string): string | undefined => (typeof o[k] === 'string' && o[k] ? (o[k] as string) : undefined);
     const detail = str('detail') ?? str('error') ?? str('message') ?? str('title');
-    if (detail !== undefined) {
-      return { detail, ...(str('code') ? { code: str('code') } : {}), ...(str('title') ? { title: str('title') } : {}) };
+    if (detail !== undefined || issues) {
+      return {
+        detail: detail ?? '',
+        ...(str('code') ? { code: str('code') } : {}),
+        ...(str('title') ? { title: str('title') } : {}),
+        ...(issues ? { errors: issues } : {}),
+      };
     }
   }
   return { detail: raw.slice(0, RAW_BODY_LIMIT) };

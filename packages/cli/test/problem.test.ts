@@ -62,6 +62,50 @@ describe('readProblem', () => {
     expect(readProblem(body).detail).toBe('you may not promote a listed vertical');
   });
 
+  it('reads the pre-#113 `{ error, issues }` Zod refusal as field errors', () => {
+    // 'invalid request' alone names nothing a builder can fix; the issues name the field.
+    const body = JSON.stringify({
+      error: 'invalid request',
+      issues: [
+        { code: 'invalid_type', path: ['ttlHours'], message: 'Expected number, received string' },
+        { code: 'unrecognized_keys', path: [], message: "Unrecognized key(s): 'ttl'" },
+      ],
+    });
+    expect(readProblem(body)).toEqual({
+      detail: 'invalid request',
+      errors: [
+        { path: 'ttlHours', message: 'Expected number, received string' },
+        { path: '', message: "Unrecognized key(s): 'ttl'" },
+      ],
+    });
+  });
+
+  it('reads issues even when the body carries no sentence at all', () => {
+    const body = JSON.stringify({ issues: [{ path: ['tag'], message: 'Required' }] });
+    expect(readProblem(body)).toEqual({ detail: '', errors: [{ path: 'tag', message: 'Required' }] });
+  });
+
+  it('keeps an issue that is not in Zod’s shape rather than dropping it', () => {
+    const body = JSON.stringify({ error: 'invalid request', issues: ['tag is required', { odd: true }] });
+    expect(readProblem(body).errors).toEqual([
+      { path: '', message: 'tag is required' },
+      { path: '', message: '{"odd":true}' },
+    ]);
+  });
+
+  it('prefers a problem document’s own `errors` over a legacy `issues` beside it', () => {
+    const body = problemBody('validation_failed', 'invalid request', {
+      errors: [{ path: 'tag', message: 'expected string' }],
+      issues: [{ path: ['tag'], message: 'Required' }],
+    });
+    expect(readProblem(body).errors).toEqual([{ path: 'tag', message: 'expected string' }]);
+  });
+
+  it('ignores an empty or non-array `issues`', () => {
+    expect(readProblem(JSON.stringify({ error: 'nope', issues: [] }))).toEqual({ detail: 'nope' });
+    expect(readProblem(JSON.stringify({ error: 'nope', issues: 'many' }))).toEqual({ detail: 'nope' });
+  });
+
   it('shows a slice of a body that is not a recognisable error at all', () => {
     expect(readProblem('upstream connect error or disconnect').detail).toBe('upstream connect error or disconnect');
     expect(readProblem('x'.repeat(500)).detail).toHaveLength(300);
@@ -96,6 +140,16 @@ describe('failureMessage', () => {
       'preview failed (400 validation_failed): invalid request\n' +
         '  tag: expected string\n' +
         '  (root): unrecognized key',
+    );
+  });
+
+  it('lists a legacy refusal’s issues under the message too (#971)', () => {
+    const body = JSON.stringify({
+      error: 'invalid request',
+      issues: [{ code: 'invalid_type', path: ['ttlHours'], message: 'Expected number, received string' }],
+    });
+    expect(failureMessage('preview create failed', 400, body)).toBe(
+      'preview create failed (400): invalid request\n  ttlHours: Expected number, received string',
     );
   });
 
