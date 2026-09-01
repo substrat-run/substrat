@@ -707,6 +707,42 @@ describe('answering a customer', () => {
   });
 
   /**
+   * A person sends the draft, and it stops waiting.
+   *
+   * The supervised desk's whole workflow, and the half that was missing: sending from
+   * the draft card posts a public reply, and until the turn moved with it the desk went
+   * on offering the same draft and counting the answer as never delivered. This is what
+   * the agent's "Send reply" button does.
+   */
+  it('a human sending the draft takes it off the waiting list', async () => {
+    const dana = await at(world.kestrel, 'admin');
+    const r = await ask(world.kestrel, 'How do I rotate an API key?');
+    expect(r.outcome).toBe('drafted');
+
+    const waitingFirst = (await dana.invoke('ticket0/assistant-health', {})) as {
+      waiting: { id: string }[];
+    };
+    expect(waitingFirst.waiting.map((w) => w.id)).toContain(r.turnId);
+
+    const omar = await at(world.kestrel, 'agent');
+    await omar.invoke('ticket0/post-public-reply', {
+      conversationId: r.conversationId,
+      body: 'Rotate the key; the old one stays valid for 24 hours.',
+      turnId: r.turnId,
+    });
+
+    const turns = (await omar.invoke('ticket0/list-turns', {
+      conversationId: r.conversationId,
+    })) as Page<{ id: string; outcome: string }>;
+    expect(turns.entries.find((t) => t.id === r.turnId)?.outcome).toBe('answered');
+
+    const waitingAfter = (await dana.invoke('ticket0/assistant-health', {})) as {
+      waiting: { id: string }[];
+    };
+    expect(waitingAfter.waiting.map((w) => w.id)).not.toContain(r.turnId);
+  });
+
+  /**
    * The other side: an answer that WENT leaves nothing waiting.
    *
    * The desk still has drafted turns — the seed writes some, for the draft card, and a

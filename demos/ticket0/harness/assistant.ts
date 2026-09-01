@@ -260,11 +260,26 @@ export async function answerConversation(
    * failure mode this closes is silence: a customer who asked something and got
    * nothing back has no way to tell a broken desk from a slow one.
    */
-  const send = async (text: string, citedArticleIds: string[]): Promise<boolean> => {
+  const send = async (
+    text: string,
+    citedArticleIds: string[],
+    /**
+     * The drafted turn this send is delivering, when it is delivering one. Rides ON the
+     * reply so the message and the turn's new state commit together: a second call
+     * afterwards could fail with the answer already read by the customer, leaving the
+     * desk reporting it as still waiting for a person.
+     */
+    turnId?: string,
+  ): Promise<boolean> => {
     try {
       await assistant.invoke(
         'ticket0/post-public-reply',
-        { conversationId: input.conversationId, body: text, citedArticleIds },
+        {
+          conversationId: input.conversationId,
+          body: text,
+          citedArticleIds,
+          ...(turnId ? { turnId } : {}),
+        },
         // The platform's own dedupe, keyed by the message being answered: a retried
         // send returns the first one's recording instead of posting a second public
         // reply and emitting a second `reply-requested`. `record-answer` already had
@@ -384,24 +399,18 @@ export async function answerConversation(
    */
   // What it actually sent is recorded on the message; the turn keeps its own copy of
   // what the model drew on, and a human who edits the draft can make the two differ.
-  const sent = await send(answer.text, context.map((c) => c.id));
   /**
-   * And the ROW learns what happened.
+   * The turn rides along, so the ROW learns what happened.
    *
-   * The turn was written `drafted` before the send, which is the right order — a turn
-   * that has been paid for must survive a refused send. But nothing used to close the
-   * loop afterwards, so a desk whose assistant answers every customer directly still
-   * had a table full of drafts: the draft card offered to send an answer the customer
-   * had already read, the deflection report counted it as unsent, and the health panel
-   * listed it as waiting for a person. Only the value this function RETURNED was ever
-   * right, and it is the one nothing stores.
+   * It was written `drafted` before the send, which is the right order — a turn that
+   * has been paid for must survive a refused send. What was missing is the other half:
+   * nothing closed the loop, so a desk whose assistant answers every customer directly
+   * still held a table full of drafts. The draft card offered to send an answer the
+   * customer had already read, the deflection report counted it unsent, and the health
+   * panel listed it as waiting for a person. Only the value this function RETURNS was
+   * ever right, and it is the one nothing stores.
    */
-  if (sent) {
-    await assistant.invoke('ticket0/mark-turn-sent', {
-      conversationId: input.conversationId,
-      turnId: input.messageId,
-    });
-  }
+  const sent = await send(answer.text, context.map((c) => c.id), input.messageId);
   return {
     outcome: sent ? 'answered' : 'drafted',
     turnId: input.messageId,

@@ -1180,17 +1180,25 @@ function Assistant({ go }: { go: (v: View) => void }) {
   const [saving, setSaving] = useState(false);
   const [saveFailed, setSaveFailed] = useState<string | null>(null);
 
-  const load = () =>
-    assistantStatus()
-      .then((s) => {
-        setStatus(s);
-        setLoadFailed(null);
-      })
-      .catch((e: Error) => setLoadFailed(e.message));
+  /**
+   * Rethrows after recording, so a caller can tell a read that failed from one that
+   * did not. Without that, a re-read failing after a successful flip left the OLD
+   * mode on screen with no error against it — the one thing this screen must never do.
+   */
+  const load = async () => {
+    try {
+      const s = await assistantStatus();
+      setStatus(s);
+      setLoadFailed(null);
+    } catch (e) {
+      setLoadFailed((e as Error).message);
+      throw e;
+    }
+  };
 
   useEffect(() => {
-    void load();
-    // Once, on open — the toggle re-reads for itself.
+    // Once, on open — the toggle re-reads for itself. The error is already on screen.
+    void load().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1205,6 +1213,8 @@ function Assistant({ go }: { go: (v: View) => void }) {
     setSaveFailed(null);
     try {
       await api.configureDesk({ assistantAutonomous: autonomous });
+      // A failure in here is the re-read's, not the write's, and it lands in the same
+      // place: the flip is not shown as done until the desk has confirmed it.
       await load();
     } catch (e) {
       setSaveFailed((e as Error).message);

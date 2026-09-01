@@ -306,7 +306,17 @@ async function answerFor(
     const { autonomous } = (await widget.invoke('ticket0/assistant-mode', {})) as {
       autonomous: boolean;
     };
-    const who = autonomous ? desk.assistantAutonomous : desk.assistant;
+    /**
+     * Fall back to the supervised account when there is no autonomous one.
+     *
+     * `.data/cast.json` is written once and read verbatim on every later boot, so a
+     * checkout that ran this demo before the second assistant existed has a world with
+     * three service people and no `assistantAutonomous`. Reaching for `.principal`
+     * there would throw, and the desk would record a failed turn for a model that
+     * worked. Drafting instead is the honest degradation — and `rm -rf .data` re-seeds
+     * a world that has both.
+     */
+    const who = autonomous ? (desk.assistantAutonomous ?? desk.assistant) : desk.assistant;
     const assistant = await host.getScope(who.principal, desk.tenant, desk.scope);
     const outcome = await answerConversation(
       { invoke: (op, input) => assistant.invoke(op, input) as Promise<never> },

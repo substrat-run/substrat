@@ -462,13 +462,6 @@ export interface Ticket0Client {
   markNotificationRead(input: { notificationId: string }): Promise<Notification>;
 
   /**
-   * Record that a drafted turn was sent to the customer
-   *
-   * `POST /conversations/{conversationId}/answers/{turnId}/sent` — `ticket0/mark-turn-sent`
-   */
-  markTurnSent(input: { conversationId: string; turnId: string }): Promise<AiTurn>;
-
-  /**
    * Merge this conversation into another
    *
    * `POST /conversations/{conversationId}/merge` — `ticket0/merge`
@@ -514,7 +507,7 @@ export interface Ticket0Client {
    *
    * `POST /conversations/{conversationId}/replies` — `ticket0/post-public-reply`
    */
-  postPublicReply(input: { conversationId: string; body: string; bodyHtml?: string | null; citedArticleIds?: string[] }): Promise<Message>;
+  postPublicReply(input: { conversationId: string; body: string; bodyHtml?: string | null; citedArticleIds?: string[]; turnId?: string }): Promise<Message>;
 
   /**
    * Read a message the relay is about to send
@@ -926,8 +919,6 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/turns`, "GET", undefined, omit(input, ["conversationId"])),
     markNotificationRead: (input: Args) =>
       send(`/me/notifications/${encodeURIComponent(String(input.notificationId))}/read`, "POST", omit(input, ["notificationId"]), undefined),
-    markTurnSent: (input: Args) =>
-      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/answers/${encodeURIComponent(String(input.turnId))}/sent`, "POST", omit(input, ["conversationId","turnId"]), undefined),
     merge: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/merge`, "POST", omit(input, ["conversationId"]), undefined),
     myConversations: () =>

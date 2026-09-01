@@ -241,6 +241,10 @@ What a hosted desk does **not** get from a seed, and how it gets it instead:
   answers as — Settings → Assistant, "Let it answer" / "Put it back under review". A new
   desk is supervised, and so is one that has never decided.
 
+  A drafted turn stops being a draft when the reply that carries it goes out —
+  `post-public-reply` takes an optional `turnId` and moves the row in the same
+  transaction, whether the assistant sent it or a person did from the draft card.
+
   Two principals rather than one principal moved between roles, because `assignScopeRole`
   writes a role tuple and the platform has nothing that takes one back (#1161): promoting
   the one account would be a one-way door. The setting picks who is asked; the kernel

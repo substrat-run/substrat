@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-61 operations · 26 narrowed checks · 26 conformance pairs driven
+60 operations · 25 narrowed checks · 25 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**26 pairs driven** across 26 of this package's 26 narrowed checks.
+**25 pairs driven** across 25 of this package's 25 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
@@ -49,7 +49,6 @@ against B, and requires a permission denial specifically.
 | `ticket0/list-conversation-tags` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-messages` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-turns` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
-| `ticket0/mark-turn-sent` | `conversation:reply-public` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/merge` | `conversation:merge` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/my-messages` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-note` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |

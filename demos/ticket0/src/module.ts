@@ -1436,6 +1436,24 @@ const operations = {
     }
     settle(ctx, conversation, next);
 
+    /**
+     * If this reply is SENDING a drafted turn, the turn stops being a draft — here,
+     * in the same transaction as the message it went out on.
+     *
+     * Only a draft moves. An `escalated` or `failed` turn stayed what it was for a
+     * reason, and an `answered` one is already there, so a retry writes nothing. A
+     * turnId naming a turn on another conversation moves nothing either: the reply is
+     * still posted, because the caller's authority was over THIS conversation and the
+     * turn is bookkeeping attached to it.
+     */
+    if (input.turnId) {
+      ctx.sql.exec(
+        `UPDATE ticket0_ai_turns SET outcome = 'answered'
+          WHERE id = ? AND conversation_id = ? AND outcome = 'drafted'`,
+        [input.turnId, conversation.id],
+      );
+    }
+
     // Ids only: the body is erasable, so it cannot ride an immutable event. The relay
     // comes back for it at send time through `ticket0/read-outbound`.
     ctx.emit(messageEvent(row, 'ticket0.reply-requested'));
@@ -2089,27 +2107,6 @@ const operations = {
       },
     });
     return row;
-  },
-
-  'ticket0/mark-turn-sent': async (ctx, input) => {
-    assertAllowed(
-      await ctx.check(T0_PERM.conversationReplyPublic, conversationRef(input.conversationId)),
-    );
-    conversationOrThrow(ctx, input.conversationId);
-    const turn = ctx.sql.query<AiTurnRow>(
-      'SELECT * FROM ticket0_ai_turns WHERE id = ? AND conversation_id = ?',
-      [input.turnId, input.conversationId],
-    )[0];
-    if (!turn) throw substratError('not_found', `turn not found: ${input.turnId}`);
-    /**
-     * Only a DRAFT becomes an answer. An `escalated` or `failed` turn stayed what it
-     * was for a reason, and an `answered` one is already there — so a retry writes
-     * nothing rather than writing it again.
-     */
-    if (turn.outcome === 'drafted') {
-      ctx.sql.exec("UPDATE ticket0_ai_turns SET outcome = 'answered' WHERE id = ?", [turn.id]);
-    }
-    return ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [turn.id])[0]!;
   },
 
   /**

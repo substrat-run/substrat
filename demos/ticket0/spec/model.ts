@@ -1116,6 +1116,22 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       bodyHtml: z.string().nullable().optional(),
       /** What this answer drew on. Optional: a human reply usually cites nothing. */
       citedArticleIds: z.array(z.string()).optional(),
+      /**
+       * The drafted turn this reply is sending, if it is sending one.
+       *
+       * The turn is recorded BEFORE the send and must be — a turn that has been paid
+       * for has to survive a refused send. What was missing is the other half: nothing
+       * marked it sent afterwards, so an answer the customer had already read stayed
+       * `drafted` forever. The draft card offered to send it again, the deflection
+       * report counted it unsent, and a "waiting for a person" list would list it.
+       *
+       * It rides on THIS operation rather than a second one because the two facts must
+       * not come apart: a follow-up call that failed after the reply went out would
+       * leave the desk saying an answer is waiting that the customer has already read.
+       * Same transaction, one act. Optional and behaviour-preserving — a human reply
+       * that is not sending a draft names no turn.
+       */
+      turnId: z.string().optional(),
     }),
     output: ticket0Entities.message.fields,
     http: { method: 'POST', path: '/conversations/{conversationId}/replies' },
@@ -1600,34 +1616,6 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       piiClass: 'none',
       payload: ['id', 'conversation_id', 'model', 'input_tokens', 'output_tokens', 'outcome'],
     },
-  },
-
-  /**
-   * The turn went out — say so on the row.
-   *
-   * `record-answer` writes the turn BEFORE the send, and it must: a turn that has been
-   * paid for has to exist even if the send is then refused. What was missing is the
-   * other half. A successful send left the row saying `drafted` forever, so an answer
-   * the customer had already read still counted as one waiting for a person — in the
-   * draft card on the conversation, in the desk's deflection reporting, and in the
-   * health panel's "waiting" list. Every one of those was reading a row that had
-   * stopped being true a moment after it was written.
-   *
-   * Gated on `conversation:reply-public`, and that is the point: only a principal that
-   * COULD have sent the reply may record that it was sent. A supervised assistant
-   * cannot mark its own draft as answered, which is the same refusal that stopped it
-   * sending in the first place.
-   */
-  'ticket0/mark-turn-sent': {
-    summary: 'Record that a drafted turn was sent to the customer',
-    permission: {
-      key: 'conversation:reply-public',
-      entity: 'conversation',
-      idFrom: 'conversationId',
-    },
-    input: z.object({ conversationId: z.string(), turnId: z.string() }),
-    output: ticket0Entities.aiTurn.fields,
-    http: { method: 'POST', path: '/conversations/{conversationId}/answers/{turnId}/sent' },
   },
 
   /**
