@@ -142,11 +142,39 @@ consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
    (`moneyOf`, `mulMoney`, `addDecimal`, `compareDecimal`) — never floats.
 10. **Web-standard APIs always** — `globalThis.crypto`, `TextEncoder`, `URL`. Never
     hand-roll a hash to dodge an import ban.
-11. **Parse, don't trust.** Zod at every boundary — but import `z` from
+11. **Parse, don't trust** — and the **host** is what parses. A module passes
+    `operationInputs: operationInputsOf(ops)` beside its `operations`, and every invocation
+    is parsed against the declared schema before the guards and the handler, on every path
+    in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared input nobody
+    parses stops being possible rather than merely discouraged. Import `z` from
     `@substrat-run/contracts`, **never from `zod`**. Zod schemas don't compose across
     copies or majors; composing a contracts schema into one built from a separate `zod`
     fails at *runtime* (`expected a Zod schema`) with an error pointing nowhere near the
     cause.
+
+## Catching an engine error requires `ctx.atomic`
+
+An engine call composed inside your transaction has no boundary of its own. A bare `catch`
+around it leaves you holding its partial writes — the rows its invariants were protecting —
+and then commits them. Give the call a boundary instead:
+
+```ts
+try {
+  await ctx.atomic(() => completeWorkOrder(ctx, { orderId, billable }));
+} catch {
+  // the engine's rows, events, links and grants are all gone; your own writes
+  // survive, and the operation still commits once
+}
+```
+
+A succeeded `ctx.atomic` is still provisional: if the operation later throws, its writes go
+too. Sub-transactions nest but must not interleave — starting two concurrently throws.
+
+Outside `ctx.atomic`, catching an engine error is forbidden and `boundary-lint` rejects it,
+with **no** escape hatch — there is no legitimate reason to swallow one unprotected.
+`try`/`finally` with no `catch` is fine, and so is a `catch` that always rethrows
+(`catch (e) { log(e); throw e }`): the operation still fails and the whole transaction rolls
+back, which is the outcome the rule is protecting.
 
 ## Declare every link edge
 
