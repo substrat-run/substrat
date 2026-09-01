@@ -37,6 +37,7 @@
     "lint:docs": "node tools/lint-docs.mjs",
     "lint:docs:drift": "node tools/docs-drift.mjs",
     "lint:docs:structure": "node tools/docs-structure.mjs",
+    "lint:docs:surface": "node tools/docs-surface-check.mjs",
     "lint:llms": "tsx tools/llms-index.mts",
     "lint:changelog": "node tools/changelog-week.mjs",
     "lint:agent-rules": "tsx tools/agent-rules-emit.mts",

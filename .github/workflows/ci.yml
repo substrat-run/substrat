@@ -88,13 +88,18 @@ jobs:
       # hand-adapted copy of the substrat skill, so fail if the skill moved without
       # a human re-reconciling the playbook (tools/playbook-sync.mts).
       - run: pnpm lint:playbook --check
-      # Two docs checkpoints behind one command. docs-drift (#750) asks whether a
+      # Three docs checkpoints behind one command. docs-drift (#750) asks whether a
       # PUBLISHED page has fallen behind its source. docs-structure asks whether an
       # INTERNAL document still says what it is: a closed status vocabulary, `built`
       # only where a reader looks for shipped work, no architecture/ page opening by
       # calling itself unbuilt, every relative link resolving, and the docs/README.md
       # index regenerated from front-matter. The audit that added it found 18 of 18
-      # sampled documents describing shipped work as unbuilt.
+      # sampled documents describing shipped work as unbuilt. docs-surface (#988)
+      # asks the one question the other two cannot: does a name on an engine's
+      # surface page name a real export? Staleness is a proxy; a documented
+      # function the engine does not export is drift a reader copies into an
+      # editor. #811 made `listOrders` paged and the page went on documenting
+      # `listOrders(ctx, status?)` for weeks.
       - run: pnpm lint:docs --check
       # The machine-readable-docs checkpoint (#751). llms.txt is emitted from the
       # sidebar, so a page nobody added there is invisible to every agent while
