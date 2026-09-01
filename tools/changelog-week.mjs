@@ -20,6 +20,15 @@
  * closes, or last week's PR for context, is citing something outside the range on
  * purpose. Missing is a defect; extra is editing.
  *
+ * The second mechanical thing is the one that keeps getting mistaken for a defect:
+ * an entry states its week **twice**, and the two statements use opposite
+ * conventions. Frontmatter `range:` is half-open — `2026-08-17..2026-08-24` is
+ * Monday to Monday, the end *excluded* — because that is what a git range wants.
+ * The H1 is prose for a reader, so it is inclusive: "17–23 August 2026". They are
+ * supposed to disagree by a day, and #988 filed the disagreement as drift. So the
+ * relation is checked rather than commented: `--check` derives the heading's span
+ * from the declared range and refuses if they part company, in either direction.
+ *
  *   node tools/changelog-week.mjs                 # the last complete week, as raw material
  *   node tools/changelog-week.mjs --week 2026-w34 # a named week
  *   node tools/changelog-week.mjs --check         # CI: every entry accounts for its range
@@ -102,6 +111,44 @@ function weekRange(id) {
   // carrying one would pass the range check while duplicating a real week's coverage.
   if (isoWeekOf(start) !== id) throw new Error(`not an ISO week: ${id}`);
   return { id, start, end: addDays(start, 7) };
+}
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+/**
+ * The date span an entry's H1 claims, as `{ from, to }` ISO dates — inclusive, the
+ * way prose reads. Every published entry writes it one of two ways, depending on
+ * whether the week straddles a month:
+ *
+ *   # Week 34 · 17–23 August 2026
+ *   # Week 31 · 27 July – 2 August 2026
+ *
+ * The month, and the year, are stated once when they are the same on both sides.
+ * A span that runs over New Year states its own year on the left; without one, a
+ * left month later in the calendar than the right month is the previous year.
+ *
+ * Returns `undefined` when the heading carries no span at all — the caller reports
+ * that, because an entry whose heading does not say which week it is is exactly
+ * what this check exists to catch.
+ */
+function headingSpanOf(src) {
+  const h1 = /^#[ \t]+(.+)$/m.exec(src);
+  if (!h1) return undefined;
+  const m = /(\d{1,2})(?:\s+([A-Za-z]+))?(?:\s+(\d{4}))?\s*[–—-]\s*(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})/
+    .exec(h1[1]);
+  if (!m) return undefined;
+
+  const [, d1, name1, year1, d2, name2, year2] = m;
+  const to = MONTHS.indexOf(name2);
+  const from = name1 ? MONTHS.indexOf(name1) : to;
+  if (from < 0 || to < 0) return undefined;
+
+  const iso = (y, month, day) => `${y}-${String(month + 1).padStart(2, '0')}-${day.padStart(2, '0')}`;
+  const fromYear = year1 ? Number(year1) : Number(year2) - (from > to ? 1 : 0);
+  return { from: iso(fromYear, from, d1), to: iso(Number(year2), to, d2) };
 }
 
 /**
@@ -223,6 +270,25 @@ function check() {
           `${range.start}..${range.end}`,
       );
       continue;
+    }
+
+    // The H1 states the same week a second time, for a reader rather than for git,
+    // so it is inclusive where the range is half-open. Off by exactly one day is
+    // the correct answer here, and #988 read it as drift — hence the check.
+    const heading = headingSpanOf(src);
+    const inclusive = { from: range.start, to: addDays(range.end, -1) };
+    if (!heading) {
+      problems.push(
+        `${file}: the H1 names no date span — it should restate the range inclusively, ` +
+          `as \`# Week ${Number(id.slice(-2))} · …\` covering ${inclusive.from} to ${inclusive.to}`,
+      );
+    } else if (heading.from !== inclusive.from || heading.to !== inclusive.to) {
+      problems.push(
+        `${file}: the H1 says ${heading.from}..${heading.to} but \`range: ${range.start}..` +
+          `${range.end}\` (end exclusive) is ${inclusive.from}..${inclusive.to}. The range is ` +
+          `half-open and the heading is inclusive, so they differ by one day on purpose — ` +
+          `fix whichever of the two is actually wrong, not the convention`,
+      );
     }
 
     const cited = new Set([...src.matchAll(/#(\d+)/g)].map((m) => Number(m[1])));

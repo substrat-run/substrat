@@ -71,7 +71,12 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   area, the commits that landed without a PR, and each package's version span
   (`--week 2026-w34` for a named week). With `--check`, CI asserts **completeness**:
   every merged PR inside an entry's declared `range` is named somewhere in its source
-  (a commit that landed without a PR is reported as a note, not failed on). The prose
+  (a commit that landed without a PR is reported as a note, not failed on). An entry
+  states its week **twice, in opposite conventions**, and that is deliberate: frontmatter
+  `range:` is half-open Monday-to-Monday (`2026-08-17..2026-08-24`, end excluded) because
+  a git range wants it that way, while the H1 is prose and inclusive ("17–23 August 2026").
+  They are supposed to differ by a day; `--check` derives one from the other and refuses if
+  they part company, so nobody "fixes" the gap again (#988). The prose
   is written for a **platform user** — what changed for them, no PR references — so
   each entry accounts for its merges in a coverage-ledger HTML comment at the end.
   The prose is authored, not generated, and deliberately carries none of the three marks
