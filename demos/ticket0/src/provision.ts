@@ -142,6 +142,31 @@ export const OWNER_ROLE_KEY = 'desk-admin';
 export const SERVICE_ROLES = ['widget', 'assistant', 'relay'] as const;
 export type ServiceRole = (typeof SERVICE_ROLES)[number];
 
+/**
+ * The roles a PERSON may be invited at, in the order the picker offers them.
+ *
+ * Listing the humans is the check. `ROLES` above also holds the three service accounts
+ * and the two assistant roles, all held by nobody — and offering `widget` in an invite
+ * dropdown would be offering to hand somebody the desk's own chat service.
+ */
+export const HUMAN_ROLES = ['desk-admin', 'agent', 'customer'] as const;
+
+/**
+ * Which of those WORK the desk — the ones whose holder belongs in the staff directory
+ * and may therefore be assigned a conversation.
+ *
+ * `customer` is a human role and is deliberately not here: the portal is not the
+ * inbox, and a customer turning up in an assignee picker would be a bug rather than a
+ * convenience.
+ */
+export const STAFF_ROLES = ['desk-admin', 'agent'] as const;
+
+/**
+ * The one invitable role that takes an argument: a customer's portal is a grant on ONE
+ * contact, since `conversation:read-own` is held by nobody scope-wide.
+ */
+export const CONTACT_BOUND_ROLE = 'customer';
+
 export const permissions = definePermissions({
   modules: MODULES,
   roles: ROLES,

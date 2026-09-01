@@ -9,19 +9,19 @@
  * two cannot disagree.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api, auth, claimOwner, me, type Identity, type Session } from './api.js';
+import { ApiError, api, auth, claimOwner, invites, me, type Identity, type Session } from './api.js';
 import { Avatar } from './ui.js';
 import { Notifications } from './Notifications.js';
 import { Inbox } from './views/Inbox.js';
 import { ConversationView } from './views/Conversation.js';
-import { Settings } from './views/Settings.js';
+import { Settings, type SettingsTab } from './views/Settings.js';
 import { Portal } from './views/Portal.js';
 import { Reports } from './views/Reports.js';
 
 export type View =
   | { name: 'inbox' }
   | { name: 'conversation'; id: string }
-  | { name: 'settings'; tab: 'desk' | 'identity' | 'knowledge' | 'assistant' | 'usage' }
+  | { name: 'settings'; tab: SettingsTab }
   | { name: 'reports' }
   | { name: 'portal' }
   | { name: 'portal-conversation'; id: string };
@@ -31,8 +31,7 @@ function parseHash(): View {
   const h = location.hash.replace(/^#\/?/, '');
   const [a, b] = h.split('/');
   if (a === 'c' && b) return { name: 'conversation', id: b };
-  if (a === 'settings')
-    return { name: 'settings', tab: (b as 'desk') || 'desk' };
+  if (a === 'settings') return { name: 'settings', tab: (b as SettingsTab) || 'desk' };
   if (a === 'reports') return { name: 'reports' };
   if (a === 'portal') return b ? { name: 'portal-conversation', id: b } : { name: 'portal' };
   return { name: 'inbox' };
@@ -94,8 +93,26 @@ async function probe(): Promise<Capabilities> {
   return { money, configure, inbox };
 }
 
+const PARAMS = new URLSearchParams(location.search);
 /** A claim token in the URL (`?claim=<token>`) — the installer arrived by a dashboard-minted claim link (#925). */
-const CLAIM_TOKEN = new URLSearchParams(location.search).get('claim');
+const CLAIM_TOKEN = PARAMS.get('claim');
+/** An invite token (`?invite=<token>`) — a colleague arrived by a link an admin made (#1149). */
+const INVITE_TOKEN = PARAMS.get('invite');
+
+/**
+ * Drop a spent token from the URL and re-enter the app normally.
+ *
+ * Both screens below return BEFORE the desk renders, so an error state with no action
+ * is a dead end — and a link is reopened all the time: the person kept it, or the
+ * browser restored the tab. A signed-in colleague who lands there would otherwise have
+ * to edit the address bar by hand.
+ */
+function forget(param: string) {
+  const url = new URL(location.href);
+  url.searchParams.delete(param);
+  history.replaceState({}, '', url.pathname + url.search + url.hash);
+  location.reload();
+}
 
 /**
  * Claim the owner seat. The token rides the sign-in round-trip: try the claim at once (a
@@ -142,6 +159,72 @@ function ClaimOwner({ token }: { token: string }) {
           Sign in
         </button>
       )}
+      {state === 'error' && (
+        <button className="btn" onClick={() => forget('claim')}>
+          Continue to the desk
+        </button>
+      )}
+    </Splash>
+  );
+}
+
+/**
+ * Accept an invite. The same shape as `ClaimOwner` above and for the same reasons: the
+ * account lives at the issuer, so there is nothing to create here — sign in, then bind
+ * this login to the principal the invite already granted a role to. Try the claim at
+ * once (the redirect back may have left a session), and on 401 send them to the issuer
+ * with the token still riding the URL.
+ */
+function AcceptInvite({ token }: { token: string }) {
+  const [state, setState] = useState<'trying' | 'needs-login' | 'error'>('trying');
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    invites.accept(token).then(
+      () => {
+        // The token is spent; leaving it in the URL would make a reload look like a
+        // dead link rather than like the desk they now work at.
+        history.replaceState({}, '', location.pathname + location.hash);
+        location.reload();
+      },
+      (e: unknown) => {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 401) setState('needs-login');
+        else {
+          setErr(e instanceof Error ? e.message : String(e));
+          setState('error');
+        }
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [token]);
+  return (
+    <Splash>
+      <div className="t-title" style={{ marginBottom: 10 }}>
+        ticket0
+      </div>
+      <div className="t-meta" style={{ marginBottom: 18 }}>
+        {state === 'trying'
+          ? 'Checking your invite…'
+          : state === 'error'
+            ? (err ?? 'This invite is no longer valid.')
+            : 'Sign in to join this desk.'}
+      </div>
+      {state === 'needs-login' && (
+        <button
+          className="btn btn-primary"
+          onClick={() => auth.login(`/?invite=${encodeURIComponent(token)}`)}
+        >
+          Sign in
+        </button>
+      )}
+      {state === 'error' && (
+        <button className="btn" onClick={() => forget('invite')}>
+          Continue to the desk
+        </button>
+      )}
     </Splash>
   );
 }
@@ -170,6 +253,9 @@ export function App() {
   // Arrived by a claim link (#925): bind this login to the owner seat, whether or not a
   // session (or even another principal) already exists. Takes priority over everything.
   if (CLAIM_TOKEN) return <ClaimOwner token={CLAIM_TOKEN} />;
+  // Arrived by an invite link (#1149), and for the same reason it comes before the
+  // signed-out splash: the token is the authority, not the session.
+  if (INVITE_TOKEN) return <AcceptInvite token={INVITE_TOKEN} />;
   if (session === null || 'status' in session)
     return (
       <Splash>
@@ -200,7 +286,7 @@ export function App() {
         {portal ? (
           <Portal view={view} go={go} session={session} />
         ) : view.name === 'settings' ? (
-          <Settings tab={view.tab} caps={caps} go={go} />
+          <Settings tab={view.tab} caps={caps} session={session} go={go} />
         ) : view.name === 'reports' ? (
           <Reports caps={caps} />
         ) : view.name === 'conversation' ? (
@@ -264,9 +350,12 @@ function TopBar({
         {/* The report is the money with a denominator, so it appears for the same
             capability the money does — learned by asking, exactly as above. */}
         {caps?.money ? tab('Reports', view.name === 'reports', () => go({ name: 'reports' })) : null}
-        {caps?.configure
-          ? tab('Settings', view.name === 'settings', () => go({ name: 'settings', tab: 'desk' }))
-          : null}
+        {/* Not gated on `configure` any more: the Settings shell shows an agent the one
+            tab they have business on — their own profile, which is what puts them in
+            the desk's directory and therefore in the assignee picker (#1149). */}
+        {tab('Settings', view.name === 'settings', () =>
+          go({ name: 'settings', tab: caps?.configure ? 'desk' : 'you' }),
+        )}
         {tab('My conversations', view.name.startsWith('portal'), () => go({ name: 'portal' }))}
       </nav>
       <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>

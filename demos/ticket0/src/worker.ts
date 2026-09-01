@@ -64,7 +64,16 @@ import {
 } from '@substrat-run/vertical-auth';
 import { API_DOCUMENT } from './api.js';
 import { T0_PERM, TICKET0_ENV, ticket0Manifest } from './manifest.js';
-import { MODULES, OWNER_ROLE_KEY, ROLES, SERVICE_ROLES, type ServiceRole } from './provision.js';
+import {
+  CONTACT_BOUND_ROLE,
+  HUMAN_ROLES,
+  MODULES,
+  OWNER_ROLE_KEY,
+  ROLES,
+  SERVICE_ROLES,
+  STAFF_ROLES,
+  type ServiceRole,
+} from './provision.js';
 import { mountApi } from './routes.js';
 import {
   answerConversation,
@@ -75,6 +84,7 @@ import {
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh } from '../harness/kb-refresh.js';
+import { mountInvites, recordStaffProfile } from '../harness/invites.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 
 /** The scope-DO class = the app binary: kernel + metering + ticket0, bundled. */
@@ -386,130 +396,99 @@ app.post('/api/claim-owner', async (c) => {
     await sha256Hex(token),
   );
   if (!principal) throw new HTTPException(400, { message: 'this claim link is invalid, expired, or already used' });
+  /**
+   * The owner is the desk's first colleague, so they go in its directory (#1149).
+   * Without this the one human on a fresh hosted desk was missing from `list-agents`,
+   * which made the assignee picker they were shown empty and their own name a ULID.
+   */
+  await recordStaffProfile(
+    async (p, operation, input) =>
+      (await hostFor(c.env).getScope(principalId.parse(p), node.tenantId, node.scopeId)).invoke(
+        operation,
+        input,
+      ),
+    principal,
+    subject,
+  );
   return c.json({ ok: true, principal });
 });
 
 // ── Invites — the only way a second person reaches a hosted desk ─────────────
 
-const inviteBody = z.object({
-  email: z.string().email().optional(),
-  /** One of this vertical's HUMAN roles — validated below. */
-  roleKey: z.string().min(1),
+/**
+ * The flow itself is `harness/invites.ts`, mounted by the dev server too. What is
+ * host-specific and stays here is all of what this passes it: which desk the routed
+ * hostname means, where its pending invites live (the tenant's identity DO), how a
+ * caller is authenticated, and what "may manage people" means on this vertical.
+ */
+mountInvites(app, {
+  humanRoles: HUMAN_ROLES,
+  staffRoles: STAFF_ROLES,
+  contactBoundRole: CONTACT_BOUND_ROLE,
+  /** The worker serves the SPA as well as the API, so an invite link points at itself. */
+  appOrigin: (c) => new URL(c.req.raw.url).origin,
+  subjectOf: async (c) => (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers),
   /**
-   * For a `customer` invite: the contact whose conversations this person may see.
-   * `conversation:read-own` is held by nobody scope-wide, so the portal is a grant on
-   * ONE contact and their history is reached from it through the declared parent edge.
+   * Gate an admin-only action. `get-desk` IS the check — it asserts `desk:configure`
+   * inside the operation, which only `desk-admin` holds — so the authority comes from
+   * this desk's own grants rather than from a second role table out here.
    */
-  contactId: z.string().min(1).optional(),
+  requireAdmin: async (c) => {
+    await (await stub(c)).invoke('ticket0/get-desk', {});
+  },
+  deskOf: async (c) => {
+    const node = nodeFor(c.req.raw, c.env);
+    const directory = identityDo(c.env, node);
+    const host = hostFor(c.env);
+    return {
+      store: {
+        /**
+         * The DO stamps `created_at` as epoch millis; every other timestamp this
+         * vertical shows is ISO text, and the screen rendering these calls the same
+         * `ago()` it calls on rows out of a scope. Normalising here keeps the surface
+         * one shape rather than making the app ask which store answered.
+         */
+        list: async () =>
+          (await directory.listInvites(node.scopeId)).map((i) => ({
+            principal: i.principal,
+            roleKey: i.roleKey,
+            email: i.email,
+            created_at: new Date(i.createdAt).toISOString(),
+          })),
+        create: ({ principal, roleKey, email, tokenHash }) =>
+          directory.createInvite(node.scopeId, principal, roleKey, email, tokenHash),
+        revoke: (principal) => directory.revokeInvite(node.scopeId, principal),
+        /**
+         * The role is read BEFORE the claim consumes the invite — afterwards the row
+         * is gone and nothing can still say whether this person works the desk. The
+         * worker always knows its scope (the router asserted it), so listing is free
+         * here in a way it is not on a node holding two desks.
+         */
+        claim: async (sub, tokenHash) => {
+          const pending = await directory.listInvites(node.scopeId);
+          const principal = await directory.claimInvite(node.scopeId, sub, tokenHash);
+          if (!principal) return null;
+          return {
+            principal,
+            roleKey: pending.find((i) => i.principal === principal)?.roleKey ?? '',
+          };
+        },
+      },
+      assignRole: (principal, roleKey) =>
+        host.assignScopeRole(node.scopeId, principalId.parse(principal), roleKey),
+      grantContactPortal: (principal, contactId) =>
+        host.grantEntityLocal(node.scopeId, principalId.parse(principal), T0_PERM.conversationReadOwn, {
+          entityType: 'contact',
+          entityId: contactId,
+        }),
+      invokeAs: async (principal, operation, input) =>
+        (await host.getScope(principalId.parse(principal), node.tenantId, node.scopeId)).invoke(
+          operation,
+          input,
+        ),
+    };
+  },
 });
-
-/**
- * Who may be invited, and it is not every role. The three service accounts are minted
- * by provision and held by no human, so offering `widget` in an invite dropdown would
- * be offering to hand somebody the desk's own chat service. Listing the humans is the
- * check.
- */
-const HUMAN_ROLES = ['desk-admin', 'agent', 'customer'] as const;
-
-/** Gate an admin-only action: the caller must hold `desk:configure`, which only `desk-admin` does. */
-async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
-  const scope = await stub(c);
-  // `get-desk` IS the check — it asserts `desk:configure` inside the operation, so the
-  // authority comes from the desk's own grants rather than from a second role table here.
-  await scope.invoke('ticket0/get-desk', {});
-  return scope;
-}
-
-app.get('/api/invites', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  await requireAdmin(c);
-  return c.json({
-    roles: HUMAN_ROLES,
-    invites: await identityDo(c.env, node).listInvites(node.scopeId),
-  });
-});
-
-app.post('/api/invites', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  await requireAdmin(c);
-  const { email, roleKey, contactId } = inviteBody.parse(await c.req.json());
-  if (!HUMAN_ROLES.includes(roleKey as (typeof HUMAN_ROLES)[number])) {
-    throw new HTTPException(400, { message: `'${roleKey}' is not a role a person can be invited at` });
-  }
-  if (roleKey === 'customer' && !contactId) {
-    throw new HTTPException(400, {
-      message: 'a customer invite names the contact whose history it opens (contactId)',
-    });
-  }
-  const principal = principalId.parse(ulid());
-  // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
-  const token = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
-  const host = hostFor(c.env);
-  await host.assignScopeRole(node.scopeId, principal, roleKey);
-  if (roleKey === 'customer') {
-    /**
-     * The PORTAL grant — the hosted half of what the seed does with a platform actor.
-     *
-     * The admin proved they hold `desk:configure` above, and `contact:read` is in the
-     * same role, so the id they name is one they can already read off the contacts
-     * list. What this hands over is strictly narrower than what they hold: one
-     * contact's own conversations, public messages only, and no inbox.
-     *
-     * The id is not checked against a row, because there is no read-one-contact
-     * operation and inventing one to validate an argument would be the wrong reason to
-     * widen the surface. A grant naming a contact that does not exist opens nothing —
-     * the walk starts at a row that is not there — so the failure mode is an invite
-     * that shows an empty portal, not access to somebody else's history.
-     */
-    await host.grantEntityLocal(node.scopeId, principal, T0_PERM.conversationReadOwn, {
-      entityType: 'contact',
-      entityId: contactId!,
-    });
-  }
-  await identityDo(c.env, node).createInvite(
-    node.scopeId,
-    principal,
-    roleKey,
-    email ?? null,
-    await sha256Hex(token),
-  );
-  return c.json(
-    {
-      principal,
-      roleKey,
-      email: email ?? null,
-      acceptUrl: `${new URL(c.req.raw.url).origin}/?invite=${token}`,
-    },
-    201,
-  );
-});
-
-app.post('/api/invites/:principal/revoke', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  await requireAdmin(c);
-  await identityDo(c.env, node).revokeInvite(node.scopeId, c.req.param('principal'));
-  return c.body(null, 204);
-});
-
-/**
- * Accept an invite: the invitee has signed in at the issuer, and now claims it. Binds
- * their subject → the invite's pre-minted principal, which already holds the role (and,
- * for a customer, the grant on their own contact).
- */
-app.post('/api/accept-invite', async (c) => {
-  const node = nodeFor(c.req.raw, c.env);
-  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
-  if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
-  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
-  const principal = await identityDo(c.env, node).claimInvite(
-    node.scopeId,
-    subject.sub,
-    await sha256Hex(token),
-  );
-  if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
-  return c.json({ ok: true, principal });
-});
-
 // ── The knowledge base: the fetching half ────────────────────────────────────
 
 /**

@@ -298,8 +298,44 @@ export function Inbox({
     setFilters((f) => ({ ...f, contact_id: contactId }));
   };
 
+  /**
+   * Am I in my own desk's directory?
+   *
+   * `agentProfile` is what makes somebody assignable, so an agent without one is
+   * invisible in every picker on this screen — including to themselves. That used to
+   * be silent and permanent: nothing in the app wrote the row, so on a hosted desk
+   * NOBODY was in it (#1149). Joining writes it now, but a desk installed before that
+   * is still short its people, and the honest fix is to say so where the consequence
+   * is — beside the pickers — rather than to write a name on somebody's behalf.
+   *
+   * Held back until the directory has actually loaded: an empty map is also what a
+   * failed read looks like, and "nobody can assign work to you" is not a thing to say
+   * on the strength of a dropped connection.
+   */
+  const missingProfile = staff.size > 0 && !staff.has(session.principal);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22, width: 1360, maxWidth: '100%' }}>
+      {missingProfile ? (
+        <div
+          className="frame"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: '10px 16px',
+            background: 'var(--surface)',
+          }}
+        >
+          <div className="t-small" style={{ flex: 1 }}>
+            You are not in this desk’s directory, so colleagues cannot hand a
+            conversation to you. Setting your display name puts you in it.
+          </div>
+          <button className="btn" onClick={() => go({ name: 'settings', tab: 'you' })}>
+            Set your profile
+          </button>
+        </div>
+      ) : null}
       <div className="frame">
         <div
           style={{

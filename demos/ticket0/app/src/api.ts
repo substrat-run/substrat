@@ -24,6 +24,12 @@ export type {
   Ticket0Client,
 } from './api.generated.js';
 
+// This vertical answers problem+json (`src/routes.ts`), whose message is `detail`.
+const problemDetail = (body: unknown): string | undefined =>
+  typeof body === 'object' && body !== null
+    ? ((body as { detail?: string; title?: string }).detail ?? (body as { title?: string }).title)
+    : undefined;
+
 export interface Session {
   principal: string;
   display: string;
@@ -67,6 +73,78 @@ export async function claimOwner(token: string): Promise<void> {
   }
 }
 
+/**
+ * The desk's people — the four requests here that are not in the model, and could not
+ * be.
+ *
+ * An invite mints a PRINCIPAL and grants it a role, and neither is something module
+ * code may do: roles live in the kernel's admin surface, which an operation deliberately
+ * cannot reach. So the flow is a host surface (`harness/invites.ts`, mounted by both the
+ * dev server and the worker) rather than a declared operation, and this is its client.
+ *
+ * The staff DIRECTORY is a different thing and is in the model: `list-agents` reads the
+ * profiles, and `agents.ts` is what resolves them into names. An invite is how somebody
+ * comes to have one.
+ */
+export interface PendingInvite {
+  principal: string;
+  roleKey: string;
+  email: string | null;
+  created_at: string;
+}
+
+export interface CreatedInvite extends PendingInvite {
+  /** The one-time link to hand over. Shown once — only its hash is kept. */
+  acceptUrl: string;
+}
+
+async function inviteCall<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(path, { credentials: 'same-origin', ...init });
+  const text = await res.text();
+  // A body that is not JSON — a proxy's HTML 502, a gateway's plain text — must not
+  // throw before the status is read: `accept` below tells "sign in first" from "spent
+  // link" by the STATUS, and a `SyntaxError` carries none. So a parse failure degrades
+  // to a null body and the response still becomes an `ApiError` with its status.
+  let body: unknown = null;
+  let parsed = true;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = false;
+  }
+  // `statusText` is EMPTY over HTTP/2 — which is what the hosted desk speaks — so it
+  // cannot be the last resort: an empty message renders as no message at all on a
+  // screen that decides whether to say anything by whether it has one.
+  if (!res.ok)
+    throw new ApiError(res.status, problemDetail(body) || res.statusText || `${res.status}`, parsed ? body : text);
+  if (!parsed) throw new ApiError(res.status, 'The desk answered with something that is not JSON.', text);
+  return body as T;
+}
+
+export const invites = {
+  /** The roles a person may be invited at, and who is already invited and has not arrived. */
+  list: () => inviteCall<{ roles: string[]; invites: PendingInvite[] }>('/api/invites'),
+  create: (input: { email?: string; roleKey: string; contactId?: string }) =>
+    inviteCall<CreatedInvite>('/api/invites', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(input),
+    }),
+  revoke: (principal: string) =>
+    inviteCall<null>(`/api/invites/${encodeURIComponent(principal)}/revoke`, { method: 'POST' }),
+  /**
+   * Claim an invite with the token from its link. A 401 means "sign in first" and a
+   * 400 means the link is spent — two different screens, so the status is what the
+   * caller reads rather than the message.
+   */
+  accept: (token: string) =>
+    inviteCall<{ ok: true; principal: string }>('/api/accept-invite', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    }),
+};
+
 export const auth = {
   login: (returnTo = '/') =>
     location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`),
@@ -74,12 +152,6 @@ export const auth = {
   switchUser: () => location.assign('/api/auth/login?prompt=select_account'),
   logout: () => location.assign('/api/auth/logout'),
 };
-
-// This vertical answers problem+json (`src/routes.ts`), whose message is `detail`.
-const problemDetail = (body: unknown): string | undefined =>
-  typeof body === 'object' && body !== null
-    ? ((body as { detail?: string; title?: string }).detail ?? (body as { title?: string }).title)
-    : undefined;
 
 export const api = createClient({
   fetch: (input, init) => fetch(input, { credentials: 'same-origin', ...init }),
