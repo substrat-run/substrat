@@ -2,7 +2,15 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 import { buildArtifacts, emitInto } from './llms.mjs';
+import { emitHeaders } from './headers.mjs';
 import { changelogSidebar, guideSidebar } from './sidebar.mjs';
+
+/**
+ * Where the opt-in ticket0 widget is served from — named once, because it is
+ * read twice: the `<script>` tag below, and the CSP that has to allow it.
+ * A widget the policy did not name would load and then fail silently.
+ */
+const WIDGET_API = process.env.TICKET0_API ?? 'http://localhost:8874';
 
 export default withMermaid(defineConfig({
   title: 'Substrat',
@@ -22,16 +30,7 @@ export default withMermaid(defineConfig({
    * a person to make deliberately, not a side effect of a demo landing.
    */
   head: process.env.TICKET0_WIDGET
-    ? [
-        [
-          'script',
-          {
-            src: `${process.env.TICKET0_API ?? 'http://localhost:8874'}/widget.js`,
-            'data-api': process.env.TICKET0_API ?? 'http://localhost:8874',
-            defer: '',
-          },
-        ],
-      ]
+    ? [['script', { src: `${WIDGET_API}/widget.js`, 'data-api': WIDGET_API, defer: '' }]]
     : [],
 
   // The package's own changelog is not a docs page. It was being built and
@@ -52,6 +51,11 @@ export default withMermaid(defineConfig({
   buildEnd(siteConfig) {
     const repoRoot = resolve(siteConfig.srcDir, '../..');
     emitInto(siteConfig.outDir, buildArtifacts(siteConfig.srcDir, repoRoot));
+    // The `_headers` Cloudflare Pages serves the site with, including a CSP
+    // whose script hashes are read back out of the HTML this build just wrote
+    // (headers.mts explains why they cannot be written down). Emitted last: it
+    // hashes the inline scripts on every page, and the twins above add none.
+    emitHeaders(siteConfig.outDir, process.env.TICKET0_WIDGET ? WIDGET_API : undefined);
   },
 
   themeConfig: {
