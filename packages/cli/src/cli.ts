@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
-import { push, readVerticalMeta, nextVersion, previewVersion, pinTenant } from './push.js';
+import { push, readVerticalMeta, nextVersion, previewVersion, pinTenant, assertLayerRules } from './push.js';
 import { printVersions } from './versions.js';
 import { promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
@@ -102,7 +102,11 @@ Usage:
                                                --allow-fork to do it deliberately.
                                                A UI (app/) that nothing in the manifest
                                                would serve is refused too — declare
-                                               runtimeNeeds.assets, or --allow-unserved-ui
+                                               runtimeNeeds.assets, or --allow-unserved-ui.
+                                               The layer rules (boundary-lint R1–R8) run on
+                                               the source before the build and a violation
+                                               refuses the push; --skip-lint deploys
+                                               ungated code deliberately
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
@@ -303,6 +307,14 @@ async function cmdPush(): Promise<void> {
 
   // Slug + name default from the vertical's package.json (`substrat` block, else derived);
   // a flag still wins. So `cd demos/meridian && substrat push` needs no --slug/--name.
+  // The layer rules first (#955) — before authentication and before the registry round-trip
+  // that picks the next version. `push()` runs them too (the gate belongs to the push, not to
+  // one command's argument handling); running them here as well is what keeps a violating
+  // tree from spending a network call first, where a failed one would stand in place of the
+  // diagnostic. The receipt is what keeps the two calls from being two scans — see
+  // assertLayerRules.
+  const linted = assertLayerRules(dir, argv.includes('--skip-lint'));
+
   const meta = readVerticalMeta(dir);
   const slug = flag('slug') ?? meta.slug;
   const name = flag('name') ?? meta.name;
@@ -348,6 +360,11 @@ async function cmdPush(): Promise<void> {
     // A UI the push would never serve is refused (#881); this says the app/ in the tree
     // is deliberately not part of this deploy.
     allowUnservedUi: argv.includes('--allow-unserved-ui'),
+    // The layer rules run on every push (#955); this deploys code they never saw, and
+    // says so in the push's own output. `linted` is the pre-flight above, so `push()`
+    // does not scan the same tree twice.
+    skipLint: argv.includes('--skip-lint'),
+    linted,
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,
@@ -730,6 +747,9 @@ async function cmdPreview(): Promise<void> {
       console.error(usage);
       process.exit(1);
     }
+    // Same gate, same reason as `cmdPush` (#955): a preview runs the same code on the same
+    // runtime, and the refusal should arrive before the registry round-trip below.
+    const linted = assertLayerRules(dir, argv.includes('--skip-lint'));
     const meta = readVerticalMeta(dir);
     const slug = flag('slug') ?? meta.slug;
     if (!slug) {
@@ -754,6 +774,10 @@ async function cmdPreview(): Promise<void> {
     console.log(`pushing ${slug}@${version} for preview '${tag}' …`);
     const pushed = await push({
       dir, slug, version, name: meta.name, tenant,
+      // A preview runs the same code on the same runtime, so it is gated the same (#955),
+      // by the pre-flight above — whose receipt keeps this from re-scanning the tree.
+      skipLint: argv.includes('--skip-lint'),
+      linted,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,
       entitlements: meta.entitlements,

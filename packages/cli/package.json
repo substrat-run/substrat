@@ -33,6 +33,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@substrat-run/boundary-lint": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "esbuild": "^0.25.0"
   },
