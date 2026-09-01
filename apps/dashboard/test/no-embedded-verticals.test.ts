@@ -16,19 +16,23 @@ import { MODULES } from '../src/index.js';
  * behavioural test catches an import that merely widens what is bundled. Reading the
  * file is what makes the rule mechanical rather than a comment nobody re-reads.
  */
+/**
+ * A module specifier, matched on its QUOTES rather than on the `from` keyword. `from`
+ * alone misses the forms that carry none, and a side-effect `import '…/module'` registers
+ * a vertical exactly as thoroughly as a named import does — it is the shape someone
+ * reaches for when re-adding a module they have no symbol to use. `SEP` is "whitespace or
+ * a block comment", so an interposed comment cannot hide a specifier either; it can only
+ * ever consume characters immediately following the keyword, never skip over code.
+ */
+const SEP = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
+const IMPORT_SPECIFIER = new RegExp(String.raw`(?:from|import)${SEP}\(?${SEP}['"]([^'"]+)['"]`, 'g');
+
 describe('the privileged worker bundles no vertical module code', () => {
   // `.href` on the way in deliberately: the worker types put a DOM `URL` in scope, which
   // is not node's, so the object overload of `fileURLToPath` does not accept it here.
   const read = (rel: string) => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url).href), 'utf8');
-  /**
-   * Every module specifier in a source file, in order — matched on the QUOTES, not on
-   * `from`, so the forms that carry no `from` are caught too: a side-effect
-   * `import '…/module'` registers a vertical just as thoroughly as a named one, and it is
-   * exactly the shape someone reaches for to re-add a module without a symbol to use.
-   * Covers `export … from`, double quotes and dynamic `import(…)` for the same reason.
-   */
-  const importsOf = (src: string) =>
-    [...src.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1]!);
+  /** Every module specifier in a source file, in order. */
+  const importsOf = (src: string) => [...src.matchAll(IMPORT_SPECIFIER)].map((m) => m[1]!);
 
   it('the ScopeDO runs the dashboard vertical and nothing else', () => {
     // `provision.ts`'s list, which is also what `lint:permissions` renders PERMISSIONS.md
@@ -51,6 +55,27 @@ describe('the privileged worker bundles no vertical module code', () => {
         }
       }
     }
+  });
+
+  it('the matcher sees every import form a module could arrive through', () => {
+    // The guard is only as good as this list. Each line is a real way to register a
+    // vertical module, and each one escaped an earlier draft of the regex.
+    const src = [
+      `import { a } from '@substrat-run/demo-x/module';`, // named
+      `import '@substrat-run/demo-y/module';`, // side-effect — no `from` at all
+      `import b from "@substrat-run/demo-z/module";`, // double-quoted
+      `const c = await import('@substrat-run/demo-w/module');`, // dynamic
+      `await import(/* lazy */ '@substrat-run/demo-v/module');`, // comment before the specifier
+      `export { d } from '@substrat-run/demo-u/module';`, // re-export
+    ].join('\n');
+    expect(importsOf(src)).toEqual([
+      '@substrat-run/demo-x/module',
+      '@substrat-run/demo-y/module',
+      '@substrat-run/demo-z/module',
+      '@substrat-run/demo-w/module',
+      '@substrat-run/demo-v/module',
+      '@substrat-run/demo-u/module',
+    ]);
   });
 
   it('declares meridian and absence as TEST-only dependencies', () => {
