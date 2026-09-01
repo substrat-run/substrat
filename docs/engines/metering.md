@@ -133,17 +133,30 @@ The subject is also the **only** tag slot, and that is a boundary, stated twice:
 
 ## 1. Surface
 
-Permissions: `metering:read`, `metering:record`, `metering:configure`,
-`metering:close`. Events: `metering.meter-configured`, `metering.usage-recorded`,
-`metering.period-closed` (all v1, all `piiClass: 'none'`). No consumers, no schedules —
-*when* to close a period is billing policy, which is vertical vocabulary; the vertical
-calls `closePeriod` from its own schedule or operation.
+**The operations, in-scope functions, permissions and events live in one place, and it is
+not here:** [`apps/docs/engines/metering/surface.md`](../../apps/docs/engines/metering/surface.md)
+and [`events.md`](../../apps/docs/engines/metering/events.md), published at
+[substrat.net/engines/metering/surface](https://substrat.net/engines/metering/surface) and
+[/events](https://substrat.net/engines/metering/events). This page restated them, which is
+what [`docs/README.md`](../README.md) means by *nothing belongs in both* — and the copy had
+already fallen behind on two counts: the eight operation bindings are not a flat mirror of
+the eight exports (the four reads answer `Page<T>`, the in-scope functions stay unpaged),
+and the "first consumer" below shipped under different meter keys. What stays here is the
+reasoning the published pages do not carry:
 
-In-scope functions (K-16; the caller holds the permission check when composing):
-`configureMeter`, `listMeters`, `recordUsage`, `usageTotal` (same aggregation code path
-as close — one source of truth), `listEntries`, `closePeriod`, `listPeriods`,
-`periodLines`. Default operation bindings exist for all of them.
-
-First consumer (follow-up, on the builder branch): `BuilderAgent` records
-`ai.tokens.input` / `ai.tokens.output` per turn with the turn id as dedupe key, from
-the `usage` event `AiSdkGenerator` already yields.
+- **No consumers, no schedules, deliberately.** *When* to close a period is billing
+  policy, which is vertical vocabulary; the vertical calls `closePeriod` from its own
+  schedule or operation. An engine that closed on its own timer would be holding a
+  pricing decision.
+- **`usageTotal` runs the same aggregation code path a close freezes** — one source of
+  truth, so the number a screen shows mid-window and the number a period line records
+  can never be computed two different ways.
+- **First consumer, shipped:** the builder studio records AI token usage per turn from
+  the `usage` event `AiSdkGenerator` already yields, with the turn id as dedupe key
+  (`apps/builder/src/metering.ts`). Its meter keys carry the **model** —
+  `ai.tokens.<side>.<model>` over four sides (input, output, cacheRead, cacheWrite),
+  beside an `ai.cost.usd.<model>` counter — because anything that changes the price has
+  to be part of the key, or a period line cannot be priced. The flat
+  `ai.tokens.input` / `ai.tokens.output` keys this spec originally proposed are the
+  pre-model v0 form; entries already recorded under them stay in the ledger (append-only)
+  and reads fold them in as unattributed.

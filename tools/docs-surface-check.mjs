@@ -20,12 +20,13 @@
  * and the names in it are checked, both directions:
  *
  *   1. **Nothing documented is imaginary.** Every `name(` in a table row or a
- *      ```ts fence under "In-scope functions", and every `<engine>/<op>` key in
- *      a table row, names something the engine really exports or really
- *      registers. Prose is deliberately not read — see `documentedFunctions`.
+ *      ```ts fence under "In-scope functions", every `<engine>/<op>` key in a
+ *      table row, and every `<engine>:<perm>` key in one, names something the
+ *      engine really exports, registers or declares. Prose is deliberately not
+ *      read — see `documentedFunctions`.
  *   2. **Nothing exported is unmentioned.** Every exported function whose first
  *      parameter is `ctx` — the in-scope surface, by definition — and every
- *      declared operation key is named somewhere on the page.
+ *      declared operation and permission key is named somewhere on the page.
  *
  * It is deliberately **name-level only**. Checking that a documented signature
  * matches the compiled one needs the type checker, which this does not carry; a
@@ -151,6 +152,27 @@ function operationKeys(engineDir, engine) {
   return keys;
 }
 
+/**
+ * The permission keys the engine *declares*, read from the `{ key: '…' }`
+ * entries of its module registration. Only that form counts: absence also
+ * writes `permissions: ['absence:approve']` on a schedule, which is a key being
+ * *used*, and a key only a schedule holds is not a surface a reader grants.
+ *
+ * A permission key is the third thing a page can get wrong and the most
+ * expensive: an undocumented one is a grant nobody makes, so the capability
+ * silently belongs to no role. `protocol:attach` was declared with the
+ * attachment gate and the page kept saying "Nine keys" (#988).
+ */
+function permissionKeys(engineDir, engine) {
+  const rel = `${engineDir}/src/index.ts`;
+  if (!existsSync(join(ROOT, rel))) return new Set();
+  const keys = new Set();
+  for (const m of read(rel).matchAll(/\{\s*key:\s*['"]([a-z0-9-]+:[a-z0-9-]+)['"]/gi)) {
+    if (m[1].startsWith(`${engine}:`)) keys.add(m[1]);
+  }
+  return keys;
+}
+
 // ---------------------------------------------------------------------------
 // What the page says
 // ---------------------------------------------------------------------------
@@ -221,6 +243,27 @@ function documentedOperations(page, engine) {
   return keys;
 }
 
+/**
+ * The permission keys the page *claims*. Two forms are a claim, and prose is
+ * again not one: a table row's cells (workorder, protocol, booking), and the
+ * `` `a:read` · `a:write` `` run a page with few keys writes instead of a table
+ * (metering, invites). Everything else on the page may name a key while saying
+ * it is held by nobody, or that it is deliberately absent.
+ */
+function documentedPermissions(page, engine) {
+  const keys = new Set();
+  const take = (line) => {
+    for (const m of line.matchAll(/`([a-z0-9-]+:[a-z0-9-]+)`/gi)) {
+      if (m[1].startsWith(`${engine}:`)) keys.add(m[1]);
+    }
+  };
+  for (const line of page.split('\n')) {
+    if (/^\s*\|/.test(line)) take(line);
+    else if (/^\s*`[a-z0-9-]+:[a-z0-9-]+`(\s+·\s+`[^`]+`)*\s*$/i.test(line)) take(line);
+  }
+  return keys;
+}
+
 /** Loose: a name is "mentioned" if it appears on the page as a whole word. */
 const mentions = (page, name) => new RegExp(`(?<![\\w/-])${name}(?![\\w-])`).test(page);
 
@@ -250,6 +293,7 @@ for (const engine of engines) {
   const page = read(pageRel);
   const { all, inScope } = exportsOf(`engines/${engine}`);
   const ops = operationKeys(`engines/${engine}`, engine);
+  const perms = permissionKeys(`engines/${engine}`, engine);
 
   const section = inScopeSection(page);
   if (section === null) {
@@ -262,7 +306,13 @@ for (const engine of engines) {
   }
 
   const documented = documentedFunctions(section);
-  coverage.push({ engine, documented: documented.size, inScope: inScope.size, ops: ops.size });
+  coverage.push({
+    engine,
+    documented: documented.size,
+    inScope: inScope.size,
+    ops: ops.size,
+    perms: perms.size,
+  });
 
   for (const name of [...documented].sort()) {
     if (!all.has(name)) {
@@ -307,17 +357,58 @@ for (const engine of engines) {
       });
     }
   }
+
+  // Every engine declares at least one key. Zero means the declaration moved out
+  // of `index.ts` and this tool stopped reading it — which would otherwise
+  // surface as a storm of phantom-permission reports blaming the page for being
+  // right. Say what actually happened instead.
+  if (perms.size === 0) {
+    problems.push({
+      engine,
+      kind: 'no-permissions',
+      detail: `engines/${engine}/src/index.ts declares no \`{ key: '${engine}:…' }\` permissions, so none are checked — the declaration moved and \`permissionKeys\` needs to follow it.`,
+    });
+  }
+
+  const documentedPerms = documentedPermissions(page, engine);
+
+  for (const key of perms.size === 0 ? [] : [...documentedPerms].sort()) {
+    if (!perms.has(key)) {
+      problems.push({
+        engine,
+        kind: 'phantom-permission',
+        detail: `${pageRel} documents the permission \`${key}\`, which engines/${engine}/src/index.ts does not declare.`,
+      });
+    }
+  }
+
+  // Both directions read the SAME parsed set, deliberately — unlike functions
+  // and operation keys, which fall back to the loose `mentions`. A permission
+  // key is granted from a table: an operator scanning the page for what to hand
+  // a role reads the rows, not the paragraphs. So a key that appears only in
+  // prose is exactly the `protocol:attach` failure again, and taking `mentions`
+  // here would let the sentence explaining a key satisfy the check that the key
+  // is offered.
+  for (const key of [...perms].sort()) {
+    if (!documentedPerms.has(key)) {
+      problems.push({
+        engine,
+        kind: 'undocumented-permission',
+        detail: `engines/${engine}/src/index.ts declares the permission \`${key}\`, which ${pageRel} never offers in a table row or a \`·\` run — so nobody grants it and the capability belongs to no role.`,
+      });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Report
 // ---------------------------------------------------------------------------
 
-console.log('\nengine        documented  in-scope  operations');
-console.log('-'.repeat(44));
+console.log('\nengine        documented  in-scope  operations  permissions');
+console.log('-'.repeat(57));
 for (const c of coverage) {
   console.log(
-    `${c.engine.padEnd(12)}  ${String(c.documented).padStart(10)}  ${String(c.inScope).padStart(8)}  ${String(c.ops).padStart(10)}`,
+    `${c.engine.padEnd(12)}  ${String(c.documented).padStart(10)}  ${String(c.inScope).padStart(8)}  ${String(c.ops).padStart(10)}  ${String(c.perms).padStart(11)}`,
   );
 }
 console.log(`\ndocs-surface: ${coverage.length} engine surface page(s) checked against their exports`);
@@ -345,8 +436,9 @@ console.error(
   '\ndocs-surface: FAILED\n' +
     '  A name on a published surface page is what a reader types into their editor first.\n' +
     '  A documented function the engine does not export sends them to a call that will not\n' +
-    '  compile; an exported one the page never names is a surface nobody can find. Fix the\n' +
-    '  page against the source — or, if the export really went away, that is a non-additive\n' +
-    '  engine change and the page is telling you so.',
+    '  compile; an exported one the page never names is a surface nobody can find; an\n' +
+    '  undocumented permission key is a grant nobody makes, so the capability it guards\n' +
+    '  belongs to no role. Fix the page against the source — or, if the export really went\n' +
+    '  away, that is a non-additive engine change and the page is telling you so.',
 );
 process.exit(1);
