@@ -27,9 +27,11 @@ decide something, not rendering a table.
 
 ## In-scope functions
 
-The composable surface. A vertical calls these **inside its own operation and its own
-permission check**, in one transaction — this is how you extend the engine without
-forking it.
+The composable surface. A vertical calls these **inside its own operation**, in one
+transaction — this is how you extend the engine without forking it. For every one of them
+except `acceptInvite`, the caller owns the permission check; **`acceptInvite` must not be
+gated**, for the reason below, and putting it behind a permission key is how you lock out
+the invitees the invitation was issued to.
 
 ```ts
 sendInvite(ctx, { orgId, identifier, roleKey, ttlMs? })  → Promise<{ id }>
@@ -42,10 +44,11 @@ hashIdentifier(scopeSalt, identifier)                    → Promise<string>
 
 Notes worth knowing:
 
-- `sendInvite` hashes the identifier before anything touches storage, and rate-limits
-  open invitations per sender per organization. It answers `{ id }` and nothing about
-  whether the recipient already exists, is already a member, or declined before — that
-  uniformity is what keeps the surface non-enumerable.
+- `sendInvite` hashes the identifier **before it is persisted or used in a lookup** — the
+  plaintext never reaches storage and never appears in a `WHERE` clause. It also
+  rate-limits open invitations per sender per organization, and answers `{ id }` and
+  nothing about whether the recipient already exists, is already a member, or declined
+  before — that uniformity is what keeps the surface non-enumerable.
 - `acceptInvite` checks no permission (below) and re-hashes the presented identifier to
   compare. It emits `member.add-requested`; it does **not** write the membership.
 - `expireOverdue` is called on the read and write paths inside the engine, so an overdue
@@ -55,7 +58,8 @@ Notes worth knowing:
   comparison input. It is Web Crypto (`globalThis.crypto`), never a hand-rolled digest,
   and it is salted with the scope id — one address hashes differently in every tenant.
 
-None of these check permissions — that is the caller's job, by design.
+None of these check permissions themselves — for five of the six that is the caller's job,
+by design; for `acceptInvite` there is no check to make.
 
 ## `invites/accept` checks no permission
 

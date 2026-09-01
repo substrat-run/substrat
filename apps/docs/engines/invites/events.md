@@ -1,11 +1,18 @@
 # Invites: events
 
-| Type | When |
-|---|---|
-| `invites.sent` | a new invitation is recorded |
-| `invites.accepted` | the recipient accepts |
-| `invites.revoked` | an unaccepted invitation is withdrawn |
-| `member.add-requested` | on acceptance — the membership request |
+## Emitted
+
+| Type | Version | When |
+|---|---|---|
+| `invites.sent` | 1 | a new invitation is recorded |
+| `invites.accepted` | 1 | the recipient accepts |
+| `invites.revoked` | 1 | an unaccepted invitation is withdrawn |
+| `member.add-requested` | 1 | on acceptance — the membership request |
+
+## Consumed
+
+**None.** `consumes` is empty: this engine is a pure producer. An invitation is started by
+a call, never by another module's event.
 
 All payloads are `piiClass: 'none'` and **contain no identifier**. The event spine
 outlives the row it describes, so an address leaked here is leaked for as long as
