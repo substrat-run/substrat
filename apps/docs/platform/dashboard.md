@@ -45,9 +45,13 @@ handful of groups:
 - **Connections** — `begin-connection`.
 
 Provisioning an app is `assertAllowed(ctx.check('dashboard:provision-app'))` then a
-**tenant-narrowed** `provisionScope` into the caller's own tenant: the kernel refuses a caller
-without the key before anything is created, and cannot provision into someone else's tenant by
-construction.
+**tenant-narrowed** `provisionScope` into the caller's own tenant. The permission half is the
+kernel's: a caller without the key is refused before anything is created. The tenant half is
+narrower than it looks — the Dashboard pins the tenant in its own process, and the credential it
+presents to the control plane is not itself tenant-scoped, so the narrowing is enforced by the
+caller rather than by the server, and an action is audited as the Dashboard rather than as the
+customer's admin. The [design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md)
+§4 says exactly where the line falls and what closes it.
 
 ## Auth
 
@@ -198,5 +202,6 @@ surface is now shipped: the app lifecycle, builder **Deployments**, a read-only 
 export/import, **Previews**, per-app **Environment**, custom **Domains**, team **members** (invite /
 accept / remove / leave, with a Team view), and third-party **connections** (an Integrations view).
 Billing and the plan are the main pieces still on the roadmap the
-[design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md) lays out.
+[design note](https://github.com/substrat-run/substrat/blob/main/docs/architecture/dashboard.md) lays out,
+alongside making the seam's tenant narrowing server-enforced rather than caller-enforced.
 It is served as a React SPA bundled into its worker; the account menu lives in the sidebar footer.
