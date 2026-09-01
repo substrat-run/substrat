@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { dirname, join, isAbsolute, resolve } from 'node:path';
@@ -537,5 +537,59 @@ describe('generatedConfigPath — the derived config wrangler is pointed at', ()
 
   it('names the same file whether the push addressed the directory or ran inside it', () => {
     expect(generatedConfigPath(resolve('demos/ticket0'))).toBe(generatedConfigPath('demos/ticket0'));
+  });
+});
+
+/**
+ * Every DECLARED field `readVerticalMeta` reads must actually reach `push()`.
+ *
+ * The gap this closes is not a wrong value but an absent one: `substrat.usesModels`
+ * (#1054) was read from package.json, typed on the push options, sent by `push()` and
+ * honoured by the control plane — and `cli.ts` never passed it, so the `ai` binding it
+ * requests was never injected for ANY vertical, on any push, from #1072 until this fix.
+ * Nothing was red, because every link in the chain was individually correct.
+ *
+ * So the assertion is on the JOIN, and it is written over the field LIST rather than
+ * over one field: the next declared surface added to `readVerticalMeta` and forgotten at
+ * a call site fails here instead of shipping as a capability that silently never arrives.
+ * Read from source deliberately — the two call sites build an object literal inline, and
+ * a test that imported them would be asserting against the very thing it is checking.
+ */
+describe('cli.ts — every declared field readVerticalMeta reads reaches push()', () => {
+  /** What the meta carries ABOUT THE DEPLOY, as opposed to what identifies it. */
+  const IDENTITY = new Set(['slug', 'slugExplicit', 'name', 'tenant', 'versionSeed']);
+
+  it('threads each one at both the push and the preview-create call site', () => {
+    // Derived at RUNTIME from a package.json declaring everything, so a field added to
+    // `readVerticalMeta` joins this test by existing rather than by being listed here.
+    const meta = readVerticalMeta(
+      scratch({
+        name: '@substrat-run/demo-probe',
+        version: '1.0.0',
+        substrat: {
+          slug: 'probe',
+          envSpec: [],
+          ownerGrants: [],
+          entitlements: [],
+          provides: [],
+          requires: [],
+          provisions: [],
+          sendsEmail: true,
+          usesModels: true,
+          surfaces: [],
+          outbound: [],
+        },
+      }),
+    );
+    const declared = Object.keys(meta).filter((k) => !IDENTITY.has(k));
+    // Guard the guard: an empty list would make every assertion below vacuous.
+    expect(declared).toContain('usesModels');
+
+    const src = readFileSync(new URL('../src/cli.ts', import.meta.url), 'utf8');
+    const missing = declared.filter((key) => {
+      const sites = src.match(new RegExp(`^\\s*${key}: meta\\.${key},$`, 'gm')) ?? [];
+      return sites.length < 2;
+    });
+    expect(missing).toEqual([]);
   });
 });
