@@ -1,5 +1,45 @@
 # @substrat-run/cli
 
+## 0.26.3
+
+### Patch Changes
+
+- d9ab34d: Every site that replays a scope dump judges it first
+
+  A dump names its own tables and columns and carries its own schema text, and all
+  three reach SQL as text — a bind parameter can stand in for a value but never for an
+  identifier, and never for a `CREATE TABLE`. `substrat scope pull`/`restore` were
+  hardened for this already; the three server-side replay paths were not, and one of
+  them is the hosted scope restore.
+
+  Two problems, and the second is the larger. Names were interpolated behind double
+  quotes, which a crafted name closes. And executing a table's schema ran _every_
+  statement the text contained — `db.exec` on SQLite and `SqlStorage.exec` on a Durable
+  Object both do — so anything appended to an honest `CREATE TABLE` ran too, with
+  entirely plain identifiers that no name check would have caught.
+
+  A dump is now refused unless its names are plain SQL identifiers, each table is
+  listed once (case-folded, as SQLite resolves them), and each table's schema is
+  exactly one `CREATE TABLE` for the name it is listed under. The checks live in
+  `@substrat-run/contracts` beside the schema they judge, so the rule is stated once
+  rather than three times and fixed in one of them.
+
+  Restoring a dump whose schema carries a second statement now fails instead of
+  silently loading part of it. No dump `exportScope` produces looks like that.
+
+- 48c1327: `substrat push` now runs the layer rules before it builds anything, and refuses on a
+  violation. Until now `boundary-lint` ran only inside this repo's CI and the builder studio,
+  so a vertical developed anywhere else was built, uploaded and admitted having been checked
+  by nothing — the ambient-env ban, private tables, the clock rule and the engine-catch rule
+  were advisory for exactly the code that reaches production. The refusal names file, line and
+  rule. Two cases print a note and push normally rather than refusing, each naming what went
+  unchecked: a project whose module code the linter cannot find (nothing was checked), and one
+  whose declared engines do not resolve under `node_modules/@substrat-run` (everything but R5,
+  which has no table-ownership map to judge against). `--skip-lint` deploys ungated code
+  deliberately and says so in the output.
+- Updated dependencies [d9ab34d]
+  - @substrat-run/contracts@0.95.1
+
 ## 0.26.2
 
 ### Patch Changes
