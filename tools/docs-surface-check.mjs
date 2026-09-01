@@ -358,7 +358,19 @@ for (const engine of engines) {
     }
   }
 
-  for (const key of [...documentedPermissions(page, engine)].sort()) {
+  // Every engine declares at least one key. Zero means the declaration moved out
+  // of `index.ts` and this tool stopped reading it — which would otherwise
+  // surface as a storm of phantom-permission reports blaming the page for being
+  // right. Say what actually happened instead.
+  if (perms.size === 0) {
+    problems.push({
+      engine,
+      kind: 'no-permissions',
+      detail: `engines/${engine}/src/index.ts declares no \`{ key: '${engine}:…' }\` permissions, so none are checked — the declaration moved and \`permissionKeys\` needs to follow it.`,
+    });
+  }
+
+  for (const key of perms.size === 0 ? [] : [...documentedPermissions(page, engine)].sort()) {
     if (!perms.has(key)) {
       problems.push({
         engine,
