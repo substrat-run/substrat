@@ -18,6 +18,21 @@ describe('rateFor', () => {
 		expect(rateFor('qwen:qwen99-ultra')).toBeNull();
 		expect(rateFor('no-colon')).toBeNull();
 	});
+
+	it("matches a Workers AI id whole, slashes and all", () => {
+		// `@cf/vendor/model` is the one served id shape that carries slashes and an
+		// `@` — the parse splits on the FIRST colon for exactly this reason, and a
+		// split that got greedy would silently unprice every Cloudflare model.
+		expect(rateFor('cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast')?.provider).toBe('cloudflare');
+		expect(rateFor('cloudflare:@cf/zai-org/glm-5.2')?.label).toBe('Glm 5.2');
+	});
+
+	it('leaves a partner-served id unpriced — the catalog we expand is Cloudflare\'s own', () => {
+		// A bare `vendor/model` runs on the partner's infrastructure under Cloudflare's
+		// unified billing; the picker keeps it free text and the card keeps it unpriced.
+		// Whether the platform bills those is a decision, not an oversight.
+		expect(rateFor('cloudflare:deepseek/deepseek-v4-pro')).toBeNull();
+	});
 });
 
 describe('normalizeModelSpec', () => {
@@ -68,6 +83,16 @@ describe('listCostOfSteps — real card', () => {
 		const apart = steps.map((s) => listCostOfSteps('anthropic:claude-sonnet-5', [s])!);
 		// Exact: the same decimal fold the function uses, compared as the canonical string.
 		expect(together).toBe(apart.reduce((acc, c) => addDecimal(acc, c), '0'));
+	});
+
+	it('prices a Workers AI turn at Cloudflare list', () => {
+		// @cf/meta/llama-3.3-70b-instruct-fp8-fast: $0.293/1M in, $2.253/1M out.
+		// 1M in + 100k out = 0.293 + 0.2253.
+		expect(
+			listCostOfSteps('cloudflare:@cf/meta/llama-3.3-70b-instruct-fp8-fast', [
+				{ inputTokens: 1_000_000, outputTokens: 100_000 },
+			]),
+		).toBe('0.5183');
 	});
 
 	it('returns null for unpriced models — never a guessed $0', () => {

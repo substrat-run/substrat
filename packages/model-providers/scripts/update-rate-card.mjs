@@ -33,9 +33,10 @@ const LITELLM_URL =
 	'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 
 /**
- * The models we serve and bill — the pair table (src/model-pairs.ts)
- * plus nothing else. A model absent here is unpriced by design (the read side
- * reports it as unpricedTokens, never a guessed $0).
+ * The models we serve and bill, one row each — the pair table
+ * (src/model-pairs.ts) plus nothing else. A model absent from here AND from
+ * every catalog below is unpriced by design (the read side reports it as
+ * unpricedTokens, never a guessed $0).
  */
 const SERVED = [
 	{ provider: 'qwen', id: 'qwen3.6-flash', label: 'Qwen 3.6 Flash', modelsDev: ['alibaba', 'qwen3.6-flash'], litellm: 'dashscope/qwen3.6-flash' },
@@ -43,6 +44,48 @@ const SERVED = [
 	{ provider: 'anthropic', id: 'claude-sonnet-5', label: 'Claude Sonnet 5', modelsDev: ['anthropic', 'claude-sonnet-5'], litellm: 'claude-sonnet-5' },
 	{ provider: 'anthropic', id: 'claude-opus-5', label: 'Claude Opus 5', modelsDev: ['anthropic', 'claude-opus-5'], litellm: 'claude-opus-5' },
 ];
+
+/**
+ * Whole catalogs we serve and bill, expanded model-by-model below.
+ *
+ * A row-per-model table works while the models are OURS to choose — the builder
+ * studio runs the pair table and nothing else. A vertical's tenant picks from
+ * the provider's own catalog (ticket0's `TICKET0_MODEL`, #1054), so the set is
+ * the provider's to change, and curating four of twenty-seven by hand means the
+ * other twenty-three price at null: metered, billed nothing, silently.
+ *
+ * Expansion is driven by models.dev (the primary card) and cross-checked against
+ * LiteLLM exactly as a hand-written row is — a model only models.dev carries is
+ * taken with the same printed single-source warning, never waved through.
+ *
+ * Cloudflare: the picker lists `@cf/…` — Cloudflare's own network — and those
+ * are what this expands. Partner-served `vendor/model` ids stay free text in the
+ * picker and unpriced here; whether the platform bills those is a separate
+ * decision from whether it can price them.
+ */
+const SERVED_CATALOGS = [
+	{
+		provider: 'cloudflare',
+		modelsDevProvider: 'cloudflare-workers-ai',
+		litellmPrefix: 'cloudflare/',
+	},
+];
+
+/** A models.dev provider's models as SERVED rows, id-sorted for a stable diff. */
+function expandCatalog(modelsDev, c) {
+	const provider = modelsDev[c.modelsDevProvider];
+	if (!provider) throw new Error(`models.dev has no provider '${c.modelsDevProvider}'`);
+	return Object.values(provider.models ?? {})
+		.filter((m) => m.cost && m.cost.input !== undefined && m.cost.output !== undefined)
+		.map((m) => ({
+			provider: c.provider,
+			id: m.id,
+			label: m.name ?? m.id,
+			modelsDev: [c.modelsDevProvider, m.id],
+			litellm: `${c.litellmPrefix}${m.id}`,
+		}))
+		.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
 
 /** A per-1M USD rate as a plain decimal string ('0.1875', '2', '0.25'). */
 function dec(n) {
@@ -206,10 +249,12 @@ function reconcile(name, md, ll) {
 const modelsDev = await load(MODELS_DEV_URL, 'MODELS_DEV_JSON');
 const liteLlm = await load(LITELLM_URL, 'LITELLM_JSON');
 
+const served = [...SERVED, ...SERVED_CATALOGS.flatMap((c) => expandCatalog(modelsDev, c))];
+
 const rows = [];
 const allMismatches = [];
 const allNotes = [];
-for (const s of SERVED) {
+for (const s of served) {
 	const md = fromModelsDev(modelsDev[s.modelsDev[0]]?.models?.[s.modelsDev[1]]);
 	const llRaw = liteLlm[s.litellm];
 	const ll = fromLiteLlm(llRaw);
@@ -257,6 +302,13 @@ const out = `/**
  * prices in USD per 1M tokens, decimal strings. Tier selection is
  * all-or-nothing by the request's total input tokens (DashScope/Anthropic
  * threshold semantics — the whole request bills at the tier it lands in).
+ *
+ * The models we choose ourselves are one authored row each; a provider whose
+ * catalog a TENANT picks from is expanded whole, so a pick outside a curated
+ * few is priced rather than silently free. Cloudflare is here as its own
+ * Workers AI catalog (the @cf/... ids) - partner-served vendor/model ids are
+ * deliberately absent: the picker keeps them free text, and billing them is a
+ * decision rather than an omission.
  */
 import type { ModelRate } from './pricing.js';
 

@@ -9,10 +9,17 @@
  * prices in USD per 1M tokens, decimal strings. Tier selection is
  * all-or-nothing by the request's total input tokens (DashScope/Anthropic
  * threshold semantics — the whole request bills at the tier it lands in).
+ *
+ * The models we choose ourselves are one authored row each; a provider whose
+ * catalog a TENANT picks from is expanded whole, so a pick outside a curated
+ * few is priced rather than silently free. Cloudflare is here as its own
+ * Workers AI catalog (the @cf/... ids) - partner-served vendor/model ids are
+ * deliberately absent: the picker keeps them free text, and billing them is a
+ * decision rather than an omission.
  */
 import type { ModelRate } from './pricing.js';
 
-export const RATE_CARD_GENERATED_AT = '2026-08-15';
+export const RATE_CARD_GENERATED_AT = '2026-09-01';
 
 export const RATE_CARD: readonly ModelRate[] = [
 	{
@@ -69,7 +76,8 @@ export const RATE_CARD: readonly ModelRate[] = [
 		],
 		"sources": [
 			"models.dev:anthropic/claude-sonnet-5",
-			"litellm:claude-sonnet-5"
+			"litellm:claude-sonnet-5",
+			"https://docs.anthropic.com/en/docs/about-claude/models/overview"
 		]
 	},
 	{
@@ -88,7 +96,516 @@ export const RATE_CARD: readonly ModelRate[] = [
 		],
 		"sources": [
 			"models.dev:anthropic/claude-opus-5",
-			"litellm:claude-opus-5"
+			"litellm:claude-opus-5",
+			"https://docs.anthropic.com/en/docs/about-claude/models/overview"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+		"label": "Gemma Sea Lion V4 27B It",
+		"contextTokens": 128000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.351",
+				"outputPer1M": "0.555",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+			"litellm:cloudflare/@cf/aisingapore/gemma-sea-lion-v4-27b-it"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+		"label": "Deepseek R1 Distill Qwen 32B",
+		"contextTokens": 80000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.497",
+				"outputPer1M": "4.881",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+			"litellm:cloudflare/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/deepseek-ai/deepseek-v4-flash-0731",
+		"label": "DeepSeek V4 Flash 0731",
+		"contextTokens": 1310720,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.44",
+				"outputPer1M": "1.32",
+				"cacheReadPer1M": "0.014",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4-flash-0731"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/deepseek-ai/deepseek-v4-pro-0813",
+		"label": "DeepSeek V4 Pro 0813",
+		"contextTokens": 1048576,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "1.32",
+				"outputPer1M": "3.96",
+				"cacheReadPer1M": "0.044",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/deepseek-ai/deepseek-v4-pro-0813"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/google/gemma-4-26b-a4b-it",
+		"label": "Gemma 4 26B A4B IT",
+		"contextTokens": 256000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.1",
+				"outputPer1M": "0.3",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/google/gemma-4-26b-a4b-it",
+			"litellm:cloudflare/@cf/google/gemma-4-26b-a4b-it"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/ibm-granite/granite-4.0-h-micro",
+		"label": "Granite 4.0 H Micro",
+		"contextTokens": 131000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.017",
+				"outputPer1M": "0.112",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/ibm-granite/granite-4.0-h-micro",
+			"litellm:cloudflare/@cf/ibm-granite/granite-4.0-h-micro"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/meta/llama-3.1-8b-instruct-fp8",
+		"label": "Llama 3.1 8B Instruct fp8",
+		"contextTokens": 32000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.152",
+				"outputPer1M": "0.287",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8",
+			"litellm:cloudflare/@cf/meta/llama-3.1-8b-instruct-fp8"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/meta/llama-3.2-11b-vision-instruct",
+		"label": "Llama 3.2 11B Vision Instruct",
+		"contextTokens": 128000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.0485",
+				"outputPer1M": "0.676",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/meta/llama-3.2-11b-vision-instruct",
+			"litellm:cloudflare/@cf/meta/llama-3.2-11b-vision-instruct"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/meta/llama-3.2-1b-instruct",
+		"label": "Llama 3.2 1B Instruct",
+		"contextTokens": 60000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.027",
+				"outputPer1M": "0.201",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/meta/llama-3.2-1b-instruct",
+			"litellm:cloudflare/@cf/meta/llama-3.2-1b-instruct"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/meta/llama-3.2-3b-instruct",
+		"label": "Llama 3.2 3B Instruct",
+		"contextTokens": 80000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.0509",
+				"outputPer1M": "0.335",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/meta/llama-3.2-3b-instruct",
+			"litellm:cloudflare/@cf/meta/llama-3.2-3b-instruct"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+		"label": "Llama 3.3 70B Instruct fp8 Fast",
+		"contextTokens": 24000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.293",
+				"outputPer1M": "2.253",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+			"litellm:cloudflare/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/meta/llama-4-scout-17b-16e-instruct",
+		"label": "Llama 4 Scout 17B 16E Instruct",
+		"contextTokens": 131000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.27",
+				"outputPer1M": "0.85",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
+			"litellm:cloudflare/@cf/meta/llama-4-scout-17b-16e-instruct"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/meta/llama-guard-3-8b",
+		"label": "Llama Guard 3 8B",
+		"contextTokens": 131072,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.484",
+				"outputPer1M": "0.03",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/meta/llama-guard-3-8b",
+			"litellm:cloudflare/@cf/meta/llama-guard-3-8b"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/mistralai/mistral-small-3.1-24b-instruct",
+		"label": "Mistral Small 3.1 24B Instruct",
+		"contextTokens": 128000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.351",
+				"outputPer1M": "0.555",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+			"litellm:cloudflare/@cf/mistralai/mistral-small-3.1-24b-instruct"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/moonshotai/kimi-k2.6",
+		"label": "Kimi K2.6",
+		"contextTokens": 262144,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.95",
+				"outputPer1M": "4",
+				"cacheReadPer1M": "0.16",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6",
+			"litellm:cloudflare/@cf/moonshotai/kimi-k2.6"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/moonshotai/kimi-k2.7-code",
+		"label": "Kimi K2.7 Code",
+		"contextTokens": 262144,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.95",
+				"outputPer1M": "4",
+				"cacheReadPer1M": "0.19",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code",
+			"litellm:cloudflare/@cf/moonshotai/kimi-k2.7-code"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/nvidia/nemotron-3-120b-a12b",
+		"label": "Nemotron 3 Super 120B",
+		"contextTokens": 256000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.5",
+				"outputPer1M": "1.5",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/nvidia/nemotron-3-120b-a12b",
+			"litellm:cloudflare/@cf/nvidia/nemotron-3-120b-a12b"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/openai/gpt-oss-120b",
+		"label": "GPT OSS 120B",
+		"contextTokens": 128000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.35",
+				"outputPer1M": "0.75",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/openai/gpt-oss-120b",
+			"litellm:cloudflare/@cf/openai/gpt-oss-120b"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/openai/gpt-oss-20b",
+		"label": "GPT OSS 20B",
+		"contextTokens": 128000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.2",
+				"outputPer1M": "0.3",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/openai/gpt-oss-20b",
+			"litellm:cloudflare/@cf/openai/gpt-oss-20b"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/qwen/qwen2.5-coder-32b-instruct",
+		"label": "Qwen2.5 Coder 32B Instruct",
+		"contextTokens": 32768,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.66",
+				"outputPer1M": "1",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/qwen/qwen2.5-coder-32b-instruct",
+			"litellm:cloudflare/@cf/qwen/qwen2.5-coder-32b-instruct"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/qwen/qwen3-30b-a3b-fp8",
+		"label": "Qwen3 30B A3b fp8",
+		"contextTokens": 32768,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.0509",
+				"outputPer1M": "0.335",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/qwen/qwen3-30b-a3b-fp8",
+			"litellm:cloudflare/@cf/qwen/qwen3-30b-a3b-fp8"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/qwen/qwen3.8-27b",
+		"label": "Qwen3.8 27B",
+		"contextTokens": 262144,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.45",
+				"outputPer1M": "3.2",
+				"cacheReadPer1M": "0.05",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/qwen/qwen3.8-27b"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/qwen/qwq-32b",
+		"label": "Qwq 32B",
+		"contextTokens": 24000,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.66",
+				"outputPer1M": "1",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/qwen/qwq-32b",
+			"litellm:cloudflare/@cf/qwen/qwq-32b"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/zai-org/glm-4.7-flash",
+		"label": "GLM-4.7-Flash",
+		"contextTokens": 131072,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.0605",
+				"outputPer1M": "0.4",
+				"cacheReadPer1M": null,
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/zai-org/glm-4.7-flash",
+			"litellm:cloudflare/@cf/zai-org/glm-4.7-flash"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/zai-org/glm-5.2",
+		"label": "Glm 5.2",
+		"contextTokens": 262144,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "1.4",
+				"outputPer1M": "4.4",
+				"cacheReadPer1M": "0.26",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/zai-org/glm-5.2",
+			"litellm:cloudflare/@cf/zai-org/glm-5.2"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/zai-org/glm-5.3",
+		"label": "Glm 5.3",
+		"contextTokens": 1310720,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "1.4",
+				"outputPer1M": "4.4",
+				"cacheReadPer1M": "0.26",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/zai-org/glm-5.3"
+		]
+	},
+	{
+		"provider": "cloudflare",
+		"idPrefix": "@cf/zai-org/glm-5.3-flash",
+		"label": "Glm 5.3 Flash",
+		"contextTokens": 1310720,
+		"tiers": [
+			{
+				"upToInputTokens": null,
+				"inputPer1M": "0.15",
+				"outputPer1M": "0.5",
+				"cacheReadPer1M": "0.03",
+				"cacheWritePer1M": null
+			}
+		],
+		"sources": [
+			"models.dev:cloudflare-workers-ai/@cf/zai-org/glm-5.3-flash"
 		]
 	}
 ];
