@@ -1,5 +1,13 @@
 # @substrat-run/engine-metering
 
+## 0.5.2
+
+### Patch Changes
+
+- Updated dependencies [db5a3da]
+  - @substrat-run/contracts@0.96.0
+  - @substrat-run/kernel@0.96.0
+
 ## 0.5.1
 
 ### Patch Changes
