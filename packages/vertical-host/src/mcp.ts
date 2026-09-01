@@ -388,22 +388,18 @@ export function mountMcp(
         ...(page.cursor === undefined ? {} : { cursor: page.cursor }),
         ...(page.order === undefined ? {} : { order: page.order }),
       };
-    } else if (!tool.takesInput && Object.keys(payload).length === 0) {
-      // An operation declaring no input takes `undefined`, and `z.object({})` cannot
-      // say so — a handler typed for `undefined` would reject `{}`.
+    } else if (!tool.takesInput) {
+      // An operation declaring no input takes `undefined`, and `z.object({})` cannot say
+      // so — a handler typed for `undefined` would reject `{}`. Unconditionally, not
+      // only when the caller sent nothing: the HTTP mount discards a query string here
+      // too, and a model that hallucinates an argument for a no-input tool must not make
+      // the same operation see a different input than it would over the wire.
       return undefined;
     }
     return payload;
   };
 
-  const call = async (c: Context, id: Id, params: Record<string, unknown> | undefined) => {
-    // Authentication FIRST, before we say whether the tool exists. An anonymous call
-    // throws an HTTPException, which travels out of this handler as a 401 so an MCP
-    // client starts its authorization flow instead of reading a tool failure — and
-    // answering "unknown tool" before that would let anyone with the URL enumerate
-    // the surface by watching -32602 and 401 trade places.
-    const stub = await resolveStub(c);
-
+  const call = async (id: Id, params: Record<string, unknown> | undefined, stub: ScopeStub) => {
     const name = typeof params?.['name'] === 'string' ? (params['name'] as string) : undefined;
     const tool = name ? byName.get(name) : undefined;
     if (!tool) return rpcError(id, -32602, `Unknown tool: ${name ?? '(none)'}`);
@@ -428,7 +424,7 @@ export function mountMcp(
     }
   };
 
-  const handle = async (c: Context, msg: Req): Promise<object | null> => {
+  const handle = async (msg: Req, stub: ScopeStub): Promise<object | null> => {
     const id = msg.id ?? null;
     const isNotification = msg.id === undefined;
     switch (msg.method) {
@@ -452,7 +448,6 @@ export function mountMcp(
       case 'ping':
         return isNotification ? null : rpcResult(id, {});
       case 'tools/list': {
-        await resolveStub(c);
         return rpcResult(id, {
           tools: tools.map((t) => ({
             name: t.name,
@@ -463,7 +458,7 @@ export function mountMcp(
         });
       }
       case 'tools/call':
-        return await call(c, id, msg.params);
+        return await call(id, msg.params, stub);
       default:
         return isNotification ? null : rpcError(id, -32601, `Method not found: ${msg.method ?? '(none)'}`);
     }
@@ -516,6 +511,23 @@ export function mountMcp(
     } catch {
       return c.json(rpcError(null, -32700, 'Parse error'), 400);
     }
+    /**
+     * A client pins the revision it negotiated on every later request. One we do not
+     * speak is a 400 BEFORE anything is dispatched: the alternative is answering a call
+     * under a contract we never agreed to, whose framing we would then be guessing at.
+     * Absent is not an error — a client that never sends it is the pre-header behaviour
+     * the transport still allows.
+     */
+    const pinned = c.req.header(MCP_PROTOCOL_HEADER);
+    if (pinned !== undefined && !(MCP_PROTOCOL_VERSIONS as readonly string[]).includes(pinned)) {
+      return c.json(
+        rpcError(null, -32600, `Unsupported ${MCP_PROTOCOL_HEADER}: ${pinned}`, {
+          supported: [...MCP_PROTOCOL_VERSIONS],
+        }),
+        400,
+      );
+    }
+
     // Batching left the protocol in 2025-06-18 but earlier clients still send arrays,
     // and answering one is cheaper than explaining why we will not.
     const messages = Array.isArray(body) ? (body as Req[]) : [body as Req];
@@ -523,12 +535,23 @@ export function mountMcp(
 
     const replies: object[] = [];
     try {
+      /**
+       * The whole ENDPOINT is authenticated, including `initialize`.
+       *
+       * Authenticating only the two methods that touch a scope would leave a client
+       * shaking hands anonymously and meeting the 401 mid-session, on its second
+       * request. Resolving here means the very first message a client sends is the one
+       * that fails, carrying the challenge — which is what makes discovery start on its
+       * own rather than after a false start. It is also the honest reading of the
+       * protocol: the resource is the endpoint, not a subset of its verbs.
+       */
+      const stub = await resolveStub(c);
       for (const msg of messages) {
         if (!msg || typeof msg !== 'object') {
           replies.push(rpcError(null, -32600, 'Invalid Request'));
           continue;
         }
-        const reply = await handle(c, msg);
+        const reply = await handle(msg, stub);
         if (reply) replies.push(reply);
       }
     } catch (err) {

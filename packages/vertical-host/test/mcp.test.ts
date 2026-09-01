@@ -199,6 +199,17 @@ describe('calling a tool', () => {
     expect(calls[0]?.input).toBeUndefined();
   });
 
+  /**
+   * The HTTP mount discards a query string for a no-input operation, so this has to
+   * discard hallucinated arguments — otherwise one operation sees a different input
+   * depending on which transport reached it.
+   */
+  it('discards arguments a model invented for a no-input tool', async () => {
+    const { app, calls } = harness();
+    await rpc(app, 'tools/call', { name: 'todo_my-lists', arguments: { mine: true } });
+    expect(calls[0]?.input).toBeUndefined();
+  });
+
   it('will not let a caller talk the model out of a pinned field', async () => {
     const { app, calls } = harness();
     await rpc(app, 'tools/call', {
@@ -292,6 +303,24 @@ describe('authentication is transport-level, authorization is in-band', () => {
     await rpc(app, 'tools/list', {});
     expect(resolved).toBe(1);
   });
+
+  /**
+   * The whole endpoint, not two of its verbs. Authenticating only the scope-touching
+   * methods would let a client shake hands anonymously and meet the 401 on its SECOND
+   * request — a false start before discovery, where the first message should carry it.
+   */
+  it('authenticates the handshake too, so the first message is the one that 401s', async () => {
+    const app = new Hono();
+    mountOperations(app, operations, async () => {
+      throw new HTTPException(401, { message: 'anonymous' });
+    });
+    const res = await app.request('/api/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+    });
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('the endpoint itself', () => {
@@ -317,6 +346,29 @@ describe('the endpoint itself', () => {
     });
     expect(res.status).toBe(400);
     expect(((await res.json()) as any).error.code).toBe(-32700);
+  });
+
+  it('refuses a pinned protocol revision it does not speak', async () => {
+    const { app, calls } = harness();
+    const res = await app.request('/api/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'MCP-Protocol-Version': '1999-01-01' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'todo_my-lists' } }),
+    });
+    expect(res.status).toBe(400);
+    // Refused BEFORE dispatch — answering under a contract we never agreed to is worse
+    // than refusing, because we would be guessing at its framing.
+    expect(calls).toEqual([]);
+  });
+
+  it('accepts a request that pins no revision at all', async () => {
+    const { app } = harness();
+    const res = await app.request('/api/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+    });
+    expect(res.status).toBe(200);
   });
 
   it('refuses a method it does not implement', async () => {

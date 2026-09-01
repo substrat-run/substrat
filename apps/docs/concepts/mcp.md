@@ -9,7 +9,7 @@ That is the whole prerequisite, and it is worth stating plainly: this rides on t
 catalog to render, so it has no tool list either — it gets the endpoint by adopting
 `mountOperations`, not by configuring anything here.
 
-```
+```http
 POST https://your-vertical.example/api/mcp
 Authorization: Bearer <token from your issuer>
 ```
@@ -52,9 +52,10 @@ do through MCP it could already do with `curl` and the same token. The endpoint 
 Two consequences worth knowing, because they are what a hand-rolled MCP server usually
 gets wrong:
 
-- **Authentication is transport-level.** An anonymous call gets an HTTP `401`, which is
-  what makes an MCP client start its authorization flow. It is not reported as a tool
-  failure.
+- **Authentication is transport-level.** Every call to the endpoint needs a principal —
+  the handshake included — so an anonymous client's *first* message gets an HTTP `401`
+  carrying the challenge, which is what makes it start its authorization flow. Never
+  reported as a tool failure, and never deferred to the second request.
 - **Authorization is in-band.** A refused permission comes back as a normal tool result
   with `isError: true`, so the agent reads *"you may not do that"* and picks something
   else. Returning a transport error there would make one refusal look like a broken
@@ -67,7 +68,7 @@ talk to, and somebody has to paste a token in by hand. So the endpoint can publi
 [RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata and point
 its challenge at it.
 
-```
+```http
 401 Unauthorized
 WWW-Authenticate: Bearer resource_metadata="https://desk.example/.well-known/oauth-protected-resource/api/mcp"
 ```
@@ -124,6 +125,22 @@ hardest to refuse.
 
 The ceiling behaves as it does on the wire: a `limit` above `LIST_PAGE_MAX` is **refused,
 not silently capped**, because a capped page is indistinguishable from the end of a walk.
+
+## What a tool call cannot do yet
+
+Two HTTP affordances have no MCP equivalent, and a tool call behaves exactly like a wire
+call that omitted them — which is a legitimate call, not a skipped check:
+
+- **Optimistic concurrency.** A tool result carries no `ETag`, so an agent has nothing to
+  echo back and a guarded operation runs with no precondition. Read-modify-write over MCP
+  is therefore last-writer-wins.
+- **Idempotent retries.** There is no `Idempotency-Key`, and inventing one per call would
+  defeat the point — a retry would mint a new key and write twice anyway. An agent that
+  retries a failed write may write twice.
+
+Neither can be fixed by forwarding the POST's own headers: a batch carries several calls
+and one header cannot speak for all of them. Both want a tool-level convention — an
+`ifMatch` argument and a returned version — which is a design question, not an omission.
 
 ## The one knob, and it is optional
 
