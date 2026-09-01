@@ -61,6 +61,17 @@ entityCheckConformanceSuite(
         });
         return m.conversation_id;
       }
+      if (entityType === 'savedReply') {
+        // An agent's own library entry. Nothing narrows on a saved reply — it is
+        // here because `ticket0/render-saved-reply` names one beside the
+        // conversation it DOES narrow on, and that one has to exist.
+        const agent = await host.getScope(desk.agent.principal, desk.tenant, desk.scope);
+        const r = await agent.invoke<{ id: string }>('ticket0/create-saved-reply', {
+          title: `Conformance ${made}`,
+          body: 'A canned answer from the conformance kit.',
+        });
+        return r.id;
+      }
       if (entityType === 'kbSource') {
         const admin = await host.getScope(desk.admin.principal, desk.tenant, desk.scope);
         const s = await admin.invoke<{ id: string }>('ticket0/add-kb-source', {

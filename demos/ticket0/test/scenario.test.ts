@@ -1270,6 +1270,210 @@ describe('the audit spine', () => {
     });
   });
 
+  /**
+   * The substitution, end to end, from the concept's promise that a canned answer
+   * can say the customer's name and sign itself with the agent's.
+   *
+   * Every expected value is stated here rather than read back out of the row it
+   * came from: an assertion that re-derives its own expectation from the same read
+   * the code did agrees with a broken renderer perfectly.
+   */
+  it('a saved reply fills in the conversation, the contact and the caller — and leaves the rest alone', async () => {
+    const anna = await at(world.substrat, 'agent');
+    // Stated here rather than inherited from whichever block ran before: the
+    // rendered name and signature ARE the assertion, so a test that took them from
+    // the current row would pass against a renderer that substituted nothing.
+    await anna.invoke('ticket0/set-agent-profile', {
+      displayName: 'Anna Lindqvist',
+      avatarUrl: null,
+      signature: 'Anna\nSubstrat Support',
+    });
+    const reply = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Signed greeting',
+      body:
+        'Hi {{contact.name}}, about "{{ conversation.subject }}" — {{agent.name}} here.\n' +
+        'Nothing to do with us: {{ some.other.thing }} and { not a token }.\n' +
+        '{{agent.signature}}',
+    })) as { id: string };
+    const conv = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: story.conversation,
+    })) as Conversation;
+
+    const rendered = (await anna.invoke('ticket0/render-saved-reply', {
+      conversationId: story.conversation,
+      savedReplyId: reply.id,
+    })) as { id: string; title: string; body: string; blank: string[]; unresolved: string[] };
+
+    expect(rendered.id).toBe(reply.id);
+    expect(rendered.title).toBe('Signed greeting');
+    expect(rendered.body).toBe(
+      `Hi Priya, about "${conv.subject}" — Anna Lindqvist here.\n` +
+        'Nothing to do with us: {{ some.other.thing }} and { not a token }.\n' +
+        'Anna\nSubstrat Support',
+    );
+    // Nothing was empty, and the one token nobody declares came through verbatim
+    // rather than being deleted — a canned answer about braces stays readable.
+    expect(rendered.blank).toEqual([]);
+    expect(rendered.unresolved).toEqual(['some.other.thing']);
+
+    // A read: it wrote nothing, so it announced nothing. Rendering a reply is not
+    // using one, and a usage counter that ticked here would be counting previews.
+    expect(outbox(world.substrat, 'ticket0.saved-reply-rendered')).toBeUndefined();
+  });
+
+  /**
+   * The assistant has a profile with no signature, so the same reply rendered as
+   * them says so instead of pretending. `blank` is what lets the composer warn
+   * before "Hi ," reaches a customer.
+   */
+  it('a variable with nothing behind it renders empty and says which one', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const assistant = await at(world.substrat, 'assistant');
+    const reply = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Sign-off only',
+      body: 'Thanks!\n{{agent.signature}}',
+    })) as { id: string };
+
+    const rendered = (await assistant.invoke('ticket0/render-saved-reply', {
+      conversationId: story.conversation,
+      savedReplyId: reply.id,
+    })) as { body: string; blank: string[]; unresolved: string[] };
+
+    expect(rendered.body).toBe('Thanks!\n');
+    expect(rendered.blank).toEqual(['agent.signature']);
+    expect(rendered.unresolved).toEqual([]);
+  });
+
+  it('editing a saved reply announces the whole new row, and changing nothing announces nothing', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const reply = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Shipping times',
+      body: 'Two to four days.',
+    })) as { id: string; created_by: string; created_at: string };
+
+    const updated = (await anna.invoke('ticket0/update-saved-reply', {
+      savedReplyId: reply.id,
+      body: 'Three to five days.',
+    })) as { id: string; title: string; body: string };
+    // A PATCH: the title was not sent, so the title did not move.
+    expect(updated.title).toBe('Shipping times');
+    expect(updated.body).toBe('Three to five days.');
+
+    const evt = outbox(world.substrat, 'ticket0.saved-reply-updated')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_id).toBe(reply.id);
+    expect(JSON.parse(evt.payload!)).toEqual({
+      id: reply.id,
+      title: 'Shipping times',
+      body: 'Three to five days.',
+      created_by: reply.created_by,
+      created_at: reply.created_at,
+    });
+
+    // Saving the same values again is not an edit, so the outbox still shows the
+    // one above rather than a second, later row.
+    await anna.invoke('ticket0/update-saved-reply', {
+      savedReplyId: reply.id,
+      title: 'Shipping times',
+      body: 'Three to five days.',
+    });
+    expect(outbox(world.substrat, 'ticket0.saved-reply-updated')).toEqual(evt);
+  });
+
+  /**
+   * The guard the declaration buys, driven rather than assumed.
+   *
+   * `update-saved-reply` declares `concurrency`, which does nothing on its own: a
+   * caller that sends no tag is unconditional by design, and the whole mechanism
+   * would have passed every test in this file while being wired to nothing. So this
+   * plays the two-agent story out — read, both edit, second one refused.
+   */
+  it('an edit over a version somebody else moved is refused, and changes nothing', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const markus = await at(world.substrat, 'admin');
+    const reply = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Two editors',
+      body: 'The first version.',
+    })) as { id: string };
+
+    // Both open it. The tag is the ETag the transport would hand each browser.
+    let held: string | null = null;
+    await anna.invoke(
+      'ticket0/get-saved-reply',
+      { savedReplyId: reply.id },
+      { onEntityVersion: (v) => (held = v) },
+    );
+    expect(held).not.toBeNull();
+    const stale = `"${held!}"`;
+
+    // Anna saves first, against the version they both read.
+    await anna.invoke(
+      'ticket0/update-saved-reply',
+      { savedReplyId: reply.id, body: 'Anna’s version.' },
+      { ifMatch: stale },
+    );
+
+    // Markus saves second, still holding the version Anna moved. Without the guard
+    // this would land and Anna's edit would be gone with nothing said.
+    await expect(
+      markus.invoke(
+        'ticket0/update-saved-reply',
+        { savedReplyId: reply.id, body: 'Markus’ version.' },
+        { ifMatch: stale },
+      ),
+    ).rejects.toThrow(/changed since you read it/);
+
+    // The refusal is a refusal: the row still says what Anna wrote, and the second
+    // save announced nothing.
+    const row = (await anna.invoke('ticket0/get-saved-reply', {
+      savedReplyId: reply.id,
+    })) as { body: string };
+    expect(row.body).toBe('Anna’s version.');
+    const evt = outbox(world.substrat, 'ticket0.saved-reply-updated')!;
+    expect(JSON.parse(evt.payload!).body).toBe('Anna’s version.');
+  });
+
+  it('a rename onto a title somebody else holds is refused', async () => {
+    const anna = await at(world.substrat, 'agent');
+    await anna.invoke('ticket0/create-saved-reply', { title: 'Taken', body: 'Mine.' });
+    const other = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Not taken',
+      body: 'Also mine.',
+    })) as { id: string };
+
+    await expect(
+      anna.invoke('ticket0/update-saved-reply', { savedReplyId: other.id, title: 'Taken' }),
+    ).rejects.toThrow(/already called/);
+  });
+
+  it('deleting one announces it, takes it out of the library, and is not repeatable', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const reply = (await anna.invoke('ticket0/create-saved-reply', {
+      title: 'Out of date',
+      body: 'Nobody says this any more.',
+    })) as { id: string };
+
+    const gone = (await anna.invoke('ticket0/delete-saved-reply', {
+      savedReplyId: reply.id,
+    })) as { id: string; title: string };
+    expect(gone).toEqual({ id: reply.id, title: 'Out of date' });
+
+    const evt = outbox(world.substrat, 'ticket0.saved-reply-deleted')!;
+    expect(evt).toBeDefined();
+    expect(evt.entity_id).toBe(reply.id);
+    // The title rides, because after this there is nowhere left to read it from.
+    expect(JSON.parse(evt.payload!)).toEqual({ id: reply.id, title: 'Out of date' });
+
+    const page = (await anna.invoke('ticket0/list-saved-replies', {})) as Page<{ id: string }>;
+    expect(page.entries.map((r) => r.id)).not.toContain(reply.id);
+
+    // A ULID that names nothing is a stale client, not a second deletion — the
+    // opposite call from `untag-conversation`, whose identifier is typed by hand.
+    await expect(
+      anna.invoke('ticket0/delete-saved-reply', { savedReplyId: reply.id }),
+    ).rejects.toThrow(/not found/);
+  });
+
   it('a read notification announces itself', async () => {
     const anna = await at(world.substrat, 'agent');
     const mine = (await anna.invoke('ticket0/my-notifications', {})) as Page<{

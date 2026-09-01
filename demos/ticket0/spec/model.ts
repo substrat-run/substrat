@@ -86,6 +86,44 @@ export const DESK_METRICS_WINDOW_DAYS = 30;
 export const DESK_METRICS_MAX_DAYS = 366;
 
 /**
+ * Everything a saved reply may say about the conversation it is being pasted into.
+ *
+ * A CLOSED set, and that is the decision rather than an unfinished start. A template
+ * language a tenant authors is a different and much larger thing: it needs a parser,
+ * an evaluation budget, an escaping story, and an answer for what happens when the
+ * expression reads a column the caller cannot see. Four names, resolved by four
+ * explicit reads in `ticket0/render-saved-reply`, need none of that — and each one is
+ * a fact the agent pasting the reply is already entitled to read on that screen.
+ *
+ * A token outside this set is left in the text VERBATIM and named in `unresolved`. It
+ * is not an error: a canned answer about CSS may legitimately contain `{{ … }}`, and
+ * refusing it would make the substitution feature break unrelated snippets. Silently
+ * deleting it would be worse, since the agent would send a sentence with a hole in it.
+ */
+export const SAVED_REPLY_VARIABLES = [
+  'agent.name',
+  'agent.signature',
+  'contact.name',
+  'conversation.subject',
+] as const;
+
+/**
+ * What a placeholder looks like: `{{name}}`, with optional inner whitespace.
+ *
+ * Deliberately narrow — letters, digits, `_` and `.` only — so the pattern cannot
+ * swallow a JSON or CSS brace pair that happens to sit in a canned answer about
+ * either. Declared here beside the variable list because a renderer and a screen
+ * that highlights placeholders must agree about what one is.
+ *
+ * A FUNCTION rather than a shared constant on purpose: a `/g` regular expression
+ * carries a mutable `lastIndex`, so a single shared one gives whichever caller runs
+ * second a different answer to the same question.
+ */
+export function savedReplyToken(): RegExp {
+  return /\{\{\s*([A-Za-z0-9_.]+)\s*\}\}/g;
+}
+
+/**
  * What the HOST knew about the browser when the widget opened — `ClientContext`
  * flattened into columns. Shared by `widgetOpening` (where `widget-start` records it)
  * and `widgetSession` (where the first message carries it), so the two tables cannot
@@ -1262,6 +1300,141 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       schemaVersion: 1,
       piiClass: 'none',
       payload: ['id', 'title', 'body', 'created_by', 'created_at'],
+    },
+  },
+
+  /**
+   * One canned answer, and the version tag an edit of it will be checked against.
+   *
+   * This exists because of what a guard needs to be armed. A version is handed back
+   * on a concurrency-checked response, and the list is a PAGE — one response about
+   * many rows, so there is no single entity for a tag to be about. Without a read
+   * of one row, an editor's first save is the unconditional one, and `If-Match`
+   * only starts protecting the row after the first time somebody has already
+   * overwritten something.
+   *
+   * So it declares `concurrency` despite being a GET, which reads oddly and is
+   * right: the host forwards `If-Match` on unsafe methods only — on a GET the
+   * header means a conditional read, and honouring it would answer a screen with a
+   * 412 where it asked for a body — but it still hands the tag back. Declaring it
+   * here is exactly "this is the read an edit is checked against".
+   */
+  'ticket0/get-saved-reply': {
+    summary: 'One canned answer',
+    permission: 'conversation:draft',
+    input: z.object({ savedReplyId: z.string() }),
+    output: ticket0Entities.savedReply.fields,
+    http: { method: 'GET', path: '/saved-replies/{savedReplyId}' },
+    concurrency: { over: 'savedReply', idFrom: 'savedReplyId' },
+  },
+
+  /**
+   * Change a canned answer's title or its text.
+   *
+   * A partial field-bag over `savedReply` — `savedReplyId` names the row, the two
+   * columns are optional — which is read-modify-write, and the model refuses that
+   * shape without a `concurrency` declaration (#129). It is right here rather than
+   * merely required: a saved reply is a SHARED row on a desk, so two agents editing
+   * the same one is the ordinary case rather than the exotic one, and the second
+   * save silently discarding the first is exactly what nobody would notice.
+   *
+   * `set-agent-profile` answers the same hazard by stating the whole row instead,
+   * because its row is keyed by the caller and so has no id for `concurrency` to
+   * name. This one does have an id, so it takes the better answer.
+   *
+   * The title stays unique — `savedReply.key` says so — and a rename onto another
+   * reply's title is a `conflict` rather than a silent no-op, since the caller
+   * plainly meant to end up with the name they typed.
+   */
+  'ticket0/update-saved-reply': {
+    summary: 'Change a canned answer',
+    permission: 'conversation:draft',
+    input: z.object({
+      savedReplyId: z.string(),
+      title: z.string().min(1).optional(),
+      body: z.string().min(1).optional(),
+    }),
+    output: ticket0Entities.savedReply.fields,
+    http: { method: 'PATCH', path: '/saved-replies/{savedReplyId}' },
+    concurrency: { over: 'savedReply', idFrom: 'savedReplyId' },
+    emits: {
+      entity: 'savedReply',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-updated',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'title', 'body', 'created_by', 'created_at'],
+    },
+  },
+
+  /**
+   * Take a canned answer out of the library.
+   *
+   * A missing id is `not_found`, NOT a no-op that says `removed: false`. That is the
+   * opposite of what `untag-conversation` does one screen up, and the difference is
+   * where the identifier came from: a tag is a string a person typed, so untagging
+   * something never tagged is a plausible thing to mean, while a saved reply is
+   * addressed by a ULID that can only have come from a list — an id that names
+   * nothing is a stale client, and saying so is more useful than pretending.
+   *
+   * Guarded like the update, and deliberately so: the two hazards are one hazard.
+   * A delete over a version the caller has not seen destroys someone else's edit
+   * just as completely as an overwrite does, and more permanently.
+   *
+   * The title rides on the way out, and on the event, because after this there is
+   * nowhere left to read it from.
+   */
+  'ticket0/delete-saved-reply': {
+    summary: 'Delete a canned answer',
+    permission: 'conversation:draft',
+    input: z.object({ savedReplyId: z.string() }),
+    output: z.object({ id: z.string(), title: z.string() }),
+    http: { method: 'DELETE', path: '/saved-replies/{savedReplyId}' },
+    concurrency: { over: 'savedReply', idFrom: 'savedReplyId' },
+    emits: {
+      entity: 'savedReply',
+      entityIdFrom: 'id',
+      type: 'ticket0.saved-reply-deleted',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'title'],
+    },
+  },
+
+  /**
+   * A canned answer with this conversation's facts filled in.
+   *
+   * The substitution happens on the SERVER, and that is the whole point: the four
+   * values in `SAVED_REPLY_VARIABLES` are read here, inside a permission check
+   * narrowed to this conversation, so a reply cannot be used as a way to read a
+   * contact's name out of a conversation the caller does not hold. A browser doing
+   * its own substitution would need those values handed to it first, which is the
+   * same read without the check in front of it.
+   *
+   * It writes nothing and emits nothing. Rendering a reply is not using one — the
+   * agent may read the result and discard it, and a usage counter that ticked here
+   * would count previews.
+   *
+   * Three lists come back, not one string, because the screen has three different
+   * things to say. `body` is what to paste. `blank` names the variables that were
+   * real but empty — an anonymous visitor has no name, an agent may have set no
+   * signature — so the composer can warn before "Hi ," goes to a customer. And
+   * `unresolved` names the tokens left verbatim because nothing declares them.
+   */
+  'ticket0/render-saved-reply': {
+    summary: 'A canned answer with this conversation’s facts filled in',
+    permission: { key: 'conversation:draft', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string(), savedReplyId: z.string() }),
+    output: z.object({
+      id: z.string(),
+      title: z.string(),
+      body: z.string(),
+      blank: z.array(z.string()),
+      unresolved: z.array(z.string()),
+    }),
+    http: {
+      method: 'GET',
+      path: '/conversations/{conversationId}/saved-replies/{savedReplyId}/render',
     },
   },
 

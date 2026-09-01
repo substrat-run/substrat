@@ -665,6 +665,9 @@ function Composer({
   const [internal, setInternal] = useState(false);
   const [text, setText] = useState('');
   const [picker, setPicker] = useState(false);
+  /** What the last insert could not fill in. Lives HERE rather than in the picker,
+   *  which unmounts the moment the text lands. */
+  const [insertNote, setInsertNote] = useState<string | null>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
 
   const send = () => {
@@ -675,6 +678,7 @@ function Composer({
         ? api.postNote({ conversationId: conv.id, body })
         : api.postPublicReply({ conversationId: conv.id, body }));
       setText('');
+      setInsertNote(null);
     });
   };
 
@@ -701,8 +705,10 @@ function Composer({
     <div style={{ position: 'relative', borderTop: '1px solid var(--hairline)', background: 'var(--surface)' }}>
       {picker ? (
         <SavedReplies
-          onPick={(body) => {
+          conversationId={conv.id}
+          onPick={(body, note) => {
             setText((t) => (t ? `${t}\n${body}` : body));
+            setInsertNote(note);
             setPicker(false);
             ta.current?.focus();
           }}
@@ -772,6 +778,11 @@ function Composer({
             </button>
           </div>
         </div>
+        {insertNote ? (
+          <div className="t-small" style={{ marginTop: 6, color: 'var(--internal-text)' }}>
+            {insertNote}
+          </div>
+        ) : null}
         <div className="t-small" style={{ marginTop: 6, opacity: 0.75 }}>
           Signed in as {session.display}
         </div>
@@ -782,20 +793,160 @@ function Composer({
 
 /* ── Saved replies (07) ─────────────────────────────────────────────────── */
 
-function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onClose: () => void }) {
+/**
+ * A placeholder, for the preview's benefit only.
+ *
+ * The authoritative pattern is `savedReplyToken()` in `spec/model.ts` and the
+ * substitution happens on the server — this exists so the preview can SAY a reply
+ * has placeholders before the agent inserts it. A screen that highlights and a
+ * renderer that replaces are allowed to be two pieces of code; a screen that
+ * substituted would not be, because it would need the contact's name in the
+ * browser and that read is what the server-side render exists to keep behind a
+ * permission check.
+ */
+const TOKEN_HINT = /\{\{\s*[A-Za-z0-9_.]+\s*\}\}/;
+
+function SavedReplies({
+  conversationId,
+  onPick,
+  onClose,
+}: {
+  conversationId: string;
+  onPick: (body: string, note: string | null) => void;
+  onClose: () => void;
+}) {
   const [items, setItems] = useState<SavedReply[]>([]);
   const [q, setQ] = useState('');
   const [i, setI] = useState(0);
+  /** The reply being edited, as a draft — `null` means the list is just a list. */
+  const [draft, setDraft] = useState<{ id: string; title: string; body: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  /** Which reply's Delete button is asking a second time. A deletion is not undoable
+   *  and the button sits next to Edit, so one stray click must not be enough. */
+  const [confirming, setConfirming] = useState<string | null>(null);
+
+  /**
+   * A failed load says so and keeps what it had.
+   *
+   * Emptying the list on a failure renders "Nothing saved yet." over a library that
+   * exists — a wrong answer told confidently, and the worst kind after a save or a
+   * delete, where it would read as the write having destroyed everything.
+   */
+  const reload = () =>
+    api
+      .listSavedReplies()
+      .then((p) => {
+        setItems(p.entries);
+        setError(null);
+      })
+      .catch((e: unknown) =>
+        setError(e instanceof ApiError ? e.message : 'Could not load the saved replies.'),
+      );
 
   useEffect(() => {
-    void api
-      .listSavedReplies()
-      .then((p) => setItems(p.entries))
-      .catch(() => setItems([]));
+    void reload();
   }, []);
 
   const shown = items.filter((r) => (r.title + r.body).toLowerCase().includes(q.toLowerCase()));
   const active = shown[Math.min(i, shown.length - 1)];
+
+  // Moving off a row disarms its Delete. An armed confirmation that survives a walk
+  // through the list is a trap: the second click lands on a row the person is no
+  // longer thinking about.
+  useEffect(() => {
+    if (confirming !== null && confirming !== active?.id) setConfirming(null);
+  }, [active?.id, confirming]);
+
+  /**
+   * Insert the SERVER's rendering, never the raw body.
+   *
+   * If the render fails the raw text still goes in: a desk that cannot paste a
+   * canned answer because a placeholder could not be filled is worse than one that
+   * pastes `{{contact.name}}` for a person to fix. The failure is said out loud
+   * rather than swallowed.
+   */
+  const pick = (reply: SavedReply) => {
+    setBusy(true);
+    void api
+      .renderSavedReply({ conversationId, savedReplyId: reply.id })
+      .then((r) => {
+        // The note goes UP rather than into this component's own error line: the
+        // insert closes the picker, so anything said here is unmounted before it is
+        // read. The composer outlives the insert and is where the text landed.
+        const parts = [
+          r.blank.length > 0 ? `nothing to put in ${r.blank.join(', ')}` : '',
+          r.unresolved.length > 0 ? `left ${r.unresolved.join(', ')} as written` : '',
+        ].filter(Boolean);
+        onPick(r.body, parts.length > 0 ? `Inserted — ${parts.join('; ')}.` : null);
+      })
+      .catch(() =>
+        onPick(reply.body, 'Inserted as written — the placeholders could not be filled in.'),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  /**
+   * Open the editor by READING the row, not by copying it out of the list.
+   *
+   * The read is what arms the concurrency guard: it hands back the entity tag the
+   * generated client remembers and sends as `If-Match` on the save, so a colleague
+   * who edited the same reply in the meantime causes a refusal rather than a silent
+   * overwrite. Seeding the form from the list row would skip that and look identical
+   * until the day it mattered.
+   */
+  const edit = (reply: SavedReply) => {
+    setError(null);
+    // An armed Delete must not survive the trip through the editor: click Delete,
+    // click Edit, cancel, and the next single click would delete without asking.
+    setConfirming(null);
+    setBusy(true);
+    void api
+      .getSavedReply({ savedReplyId: reply.id })
+      .then((r) => setDraft({ id: r.id, title: r.title, body: r.body }))
+      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : 'Could not open that reply.'))
+      .finally(() => setBusy(false));
+  };
+
+  const save = () => {
+    if (!draft) return;
+    setBusy(true);
+    void api
+      .updateSavedReply({ savedReplyId: draft.id, title: draft.title, body: draft.body })
+      .then(async () => {
+        setDraft(null);
+        setError(null);
+        await reload();
+      })
+      .catch((e: unknown) =>
+        setError(
+          e instanceof ApiError && e.status === 412
+            ? 'Somebody else changed this reply while you had it open. Close and reopen it to see theirs.'
+            : e instanceof ApiError
+              ? e.message
+              : 'Could not save that reply.',
+        ),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  const remove = (reply: SavedReply) => {
+    if (confirming !== reply.id) {
+      setConfirming(reply.id);
+      return;
+    }
+    setBusy(true);
+    void api
+      .deleteSavedReply({ savedReplyId: reply.id })
+      .then(async () => {
+        setDraft(null);
+        setConfirming(null);
+        setError(null);
+        await reload();
+      })
+      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : 'Could not delete that reply.'))
+      .finally(() => setBusy(false));
+  };
 
   return (
     <div
@@ -813,10 +964,16 @@ function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onC
         zIndex: 10,
       }}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') onClose();
+        if (e.key === 'Escape') {
+          if (draft) setDraft(null);
+          else onClose();
+          return;
+        }
+        // While the editor is open the arrows belong to the textarea, not the list.
+        if (draft) return;
         if (e.key === 'ArrowDown') setI((n) => Math.min(shown.length - 1, n + 1));
         if (e.key === 'ArrowUp') setI((n) => Math.max(0, n - 1));
-        if (e.key === 'Enter' && active) onPick(active.body);
+        if (e.key === 'Enter' && active) pick(active);
       }}
     >
       <div style={{ padding: 10, borderBottom: '1px solid var(--hairline)' }}>
@@ -826,8 +983,17 @@ function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onC
           placeholder="Search saved replies…"
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          disabled={draft !== null}
         />
       </div>
+      {error ? (
+        <div
+          className="t-small"
+          style={{ padding: '7px 12px', borderBottom: '1px solid var(--hairline)', color: 'var(--secondary)' }}
+        >
+          {error}
+        </div>
+      ) : null}
       <div style={{ display: 'grid', gridTemplateColumns: '224px 1fr', minHeight: 180 }}>
         <div style={{ borderRight: '1px solid var(--hairline)', overflowY: 'auto', maxHeight: 260 }}>
           {shown.length === 0 ? (
@@ -838,11 +1004,12 @@ function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onC
             shown.map((r, n) => (
               <div
                 key={r.id}
-                onMouseEnter={() => setI(n)}
-                onClick={() => onPick(r.body)}
+                onMouseEnter={() => (draft ? undefined : setI(n))}
+                onClick={() => (draft ? undefined : pick(r))}
                 style={{
                   padding: '9px 12px',
-                  cursor: 'pointer',
+                  cursor: draft ? 'default' : 'pointer',
+                  opacity: draft && draft.id !== r.id ? 0.45 : 1,
                   background: n === i ? 'var(--tint)' : 'transparent',
                   boxShadow: n === i ? 'inset 2px 0 0 var(--action)' : 'none',
                 }}
@@ -853,9 +1020,60 @@ function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onC
             ))
           )}
         </div>
-        <div style={{ padding: 13, font: "400 12px/1.65 'Geist', sans-serif", color: 'var(--secondary)' }}>
-          {active ? active.body : <span className="t-small">Pick a reply to preview it.</span>}
-        </div>
+        {draft ? (
+          <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* Focused on open, and not only for convenience: the Edit button
+                unmounts with the preview pane, so focus would otherwise fall back
+                to the body and the container's keydown handler would never see
+                Escape — leaving "esc cancels the edit" a hint that does nothing. */}
+            <input
+              autoFocus
+              className="input"
+              value={draft.title}
+              onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+              placeholder="Title"
+            />
+            <textarea
+              className="input"
+              rows={6}
+              value={draft.body}
+              onChange={(e) => setDraft({ ...draft, body: e.target.value })}
+              placeholder="The reply. {{contact.name}}, {{conversation.subject}}, {{agent.name}}, {{agent.signature}}"
+              style={{ resize: 'vertical', font: "400 12px/1.6 'Geist', sans-serif" }}
+            />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                className="btn btn-primary"
+                disabled={busy || draft.title.trim() === '' || draft.body.trim() === ''}
+                onClick={save}
+              >
+                Save
+              </button>
+              <button className="btn btn-ghost" disabled={busy} onClick={() => setDraft(null)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: 13, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ font: "400 12px/1.65 'Geist', sans-serif", color: 'var(--secondary)', flex: 1 }}>
+              {active ? active.body : <span className="t-small">Pick a reply to preview it.</span>}
+            </div>
+            {active && TOKEN_HINT.test(active.body) ? (
+              <div className="t-small">Placeholders fill in when you insert.</div>
+            ) : null}
+            {active ? (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn" disabled={busy} onClick={() => edit(active)}>
+                  Edit
+                </button>
+                <button className="btn btn-ghost" disabled={busy} onClick={() => remove(active)}>
+                  {confirming === active.id ? 'Delete — click again' : 'Delete'}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
       <div
         style={{
@@ -866,7 +1084,9 @@ function SavedReplies({ onPick, onClose }: { onPick: (body: string) => void; onC
           background: 'var(--app-bg)',
         }}
       >
-        <span className="t-small mono">↑↓ browse · ↵ insert · esc</span>
+        <span className="t-small mono">
+          {draft ? 'esc cancels the edit' : '↑↓ browse · ↵ insert · esc'}
+        </span>
         <span className="t-small">Inserted as editable text — nothing sends on insert.</span>
       </div>
     </div>

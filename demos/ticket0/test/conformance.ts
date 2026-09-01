@@ -70,5 +70,11 @@ export const conformance = declareEntityChecks({
    */
   coEntities: {
     'ticket0/merge': { intoConversationId: 'conversation' },
+    // The reply being rendered is not the entity the check narrows to — the
+    // conversation is — but it still has to EXIST, or case 1 measures a
+    // `not_found` it merely tolerates rather than the permission answer it is
+    // for. So the kit makes one per case, the same way it makes the survivor a
+    // merge folds into.
+    'ticket0/render-saved-reply': { savedReplyId: 'savedReply' },
   },
 });
