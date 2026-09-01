@@ -122,11 +122,20 @@ words. That's how you parameterise engine behaviour without a config bag — see
 | `protocol:sign` | Sign in-app — freezes it forever (the technician fills, the arbetsledare signs) |
 | `protocol:countersign` | Counter-sign an already-signed protocol — a second signature on the same frozen content |
 | `protocol:read` | Read protocol templates, instances, responses, signature requests and signatures |
+| `protocol:attach` | Attach a document to an instance — the sealed signed PDF a signing connector lands, or a human upload |
 | `protocol:void` | Void (supersede) a protocol — never deletes |
 
-Nine keys for what looks like one workflow, because the separations are the product:
+Ten keys for what looks like one workflow, because the separations are the product:
 fill ≠ sign is the arbetsledare rule, sign ≠ countersign is the customer at pickup, and
 `void` is a supervisory act.
+
+`protocol:attach` is the one key **no operation checks**. The engine declares
+`attachmentTargets: [{ entityType: 'protocol', readPermission: 'protocol:read',
+writePermission: 'protocol:attach' }]`, so the platform's own attachment endpoints check
+it — reading an attachment on an instance takes `protocol:read`, landing one takes
+`protocol:attach`. Grant it to whatever speaks for the signing connector, and to the roles
+allowed to upload a document by hand; it is not implied by `protocol:bind`, which binds a
+content *ref and hash* rather than bytes.
 
 `protocol:record-signature` is the odd one and deliberately so: it speaks **for an external
 provider**, not for a person, and it is held by **no human role in any demo**. A staff signer

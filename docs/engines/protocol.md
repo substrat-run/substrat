@@ -4,7 +4,7 @@ layer: kernel
 description: Protocol and checklist engine. OQ11 decided and logged as K-38.
 ---
 
-# Protocol engine — concept spec (pre-extraction draft)
+# `engine-protocol` — protocols, checklists and the sign-freezes invariant
 
 Status: **built** — the engine ships on npm; OQ11 decided (§6), its log entry still unratified
 
@@ -64,22 +64,20 @@ a manifest surface.
 
 ## 3. Domain model (engine-owned after extraction)
 
-```
-protocol_templates   id, key, version, title, content_json (sections/items), created_at
-                     — immutable per (key, version); new content = new version
-protocol_instances   id, template_key, template_version, entity_type, entity_id,
-                     status ('open' | 'signed' | 'voided'), created_by, created_at
-protocol_responses   id, instance_id, item_key, value_json, note, responded_by,
-                     responded_at            — append-only; latest-per-item wins
-protocol_signatures  id, instance_id, signed_by, signatory_kind, kind, method,
-                     content_hash, evidence_ref, request_id, signed_at
-protocol_signature_requests
-                     id, instance_id, party_label, party_kind, party_ref,
-                     signature_kind, method, status, content_hash, external_ref,
-                     requested_by/at, resolved_at — milestone D (§5)
-```
+**The five tables and their columns live in one place, and it is not here:**
+[`apps/docs/engines/protocol/model.md`](../../apps/docs/engines/protocol/model.md),
+published at [substrat.net/engines/protocol/model](https://substrat.net/engines/protocol/model).
+This page restated them until the copy disagreed with the engine — it gave
+`protocol_instances.status` as `('open' | 'signed' | 'voided')`, three of the four states
+the engine actually has (`pending_signature`, the state `requestSignatures` moves an
+instance into, was missing), carried none of the freeze or document-binding columns
+(`frozen_hash`, `frozen_at`, `bound_hash`, the content ref) and still marked
+`protocol_signature_requests` as forthcoming
+"milestone D" work that shipped. That is what [`docs/README.md`](../README.md) means by
+*nothing belongs in both*.
 
-Design choices to challenge in review:
+What stays here is the reasoning the published page does not carry — the design choices to
+challenge in review:
 
 - **Responses are append-only** (edit = new row). The fill history is itself audit
   material ("value changed from 4.2 to 5.1 before signing"), and it makes offline
@@ -100,14 +98,17 @@ Design choices to challenge in review:
    additional signature rows on the same frozen content, never new content. A signatory never
    signs the same instance twice — stated over *signatories*, so it holds for external parties.
 4. Append-only responses, bound to an unfrozen checklist instance.
-5. Every mutation emits (fat payloads; a consumer never needs a cross-module read):
-   `protocol.instantiated | response-recorded | content-bound | signatures-requested |
-   signature-declined | signatures-cancelled | signed | countersigned | voided`.
-6. Every operation checks a permission: `protocol:create | fill | bind | request-signature |
-   record-signature | sign | countersign | read | void` — `sign` deliberately separate from
-   `fill` (the FSM reality: the technician fills, sometimes only arbetsledare signs), and
-   `record-signature` deliberately separate from all of them because it speaks for an external
-   provider rather than for a person.
+5. Every mutation emits a fat payload — a consumer never needs a cross-module read. The
+   nine events, with what each announces, are at
+   [`apps/docs/engines/protocol/events.md`](../../apps/docs/engines/protocol/events.md).
+6. Every operation checks a permission. The keys are at
+   [`apps/docs/engines/protocol/surface.md#permissions`](../../apps/docs/engines/protocol/surface.md#permissions)
+   — this page listed nine of the ten until `protocol:attach`, the attachment write gate,
+   was added to the engine and never to the copy. What belongs here is *why* there are that
+   many: `sign` is deliberately separate from `fill` (the FSM reality — the technician
+   fills, sometimes only the arbetsledare signs), and `record-signature` is deliberately
+   separate from all of them because it speaks for an external provider rather than for a
+   person.
 
 ## 5. Signature model: provider-agnostic evidence
 
