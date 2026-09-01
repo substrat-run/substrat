@@ -411,13 +411,24 @@ export function assertUiIsServed(
  *
  * `--skip-lint` is the escape hatch, and it says out loud that the push was ungated — a
  * flag that silently weakens a gate is a flag that becomes the default in someone's CI.
+ *
+ * CALLED TWICE, ON PURPOSE. `cli.ts` runs it as the FIRST thing a push does — before the
+ * registry round-trip that picks the next version — so a violating tree costs one local
+ * scan and not a network error standing where the diagnostic should be. `push()` runs it
+ * too, so the gate belongs to the push rather than to one command's argument handling. A
+ * root that already passed in this process is a no-op the second time: the CLI is one
+ * process per push, so the tree cannot have changed between the two calls, and repeating
+ * the all-clear would only teach a reader that the line means nothing.
  */
+const gated = new Set<string>();
+
 export function assertLayerRules(dir: string, skipLint = false): void {
   if (skipLint) {
     console.log('note: --skip-lint — the layer rules were NOT checked; this push is ungated');
     return;
   }
   const root = resolve(dir);
+  if (gated.has(root)) return;
   const config = loadBoundaryLintConfig(root);
   const packages = resolvePackages(root, config);
   const linted = packages.filter((p) => p.lint);
@@ -426,6 +437,7 @@ export function assertLayerRules(dir: string, skipLint = false): void {
       'note: boundary-lint found no module code to check (expected `src/`, or a ' +
         '`boundary-lint.config.json` naming it) — this push is ungated',
     );
+    gated.add(root);
     return;
   }
   if (packages.every((p) => p.lint) && declaredEngines(root, config).length > 0) {
@@ -437,6 +449,7 @@ export function assertLayerRules(dir: string, skipLint = false): void {
   const violations = lint(root, config);
   if (violations.length === 0) {
     console.log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
+    gated.add(root);
     return;
   }
   throw new Error(

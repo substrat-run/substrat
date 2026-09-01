@@ -129,15 +129,52 @@ describe('push() — the gate is ON the push path, before anything is built', ()
   });
 });
 
+describe('assertLayerRules — the same tree, checked twice in one process', () => {
+  /**
+   * The CLI gates before the version lookup AND inside `push()`. Both are wanted — one so a
+   * violating tree never spends a network call first, one so the gate belongs to the push
+   * rather than to argument handling — but the all-clear must be said once. A line a reader
+   * sees twice per push is a line they stop reading.
+   */
+  it('says the all-clear once and re-scans nothing', () => {
+    captureLog();
+    const dir = vertical(CLEAN);
+    assertLayerRules(dir);
+    assertLayerRules(dir);
+    expect(logs.filter((l) => l.includes('all layer rules hold')).length).toBe(1);
+  });
+});
+
 /**
- * The same join the `usesModels` test below in push.test.ts pins, for the same reason: a
- * flag typed on the options, honoured by `push()`, and never read from argv is a flag that
- * does nothing. Both push call sites in cli.ts are real pushes of real code.
+ * The same join the `usesModels` test in push.test.ts pins, for the same reason: a flag
+ * typed on the options, honoured by `push()`, and never read from argv is a flag that does
+ * nothing. Both push call sites in cli.ts are real pushes of real code.
  */
-describe('cli.ts — --skip-lint reaches both push call sites', () => {
-  it('is read from argv at push and at preview create', () => {
-    const src = readFileSync(new URL('../src/cli.ts', import.meta.url), 'utf8');
+describe('cli.ts — the gate runs before anything can fail on the network', () => {
+  const src = readFileSync(new URL('../src/cli.ts', import.meta.url), 'utf8');
+
+  it('reads --skip-lint from argv at push and at preview create', () => {
     const sites = src.match(/^\s*skipLint: argv\.includes\('--skip-lint'\),$/gm) ?? [];
     expect(sites.length).toBe(2);
+  });
+
+  /**
+   * A push with no --version asks the registry for the latest before it builds. Gating only
+   * inside `push()` left that round-trip AHEAD of the local check, so a violating tree on a
+   * flaky network reported a connection failure where it should have reported the rule it
+   * broke — the diagnostic replaced by the least useful error in the program.
+   */
+  it('gates before the registry round-trip in both commands', () => {
+    for (const [command, lookup] of [
+      ['cmdPush', 'nextVersion('],
+      ['cmdPreview', 'previewVersion('],
+    ] as const) {
+      const body = src.slice(src.indexOf(`async function ${command}(`));
+      const gate = body.indexOf('assertLayerRules(');
+      const round = body.indexOf(lookup);
+      expect(gate).toBeGreaterThan(-1);
+      expect(round).toBeGreaterThan(-1);
+      expect(gate).toBeLessThan(round);
+    }
   });
 });

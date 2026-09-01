@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
-import { push, readVerticalMeta, nextVersion, previewVersion, pinTenant } from './push.js';
+import { push, readVerticalMeta, nextVersion, previewVersion, pinTenant, assertLayerRules } from './push.js';
 import { printVersions } from './versions.js';
 import { promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
@@ -307,6 +307,13 @@ async function cmdPush(): Promise<void> {
 
   // Slug + name default from the vertical's package.json (`substrat` block, else derived);
   // a flag still wins. So `cd demos/meridian && substrat push` needs no --slug/--name.
+  // The layer rules first (#955) — before authentication and before the registry round-trip
+  // that picks the next version. `push()` runs them too (the gate belongs to the push, not to
+  // one command's argument handling); running them here as well is what keeps a violating
+  // tree from spending a network call first, where a failed one would stand in place of the
+  // diagnostic. The second call is a no-op — see assertLayerRules.
+  assertLayerRules(dir, argv.includes('--skip-lint'));
+
   const meta = readVerticalMeta(dir);
   const slug = flag('slug') ?? meta.slug;
   const name = flag('name') ?? meta.name;
@@ -737,6 +744,9 @@ async function cmdPreview(): Promise<void> {
       console.error(usage);
       process.exit(1);
     }
+    // Same gate, same reason as `cmdPush` (#955): a preview runs the same code on the same
+    // runtime, and the refusal should arrive before the registry round-trip below.
+    assertLayerRules(dir, argv.includes('--skip-lint'));
     const meta = readVerticalMeta(dir);
     const slug = flag('slug') ?? meta.slug;
     if (!slug) {
