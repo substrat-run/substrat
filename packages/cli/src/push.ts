@@ -21,6 +21,13 @@ import {
   type RuntimeNeeds,
   type VersionOrigin,
 } from '@substrat-run/contracts';
+import {
+  lint,
+  loadConfig as loadBoundaryLintConfig,
+  resolvePackages,
+  declaredEngines,
+  formatViolations,
+} from '@substrat-run/boundary-lint';
 import { warnIfStale } from './version.js';
 import { parseJsonBody, readAllEntries } from './http.js';
 import { failureMessage } from './problem.js';
@@ -375,6 +382,78 @@ export function assertUiIsServed(
   );
 }
 
+/**
+ * The layer rules, run on the way out (#955).
+ *
+ * Every mechanical rule the platform advertises — R2's ambient-env ban (#862), R5's private
+ * tables, R6's clock, R7's engine-catch, R4's spine — lives in `boundary-lint`, which until
+ * now ran only in THIS repo's CI and in the builder studio. A vertical developed anywhere
+ * else reached production having been checked by nothing: `substrat push` built the bundle,
+ * uploaded it, and the control plane admitted it. That made the rules advisory for every
+ * real customer, which is the opposite of the claim CLAUDE.md makes for them.
+ *
+ * So the push is the gate. It runs on the SOURCE tree, before the wrangler build, because
+ * that is where the rules are legible and because a refusal is worth more in a second than
+ * at the end of a build the vertical was going to ship broken anyway. This is the builder's
+ * own machine — the same trust position `deriveRegistry` already runs in — not a platform-
+ * side check over the uploaded bundle; that one is a separate question, tracked in #861.
+ *
+ * Two shapes deliberately do NOT refuse:
+ *
+ *   - No module code found. `boundary-lint`'s own CLI exits 2 here, and it is right to: a
+ *     linter invoked directly and told to check a tree it cannot find has failed at its job.
+ *     A push has not — the layout may simply not be one auto-detection knows, and refusing
+ *     would make `substrat push` unusable for a project whose only fault is an unusual
+ *     directory. It prints what it did instead, so the absence is visible rather than a
+ *     green light.
+ *   - Engines declared but unresolvable (R5's ownership map is empty). Same reasoning, and
+ *     the note says what went unchecked.
+ *
+ * `--skip-lint` is the escape hatch, and it says out loud that the push was ungated — a
+ * flag that silently weakens a gate is a flag that becomes the default in someone's CI.
+ */
+export function assertLayerRules(dir: string, skipLint = false): void {
+  if (skipLint) {
+    console.log('note: --skip-lint — the layer rules were NOT checked; this push is ungated');
+    return;
+  }
+  const root = resolve(dir);
+  const config = loadBoundaryLintConfig(root);
+  const packages = resolvePackages(root, config);
+  const linted = packages.filter((p) => p.lint);
+  if (linted.length === 0) {
+    console.log(
+      'note: boundary-lint found no module code to check (expected `src/`, or a ' +
+        '`boundary-lint.config.json` naming it) — this push is ungated',
+    );
+    return;
+  }
+  if (packages.every((p) => p.lint) && declaredEngines(root, config).length > 0) {
+    console.log(
+      'note: engines are declared but none resolved under node_modules/@substrat-run — ' +
+        'R5 (tables private) checked nothing this push',
+    );
+  }
+  const violations = lint(root, config);
+  if (violations.length === 0) {
+    console.log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
+    return;
+  }
+  throw new Error(
+    [
+      `${violations.length} layer-rule violation(s) — this vertical cannot be pushed.`,
+      '',
+      formatViolations(violations),
+      '',
+      '  These are the rules the platform enforces mechanically: data access is ctx.sql,',
+      '  capabilities come from ctx, another module\'s tables are private, time is ctx.now(),',
+      '  and an engine error is caught only inside ctx.atomic. Run',
+      '  `npx substrat-boundary-lint --verbose` for what was checked, or push with',
+      '  --skip-lint to deploy ungated code deliberately.',
+    ].join('\n'),
+  );
+}
+
 export interface PushOptions {
   dir: string;
   slug: string;
@@ -430,6 +509,12 @@ export interface PushOptions {
    * that only shows up as a 404 on the live hostname, so it is refused by default.
    */
   allowUnservedUi?: boolean;
+  /**
+   * Push code the layer rules never saw (#955) — the CLI's --skip-lint. See
+   * `assertLayerRules`: the gate refuses on a violation, and this is the deliberate,
+   * self-announcing way past it.
+   */
+  skipLint?: boolean;
   controlPlaneUrl: string;
   /** The auth header to send — a bearer session or an x-service-token (see config.resolveAuth). */
   authHeader: Record<string, string>;
@@ -530,6 +615,11 @@ export function generatedConfigPath(dir: string): string {
 export async function push(
   opts: PushOptions,
 ): Promise<{ id: string; admission: string; deploymentRef: string; verticalSlug: string; warnings?: string[] }> {
+  // The layer rules, before anything is built or uploaded (#955). First, because it reads
+  // the source tree and needs nothing else — a violation is refused in a second rather than
+  // after a wrangler build whose output was never going to be admissible.
+  assertLayerRules(opts.dir, opts.skipLint);
+
   // Substrate-vocabulary path (D-38): when `substrat.runtimeNeeds` is present the builder
   // authored no wrangler config, so none is read — the CLI derives it. The generated file
   // lands next to the vertical (a relative `main` and the build command's cwd both resolve

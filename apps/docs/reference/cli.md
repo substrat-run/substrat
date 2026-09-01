@@ -118,6 +118,7 @@ input defaults from the project; flags override each:
 | version | the registry's latest for the slug, patch-bumped (seeded from `package.json` `version` on the very first push) | `--version` |
 | workspace | `"substrat": { "tenant" }` in `package.json` — the **pin** | `--tenant`, `SUBSTRAT_TENANT` |
 | UI served? | refuse if `app/index.html` exists and nothing in the manifest would serve it | `--allow-unserved-ui` |
+| layer rules | refuse if [boundary-lint](/concepts/modules) finds a violation in your module code | `--skip-lint` |
 
 **Push refuses a UI that nothing would serve.** A front end ships as native assets: the push
 runs your declared `build`, hashes the output and uploads it to the runtime's asset store.
@@ -143,6 +144,16 @@ anything. The fix is the declaration it prints:
 handling, a prefix missing from it answers `index.html`, so the app reports parse errors where
 it should report denials. If the app is deliberately not part of this deploy — a mock, a
 fixture, or built and deployed elsewhere — `--allow-unserved-ui` says so and the push proceeds.
+
+**Push runs the layer rules.** Before anything is built, `push` runs
+[`boundary-lint`](/concepts/modules) over your source and refuses on a violation — data access
+is `ctx.sql`, capabilities come from `ctx`, another module's tables are private, time is
+`ctx.now()`, and an engine error is caught only inside `ctx.atomic`. These are the rules the
+platform states as mechanical, so they run where your code actually reaches production rather
+than only in a CI job you may not have wired. It reads the same
+`boundary-lint.config.json` the standalone linter does; if it finds no module code to check,
+it says so and continues rather than refusing. `--skip-lint` pushes ungated on purpose, and
+prints that it did.
 
 The push builds the bundle (`wrangler deploy --dry-run`, running your own `build.command`),
 reads the declared surface (your own DO classes, D1 databases, compatibility date/flags, entry

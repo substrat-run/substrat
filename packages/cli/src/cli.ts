@@ -102,7 +102,11 @@ Usage:
                                                --allow-fork to do it deliberately.
                                                A UI (app/) that nothing in the manifest
                                                would serve is refused too — declare
-                                               runtimeNeeds.assets, or --allow-unserved-ui
+                                               runtimeNeeds.assets, or --allow-unserved-ui.
+                                               The layer rules (boundary-lint R1–R8) run on
+                                               the source before the build and a violation
+                                               refuses the push; --skip-lint deploys
+                                               ungated code deliberately
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
@@ -348,6 +352,9 @@ async function cmdPush(): Promise<void> {
     // A UI the push would never serve is refused (#881); this says the app/ in the tree
     // is deliberately not part of this deploy.
     allowUnservedUi: argv.includes('--allow-unserved-ui'),
+    // The layer rules run on every push (#955); this deploys code they never saw, and
+    // says so in the push's own output.
+    skipLint: argv.includes('--skip-lint'),
     envSpec: meta.envSpec,
     ownerGrants: meta.ownerGrants,
     entitlements: meta.entitlements,
@@ -754,6 +761,8 @@ async function cmdPreview(): Promise<void> {
     console.log(`pushing ${slug}@${version} for preview '${tag}' …`);
     const pushed = await push({
       dir, slug, version, name: meta.name, tenant,
+      // A preview runs the same code on the same runtime, so it is gated the same (#955).
+      skipLint: argv.includes('--skip-lint'),
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,
       entitlements: meta.entitlements,

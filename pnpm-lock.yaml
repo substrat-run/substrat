@@ -1620,6 +1620,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@substrat-run/boundary-lint':
+        specifier: workspace:^
+        version: link:../boundary-lint
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
