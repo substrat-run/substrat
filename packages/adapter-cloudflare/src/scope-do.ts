@@ -42,6 +42,7 @@ import {
   listLimitOf,
   requestFingerprint,
   substratError,
+  assertReplayableDump,
 } from '@substrat-run/contracts';
 import {
   ulid,
@@ -2265,6 +2266,12 @@ export function defineScopeDO(
         // A dump written before indexes were excluded may still carry them; skipped
         // rather than failing a restore over data about to be recomputed.
         const replayable = tables.filter((t) => !isSearchIndexTable(t.name));
+        // The dump is untrusted input (#1143). `SqlStorage.exec` runs every statement
+        // in the string it is given, so a `ddl` with anything appended to its CREATE
+        // TABLE executed that too — with entirely plain identifiers, which is why no
+        // amount of name checking reaches it. There is no prepare step here to compile
+        // only the first statement, so the text itself has to be the one statement.
+        assertReplayableDump(replayable);
         for (const t of replayable) this.sql.exec(t.ddl);
         for (const t of replayable) {
           if (t.rows.length === 0) continue;

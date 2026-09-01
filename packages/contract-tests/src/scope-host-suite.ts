@@ -1129,6 +1129,125 @@ export function scopeHostContractSuite(
         expect(src?.forkedFrom).toBeNull();
         expect(src?.forkedAt).toBeNull();
       });
+
+      // -- a dump is untrusted input (#1143) ---------------------------------
+      //
+      // `importScope` replays a dump's own table names, column names and schema
+      // TEXT. All three reach SQL as text — a bind parameter can stand in for a
+      // value but never for an identifier, and never for a CREATE TABLE. The route
+      // is staff-gated and audited, which narrows who can reach it; it does not make
+      // the bytes trustworthy, and "only staff can do this" is not an access
+      // control on what the statement then does.
+      //
+      // These run against EVERY adapter on purpose. The SQLite host could lean on
+      // `prepare` compiling a single statement; a Durable Object has no prepare step
+      // at all, so the hosted path is the one where the text itself has to be the
+      // one statement — and the hosted path is the one that matters.
+
+      describe('scope import — a hostile dump is refused (#1143)', () => {
+        const forge = async (tables: unknown[]) => {
+          const dump = await host.admin.exportScope(staff, t1, s1);
+          return { ...dump, tables: tables as typeof dump.tables };
+        };
+        const importForged = async (tables: unknown[]) =>
+          host.importScope(
+            staff,
+            { tenantId: t1, scopeId: scopeId.parse(ulid()), jurisdiction: 'eu', vertical: 'connector-vertical' },
+            await forge(tables),
+          );
+
+        it('refuses a table name that is not a plain SQL identifier', async () => {
+          await expect(
+            importForged([
+              {
+                name: 'x") ; ATTACH DATABASE \'/tmp/pwned.db\' AS e; --',
+                ddl: 'CREATE TABLE x (id TEXT)',
+                columns: ['id'],
+                rows: [['1']],
+              },
+            ]),
+          ).rejects.toThrow(/not a plain SQL identifier/);
+        });
+
+        it('refuses a column name that is not a plain SQL identifier', async () => {
+          await expect(
+            importForged([
+              {
+                name: 'marker',
+                ddl: 'CREATE TABLE marker (id TEXT)',
+                columns: ['a") , ("b'],
+                rows: [['1']],
+              },
+            ]),
+          ).rejects.toThrow(/not a plain SQL identifier/);
+        });
+
+        // The hole no identifier check reaches: both names below are perfectly plain,
+        // and `exec` would have run the appended statement too.
+        it('refuses a second statement appended to a table DDL', async () => {
+          await expect(
+            importForged([
+              {
+                name: 'marker',
+                ddl: 'CREATE TABLE marker (id TEXT); CREATE TABLE smuggled (id TEXT);',
+                columns: ['id'],
+                rows: [['1']],
+              },
+            ]),
+          ).rejects.toThrow(/more than one statement/);
+        });
+
+        it('refuses a DDL that creates a table other than the one it is listed under', async () => {
+          await expect(
+            importForged([
+              { name: 'marker', ddl: 'CREATE TABLE something_else (id TEXT)', columns: ['id'], rows: [] },
+            ]),
+          ).rejects.toThrow(/does not begin with/);
+        });
+
+        // The repeat is how a crafted entry hides: the honest one creates the table,
+        // and every per-entry check still sees a table that exists. Case-folded,
+        // because SQLite resolves table names that way.
+        it('refuses a table listed twice, including differing only in case', async () => {
+          await expect(
+            importForged([
+              { name: 'marker', ddl: 'CREATE TABLE marker (id TEXT)', columns: ['id'], rows: [] },
+              { name: 'MARKER', ddl: 'CREATE TABLE MARKER (id TEXT)', columns: ['id'], rows: [] },
+            ]),
+          ).rejects.toThrow(/listed twice/);
+        });
+
+        // Non-vacuous: proves the checks do not simply reject everything, and that a
+        // `;` inside a string literal is not read as a statement boundary — a DEFAULT
+        // of `'a;b'` is legal SQL, and a `split(';')` would refuse it.
+        //
+        // Appended to the real dump rather than replacing it: a dump listing ONE table
+        // is honest input the checks accept, but it also drops everything else in the
+        // scope, and the search index left behind then points at a content table that
+        // no longer exists. That is a property of the forged dump, not of this fix.
+        it('still accepts an honest dump whose DDL contains a quoted semicolon', async () => {
+          const dump = await host.admin.exportScope(staff, t1, s1);
+          const copy = scopeId.parse(ulid());
+          await host.importScope(
+            staff,
+            { tenantId: t1, scopeId: copy, jurisdiction: 'eu', vertical: 'connector-vertical' },
+            {
+              ...dump,
+              tables: [
+                ...dump.tables,
+                {
+                  name: 'quoted_semi',
+                  ddl: "CREATE TABLE quoted_semi (id TEXT, note TEXT DEFAULT 'a;b')",
+                  columns: ['id', 'note'],
+                  rows: [['1', 'ok']],
+                },
+              ],
+            },
+          );
+          const tables = await host.admin.listScopeTables(staff, t1, copy);
+          expect(tables.find((t) => t.name === 'quoted_semi')?.rowCount).toBe(1);
+        });
+      });
     });
 
     // -- directory export/restore: the platform's own DR (#40) -----------------
