@@ -115,6 +115,10 @@ export interface PageParams {
   readonly sort?: string;
   readonly order?: 'asc' | 'desc';
   readonly cursor?: string;
+  /**
+   * Narrowing, per declared column. A scalar is an equality; an ARRAY is the set
+   * of permitted values (`IN`), and an empty array permits none of them.
+   */
   readonly filters?: Readonly<Record<string, unknown>>;
   /** Also count the filtered set — the declaration's `total`, passed through. */
   readonly total?: boolean;

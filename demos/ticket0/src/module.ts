@@ -84,6 +84,17 @@ const DESK = 'desk';
 const WAKE_BATCH = 200;
 
 /**
+ * Every state an unfiltered inbox shows — which is every state the machine has, less
+ * the terminal one.
+ *
+ * Written out rather than derived from the lifecycle by subtracting `closed`: the
+ * screen's default is a PRODUCT decision about what an agent should be looking at,
+ * and a machine gaining a sixth state should make somebody choose which side of this
+ * line it falls on rather than silently answering for them.
+ */
+const OPEN_STATES = ['new', 'open', 'snoozed', 'resolved'] as const;
+
+/**
  * `2026-03-09T09:00:00.000Z`, as a SQLite GLOB — the shape `instant` normalises to.
  *
  * The sweep compares `snoozed_until` as TEXT, which is only the same as comparing
@@ -1320,6 +1331,15 @@ const operations = {
     const filters: Record<string, unknown> = {};
     for (const key of ['state', 'assignee', 'channel', 'priority', 'contact_id'] as const) {
       if (input[key] !== undefined) filters[key] = input[key];
+    }
+    // The unfiltered inbox is every state but the terminal one — declared on the
+    // input, and applied here as a SET rather than as four requests a screen would
+    // have to page separately. An explicit `state` outranks it, so asking for
+    // `closed` still means closed; `include_closed` is what widens the read back to
+    // the whole desk. The count follows the same `WHERE`, so the total the screen
+    // shows is the total of what it is showing.
+    if (input.state === undefined && input.include_closed !== true) {
+      filters['state'] = OPEN_STATES;
     }
     return ctx.page<ConversationRow>('conversation', {
       ...input,

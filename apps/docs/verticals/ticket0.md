@@ -27,9 +27,12 @@ begins with a stranger in a chat bubble on somebody else's page. It proves:
   desk admin's alone: sign in as Markus and the money is on the screen; sign in as Anna and the
   same screen has none — a permission, not a flag.
 - **The public/internal flag is load-bearing.** A message is either public (the customer sees it)
-  or internal (only staff do); nothing reaches `resolved` without a public reply, nothing reaches
-  `closed` except from `resolved`, a customer's reply *reopens* the same thread, and a merged
-  conversation keeps its history. The customer-facing read is written once and strips author ids.
+  or internal (only staff do); nothing reaches `resolved` without a public reply, a customer's
+  reply *reopens* the same thread, and a merged conversation keeps its history. `closed` is the
+  one way out that asks nothing — a thread nobody will ever answer is unresolvable, so requiring
+  a resolve on the way to closed would strand it in the inbox for good. Only resolving stamps
+  `resolved_at`, and the reports count that stamp, so an emptied inbox moves no number. The
+  customer-facing read is written once and strips author ids.
 - **Failure is never silent.** A turn that could not answer carries its reason, the
   conversation draws it as a card, and *Settings → Assistant* says which model this install
   answers with and lists the newest failures.

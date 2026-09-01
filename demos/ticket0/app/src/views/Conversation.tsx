@@ -221,11 +221,16 @@ function Header({
       </div>
       <StateBadge state={conv.state} />
       <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-        {conv.state === 'resolved' ? (
-          <button className="btn" disabled={busy} onClick={() => void act(() => api.close({ conversationId: conv.id }))}>
-            Close
-          </button>
-        ) : (
+        {/*
+          Snooze and Resolve are the states the machine will still take from here;
+          `resolved` has neither, since it is already past both.
+
+          Close is beside them ALWAYS, and that is the point of it. `resolve` refuses
+          a conversation the customer has never heard from, so an empty or abandoned
+          thread can only ever leave the inbox this way — a Close that appeared only
+          after Resolve had succeeded was a door locked from the inside.
+        */}
+        {conv.state === 'resolved' ? null : (
           <>
             <button
               className="btn"
@@ -243,6 +248,14 @@ function Header({
             </button>
           </>
         )}
+        <button
+          className="btn"
+          disabled={busy || conv.state === 'closed'}
+          title="Close this conversation for good — it leaves the inbox and is not counted as answered"
+          onClick={() => void act(() => api.close({ conversationId: conv.id }))}
+        >
+          Close
+        </button>
       </div>
     </div>
   );

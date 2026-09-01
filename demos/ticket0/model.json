@@ -1192,6 +1192,7 @@
         "new": {
           "on": {
             "ticket0/assign": "open",
+            "ticket0/close": "closed",
             "ticket0/post-public-reply": "open",
             "ticket0/resolve": "resolved"
           },
@@ -1209,6 +1210,7 @@
         },
         "open": {
           "on": {
+            "ticket0/close": "closed",
             "ticket0/resolve": "resolved",
             "ticket0/snooze": "snoozed"
           },
@@ -1243,6 +1245,7 @@
         },
         "snoozed": {
           "on": {
+            "ticket0/close": "closed",
             "ticket0/ingest-message": "open",
             "ticket0/resolve": "resolved",
             "ticket0/wake": "open",

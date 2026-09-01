@@ -286,7 +286,7 @@ export interface Ticket0Client {
   assistantMode(): Promise<{ autonomous: boolean }>;
 
   /**
-   * Close a resolved conversation for good
+   * Close a conversation for good, answered or not
    *
    * `POST /conversations/{conversationId}/close` — `ticket0/close`
    */
@@ -403,13 +403,13 @@ export interface Ticket0Client {
   listConversationTags(input: { conversationId: string }): Promise<{ tags: ConversationTag[] }>;
 
   /**
-   * The desk’s conversations
+   * The desk’s conversations — everything but the closed ones, unless asked
    *
    * `GET /conversations` — `ticket0/list-conversations`
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string }): Promise<Paged<Conversation>>;
+  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string; include_closed?: boolean }): Promise<Paged<Conversation>>;
 
   /**
    * The desk’s documentation sources

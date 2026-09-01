@@ -727,7 +727,7 @@
     "/api/conversations/{conversationId}/close": {
       "post": {
         "operationId": "ticket0-close",
-        "summary": "Close a resolved conversation for good",
+        "summary": "Close a conversation for good, answered or not",
         "parameters": [
           {
             "name": "conversationId",
@@ -3338,7 +3338,7 @@
     "/api/conversations": {
       "get": {
         "operationId": "ticket0-list-conversations",
-        "summary": "The desk’s conversations",
+        "summary": "The desk’s conversations — everything but the closed ones, unless asked",
         "parameters": [
           {
             "name": "limit",
@@ -3433,6 +3433,14 @@
             "description": "Only entries whose `contact_id` equals this.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "include_closed",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],

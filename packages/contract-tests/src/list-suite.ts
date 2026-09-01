@@ -160,6 +160,47 @@ export function listContractSuite(
       expect(got.entries.map((r) => r['id'])).toEqual(['01C', '01E']);
     });
 
+    /**
+     * A SET of permitted values, which is the narrowing a single `=` cannot state.
+     * The case it exists for is an inbox that hides one terminal state by default:
+     * "every status but `closed`" is four equalities, and four requests cannot be
+     * paged as one list.
+     */
+    it('filters on a SET of values, and the set survives the whole walk', async () => {
+      const seen = await walkAll({ filters: { status: ['open', 'closed'] } }, 2);
+      expect(seen).toEqual(['01A', '01B', '01C', '01D', '01E', '01F']);
+      const narrowed = await walkAll({ filters: { status: ['closed'] } }, 2);
+      expect(narrowed).toEqual(['01D', '01F']);
+    });
+
+    it('composes a set filter with a scalar one, and counts the same set', async () => {
+      const got = (await page({
+        limit: 50,
+        filters: { status: ['open', 'closed'], kind: 'service' },
+        total: true,
+      })) as CountedPage<Row>;
+      expect(got.entries.map((r) => r['id'])).toEqual(['01C', '01E', '01F']);
+      expect(got.total).toBe(3);
+    });
+
+    /**
+     * A caller that narrowed to nothing asked for nothing. Dropping an empty clause
+     * would hand back the WHOLE table instead — the widest possible answer to the
+     * narrowest possible question, and a permission-shaped bug wherever the set is
+     * computed from what the reader may see.
+     */
+    it('matches NO rows on an empty set, rather than every row', async () => {
+      const got = (await page({ limit: 50, filters: { status: [] }, total: true })) as CountedPage<Row>;
+      expect(got.entries).toEqual([]);
+      expect(got.total).toBe(0);
+    });
+
+    it('refuses a set filter on a column the declaration does not offer', async () => {
+      await expect(page({ limit: 2, filters: { number: ['1001'] } })).rejects.toThrow(
+        /not a declared filter/,
+      );
+    });
+
     it('ignores an undefined filter rather than matching NULL', async () => {
       const got = await page({ limit: 50, filters: { status: undefined } });
       expect(got.entries).toHaveLength(6);
