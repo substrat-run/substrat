@@ -355,6 +355,20 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     activateScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/activate`),
     suspendScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/suspend`),
     unsuspendScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/unsuspend`),
+    /**
+     * Re-run the vertical's provision for a scope that already has one — NOT a status
+     * transition, which is why it sits outside the ladder above and outside
+     * `availableActions`. Nothing about the scope's state changes; what happens is that
+     * everything provisioning delivers is delivered again: entitlements, identity links,
+     * connection grants, and the vertical's OWN `onProvision` hook.
+     *
+     * Idempotent at the far end (K-31), so it is safe to press twice. It is the lever
+     * for two shapes of stuck install: the #332 lockout (roles projected, zero tuples,
+     * every login denied), and an install that predates something its vertical now mints
+     * for itself at provision — a new service principal, say — which no other path can
+     * ever deliver, because provision runs at install and never again.
+     */
+    reprovisionScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/provision`),
     archiveScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/archive`),
     unarchiveScope: (t: TenantId, s: ScopeId) => post<Scope>(`/tenants/${t}/scopes/${s}/unarchive`),
     // archived → reaped (§4.4): irreversibly wipe the scope's DO storage, keeping the
