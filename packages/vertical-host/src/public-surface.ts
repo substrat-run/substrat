@@ -162,7 +162,7 @@ export function mountPublicSurface(
    * has — readable in a log or a `curl` even though the browser will not show it to
    * the embedding page.
    */
-  app.use(`${basePath}/*`, async (c: Context, next: () => Promise<void>) => {
+  const gate = async (c: Context, next: () => Promise<void>) => {
     const origin = c.req.header('origin');
     const actor = origin ? await resolveActor(c, { origin, service }) : null;
     const allowed = !!origin && !!actor && actor.allowedOrigins.includes(origin);
@@ -189,7 +189,13 @@ export function mountPublicSurface(
     c.header('access-control-allow-origin', origin);
     c.header('vary', 'origin');
     await next();
-  });
+  };
+
+  // `${basePath}/*` covers the base path ITSELF as well as everything under it, so a route
+  // the vertical declares at `'/'` is guarded like every other one. Registered once:
+  // adding a second `app.use(basePath, …)` for it would run the gate — and therefore
+  // `resolveActor`'s round trip to a scope — twice on that one path.
+  app.use(`${basePath}/*`, gate);
 
   /**
    * What the middleware above already decided. The throw is the assertion that the two

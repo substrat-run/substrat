@@ -89,6 +89,52 @@ describe('mountPublicSurface', () => {
     ).toThrow(/basePath/);
   });
 
+  it('guards a route declared at the base path itself', async () => {
+    // A one-route surface declares it at `'/'`, which is the bare base path — the one URL
+    // a `${basePath}/*` guard could plausibly miss. It does not, and this is what keeps
+    // that true: the route most likely to BE the whole surface must not be the one route
+    // nothing checks. `resolveActor` is counted too, since the obvious over-correction
+    // (registering the gate on the base path as well) makes every call round-trip twice.
+    let resolved = 0;
+    let invoked = 0;
+    const app = new Hono();
+    app.onError((err, c) => {
+      const seen = classifyError(err) ?? { status: 500 as const, message: messageOf(err) };
+      return c.json({ error: seen.message }, seen.status);
+    });
+    mountPublicSurface(app, {
+      service: 'widget',
+      basePath: '/widget',
+      resolveActor: async () => {
+        resolved += 1;
+        return {
+          invoke: async <T,>() => {
+            invoked += 1;
+            return { ok: true } as T;
+          },
+          allowedOrigins: [SITE],
+        };
+      },
+      routes: (route) => {
+        route.post('/', async (c, { actor }) => c.json(await actor.invoke('demo/root', {})));
+      },
+    });
+
+    const refused = await app.request('/widget', { method: 'POST', headers: { origin: OTHER } });
+    expect(refused.status).toBe(403);
+    expect(invoked).toBe(0);
+
+    resolved = 0;
+    const ok = await app.request('/widget', { method: 'POST', headers: { origin: SITE } });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get('access-control-allow-origin')).toBe(SITE);
+    expect(invoked).toBe(1);
+    expect(resolved).toBe(1); // once, not once per registered guard
+
+    const preflight = await app.request('/widget', { method: 'OPTIONS', headers: { origin: SITE } });
+    expect(preflight.status).toBe(204);
+  });
+
   // ── 1. Unauthenticated, and it runs as the declared service ─────────────────
   it('runs an unauthenticated call as the declared service principal', async () => {
     const { app, seen, invoked } = appWith({ service: 'widget' });
