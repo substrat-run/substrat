@@ -207,7 +207,15 @@ for (const [page, src] of Object.entries(PROSE)) {
 /** @type {{area: string, link: string}[]} */
 const uninventoried = [];
 
-if (existsSync(join(ROOT, INVENTORY))) {
+/**
+ * A gate that goes quiet when its subject disappears is not a gate — deleting or
+ * renaming the page would silently take the check with it, and every engine and
+ * vertical would read as inventoried. So a missing inventory is itself the failure,
+ * and a deliberate rename is a one-line edit to `INVENTORY` above.
+ */
+const inventoryMissing = !existsSync(join(ROOT, INVENTORY));
+
+if (!inventoryMissing) {
   const text = readFileSync(join(ROOT, INVENTORY), 'utf8');
   for (const { area } of areas) {
     const [kind, slug] = area.split('/');
@@ -238,15 +246,18 @@ const rows = areas
 
 if (JSON_OUT) {
   console.log(
-    JSON.stringify({ rows, uncovered, uninventoried, warnAt: WARN_AT, failAt: FAIL_AT }, null, 2),
+    JSON.stringify(
+      { rows, uncovered, uninventoried, inventoryMissing, warnAt: WARN_AT, failAt: FAIL_AT },
+      null,
+      2,
+    ),
   );
-  process.exit(
-    uncovered.length || uninventoried.length || rows.some((r) => r.behind > FAIL_AT)
-      ? CHECK
-        ? 1
-        : 0
-      : 0,
-  );
+  const failed =
+    uncovered.length ||
+    uninventoried.length ||
+    inventoryMissing ||
+    rows.some((r) => r.behind > FAIL_AT);
+  process.exit(failed && CHECK ? 1 : 0);
 }
 
 const pad = (s, n) => String(s).padEnd(n);
@@ -271,6 +282,10 @@ if (uncovered.length) {
   for (const u of uncovered) console.log(`  ${u.pkg}  →  write ${DOCS}/${u.expected}`);
 }
 
+if (inventoryMissing) {
+  console.log(`\nThe status inventory is gone: ${INVENTORY}`);
+}
+
 if (uninventoried.length) {
   console.log(`\nHas a page, but no row in ${INVENTORY}:`);
   for (const u of uninventoried) console.log(`  ${u.area}  →  add a row linking ${u.link}`);
@@ -281,8 +296,14 @@ if (!CHECK) {
   process.exit(0);
 }
 
-if (uncovered.length || uninventoried.length || rotted.length) {
+if (uncovered.length || uninventoried.length || inventoryMissing || rotted.length) {
   console.error('\ndocs-drift: FAILED');
+  if (inventoryMissing)
+    console.error(
+      `  the status inventory ${INVENTORY} does not exist. Every engine and vertical would\n` +
+        '  read as inventoried, so the check above would pass by describing nothing. If the page\n' +
+        '  moved, point INVENTORY at where it moved to.',
+    );
   if (uninventoried.length)
     console.error(
       `  ${uninventoried.length} engine(s) or vertical(s) with a page that the status ` +
