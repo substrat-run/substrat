@@ -206,20 +206,13 @@ Engine logic lives in plain exports; the engine's own operations are thin
 inside its own operations does the permission check itself — same transaction, same
 rule as every engine.
 
-```ts
-configureLeaveType(ctx, { key, floor?, active? })                 → LeaveType
-recordEntry(ctx, { subject, leaveTypeKey,                         // accrual|correction|carryover
-                   entryKind, delta, effectiveDate, note? })      → Entry
-requestAbsence(ctx, { subject, leaveTypeKey,
-                      startDate, endDate, days, note? })          → AbsenceRequest
-decideAbsence(ctx, { requestId, decision, note? })                → { request, booking: Entry | null }
-cancelAbsence(ctx, { requestId, reason? })                        → { request, reversal: Entry | null }
-expireStaleRequests(ctx)                                          → { expired: number }
-balanceAsOf(ctx, { subject, leaveTypeKey, asOf? })                → string  // pure fold
-availability(ctx, { subject, from, to })                          → { days, requests }   // D-C
-listRequests(ctx, { subject?, status? })                          → AbsenceRequest[]
-listEntries(ctx, { subject, leaveTypeKey? })                      → Entry[]
-```
+**The signatures live in one place, and it is not here:**
+[`apps/docs/engines/absence/surface.md`](../../apps/docs/engines/absence/surface.md),
+published at [substrat.net/engines/absence/surface](https://substrat.net/engines/absence/surface).
+This page restated them until the copy named ten of the twelve — `listLeaveTypes` and
+`entriesInWindow` never reached it — and gave the ledger row as `Entry` where the engine
+publishes `AbsenceEntry`. That is what [`docs/README.md`](../README.md) means by *nothing
+belongs in both*. What stays here is the reasoning the published page does not carry:
 
 - `recordEntry` is the one write that bypasses the request flow, restricted to
   `accrual | correction | carryover` — `booking` and `reversal` kinds are mintable only
@@ -233,27 +226,24 @@ listEntries(ctx, { subject, leaveTypeKey? })                      → Entry[]
 
 ## 5. Permissions
 
-`absence:read` · `absence:request` · `absence:approve` · `absence:configure`
+`absence:read` · `absence:request` · `absence:approve` · `absence:configure` — what each
+covers, and the self-service shape `absence:request` takes when granted entity-narrowed on a
+subject's own ref, are at
+[`apps/docs/engines/absence/surface.md`](../../apps/docs/engines/absence/surface.md#permissions).
 
-- `absence:request` per-entity (`ctx.check(perm, subjectRef)`) is the self-service
-  path: an employee/fältarbetare books leave for *their own* subject through an
-  entity-narrowed grant. Withdrawing one's own `requested` row rides the same check.
-- `absence:approve` covers decide, cancel-after-approval, and is the check the expiry
-  sweep's system grant projects (#383/#461 machinery, nothing new).
-- `absence:configure` covers leave types and direct `recordEntry` writes.
-- `absence:read` per-entity carries "my balance"; unnarrowed it is the planner's and
-  manager's read (`availability`, request queues).
+The one fact that is internal rather than published: `absence:approve` is also the check the
+expiry sweep's system grant projects (#383/#461 machinery, nothing new here).
 
 ## 6. Events (frozen once shipped)
 
-`absence.leave-type-configured` (`piiClass: 'none'`) ·
-`absence.entry-recorded` · `absence.requested` · `absence.decided` ·
-`absence.cancelled` · `absence.expired`
+All six — each with what it announces, its `piiClass` and what its payload carries — are at
+[`apps/docs/engines/absence/events.md`](../../apps/docs/engines/absence/events.md)
+(published at [substrat.net/engines/absence/events](https://substrat.net/engines/absence/events)).
+The decisions below are what belongs here.
 
-- All subject-bearing events are `piiClass: 'pseudonymous'` with `subjectId` = the
-  stored `data_subject_id` (D-B). Payloads carry the subject ref, leave-type key,
-  dates/days, and entry/request ids — fat enough that no consumer ever needs a
-  cross-module read.
+- Every subject-bearing event is `piiClass: 'pseudonymous'` with `subjectId` = the stored
+  `data_subject_id`, which is D-B paying off: the vertical's erasure key is what the
+  platform erases on, and the engine never learns a name.
 - `absence.decided` carries `decision` and, on approval, the `booking` entry id and
   delta; `absence.cancelled` carries the `reversal` entry id when one was written.
   One transition, one event — no separate `absence.booked` (engine-booking's
