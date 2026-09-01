@@ -324,7 +324,7 @@ export async function answerConversation(
         results: { id: string; title: string; url: string; body: string }[];
       }>('ticket0/search-kb', { q, limit: topK });
       if (found.results.length === 0) continue;
-      context = distinctDocuments(found.results);
+      context = spreadAcrossDocuments(found.results);
       break;
     }
     answer = await model.answer({ question: input.question, context });
@@ -421,23 +421,51 @@ export async function answerConversation(
 }
 
 /**
- * One section per document, best-ranked first.
+ * Breadth first, depth second: every document's best section, then their next-best.
  *
  * The corpus is split at `##`, so a page that answers well answers several times over —
  * and the model was being handed four excerpts from two pages while the customer saw
- * four citations to the same two places. Ranking already put the best section first, so
- * keeping it and dropping the rest of that document costs nothing and buys breadth.
+ * four citations to the same two places. The first fix for that kept ONE section per
+ * document, on the reasoning that ranking had already put the best section first so
+ * dropping the rest cost nothing.
+ *
+ * It cost the answer. bm25's best section of a page is not always the section that
+ * answers the question. Asked *"what connectors exist in Substrat?"*, the index ranked
+ * `/connectors/#what-a-connector-is-not` above `/connectors/#available-connectors` —
+ * the table that lists them — so the one-per-document rule dropped the list and kept a
+ * section explaining what a connector is not, next to two engine pages that describe
+ * the seam in the abstract. The desk answered that Substrat has no connectors.
+ *
+ * So a document may contribute up to `perDocument` sections, but only after every other
+ * document has contributed its first. The citation spread that motivated the original
+ * rule survives — no page can take a second slot while another page is unrepresented —
+ * and a page that genuinely answers twice is allowed to say so.
  */
-function distinctDocuments(
+export function spreadAcrossDocuments(
   results: readonly { id: string; title: string; url: string; body: string }[],
+  perDocument = 2,
 ): RetrievedArticle[] {
-  const seen = new Set<string>();
-  const out: RetrievedArticle[] = [];
+  // Rank order, twice over: `order` is the documents by their best hit, and each
+  // document's own list is the sections in the order the index returned them.
+  const order: string[] = [];
+  const sections = new Map<string, RetrievedArticle[]>();
   for (const r of results) {
     const document = r.url.split('#')[0]!;
-    if (seen.has(document)) continue;
-    seen.add(document);
-    out.push({ id: r.id, title: r.title, url: r.url, body: r.body });
+    let held = sections.get(document);
+    if (!held) {
+      held = [];
+      sections.set(document, held);
+      order.push(document);
+    }
+    held.push({ id: r.id, title: r.title, url: r.url, body: r.body });
+  }
+
+  const out: RetrievedArticle[] = [];
+  for (let round = 0; round < perDocument; round++) {
+    for (const document of order) {
+      const section = sections.get(document)?.[round];
+      if (section) out.push(section);
+    }
   }
   return out;
 }

@@ -23,7 +23,9 @@ import {
   platformModel,
   recordAssistantFailure,
   searchQueriesOf,
+  spreadAcrossDocuments,
   type Model,
+  type RetrievedArticle,
   type ModelDescription,
 } from '../harness/assistant.js';
 import { createModelHost } from '@substrat-run/vertical-host/model';
@@ -339,6 +341,146 @@ describe('turning a question into a search', () => {
 
   it('never produces an empty query, however little the question carries', () => {
     expect(searchQueriesOf('hi!!')).toEqual(['help']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('choosing which sections the model sees', () => {
+  /** A hit list as the index hands it over: rank order, sections carrying anchors. */
+  const hit = (url: string) => ({ id: url, title: url, url, body: url });
+
+  it('leads with one section per document, best-ranked first', () => {
+    const spread = spreadAcrossDocuments([
+      hit('/connectors/#what-a-connector-is-not'),
+      hit('/connectors/#available-connectors'),
+      hit('/engines/invoicing/composing#reaching-the-outside-world'),
+    ]);
+    // Breadth before depth: the second page is ahead of the first page's second
+    // section, so a narrow question still gets more than one place to look.
+    expect(spread.map((s) => s.url)).toEqual([
+      '/connectors/#what-a-connector-is-not',
+      '/engines/invoicing/composing#reaching-the-outside-world',
+      '/connectors/#available-connectors',
+    ]);
+  });
+
+  /**
+   * The regression this function exists for. Asked "what connectors exist in
+   * Substrat?", the index ranked the connectors page's *What a connector is not*
+   * above its *Available connectors* — the table that lists them. One section per
+   * document dropped the table, and the desk told a customer that Substrat has no
+   * connectors while the answer sat one rank below in the same result set.
+   */
+  it('does not drop a page’s answering section for its best-ranked one', () => {
+    const spread = spreadAcrossDocuments([
+      hit('/connectors/#what-a-connector-is-not'),
+      hit('/connectors/#available-connectors'),
+    ]);
+    expect(spread.map((s) => s.url)).toContain('/connectors/#available-connectors');
+  });
+
+  it('caps a document so one page cannot crowd out the rest', () => {
+    const spread = spreadAcrossDocuments([
+      hit('/connectors/#one'),
+      hit('/connectors/#two'),
+      hit('/connectors/#three'),
+      hit('/guide/deploying#four'),
+    ]);
+    expect(spread.filter((s) => s.url.startsWith('/connectors/'))).toHaveLength(2);
+    expect(spread.map((s) => s.url)).not.toContain('/connectors/#three');
+  });
+
+  it('treats a page with no anchor as its own document', () => {
+    const spread = spreadAcrossDocuments([hit('/connectors/'), hit('/connectors/#available-connectors')]);
+    expect(spread).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('what reaches the model', () => {
+  /**
+   * A page that answers in several sections, and a second page that answers in one —
+   * the shape the real corpus has and the shape the one-per-document rule mishandled.
+   */
+  const CORPUS = [
+    '# What is a connector?',
+    '',
+    'Source: https://docs.kestrel.example/connectors.md',
+    '',
+    '## What a connector is not',
+    '',
+    'A connector is not an engine and not an adapter. It owns no tables, no domain',
+    'state and no permissions of its own; it consumes an event and effects something',
+    'outside. Nothing here lists which connectors a deployment can actually use.',
+    '',
+    '## Available connectors',
+    '',
+    'The connectors that exist today, one row each. Kestrel Sign is published and',
+    'connects a tenant’s signing account; the accounting connectors are not written',
+    'yet. This is the list a person asking "which connectors exist" wants.',
+    '',
+    '# Deploying',
+    '',
+    'Source: https://docs.kestrel.example/deploying.md',
+    '',
+    'A push builds the vertical and binds it to a hostname. Connectors are declared by',
+    'the vertical and run by the platform, so a deploy carries whichever connectors',
+    'exist for it along with everything else.',
+  ].join('\n');
+
+  const fakeFetch = (async () => new Response(CORPUS)) as unknown as typeof fetch;
+
+  /** A model that answers blandly and remembers what it was given. */
+  const capturing = (): Model & { context: RetrievedArticle[] } => {
+    const model = {
+      label: 'test/capturing',
+      context: [] as RetrievedArticle[],
+      async answer(input: { question: string; context: RetrievedArticle[] }) {
+        model.context = input.context;
+        return { text: 'Kestrel Sign.', inputTokens: 10, outputTokens: 5, confidence: 0.9 };
+      },
+    };
+    return model;
+  };
+
+  it('hands over the section that answers, not only the page’s best-ranked one', async () => {
+    const admin = await at(world.kestrel, 'admin');
+    const sources = (await admin.invoke('ticket0/list-kb-sources', {})) as Page<{ id: string; kind: 'llms-txt'; url: string }>;
+    await runIngest(asTarget(admin), sources.entries[0]!, fakeFetch);
+
+    const widget = await at(world.kestrel, 'widget');
+    const desk = world.kestrel;
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: desk.origin,
+      identity: {
+        externalId: desk.customer.email,
+        signature: await signIdentity(desk.verificationSecret, desk.customer.email),
+      },
+    })) as { sessionId: string; token: string };
+    const question = 'What connectors exist?';
+    const message = (await widget.invoke('ticket0/widget-post', {
+      sessionId: started.sessionId,
+      token: started.token,
+      body: question,
+    })) as { id: string; conversation_id: string };
+
+    const model = capturing();
+    const { autonomous } = (await widget.invoke('ticket0/assistant-mode', {})) as { autonomous: boolean };
+    await answerConversation(
+      asTarget(await at(desk, autonomous ? 'assistantAutonomous' : 'assistant')),
+      { conversationId: message.conversation_id, messageId: message.id, question },
+      model,
+    );
+
+    // The whole point: the listing section is in front of the model. Which of the
+    // page’s two sections bm25 prefers is the index’s business and not asserted —
+    // what is asserted is that preferring one no longer discards the other.
+    const titles = model.context.map((c) => c.title);
+    expect(titles).toContain('What is a connector? — Available connectors');
+    // And breadth survives: the other page is still represented.
+    expect(model.context.some((c) => c.url.includes('/deploying'))).toBe(true);
   });
 });
 
