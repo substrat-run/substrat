@@ -45,6 +45,8 @@ export interface AssistantStatus {
       error: string | null;
       created_at: string;
     }[];
+    /** Waiting for a person, at ANY age — not only inside the window above. */
+    waitingTotal: number;
     /** The newest drafted answers, so a panel can send somebody to them. */
     waiting: {
       id: string;

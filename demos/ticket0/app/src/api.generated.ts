@@ -276,7 +276,7 @@ export interface Ticket0Client {
    *
    * `GET /assistant/health` — `ticket0/assistant-health`
    */
-  assistantHealth(): Promise<{ since: string; turns: number; failed: number; drafted: number; supervised: boolean; recent: ({ id: string; conversation_id: string; subject: string; model: string; error: string | null; created_at: string })[]; waiting: { id: string; conversation_id: string; subject: string; model: string; created_at: string }[] }>;
+  assistantHealth(): Promise<{ since: string; turns: number; failed: number; drafted: number; supervised: boolean; recent: ({ id: string; conversation_id: string; subject: string; model: string; error: string | null; created_at: string })[]; waitingTotal: number; waiting: { id: string; conversation_id: string; subject: string; model: string; created_at: string }[] }>;
 
   /**
    * Whether this desk’s assistant sends its own answers

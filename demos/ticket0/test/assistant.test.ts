@@ -13,6 +13,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Page } from '@substrat-run/contracts';
+import { manualClock } from '@substrat-run/kernel';
 import type { ScopeHost, ScopeStub } from '@substrat-run/kernel';
 import {
   answerConversation,
@@ -705,6 +706,92 @@ describe('answering a customer', () => {
     expect(after.waiting.map((w) => w.conversation_id)).toContain(r.conversationId);
     expect(after.waiting[0]?.subject).toBeTruthy();
   });
+
+  /**
+   * Turning the assistant loose does not send what it already drafted — and must not
+   * hide it either.
+   *
+   * The panel used to gate the waiting list on the desk being supervised, so flipping
+   * to autonomous made an existing backlog vanish from the one screen that knew about
+   * it. That is the worst possible moment to hide it: nothing will ever send those
+   * answers automatically, and the customers who asked are still waiting.
+   */
+  it('answers already waiting survive the desk being turned loose', async () => {
+    const dana = await at(world.kestrel, 'admin');
+    const r = await ask(world.kestrel, 'How do I rotate an API key?');
+    expect(r.outcome).toBe('drafted');
+
+    await dana.invoke('ticket0/configure-desk', { assistantAutonomous: true });
+    try {
+      const health = (await dana.invoke('ticket0/assistant-health', {})) as {
+        supervised: boolean;
+        waitingTotal: number;
+        waiting: { id: string }[];
+      };
+      expect(health.supervised).toBe(false);
+      expect(health.waitingTotal).toBeGreaterThan(0);
+      expect(health.waiting.map((w) => w.id)).toContain(r.turnId);
+    } finally {
+      await dana.invoke('ticket0/configure-desk', { assistantAutonomous: false });
+    }
+  });
+
+  /**
+   * And age is not what makes an answer waiting — being unsent is.
+   *
+   * The counts above are a 24-hour window, which is right for them and wrong for this:
+   * a draft nobody sent three days ago is more urgent than one from an hour ago, so it
+   * has to still be on the list. `manualClock` moves the desk past the window rather
+   * than sleeping through it.
+   */
+  it('a draft older than the counting window is still waiting', async () => {
+    // Its OWN world, on its own clock: advancing three days inside the shared one would
+    // move every later case in this file out of the window its counts are about.
+    const ownDir = mkdtempSync(join(tmpdir(), 'ticket0-waiting-age-'));
+    try {
+      const clock = manualClock('2026-03-02T09:00:00.000Z');
+      const ownHost = buildHost(ownDir, clock.read);
+      const ownWorld = await seed(ownHost);
+      const desk = ownWorld.kestrel;
+      const dana = await ownHost.getScope(desk.admin.principal, desk.tenant, desk.scope);
+
+      const widget = await ownHost.getScope(desk.widget.principal, desk.tenant, desk.scope);
+      const started = (await widget.invoke('ticket0/widget-start', {
+        origin: desk.origin,
+        identity: {
+          externalId: desk.customer.email,
+          signature: await signIdentity(desk.verificationSecret, desk.customer.email),
+        },
+      })) as { sessionId: string; token: string };
+      const question = 'How do I rotate an API key?';
+      const message = (await widget.invoke('ticket0/widget-post', {
+        sessionId: started.sessionId,
+        token: started.token,
+        body: question,
+      })) as { id: string; conversation_id: string };
+      const assistant = await ownHost.getScope(desk.assistant.principal, desk.tenant, desk.scope);
+      const r = await answerConversation(
+        asTarget(assistant),
+        { conversationId: message.conversation_id, messageId: message.id, question },
+        fakeModel(),
+      );
+      expect(r.outcome).toBe('drafted');
+
+      clock.advance(3 * 24 * 60 * 60 * 1000);
+      const health = (await dana.invoke('ticket0/assistant-health', {})) as {
+        drafted: number;
+        waitingTotal: number;
+        waiting: { id: string }[];
+      };
+      // Out of the window the counts describe...
+      expect(health.drafted).toBe(0);
+      // ...and still on the list, because nobody sent it.
+      expect(health.waiting.map((w) => w.id)).toContain(r.turnId);
+      expect(health.waitingTotal).toBeGreaterThan(0);
+    } finally {
+      rmSync(ownDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   /**
    * A person sends the draft, and it stops waiting.
