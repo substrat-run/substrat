@@ -779,6 +779,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * unchanged docs site produces an empty diff rather than a full one.
    */
   'ticket0/record-kb-articles': {
+    // Not a tool: the harness writes its own result back here — a connector's return path, not a verb.
+    mcp: false,
     summary: 'Record the articles an ingest produced',
     permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
     input: z.object({
@@ -818,6 +820,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * on the row — a failed read is a health signal, not a spinner.
    */
   'ticket0/record-kb-ingest-failure': {
+    // Not a tool: the harness writes its own result back here — a connector's return path, not a verb.
+    mcp: false,
     summary: 'Record that a documentation source could not be read',
     permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
     input: z.object({ sourceId: z.string(), error: z.string().min(1) }),
@@ -1062,6 +1066,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * predates the client columns — the rail simply has no card to show.
    */
   'ticket0/widget-session': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
     summary: 'The browser session behind a widget conversation',
     permission: { key: 'conversation:read', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({ conversationId: z.string() }),
@@ -1275,6 +1281,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * doors a conversation came back through.
    */
   'ticket0/wake-snoozed': {
+    // Not a tool: a schedule's entry point; nothing calls it by hand.
+    mcp: false,
     summary: 'Wake every conversation whose snooze has elapsed',
     permission: 'conversation:assign',
     output: z.object({ woke: z.number().int() }),
@@ -1616,6 +1624,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * a separate act with a separate permission — which is the entire design.
    */
   'ticket0/record-answer': {
+    // Not a tool: the harness writes its own result back here — a connector's return path, not a verb.
+    mcp: false,
     summary: 'Record an assistant answer and its token usage',
     permission: { key: 'conversation:draft', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({
@@ -1667,6 +1677,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * outcome, same card in the desk; no tokens, because nothing ran.
    */
   'ticket0/record-assistant-failure': {
+    // Not a tool: the harness writes its own result back here — a connector's return path, not a verb.
+    mcp: false,
     summary: 'Record that the assistant could not act on a message',
     permission: { key: 'conversation:widget', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({
@@ -1985,6 +1997,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * conversation this belongs to has already been made from the mail headers.
    */
   'ticket0/ingest-message': {
+    // Not a tool: the email relay's own surface — it brings mail in and reports what it sent.
+    mcp: false,
     summary: 'Record a message that arrived from outside',
     permission: 'conversation:relay',
     input: z.object({
@@ -2018,6 +2032,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * the send find nothing. That is the correct outcome and the reason for the shape.
    */
   'ticket0/read-outbound': {
+    // Not a tool: the email relay's own surface — it brings mail in and reports what it sent.
+    mcp: false,
     summary: 'Read a message the relay is about to send',
     permission: 'conversation:relay',
     input: z.object({ messageId: z.string() }),
@@ -2036,6 +2052,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   'ticket0/record-delivery': {
+    // Not a tool: the email relay's own surface — it brings mail in and reports what it sent.
+    mcp: false,
     summary: 'Record that the relay delivered a message',
     permission: 'conversation:relay',
     input: z.object({ messageId: z.string(), emailMessageId: z.string() }),
@@ -2073,6 +2091,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * A visitor can neither call it nor enumerate a desk's origins with it.
    */
   'ticket0/widget-origins': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
     summary: 'The origins this desk may be embedded on',
     permission: 'conversation:widget',
     output: z.object({ origins: z.array(z.string()) }),
@@ -2092,6 +2112,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * grants nothing on its own: the principal it selects is where the authority lives.
    */
   'ticket0/assistant-mode': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
     summary: 'Whether this desk’s assistant sends its own answers',
     permission: 'conversation:widget',
     output: z.object({ autonomous: z.boolean() }),
@@ -2118,6 +2140,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * first message binds one.
    */
   'ticket0/widget-start': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
     summary: 'Open a chat session from an embedded widget',
     // The desk's widget service holds this, and nobody else. It is the authority to
     // OPEN a conversation; what the visitor may then do with it is the token.
@@ -2165,6 +2189,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   'ticket0/widget-post': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
     summary: 'Say something in the widget',
     // The key admits the widget service; the TOKEN decides which conversation. Note
     // what is absent from the input: there is no conversation id to widen.
@@ -2195,6 +2221,8 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * operation with a `visibility` branch is how internal notes leak.
    */
   'ticket0/widget-thread': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
     summary: 'The public messages in this session’s conversation',
     permission: 'conversation:widget',
     input: z.object({ sessionId: z.string(), token: z.string() }),

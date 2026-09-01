@@ -40,6 +40,7 @@ import {
 } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { classifyError } from './errors.js';
+import { mountMcp, type MountMcpOptions } from './mcp.js';
 
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
 
@@ -224,6 +225,17 @@ export interface MountOperationsOptions {
     error: unknown,
     operation: string,
   ) => Response | Promise<Response> | undefined | Promise<undefined>;
+  /**
+   * The MCP rendering of these same operations (#112).
+   *
+   * ON by default, and zero rows of setup: a vertical that mounts its operations has
+   * an MCP endpoint at `${basePath}/mcp`. It adds no reachability — every tool is a
+   * route that already exists, behind the same auth and the same permission check —
+   * so defaulting it on is a rendering decision rather than a permission one.
+   *
+   * `false` turns it off. An object configures it (`path`, `serverInfo`).
+   */
+  readonly mcp?: false | MountMcpOptions;
 }
 
 /** A request body, or the 400 it deserves. */
@@ -566,6 +578,15 @@ export function mountOperations(
     else app.delete(full, handler);
 
     mounted.push({ operation: name, method, path: full });
+  }
+
+  // The third rendering of the catalog these routes are the first of (#112). Mounted
+  // from here rather than asked for, because it is derived from exactly what was just
+  // mounted: an operation with `http` is a route AND a tool, and there is no second
+  // declaration that could disagree. Not added to `mounted` — the return value names
+  // operation routes, and this is one endpoint carrying all of them.
+  if (options.mcp !== false) {
+    mountMcp(app, operations, resolveStub, { ...(options.mcp ?? {}), basePath: base });
   }
 
   return mounted;

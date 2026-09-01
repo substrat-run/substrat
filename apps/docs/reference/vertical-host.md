@@ -98,6 +98,18 @@ headers and their semantics are specified in API design —
 [§7 writes are safe to retry](/concepts/api-design#_7-writes-are-safe-to-retry) and
 [§7b a read-modify-write says what it is writing over](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over).
 
+### It also mounts the MCP surface
+
+The same call renders those operations a second way: an
+[MCP](https://modelcontextprotocol.io) endpoint at `${basePath}/mcp`, one tool per
+operation that declares `http`, dispatching through the same `resolveStub` and the same
+permission checks. On by default and zero rows of setup — `mcp: false` in the options
+turns it off, and `mcp: { path, serverInfo }` configures it. Per operation, `mcp: false`
+keeps a machine-facing route out of the tool list.
+
+`mcpToolsOf(operations)` is exported so a vertical can see or assert its own tool surface
+without standing up a server. See [the MCP surface](/concepts/mcp).
+
 ### The scope host is structural
 
 `hostFor` returns anything satisfying the `VerticalScopeHost` interface — the `…Local`

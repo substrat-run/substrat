@@ -135,6 +135,7 @@ export function guideSidebar() {
         { text: 'Lifecycles', link: '/concepts/lifecycle' },
         { text: 'Modules & the manifest', link: '/concepts/modules' },
         { text: 'What a good API looks like', link: '/concepts/api-design' },
+        { text: 'The MCP surface', link: '/concepts/mcp' },
         { text: 'Money', link: '/concepts/money' },
       ],
     },

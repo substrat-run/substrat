@@ -9,6 +9,7 @@ export {
   AUTH_CONFIG_KEY,
   AuthConfigError,
   authChoice,
+  authorizationServersOf,
   instanceAuthFor,
   parseAuthChoice,
   selectAuthProvider,

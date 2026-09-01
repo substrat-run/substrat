@@ -15,6 +15,15 @@ export function mountApi(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: Hono<any, any, any>,
   resolveStub: ResolveStub,
+  /**
+   * Which issuer mints tokens for THIS desk, resolved per request (RFC 9728).
+   *
+   * The MCP endpoint mounts either way; this is what lets a client that gets a 401
+   * discover where to authenticate instead of being handed a token by hand. It is a
+   * parameter rather than a constant because a hosted desk's issuer is per-install
+   * configuration — one script serving many issuers.
+   */
+  authorizationServers?: (c: Context) => Promise<readonly string[]>,
 ): { operation: string; method: string; path: string }[] {
   // The mount decides the status for everything the kernel itself names — a refused
   // permission, an input that failed to parse, an anonymous call — and re-throws the
@@ -22,5 +31,7 @@ export function mountApi(
   // what is left of the error map is nothing.
   app.onError((err, c: Context) => problemResponse(c, err));
 
-  return mountOperations(app, ticket0Operations, resolveStub);
+  return mountOperations(app, ticket0Operations, resolveStub, {
+    ...(authorizationServers ? { mcp: { protectedResource: { authorizationServers } } } : {}),
+  });
 }
