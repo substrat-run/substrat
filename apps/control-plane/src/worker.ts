@@ -748,12 +748,21 @@ function resolveVerticalForScopeFor(
 async function reconcileOneScope(env: Env, t: TenantId, s: ScopeId): Promise<void> {
   const host = hostFor(env);
   const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, t, s);
-  if (!rec?.vertical) return;
+  /**
+   * Both of these THROW rather than returning quietly, and the difference matters more
+   * than it looks: the sweep marks a scope provisioned when this resolves. A silent
+   * return would therefore write a receipt for a reconcile that never ran — and the
+   * scope would stop retrying once its deployment finally appeared, which is the exact
+   * failure this whole feature exists to prevent, reintroduced one layer down.
+   *
+   * An active scope whose vertical resolves no deployment is genuinely broken (it
+   * cannot serve a request either), so saying so once per pass is a diagnosis rather
+   * than noise.
+   */
+  if (!rec?.vertical) throw new Error(`scope ${s} is bound to no vertical — nothing to reconcile`);
   const client = await resolveVerticalForScopeFor(env)(rec);
   if (!client) {
-    // No deployment bound: there is nothing to reconcile INTO, and reporting it as a
-    // failure every pass would be noise about a scope nobody can repair from here.
-    return;
+    throw new Error(`no deployment is bound for vertical '${rec.vertical}' — cannot reconcile`);
   }
   const payload = await reconcilePayloadFor(
     host.admin as unknown as Parameters<typeof reconcilePayloadFor>[0],

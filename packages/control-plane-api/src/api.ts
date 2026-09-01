@@ -3010,10 +3010,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           ...(tenantStores.length ? { tenantStores } : {}),
         }),
       );
-      // #1172: a fresh install has just had its provision hook run against the version
-      // it is bound to, so it starts with a receipt rather than being swept once for no
-      // reason. Read back rather than assumed — the bind happened earlier in this
-      // request, and what the sweep compares against is the stored row.
+      // #1172: the hook has just run, so record what it ran against — WHEN the scope is
+      // already bound to a version. Often it is not: this route does not bind, and the
+      // usual install order binds afterwards (adopt-serving), in which case there is
+      // nothing truthful to record yet and the sweep's first pass reconciles once. That
+      // is the right trade — a receipt written before a bind would name no version, and
+      // one guessed from the serving pointer would claim a hook ran against code this
+      // scope was not running.
       const provisioned = await admin.getScopeRecord(c.get('actor'), input.tenantId, input.scopeId);
       if (provisioned?.verticalVersionId) {
         await admin.markScopeProvisioned(

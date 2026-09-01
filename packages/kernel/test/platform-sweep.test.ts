@@ -59,6 +59,7 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     verticalVersionId: string | null;
     provisionedVersionId: string | null;
     forkedFrom?: string | null;
+    kind?: string;
   };
 
   function hostWithScopes(scopes: FakeScope[]) {
@@ -171,6 +172,28 @@ describe('runPlatformSweep · provision reconcile (#1172)', () => {
     ]);
     const report = await sweep(host, async () => {
       throw new Error('must not reconcile a fork');
+    });
+    expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
+  });
+
+  /**
+   * A CLEAN-ROOM preview (#509) is an empty scope with no source to copy, so it has
+   * `kind: 'preview'` and NO `forkedFrom` — the reap sweep keys on `kind` for the same
+   * reason. Filtering on lineage alone would let precisely these through, and a preview
+   * is the one place a vertical's install-side hook is least wanted.
+   */
+  it('skips a clean-room preview, which has no lineage to filter on', async () => {
+    const { host } = hostWithScopes([
+      {
+        id: sid(),
+        tenantId: T,
+        verticalVersionId: 'v2',
+        provisionedVersionId: 'v1',
+        kind: 'preview',
+      },
+    ]);
+    const report = await sweep(host, async () => {
+      throw new Error('must not reconcile a clean-room preview');
     });
     expect(report.provisionReconcile).toEqual({ behind: 0, reconciled: 0, failed: 0 });
   });

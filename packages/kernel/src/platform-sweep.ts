@@ -553,11 +553,18 @@ export async function runPlatformSweep(
   if (options.reconcileScopeFn) {
     const reconcile = options.reconcileScopeFn;
     const provisionReconcile: ProvisionReconcileReport = { behind: 0, reconciled: 0, failed: 0 };
-    // Primaries only. A fork is a preview or an archive of somebody else's data — it
-    // serves no install, and re-provisioning one would run a vertical's hook against a
-    // copy, minting a second set of whatever the hook mints.
+    /**
+     * Primaries only — and that takes BOTH tests, not one.
+     *
+     * A fork is an archive or a preview of somebody else's data, and re-provisioning one
+     * runs the vertical's install-side hook against a copy, minting a second set of
+     * whatever it mints. But a CLEAN-ROOM preview (#509) is an empty scope with no source
+     * to copy, so it carries `kind: 'preview'` and NO `forkedFrom` — the reap sweep keys
+     * on `kind` for exactly that reason. Filtering on lineage alone would let those
+     * through, which is the one shape of scope where the hook's effects are least wanted.
+     */
     const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
-      (s) => !s.forkedFrom,
+      (s) => !s.forkedFrom && s.kind !== 'preview',
     );
     await mapBounded(scopes, concurrency, async (s) => {
       if (failedThisPass.has(s.id)) return;
