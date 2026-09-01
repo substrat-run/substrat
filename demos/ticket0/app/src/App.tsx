@@ -100,6 +100,21 @@ const CLAIM_TOKEN = PARAMS.get('claim');
 const INVITE_TOKEN = PARAMS.get('invite');
 
 /**
+ * Drop a spent token from the URL and re-enter the app normally.
+ *
+ * Both screens below return BEFORE the desk renders, so an error state with no action
+ * is a dead end — and a link is reopened all the time: the person kept it, or the
+ * browser restored the tab. A signed-in colleague who lands there would otherwise have
+ * to edit the address bar by hand.
+ */
+function forget(param: string) {
+  const url = new URL(location.href);
+  url.searchParams.delete(param);
+  history.replaceState({}, '', url.pathname + url.search + url.hash);
+  location.reload();
+}
+
+/**
  * Claim the owner seat. The token rides the sign-in round-trip: try the claim at once (a
  * session may already exist), and on 401 send them to the issuer, returning here with the
  * token still in the URL. On success the token leaves the URL and `/api/me` resolves the owner.
@@ -142,6 +157,11 @@ function ClaimOwner({ token }: { token: string }) {
       {state === 'needs-login' && (
         <button className="btn btn-primary" onClick={() => auth.login(`/?claim=${encodeURIComponent(token)}`)}>
           Sign in
+        </button>
+      )}
+      {state === 'error' && (
+        <button className="btn" onClick={() => forget('claim')}>
+          Continue to the desk
         </button>
       )}
     </Splash>
@@ -198,6 +218,11 @@ function AcceptInvite({ token }: { token: string }) {
           onClick={() => auth.login(`/?invite=${encodeURIComponent(token)}`)}
         >
           Sign in
+        </button>
+      )}
+      {state === 'error' && (
+        <button className="btn" onClick={() => forget('invite')}>
+          Continue to the desk
         </button>
       )}
     </Splash>

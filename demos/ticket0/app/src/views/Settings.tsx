@@ -19,6 +19,7 @@ import {
   type PendingInvite,
   type Session,
 } from '../api.js';
+import { forgetAgents } from '../agents.js';
 import { contacts } from '../contacts.js';
 import { Avatar, Dot, Empty, UnitPrice, ago } from '../ui.js';
 
@@ -154,7 +155,11 @@ function Team({ session }: { session: Session }) {
   const [staff, setStaff] = useState<AgentProfile[] | null>(null);
   const [pending, setPending] = useState<PendingInvite[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
-  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+  // Two reads, two failures. They are independent — inviting somebody does not depend
+  // on the roster loading — so one of them going down must not take the other's section
+  // with it, which a single page-level state would. Same split as `Desk` and `Knowledge`.
+  const [staffFailed, setStaffFailed] = useState<string | null>(null);
+  const [inviteFailed, setInviteFailed] = useState<string | null>(null);
 
   const [role, setRole] = useState('agent');
   const [email, setEmail] = useState('');
@@ -171,16 +176,20 @@ function Team({ session }: { session: Session }) {
     // somebody has just changed who is in it.
     void api
       .listAgents()
-      .then((p) => setStaff(p.entries))
-      .catch((e: Error) => setLoadFailed(e.message));
+      .then((p) => {
+        setStaff(p.entries);
+        setStaffFailed(null);
+      })
+      .catch((e: Error) => setStaffFailed(e.message));
     void invites
       .list()
       .then((r) => {
         setPending(r.invites);
         setRoles(r.roles);
         setRole((cur) => (r.roles.includes(cur) ? cur : (r.roles[0] ?? '')));
+        setInviteFailed(null);
       })
-      .catch((e: Error) => setLoadFailed(e.message));
+      .catch((e: Error) => setInviteFailed(e.message));
   }, []);
   useEffect(load, [load]);
 
@@ -224,8 +233,6 @@ function Team({ session }: { session: Session }) {
     }
   };
 
-  if (loadFailed) return <Empty title="Could not load the team" note={loadFailed} />;
-
   return (
     <>
       <Head
@@ -237,7 +244,11 @@ function Team({ session }: { session: Session }) {
         On the desk
       </div>
       <div style={{ marginBottom: 26 }}>
-        {staff === null ? (
+        {staffFailed ? (
+          <div className="t-small" style={{ color: 'var(--red, #b3261e)' }}>
+            Could not load the roster — {staffFailed}
+          </div>
+        ) : staff === null ? (
           <div className="t-meta">Loading…</div>
         ) : staff.length === 0 ? (
           <div className="t-small" style={{ color: 'var(--secondary)' }}>
@@ -278,106 +289,118 @@ function Team({ session }: { session: Session }) {
           marginBottom: 26,
         }}
       >
-        {failed ? (
-          <div className="t-small" style={{ color: 'var(--red, #b3261e)', marginBottom: 10 }}>
-            {failed}
+        {inviteFailed ? (
+          <div className="t-small" style={{ color: 'var(--red, #b3261e)' }}>
+            Could not load the invites — {inviteFailed}
           </div>
-        ) : null}
-        <Field
-          label="Email"
-          hint="For your own reference. The invite is claimed by whoever opens the link and signs in — this desk hosts no sign-up and sends no mail here."
-        >
-          <input
-            className="input"
-            type="email"
-            placeholder="colleague@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </Field>
-        <Field label="Role" hint={ROLE_NOTE[role]}>
-          <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>
-            {roles.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {role === 'customer' ? (
-          <Field
-            label="Whose conversations"
-            hint="A customer sees one contact's own history and nothing else — pick which."
-          >
-            <select
-              className="input"
-              value={contactId}
-              onChange={(e) => setContactId(e.target.value)}
+        ) : (
+          <>
+            {failed ? (
+              <div className="t-small" style={{ color: 'var(--red, #b3261e)', marginBottom: 10 }}>
+                {failed}
+              </div>
+            ) : null}
+            <Field
+              label="Email"
+              hint="For your own reference. The invite is claimed by whoever opens the link and signs in — this desk hosts no sign-up and sends no mail here."
             >
-              <option value="">Choose a contact…</option>
-              {people.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.display_name ?? c.email ?? c.id}
-                </option>
-              ))}
-            </select>
-          </Field>
-        ) : null}
-        <button
-          className="btn btn-primary"
-          disabled={busy || !role || (role === 'customer' && !contactId)}
-          onClick={() => void create()}
-        >
-          {busy ? 'Creating…' : 'Create invite link'}
-        </button>
-        {link ? (
-          <div style={{ marginTop: 14 }}>
-            <div className="t-small" style={{ marginBottom: 6 }}>
-              Send this link to them. It works once, and it is shown once — only its hash
-              is kept here.
-            </div>
-            <div style={{ display: 'flex', gap: 8 }}>
               <input
-                className="input mono"
-                readOnly
-                value={link}
-                onFocus={(e) => e.currentTarget.select()}
+                className="input"
+                type="email"
+                placeholder="colleague@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
               />
-              <button
-                className="btn"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(link);
-                  setCopied(true);
-                }}
+            </Field>
+            <Field label="Role" hint={ROLE_NOTE[role]}>
+              <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>
+                {roles.map((r) => (
+                  <option key={r} value={r}>
+                    {r}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {role === 'customer' ? (
+              <Field
+                label="Whose conversations"
+                hint="A customer sees one contact's own history and nothing else — pick which."
               >
-                {copied ? 'Copied' : 'Copy'}
-              </button>
-            </div>
-          </div>
-        ) : null}
+                <select
+                  className="input"
+                  value={contactId}
+                  onChange={(e) => setContactId(e.target.value)}
+                >
+                  <option value="">Choose a contact…</option>
+                  {people.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.display_name ?? c.email ?? c.id}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
+            <button
+              className="btn btn-primary"
+              disabled={busy || !role || (role === 'customer' && !contactId)}
+              onClick={() => void create()}
+            >
+              {busy ? 'Creating…' : 'Create invite link'}
+            </button>
+            {link ? (
+              <div style={{ marginTop: 14 }}>
+                <div className="t-small" style={{ marginBottom: 6 }}>
+                  Send this link to them. It works once, and it is shown once — only its hash
+                  is kept here.
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input
+                    className="input mono"
+                    readOnly
+                    value={link}
+                    onFocus={(e) => e.currentTarget.select()}
+                  />
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      void navigator.clipboard?.writeText(link);
+                      setCopied(true);
+                    }}
+                  >
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
 
-      <div className="micro" style={{ marginBottom: 8 }}>
-        Invited, not yet arrived
-      </div>
-      {pending.length === 0 ? (
-        <div className="t-small" style={{ color: 'var(--secondary)' }}>
-          No outstanding invites.
-        </div>
-      ) : (
-        pending.map((i) => (
-          <Row key={i.principal}>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div className="t-strong">{i.email ?? 'Invite'}</div>
-              <div className="t-small" style={{ color: 'var(--secondary)' }}>
-                {i.roleKey} · {ago(i.created_at)}
-              </div>
+      {inviteFailed ? null : (
+        <>
+          <div className="micro" style={{ marginBottom: 8 }}>
+            Invited, not yet arrived
+          </div>
+          {pending.length === 0 ? (
+            <div className="t-small" style={{ color: 'var(--secondary)' }}>
+              No outstanding invites.
             </div>
-            <button className="btn btn-ghost" onClick={() => void revoke(i.principal)}>
-              Revoke
-            </button>
-          </Row>
-        ))
+          ) : (
+            pending.map((i) => (
+              <Row key={i.principal}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div className="t-strong">{i.email ?? 'Invite'}</div>
+                  <div className="t-small" style={{ color: 'var(--secondary)' }}>
+                    {i.roleKey} · {ago(i.created_at)}
+                  </div>
+                </div>
+                <button className="btn btn-ghost" onClick={() => void revoke(i.principal)}>
+                  Revoke
+                </button>
+              </Row>
+            ))
+          )}
+        </>
       )}
     </>
   );
@@ -455,6 +478,10 @@ function You({ session }: { session: Session }) {
         avatarUrl: null,
         signature: profile.signature.trim() || null,
       });
+      // The directory this just changed is cached for the life of the tab, and the two
+      // screens that read it are one navigation away. A failed save leaves the cache
+      // alone: nothing changed, so nothing needs re-reading.
+      forgetAgents();
       setSaved(true);
     } catch (e) {
       setFailed(e instanceof Error ? e.message : String(e));

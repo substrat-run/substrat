@@ -101,8 +101,23 @@ export interface CreatedInvite extends PendingInvite {
 async function inviteCall<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: 'same-origin', ...init });
   const text = await res.text();
-  const body: unknown = text ? JSON.parse(text) : null;
-  if (!res.ok) throw new ApiError(res.status, problemDetail(body) ?? res.statusText, body);
+  // A body that is not JSON — a proxy's HTML 502, a gateway's plain text — must not
+  // throw before the status is read: `accept` below tells "sign in first" from "spent
+  // link" by the STATUS, and a `SyntaxError` carries none. So a parse failure degrades
+  // to a null body and the response still becomes an `ApiError` with its status.
+  let body: unknown = null;
+  let parsed = true;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = false;
+  }
+  // `statusText` is EMPTY over HTTP/2 — which is what the hosted desk speaks — so it
+  // cannot be the last resort: an empty message renders as no message at all on a
+  // screen that decides whether to say anything by whether it has one.
+  if (!res.ok)
+    throw new ApiError(res.status, problemDetail(body) || res.statusText || `${res.status}`, parsed ? body : text);
+  if (!parsed) throw new ApiError(res.status, 'The desk answered with something that is not JSON.', text);
   return body as T;
 }
 

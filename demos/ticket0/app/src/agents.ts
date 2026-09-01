@@ -32,6 +32,18 @@ async function everyAgent(): Promise<Map<string, AgentProfile>> {
   }
 }
 
+/**
+ * Forget the directory, so the next `agents()` reads it again.
+ *
+ * The cache lives for the tab, which is right for a hundred inbox rows resolving one
+ * name each and wrong the moment somebody changes who is IN it. Saving a profile is
+ * exactly that: without this, returning to the inbox still shows "nobody can hand you
+ * work" and the picker still omits the person who just joined the directory.
+ */
+export function forgetAgents(): void {
+  cache = null;
+}
+
 export function agents(): Promise<Map<string, AgentProfile>> {
   cache ??= everyAgent().catch(() => {
     // A caller who may not read the desk gets the empty map — but the failure is not
