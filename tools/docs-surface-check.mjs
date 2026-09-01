@@ -21,8 +21,8 @@
  *
  *   1. **Nothing documented is imaginary.** Every `name(` in a table row or a
  *      ```ts fence under "In-scope functions", and every `<engine>/<op>` key in
- *      a backtick anywhere on the page, names something the engine really
- *      exports or really registers.
+ *      a table row, names something the engine really exports or really
+ *      registers. Prose is deliberately not read — see `documentedFunctions`.
  *   2. **Nothing exported is unmentioned.** Every exported function whose first
  *      parameter is `ctx` — the in-scope surface, by definition — and every
  *      declared operation key is named somewhere on the page.
@@ -64,10 +64,11 @@ const CTX_FIRST = [
 
 /**
  * Every name `src/index.ts` exports, plus the subset that is an in-scope
- * function. "In-scope function" is not a list we keep: it is `export function
- * f(ctx, …)`, which is precisely the shape a vertical composes inside its own
- * operation. A re-export block is followed one hop into the local file it names
- * so an engine that keeps its lifecycle in `lifecycle.ts` reads the same.
+ * function. "In-scope function" is not a list we keep: it is any exported
+ * `(ctx, …)` function — see `CTX_FIRST` — which is precisely the shape a
+ * vertical composes inside its own operation. A re-export block is followed one
+ * hop into the local file it names, so an engine that keeps its lifecycle in
+ * `lifecycle.ts` reads the same.
  */
 function exportsOf(engineDir) {
   /** Names the package's entry point really hands out. */
