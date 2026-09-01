@@ -20,8 +20,15 @@ describe('the privileged worker bundles no vertical module code', () => {
   // `.href` on the way in deliberately: the worker types put a DOM `URL` in scope, which
   // is not node's, so the object overload of `fileURLToPath` does not accept it here.
   const read = (rel: string) => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url).href), 'utf8');
-  /** Every `from '<specifier>'` in a source file, in order. */
-  const importsOf = (src: string) => [...src.matchAll(/from\s+'([^']+)'/g)].map((m) => m[1]!);
+  /**
+   * Every module specifier in a source file, in order — matched on the QUOTES, not on
+   * `from`, so the forms that carry no `from` are caught too: a side-effect
+   * `import '…/module'` registers a vertical just as thoroughly as a named one, and it is
+   * exactly the shape someone reaches for to re-add a module without a symbol to use.
+   * Covers `export … from`, double quotes and dynamic `import(…)` for the same reason.
+   */
+  const importsOf = (src: string) =>
+    [...src.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1]!);
 
   it('the ScopeDO runs the dashboard vertical and nothing else', () => {
     // `provision.ts`'s list, which is also what `lint:permissions` renders PERMISSIONS.md
