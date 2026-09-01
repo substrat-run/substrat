@@ -5,36 +5,66 @@
  * Identity verification (10), where a secret is shown exactly once, and Usage (12),
  * where a per-token price gets a type treatment rather than a rounding.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
-import { api, assistantStatus, refreshKbSource, type AssistantStatus, type KbSource } from '../api.js';
-import { Dot, Empty, UnitPrice, ago } from '../ui.js';
+import {
+  api,
+  assistantStatus,
+  invites,
+  refreshKbSource,
+  type AgentProfile,
+  type AssistantStatus,
+  type Contact,
+  type KbSource,
+  type PendingInvite,
+  type Session,
+} from '../api.js';
+import { contacts } from '../contacts.js';
+import { Avatar, Dot, Empty, UnitPrice, ago } from '../ui.js';
 
-type Tab = 'desk' | 'identity' | 'knowledge' | 'assistant' | 'usage';
+export type SettingsTab =
+  | 'you'
+  | 'desk'
+  | 'team'
+  | 'identity'
+  | 'knowledge'
+  | 'assistant'
+  | 'usage';
 
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'desk', label: 'Desk' },
-  { id: 'identity', label: 'Identity verification' },
-  { id: 'knowledge', label: 'Knowledge base' },
-  { id: 'assistant', label: 'Assistant' },
-  { id: 'usage', label: 'Usage & cost' },
+/**
+ * The tab strip, and what each tab needs to be worth showing.
+ *
+ * `admin: false` is the whole reason this is a table rather than a literal: "You" is
+ * the one screen an ordinary agent has business on, and Settings used to refuse them
+ * outright — which is how a desk full of agents ended up with a directory nobody could
+ * put themselves in.
+ */
+const TABS: { id: SettingsTab; label: string; admin: boolean }[] = [
+  { id: 'you', label: 'You', admin: false },
+  { id: 'desk', label: 'Desk', admin: true },
+  { id: 'team', label: 'Team', admin: true },
+  { id: 'identity', label: 'Identity verification', admin: true },
+  { id: 'knowledge', label: 'Knowledge base', admin: true },
+  { id: 'assistant', label: 'Assistant', admin: true },
+  { id: 'usage', label: 'Usage & cost', admin: true },
 ];
 
 export function Settings({
   tab,
   caps,
+  session,
   go,
 }: {
-  tab: Tab;
+  tab: SettingsTab;
   caps: Capabilities | null;
+  session: Session;
   go: (v: View) => void;
 }) {
-  if (!caps?.configure)
-    return (
-      <div className="frame" style={{ width: 720 }}>
-        <Empty title="Settings are the desk admin's" note="Your account does not hold `desk:configure`." />
-      </div>
-    );
+  const admin = caps?.configure === true;
+  const tabs = TABS.filter((t) => admin || !t.admin);
+  // A deep link to an admin tab held by somebody who is not one — a bookmark, or a
+  // link a colleague pasted. Land them on what they may see rather than on a wall.
+  const active = tabs.some((t) => t.id === tab) ? tab : tabs[0]!.id;
 
   return (
     <div
@@ -42,7 +72,7 @@ export function Settings({
       style={{ width: 960, maxWidth: '100%', display: 'grid', gridTemplateColumns: '180px 1fr', background: 'var(--surface)' }}
     >
       <nav style={{ borderRight: '1px solid var(--hairline)', padding: 12, background: 'var(--app-bg)' }}>
-        {TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => go({ name: 'settings', tab: t.id })}
@@ -55,9 +85,9 @@ export function Settings({
               borderRadius: 6,
               padding: '7px 10px',
               marginBottom: 2,
-              font: `${t.id === tab ? 600 : 500} 12px 'Geist', sans-serif`,
-              color: t.id === tab ? 'var(--text)' : 'var(--secondary)',
-              background: t.id === tab ? 'var(--nav-active)' : 'transparent',
+              font: `${t.id === active ? 600 : 500} 12px 'Geist', sans-serif`,
+              color: t.id === active ? 'var(--text)' : 'var(--secondary)',
+              background: t.id === active ? 'var(--nav-active)' : 'transparent',
             }}
           >
             {t.label}
@@ -65,11 +95,13 @@ export function Settings({
         ))}
       </nav>
       <section style={{ padding: 22, minHeight: 460 }}>
-        {tab === 'desk' ? <Desk /> : null}
-        {tab === 'identity' ? <Identity /> : null}
-        {tab === 'knowledge' ? <Knowledge /> : null}
-        {tab === 'assistant' ? <Assistant go={go} /> : null}
-        {tab === 'usage' ? <Usage money={caps.money} /> : null}
+        {active === 'you' ? <You session={session} /> : null}
+        {active === 'desk' ? <Desk /> : null}
+        {active === 'team' ? <Team session={session} /> : null}
+        {active === 'identity' ? <Identity /> : null}
+        {active === 'knowledge' ? <Knowledge /> : null}
+        {active === 'assistant' ? <Assistant go={go} /> : null}
+        {active === 'usage' ? <Usage money={caps?.money === true} /> : null}
       </section>
     </div>
   );
@@ -101,6 +133,375 @@ function Field({ label, children, hint }: { label: string; children: React.React
         </div>
       ) : null}
     </label>
+  );
+}
+
+
+/* ── Team ───────────────────────────────────────────────────────────────── */
+
+/**
+ * Who works this desk, and how a second person gets here at all.
+ *
+ * The two lists are deliberately not one. The **directory** is `list-agents` — the
+ * `agentProfile` rows, which are what makes somebody assignable, and which the
+ * `assign` handler validates against. **Pending invites** are a host-surface fact
+ * living outside the scope entirely (a pre-minted principal and a hashed token in the
+ * identity directory), and somebody who has not accepted holds a role and belongs in
+ * no picker. Merging them into one roster would put a name in front of an agent that
+ * `assign` would then refuse.
+ */
+function Team({ session }: { session: Session }) {
+  const [staff, setStaff] = useState<AgentProfile[] | null>(null);
+  const [pending, setPending] = useState<PendingInvite[]>([]);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [loadFailed, setLoadFailed] = useState<string | null>(null);
+
+  const [role, setRole] = useState('agent');
+  const [email, setEmail] = useState('');
+  const [contactId, setContactId] = useState('');
+  const [people, setPeople] = useState<Contact[]>([]);
+  const [link, setLink] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    // The directory is read fresh here, not through `agents()`: that cache exists so a
+    // hundred rows in the inbox resolve one name each, and this is the screen where
+    // somebody has just changed who is in it.
+    void api
+      .listAgents()
+      .then((p) => setStaff(p.entries))
+      .catch((e: Error) => setLoadFailed(e.message));
+    void invites
+      .list()
+      .then((r) => {
+        setPending(r.invites);
+        setRoles(r.roles);
+        setRole((cur) => (r.roles.includes(cur) ? cur : (r.roles[0] ?? '')));
+      })
+      .catch((e: Error) => setLoadFailed(e.message));
+  }, []);
+  useEffect(load, [load]);
+
+  // Only for a customer invite, and only then: the portal is a grant on ONE contact,
+  // so the form has to name which — and a free-text ULID field would be a way to make
+  // a typo permanent.
+  useEffect(() => {
+    if (role !== 'customer' || people.length > 0) return;
+    void contacts().then((m) => setPeople([...m.values()]));
+  }, [role, people.length]);
+
+  const create = async () => {
+    setBusy(true);
+    setFailed(null);
+    setLink(null);
+    setCopied(false);
+    try {
+      const made = await invites.create({
+        roleKey: role,
+        ...(email.trim() ? { email: email.trim() } : {}),
+        ...(role === 'customer' && contactId ? { contactId } : {}),
+      });
+      setLink(made.acceptUrl);
+      setEmail('');
+      setContactId('');
+      load();
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (principal: string) => {
+    setFailed(null);
+    try {
+      await invites.revoke(principal);
+      load();
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  if (loadFailed) return <Empty title="Could not load the team" note={loadFailed} />;
+
+  return (
+    <>
+      <Head
+        title="Team"
+        note="Everyone who works this desk. An invite grants a role at once and hands back a one-time link — the person holds it until they sign in."
+      />
+
+      <div className="micro" style={{ marginBottom: 8 }}>
+        On the desk
+      </div>
+      <div style={{ marginBottom: 26 }}>
+        {staff === null ? (
+          <div className="t-meta">Loading…</div>
+        ) : staff.length === 0 ? (
+          <div className="t-small" style={{ color: 'var(--secondary)' }}>
+            Nobody has a profile yet — so the assignee picker has nothing to offer. Set
+            yours under “You”, and invite the rest of the desk below.
+          </div>
+        ) : (
+          staff.map((a) => (
+            <Row key={a.principal}>
+              <Avatar name={a.display_name} size={26} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div className="t-strong">
+                  {a.display_name}
+                  {a.principal === session.principal ? (
+                    <span className="t-small" style={{ color: 'var(--secondary)' }}>
+                      {' '}
+                      · you
+                    </span>
+                  ) : null}
+                </div>
+                <div className="t-small mono" style={{ color: 'var(--secondary)' }}>
+                  {a.principal}
+                </div>
+              </div>
+            </Row>
+          ))
+        )}
+      </div>
+
+      <div className="micro" style={{ marginBottom: 8 }}>
+        Invite somebody
+      </div>
+      <div
+        style={{
+          border: '1px solid var(--hairline)',
+          borderRadius: 8,
+          padding: 14,
+          marginBottom: 26,
+        }}
+      >
+        {failed ? (
+          <div className="t-small" style={{ color: 'var(--red, #b3261e)', marginBottom: 10 }}>
+            {failed}
+          </div>
+        ) : null}
+        <Field
+          label="Email"
+          hint="For your own reference. The invite is claimed by whoever opens the link and signs in — this desk hosts no sign-up and sends no mail here."
+        >
+          <input
+            className="input"
+            type="email"
+            placeholder="colleague@example.com"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+          />
+        </Field>
+        <Field label="Role" hint={ROLE_NOTE[role]}>
+          <select className="input" value={role} onChange={(e) => setRole(e.target.value)}>
+            {roles.map((r) => (
+              <option key={r} value={r}>
+                {r}
+              </option>
+            ))}
+          </select>
+        </Field>
+        {role === 'customer' ? (
+          <Field
+            label="Whose conversations"
+            hint="A customer sees one contact's own history and nothing else — pick which."
+          >
+            <select
+              className="input"
+              value={contactId}
+              onChange={(e) => setContactId(e.target.value)}
+            >
+              <option value="">Choose a contact…</option>
+              {people.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.display_name ?? c.email ?? c.id}
+                </option>
+              ))}
+            </select>
+          </Field>
+        ) : null}
+        <button
+          className="btn btn-primary"
+          disabled={busy || !role || (role === 'customer' && !contactId)}
+          onClick={() => void create()}
+        >
+          {busy ? 'Creating…' : 'Create invite link'}
+        </button>
+        {link ? (
+          <div style={{ marginTop: 14 }}>
+            <div className="t-small" style={{ marginBottom: 6 }}>
+              Send this link to them. It works once, and it is shown once — only its hash
+              is kept here.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                className="input mono"
+                readOnly
+                value={link}
+                onFocus={(e) => e.currentTarget.select()}
+              />
+              <button
+                className="btn"
+                onClick={() => {
+                  void navigator.clipboard?.writeText(link);
+                  setCopied(true);
+                }}
+              >
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <div className="micro" style={{ marginBottom: 8 }}>
+        Invited, not yet arrived
+      </div>
+      {pending.length === 0 ? (
+        <div className="t-small" style={{ color: 'var(--secondary)' }}>
+          No outstanding invites.
+        </div>
+      ) : (
+        pending.map((i) => (
+          <Row key={i.principal}>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="t-strong">{i.email ?? 'Invite'}</div>
+              <div className="t-small" style={{ color: 'var(--secondary)' }}>
+                {i.roleKey} · {ago(i.created_at)}
+              </div>
+            </div>
+            <button className="btn btn-ghost" onClick={() => void revoke(i.principal)}>
+              Revoke
+            </button>
+          </Row>
+        ))
+      )}
+    </>
+  );
+}
+
+/** What each role actually opens, said where the choice is made rather than in a doc. */
+const ROLE_NOTE: Record<string, string> = {
+  'desk-admin': 'The whole inbox, the settings, the knowledge base and the money.',
+  agent: 'The whole inbox: reply, assign, resolve. No settings and no cost figures.',
+  customer: 'The portal only — one contact’s own conversations, public messages.',
+};
+
+function Row({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        borderBottom: '1px solid var(--hairline)',
+        padding: '10px 2px',
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* ── You ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Your own profile — and the reason it is a screen rather than a detail.
+ *
+ * `ticket0_agent_profiles` IS the desk's directory: a profile is what makes somebody
+ * assignable, and the model says so in as many words ("an agent who cannot be found in
+ * the picker sets their profile and appears"). Until #1149 nothing in the app let
+ * anybody do that, so on a hosted desk the row existed for nobody, `list-agents`
+ * answered empty, and every owner cell showed the tail of a ULID.
+ *
+ * Joining now writes the row from the name the issuer knows, so this is a correction
+ * rather than a first step — but it is the only place the name and the signature can
+ * be corrected, and it is open to every agent, not only the admin. That is why the tab
+ * strip below is capability-dependent and this tab is in it either way.
+ */
+function You({ session }: { session: Session }) {
+  const [profile, setProfile] = useState<{ displayName: string; signature: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api
+      .listAgents()
+      .then((p) => {
+        const mine = p.entries.find((a) => a.principal === session.principal);
+        setProfile({
+          // Falling back to the signed-in name means the field is never empty on a desk
+          // where the row has not been written yet — the person confirms rather than types.
+          displayName: mine?.display_name ?? session.display,
+          signature: mine?.signature ?? '',
+        });
+      })
+      .catch(() => setProfile({ displayName: session.display, signature: '' }));
+  }, [session.principal, session.display]);
+
+  if (!profile) return <div className="t-meta">Loading…</div>;
+
+  const save = async () => {
+    setSaving(true);
+    setSaved(false);
+    setFailed(null);
+    try {
+      await api.setAgentProfile({
+        displayName: profile.displayName,
+        avatarUrl: null,
+        signature: profile.signature.trim() || null,
+      });
+      setSaved(true);
+    } catch (e) {
+      setFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <>
+      <Head
+        title="You"
+        note="How colleagues find you in the assignee picker, and how you sign off on mail that leaves the desk."
+      />
+      <Field label="Display name" hint="What the inbox, the rail and the picker call you.">
+        <input
+          className="input"
+          value={profile.displayName}
+          onChange={(e) => setProfile({ ...profile, displayName: e.target.value })}
+        />
+      </Field>
+      <Field label="Signature" hint="Appended to outbound email. Left empty, nothing is added.">
+        <textarea
+          className="textarea"
+          rows={3}
+          value={profile.signature}
+          onChange={(e) => setProfile({ ...profile, signature: e.target.value })}
+        />
+      </Field>
+      {failed ? (
+        <div className="t-small" style={{ color: 'var(--red, #b3261e)', marginBottom: 10 }}>
+          {failed}
+        </div>
+      ) : null}
+      <button
+        className="btn btn-primary"
+        disabled={saving || !profile.displayName.trim()}
+        onClick={() => void save()}
+      >
+        {saving ? 'Saving…' : 'Save'}
+      </button>
+      {saved ? (
+        <span className="t-small" style={{ marginLeft: 10, color: 'var(--green)' }}>
+          Saved
+        </span>
+      ) : null}
+    </>
   );
 }
 

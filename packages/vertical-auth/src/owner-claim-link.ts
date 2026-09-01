@@ -22,6 +22,11 @@ export function ownerClaimPath(token: string): string {
   return `/?claim=${encodeURIComponent(token)}`;
 }
 
+/** Its counterpart for a member invite — what the SPA reads back as `?invite=`. */
+export function invitePath(token: string): string {
+  return `/?invite=${encodeURIComponent(token)}`;
+}
+
 /**
  * Mint a claim link for a scope's unclaimed owner seat. `origin` is the instance's public
  * origin — supplied by the platform, which owns the hostname directory; a `/internal` call

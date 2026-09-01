@@ -26,7 +26,7 @@ import { devLogin } from '@substrat-run/dev-issuer';
 import type { ScopeHost } from '@substrat-run/kernel';
 import { createModelHost, type ModelAttribution, type ModelHost } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import { ticket0Manifest } from './manifest.js';
+import { T0_PERM, ticket0Manifest } from './manifest.js';
 import { API_DOCUMENT } from './api.js';
 import {
   answerConversation,
@@ -38,10 +38,13 @@ import {
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { buildHost, linkDevPersonas, seed, type Desk, type World } from './seed.js';
+import { CONTACT_BOUND_ROLE, HUMAN_ROLES, STAFF_ROLES } from './provision.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 import { startDemoSites } from '../harness/demo-site.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
+import { mountInvites } from '../harness/invites.js';
+import { devInviteDesk } from '../harness/dev-invites.js';
 
 /**
  * Local secrets, if there are any.
@@ -58,6 +61,8 @@ try {
 
 const DATA = process.env.DATA_DIR ?? '.data';
 const CAST = join(DATA, 'cast.json');
+/** Pending invites, beside the cast — the dev server's stand-in for the identity DO's `invite` table. */
+const INVITES = join(DATA, 'invites.json');
 const WIDGET_JS = new URL('../widget/widget.js', import.meta.url);
 
 async function boot() {
@@ -111,6 +116,39 @@ async function boot() {
   mountApi(app, staffStub);
   // "Re-read" and "Add a source" in the desk — the same route the worker mounts.
   mountKbRefresh(app, staffStub);
+
+  /**
+   * Settings → Team, and the link an invitee follows — the same surface the worker
+   * mounts (`harness/invites.ts`), over this host's own stores.
+   *
+   * The accept link points at the WEB origin rather than at this API: Vite serves the
+   * app in dev and this process does not, so a link to `PORT` would land on JSON. The
+   * worker has no such split and points at itself.
+   */
+  const webOrigin = process.env.WEB_ORIGIN ?? `http://localhost:${process.env.WEB_PORT ?? 5281}`;
+  mountInvites(app, {
+    humanRoles: HUMAN_ROLES,
+    staffRoles: STAFF_ROLES,
+    contactBoundRole: CONTACT_BOUND_ROLE,
+    appOrigin: () => webOrigin,
+    subjectOf: (c) => login.subject(c.req.raw.headers),
+    // `get-desk` IS the check: it asserts `desk:configure` inside the operation, so
+    // the authority is the desk's own grants and not a role list out here.
+    requireAdmin: async (c) => {
+      await (await staffStub(c)).invoke('ticket0/get-desk', {});
+    },
+    deskOf: async (c) => {
+      const caller = await login.caller(c.req.raw.headers);
+      return devInviteDesk({
+        file: INVITES,
+        host,
+        actor: staff,
+        provider: DEV_PROVIDER,
+        portalPermission: T0_PERM.conversationReadOwn,
+        caller: caller ? { tenantId: caller.tenantId, scopeId: caller.scopeId } : null,
+      });
+    },
+  });
   // Settings → Assistant: the model this process would answer with, beside the failed
   // turns. One model for both desks here, since one process serves both.
   mountAssistantStatus(app, staffStub, () => model);
