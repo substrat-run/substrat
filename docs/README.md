@@ -215,6 +215,7 @@ Dated snapshots of the outside world. Never revised.
 |---|---|---|
 | [fsm-vendor-feature-survey.md](research/fsm-vendor-feature-survey.md) | `historical` | Feature survey of the Nordic FSM market, surveyed 2026-07-13. |
 | [platform-landscape-drilldown.md](research/platform-landscape-drilldown.md) | `historical` | How platform incumbents handle extension, upgrades, tenancy. |
+| [support-desk-vendor-survey.md](research/support-desk-vendor-survey.md) | `historical` | Feature survey of the support-desk market (Zendesk, Freshdesk, Intercom, Help Scout), surveyed 2026-09-02. |
 
 ### `acceptance/`
 
