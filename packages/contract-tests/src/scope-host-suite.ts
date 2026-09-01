@@ -1630,6 +1630,75 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- the provision receipt (#1172) ----------------------------------------
+    //
+    // `provisionedVersionId` records which version a scope's provision hook last ran
+    // against — a different fact from the version it is BOUND to, and the platform's only
+    // way to tell an install whose hook has run from one serving code it has never
+    // provisioned for. Both hosts must agree, because the sweep that reads it runs
+    // against either.
+
+    describe('provision receipt (#1172)', () => {
+      it('starts null, records what it is told, and survives a rebind', async () => {
+        const sp = scopeId.parse(ulid());
+        await host.provisionScope(staff, {
+          tenantId: t1,
+          scopeId: sp,
+          jurisdiction: 'eu',
+          vertical: 'recepttest',
+        });
+        await host.admin.activateScope(staff, t1, sp);
+        await host.admin.registerVertical(staff, {
+          slug: 'recepttest',
+          name: 'Receipt Test',
+          source: 'builtin',
+        });
+        const publish = async (version: string) => {
+          const id = ulid();
+          await host.admin.publishVersion(staff, {
+            id,
+            verticalSlug: 'recepttest',
+            version,
+            manifestDigest: `man-${version}`,
+            permissionDigest: 'p',
+            migrationDigest: 'g',
+            deploymentRef: null,
+          });
+          await host.admin.admitVersion(staff, id);
+          return id;
+        };
+        const v1 = await publish('1.0.0');
+        const v2 = await publish('2.0.0');
+
+        // Null to begin with — not "up to date". A scope nobody has provisioned a
+        // hook into has no evidence either way, and the sweep must read that as work.
+        await host.admin.bindScopeVersion(staff, t1, sp, v1);
+        expect((await host.admin.getScopeRecord(staff, t1, sp))?.provisionedVersionId).toBeNull();
+
+        await host.admin.markScopeProvisioned(staff, t1, sp, v1);
+        expect((await host.admin.getScopeRecord(staff, t1, sp))?.provisionedVersionId).toBe(v1);
+
+        /**
+         * A rebind moves the bound version and leaves the receipt alone — which is the
+         * whole mechanism. If binding also marked, a push would erase the evidence that
+         * its own installs still need provisioning, and the sweep would never fire.
+         */
+        await host.admin.bindScopeVersion(staff, t1, sp, v2);
+        const after = await host.admin.getScopeRecord(staff, t1, sp);
+        expect(after?.verticalVersionId).toBe(v2);
+        expect(after?.provisionedVersionId).toBe(v1);
+
+        await host.admin.markScopeProvisioned(staff, t1, sp, v2);
+        expect((await host.admin.getScopeRecord(staff, t1, sp))?.provisionedVersionId).toBe(v2);
+      });
+
+      it('refuses a scope that is not in the named tenant', async () => {
+        await expect(
+          host.admin.markScopeProvisioned(staff, t2, s1, 'some-version'),
+        ).rejects.toThrow();
+      });
+    });
+
     // -- snapshot retention: deleteSnapshot + the GC sweep (§3/§9) -------------
     //
     // The one sanctioned hard delete, kept narrow: only a FORK may be reaped, and the

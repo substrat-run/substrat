@@ -555,6 +555,7 @@ interface ScopeRow {
   status: string;
   schema_version: string;
   vertical_version_id: string | null;
+  provisioned_version_id: string | null;
   migration_failed_version: string | null;
   migration_error: string | null;
   migration_attempts: number;
@@ -1043,6 +1044,7 @@ export class SqliteScopeHost implements ScopeHost {
         status TEXT NOT NULL DEFAULT 'active',
         schema_version TEXT NOT NULL DEFAULT '0',
         vertical_version_id TEXT,
+        provisioned_version_id TEXT,
         -- Last FAILED migration attempt (§5.3). All null / 0 = healthy. Written on
         -- the failure path so a scope that fails closed stops rendering as active;
         -- cleared on the next success. See applyPendingMigrations.
@@ -4119,6 +4121,7 @@ export class SqliteScopeHost implements ScopeHost {
         vertical: r.vertical,
         schemaVersion: r.schema_version,
         verticalVersionId: r.vertical_version_id,
+        provisionedVersionId: r.provisioned_version_id ?? null,
         migrationFailure: mapMigrationFailure(r),
         forkedFrom: r.forked_from,
         forkedAt: r.forked_at,
@@ -5194,6 +5197,22 @@ export class SqliteScopeHost implements ScopeHost {
           vertical: v.verticalSlug,
           version: v.version,
         });
+      },
+      /**
+       * Record that this scope's provision has now run against `versionId` (#1172).
+       * Written only after a provision or reconcile succeeded — a receipt, never a hope.
+       */
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string) => {
+        const scope = this.directory
+          .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')
+          .get(scopeId) as { tenant_id: string } | undefined;
+        if (!scope || scope.tenant_id !== tenantId) {
+          throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        }
+        this.directory
+          .prepare('UPDATE scopes SET provisioned_version_id = ? WHERE scope_id = ?')
+          .run(versionId, scopeId);
+        this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, { versionId });
       },
       verticalServing: async (actor, verticalSlug: string) => {
         const r = this.directory
@@ -7088,6 +7107,9 @@ export class SqliteScopeHost implements ScopeHost {
     // under several accounts. Existing data always satisfies the wider key.
     this.directory.exec('DROP INDEX IF EXISTS _substrat_connections_live');
     this.ensureColumn(this.directory, '_substrat_admin_log', 'caused_by', 'caused_by TEXT');
+    // #1172: which version this scope's provision hook last ran against. Null on every
+    // existing row, which reads as "unknown, reconcile once" rather than "up to date".
+    this.ensureColumn(this.directory, 'scopes', 'provisioned_version_id', 'provisioned_version_id TEXT');
     // §4.8's grace-window timestamp on tenants (mirrors scopes' archived_at).
     this.ensureColumn(this.directory, 'tenants', 'deleting_at', 'deleting_at TEXT');
     this.ensureColumn(

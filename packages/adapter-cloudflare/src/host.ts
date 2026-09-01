@@ -429,6 +429,7 @@ interface ControlPlaneStub {
   listVersions(verticalSlug: string, page?: ListPage): Promise<VersionRow[]>;
   setAdmission(id: string, admission: string, note: string | null): Promise<void>;
   bindScopeVersion(scopeId: string, versionId: string, verticalSlug: string): Promise<void>;
+  markScopeProvisioned(scopeId: string, versionId: string): Promise<void>;
   setVerticalServing(
     slug: string,
     s: { ref: string; versionId: string; doClassesJson: string; migrationTag: string },
@@ -2638,6 +2639,7 @@ export class CloudflareScopeHost implements ScopeHost {
         vertical: r.vertical,
         schemaVersion: r.schema_version,
         verticalVersionId: r.vertical_version_id,
+        provisionedVersionId: r.provisioned_version_id ?? null,
         migrationFailure:
           r.migration_failed_version && r.migration_last_attempt_at
             ? {
@@ -3411,6 +3413,22 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.cp.bindScopeVersion(scopeId, versionId, v.vertical_slug);
         await this.recordAdmin(actor, 'bindScopeVersion', { tenantId, scopeId }, null, {
           versionId, vertical: v.vertical_slug, version: v.version,
+        });
+      },
+      /**
+       * Record that this scope's provision has now run against `versionId` (#1172).
+       *
+       * Audited like every other directory write, and deliberately narrow: it takes the
+       * version rather than deriving it, so the caller records what it actually
+       * reconciled against rather than whatever the scope happens to be bound to by the
+       * time the write lands.
+       */
+      markScopeProvisioned: async (actor, tenantId, scopeId, versionId: string) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        await this.cp.markScopeProvisioned(scopeId, versionId);
+        await this.recordAdmin(actor, 'markScopeProvisioned', { tenantId, scopeId }, null, {
+          versionId,
         });
       },
       verticalServing: async (actor, verticalSlug: string) => {
