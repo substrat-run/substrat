@@ -21,10 +21,10 @@ import { MODULES } from '../src/index.js';
  * alone misses the forms that carry none, and a side-effect `import '…/module'` registers
  * a vertical exactly as thoroughly as a named import does — it is the shape someone
  * reaches for when re-adding a module they have no symbol to use. `SEP` is "whitespace or
- * a block comment", so an interposed comment cannot hide a specifier either; it can only
- * ever consume characters immediately following the keyword, never skip over code.
+ * a comment, of either kind", so an interposed comment cannot hide a specifier either; it
+ * can only ever consume characters immediately following the keyword, never skip over code.
  */
-const SEP = String.raw`(?:\s|/\*[\s\S]*?\*/)*`;
+const SEP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*\n)*`;
 const IMPORT_SPECIFIER = new RegExp(String.raw`(?:from|import)${SEP}\(?${SEP}['"]([^'"]+)['"]`, 'g');
 
 describe('the privileged worker bundles no vertical module code', () => {
@@ -65,8 +65,10 @@ describe('the privileged worker bundles no vertical module code', () => {
       `import '@substrat-run/demo-y/module';`, // side-effect — no `from` at all
       `import b from "@substrat-run/demo-z/module";`, // double-quoted
       `const c = await import('@substrat-run/demo-w/module');`, // dynamic
-      `await import(/* lazy */ '@substrat-run/demo-v/module');`, // comment before the specifier
+      `await import(/* lazy */ '@substrat-run/demo-v/module');`, // block comment before the specifier
       `export { d } from '@substrat-run/demo-u/module';`, // re-export
+      `import // why\n'@substrat-run/demo-t/module';`, // line comment, side-effect
+      `void import(// why\n'@substrat-run/demo-s/module');`, // line comment, dynamic
     ].join('\n');
     expect(importsOf(src)).toEqual([
       '@substrat-run/demo-x/module',
@@ -75,6 +77,8 @@ describe('the privileged worker bundles no vertical module code', () => {
       '@substrat-run/demo-w/module',
       '@substrat-run/demo-v/module',
       '@substrat-run/demo-u/module',
+      '@substrat-run/demo-t/module',
+      '@substrat-run/demo-s/module',
     ]);
   });
 
