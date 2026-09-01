@@ -1,4 +1,4 @@
-import { assertDumpIdentifiers, assertReplayableDump, assertSqlIdentifier } from '@substrat-run/contracts';
+import { assertReplayableDump, assertSqlIdentifier } from '@substrat-run/contracts';
 /**
  * `substrat scope pull <scopeId>` — bring a scope's data to the local inner loop
  * (preview-and-snapshots.md §8; the substrat analog of `vercel env pull`).
@@ -117,9 +117,12 @@ export async function pullScope(opts: {
     throw new Error(body?.error ?? `pull refused: ${res.status} ${res.statusText}`);
   }
   const dump = await readJson<PulledDump>(res, url);
-  // Checked before EITHER writer, so the node-<22.13 JSON fallback cannot leave a
-  // dump on disk that a later `scope restore` would then have to refuse.
-  assertDumpIdentifiers(dump.tables);
+  // The WHOLE rule, checked before EITHER writer, so the node-<22.13 JSON fallback
+  // cannot leave a dump on disk that a later `scope restore` would then have to
+  // refuse. Names alone would not do it: `writeSqlite` returns before its own check
+  // when `node:sqlite` is missing, so the schema text would go unjudged on exactly
+  // the path that skips the SQLite writer.
+  assertReplayableDump(dump.tables);
 
   mkdirSync(opts.outDir, { recursive: true });
   const base = join(opts.outDir, `${dump.tenantId}__${dump.scopeId}`);
@@ -153,9 +156,11 @@ async function readDump(file: string): Promise<{ tables: DumpTable[] }> {
   if (!file.endsWith('.sqlite')) {
     const parsed = JSON.parse(readFileSync(file, 'utf8')) as { tables?: DumpTable[] };
     if (!Array.isArray(parsed.tables)) throw new Error(`${file} is not a scope dump (no tables)`);
-    // The file is whatever the builder passed to --file, and its names end up in SQL
-    // on the server's loader — refuse a crafted one here rather than forwarding it.
-    assertDumpIdentifiers(parsed.tables);
+    // The file is whatever the builder passed to --file, and all of it — the names
+    // AND the schema text — ends up in SQL on the server's loader. Refuse a crafted
+    // one here rather than forwarding it: the server refuses it too, but a dump that
+    // never leaves the machine is the property this end is claiming.
+    assertReplayableDump(parsed.tables);
     // FK-order before we POST — the server inserts in the order it receives, and an
     // older control plane defers no FK check, so parents must arrive before children.
     return { tables: orderTablesByForeignKeys(parsed.tables) };

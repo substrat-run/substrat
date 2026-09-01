@@ -113,6 +113,37 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
     expect(called).toBe(0); // refused locally — the dump never left the machine
   });
 
+  it('restore refuses a .dump.json whose DDL carries a second statement, plain names and all', async () => {
+    // The counterpart of the pull case below, on the path a builder actually hands an
+    // untrusted file to: every NAME here is a plain identifier, so a name-only check
+    // passes the file straight to the control plane. The server refuses it there —
+    // but "the dump never left the machine" is the property this end claims.
+    const file = join(dir, 'appended.dump.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        tables: [
+          {
+            name: 'crm_vendors',
+            ddl: 'CREATE TABLE crm_vendors (id TEXT PRIMARY KEY); CREATE TABLE smuggled (id TEXT);',
+            columns: ['id'],
+            rows: [['v1']],
+          },
+        ],
+      }),
+    );
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      restoreScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', file }),
+    ).rejects.toThrow(/more than one statement/);
+    expect(called).toBe(0);
+  });
+
   it('a second statement appended to a table DDL is refused, not silently dropped', async () => {
     // The names here are all plain — this is the hole `assertDumpIdentifiers` does
     // NOT cover: the DDL text itself, which `exec` would have run in full.
@@ -147,6 +178,10 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
       }),
     ).rejects.toThrow(/more than one statement/);
     expect(existsSync(join(outDir, 'acme__s-2.sqlite'))).toBe(false);
+    // Nor as the JSON fallback: the check runs before EITHER writer, so a node
+    // without `node:sqlite` — where `writeSqlite` returns before its own check —
+    // does not get to leave the refused dump on disk instead.
+    expect(existsSync(join(outDir, 'acme__s-2.dump.json'))).toBe(false);
   });
 
   /** A pull whose response is exactly these tables. */
