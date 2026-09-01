@@ -88,6 +88,22 @@ const PROSE = {
   'guide/architecture.md': ['packages/kernel/src'],
 };
 
+/**
+ * The "Current status" table in `guide/what-is-substrat.md` is a THIRD hand-list,
+ * beside `engines/index.md` and `verticals/index.md` (#988). A hand-list is exactly
+ * what left `todo` and `ticket0` undocumented for a month (#998) — and the same
+ * omission had already recurred here: the table named all seven engines and six of
+ * the eight verticals that have a page.
+ *
+ * The staleness proxy above is the wrong instrument for it. The page tracks no one
+ * directory, so a `PROSE` entry would have to point at `demos/` + `engines/`, which
+ * churn enough to keep it permanently red — the failure mode this file's own header
+ * warns against. What rots in an inventory is COVERAGE, so coverage is what this
+ * asks: every engine and vertical page that exists must be linked from the table.
+ * It fails when a row is missing, and at no other time.
+ */
+const INVENTORY = `${DOCS}/guide/what-is-substrat.md`;
+
 const args = process.argv.slice(2);
 const CHECK = args.includes('--check');
 const JSON_OUT = args.includes('--json');
@@ -185,6 +201,32 @@ for (const [page, src] of Object.entries(PROSE)) {
 }
 
 // ---------------------------------------------------------------------------
+// Coverage, second question: does the status inventory name what has a page?
+// ---------------------------------------------------------------------------
+
+/** @type {{area: string, link: string}[]} */
+const uninventoried = [];
+
+/**
+ * A gate that goes quiet when its subject disappears is not a gate — deleting or
+ * renaming the page would silently take the check with it, and every engine and
+ * vertical would read as inventoried. So a missing inventory is itself the failure,
+ * and a deliberate rename is a one-line edit to `INVENTORY` above.
+ */
+const inventoryMissing = !existsSync(join(ROOT, INVENTORY));
+
+if (!inventoryMissing) {
+  const text = readFileSync(join(ROOT, INVENTORY), 'utf8');
+  for (const { area } of areas) {
+    const [kind, slug] = area.split('/');
+    if (kind !== 'engine' && kind !== 'vertical') continue;
+    const link = `/${kind === 'engine' ? 'engines' : 'verticals'}/${slug}`;
+    // The lookahead so `/verticals/todo` is not satisfied by `/verticals/todo-next`.
+    if (!new RegExp(`${link}(?![\\w-])`).test(text)) uninventoried.push({ area, link });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Measure.
 // ---------------------------------------------------------------------------
 
@@ -203,8 +245,19 @@ const rows = areas
   .sort((a, b) => b.behind - a.behind);
 
 if (JSON_OUT) {
-  console.log(JSON.stringify({ rows, uncovered, warnAt: WARN_AT, failAt: FAIL_AT }, null, 2));
-  process.exit(uncovered.length || rows.some((r) => r.behind > FAIL_AT) ? (CHECK ? 1 : 0) : 0);
+  console.log(
+    JSON.stringify(
+      { rows, uncovered, uninventoried, inventoryMissing, warnAt: WARN_AT, failAt: FAIL_AT },
+      null,
+      2,
+    ),
+  );
+  const failed =
+    uncovered.length ||
+    uninventoried.length ||
+    inventoryMissing ||
+    rows.some((r) => r.behind > FAIL_AT);
+  process.exit(failed && CHECK ? 1 : 0);
 }
 
 const pad = (s, n) => String(s).padEnd(n);
@@ -229,13 +282,35 @@ if (uncovered.length) {
   for (const u of uncovered) console.log(`  ${u.pkg}  →  write ${DOCS}/${u.expected}`);
 }
 
+if (inventoryMissing) {
+  console.log(`\nThe status inventory is gone: ${INVENTORY}`);
+}
+
+if (uninventoried.length) {
+  console.log(`\nHas a page, but no row in ${INVENTORY}:`);
+  for (const u of uninventoried) console.log(`  ${u.area}  →  add a row linking ${u.link}`);
+}
+
 if (!CHECK) {
   console.log('\n(advisory — run with --check for the CI exit code)');
   process.exit(0);
 }
 
-if (uncovered.length || rotted.length) {
+if (uncovered.length || uninventoried.length || inventoryMissing || rotted.length) {
   console.error('\ndocs-drift: FAILED');
+  if (inventoryMissing)
+    console.error(
+      `  the status inventory ${INVENTORY} does not exist. Every engine and vertical would\n` +
+        '  read as inventoried, so the check above would pass by describing nothing. If the page\n' +
+        '  moved, point INVENTORY at where it moved to.',
+    );
+  if (uninventoried.length)
+    console.error(
+      `  ${uninventoried.length} engine(s) or vertical(s) with a page that the status ` +
+        `inventory does not name: ${uninventoried.map((u) => u.area).join(', ')}.\n` +
+        `  Add a row to ${INVENTORY} — a reader who lands on that table takes it for the\n` +
+        '  whole list, and a shape the repo proves but the inventory omits is proved to nobody.',
+    );
   if (uncovered.length)
     console.error(
       `  ${uncovered.length} published package(s) or demo vertical(s) with no page. A package ` +
