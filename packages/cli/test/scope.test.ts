@@ -153,24 +153,58 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
     }
   });
 
-  it('refuses a DDL that creates something other than the table it is declared for', async () => {
+  /** A pull whose response is exactly these tables. */
+  const pullOf = (scopeId: string, tables: unknown[], outDir: string) => {
     globalThis.fetch = (async () =>
       new Response(
-        JSON.stringify({
-          tenantId: 'acme',
-          scopeId: 's-3',
-          capturedAt: '2026-09-01T00:00:00.000Z',
-          masked: true,
-          tables: [{ name: 'crm_vendors', ddl: 'CREATE TABLE something_else (id TEXT)', columns: ['id'], rows: [] }],
-        }),
+        JSON.stringify({ tenantId: 'acme', scopeId, capturedAt: '2026-09-01T00:00:00.000Z', masked: true, tables }),
         { status: 200 },
       )) as unknown as typeof fetch;
+    return pullScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId, full: false, outDir });
+  };
 
+  it('refuses a DDL that creates something other than the table it is declared for', async () => {
     await expect(
-      pullScope({
-        controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-3', full: false, outDir: join(dir, 'wrong'),
-      }),
-    ).rejects.toThrow(/does not create that table/);
+      pullOf(
+        's-3',
+        [{ name: 'crm_vendors', ddl: 'CREATE TABLE something_else (id TEXT)', columns: ['id'], rows: [] }],
+        join(dir, 'wrong'),
+      ),
+    ).rejects.toThrow(/does not begin with/);
+  });
+
+  it('refuses a DDL whose FIRST statement is the hostile one — before it runs', async () => {
+    const attached = join(dir, 'attached.db');
+    await expect(
+      pullOf(
+        's-4',
+        [
+          {
+            name: 'crm_vendors',
+            ddl: `ATTACH DATABASE '${attached}' AS e; CREATE TABLE crm_vendors (id TEXT);`,
+            columns: ['id'],
+            rows: [],
+          },
+        ],
+        join(dir, 'attach'),
+      ),
+    ).rejects.toThrow(/does not begin with/);
+    // The check sits BEFORE the execution, so the ATTACH never happened — a check
+    // that ran afterwards would have let it through and then complained.
+    expect(existsSync(attached)).toBe(false);
+  });
+
+  it('refuses a table listed twice — the repeat is how a payload hides behind an honest entry', async () => {
+    await expect(
+      pullOf(
+        's-5',
+        [
+          { name: 'crm_vendors', ddl: 'CREATE TABLE crm_vendors (id TEXT)', columns: ['id'], rows: [] },
+          { name: 'crm_vendors', ddl: `ATTACH DATABASE '${join(dir, 'dup.db')}' AS e`, columns: ['id'], rows: [] },
+        ],
+        join(dir, 'dup'),
+      ),
+    ).rejects.toThrow(/is listed twice/);
   });
 
   it('pull refuses a crafted dump instead of writing it to disk', async () => {

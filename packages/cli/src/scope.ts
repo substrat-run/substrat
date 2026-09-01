@@ -61,9 +61,43 @@ function sqlIdentifier(name: string, what: string): string {
 
 /** Every table and column name in a dump, checked before any of them reaches SQL. */
 export function assertDumpIdentifiers(tables: { name: string; columns?: string[] }[]): void {
+  const seen = new Set<string>();
   for (const t of tables) {
     sqlIdentifier(t.name, 'table name');
+    // A dump lists each table once. A REPEATED name is how a crafted one hides: the
+    // honest entry creates the table, and a second entry under the same name carries
+    // the payload while every per-entry check still sees a table that exists.
+    if (seen.has(t.name)) {
+      throw new Error(
+        `refusing this backup: table ${JSON.stringify(t.name)} is listed twice. A scope dump names ` +
+          'each of its tables once — a repeat is corrupt or crafted, and it is not loaded.',
+      );
+    }
+    seen.add(t.name);
     for (const c of t.columns ?? []) sqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
+  }
+}
+
+/**
+ * A table's DDL opens with `CREATE TABLE <the name the dump declared> (` — checked
+ * BEFORE the statement runs, because a check that runs afterwards has already let
+ * the statement happen. `prepare` compiles only the first statement of a string, so
+ * pinning that first statement's opening is what makes the ONE statement that
+ * executes the one the dump claims it is. This reads the head of the text and
+ * nothing more; the rest of the CREATE TABLE is SQLite's business, not ours.
+ */
+const CREATE_TABLE_HEAD =
+  /^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|`([^`]+)`|\[([^\]]+)\]|([A-Za-z_][A-Za-z0-9_]*))\s*\(/i;
+
+function assertCreatesDeclaredTable(ddl: string, name: string): void {
+  const head = CREATE_TABLE_HEAD.exec(ddl);
+  const creates = head ? (head[1] ?? head[2] ?? head[3] ?? head[4]) : undefined;
+  if (creates !== name) {
+    throw new Error(
+      `refusing this backup: the schema given for table ${JSON.stringify(name)} does not begin with ` +
+        `\`CREATE TABLE ${name} (\` — it begins ${JSON.stringify(ddl.slice(0, 60))}. A scope dump's schema ` +
+        'and its own table list have to agree; one that does not is corrupt or crafted, and it is not loaded.',
+    );
   }
 }
 
@@ -111,21 +145,13 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
     // FK-unordered dump would trip a constraint on the first child row.
     for (const t of orderTablesByForeignKeys(dump.tables)) {
       // A dump's `ddl` is untrusted SQL text, and `exec` runs EVERY statement in it —
-      // so `CREATE TABLE x (…); ATTACH DATABASE …;` used to execute both. `prepare`
-      // compiles only the first statement and `run` executes only that one, which
-      // makes SQLite's own parser the boundary instead of a regex over the text.
+      // so `CREATE TABLE x (…); ATTACH DATABASE …;` used to execute both. Two things
+      // together fix that, and the order between them is the point: the text must
+      // OPEN as this table's CREATE TABLE (checked first, so nothing hostile has run
+      // by the time we decide), and `prepare`/`run` then compiles and executes only
+      // that first statement, leaving anything appended to it inert.
+      assertCreatesDeclaredTable(t.ddl, t.name);
       db.prepare(t.ddl).run();
-      // The one statement that did run still has to be the table the dump declared —
-      // otherwise a `ddl` whose FIRST statement is the hostile one walks through.
-      const made = db
-        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
-        .get(t.name) as { name: string } | undefined;
-      if (!made) {
-        throw new Error(
-          `refusing this backup: the DDL for table ${JSON.stringify(t.name)} does not create that table. ` +
-            'A scope dump whose schema and its own table list disagree is corrupt or crafted — it is not loaded.',
-        );
-      }
       if (t.rows.length === 0) continue;
       const cols = t.columns.map((c) => `"${c}"`).join(', ');
       const marks = t.columns.map(() => '?').join(', ');
