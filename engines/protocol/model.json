@@ -148,5 +148,43 @@
         "additionalProperties": false
       }
     }
+  },
+  "lifecycles": {
+    "protocol": {
+      "field": "status",
+      "initial": "open",
+      "states": {
+        "open": {
+          "on": {
+            "protocol/request-signatures": "pending_signature",
+            "protocol/sign": "signed",
+            "protocol/void": "voided"
+          },
+          "allow": [
+            "protocol/bind-document",
+            "protocol/fill"
+          ],
+          "extensible": true
+        },
+        "pending_signature": {
+          "on": {
+            "protocol/cancel-signatures": "open",
+            "protocol/record-signature": "signed",
+            "protocol/void": "voided"
+          }
+        },
+        "signed": {
+          "on": {
+            "protocol/void": "voided"
+          },
+          "allow": [
+            "protocol/countersign"
+          ]
+        },
+        "voided": {
+          "terminal": true
+        }
+      }
+    }
   }
 }
