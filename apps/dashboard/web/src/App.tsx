@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Toast, Dialog, Input, useAutoRefresh } from '@substrat-run/ui';
+import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
 import { navigate as go, setTeamSlug } from './lib/router';
@@ -693,7 +693,16 @@ export function App() {
     return <SignIn error={failed} />;
   }
   if (needsOnboarding(me)) {
-    return <Onboarding name={me.name} busy={creatingTeam} onCreate={(n) => void createTeam(n)} />;
+    // The bubble rides along here too. Someone signed in with no team yet is stuck on
+    // one screen with one action, which makes them the likeliest person in the product
+    // to have a question — and `/api/support/identity` needs only the session, not a
+    // team, precisely so this screen can carry it.
+    return (
+      <>
+        <Onboarding name={me.name} busy={creatingTeam} onCreate={(n) => void createTeam(n)} />
+        <SupportWidget />
+      </>
+    );
   }
 
   const currentTeam = me.teams?.find((t) => t.id === me.currentTeamId);
@@ -732,6 +741,15 @@ export function App() {
       onOpenNotifications={() => { setNotifs(true); setUnread(false); }}
       onSignOut={signOut}
     >
+      {/*
+        The support desk, with this customer already vouched for — the worker signs the
+        claim (`/api/support/identity`) so a question from the portal arrives attached
+        to a person. Renders nothing here: `widget.js` appends its own host to
+        document.body and draws into a shadow root, so the shell neither lays it out
+        nor styles it.
+      */}
+      <SupportWidget />
+
       {route.section === 'new' ? (
         <CreateApp
           catalog={catalog}

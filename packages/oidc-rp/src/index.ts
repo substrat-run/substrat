@@ -293,6 +293,38 @@ export function sessionFromHeaders(env: OidcEnv, headers: Headers): Promise<Sess
   return verifySession(env, readCookie(headers.get('cookie'), SESSION_COOKIE));
 }
 
+/**
+ * Vouch for the session above to a widget embedded from ANOTHER origin —
+ * HMAC-SHA-256 over the subject, hex, keyed by a secret that widget's backend also
+ * holds. This is the construction Intercom calls `user_hash` and Help Scout calls a
+ * Beacon signature, and Substrat's own support desk (ticket0) verifies exactly it.
+ *
+ * It lives here, beside the thing it vouches FOR, for the reason this whole package
+ * exists: the console and the dashboard both embed the desk, so the alternative is
+ * the same security-critical MAC written twice, in two workers, with two chances to
+ * disagree about encoding. What must never move is which side computes it — the
+ * secret stays server-side and the browser only carries the result, which is the
+ * entire reason a visitor cannot claim somebody else's identity in devtools.
+ *
+ * The claim is the subject and nothing else: no expiry, no origin binding. That is
+ * the receiving end's model, not a shortcut taken here — a signature is a durable
+ * assertion that this deployment believes the bearer is `subject`, so it is minted
+ * only for the session's own identity and served `no-store`.
+ */
+export async function signVisitorIdentity(secret: string, subject: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(subject));
+  return Array.from(new Uint8Array(mac))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 const cookieOpts = (origin: string, maxAge: number) => ({
   httpOnly: true,
   secure: origin.startsWith('https:'),

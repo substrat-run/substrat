@@ -36,6 +36,7 @@
     "@substrat-run/boundary-lint": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
+    "@substrat-run/oidc-rp": "workspace:^",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
     "ai": "7.0.62",

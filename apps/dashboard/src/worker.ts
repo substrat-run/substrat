@@ -32,7 +32,7 @@ import { calloutModule } from '@substrat-run/demo-callout/module';
 import { meridianModule } from '@substrat-run/demo-meridian/module';
 import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
-import { mountOidcRoutes, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
+import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
 import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
@@ -131,6 +131,19 @@ interface Env extends OidcEnv {
    * one-click CI setup 501s (the manual instructions remain).
    */
   CP_PUBLIC_URL?: string;
+  /**
+   * The support desk the portal embeds (`https://ticket0.substrat.net`) and the secret
+   * it verifies an identity claim against — that desk's own `verification_secret`,
+   * minted at Settings → Identity verification and readable exactly once. A `vars`
+   * entry and a secret respectively: one is a deployment fact worth reading in a diff,
+   * the other is not.
+   *
+   * Both optional, and both needed: either unset ⇒ `/api/support/identity` answers
+   * `{ desk: null }` and the portal carries no bubble. A deployment with no support
+   * desk is a supported deployment, not a half-configured one.
+   */
+  SUPPORT_DESK_ORIGIN?: string;
+  SUPPORT_WIDGET_SECRET?: string;
   /**
    * The AES-256 key that seals stored connection credentials (connections.md §3.3).
    * base64 of 32 bytes (`openssl rand -base64 32`). A DEDICATED secret — never derived
@@ -741,6 +754,35 @@ app.get('/api/me', async (c) => {
     teams: await listTeams(host, tenants),
     currentTeamId: node.tenantId,
   });
+});
+
+/**
+ * The support desk's identity claim for the signed-in customer — what the portal's
+ * `<SupportWidget/>` hands the desk so a question arrives attached to a person rather
+ * than to an anonymous browser. The signature is minted HERE, from a secret that never
+ * reaches the page (`signVisitorIdentity`), which is the only reason the claim means
+ * anything: a visitor cannot claim somebody else's identity by editing an attribute.
+ *
+ * A SESSION is the whole requirement — no team, no membership, no onboarding state.
+ * Someone who signed in and has not made a team yet is stuck on one screen and is the
+ * likeliest person in the product to have a question; refusing them a bubble because
+ * `/api/me` would say `needsOnboarding` would aim the desk away from exactly them.
+ *
+ * The claim is the session's own email and no other. A session whose OIDC identity
+ * carries no email cannot be vouched for at all, so it gets `{ desk: null }` — the
+ * same answer as an unconfigured deployment, because from the page's side it is the
+ * same fact: nothing to embed.
+ */
+app.get('/api/support/identity', async (c) => {
+  const desk = c.env.SUPPORT_DESK_ORIGIN;
+  const secret = c.env.SUPPORT_WIDGET_SECRET;
+  // No desk configured is not an error — it is a deployment without one.
+  if (!desk || !secret) return c.json({ desk: null });
+  const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
+  if (!user) return c.json({ error: 'unauthorized' }, 401);
+  if (!user.email) return c.json({ desk: null });
+  c.header('cache-control', 'no-store');
+  return c.json({ desk, user: user.email, signature: await signVisitorIdentity(secret, user.email) });
 });
 
 /**

@@ -90,7 +90,7 @@ import {
 } from '@substrat-run/control-plane-api';
 import { VerticalClient } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
-import { mountOidcRoutes, type OidcEnv } from '@substrat-run/oidc-rp';
+import { mountOidcRoutes, signVisitorIdentity, type OidcEnv } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
@@ -148,6 +148,19 @@ interface Env extends OidcEnv, ConnectorEnv {
    * still deterministic within one response and strictly less correlatable across two.
    */
   MASK_SALT?: string;
+  /**
+   * The support desk the console embeds (`https://ticket0.substrat.net`) and the
+   * secret it verifies an identity claim against — the desk's own
+   * `verification_secret`, minted at Settings → Identity verification and readable
+   * exactly once. A `vars` entry and a secret respectively, because one is a
+   * deployment fact worth reading in a diff and the other is not.
+   *
+   * Both optional, and both needed: either unset ⇒ `/api/support/identity` answers
+   * `{ desk: null }` and the console simply carries no bubble. A deployment with no
+   * support desk is a supported deployment, not a half-configured one.
+   */
+  SUPPORT_DESK_ORIGIN?: string;
+  SUPPORT_WIDGET_SECRET?: string;
   /** Local dev / test only: trust the `x-platform-actor` header. NEVER on a real deploy. */
   ALLOW_DEV_ACTOR?: string;
   /**
@@ -1020,6 +1033,31 @@ export default {
     app.get('/api/auth/session', async (c) => {
       const staff = await oidcStaffSessionReader(c.env)(c.req.raw.headers);
       return c.json({ user: staff ? { email: staff.email } : null });
+    });
+
+    // The support desk's identity claim for the signed-in staff member — what the
+    // console's `<SupportWidget/>` hands the desk so a question arrives attached to a
+    // person rather than to an anonymous browser. The signature is minted HERE, from a
+    // secret that never reaches the page (`signVisitorIdentity`), which is the only
+    // reason the claim means anything.
+    //
+    // Deliberately NOT roster-gated. The roster decides who may ACT on the control
+    // plane, and someone AuthHero authenticated who is not on it sees an empty console
+    // and has the best reason of anyone to ask a question. What is gated is the
+    // identity: this signs the session's own email and no other.
+    app.get('/api/support/identity', async (c) => {
+      const desk = c.env.SUPPORT_DESK_ORIGIN;
+      const secret = c.env.SUPPORT_WIDGET_SECRET;
+      // No desk configured is not an error — it is a deployment without one.
+      if (!desk || !secret) return c.json({ desk: null });
+      const staff = await oidcStaffSessionReader(c.env)(c.req.raw.headers);
+      if (!staff) return c.json({ error: 'unauthenticated' }, 401);
+      c.header('cache-control', 'no-store');
+      return c.json({
+        desk,
+        user: staff.email,
+        signature: await signVisitorIdentity(secret, staff.email),
+      });
     });
 
     // The BUILDER's identity + the tenants they can build for (builder-plane.md §5). The
