@@ -1,5 +1,8 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
-import { bindScopeVersion } from '../src/scope.js';
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { assertDumpIdentifiers, bindScopeVersion, pullScope, restoreScope } from '../src/scope.js';
 
 describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () => {
   const orig = globalThis.fetch;
@@ -57,5 +60,211 @@ describe('bindScopeVersion — the per-scope rollout primitive (#509 (c))', () =
     await expect(
       bindScopeVersion({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', versionId: 'v-9' }),
     ).rejects.toThrow(/pending, not admitted/);
+  });
+});
+
+describe('a backup names its own tables — and those names reach SQL (#1143)', () => {
+  const orig = globalThis.fetch;
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-dump-'));
+  afterEach(() => {
+    globalThis.fetch = orig;
+    vi.restoreAllMocks();
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  // What a crafted dump would carry: the quote closes and a second statement runs.
+  const HOSTILE = 'x") ; ATTACH DATABASE \'/tmp/pwned.db\' AS e; --';
+
+  it('accepts the names a real scope actually holds', () => {
+    expect(() =>
+      assertDumpIdentifiers([
+        { name: '_substrat_outbox', columns: ['id', 'payload_json', 'emitted_at'] },
+        { name: 'crm_vendors', columns: ['id'] },
+      ]),
+    ).not.toThrow();
+  });
+
+  it('refuses a table name that escapes its quoting, naming the offender', () => {
+    expect(() => assertDumpIdentifiers([{ name: HOSTILE, columns: ['id'] }])).toThrow(/table name .*ATTACH DATABASE/s);
+  });
+
+  it('refuses a crafted COLUMN name too — the INSERT interpolates those as well', () => {
+    expect(() => assertDumpIdentifiers([{ name: 'crm_vendors', columns: ['id', 'a") , ("b'] }])).toThrow(
+      /column name in table "crm_vendors"/,
+    );
+  });
+
+  it('restore refuses a crafted .dump.json instead of forwarding it to the control plane', async () => {
+    const file = join(dir, 'hostile.dump.json');
+    writeFileSync(
+      file,
+      JSON.stringify({ tables: [{ name: HOSTILE, ddl: 'CREATE TABLE x (id TEXT)', columns: ['id'], rows: [['1']] }] }),
+    );
+    let called = 0;
+    globalThis.fetch = (async () => {
+      called += 1;
+      return new Response('{}', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      restoreScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-1', file }),
+    ).rejects.toThrow(/refusing this backup/);
+    expect(called).toBe(0); // refused locally — the dump never left the machine
+  });
+
+  it('a second statement appended to a table DDL never executes', async () => {
+    // The names here are all plain — this is the hole `assertDumpIdentifiers` does
+    // NOT cover: the DDL text itself, which `exec` would have run in full.
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          tenantId: 'acme',
+          scopeId: 's-2',
+          capturedAt: '2026-09-01T00:00:00.000Z',
+          masked: true,
+          tables: [
+            {
+              name: 'crm_vendors',
+              ddl: 'CREATE TABLE crm_vendors (id TEXT PRIMARY KEY); CREATE TABLE smuggled (id TEXT);',
+              columns: ['id'],
+              rows: [['v1']],
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outDir = join(dir, 'compound');
+
+    await pullScope({
+      controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-2', full: false, outDir,
+    });
+
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(join(outDir, 'acme__s-2.sqlite'), { readOnly: true });
+    try {
+      const names = (
+        db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all() as { name: string }[]
+      ).map((t) => t.name);
+      expect(names).toEqual(['crm_vendors']); // 'smuggled' was compiled away, not run
+      expect(db.prepare('SELECT id FROM crm_vendors').all()).toEqual([{ id: 'v1' }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  /** A pull whose response is exactly these tables. */
+  const pullOf = (scopeId: string, tables: unknown[], outDir: string) => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({ tenantId: 'acme', scopeId, capturedAt: '2026-09-01T00:00:00.000Z', masked: true, tables }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    return pullScope({ controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId, full: false, outDir });
+  };
+
+  it('refuses a DDL that creates something other than the table it is declared for', async () => {
+    await expect(
+      pullOf(
+        's-3',
+        [{ name: 'crm_vendors', ddl: 'CREATE TABLE something_else (id TEXT)', columns: ['id'], rows: [] }],
+        join(dir, 'wrong'),
+      ),
+    ).rejects.toThrow(/does not begin with/);
+  });
+
+  it('refuses a DDL whose FIRST statement is the hostile one — before it runs', async () => {
+    const attached = join(dir, 'attached.db');
+    await expect(
+      pullOf(
+        's-4',
+        [
+          {
+            name: 'crm_vendors',
+            ddl: `ATTACH DATABASE '${attached}' AS e; CREATE TABLE crm_vendors (id TEXT);`,
+            columns: ['id'],
+            rows: [],
+          },
+        ],
+        join(dir, 'attach'),
+      ),
+    ).rejects.toThrow(/does not begin with/);
+    // The check sits BEFORE the execution, so the ATTACH never happened — a check
+    // that ran afterwards would have let it through and then complained.
+    expect(existsSync(attached)).toBe(false);
+  });
+
+  it('refuses a table listed twice — the repeat is how a payload hides behind an honest entry', async () => {
+    await expect(
+      pullOf(
+        's-5',
+        [
+          { name: 'crm_vendors', ddl: 'CREATE TABLE crm_vendors (id TEXT)', columns: ['id'], rows: [] },
+          { name: 'crm_vendors', ddl: `ATTACH DATABASE '${join(dir, 'dup.db')}' AS e`, columns: ['id'], rows: [] },
+        ],
+        join(dir, 'dup'),
+      ),
+    ).rejects.toThrow(/is listed twice/);
+  });
+
+  it('refuses two names that differ only in case — SQLite reads those as one table', async () => {
+    await expect(
+      pullOf(
+        's-6',
+        [
+          { name: 'crm_vendors', ddl: 'CREATE TABLE crm_vendors (id TEXT)', columns: ['id'], rows: [['v1']] },
+          {
+            name: 'CRM_Vendors',
+            ddl: 'CREATE TABLE IF NOT EXISTS CRM_Vendors (id TEXT)',
+            columns: ['id'],
+            rows: [['smuggled']],
+          },
+        ],
+        join(dir, 'case'),
+      ),
+    ).rejects.toThrow(/is listed twice/);
+  });
+
+  it('a refused dump does not delete the file the previous pull wrote', async () => {
+    const outDir = join(dir, 'keep');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await pullOf('s-7', [{ name: 'crm_vendors', ddl: 'CREATE TABLE crm_vendors (id TEXT)', columns: ['id'], rows: [['v1']] }], outDir);
+    const file = join(outDir, 'acme__s-7.sqlite');
+    expect(existsSync(file)).toBe(true);
+
+    // Same scope, so the same destination path — a hostile response must not cost
+    // the builder the good pull sitting there.
+    await expect(
+      pullOf('s-7', [{ name: 'crm_vendors', ddl: 'ATTACH DATABASE \'/tmp/x.db\' AS e', columns: ['id'], rows: [] }], outDir),
+    ).rejects.toThrow(/does not begin with/);
+    expect(existsSync(file)).toBe(true);
+  });
+
+  it('pull refuses a crafted dump instead of writing it to disk', async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          tenantId: 'acme',
+          scopeId: 's-1',
+          capturedAt: '2026-09-01T00:00:00.000Z',
+          masked: true,
+          tables: [{ name: HOSTILE, ddl: 'CREATE TABLE x (id TEXT)', columns: ['id'], rows: [['1']] }],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const outDir = join(dir, 'pull');
+
+    await expect(
+      pullScope({
+        controlPlaneUrl: 'http://cp',
+        header: {},
+        tenantId: 'acme',
+        scopeId: 's-1',
+        full: false,
+        outDir,
+      }),
+    ).rejects.toThrow(/refusing this backup/);
+    expect(existsSync(join(outDir, 'acme__s-1.sqlite'))).toBe(false);
+    expect(existsSync(join(outDir, 'acme__s-1.dump.json'))).toBe(false);
   });
 });
