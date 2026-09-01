@@ -116,6 +116,42 @@ host one way to take it down, poll and all. For the hosted desk to answer there,
 `https://substrat.net` must be on its origin allowlist (Settings → Widget origins), and
 `http://localhost:5173` for the docs dev server.
 
+### The platform apps embed it signed in
+
+The console (`console.substrat.net`) and the dashboard (`app.substrat.net`) carry the
+same widget, with one difference that changes everything about it: **the visitor is
+already vouched for**. Both are React SPAs behind an OIDC session, so both mount
+`<SupportWidget/>` from `@substrat-run/ui`, which asks its own worker for a claim:
+
+```
+GET /api/support/identity  →  { desk, user, signature }   (or { desk: null })
+```
+
+The signature is `signVisitorIdentity(secret, email)` from `@substrat-run/oidc-rp` —
+the same `HMAC-SHA-256(desk secret, data-user)` a customer's backend computes,
+computed here for the session the OIDC round-trip established. It is minted in the
+worker, from a secret the page never sees, and served `no-store`; the browser only
+carries it. A question from either app therefore arrives attached to a person, and
+the desk's header says the site verified them.
+
+What that costs at deploy time, and neither half works without the other:
+
+| where | what |
+|---|---|
+| `SUPPORT_DESK_ORIGIN` (a `vars` entry in both `wrangler.jsonc`) | which desk to embed — `https://ticket0.substrat.net` |
+| `SUPPORT_WIDGET_SECRET` (a secret on both workers, one canonical key in `scripts/secrets.mjs`) | that desk's verification secret, from Settings → Identity verification — **readable once**, so capture it at rotation |
+| the desk's origin allowlist (Settings → Widget origins) | `https://console.substrat.net` and `https://app.substrat.net` (plus the `-test` pair), or the desk's own preflight refuses the origin before any handler runs |
+
+One secret for both apps on purpose: they embed one desk, and a desk verifies against
+exactly one secret — two keys would let the two apps drift onto opposite halves of a
+rotation, and only one of them would work. Either value unset ⇒ the endpoint answers
+`{ desk: null }` and the app carries no bubble at all. A deployment with no support
+desk is a supported deployment, not a half-configured one.
+
+`test/platform-identity.test.ts` is the seam under test: it signs with the platform's
+function and hands the result to this desk's real `widget-start`, because two
+implementations of one HMAC agreeing is the entire thing the embed rests on.
+
 ## When the assistant does not answer
 
 Nothing the assistant does is allowed to fail silently — a customer message with no

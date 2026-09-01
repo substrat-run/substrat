@@ -117,6 +117,13 @@ const MANIFEST = {
       // `emailSender` relay). Its own key, not the dashboard's DASH_EMAIL_FROM:
       // different senders, and a shared key would make one worker's choice the other's.
       EMAIL_FROM: 'CP_EMAIL_FROM',
+      // The support desk's verification secret — what the console's identity claim is
+      // signed with (`/api/support/identity`). ONE canonical key for both platform
+      // apps, because they embed the SAME desk and a desk verifies against exactly one
+      // secret: two keys here would let the console and the dashboard drift onto
+      // different halves of a rotation, and only one of them would work.
+      // Optional: unset ⇒ neither app carries a support bubble.
+      SUPPORT_WIDGET_SECRET: 'SUPPORT_WIDGET_SECRET',
     },
   },
   builder: {
@@ -175,6 +182,8 @@ const MANIFEST = {
       GITHUB_APP_WEBHOOK_SECRET: 'GITHUB_APP_WEBHOOK_SECRET',
       EMAIL_FROM: 'DASH_EMAIL_FROM',
       CP_ACTOR: 'DASH_CP_ACTOR',
+      // The same desk secret the console holds — see the control plane's note above.
+      SUPPORT_WIDGET_SECRET: 'SUPPORT_WIDGET_SECRET',
     },
   },
   router: {

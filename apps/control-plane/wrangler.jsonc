@@ -49,6 +49,12 @@
 		"PLATFORM_BASE_DOMAINS": "substrat.run",
 		"PLATFORM_CP_URL": "https://console.substrat.net",
 		"SCRIVE_BASE_URL": "https://scrive.com",
+		// The support desk the console embeds (ticket0). Paired with the
+		// SUPPORT_WIDGET_SECRET secret — that desk's verification secret — without which
+		// the console carries no bubble at all. The desk must also list
+		// `https://console.substrat.net` under Settings → Widget origins, or its own
+		// preflight refuses this origin before any handler runs.
+		"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net",
 		// The namespace the REST-side WfP calls (upload, modules, bindings, console links)
 		// address BY NAME — must match the `dispatch_namespaces` binding below. Stated in
 		// both envs and defaulted nowhere (#962): TEST once inherited prod's name through
@@ -194,6 +200,7 @@
 				"PLATFORM_BASE_DOMAINS": "substrat.run",
 				"PLATFORM_CP_URL": "https://console-test.substrat.net",
 				"SCRIVE_BASE_URL": "https://api-testbed.scrive.com",
+				"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net", // same desk; console-test.substrat.net must be on its origin list
 				// #858: pushed verticals declare Workers automatic tracing at 100%, on TEST
 				// only. Prod sets nothing, so prod scripts keep emitting logs and no spans.
 				// 100% because the question is whether spans appear AT ALL for a

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { EntitlementGrant, HostnameBinding, Scope, ScopeId, Tenant, TenantId } from '@substrat-run/contracts';
-import { Card, Toast, useAutoRefresh } from './components';
+import { Card, SupportWidget, Toast, useAutoRefresh } from './components';
 import { scopeHandle } from './lib/fleet';
 import { navPath, parseNav, type Nav } from './lib/nav';
 import { ConsoleShell } from './ConsoleShell';
@@ -310,6 +310,17 @@ export function App() {
       identityLabel={devMode ? undefined : session?.email}
       onSignOut={devMode ? undefined : () => signOut()}
     >
+      {/*
+        The support desk, with this staff member already vouched for — the control
+        plane signs the claim (`/api/support/identity`) so a question from the console
+        arrives attached to a person. Renders nothing here: `widget.js` appends its own
+        host to document.body and draws into a shadow root, so it is not laid out by
+        the shell and cannot be styled by it. Inside the shell rather than above it
+        because that is the signed-in tree — the login and dev-actor cards return
+        earlier, and neither has an identity to vouch for.
+      */}
+      <SupportWidget />
+
       {error && (
         <Card style={{ marginBottom: 16 }}>
           <span style={{ fontSize: 13, color: 'var(--status-danger-fg)' }}>{error}</span>

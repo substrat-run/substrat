@@ -1178,6 +1178,9 @@ importers:
       '@substrat-run/model-emit':
         specifier: workspace:*
         version: link:../../packages/model-emit
+      '@substrat-run/oidc-rp':
+        specifier: workspace:^
+        version: link:../../packages/oidc-rp
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0
