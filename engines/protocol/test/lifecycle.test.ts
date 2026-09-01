@@ -1,15 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { EntityRef, StateDef } from '@substrat-run/contracts';
-import { toProblem, transitionFor } from '@substrat-run/contracts';
+import { principalId, toProblem, transitionFor } from '@substrat-run/contracts';
+import { ulid } from '@substrat-run/kernel';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   PROTOCOL_PERM as PERM,
   countersignProtocol,
   defineTemplate,
   fillProtocol,
+  getProtocol,
   instantiateProtocol,
   protocolLifecycle,
   protocolModule,
+  recordSignature,
+  requestSignatures,
   signProtocol,
   voidProtocol,
 } from '../src/index.js';
@@ -63,8 +67,20 @@ describe('engine-protocol — the lifecycle is declared, and the declaration ref
     h = await engineHarness({
       modules: [protocolModule],
       entityRelations: [{ entityType: 'protocol', parentType: 'workorder' }],
+      // `requestSignatures` seals each party's address to the connector that will
+      // deliver the document, so the scope needs a live connection to seal to.
+      connections: ['scrive'],
     });
-    await h.as([PERM.create, PERM.fill, PERM.sign, PERM.countersign, PERM.read, PERM.void]);
+    await h.as([
+      PERM.create,
+      PERM.fill,
+      PERM.requestSignature,
+      PERM.recordSignature,
+      PERM.sign,
+      PERM.countersign,
+      PERM.read,
+      PERM.void,
+    ]);
   });
   afterEach(async () => {
     await h.close();
@@ -159,6 +175,56 @@ describe('engine-protocol — the lifecycle is declared, and the declaration ref
     );
     expect(toProblem(err).reason).toBe('already_voided');
     expect(err.message).toMatch(/already voided/);
+  });
+
+  // -- the one edge whose move is conditional -----------------------------------
+
+  it('a NON-final signature leaves the instance pending — the edge is the verb, not a promise', async () => {
+    const inst = await openInstance();
+    const { contentHash, requests } = await h.run((ctx) =>
+      requestSignatures(ctx, {
+        instanceId: inst.id,
+        method: 'scrive',
+        parties: [
+          { label: 'Beställare', kind: 'external', contact: { email: 'part@example.se' } },
+          { label: 'Utställare', kind: 'principal', signatureKind: 'primary' },
+        ],
+      }),
+    );
+    expect(requests).toHaveLength(2);
+
+    // One of two parties signs. `protocol/record-signature` IS the declared
+    // `pending_signature → signed` edge — no other verb performs that move — but
+    // it performs it only when the LAST request resolves. The condition lives in
+    // the handler, where a lifecycle deliberately cannot reach, exactly as
+    // booking's `not_yet_expired` sits on its `held → expired` edge.
+    await h.run((ctx) =>
+      recordSignature(ctx, {
+        requestId: requests[1]!.id,
+        signatory: { kind: 'principal', ref: principalId.parse(ulid()) },
+        signedAt: '2026-03-01T10:00:00.000Z',
+        contentHash,
+      }),
+    );
+
+    const after = await h.run((ctx) => getProtocol(ctx, inst.id));
+    expect(after.instance.status).toBe('pending_signature');
+    // The declaration still names the edge, and still names it from here.
+    expect(transitionFor(protocolLifecycle, 'pending_signature', 'protocol/record-signature')).toEqual({
+      kind: 'transition',
+      to: 'signed',
+    });
+
+    // The second signature is what takes it, and the instance follows.
+    await h.run((ctx) =>
+      recordSignature(ctx, {
+        requestId: requests[0]!.id,
+        signatory: { kind: 'external', ref: ulid(), label: 'Anna Beställare' },
+        signedAt: '2026-03-01T10:05:00.000Z',
+        contentHash,
+      }),
+    );
+    expect((await h.run((ctx) => getProtocol(ctx, inst.id))).instance.status).toBe('signed');
   });
 
   it('void is declared out of every state that is not already voided', () => {
