@@ -2201,11 +2201,30 @@ const operations = {
       [HEALTH_RECENT],
     );
     /**
-     * The answers nobody has sent yet — the other half of "is the assistant working".
+     * The answers nobody has sent — the other half of "is the assistant working".
      *
-     * Windowed like the counts rather than listed forever: a drafted turn from last
-     * month is a conversation somebody decided about, not a queue.
+     * NOT windowed, unlike everything above it. An answer written three days ago and
+     * never sent is more urgent than one written an hour ago, not less, and a list that
+     * forgot it would be telling an admin the queue is empty when it is not.
+     *
+     * "Waiting" means the draft is still the last word: no public reply from the desk
+     * on that conversation since the turn was written. That excludes a draft somebody
+     * answered in their own words — including every one sent before a reply carried its
+     * `turnId`, which would otherwise sit on this list forever with nothing able to
+     * clear it. `author_kind != 'contact'` because the CUSTOMER writing back is not the
+     * desk answering; it is the thing that makes an unsent draft worse.
      */
+    const WAITING = `FROM ticket0_ai_turns t
+         JOIN ticket0_conversations c ON c.id = t.conversation_id
+        WHERE t.outcome = 'drafted'
+          AND NOT EXISTS (
+                SELECT 1 FROM ticket0_messages m
+                 WHERE m.conversation_id = t.conversation_id
+                   AND m.visibility = 'public'
+                   AND m.author_kind != 'contact'
+                   AND m.created_at >= t.created_at
+              )`;
+    const waitingTotal = ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n ${WAITING}`, [])[0];
     const waiting = ctx.sql.query<{
       id: string;
       conversation_id: string;
@@ -2213,13 +2232,10 @@ const operations = {
       model: string;
       created_at: string;
     }>(
-      `SELECT t.id, t.conversation_id, c.subject, t.model, t.created_at
-         FROM ticket0_ai_turns t
-         JOIN ticket0_conversations c ON c.id = t.conversation_id
-        WHERE t.outcome = 'drafted' AND t.created_at >= ?
+      `SELECT t.id, t.conversation_id, c.subject, t.model, t.created_at ${WAITING}
         ORDER BY t.created_at DESC, t.id DESC
         LIMIT ?`,
-      [since, HEALTH_RECENT],
+      [HEALTH_RECENT],
     );
     return {
       since,
@@ -2228,6 +2244,7 @@ const operations = {
       drafted: Number(counts?.drafted ?? 0),
       supervised: !isAutonomous(ctx),
       recent,
+      waitingTotal: waitingTotal?.n ?? 0,
       waiting,
     };
   },

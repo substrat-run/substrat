@@ -1342,7 +1342,11 @@ function Assistant({ go }: { go: (v: View) => void }) {
         ) : null}
       </div>
 
-      {health.supervised && health.waiting.length > 0 ? (
+      {/* NOT gated on `supervised`, and that was a real bug: turning autonomy ON hid
+          the backlog at the exact moment it stopped being routine. Answers drafted
+          while a person was meant to send them do not send themselves once the switch
+          flips — they sit there, and nothing else in the desk points at them. */}
+      {health.waitingTotal > 0 ? (
         <div
           style={{
             padding: '10px 12px',
@@ -1354,11 +1358,18 @@ function Assistant({ go }: { go: (v: View) => void }) {
           }}
         >
           <strong>
-            {health.drafted} answer{health.drafted === 1 ? '' : 's'} waiting for a person.
+            {health.waitingTotal} answer{health.waitingTotal === 1 ? '' : 's'} waiting for a
+            person.
           </strong>{' '}
-          The assistant has written {health.drafted === 1 ? 'it' : 'them'} and cannot send{' '}
-          {health.drafted === 1 ? 'it' : 'them'}.
+          {health.supervised
+            ? 'The assistant wrote them and cannot send them — that is what a supervised desk does.'
+            : 'Written while this desk was supervised, and still unsent. Turning the assistant loose does not send them; they need a person, once.'}
           <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {health.waitingTotal > health.waiting.length ? (
+              <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+                The {health.waiting.length} newest:
+              </span>
+            ) : null}
             {health.waiting.map((w) => (
               <button
                 key={w.id}
@@ -1407,8 +1418,8 @@ function Assistant({ go }: { go: (v: View) => void }) {
         </div>
         {health.recent.length === 0 ? (
           <div className="t-meta" style={{ padding: '18px 16px' }}>
-            {health.drafted > 0
-              ? 'No failed turns — but see above: the answers this desk wrote are waiting for a person, not with the customers who asked.'
+            {health.waitingTotal > 0
+              ? 'No failed turns — but see above: answers this desk wrote are waiting for a person, not with the customers who asked.'
               : 'No failed turns. Every message the assistant was asked to answer got a turn recorded — answered, drafted, or escalated to a person.'}
           </div>
         ) : (

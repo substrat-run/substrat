@@ -1695,7 +1695,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
           created_at: z.string(),
         }),
       ),
-      /** The newest drafted answers, so the panel can send somebody to them. */
+      /**
+       * How many answers are waiting for a person, ALL of them — not the window's.
+       *
+       * An unsent answer from three days ago is more urgent than one from an hour ago,
+       * not less, so this is the one number here that is not about the last 24 hours.
+       */
+      waitingTotal: z.number().int(),
+      /** The newest of them, so the panel can send somebody to them. */
       waiting: z.array(
         z.object({
           id: z.string(),
