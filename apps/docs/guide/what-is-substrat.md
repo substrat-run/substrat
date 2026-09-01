@@ -99,6 +99,8 @@ Substrat is pre-release (0.x). What exists today:
 | Kallkälla (coffee shop) — two audiences, one API; commerce | [`demos/shop`](/verticals/shop) | Working |
 | Meridian (HR) — leave/absence, time, expenses, onboarding; one role-adaptive app | [`demos/meridian`](/verticals/meridian) | Working |
 | Manyfold (headless CMS) — multi-scope, *site = scope*; the editorial lifecycle as the invariant | [`demos/manyfold`](/verticals/manyfold) | Working |
+| Todo (shared lists) — user-initiated sharing on a record app; no engine, by design | [`demos/todo`](/verticals/todo) | Working |
+| ticket0 (support desk) — a public, unauthenticated surface; the assistant as a member of staff | [`demos/ticket0`](/verticals/ticket0) | Working |
 
 Interfaces change without notice until the first vertical ships.
 
