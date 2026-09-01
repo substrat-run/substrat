@@ -1,5 +1,13 @@
 # @substrat-run/demo-ticket0
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [2b53117]
+  - @substrat-run/vertical-auth@0.11.0
+  - @substrat-run/dev-issuer@0.1.10
+
 ## 0.3.2
 
 ### Patch Changes

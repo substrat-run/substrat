@@ -1,5 +1,13 @@
 # @substrat-run/demo-manyfold
 
+## 0.7.12
+
+### Patch Changes
+
+- Updated dependencies [2b53117]
+  - @substrat-run/vertical-auth@0.11.0
+  - @substrat-run/dev-issuer@0.1.10
+
 ## 0.7.11
 
 ### Patch Changes

@@ -1,5 +1,15 @@
 # @substrat-run/dashboard
 
+## 0.28.12
+
+### Patch Changes
+
+- Updated dependencies [b81f21b]
+  - @substrat-run/engine-protocol@0.12.0
+  - @substrat-run/demo-callout@0.3.13
+  - @substrat-run/demo-meridian@0.7.8
+  - @substrat-run/demo-manyfold@0.7.12
+
 ## 0.28.11
 
 ### Patch Changes

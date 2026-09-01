@@ -1,5 +1,12 @@
 # @substrat-run/demo-bike-shop
 
+## 0.1.13
+
+### Patch Changes
+
+- Updated dependencies [b81f21b]
+  - @substrat-run/engine-protocol@0.12.0
+
 ## 0.1.12
 
 ### Patch Changes
