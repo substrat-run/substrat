@@ -160,22 +160,15 @@ held ──confirm──▶ confirmed ──start──▶ in_service ──comp
 ## 4. In-scope exports (the composable surface)
 
 Engine logic lives in plain exports so verticals extend by composition, never fork.
-Operations are thin: `assertAllowed(await ctx.check(PERM))` + one call below.
+Operations are thin: `assertAllowed(await ctx.check(PERM))` + one call.
 
-```ts
-createResource(ctx, { kind, name, capacity? })                  → ResourceId
-holdReservation(ctx, { resourceId, startsAt, endsAt,
-                       quantity?, expiresAt, fillTarget? })     → ReservationId  // throws SlotUnavailable
-confirmReservation(ctx, { reservationId })                      → void           // re-checks capacity
-joinReservation(ctx, { reservationId, partyRef, share? })       → ParticipantId  // auto-confirms at fillTarget
-leaveReservation(ctx, { reservationId, participantId })         → void
-cancelReservation(ctx, { reservationId, reason? })              → void
-moveReservation(ctx, { reservationId, resourceId?,
-                       startsAt?, endsAt? })                    → Reservation    // throws SlotUnavailable
-completeReservation(ctx, { reservationId })                     → void
-markNoShow(ctx, { reservationId })                              → void
-availability(ctx, { resourceId, from, to })                     → FreeInterval[] // read model
-```
+**The signatures live in one place, and it is not here:**
+[`apps/docs/engines/booking/surface.md`](../../apps/docs/engines/booking/surface.md),
+published at [substrat.net/engines/booking/surface](https://substrat.net/engines/booking/surface).
+This page restated them until it disagreed with the engine on the return type of every
+transition, on `openReservation`, and on the three paged twins — which is what
+[`docs/README.md`](../README.md) means by *nothing belongs in both*. What stays here is
+the reasoning the published page does not carry: why the surface has these verbs.
 
 ### D-D: `move`, not a general `updateReservation`
 
@@ -237,9 +230,12 @@ their own reservation through an entity-narrowed grant, holding **no role**.
 
 ## 6. Events (frozen once shipped)
 
-`booking.resource-created` · `booking.held` · `booking.confirmed` · `booking.expired` ·
-`booking.cancelled` · `booking.moved` · `booking.started` · `booking.completed` ·
-`booking.no-show` · `booking.participant-joined` · `booking.participant-left`
+The twelve payloads are documented, field by field, at
+[`apps/docs/engines/booking/events.md`](../../apps/docs/engines/booking/events.md)
+(published at [substrat.net/engines/booking/events](https://substrat.net/engines/booking/events)).
+The list this page used to carry named eleven of them — `booking.opened` was added with
+`openReservation` and never reached the copy, which is the drift that a second list
+guarantees. The decision below is what belongs here.
 
 ### D-C: aggregate events carry no participant identities
 
