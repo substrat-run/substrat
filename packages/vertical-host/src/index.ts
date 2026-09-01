@@ -654,6 +654,32 @@ export function mountPlatformSurface<Env extends object>(
       connectionGrants: body.connectionGrants,
       connectionKeys: body.connectionKeys,
     });
+    /**
+     * The VERTICAL's half of a provision runs here too — and it did not, which made this
+     * route a repair that could not repair.
+     *
+     * "Re-runs the idempotent provision" was only ever true of the kernel half: roles
+     * projected, owner seated. Everything a vertical does for itself at provision — the
+     * service principals ticket0 mints, the site another registers — was skipped, so a
+     * scope could be reconciled as often as you liked and still be missing whatever its
+     * own hook creates. That is worst exactly where it matters most: an install that
+     * predates a new service principal has no other way to receive one, since
+     * `/internal/provision` is called at install and never again.
+     *
+     * `onProvision` is required to be idempotent (this route and the drain's retry both
+     * re-run it), so calling it here asks nothing new of a vertical. `slug` and `name`
+     * are absent — the platform does not carry them on a reconcile, and both are
+     * optional for exactly this kind of caller.
+     */
+    await deps.onProvision?.(c.env, {
+      tenantId: body.tenantId,
+      scopeId: body.scopeId,
+      owner,
+      ...(body.entitlements ? { entitlements: body.entitlements } : {}),
+      ...(body.identityLinks ? { identityLinks: body.identityLinks } : {}),
+      ...(body.connectionGrants ? { connectionGrants: body.connectionGrants } : {}),
+      ...(body.connectionKeys ? { connectionKeys: body.connectionKeys } : {}),
+    });
     return c.json({ tenantId: body.tenantId, scopeId: body.scopeId, owner });
   });
 

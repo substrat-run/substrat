@@ -600,6 +600,11 @@
                         "additionalProperties": false
                       }
                     },
+                    "waitingTotal": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
                     "waiting": {
                       "type": "array",
                       "items": {
@@ -639,6 +644,7 @@
                     "drafted",
                     "supervised",
                     "recent",
+                    "waitingTotal",
                     "waiting"
                   ],
                   "additionalProperties": false

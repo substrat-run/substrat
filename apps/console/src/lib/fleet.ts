@@ -160,6 +160,27 @@ export function fleetCounts(scopes: Scope[], tenants: Map<TenantId, Tenant>): Fl
  * `active`, so `unsuspendScope` would be rejected as an illegal transition. The
  * lever is the tenant.
  */
+/**
+ * May this scope's provisioning be re-run?
+ *
+ * Deliberately NOT part of `availableActions`: that list is the status ladder, and every
+ * entry on it is a transition the server would accept from the current status. Re-running
+ * a provision changes no status at all — it re-delivers what a provision delivers
+ * (entitlements, identity links, connection grants, and the vertical's own `onProvision`
+ * hook) to a scope that already exists.
+ *
+ * Offered wherever there is something to provision INTO: a scope with a vertical whose
+ * storage is still live. An archived scope's DO is dormant and a reaped one's is gone, so
+ * neither can be repaired without being restored first; `archiving` is mid-flight.
+ */
+export function canReprovision(
+  scope: { vertical?: string | null },
+  status: EffectiveStatus,
+): boolean {
+  if (!scope.vertical) return false;
+  return status !== 'archived' && status !== 'reaped' && status !== 'archiving';
+}
+
 export function availableActions(
   s: EffectiveStatus,
 ): ('suspend' | 'unsuspend' | 'archive' | 'unarchive' | 'reap')[] {

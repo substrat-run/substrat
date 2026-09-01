@@ -6,6 +6,7 @@ import {
   admissionTone,
   availableActions,
   awaitingStaffVouch,
+  canReprovision,
   effectiveAdmission,
   type EffectiveStatus,
 } from '../src/lib/fleet';
@@ -38,6 +39,47 @@ const ALL_STATUSES: EffectiveStatus[] = [
   'reaped',
   'suspended-via-tenant',
 ];
+
+/**
+ * Re-running a provision is a REPAIR, not a transition — the lever for a scope that is
+ * stuck rather than in the wrong state. Two shapes of stuck: the #332 lockout (roles
+ * projected, zero tuples, every login denied) and an install that predates something its
+ * vertical now mints for itself at provision, which no other path can deliver because
+ * provision runs at install and never again.
+ */
+describe('canReprovision', () => {
+  const withVertical = { vertical: 'ticket0' };
+
+  it('is offered wherever there is live storage to provision into', () => {
+    for (const status of ['provisioning', 'active', 'suspended', 'suspended-via-tenant'] as const) {
+      expect(canReprovision(withVertical, status)).toBe(true);
+    }
+  });
+
+  /**
+   * An archived scope's DO is dormant and a reaped one's is gone; `archiving` is
+   * mid-flight. Repairing any of them means restoring first, so offering the button
+   * there would be offering a failure.
+   */
+  it('is not offered where there is nothing to provision into', () => {
+    for (const status of ['archived', 'reaped', 'archiving'] as const) {
+      expect(canReprovision(withVertical, status)).toBe(false);
+    }
+  });
+
+  it('is never offered for a scope with no vertical — there is no hook to re-run', () => {
+    for (const status of ALL_STATUSES) {
+      expect(canReprovision({ vertical: null }, status)).toBe(false);
+    }
+  });
+
+  /** It changes no status, so it is not on the ladder — and must not drift onto it. */
+  it('is not one of the lifecycle transitions', () => {
+    for (const status of ALL_STATUSES) {
+      expect(availableActions(status)).not.toContain('reprovision');
+    }
+  });
+});
 
 describe('availableActions', () => {
   it('only offers transitions the server would accept from that status', () => {

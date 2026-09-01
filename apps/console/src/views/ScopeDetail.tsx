@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'react';
 import type { HostnameBinding, Scope, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Dialog, Input, KeyValue } from '../components';
-import { availableActions, effectiveStatus, scopeHandle, statusLabel, statusTone } from '../lib/fleet';
+import {
+  availableActions,
+  canReprovision,
+  effectiveStatus,
+  scopeHandle,
+  statusLabel,
+  statusTone,
+} from '../lib/fleet';
 import { boundHostnames, portalUrl } from '../lib/portal';
 import {
   d1DatabaseUrl,
@@ -220,6 +227,25 @@ export function ScopeDetail({ api, scope, tenants, hostnames, runtime, onBack, o
             {actions.includes('archive') && (
               <Button variant="secondary" onClick={() => setConfirmArchive(true)}>
                 Archive
+              </Button>
+            )}
+            {/* Re-run provisioning. NOT one of `availableActions` — that list is the
+                status ladder, and this changes no status: it re-delivers everything a
+                provision delivers, including the vertical's own `onProvision` hook.
+                Offered wherever a scope has a vertical and still has storage to repair;
+                an archived or reaped one has nothing to provision INTO. */}
+            {canReprovision(scope, eff) && (
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  run(
+                    () => api.reprovisionScope(scope.tenantId, scope.id),
+                    'Provisioning re-run',
+                    `${scope.slug} · entitlements, identity links and the vertical's own provision hook re-delivered`,
+                  )
+                }
+              >
+                Re-run provisioning
               </Button>
             )}
             {/* Reap frees the scope's DO storage for good — the one unrestorable action,
