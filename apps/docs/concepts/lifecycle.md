@@ -150,19 +150,21 @@ than becoming the truth.
 export const workorderModel = emitModel(workorderEntities, { lifecycles: workorderLifecycles });
 ```
 
-Adopted: `engine-workorder`, `engine-booking`, `engine-invoicing`, `demos/manyfold`,
-`demos/shop`.
+Adopted: `engine-workorder`, `engine-booking`, `engine-protocol`, `engine-invoicing`,
+`demos/manyfold`, `demos/shop`.
 
 Booking is worth reading as the harder example: seven states, three operations that are
 `allow` rather than edges, a state reachable by lapse rather than by transition, and a
 transition performed by composition. It needed no addition to the format.
 
-Two are deliberately not adopted:
+Protocol is the worked example of the section below: it gates content mutation, not just
+transitions, and each of its refusals carries its own reason — `content_frozen`,
+`wrong_status`, `already_voided`. Routing those through `assertTransition` would flatten
+three useful answers into one vaguer one, so it asks the declaration with `transitionFor`
+at all seven call sites and keeps its own prose.
 
-- **`engine-protocol`** gates content mutation, not just transitions, and each of its
-  refusals carries its own reason — `content_frozen`, `wrong_status`, `already_voided`.
-  Routing those through `assertTransition` would flatten three useful answers into one
-  vaguer one. It needs the `transitionFor` treatment below, applied case by case.
+One is deliberately not adopted:
+
 - **`engine-absence`** has a machine (`requested → approved | rejected | cancelled`) and no
   entity to hang it on: its registry declares `absence_leave_types` and nothing else, so
   `absence_requests` is not a declared entity. Registering it comes first.

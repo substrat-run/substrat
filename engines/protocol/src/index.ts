@@ -30,6 +30,7 @@ import {
   permissionKey,
   sealedCell,
   principalId,
+  transitionFor,
   type EntityRef,
   type EntityRow,
   type Page,
@@ -68,11 +69,33 @@ export type ProtocolConflictReason = (typeof PROTOCOL_CONFLICT_REASONS)[number];
 const conflict = (reason: ProtocolConflictReason, message: string) => substratError('conflict', message, { reason });
 
 import { protocolEntities } from './entities.js';
+import { protocolLifecycle } from './lifecycle.js';
 
 // The entity registry is PUBLIC: a composing vertical imports it to check
 // relation edges naming this engine's entities, and to declare an operation's
 // output without transcribing this engine's shape.
 export { protocolEntities, protocolInstanceRow } from './entities.js';
+
+/**
+ * The state machine is PUBLIC too (#844): a vertical rendering "what can I do
+ * from here" derives it from the declaration rather than re-deriving
+ * `status === 'open' && …` in a button's `disabled`.
+ */
+export { protocolLifecycles, protocolLifecycle } from './lifecycle.js';
+
+/**
+ * The declaration doing the deciding, in this engine's own conflict vocabulary.
+ *
+ * `assertTransition` would refuse every one of these with
+ * `reason: 'invalid_transition'`. This engine has published `wrong_status`,
+ * `content_frozen` and `already_voided` since its first release and consumers
+ * branch on them, so the *legality* question moves to the declaration
+ * (`transitionFor`) and the answer stays local — the shape
+ * `apps/docs/concepts/lifecycle.md` prescribes for exactly this case.
+ */
+function legalHere(instance: ProtocolInstanceRow, operation: string): boolean {
+  return transitionFor(protocolLifecycle, instance.status, operation) !== null;
+}
 /**
  * The row shapes this engine publishes, as Zod (#738). A vertical declaring an
  * operation that RETURNS one needs something to point at; before these it had
@@ -1069,9 +1092,17 @@ export function instantiateProtocol(
   return getInstanceRow(ctx, id);
 }
 
-/** The one place that decides whether content may still change. */
-function assertUnfrozen(instance: ProtocolInstanceRow, what: string): void {
-  if (instance.status === 'open') return;
+/**
+ * The one place that decides whether content may still change.
+ *
+ * The states that admit a content change are the ones the lifecycle declares
+ * `operation` legal in — so adding a state, or letting `bind-document` reach one
+ * `fill` cannot, is a change to the declaration and shows up in `model.json`.
+ * The prose stays here because `content_frozen` says more than "invalid
+ * transition": the verb is fine, the content is not.
+ */
+function assertUnfrozen(instance: ProtocolInstanceRow, operation: string, what: string): void {
+  if (legalHere(instance, operation)) return;
   if (instance.status === 'pending_signature') {
     throw conflict('content_frozen', 
       `protocol is out for signature: content is frozen until the requests resolve ` +
@@ -1092,7 +1123,7 @@ export function fillProtocol(
   const instance = getInstanceRow(ctx, input.instanceId);
 
   // Invariant 1+4: responses bind to an UNFROZEN instance only, and always append.
-  assertUnfrozen(instance, 'responses');
+  assertUnfrozen(instance, 'protocol/fill', 'responses');
 
   const template = getTemplateRow(ctx, instance.template_key, instance.template_version);
   const content = templateContentOf(template);
@@ -1179,7 +1210,7 @@ export function bindDocument(
 ): ProtocolInstanceRow {
   const input = bindDocumentInput.parse(rawInput);
   const instance = getInstanceRow(ctx, input.instanceId);
-  assertUnfrozen(instance, 'the binding');
+  assertUnfrozen(instance, 'protocol/bind-document', 'the binding');
 
   const template = getTemplateRow(ctx, instance.template_key, instance.template_version);
   const content = templateContentOf(template);
@@ -1282,8 +1313,8 @@ export async function requestSignatures(
 ): Promise<RequestSignaturesResult> {
   const input = requestSignaturesInput.parse(rawInput);
   const instance = getInstanceRow(ctx, input.instanceId);
-  if (instance.status !== 'open') {
-    throw conflict('wrong_status', 
+  if (!legalHere(instance, 'protocol/request-signatures')) {
+    throw conflict('wrong_status',
       `protocol is ${instance.status}: only an open protocol can be sent for signature`,
     );
   }
@@ -1501,8 +1532,8 @@ export async function recordSignature(
   }
 
   const instance = getInstanceRow(ctx, request.instance_id);
-  if (instance.status !== 'pending_signature') {
-    throw conflict('wrong_status', 
+  if (!legalHere(instance, 'protocol/record-signature')) {
+    throw conflict('wrong_status',
       `protocol is ${instance.status}: signatures are only recorded while out for signature`,
     );
   }
@@ -1643,8 +1674,8 @@ export function cancelSignatureRequests(
 ): ProtocolInstanceRow {
   const input = cancelSignatureRequestsInput.parse(rawInput);
   const instance = getInstanceRow(ctx, input.instanceId);
-  if (instance.status !== 'pending_signature') {
-    throw conflict('wrong_status', 
+  if (!legalHere(instance, 'protocol/cancel-signatures')) {
+    throw conflict('wrong_status',
       `protocol is ${instance.status}: only a protocol out for signature can be withdrawn`,
     );
   }
@@ -1767,7 +1798,7 @@ export async function signProtocol(
   input: { instanceId: string },
 ): Promise<SignResult> {
   const instance = getInstanceRow(ctx, z.string().min(1).parse(input.instanceId));
-  if (instance.status !== 'open') {
+  if (!legalHere(instance, 'protocol/sign')) {
     throw conflict('wrong_status', `protocol is ${instance.status}: only an open protocol can be signed`);
   }
   const latest = latestPerItem(getResponseRows(ctx, instance.id));
@@ -1811,8 +1842,8 @@ export async function countersignProtocol(
   input: { instanceId: string },
 ): Promise<SignResult> {
   const instance = getInstanceRow(ctx, z.string().min(1).parse(input.instanceId));
-  if (instance.status !== 'signed') {
-    throw conflict('wrong_status', 
+  if (!legalHere(instance, 'protocol/countersign')) {
+    throw conflict('wrong_status',
       `protocol is ${instance.status}: only a signed (frozen) protocol can be counter-signed`,
     );
   }
@@ -1857,7 +1888,10 @@ export function voidProtocol(
 ): ProtocolInstanceRow {
   const reason = z.string().min(1).parse(input.reason);
   const instance = getInstanceRow(ctx, z.string().min(1).parse(input.instanceId));
-  if (instance.status === 'voided') throw conflict('already_voided', 'protocol is already voided');
+  // `voided` is the one state with no `protocol/void` edge, so "not legal here"
+  // and "already voided" are the same fact — asked of the declaration, answered
+  // in this engine's words.
+  if (!legalHere(instance, 'protocol/void')) throw conflict('already_voided', 'protocol is already voided');
   const now = ctx.now();
   // An outstanding request set dies with the protocol — leaving rows `pending`
   // on a voided instance would keep `requireAllSigned` reading a live gate on
