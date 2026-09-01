@@ -82,10 +82,9 @@ reviewed one, which is the distinction the whole platform is built on.
 
 ## 5. Permissions
 
-| key | description |
-|---|---|
-| `invoicing:read` | Read invoice bases |
-| `invoicing:export` | Export an invoice basis (makes it immutable) |
+`invoicing:read` · `invoicing:export`, with their manifest descriptions and the role shape
+the split argues for, at
+[`apps/docs/engines/invoicing/surface.md`](../../apps/docs/engines/invoicing/surface.md#permissions).
 
 `attachmentTargets` exposes `underlag` behind `invoicing:read`. Entitlement key:
 `invoicing`. Note there is no `invoicing:create` — bases are created by *consuming an
@@ -94,9 +93,12 @@ permission surface.
 
 ## 6. Events
 
-**Emits.** `invoicing.underlag-updated` v1 · `invoicing.underlag-exported` **v2**.
+What is emitted and consumed, with payloads, is at
+[`apps/docs/engines/invoicing/events.md`](../../apps/docs/engines/invoicing/events.md)
+(published at [substrat.net/engines/invoicing/events](https://substrat.net/engines/invoicing/events)).
+The version argument below is what belongs here, and the published page does not carry it.
 
-`underlag-exported` is at v2 because v1 stated `total` as a bare amount string with no
+`invoicing.underlag-exported` is at **v2** because v1 stated `total` as a bare amount string with no
 currency — on a financial artifact. `demos/callout/spec/testrun.md` had always specified
 `total: Money`, so the bump is the code meeting its own spec rather than a change of intent.
 

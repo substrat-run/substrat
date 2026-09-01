@@ -69,18 +69,17 @@ but leave the order where it is. Only `start`, `complete` and `close` advance it
 
 ## 4. In-scope exports — the composable surface
 
-```ts
-createWorkOrder(ctx, input): WorkOrder
-listOrders(ctx, page): Page<WorkOrder>
-getWorkOrder(ctx, orderId): WorkOrder
-getReportedLines(ctx, orderId): { time: TimeEntry[]; material: MaterialLine[] }
-assignWorkOrder(ctx, { orderId, technician }): WorkOrder
-startWorkOrder(ctx, { orderId }): WorkOrder
-reportTime(ctx, { orderId, hours, note? }): TimeEntry
-reportMaterial(ctx, { orderId, article, qty, note? }): MaterialLine
-completeWorkOrder(ctx, { orderId, billable }): { order: WorkOrder; total: Money }
-closeWorkOrder(ctx, { orderId }): WorkOrder
-```
+Engine logic lives in plain exports; the registered operations are thin
+(`assertAllowed(await ctx.check(PERM.…))` + one call below).
+
+**The signatures live in one place, and it is not here:**
+[`apps/docs/engines/workorder/surface.md`](../../apps/docs/engines/workorder/surface.md),
+published at [substrat.net/engines/workorder/surface](https://substrat.net/engines/workorder/surface).
+That page is what a vertical reads, so it carries what a caller needs and this one did not —
+that `getWorkOrder` throws on an id naming nothing, and that `listOrders` takes the kernel's
+`PageParams` and answers a `CountedPage` under `total: true`. Two lists of the same
+signatures is the drift [`docs/README.md`](../README.md) means by *nothing belongs in both*.
+What stays here is the reasoning the published page does not carry.
 
 `assignWorkOrder`, `startWorkOrder`, `reportTime` and `reportMaterial` were extracted from
 their operation handlers in [#975](https://github.com/substrat-run/substrat/issues/975);
@@ -100,47 +99,40 @@ manager's ROT split, a shop's article prices — so the engine sums what it is g
 the read the vertical prices *from*. Callout's completion operation is the reference: read
 the lines, price them in vertical code, pass them back, all in one transaction.
 
-**Everything returned here is parsed, not asserted** ([#771](https://github.com/substrat-run/substrat/issues/771)).
-D-28's additive-only rule is enforced by review; the failure it exists to prevent — a
-vertical compiled against 0.3 running against 0.4, whose row shape moved — used to surface
-as *wrong data on a screen* rather than a throw, because a return value crossed the seam
-typed only by TypeScript, which is not there at runtime. `src/seam.ts` is the runtime half:
-
-- `returns(schema, surface, value)` parses every published value with the same schema a
-  composing vertical declares its `output` with. The refusal is `internal`, not
-  `validation_failed`: the caller's input was already parsed, and the fault is on this side.
-- `columnsOf(schema)` derives each `SELECT` list from that schema, so a read asks for
-  exactly what the seam promises. `SELECT *` pinned the published shape to the physical
-  table — a column added upstream crossed the seam, a column renamed arrived `undefined`.
-
-Parsing is **always on**, bulk reads included: every read here is one row or one page
-(#811), and dev-only validation would be absent exactly where the version skew lives.
-`test/seam.test.ts` moves the tables under a running engine — drops a column, makes
-`technician` nullable, retypes `number` — and asserts each one throws at the seam. The
-other six engines have not been converted; this one is the reference.
+**Everything returned here is parsed, not asserted** ([#771](https://github.com/substrat-run/substrat/issues/771)),
+and this engine is where that was worked out. D-28's additive-only rule is enforced by
+review; the failure it exists to prevent — a vertical compiled against 0.3 running against
+0.4, whose row shape moved — used to surface as *wrong data on a screen* rather than a
+throw, because a return value crossed the seam typed only by TypeScript, which is not there
+at runtime. `src/seam.ts` is one line of `engineSeam('engine-workorder')`
+([#970](https://github.com/substrat-run/substrat/issues/970)); the `returns` and
+`columnsOf` helpers it binds live in `@substrat-run/contracts`, and what they do is on the
+published page. `test/seam.test.ts` moves the tables under a running engine — drops a
+column, makes `technician` nullable, retypes `number` — and asserts each one throws at the
+seam. Every other engine has since been converted the same way; this one was the reference,
+not the exception.
 
 ## 5. Permissions
 
-| key | description |
-|---|---|
-| `workorder:create` | Create work orders |
-| `workorder:read` | Read work orders, time and material |
-| `workorder:assign` | Assign a technician |
-| `workorder:report` | Start work, report time and material |
-| `workorder:complete` | Complete a work order (with billable lines) |
-| `workorder:close` | Close a completed work order |
+`workorder:create` · `workorder:read` · `workorder:assign` · `workorder:report` ·
+`workorder:complete` · `workorder:close` — each with the description the manifest declares,
+and the role shapes they compose into, at
+[`apps/docs/engines/workorder/surface.md`](../../apps/docs/engines/workorder/surface.md#permissions).
 
-`attachmentTargets` exposes `workorder` behind `workorder:read`, and `entityRelations`
-declares `workorder → facility`, which is what lets an entity-narrowed grant on a facility
-resolve down to its orders (D-23 rule 3). Entitlement key: `workorder`.
+`workorder:create` is declared with no operation binding it: creation is `createWorkOrder`
+only, so the key exists for the vertical that composes it to check. `attachmentTargets`
+exposes `workorder` behind `workorder:read`, and `entityRelations` declares
+`workorder → facility`, which is what lets an entity-narrowed grant on a facility resolve
+down to its orders (D-23 rule 3). Entitlement key: `workorder`.
 
 ## 6. Events — frozen once shipped (D-28)
 
-All at `schemaVersion: 1`, all `piiClass: 'none'`:
-
-`workorder.created` · `workorder.assigned` · `workorder.started` ·
-`workorder.time-reported` · `workorder.material-reported` · `workorder.completed` ·
-`workorder.closed`
+All seven — each with its `schemaVersion`, its `piiClass` and what its payload carries — are at
+[`apps/docs/engines/workorder/events.md`](../../apps/docs/engines/workorder/events.md)
+(published at [substrat.net/engines/workorder/events](https://substrat.net/engines/workorder/events)).
+The copy this page used to carry called all seven `piiClass: 'none'`; two of them —
+`workorder.assigned` and `workorder.time-reported`, which name a technician — are
+`pseudonymous`, and a PII claim is the last thing that should live in a second list.
 
 `consumes` is empty. This engine is a pure producer.
 

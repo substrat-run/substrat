@@ -67,11 +67,9 @@ Expiry is also *enforced on read*, not only by the sweep: an overdue invitation 
 
 ## 4. Permissions — and the one operation that has none
 
-| key | description |
-|---|---|
-| `invites:send` | Invite someone to an organization |
-| `invites:read` | List invitations and their state |
-| `invites:revoke` | Withdraw an invitation before it is accepted |
+`invites:send` · `invites:read` · `invites:revoke`, each with the description the manifest
+declares, at
+[`apps/docs/engines/invites/surface.md`](../../apps/docs/engines/invites/surface.md#permissions).
 
 **Accepting checks nothing.** The invitation *is* the authority — you hold a link naming an
 id and can produce the identifier it was issued to, and that is the whole credential
@@ -88,20 +86,20 @@ attach documents to.
 
 ## 5. In-scope exports
 
-```ts
-listInvites(ctx, orgId): Invitation[]
-revokeInvite(ctx, invitationId): void
-expireOverdue(ctx, orgId): void
-hashIdentifier(scopeSalt, identifier): Promise<string>
-```
-
-`hashIdentifier` is exported because the *host* needs it to build an accept link's
-comparison input; it is Web Crypto (`globalThis.crypto`), never a hand-rolled digest.
+**The signatures live in one place, and it is not here:**
+[`apps/docs/engines/invites/surface.md`](../../apps/docs/engines/invites/surface.md#in-scope-functions),
+published at [substrat.net/engines/invites/surface](https://substrat.net/engines/invites/surface).
+This page restated four of the six — `sendInvite` and `acceptInvite`, the two that carry the
+whole design, were never in the copy — which is what [`docs/README.md`](../README.md) means
+by *nothing belongs in both*. The reasoning behind them is §3 and §6 here.
 
 ## 6. Events — and the seam the engine cannot cross
 
-**Emits.** `invites.sent` v1 · `invites.accepted` v1 · `invites.revoked` v1 ·
-`member.add-requested` v1. `consumes` is empty.
+All four — `invites.sent`, `invites.accepted`, `invites.revoked` and
+`member.add-requested`, all v1 — are at
+[`apps/docs/engines/invites/events.md`](../../apps/docs/engines/invites/events.md)
+(published at [substrat.net/engines/invites/events](https://substrat.net/engines/invites/events)).
+`consumes` is empty. The argument below is what belongs here.
 
 The fourth is the interesting one. **The engine cannot write a membership tuple.**
 Membership is tenant-wide directory state, in a different Durable Object, outside this
