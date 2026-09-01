@@ -156,13 +156,32 @@ describe('the receipt — a handoff, deliberately not a cache', () => {
 
     // Honoured: the push walks past the gate and dies on the NEXT thing a tree with no
     // runtimeNeeds and no wrangler.jsonc hits. (Nothing is built — that refusal is first.)
-    await expect(push({ ...opts, dir, linted: { root: resolve(dir) } })).rejects.toThrow(
+    await expect(push({ ...opts, dir, linted: { root: resolve(dir), skipped: false } })).rejects.toThrow(
       /nothing to build/,
     );
 
     // A receipt for another directory is not this directory's, so the rules run.
     await expect(
-      push({ ...opts, dir, linted: { root: join(resolve(dir), 'elsewhere') } }),
+      push({ ...opts, dir, linted: { root: join(resolve(dir), 'elsewhere'), skipped: false } }),
+    ).rejects.toThrow(/layer-rule violation/);
+  });
+
+  /**
+   * A `--skip-lint` receipt records that nothing was checked. Without that field it would
+   * launder the bypass: handed to a `push()` that did not itself ask to skip, it would stand
+   * in for a check that never ran — and quietly, since the ungated notice is printed by the
+   * run it replaced.
+   */
+  it('refuses to let a --skip-lint receipt stand in for a check', async () => {
+    captureLog();
+    const dir = vertical(DIRTY);
+    const receipt = assertLayerRules(dir, true);
+    expect(receipt.skipped).toBe(true);
+    await expect(
+      push({
+        dir, slug: 'crm', version: '1.0.0', controlPlaneUrl: 'http://cp', authHeader: {},
+        linted: receipt,
+      }),
     ).rejects.toThrow(/layer-rule violation/);
   });
 });

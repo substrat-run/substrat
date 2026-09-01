@@ -427,13 +427,19 @@ export function assertUiIsServed(
 export interface LayerRulesChecked {
   /** The absolute directory this check covered. */
   readonly root: string;
+  /**
+   * `--skip-lint` — nothing was checked. Carried because a receipt that cannot say so is a
+   * receipt that launders the bypass: handed to a `push()` that did NOT ask to skip, it
+   * would stand in for a check that never ran, and without even the ungated notice.
+   */
+  readonly skipped: boolean;
 }
 
 export function assertLayerRules(dir: string, skipLint = false): LayerRulesChecked {
   const root = resolve(dir);
   if (skipLint) {
     console.log('note: --skip-lint — the layer rules were NOT checked; this push is ungated');
-    return { root };
+    return { root, skipped: true };
   }
   const config = loadBoundaryLintConfig(root);
   const packages = resolvePackages(root, config);
@@ -443,7 +449,7 @@ export function assertLayerRules(dir: string, skipLint = false): LayerRulesCheck
       'note: boundary-lint found no module code to check (expected `src/`, or a ' +
         '`boundary-lint.config.json` naming it) — this push is ungated',
     );
-    return { root };
+    return { root, skipped: false };
   }
   if (packages.every((p) => p.lint) && declaredEngines(root, config).length > 0) {
     console.log(
@@ -454,7 +460,7 @@ export function assertLayerRules(dir: string, skipLint = false): LayerRulesCheck
   const violations = lint(root, config);
   if (violations.length === 0) {
     console.log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
-    return { root };
+    return { root, skipped: false };
   }
   throw new Error(
     [
@@ -641,8 +647,12 @@ export async function push(
   // The layer rules, before anything is built or uploaded (#955). First, because it reads
   // the source tree and needs nothing else — a violation is refused in a second rather than
   // after a wrangler build whose output was never going to be admissible. Skipped only for
-  // the caller that just ran it on this same directory (`opts.linted`, the CLI's pre-flight).
-  if (opts.linted?.root !== resolve(opts.dir)) assertLayerRules(opts.dir, opts.skipLint);
+  // the caller that just ran it on this same directory AND under the same skip decision
+  // (`opts.linted`, the CLI's pre-flight) — a skipped receipt is not a check.
+  const linted = opts.linted;
+  if (linted?.root !== resolve(opts.dir) || linted.skipped !== Boolean(opts.skipLint)) {
+    assertLayerRules(opts.dir, opts.skipLint);
+  }
 
   // Substrate-vocabulary path (D-38): when `substrat.runtimeNeeds` is present the builder
   // authored no wrangler config, so none is read — the CLI derives it. The generated file
