@@ -104,6 +104,15 @@ Imported directly; their in-scope functions run in **your** transaction. Read ea
 - **`engine-invites`** — how a person joins an org they are not in. Identifiers stored
   hashed and never returned; an invitation confers nothing until accepted. Reach for it
   before hand-rolling any invite flow.
+- **`engine-absence`** — leave and absence: leave types, requests that are decided rather
+  than simply written, and the balance they draw down (`requestAbsence`, `decideAbsence`,
+  `balanceAsOf`, `availability`). Which days count and which year a balance belongs to is
+  calendar policy, and calendar policy is yours.
+- **`engine-metering`** — metered usage: meters, usage recorded against them, and periods
+  closed over them (`configureMeter`, `recordUsage`, `closePeriod`, `usageTotal`). By call
+  rather than by event on purpose — you record usage inside the same transaction as the
+  work that produced it, so the ledger row and the work commit or roll back together.
+  Reach for it before adding a `usage` table and a monthly `SUM` of your own.
 
 ### Tier 2 — engines you feed by event
 
@@ -363,11 +372,44 @@ operations + the `ModuleRegistration`. Keep the split — the linter and tests e
   the customer.
 - Migrations: `SqlMigration[]`, tables prefixed `<vertical>_`, TEXT ids, ISO-8601 TEXT
   timestamps, money/decimals as TEXT. **Append-only forever after first ship.**
-- Operations: first line is always `assertAllowed(await ctx.check(PERM))`. Parse inputs
-  with Zod. `ctx.link(child, parent)` when creating related entities.
+- Operations: first line is always `assertAllowed(await ctx.check(PERM))`.
+  `ctx.link(child, parent)` when creating related entities.
+- **Handlers do not hand-parse their input.** The module passes
+  `operationInputs: operationInputsOf(<vertical>Operations)` beside its `operations`, and
+  the host parses every invocation against the declared schema before the guards and the
+  handler run — on every path in (HTTP, test, seed, schedule). The reference module already
+  does this; keep it. An inline `z.object(…).parse(input)` at the top of a handler is a
+  second description of a schema the model already declares, and it only covers the paths
+  that happen to reach that handler.
+- **Time comes from `ctx.now()`.** Module code has no other clock; `new Date()` and
+  `Date.now()` are banned exactly like `node:*`. It is the same instant for the whole
+  invocation, so your rows and the events announcing them agree about when.
 - **The pricing moment is the pattern to copy**: read the engine's reported lines with
   `getReportedLines(ctx, orderId)` → apply the vertical's price list → call the engine's
   `completeWorkOrder`. One transaction, invariants intact.
+- **Swallowing an engine error requires `ctx.atomic`.** An engine call composed inside your
+  transaction has no boundary of its own, so a `catch` that handles the failure and carries
+  on leaves you holding its partial writes — the rows its invariants were protecting — and
+  then commits them. Wrap it instead:
+
+  ```ts
+  try {
+    await ctx.atomic(() => completeWorkOrder(ctx, { orderId, billable }));
+  } catch {
+    // the engine's rows, events, links and grants are all gone; your own writes
+    // survive, and the operation still commits once
+  }
+  ```
+
+  A succeeded `ctx.atomic` is still provisional: if the operation later throws, its writes
+  go too. Sub-transactions nest but must not interleave — starting two concurrently throws.
+  The line is whether the failure still reaches the caller. A catch that **swallows** an
+  engine error — one that does not rethrow — is what needs the boundary, and outside
+  `ctx.atomic` `boundary-lint` rejects it with no escape hatch. A catch that always
+  rethrows (`catch (e) { log(e); throw e }`) needs nothing, and neither does
+  `try`/`finally` with no `catch`: the operation still fails and the whole transaction
+  rolls back, which is already the outcome the rule protects. Reach for `ctx.atomic` when
+  you intend to *continue* past the failure.
 - Portal listing: iterate and `ctx.check(perm, entityRef)` **per entity** — a proof walk,
   not UI filtering.
 - **An entity's history is `readTimeline(ctx, entity, input)` from `@substrat-run/kernel`** —
