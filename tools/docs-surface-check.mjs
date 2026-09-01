@@ -370,7 +370,9 @@ for (const engine of engines) {
     });
   }
 
-  for (const key of perms.size === 0 ? [] : [...documentedPermissions(page, engine)].sort()) {
+  const documentedPerms = documentedPermissions(page, engine);
+
+  for (const key of perms.size === 0 ? [] : [...documentedPerms].sort()) {
     if (!perms.has(key)) {
       problems.push({
         engine,
@@ -380,12 +382,19 @@ for (const engine of engines) {
     }
   }
 
+  // Both directions read the SAME parsed set, deliberately — unlike functions
+  // and operation keys, which fall back to the loose `mentions`. A permission
+  // key is granted from a table: an operator scanning the page for what to hand
+  // a role reads the rows, not the paragraphs. So a key that appears only in
+  // prose is exactly the `protocol:attach` failure again, and taking `mentions`
+  // here would let the sentence explaining a key satisfy the check that the key
+  // is offered.
   for (const key of [...perms].sort()) {
-    if (!mentions(page, key)) {
+    if (!documentedPerms.has(key)) {
       problems.push({
         engine,
         kind: 'undocumented-permission',
-        detail: `engines/${engine}/src/index.ts declares the permission \`${key}\`, which ${pageRel} never names — so nobody grants it and the capability belongs to no role.`,
+        detail: `engines/${engine}/src/index.ts declares the permission \`${key}\`, which ${pageRel} never offers in a table row or a \`·\` run — so nobody grants it and the capability belongs to no role.`,
       });
     }
   }
