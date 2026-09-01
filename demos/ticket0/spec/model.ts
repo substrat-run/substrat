@@ -835,6 +835,36 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
 
   // ─── Contacts ────────────────────────────────────────────────────────────────
 
+  /**
+   * Find a person by the address or the name they gave — the top-of-the-app lookup.
+   *
+   * A separate operation rather than another `filterable` column on the walk below,
+   * because `filterable` is equality only and says so: a support agent holds "she
+   * wrote from something-at-kestrel" and an `external_id = ?` cannot answer that.
+   * `PagedOver` names this exact fork — *"a read that needs more than equality is an
+   * operation with its own name and its own arguments"* — so this is that operation.
+   *
+   * `email` and `display_name` are the desk's two erasable columns, which has a
+   * consequence worth stating: an erased contact is unfindable by either, because
+   * there is nothing left to match. That is the erasure working, not a gap.
+   *
+   * `/contacts/search` is a static segment where a sibling read could one day take a
+   * parameter, and `mountOperations` already registers static before parameter
+   * (`comparePaths`, #785) — so the order here is for a reader, not for the router.
+   */
+  'ticket0/search-contacts': {
+    summary: 'Find a person by email or name',
+    permission: 'contact:read',
+    // Two characters, the same floor `search-kb` takes: a one-character `LIKE '%a%'`
+    // is a table scan whose answer is "everyone", which is not a lookup.
+    input: z.object({ q: z.string().min(2) }),
+    output: ticket0Entities.contact.fields,
+    // The handler composes its own `LIKE`, so the cursor is read off the ENTRY.
+    // Newest first: the person who wrote most recently is the one being looked for.
+    paged: { sortKey: 'id', order: 'desc' },
+    http: { method: 'GET', path: '/contacts/search' },
+  },
+
   'ticket0/list-contacts': {
     summary: 'The people who have asked something',
     permission: 'contact:read',
@@ -866,6 +896,12 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       assignee: z.string().optional(),
       channel: z.enum(['widget', 'email']).optional(),
       priority: z.enum(['low', 'normal', 'urgent']).optional(),
+      // Declared last and for the reason the comment above gives: `contact_id` has
+      // been `filterable` since the beginning and had no input beside it, so the
+      // emitted document advertised a parameter that reached no handler. It is the
+      // whole of "what did this customer write last time" — a person found through
+      // `search-contacts`, then their history — so it is wired rather than dropped.
+      contact_id: z.string().optional(),
     }),
     output: ticket0Entities.conversation.fields,
     paged: {
@@ -880,6 +916,58 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       total: true,
     },
     http: { method: 'GET', path: '/conversations' },
+  },
+
+  /**
+   * Free text over what the desk holds — the subject, and every message body.
+   *
+   * The primary navigation an incumbent puts above the inbox, and until now the desk
+   * had none: `list-conversations` narrows on six columns and can answer "every open
+   * urgent one", never "the thread about the failed export".
+   *
+   * Three decisions worth reading, because each closes off an obvious alternative.
+   *
+   * **It is its own operation, not a `q` on the walk.** `paged.over` composes
+   * equality predicates and provisions the index behind each one; a `LIKE` over a
+   * joined child table is neither, and bolting one on would make `filterable` mean
+   * two different things.
+   *
+   * **It matches with `LIKE`, not with an FTS index.** A `searchables` entry would
+   * be better and is what this should become — but it is a kernel-derived FTS5 table
+   * and a schema change, and a schema change is a human checkpoint this could not
+   * self-approve. So the scan is deliberate and stated rather than quiet: it is
+   * bounded by the page, and #1081 keeps the FTS half.
+   *
+   * **It is staff-only, and that is what makes an internal note searchable.** The key
+   * is `conversation:read`, which no customer and no widget principal holds, so notes
+   * are matched here and cannot reach `my-conversations` or the widget thread — those
+   * are different operations over `visibility = 'public'` and this one does not touch
+   * them. A match is the CONVERSATION, never the message, so a hit on a note leaks no
+   * part of the note.
+   *
+   * The same four filters as the walk, so a search inside a filtered inbox stays
+   * filtered rather than silently widening to the whole desk.
+   *
+   * `/conversations/search` does collide with `/conversations/{conversationId}` as a
+   * URL, and the host resolves it rather than this declaration doing so: routes mount
+   * static-segment-first (`comparePaths`, #785), so `search` cannot be swallowed as an
+   * id whatever order they are written in here.
+   */
+  'ticket0/search-conversations': {
+    summary: 'Find a conversation by subject or by what was said in it',
+    permission: 'conversation:read',
+    input: z.object({
+      q: z.string().min(2),
+      state: z.enum(['new', 'open', 'snoozed', 'resolved', 'closed']).optional(),
+      assignee: z.string().optional(),
+      channel: z.enum(['widget', 'email']).optional(),
+      priority: z.enum(['low', 'normal', 'urgent']).optional(),
+    }),
+    output: ticket0Entities.conversation.fields,
+    // `sortKey`, because the handler composes its own SQL. Newest first, like the
+    // inbox: the conversation being looked for is nearly always a recent one.
+    paged: { sortKey: 'id', order: 'desc' },
+    http: { method: 'GET', path: '/conversations/search' },
   },
 
   'ticket0/get-conversation': {

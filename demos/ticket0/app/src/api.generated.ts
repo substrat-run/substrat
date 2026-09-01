@@ -401,7 +401,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent" }): Promise<Paged<Conversation>>;
+  listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string }): Promise<Paged<Conversation>>;
 
   /**
    * The desk’s documentation sources
@@ -563,6 +563,24 @@ export interface Ticket0Client {
    * `POST /desk/verification-secret` — `ticket0/rotate-verification-secret`
    */
   rotateVerificationSecret(): Promise<{ id: string; secret: string; rotatedAt: string }>;
+
+  /**
+   * Find a person by email or name
+   *
+   * `GET /contacts/search` — `ticket0/search-contacts`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  searchContacts(input: { q: string }): Promise<Paged<Contact>>;
+
+  /**
+   * Find a conversation by subject or by what was said in it
+   *
+   * `GET /conversations/search` — `ticket0/search-conversations`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  searchConversations(input: { q: string; state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent" }): Promise<Paged<Conversation>>;
 
   /**
    * Search the knowledge base
@@ -921,6 +939,10 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/resolve`, "POST", omit(input, ["conversationId"]), undefined),
     rotateVerificationSecret: () =>
       send("/desk/verification-secret", "POST", undefined, undefined),
+    searchContacts: (input: Args) =>
+      page("/contacts/search", "GET", undefined, input),
+    searchConversations: (input: Args) =>
+      page("/conversations/search", "GET", undefined, input),
     searchKb: (input: Args) =>
       send("/kb/search", "GET", undefined, input),
     setAgentProfile: (input: Args) =>

@@ -679,6 +679,32 @@ function publicThread(
 }
 
 // ---------------------------------------------------------------------------
+// Free-text lookup - the two search reads (#1081)
+// ---------------------------------------------------------------------------
+
+/**
+ * A caller's term, as a `LIKE` pattern that means what they typed.
+ *
+ * `%` and `_` are wildcards inside a pattern, so a search for `100%` matches
+ * everything beginning `100` unless they are escaped, and `_` silently matches any
+ * character at all. The backslash is escaped first, or escaping the other two would
+ * turn a literal backslash into an escape. Every query built from this says
+ * `ESCAPE '\'`, which is what makes the escaping mean anything.
+ *
+ * The match is case-insensitive because SQLite's `LIKE` is, for ASCII, by default —
+ * so `lower()` on both sides would buy nothing here and only hide where the
+ * behaviour comes from.
+ */
+function likeTerm(term: string): string {
+  return `%${term.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+}
+
+/** Named rather than `SELECT c.*`: a search read returns the published entity, not the table. */
+const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,
+  c.priority, c.snoozed_until, c.first_public_reply_at, c.resolved_at, c.merged_into,
+  c.created_at, c.updated_at`;
+
+// ---------------------------------------------------------------------------
 // Pricing - the vertical's, never the ledger's
 // ---------------------------------------------------------------------------
 
@@ -1172,6 +1198,36 @@ const operations = {
 
   // --- Contacts ------------------------------------------------------------
 
+  /**
+   * Who is this — by the address or the name, not by an id nobody has.
+   *
+   * Both matched columns are erasable, so an erased contact matches neither and is
+   * simply absent. `external_id` is deliberately not searched: it is the caller's
+   * own key, exact by construction, and `list-contacts` already narrows on it.
+   */
+  'ticket0/search-contacts': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.contactRead));
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const like = likeTerm(input.q);
+    const params: SqlValue[] = [like, like];
+    // Newest first by default, and the caller's `?order=` is honoured rather than
+    // ignored — a walk advertised in the emitted document and quietly overridden here
+    // is a page that lies. The comparison follows the direction: descending excludes
+    // what has been seen with `id < ?`, ascending with `id > ?`. A ULID sorts
+    // chronologically, which is why the id is the key.
+    const desc = (input.order ?? 'desc') === 'desc';
+    let sql = `SELECT id, external_id, principal, email, display_name, verified_at, created_at
+                 FROM ticket0_contacts
+                WHERE (email LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\')`;
+    if (input.cursor) {
+      sql += desc ? ' AND id < ?' : ' AND id > ?';
+      params.push(input.cursor);
+    }
+    sql += ` ORDER BY id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
+    params.push(limit);
+    return pageOf(ctx.sql.query<ContactRow>(sql, params), limit, (row) => row.id);
+  },
+
   'ticket0/list-contacts': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.contactRead));
     return ctx.page<ContactRow>('contact', input);
@@ -1179,12 +1235,58 @@ const operations = {
 
   // --- The inbox -----------------------------------------------------------
 
+  /**
+   * The search box above the inbox.
+   *
+   * `EXISTS` rather than a join, and it is not a style choice: a conversation whose
+   * subject and three messages all match the term would come back four times from a
+   * join, and de-duplicating afterwards would break the page — the LIMIT would have
+   * counted rows the caller never sees. `EXISTS` asks the only question this read
+   * has, which is whether the conversation matches at all.
+   *
+   * A hit on an INTERNAL note returns the conversation and nothing of the note, and
+   * the key is `conversation:read`, which only staff hold. So a note stays internal
+   * on every path out: this one returns no message text at all, and the two
+   * customer-facing reads are separate operations over `visibility = 'public'`.
+   */
+  'ticket0/search-conversations': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const like = likeTerm(input.q);
+    const params: SqlValue[] = [like, like];
+    let sql = `SELECT ${CONVERSATION_COLUMNS}
+                 FROM ticket0_conversations c
+                WHERE (c.subject LIKE ? ESCAPE '\\'
+                       OR EXISTS (SELECT 1 FROM ticket0_messages m
+                                   WHERE m.conversation_id = c.id
+                                     AND m.body_text LIKE ? ESCAPE '\\'))`;
+    // The same four narrowings the walk offers, so searching inside a filtered inbox
+    // stays inside it. Only the ones asked for: an undefined column must not become a
+    // `WHERE state IS NULL` that quietly returns nothing.
+    for (const key of ['state', 'assignee', 'channel', 'priority'] as const) {
+      const value = input[key];
+      if (value === undefined) continue;
+      sql += ` AND c.${key} = ?`;
+      params.push(value);
+    }
+    // Newest first by default, and the caller's `?order=` honoured — see the note on
+    // `search-contacts` for why an advertised direction is not optional to obey.
+    const desc = (input.order ?? 'desc') === 'desc';
+    if (input.cursor) {
+      sql += desc ? ' AND c.id < ?' : ' AND c.id > ?';
+      params.push(input.cursor);
+    }
+    sql += ` ORDER BY c.id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
+    params.push(limit);
+    return pageOf(ctx.sql.query<ConversationRow>(sql, params), limit, (row) => row.id);
+  },
+
   'ticket0/list-conversations': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRead));
     // Only the filters actually asked for: an undefined column must not become a
     // `WHERE state IS NULL` that quietly returns nothing.
     const filters: Record<string, unknown> = {};
-    for (const key of ['state', 'assignee', 'channel', 'priority'] as const) {
+    for (const key of ['state', 'assignee', 'channel', 'priority', 'contact_id'] as const) {
       if (input[key] !== undefined) filters[key] = input[key];
     }
     return ctx.page<ConversationRow>('conversation', {
