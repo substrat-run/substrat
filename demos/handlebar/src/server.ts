@@ -9,12 +9,9 @@ import {
   listPageQuery,
   nextPageLink,
   platformActorId,
-  principalId,
   type Page,
-  type PrincipalId,
   type TimelineEntry,
 } from '@substrat-run/contracts';
-import Database from 'better-sqlite3';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { mountOperations, problemResponse } from '@substrat-run/vertical-host';
 import {
@@ -23,21 +20,24 @@ import {
   handlebarProtocolRoutes,
   handlebarWorkorderRoutes,
 } from './operations.js';
-import { buildAuthNode, migrateAuth } from './auth-node.js';
-import {
-  betterAuthAdapter,
-  devHeaderAdapter,
-  resolvePrincipal,
-  type AuthAdapter,
-} from './auth-adapters.js';
-import { buildBikeShopHost, seedBikeShop, type BikeShopWorld } from './index.js';
+import { devLogin } from '@substrat-run/dev-issuer';
+import { buildBikeShopHost, seedBikeShop, linkDevPersonas, type BikeShopWorld } from './index.js';
+import { DEV_PROVIDER } from './personas.js';
 
 /**
- * Dev API server for the Handlebar demo. Deliberately thin: authenticate
- * (dev principal picker via x-principal header, gated on ALLOW_DEV_HEADER) →
- * getScope → invoke. Every
- * route is a wrapper over an operation; there is no business logic here.
+ * Dev API server for the Handlebar demo. Deliberately thin: authenticate → getScope →
+ * invoke. Every route is a wrapper over an operation; there is no business logic here.
  * Runs on :8872 so it can sit next to the Callout demo (:8871).
+ *
+ * Authentication is an ordinary OIDC round-trip against whatever `OIDC_ISSUER` names —
+ * locally `@substrat-run/dev-issuer`, a real provider you sign into by picking a name.
+ * It replaced an `x-principal` header that named any principal and was believed: an
+ * impersonation bypass, and in a vertical whose app had no login screen at all, also the
+ * only "login" anybody reading this would ever have seen.
+ *
+ * The workshop runs no credential store. Which principal a login IS lives in the identity
+ * directory, and a subject with no link there resolves to nobody — registering an email
+ * does not make you staff at a bike workshop.
  */
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', '.data');
@@ -49,43 +49,26 @@ const world: BikeShopWorld = await seedBikeShop(host, dataDir);
 const PORT = Number(process.env.PORT ?? 8872);
 const WEB_PORT = Number(process.env.WEB_PORT ?? 5272);
 
-const auth = buildAuthNode(dataDir, `http://localhost:${PORT}`, [
-  `http://localhost:${PORT}`,
-  `http://localhost:${WEB_PORT}`,
-]);
-await migrateAuth(auth);
-
-const CAST: Record<string, { name: string; role: string; principal: PrincipalId }> = {
-  greta: { name: 'Greta (verkstadschef)', role: 'workshop-admin', principal: world.greta },
-  mans: { name: 'Måns (mekaniker)', role: 'mechanic', principal: world.mans },
-  lisbeth: { name: 'Lisbeth (portal, Crescent)', role: 'portal', principal: world.lisbeth },
-  otto: { name: 'Otto (portal, Bianchi)', role: 'portal', principal: world.otto },
-  rutger: { name: 'Rutger (annan verkstad!)', role: 'attacker', principal: world.rutger },
-};
+const staff = platformActorId.parse(ulid());
+const login = devLogin({ directory: host.admin, actor: staff, provider: DEV_PROVIDER });
+await linkDevPersonas(host, world);
 
 const app = new Hono();
 
 /**
- * Real auth first; the dev header only if explicitly opted in.
+ * The caller, and the node they belong to. `login.caller` asks the directory which tenant
+ * this subject lives in — a legitimate question here, because the pool is CENTRAL and a
+ * persona is linked in exactly one. That link is what carries Rutger into t2/s2 while
+ * everyone else lands in t1/s1, so the cross-tenant beat survives with no persona table
+ * in this file.
  *
- * A template teaches by example, so the example is a session. The header stays for
- * local iteration because it is genuinely useful, and stays OFF by default because
- * a copied template inherits its defaults.
+ * Authenticated-but-unlinked reads the same as unauthenticated: whether an email belongs
+ * to this workshop is not a question an outsider gets answered.
  */
-const NODE = { tenantId: world.t1, scopeId: world.s1 };
-const adapters: AuthAdapter[] = [betterAuthAdapter(auth, host, NODE)];
-if (process.env.ALLOW_DEV_HEADER === 'true') adapters.push(devHeaderAdapter());
-
-async function principalOf(c: Context): Promise<PrincipalId> {
-  const result = await resolvePrincipal(adapters, c.req.raw.headers);
-  // Authenticated-but-unknown reads the same as unauthenticated: whether an email
-  // belongs to this workshop is not a question an outsider gets answered.
-  if (!result) throw new PermissionDenied('not authenticated');
-  return result.principal;
-}
-
 async function stub(c: Context): Promise<ScopeStub> {
-  return host.getScope(await principalOf(c), world.t1, world.s1);
+  const caller = await login.caller(c.req.raw.headers);
+  if (!caller) throw new PermissionDenied('not authenticated');
+  return host.getScope(caller.principal, caller.tenantId, caller.scopeId);
 }
 
 // `mountOperations` decides the STATUS for everything the kernel itself names — a refused
@@ -94,7 +77,16 @@ async function stub(c: Context): Promise<ScopeStub> {
 // problem document since #113 phase 4 and still carries `{ error }` for the SPA.
 app.onError((err, c) => problemResponse(c, err));
 
-app.get('/api/cast', (c) => c.json(CAST));
+// The relying-party endpoints. Accounts and passwords live at the issuer; this vertical
+// has no credential store and hosts no sign-up.
+app.on(['GET', 'POST'], '/api/auth/*', (c) => login.handle(c.req.raw));
+
+/** Who is signed in — the shape the app's header renders, or 401. */
+app.get('/api/me', async (c) => {
+  const caller = await login.caller(c.req.raw.headers);
+  if (!caller) return c.json({ error: 'unauthorized' }, 401);
+  return c.json({ principal: caller.principal, display: caller.display });
+});
 
 // ---------------------------------------------------------------------------
 // The two routes that supply a CONSTANT the caller does not choose.
@@ -163,52 +155,6 @@ mountOperations(
   stub,
 );
 
-// Better Auth owns /api/auth/*. Mounted last so it cannot shadow a demo route.
-app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw));
-
-await seedPersonaLogins();
-
 serve({ fetch: app.fetch, port: PORT });
 console.log(`Handlebar demo API on http://localhost:${PORT} — data in ${dataDir}`);
-
-/**
- * Demo logins for the cast, so the template runs with a real session out of the
- * box rather than only with the dev header.
- *
- * Idempotent on both sides: sign-up throws when the email exists, in which case
- * the id is read back, and an already-linked identity is skipped. The two stores
- * have independent lifecycles — the world may exist while Better Auth's tables are
- * fresh — so neither may assume the other is empty.
- */
-async function seedPersonaLogins(): Promise<void> {
-  const staff = platformActorId.parse(ulid());
-  const db = new Database(join(dataDir, 'better-auth.sqlite'), { readonly: true });
-  try {
-    for (const [key, p] of Object.entries(CAST)) {
-      const email = `${key}@handlebar.test`;
-      let externalId: string | undefined;
-      try {
-        externalId = (
-          await auth.api.signUpEmail({
-            body: { email, password: 'handlebar-demo', name: p.name },
-          })
-        ).user.id;
-      } catch {
-        externalId = (db.prepare('SELECT id FROM user WHERE email = ?').get(email) as
-          | { id: string }
-          | undefined)?.id;
-      }
-      if (!externalId) continue;
-      if (await host.admin.resolveIdentity(world.t1, 'better-auth', externalId)) continue;
-      await host.admin.linkIdentity(staff, {
-        provider: 'better-auth',
-        externalId,
-        principal: p.principal,
-        tenantId: world.t1,
-        scopeId: world.s1,
-      });
-    }
-  } finally {
-    db.close();
-  }
-}
+console.log(`  auth: OIDC · ${login.issuer}`);

@@ -3,7 +3,6 @@ import {
   api,
   extra,
   type BillableLine,
-  type CastMember,
   type Money,
   type Repair,
   type TimelineEntry,
@@ -39,7 +38,7 @@ function money(m: Money | { amount: string; currency?: string }): string {
   return `${m.amount} ${'currency' in m && m.currency ? m.currency : 'SEK'}`;
 }
 
-export function RepairDetailView({ repairId, cast }: { repairId: string; cast: Record<string, CastMember> }) {
+export function RepairDetailView({ repairId }: { repairId: string }) {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.workorderGet>> | null>(null);
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [error, setError] = useState('');
@@ -68,7 +67,6 @@ export function RepairDetailView({ repairId, cast }: { repairId: string; cast: R
   if (error && !detail) return <div className="alert error">{error}</div>;
   if (!detail) return <p className="muted">Laddar…</p>;
   const { order, time, material } = detail;
-  const mechanics = Object.values(cast).filter((m) => m.role === 'mechanic');
 
   return (
     <>
@@ -89,14 +87,22 @@ export function RepairDetailView({ repairId, cast }: { repairId: string; cast: R
         <div className="row">
           {order.status === 'planned' && (
             <>
-              <select value={mechanic} onChange={(e) => setMechanic(e.target.value)}>
-                <option value="">Välj mekaniker…</option>
-                {mechanics.map((m) => (
-                  <option key={m.principal} value={m.principal}>
-                    {m.name}
-                  </option>
-                ))}
-              </select>
+              {/*
+                A free-text field, not a picker, and deliberately — the same treatment
+                `callout/OrderDetail` gives the identical problem. The dropdown used to be
+                filled from the dev server's persona cast, which made it work locally and
+                nowhere else: a hosted install has no cast, so it rendered empty and
+                assignment was impossible. Listing the real mechanics means "which
+                principals hold the mechanic role in this scope" — a members API this
+                vertical does not have, and a permission surface of its own. Rather than
+                keep a picker that works in one environment only, the field says what it is.
+              */}
+              <input
+                style={{ width: 260 }}
+                placeholder="Mekaniker (principal-id)"
+                value={mechanic}
+                onChange={(e) => setMechanic(e.target.value)}
+              />
               <button className="btn" disabled={!mechanic} onClick={act(() => api.workorderAssign({ orderId: repairId, technician: mechanic }))}>
                 Tilldela
               </button>

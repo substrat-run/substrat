@@ -375,6 +375,13 @@ export interface HandlebarClient {
   upsertPrice(input: { article: string; description: string; unit: string; priceAmount: string; currency?: string; minQty?: string; internal?: boolean }): Promise<Price>;
 
   /**
+   * Report the caller's role in this workshop
+   *
+   * `GET /whoami` — `bike-shop/whoami`
+   */
+  whoami(): Promise<{ role: "workshop-admin" | "mechanic" | "none" }>;
+
+  /**
    * Export an invoice basis — makes it immutable
    *
    * `POST /invoicing/{underlagId}/export` — `invoicing/export`
@@ -605,6 +612,8 @@ export function createClient(options: ClientOptions = {}): HandlebarClient {
       send(`/repairs/${encodeURIComponent(String(input.orderId))}/condition-report`, "POST", omit(input, ["orderId"]), undefined),
     upsertPrice: (input: Args) =>
       send("/prices", "POST", input, undefined),
+    whoami: () =>
+      send("/whoami", "GET", undefined, undefined),
     invoicingExport: (input: Args) =>
       send(`/invoicing/${encodeURIComponent(String(input.underlagId))}/export`, "POST", omit(input, ["underlagId"]), undefined),
     invoicingGet: (input: Args) =>

@@ -6,10 +6,10 @@ description: Remove the credential store from the verticals.
 
 # OIDC-only demos: remove the credential store from the verticals
 
-**Status:** **built** — Callout, Meridian, Manyfold, Todo, ticket0 and Shop are OIDC-only
+**Status:** **built** — every demo but Rally is OIDC-only
 **Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`; later `demos/todo`,
 `demos/ticket0`, `demos/shop`
-**Author:** design pass, 2026-08-04 · shop added 2026-09-01
+**Author:** design pass, 2026-08-04 · shop and handlebar added 2026-09-01
 
 ## Motivation
 
@@ -85,6 +85,38 @@ every request from a self-service shopper minted another principal and another c
 row. One provider constant on both sides is what fixes it. The provider is now named for
 the POOL (`oidc:<slug>`) rather than for whatever issuer currently fills it — a string
 carrying the issuer's name orphans every link in the directory the day the issuer changes.
+
+## Handlebar, added later — the deferral resolved
+
+Handlebar was deferred above because `/api/cast` was answering a domain question: it filled
+the **mechanic dropdown** on the assign action, and there was no `whoami` for the
+staff-vs-portal chrome. Both turned out to be smaller than the deferral assumed.
+
+**The chrome half needed no new surface.** `bike-shop/whoami` is callout's operation with
+handlebar's vocabulary — ungated (answering "what may I do" must work for a principal who
+may do nothing), and derived by probing the caller's OWN grants through `ctx.check`. No new
+permission key, so no permission-diff checkpoint. Portal is decided by EXCLUSION, which is
+true whoever is asking; the persona table's `role: 'portal'` was true only locally.
+
+**The dropdown half was already answered, by callout.** Callout hit the identical problem
+and resolved it by degrading the picker to a free-text field with a note, deferring the real
+list to "a members API of its own". Handlebar takes the same treatment. The dropdown was not
+merely local-only — it rendered EMPTY in any hosted install, so assignment was impossible
+there. A field that says what it is beats a picker that works in one environment.
+
+So no staff table, no migration, and no new permission key: the deferral was about surface
+that a second look showed nobody needed.
+
+### An unrelated bug this surfaced
+
+Driving handlebar's HTTP path — which the migration requires and the scenario suite does not
+do — turned up `GET /api/customers` answering **400 `NotListable`** on every call. The Kunder
+screen has never worked. `bike-shop/list-customers` declares `paged.over`, but the manifest
+never called `listsDeclaredBy()`, so nothing carried that declaration to the kernel and the
+declaration was decorative. Every other vertical and engine in the workspace already had the
+line. Fixed here, because a migration that leaves a main screen broken has not been verified.
+
+**Callout has the same gap** and is not fixed here.
 
 ## `packages/vertical-auth`
 

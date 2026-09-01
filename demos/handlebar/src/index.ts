@@ -13,7 +13,9 @@ export {
 export {
   buildBikeShopHost,
   seedBikeShop,
+  linkDevPersonas,
   provisionHandlebar,
   type HandlebarInstance,
   type BikeShopWorld,
 } from './seed.js';
+export { PERSONAS, DEV_PROVIDER, PERSONA_PRINCIPALS } from './personas.js';

@@ -19,6 +19,7 @@ import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { bikeShopModule, CS_PERM } from './module.js';
+import { DEV_PROVIDER, PERSONAS, PERSONA_PRINCIPALS } from './personas.js';
 
 /**
  * What ANY instance of this vertical has: one tenant, one scope, an owner.
@@ -314,4 +315,40 @@ export async function seedBikeShop(host: SqliteScopeHost, dir: string): Promise<
   }
 
   return world;
+}
+
+/**
+ * Bind each dev persona's OIDC `sub` to the principal it already IS.
+ *
+ * Re-applied on every boot, not once: `seedBikeShop` short-circuits when `cast.json`
+ * exists, so a link written into a `.data` that was later cleared would never be rewritten.
+ * It is idempotent, so running it every time costs nothing.
+ *
+ * `scopeId` on the link is what carries a persona to its own node: Rutger resolves into
+ * t2/s2 and everyone else into t1/s1, which is how the cross-tenant beat still works
+ * without a persona table in the server. Nobody is auto-minted here — registering an email
+ * does not make you staff at a bike workshop, and a subject with no link resolves to
+ * nobody at all.
+ */
+export async function linkDevPersonas(host: SqliteScopeHost, world: BikeShopWorld): Promise<void> {
+  const staff = platformActorId.parse(ulid());
+  await host.admin.registerIdentityPool(staff, {
+    provider: DEV_PROVIDER,
+    topology: 'central',
+    tenantId: null,
+  });
+  for (const persona of PERSONAS) {
+    const key = PERSONA_PRINCIPALS[persona.sub];
+    if (!key) continue;
+    const home =
+      key === 'rutger'
+        ? { tenantId: world.t2, scopeId: world.s2 }
+        : { tenantId: world.t1, scopeId: world.s1 };
+    await host.admin.linkIdentity(staff, {
+      provider: DEV_PROVIDER,
+      externalId: persona.sub,
+      principal: world[key],
+      ...home,
+    });
+  }
 }

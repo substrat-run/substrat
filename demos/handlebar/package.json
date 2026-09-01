@@ -45,6 +45,12 @@
     },
     "devServers": [
       {
+        "name": "issuer",
+        "run": "issuer",
+        "portEnv": "ISSUER_PORT",
+        "portFrom": "../../packages/dev-issuer/src/cli.ts"
+      },
+      {
         "name": "api",
         "run": "server",
         "portEnv": "PORT",
@@ -63,25 +69,26 @@
     ]
   },
   "license": "Apache-2.0",
-  "description": "Handlebar demo vertical — the v2 bike-shop skin, see spec/concept.md",
+  "description": "Handlebar demo vertical \u2014 the v2 bike-shop skin, see spec/concept.md",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "server": "tsx src/server.ts",
-    "dev": "concurrently -n api,web -c blue,green \"ALLOW_DEV_HEADER=true tsx src/server.ts\" \"pnpm --dir app dev\"",
-    "demo": "pnpm run dev"
+    "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
+    "demo": "pnpm run dev",
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
     "@substrat-run/engine-workorder": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "better-auth": "^1.7.1",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0",
     "zod": "catalog:"
