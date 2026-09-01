@@ -1,89 +1,137 @@
 <script setup lang="ts">
-// The marketing landing page, ported from the design handoff's React prototype
-// (handoff/website/home-page.jsx). It renders inside VitePress's `layout: page`,
-// so the nav and footer are VitePress's own shared chrome — not rebuilt here.
+// The marketing landing page.
 //
-// Content is deliberately faithful to the prototype; every factual claim
-// (package status, demo names, the `pnpm create substrat` command) was checked
-// against the repo before porting. Links point at real docs routes or the repo.
+// The page argues one claim — Substrat builds almost any business app, and the
+// foundation arrives with it — and every section is evidence for it, in order:
+// what people built (eight demos), what arrives free (the inventory), how little
+// you write (one operation), how it is layered, the engines you may skip, and
+// only then the guarantees. The older cut led with the five things Substrat
+// fixes, which sold a patch for a gap rather than a way to build the app.
+//
+// Content lives in these consts rather than a sibling `.content.mts`: index.md is
+// deliberately absent from llms.txt (see ALT_NOT_NEEDED in tools/llms-index.mts),
+// because it restates prose the guide pages already carry. Every factual claim
+// below was checked against the repo — the demo table in verticals/index.md, the
+// engine list in engines/index.md, and the packages themselves.
 
-const layers = [
+// The eight demo verticals, in the order they make the argument. `kernel` marks
+// the ones that compose no engine at all: three of eight, which is the strongest
+// evidence that an engine is an option rather than a tax.
+const demos = [
   {
-    key: 'kernel',
-    name: 'Kernel',
-    desc: 'Everything true of every B2B SaaS, nothing true of any particular one: identity, nested tenancy, permissions, events & audit, GDPR machinery. Owns no domain entities.',
+    name: 'Callout', domain: 'field service', layer: 'engine', href: '/verticals/callout',
+    body: 'Two engines cooperating through events with zero imports between them — and the pricing moment where vertical logic meets an engine transition.',
+    uses: 'workorder · invoicing · protocol',
   },
   {
-    key: 'engine',
-    name: 'Engines',
-    desc: 'Shared domain machinery — work orders, invoicing, protocols — that owns invariants: state machines are declared and can’t skip states, exported invoices are immutable, every mutation emits an event.',
+    name: 'Meridian', domain: 'HR', layer: 'kernel', href: '/verticals/meridian',
+    body: 'The shape-breaker: its core domain has no engine, so leave, time and expenses are vertical code on the kernel alone. Multi-country scopes from one codebase.',
+    uses: 'kernel — protocol for onboarding only',
   },
   {
-    key: 'vertical',
-    name: 'Verticals',
-    desc: 'The actual products — your code. Vocabulary, workflows, screens, pricing. The layer where AI tools do their best work, because mistakes there are cosmetic.',
+    name: 'RallyPoint', domain: 'padel club', layer: 'engine', href: '/verticals/rallypoint',
+    body: 'Allocation over an interval rather than a state machine, the lost race rejected with no locking code anywhere, and a player who holds no role at all reaching their own booking.',
+    uses: 'booking · invoicing · invites',
+  },
+  {
+    name: 'Manyfold', domain: 'headless CMS', layer: 'kernel', href: '/verticals/manyfold',
+    body: 'Draft → review → publish that cannot skip, append-only revisions, freeze-on-publish with a content hash. One tenant runs many sites, each its own scope.',
+    uses: 'kernel only — no engine',
+  },
+  {
+    name: 'Kallkälla', domain: 'coffee shop', layer: 'engine', href: '/verticals/shop',
+    body: 'Two audiences, one source of truth — a customer storefront and a staff back-office as separate apps over one API. Invoicing reused far outside field service.',
+    uses: 'invoicing · own commerce module',
+  },
+  {
+    name: 'ticket0', domain: 'support desk', layer: 'engine', href: '/verticals/ticket0',
+    body: 'A public, unauthenticated surface — an embeddable widget held by a session token and an origin allowlist rather than a login. An AI assistant with a principal and a role.',
+    uses: 'metering',
+  },
+  {
+    name: 'Handlebar', domain: 'bike workshop', layer: 'engine', href: '/verticals/handlebar',
+    body: 'Engine reuse — the same engines under new vocabulary, and the second shape that forced the protocol engine to be extracted from Callout in the first place.',
+    uses: 'workorder · invoicing · protocol',
+  },
+  {
+    name: 'Todo', domain: 'shared lists', layer: 'kernel', href: '/verticals/todo',
+    body: 'Sharing one list with one person is a grant on that entity — revocable, transactional, never an org per row. A 403 wall told apart from an empty list.',
+    uses: 'kernel only — no engine',
   },
 ];
 
-const cannots = [
+// What arrives with the project. Nothing unshipped belongs here: the section's
+// promise is that these exist the moment your project does, so a thing still in
+// flight (an MCP surface, webhooks derived from the API) stays off until it lands.
+const inventory: [string, [string, string][]][] = [
+  ['The API', [
+    ['A typed HTTP API', 'emitted from your declared model — no hand-written routes'],
+    ['OpenAPI + live docs', 'served by the vertical, gated against drift in CI'],
+    ['A generated browser client', 'paths, bodies, paged link walks'],
+    ['Inputs parsed at the boundary', 'by the host, on every path in'],
+    ['Full-text search', 'declare searchables, get a per-scope index'],
+  ]],
+  ['Identity & the record', [
+    ['OIDC login', 'any issuer, sessions, per-tenant identity directory'],
+    ['Roles and permission keys', 'plus per-entity grants that revoke'],
+    ['A permission diff in the repo', 're-emitted and gated, so a widened role shows up in review'],
+    ['Stamped events on every mutation', 'tenant, scope, actor, time — unforgeable from above'],
+    ['Timeline & history reads', 'with the authorization chain and PII class'],
+    ['GDPR erasure with a receipt', 'because every event is classified'],
+  ]],
+  ['Data & environments', [
+    ['A database per scope', 'not a tenant column you must remember'],
+    ['Ordered, append-only migrations', 'emitted from the model, reviewed as a diff'],
+    ['Snapshot any app’s data', 'an independent copy, on a TTL, reaped for you'],
+    ['Every PR forks production', 'its migrations run on the copy, the URL gets posted'],
+    ['Schema changes snapshot first', 'a bad migration has a rollback point'],
+    ['Real data on your laptop', 'audited and masked by default'],
+  ]],
+  ['Ship & run', [
+    ['One command to deploy', 'substrat push — build, upload, route'],
+    ['Hosting, domains and TLS', 'a customer’s own hostname, issued for them'],
+    ['A customer dashboard', 'teams, apps, deploys, data'],
+    ['Metering and entitlements', 'usage as evidence, features as flags'],
+    ['Connectors to the outside', 'with a declared egress allowlist per version'],
+    ['SQLite locally, hosted in production', 'one codebase, no branch between them'],
+  ]],
+];
+
+// The seven engines on a ring around the kernel. x/y are the node-box top-left
+// inside the 1016×476 figure; the spokes are drawn to the kernel's centre and the
+// opaque boxes cover their inner ends. `event` marks the one by-event engine,
+// which deliberately exports no in-scope functions (see engines/index.md).
+const ring = [
+  { name: 'Work orders', x: 433, y: 47, cx: 508, cy: 73 },
+  { name: 'Bookings', x: 699, y: 117, cx: 774, cy: 143 },
+  { name: 'Invoicing', x: 765, y: 273, cx: 840, cy: 299, event: true },
+  { name: 'Protocols', x: 581, y: 399, cx: 656, cy: 425 },
+  { name: 'Invites', x: 286, y: 399, cx: 361, cy: 425 },
+  { name: 'Absence', x: 102, y: 273, cx: 177, cy: 299 },
+  { name: 'Metering', x: 167, y: 117, cx: 242, cy: 143 },
+];
+
+const cannots: [string, string, string][] = [
   [
     'Reach another tenant’s data',
     'Data access only exists as capability-scoped operations minted for one (tenant, scope) pair — a mismatch fails closed.',
+    'fails closed',
   ],
   [
     'Skip the audit log',
     'Events are stamped with tenant, scope, actor, and timestamp below the API surface. Calling code cannot forge or suppress them.',
+    'stamped below the API',
   ],
   [
     'Emit unclassified PII',
     'Every event carries a mandatory piiClass; a PII-classed event without a data-subject key fails validation, so GDPR erasure is always possible.',
+    'piiClass required',
   ],
   [
     'Bypass the permission model',
     'Operations run inside the scope’s execution domain; every allow carries the proof path that granted it. The secure default is deny everything.',
+    'deny by default',
   ],
-];
-
-const ops = [
-  [
-    'Test copies of any app',
-    'Snapshot a running app’s data into an independent copy — try the risky thing on real data, then throw the copy away. Copies expire on a TTL and are reaped automatically.',
-    '/concepts/snapshots',
-  ],
-  [
-    'Fearless upgrades',
-    'An update that changes the schema snapshots the data first, automatically — so a bad migration has a rollback point. A code-only update just rebinds.',
-    '/concepts/snapshots#the-one-rule-everything-follows',
-  ],
-  [
-    'Real data on your laptop, governed',
-    'substrat scope pull writes a real SQLite file your local harness runs unchanged — audited, jurisdiction-checked, and masked by default. Full fidelity is an explicit break-glass.',
-    '/concepts/snapshots#where-the-data-goes-and-doesn-t',
-  ],
-];
-
-const demos = [
-  ['RallyPoint', 'Padel club', 'engine', 'Court booking as allocation over an interval rather than a state machine — the lost race rejected with no locking code anywhere, multi-venue tenancy, and a player who holds no role at all reaching their own booking through an entity-narrowed grant.', '/verticals/rallypoint'],
-  ['Meridian', 'HR', 'kernel', 'The shape-breaker: no engine exists for its core domain, so leave, time and expenses are vertical code on the kernel alone. Multi-country scopes diverging from one codebase, and one role-adaptive app serving employee and manager in the same surface.', '/verticals/meridian'],
-  ['Callout', 'Field service', 'vertical', 'The canonical composition — a Swedish service & installation firm where two engines cooperate through events with zero imports between them. Runs on SQLite locally and deployed on Cloudflare from one codebase.', '/verticals/'],
-];
-
-const pkgs = [
-  ['@substrat-run/contracts', 'Zod contract schemas — the source of truth', 'Working'],
-  ['@substrat-run/kernel', 'Scope-host contract + tuple permission checker', 'Working'],
-  ['@substrat-run/adapter-sqlite', 'Pure-SQLite scope host — local dev, CI, self-host', 'Working'],
-  ['@substrat-run/adapter-cloudflare', 'Durable-Object scope host — production', 'Working'],
-  ['@substrat-run/contract-tests', 'The conformance suite both adapters pass unchanged', 'Working'],
-  ['@substrat-run/model-emit', 'DDL and state machines emitted from your declared model, and the reader that checks it', 'Working'],
-  ['@substrat-run/vertical-host', 'The platform surface a hosted vertical mounts', 'Working'],
-  ['@substrat-run/cli', 'substrat login / push — authenticated deploy', 'Working'],
-  ['@substrat-run/engine-workorder', 'Work orders, time & material', 'Seed'],
-  ['@substrat-run/engine-booking', 'Reservations — resource × interval, one allocation invariant, no locks', 'Seed'],
-  ['@substrat-run/engine-invoicing', 'Invoice basis, immutable exports', 'Seed'],
-  ['@substrat-run/engine-protocol', 'Checklists & protocols', 'Seed'],
-  ['@substrat-run/engine-invites', 'Invitations — verified hashed identifier, accept-required', 'Seed'],
-  ['@substrat-run/engine-absence', 'Leave and absence — balances as an entry ledger', 'Seed'],
-  ['@substrat-run/engine-metering', 'Usage readings folded into billable meters', 'Seed'],
 ];
 
 // A real operation, lightly trimmed, from demos/callout/src/module.ts — the
@@ -97,17 +145,17 @@ const createWorkOrderOp = async (ctx, input) => {
     'SELECT * FROM callout_facilities WHERE id = ?',
     [input.facilityId],
   )[0];
-  if (!facility) throw new Error(\`facility not found: \${input.facilityId}\`);
+  if (!facility) throw new Error(\`facility not found\`);
 
-  return createWorkOrder(ctx, {          // the engine's in-scope function,
-    facility: ref('facility', facility.id),   // inside YOUR transaction
+  return createWorkOrder(ctx, {         // the engine's in-scope
+    facility: ref('facility', facility.id),  // function, inside
     customer: ref('customer', facility.customer_id),
-    kind: input.kind,
+    kind: input.kind,                        // YOUR transaction
     title: input.title,
   });
 };`;
 
-const didnt = [
+const didnt: [string, string][] = [
   [
     'No tenant filter',
     'There is no WHERE tenant_id to forget. ctx.sql reaches this scope’s own database and cannot address another.',
@@ -130,28 +178,36 @@ const didnt = [
   ],
 ];
 
-// Why an agent is a primary user of this API, not an afterthought.
-const forAgents = [
-  [
-    'Derived, not generated',
-    'Entities, operations and state machines are declared once; the DDL and the model artifact are emitted by code, and CI fails on drift. Cheaper than a model in tokens, latency and exactness — and smaller to hold in context afterwards.',
-    '/concepts/model',
-  ],
-  [
-    'An oracle the build didn’t write',
-    'Code comes from the model; tests come from the human-approved concept. Two independent derivations, and the disagreement between them is the product. A suite written after the handlers can only agree with whatever got built.',
-    '/guide/ai-agents#the-second-opinion-two-descriptions-that-can-disagree',
-  ],
-  [
-    'Bring your own model',
-    'Design and build run in your agent — Claude Code, Cursor, opencode — against skills that ship in the project. Your tokens, your model, and a repo that boots on SQLite with no platform in the loop.',
-    '/guide/ai-agents#bring-your-own-model-bring-your-own-agent',
-  ],
-  [
-    'Every PR gets a copy of production',
-    'Open a pull request and the platform forks the production scope, runs that PR’s own migrations against the copy, and posts the URL. Reviewing a migration diff is a checkpoint; watching it run on real data is what makes it honest.',
-    '/guide/environments-and-previews',
-  ],
+// The three layers, as the landing page states them. Deliberately NOT the
+// `LayerStack` figure from the architecture docs: that one draws five bands
+// (adapters and connectors as well) and names five engines, both of which
+// contradict what this section and the engine section below actually claim.
+const stack = [
+  {
+    key: 'vertical', name: 'Verticals', owner: 'yours',
+    role: 'Vocabulary, workflows, screens, pricing.',
+    chips: [
+      ['Callout', 'field service'], ['Meridian', 'HR'], ['RallyPoint', 'padel club'],
+      ['Manyfold', 'CMS'], ['ticket0', 'support desk'],
+    ],
+  },
+  {
+    key: 'engine', name: 'Engines', owner: 'ours — headless, versioned',
+    role: 'Shared domain machinery that owns invariants. Optional — compose them, or don’t.',
+    chips: [
+      ['workorder', 'state machine'], ['booking', 'allocation'],
+      ['invoicing', 'immutable export'], ['protocol', 'sign → frozen'],
+      ['invites', 'hashed identifier'], ['absence', 'entry ledger'], ['metering', 'usage'],
+    ],
+  },
+  {
+    key: 'kernel', name: 'Kernel', owner: 'ours — enforced at runtime',
+    role: 'Everything true of every B2B SaaS, nothing true of any particular one. Owns no domain entities.',
+    chips: [
+      ['ctx.sql', ''], ['ctx.emit', ''], ['ctx.check', ''],
+      ['ctx.link', ''], ['ctx.grant', ''], ['ctx.now', ''],
+    ],
+  },
 ];
 
 const repo = 'https://github.com/substrat-run/substrat';
@@ -159,24 +215,83 @@ const repo = 'https://github.com/substrat-run/substrat';
 
 <template>
   <div class="mkt">
-    <!-- Hero -->
+    <!-- Hero. Breadth first: the guarantees are a clause at the end of the lede,
+         not the pitch. -->
     <section class="bleed hero">
       <div class="wrap hero-inner">
         <span class="badge badge-info">
           <span class="dot" />Pre-release 0.x — working end to end on two adapters
         </span>
-        <h1>The hard parts, hosted.</h1>
+        <h1>Build almost any business app.</h1>
         <p class="lede">
-          AI made building vertical B2B software fast — except multi-tenancy,
-          identity, permissions, audit, and GDPR. Substrat owns those parts and
-          enforces them at runtime, so small teams can build production-grade
-          SaaS on top without the speed being fatal.
+          Field service, HR, court bookings, a CMS, a coffee shop, a support desk —
+          eight demo verticals on one kernel, and three of them compose no engine at
+          all. Tenancy, identity, permissions, audit and GDPR come with the
+          foundation instead of with your discipline.
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="/guide/getting-started">Get started</a>
-          <a class="btn btn-secondary" href="/guide/why-substrat">Why runtime enforcement</a>
+          <a class="btn btn-secondary" href="/verticals/">See what people build</a>
+        </div>
+        <div class="cmdline">
+          <span class="mono-xs">or</span>
           <code class="cmd">npm create substrat my-app</code>
         </div>
+      </div>
+      <div class="rule3"><span class="lv" /><span class="le" /><span class="lk" /></div>
+    </section>
+
+    <!-- The evidence for the claim, first rather than last. -->
+    <section class="wrap section">
+      <div class="kicker kicker-vertical">What people build</div>
+      <h2>Eight demos. Eight businesses. One foundation.</h2>
+      <p class="muted lede-narrow">
+        Chosen, not accumulated — each one proves a different way of using the
+        platform. The foundation is identical in all eight; the vocabulary, the
+        screens and the shape are not.
+      </p>
+      <div class="grid-4">
+        <a v-for="d in demos" :key="d.name" class="vcard" :href="d.href">
+          <span class="vhead">
+            <i :class="`layer-${d.layer}`" />
+            <b>{{ d.name }}</b>
+          </span>
+          <span class="vdomain">{{ d.domain }}</span>
+          <span class="muted sm vbody">{{ d.body }}</span>
+          <span class="vfoot" :class="{ kernelonly: d.layer === 'kernel' }">{{ d.uses }}</span>
+        </a>
+      </div>
+      <div class="vlegend">
+        <span><i class="layer-kernel" />composes no engine — the kernel alone was enough</span>
+        <span><i class="layer-engine" />composes one or more engines</span>
+      </div>
+    </section>
+
+    <!-- What arrives free. The list is the argument; density is the point. -->
+    <section class="bleed band">
+      <div class="wrap section">
+        <div class="kicker">What arrives with it</div>
+        <h2>None of this is a feature you build.</h2>
+        <p class="muted lede-narrow">
+          Every one of these exists the moment your project does — on the laptop and
+          in production, the same code either way. Nothing here is a checkbox on a
+          pricing page or a module you install.
+        </p>
+        <div class="inv">
+          <div v-for="[group, items] in inventory" :key="group" class="invcol">
+            <div class="invh">{{ group }}</div>
+            <div v-for="[title, desc] in items" :key="title" class="invi">
+              <span class="c">✓</span>
+              <span><b>{{ title }}</b><span class="muted">{{ desc }}</span></span>
+            </div>
+          </div>
+        </div>
+        <p class="invnote">
+          The list is the argument. Any one of these is a sprint; the identity and
+          audit ones are a quarter and a consultant. They are here because the layer
+          under your app is the same in every business — which is exactly why nobody
+          should be rebuilding it per product.
+        </p>
       </div>
     </section>
 
@@ -191,152 +306,123 @@ const repo = 'https://github.com/substrat-run/substrat';
         avoid it.
       </p>
       <div class="split">
-        <pre class="code"><code>{{ sample }}</code></pre>
-        <ul class="didnt">
-          <li v-for="([title, desc]) in didnt" :key="title">
-            <span class="didnt-title">{{ title }}</span>
-            <span class="muted sm">{{ desc }}</span>
+        <div class="codewrap">
+          <div class="codetab">demos/callout/src/module.ts</div>
+          <pre class="code"><code>{{ sample }}</code></pre>
+        </div>
+        <ul class="annos">
+          <li v-for="([title, desc], i) in didnt" :key="title">
+            <span class="anum">{{ String(i + 1).padStart(2, '0') }}</span>
+            <span>
+              <span class="atitle">{{ title }}</span>
+              <span class="muted sm">{{ desc }}</span>
+            </span>
           </li>
         </ul>
       </div>
     </section>
 
-    <!-- Three layers -->
-    <section class="wrap section">
-      <div class="kicker">The idea in three layers</div>
-      <h2>We build the substrate. You build the verticals.</h2>
-      <div class="grid-3">
-        <div v-for="l in layers" :key="l.key" class="layer-card">
-          <div class="layer-bar" :class="`layer-${l.key}`" />
-          <div class="layer-body">
-            <div class="layer-head">
-              <span class="layer-name">{{ l.name }}</span>
-              <code class="tag">--layer-{{ l.key }}</code>
-            </div>
-            <p class="muted">{{ l.desc }}</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Enforced at runtime -->
+    <!-- Three layers, drawn by the same figure the architecture docs use. -->
     <section class="bleed band">
       <div class="wrap section">
-        <div class="kicker">Enforced at runtime</div>
-        <h2>Code built on Substrat cannot:</h2>
+        <div class="kicker">The idea in three layers</div>
+        <h2>We build the substrate. You build the verticals.</h2>
         <p class="muted lede-narrow">
-          None of this depends on the discipline of the code above it — which is
-          the point, because increasingly that code is written by an agent.
+          The engines in the middle are optional — compose them where your domain
+          matches one, and skip them where it doesn’t.
         </p>
-        <div class="grid-2">
-          <div v-for="([title, desc]) in cannots" :key="title" class="cannot">
-            <span class="x">✕</span>
-            <div>
-              <div class="cannot-title">{{ title }}</div>
-              <div class="muted sm">{{ desc }}</div>
+        <div class="stack">
+          <template v-for="(l, i) in stack" :key="l.name">
+            <div class="slayer" :class="`sl-${l.key}`">
+              <div>
+                <div class="sname">{{ l.name }}</div>
+                <div class="muted sm">{{ l.role }}</div>
+                <div class="sowner">{{ l.owner }}</div>
+              </div>
+              <div class="chips">
+                <span v-for="[name, sub] in l.chips" :key="name" class="chip">
+                  <b>{{ name }}</b><em v-if="sub">{{ sub }}</em>
+                </span>
+              </div>
             </div>
-          </div>
+            <div v-if="i === 0" class="theline">
+              <b>THE LINE</b>
+              <span>Above ↑ mistakes are cosmetic &nbsp;·&nbsp; ↓ Below mistakes are catastrophic, so they are ours</span>
+            </div>
+          </template>
         </div>
       </div>
     </section>
 
-    <!-- Day-2 operations -->
-    <section class="wrap section">
-      <div class="kicker">Day-2 operations, day one</div>
-      <h2>The ops a platform team would build — built in.</h2>
-      <p class="muted lede-narrow">
-        Every app is one tenant’s scope with its own database, so the operations
-        story is a platform primitive, not a runbook.
-      </p>
-      <div class="grid-2">
-        <a v-for="([title, desc, href]) in ops" :key="title" class="cannot op" :href="href">
-          <span class="check">✓</span>
-          <div>
-            <div class="cannot-title">{{ title }}</div>
-            <div class="muted sm">{{ desc }}</div>
-          </div>
-        </a>
-      </div>
-    </section>
-
-    <!-- Built for agents -->
-    <section class="bleed band">
+    <!-- Engines as an option, not as architecture for its own sake. -->
+    <section class="bleed band-engine">
       <div class="wrap section">
-        <div class="kicker">Built for agents, on purpose</div>
-        <h2>The layer AI is worst at is the layer that’s already written.</h2>
+        <div class="kicker kicker-engine">Where a domain already exists</div>
+        <h2>Seven engines you don’t have to write.</h2>
         <p class="muted lede-narrow">
-          Tenancy, auth, migrations and compliance are where models fail and where
-          failure is catastrophic. Screens, forms and workflows are where they excel
-          and where failure is cosmetic. Substrat draws the line between them and
-          enforces it — then does four more things most “AI-friendly” claims skip.
+          They own the invariants that are the same in every business: a state
+          machine that can’t skip, an invoice immutable once exported, a booking
+          that can’t double-allocate. <strong>Three of the eight demos above compose
+          none at all</strong> — engines are there when your domain matches one, not
+          a tax when it doesn’t. And no engine talks to a sibling: with <em>N</em>
+          engines talking to the kernel there are <em>N</em> contracts to keep
+          compatible; between each other there are <em>N</em>².
         </p>
-        <div class="grid-2">
-          <a v-for="([title, desc, href]) in forAgents" :key="title" class="cannot op" :href="href">
-            <span class="check">✓</span>
-            <div>
-              <div class="cannot-title">{{ title }}</div>
-              <div class="muted sm">{{ desc }}</div>
-            </div>
-          </a>
+
+        <figure class="starbox" role="img"
+          aria-label="Seven engines — work orders, bookings, invoicing, protocols, invites, absence and metering — each connected to a central kernel and to nothing else. A crossed-out dashed line between two neighbouring engines marks the edge that never exists.">
+          <svg viewBox="0 0 1016 476" aria-hidden="true">
+            <g class="spokes">
+              <line v-for="n in ring" :key="n.name" :x1="n.cx" :y1="n.cy" x2="508" y2="258" />
+            </g>
+            <path class="noedge-arc" d="M583,73 Q690,40 774,117" />
+          </svg>
+          <div v-for="n in ring" :key="n.name" class="enode" :class="{ byevent: n.event }"
+            :style="{ left: `${n.x}px`, top: `${n.y}px` }">
+            <span class="en"><i />{{ n.name }}</span>
+            <span class="em">{{ n.event ? 'by event' : 'by call' }}</span>
+          </div>
+          <div class="ekernel">
+            <b>Kernel</b>
+            <span>tenancy · permissions · events · migrations</span>
+          </div>
+          <div class="noedge">✕</div>
+          <div class="noedge-l">no edge, ever</div>
+        </figure>
+
+        <div class="legend">
+          <span><i class="k" />every engine talks to the kernel, and only to the kernel</span>
+          <span><i class="kd" />by event — the vertical emits, the engine consumes</span>
+          <span><i class="kx">✕</i>no engine imports, calls or reads a sibling</span>
         </div>
       </div>
     </section>
 
-    <!-- Reference verticals -->
+    <!-- The guarantees, late, as proof rather than as the pitch. -->
     <section class="wrap section">
-      <div class="kicker">Reference verticals</div>
-      <h2>The same kernel, three businesses.</h2>
-      <div class="grid-3">
-        <a v-for="([name, kind, layer, desc, href]) in demos" :key="name" class="demo-card" :href="href">
-          <div class="demo-head">
-            <span class="swatch" :class="`layer-${layer}`" />
-            <span class="demo-name">{{ name }}</span>
-            <span class="demo-kind">{{ kind }}</span>
-          </div>
-          <p class="muted sm">{{ desc }}</p>
-        </a>
-      </div>
-    </section>
-
-    <!-- Current status -->
-    <section class="bleed band">
-      <div class="wrap section">
-        <div class="kicker">Current status</div>
-        <h2>What exists today</h2>
-        <div class="pkg-table">
-          <div v-for="([pkg, desc, status]) in pkgs" :key="pkg" class="pkg-row">
-            <code class="pkg-name">{{ pkg }}</code>
-            <span class="muted sm pkg-desc">{{ desc }}</span>
-            <span class="badge" :class="status === 'Working' ? 'badge-success' : 'badge-neutral'">
-              {{ status.toLowerCase() }}
-            </span>
-          </div>
+      <div class="kicker">And underneath all eight</div>
+      <h2>Code built on Substrat cannot:</h2>
+      <p class="muted lede-narrow">
+        None of this depends on the discipline of the code above it — which is the
+        point, because increasingly that code is written by an agent.
+      </p>
+      <div class="ledger">
+        <div v-for="([title, desc, tag]) in cannots" :key="title" class="lrow">
+          <span class="lx">✕</span>
+          <span class="ltitle">{{ title }}</span>
+          <span class="muted sm">{{ desc }}</span>
+          <span class="ltag">{{ tag }}</span>
         </div>
       </div>
     </section>
 
-    <!-- The honest half. A page that only lists strengths is a document nobody
-         trusts twice — so the gaps get a section, not a footnote. -->
-    <section class="wrap section">
-      <div class="kicker">The honest half</div>
-      <h2>Where Substrat is the wrong answer.</h2>
-      <p class="muted lede-narrow">
-        Single-tenant internal tools, one scale-heavy tenant, deep-domain products
-        like payroll or core banking, and anything where the foundation isn’t your
-        binding constraint — reach for something else, and the docs will say so
-        rather than sell around it.
-      </p>
-      <p class="muted lede-narrow">
-        There is also a list of what we don’t have: one production connector, no
-        certifications yet, no search, no localization, no report builder. Almost
-        every gap is breadth; almost every strength is depth of guarantee. That’s
-        the honest shape of a young platform, and it says plainly who shouldn’t
-        buy yet.
-      </p>
-      <div class="cta-row">
-        <a class="btn btn-secondary" href="/guide/what-substrat-lacks">What Substrat doesn’t have (yet)</a>
-        <a class="btn btn-secondary" href="/guide/comparisons">How Substrat compares</a>
-        <a class="btn btn-secondary" href="/guide/faq">FAQ</a>
+    <!-- The depth lives on its own pages; the home page just points at it. -->
+    <section class="bleed linkband">
+      <div class="wrap linkband-in">
+        <span class="linkband-l">Straight answers</span>
+        <a href="/guide/comparisons">How Substrat compares</a>
+        <a href="/guide/what-substrat-lacks">What Substrat doesn’t have (yet)</a>
+        <a href="/guide/faq">FAQ</a>
       </div>
     </section>
 
@@ -383,6 +469,11 @@ const repo = 'https://github.com/substrat-run/substrat';
   font-size: var(--text-sm);
   line-height: var(--lh-sm);
 }
+.mono-xs {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
 
 h1 {
   font-size: var(--text-4xl);
@@ -390,7 +481,8 @@ h1 {
   font-weight: var(--weight-semibold);
   letter-spacing: var(--tracking-display);
   margin: 0;
-  max-width: 640px;
+  max-width: 780px;
+  text-wrap: balance;
   border: 0;
   padding: 0;
 }
@@ -404,12 +496,19 @@ h2 {
   padding: 0;
 }
 .kicker {
+  font-family: var(--font-mono);
   font-size: var(--text-xs);
   text-transform: uppercase;
   letter-spacing: var(--tracking-caps);
   color: var(--text-brand);
   font-weight: var(--weight-semibold);
   margin-bottom: 10px;
+}
+.kicker-engine {
+  color: var(--layer-engine);
+}
+.kicker-vertical {
+  color: var(--layer-vertical);
 }
 
 /* Hero */
@@ -419,7 +518,7 @@ h2 {
   background: linear-gradient(180deg, var(--surface-brand-subtle) 0%, var(--surface-card) 70%);
 }
 .hero-inner {
-  padding: 96px 32px 88px;
+  padding: 92px 32px 84px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -429,12 +528,12 @@ h2 {
   font-size: var(--text-lg);
   line-height: var(--lh-lg);
   color: var(--text-secondary);
-  max-width: 620px;
+  max-width: 640px;
   margin: 0;
 }
 .lede-narrow {
-  max-width: 620px;
-  margin-top: 10px;
+  max-width: 660px;
+  margin-top: 12px;
 }
 .cta-row {
   display: flex;
@@ -443,15 +542,37 @@ h2 {
   margin-top: 6px;
   flex-wrap: wrap;
 }
+.cmdline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .cmd {
-  margin-left: 10px;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   background: var(--surface-inset);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  padding: 7px 12px;
+  padding: 8px 13px;
   color: var(--text-secondary);
+}
+
+/* The layer through-line: a three-colour rule closing the hero. */
+.rule3 {
+  display: flex;
+  height: 3px;
+}
+.rule3 span {
+  flex: 1;
+}
+.lv {
+  background: var(--layer-vertical);
+}
+.le {
+  background: var(--layer-engine);
+}
+.lk {
+  background: var(--layer-kernel);
 }
 
 /* Buttons */
@@ -516,18 +637,17 @@ h2 {
   background: var(--status-info-bg);
   color: var(--status-info-fg);
 }
-.badge-success {
-  background: var(--status-success-bg);
-  color: var(--status-success-fg);
-}
-.badge-neutral {
-  background: var(--status-neutral-bg);
-  color: var(--status-neutral-fg);
-}
 
 /* Bands alternate the page surface behind a section */
 .band {
   background: var(--surface-page);
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+}
+/* The engine layer gets its own accent band — --cyan-50 in light, the dark
+   theme's info surface in dark. Both are token values, not derived tints. */
+.band-engine {
+  background: var(--status-info-bg);
   border-top: 1px solid var(--border-subtle);
   border-bottom: 1px solid var(--border-subtle);
 }
@@ -543,38 +663,183 @@ h2 {
   background: var(--layer-vertical);
 }
 
-/* Grids */
-.grid-3 {
+/* Eight demos */
+.grid-4 {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
   margin-top: 32px;
 }
-.grid-2 {
+.vcard {
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 16px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+.vcard:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  text-decoration: none;
+}
+.vhead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vhead i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.vhead b {
+  font-size: var(--text-base);
+  line-height: var(--lh-base);
+  font-weight: var(--weight-semibold);
+}
+.vdomain {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-tertiary);
+}
+.vbody {
+  flex: 1;
+}
+.vfoot {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-tertiary);
+  padding-top: 9px;
+  border-top: 1px solid var(--border-subtle);
+}
+.vfoot.kernelonly {
+  color: var(--layer-kernel);
+}
+.vlegend {
+  display: flex;
+  gap: 26px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 22px;
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  color: var(--text-secondary);
+}
+.vlegend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.vlegend i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+/* What arrives with it */
+.inv {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  margin-top: 28px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 28px;
+  margin-top: 34px;
+}
+.invcol {
+  display: flex;
+  flex-direction: column;
+}
+.invh {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+  padding-bottom: 10px;
+  border-bottom: 2px solid var(--layer-kernel);
+  margin-bottom: 4px;
+}
+.invcol:nth-child(2) .invh {
+  border-bottom-color: var(--layer-engine);
+}
+.invcol:nth-child(3) .invh {
+  border-bottom-color: var(--layer-vertical);
+}
+.invcol:nth-child(4) .invh {
+  border-bottom-color: var(--text-tertiary);
+}
+.invi {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+.invi:last-child {
+  border-bottom: 0;
+}
+.invi .c {
+  color: var(--status-success-fg);
+  font-size: var(--text-xs);
+  padding-top: 3px;
+}
+.invi b {
+  font-weight: var(--weight-semibold);
+  display: block;
+}
+.invnote {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-default);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  color: var(--text-secondary);
+  max-width: 780px;
 }
 
 /* Code sample beside what it did NOT have to say */
 .split {
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-  gap: 28px;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 32px;
   margin-top: 32px;
   align-items: start;
 }
-.code {
-  margin: 0;
-  padding: 20px 22px;
+.codewrap {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-lg);
-  background: var(--surface-page);
+  overflow: hidden;
   box-shadow: var(--shadow-sm);
+  background: var(--surface-page);
+}
+.codetab {
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border-default);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  background: var(--surface-inset);
+}
+.code {
+  margin: 0;
+  padding: 18px 20px;
   overflow-x: auto;
   font-size: var(--text-sm);
-  line-height: 1.65;
+  line-height: 1.7;
+  background: none;
 }
 .code code {
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -584,157 +849,348 @@ h2 {
   border: 0;
   color: var(--text-primary);
 }
-.didnt {
+.annos {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
 }
-.didnt li {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-left: 16px;
-  border-left: 2px solid var(--border-default);
+.annos li {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--border-subtle);
 }
-.didnt-title {
-  font-weight: var(--weight-semibold);
-  font-size: var(--text-sm);
+.annos li:first-child {
+  padding-top: 0;
 }
-
-/* Three-layer cards */
-.layer-card {
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
-  box-shadow: var(--shadow-sm);
-  background: var(--surface-card);
+.annos li:last-child {
+  border-bottom: 0;
 }
-.layer-bar {
-  height: 4px;
-}
-.layer-body {
-  padding: 20px 20px 22px;
-}
-.layer-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-.layer-name {
-  font-size: var(--text-md);
-  font-weight: var(--weight-semibold);
-}
-.tag {
+.anum {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
-  color: var(--text-secondary);
-  background: var(--surface-inset);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xs);
-  padding: 1px 6px;
+  color: var(--layer-kernel);
+  padding-top: 2px;
+}
+.atitle {
+  font-weight: var(--weight-semibold);
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  display: block;
+  margin-bottom: 3px;
 }
 
-/* Cannots */
-.cannot {
-  background: var(--surface-card);
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-md);
-  padding: 16px 18px;
+/* The three-layer stack. Each band carries its layer accent on the left edge,
+   so the page's colour through-line and the architecture agree. */
+.stack {
+  margin-top: 32px;
   display: flex;
-  gap: 12px;
+  flex-direction: column;
 }
-.x {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--status-danger-fg);
-  font-weight: var(--weight-medium);
-  margin-top: 1px;
+.slayer {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 24px;
+  padding: 20px 22px;
+  border: 1px solid var(--border-default);
+  border-left-width: 4px;
+  background: var(--surface-card);
+  box-shadow: var(--shadow-sm);
 }
-.check {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  color: var(--status-success-fg);
-  font-weight: var(--weight-medium);
-  margin-top: 1px;
+.slayer:first-of-type {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
-.op {
-  text-decoration: none;
-  color: inherit;
-  transition: border-color 0.15s ease;
+.slayer:last-of-type {
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
-.op:hover {
-  border-color: var(--border-strong);
+.slayer + .slayer {
+  border-top: 0;
 }
-.cannot-title {
+.sl-vertical {
+  border-left-color: var(--layer-vertical);
+}
+.sl-engine {
+  border-left-color: var(--layer-engine);
+}
+.sl-kernel {
+  border-left-color: var(--layer-kernel);
+}
+.sname {
+  font-size: var(--text-md);
+  line-height: var(--lh-md);
   font-weight: var(--weight-semibold);
   margin-bottom: 4px;
 }
-
-/* Demo cards — each links to that vertical's page */
-.demo-card {
-  display: block;
+.sowner {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-tertiary);
+  margin-top: 6px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
+  gap: 8px;
+}
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  padding: 20px;
-  box-shadow: var(--shadow-xs);
-  background: var(--surface-card);
-  color: var(--text-primary);
-  transition: border-color 0.15s ease;
+  border-radius: var(--radius-sm);
+  padding: 5px 10px;
+  background: var(--surface-inset);
+  font-size: var(--text-sm);
+  font-family: var(--font-mono);
 }
-.demo-card:hover {
-  border-color: var(--border-strong);
-  text-decoration: none;
+.chip b {
+  font-weight: var(--weight-medium);
 }
-.demo-head {
+.chip em {
+  font-style: normal;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+}
+.theline {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 14px;
+  padding: 11px 22px;
+  background: var(--surface-inset);
+  border-left: 4px solid var(--border-strong);
+  border-right: 1px solid var(--border-default);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
 }
-.swatch {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-}
-.demo-name {
+.theline b {
+  color: var(--text-primary);
   font-weight: var(--weight-semibold);
 }
-.demo-kind {
-  font-size: var(--text-sm);
-  color: var(--text-tertiary);
-  margin-left: auto;
-}
 
-/* Package table */
-.pkg-table {
+/* The engine ring. Node boxes are opaque and sit above the spokes, so a line
+   drawn to the kernel's centre is covered at both ends and reads as an edge
+   between two boxes. */
+.starbox {
+  position: relative;
+  width: 1016px;
+  max-width: 100%;
+  height: 476px;
+  margin: 32px 0 0;
+}
+.starbox svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.spokes line {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+}
+.noedge-arc {
+  fill: none;
+  stroke: var(--status-danger-fg);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+.enode {
+  position: absolute;
+  width: 150px;
+  height: 52px;
   background: var(--surface-card);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  margin-top: 28px;
-  overflow: hidden;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 12px;
+  gap: 2px;
 }
-.pkg-row {
+.enode .en {
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+  font-weight: var(--weight-semibold);
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 12px 18px;
+  gap: 7px;
 }
-.pkg-row + .pkg-row {
+.enode .en i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--layer-engine);
+  flex: none;
+}
+.enode .em {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-tertiary);
+  padding-left: 13px;
+}
+.enode.byevent {
+  border-style: dashed;
+  border-color: var(--layer-engine);
+}
+.ekernel {
+  position: absolute;
+  left: 398px;
+  top: 210px;
+  width: 220px;
+  height: 96px;
+  background: var(--surface-brand-subtle);
+  border: 1px solid var(--layer-kernel);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+}
+.ekernel b {
+  font-size: var(--text-md);
+  line-height: var(--lh-md);
+  font-weight: var(--weight-semibold);
+}
+.ekernel span {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-secondary);
+  text-align: center;
+  max-width: 180px;
+}
+.noedge {
+  position: absolute;
+  left: 671px;
+  top: 54px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--status-danger-bg);
+  color: var(--status-danger-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+.noedge-l {
+  position: absolute;
+  left: 706px;
+  top: 32px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  color: var(--status-danger-fg);
+}
+.legend {
+  display: flex;
+  gap: 28px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 28px;
+  padding-top: 20px;
   border-top: 1px solid var(--border-subtle);
 }
-.pkg-name {
-  font-family: var(--font-mono);
+.legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
   font-size: var(--text-sm);
-  width: 300px;
-  color: var(--text-primary);
+  line-height: var(--lh-sm);
+  color: var(--text-secondary);
 }
-.pkg-desc {
-  flex: 1;
+.legend i.k {
+  width: 26px;
+  border-top: 1px solid var(--border-strong);
+  flex: none;
+}
+.legend i.kd {
+  width: 26px;
+  border-top: 1px dashed var(--layer-engine);
+  flex: none;
+}
+.legend i.kx {
+  font-style: normal;
+  color: var(--status-danger-fg);
+  font-weight: var(--weight-semibold);
+}
+
+/* The guarantees, as a ledger rather than a card grid. */
+.ledger {
+  margin-top: 32px;
+  border-top: 1px solid var(--border-default);
+}
+.lrow {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 300px) minmax(0, 1fr) 148px;
+  gap: 20px;
+  align-items: start;
+  padding: 20px 0;
+  border-bottom: 1px solid var(--border-default);
+}
+.lx {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--status-danger-bg);
+  color: var(--status-danger-fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+.ltitle {
+  font-size: var(--text-md);
+  line-height: var(--lh-md);
+  font-weight: var(--weight-semibold);
+}
+.ltag {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: var(--lh-xs);
+  color: var(--text-tertiary);
+  text-align: right;
+  padding-top: 4px;
+}
+
+/* The depth lives elsewhere; this is a signpost, not an argument. */
+.linkband {
+  background: var(--surface-page);
+  border-top: 1px solid var(--border-subtle);
+}
+.linkband-in {
+  padding: 32px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.linkband-l {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
+  color: var(--text-tertiary);
+}
+.linkband a {
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  text-decoration: none;
+  border-bottom: 1px solid var(--border-strong);
+  padding-bottom: 1px;
+}
+.linkband a:hover {
+  border-bottom-color: var(--text-primary);
 }
 
 /* CTA */
@@ -742,56 +1198,88 @@ h2 {
   background: var(--gray-950);
 }
 .cta-inner {
-  padding: 72px 32px;
+  padding: 56px 32px;
   display: flex;
   align-items: center;
-  gap: 24px;
-}
-.cta-copy {
-  flex: 1;
+  justify-content: space-between;
+  gap: 40px;
+  flex-wrap: wrap;
 }
 .cta-bars {
   display: flex;
-  gap: 4px;
+  gap: 5px;
   margin-bottom: 16px;
 }
 .cta-bar {
-  width: 22px;
-  height: 5px;
-  border-radius: 3px;
+  width: 26px;
+  height: 4px;
+  border-radius: 2px;
 }
 .cta-title {
   font-size: var(--text-3xl);
   line-height: var(--lh-3xl);
   font-weight: var(--weight-semibold);
-  letter-spacing: var(--tracking-display);
+  letter-spacing: var(--tracking-tight);
   color: #f2f3f7;
 }
 .cta-actions {
   display: flex;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
-/* Responsive */
-@media (max-width: 900px) {
-  .grid-3 {
-    grid-template-columns: 1fr;
+/* Narrow screens: the four-column grids and the fixed-size ring are the two
+   things that cannot survive a phone, so they collapse rather than scroll. */
+@media (max-width: 960px) {
+  .grid-4,
+  .inv {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .grid-2 {
-    grid-template-columns: 1fr;
+  .split,
+  .slayer {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .split {
-    grid-template-columns: 1fr;
+  .lrow {
+    grid-template-columns: 28px minmax(0, 1fr);
   }
-  .cta-inner {
-    flex-direction: column;
+  .lrow .ltag {
+    display: none;
+  }
+  .starbox {
+    height: auto;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .starbox svg,
+  .starbox .noedge,
+  .starbox .noedge-l {
+    display: none;
+  }
+  .starbox .enode,
+  .starbox .ekernel {
+    position: static;
+    width: auto;
+    height: auto;
+    padding: 12px;
+  }
+  .starbox .ekernel {
+    grid-column: 1 / -1;
+    order: -1;
     align-items: flex-start;
   }
-  .pkg-name {
-    width: auto;
+  .starbox .ekernel span {
+    text-align: left;
   }
-  .pkg-row {
-    flex-wrap: wrap;
+}
+@media (max-width: 640px) {
+  .grid-4,
+  .inv,
+  .starbox {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .section {
+    padding: 56px 24px;
   }
 }
 </style>
