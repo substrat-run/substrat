@@ -129,6 +129,13 @@ describe('the tool list is derived, not declared', () => {
     const props = tool?.inputSchema['properties'] as Record<string, unknown>;
     expect(Object.keys(props)).toEqual(expect.arrayContaining(['listId', 'limit', 'cursor', 'order', 'sort']));
   });
+
+  /** Stated, not merely enforced: the ceiling REFUSES, so an unstated bound is found by erroring. */
+  it('states the page bounds an agent would otherwise discover by failing', () => {
+    const tool = mcpToolsOf(operations).find((t) => t.operation === 'todo/list-items');
+    const limit = (tool?.inputSchema['properties'] as Record<string, Record<string, unknown>>)['limit'];
+    expect(limit).toMatchObject({ maximum: LIST_PAGE_MAX, default: LIST_PAGE_DEFAULT, minimum: 1 });
+  });
 });
 
 describe('the handshake', () => {

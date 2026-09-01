@@ -49,7 +49,7 @@
  */
 import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { z, listPageQuery, LIST_SORT_PARAM } from '@substrat-run/contracts';
+import { z, listPageQuery, LIST_PAGE_DEFAULT, LIST_PAGE_MAX, LIST_SORT_PARAM } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import { classifyError, messageOf, problemResponse } from './errors.js';
 
@@ -162,7 +162,16 @@ function literalPins(input: z.ZodObject<z.ZodRawShape> | undefined): Record<stri
  */
 function pageFields(sortKey: string | undefined): Record<string, unknown> {
   return {
-    limit: { type: 'integer', description: 'How many entries to return. Capped by the platform.' },
+    // The bound is STATED, not just enforced. The ceiling refuses rather than caps, so
+    // an agent that cannot see the maximum discovers it by getting an error — and the
+    // default matters too, since "how many did I just get" is otherwise a guess.
+    limit: {
+      type: 'integer',
+      minimum: 1,
+      maximum: LIST_PAGE_MAX,
+      default: LIST_PAGE_DEFAULT,
+      description: `How many entries to return (1–${LIST_PAGE_MAX}, default ${LIST_PAGE_DEFAULT}). Above the maximum is refused, not capped.`,
+    },
     cursor: { type: 'string', description: 'Continue a previous page — the cursor it returned.' },
     order: { type: 'string', enum: ['asc', 'desc'], description: 'Walk direction.' },
     ...(sortKey === undefined
