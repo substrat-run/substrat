@@ -386,8 +386,13 @@ export function Inbox({
           The "who is this" half. A match on a person is not a conversation, so it is
           not smuggled into the list — it is its own strip, and picking one narrows the
           inbox to that person's history through the walk's own `contact_id` filter.
+
+          Compared against `q`, not `term`: through the debounce window `term` is still
+          the PREVIOUS query, so a stamp checked against it agrees with itself and the
+          old chips stay clickable for exactly as long as the user is typing over them.
+          The raw box is the only thing that moves the instant they do.
         */}
-        {searching && matches.term === term && matches.entries.length > 0 ? (
+        {searching && matches.term === q.trim() && matches.entries.length > 0 ? (
           <div
             style={{
               display: 'flex',
