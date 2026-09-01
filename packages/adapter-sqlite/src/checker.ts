@@ -10,7 +10,7 @@ import {
   type RelationTuple,
   type RoleDefinition,
 } from '@substrat-run/contracts';
-import type { PermissionChecker } from '@substrat-run/kernel';
+import type { Clock, PermissionChecker } from '@substrat-run/kernel';
 
 /**
  * The built-in constrained relationship-tuple evaluator (design doc §4.2,
@@ -32,6 +32,15 @@ export interface CheckerDeps {
   /** Resolve an OPEN scope db; checks only run inside operations, so it is open. */
   scopeDb(scopeId: string): Database.Database | undefined;
   getRole(tenantId: string, key: string): RoleDefinition | undefined;
+  /**
+   * What "now" means when a tuple's `expires_at` is judged (#956). The host's own
+   * `clock`, so a frozen or manual clock can actually expire a grant — before this
+   * the evaluator read the wall clock and a scripted clock could not reach it.
+   *
+   * Optional and defaulting to the wall clock: a checker built without one behaves
+   * exactly as it did.
+   */
+  clock?: Clock;
 }
 
 interface TupleRow {
@@ -48,7 +57,15 @@ const t = (subject: string, relation: string, object: string): RelationTuple => 
   object: objectRef.parse(object),
 });
 
+/**
+ * Build the evaluator described above over one host's directory, scope databases
+ * and role table. Stateless per call: everything it knows it reads at check time,
+ * which is what makes check-after-write consistent and what lets `deps.clock`
+ * decide expiry rather than the wall clock.
+ */
 export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
+  const readNow: () => string = deps.clock ?? (() => new Date().toISOString());
+
   const tenantTuples = (tenantId: string, subject: string, relationPrefix: string): TupleRow[] =>
     deps.directory
       .prepare(
@@ -83,7 +100,7 @@ export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
       node: Node,
       entity?: EntityRef,
     ): Promise<Decision> {
-      const now = new Date().toISOString();
+      const now = readNow();
       const deny: Decision = { allowed: false, checked: permission, node };
       const scopeDb = node.scopeId ? deps.scopeDb(node.scopeId) : undefined;
 
