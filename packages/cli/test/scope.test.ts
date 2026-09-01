@@ -207,6 +207,39 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
     ).rejects.toThrow(/is listed twice/);
   });
 
+  it('refuses two names that differ only in case — SQLite reads those as one table', async () => {
+    await expect(
+      pullOf(
+        's-6',
+        [
+          { name: 'crm_vendors', ddl: 'CREATE TABLE crm_vendors (id TEXT)', columns: ['id'], rows: [['v1']] },
+          {
+            name: 'CRM_Vendors',
+            ddl: 'CREATE TABLE IF NOT EXISTS CRM_Vendors (id TEXT)',
+            columns: ['id'],
+            rows: [['smuggled']],
+          },
+        ],
+        join(dir, 'case'),
+      ),
+    ).rejects.toThrow(/is listed twice/);
+  });
+
+  it('a refused dump does not delete the file the previous pull wrote', async () => {
+    const outDir = join(dir, 'keep');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await pullOf('s-7', [{ name: 'crm_vendors', ddl: 'CREATE TABLE crm_vendors (id TEXT)', columns: ['id'], rows: [['v1']] }], outDir);
+    const file = join(outDir, 'acme__s-7.sqlite');
+    expect(existsSync(file)).toBe(true);
+
+    // Same scope, so the same destination path — a hostile response must not cost
+    // the builder the good pull sitting there.
+    await expect(
+      pullOf('s-7', [{ name: 'crm_vendors', ddl: 'ATTACH DATABASE \'/tmp/x.db\' AS e', columns: ['id'], rows: [] }], outDir),
+    ).rejects.toThrow(/does not begin with/);
+    expect(existsSync(file)).toBe(true);
+  });
+
   it('pull refuses a crafted dump instead of writing it to disk', async () => {
     globalThis.fetch = (async () =>
       new Response(

@@ -67,13 +67,19 @@ export function assertDumpIdentifiers(tables: { name: string; columns?: string[]
     // A dump lists each table once. A REPEATED name is how a crafted one hides: the
     // honest entry creates the table, and a second entry under the same name carries
     // the payload while every per-entry check still sees a table that exists.
-    if (seen.has(t.name)) {
+    // Compared case-insensitively, because SQLite resolves table names that way —
+    // `Users` and `users` are one table, so two entries would otherwise merge into
+    // it. `sqlIdentifier` above has already limited the name to ASCII, so lowercasing
+    // is the same fold SQLite applies rather than an approximation of it.
+    const key = t.name.toLowerCase();
+    if (seen.has(key)) {
       throw new Error(
-        `refusing this backup: table ${JSON.stringify(t.name)} is listed twice. A scope dump names ` +
+        `refusing this backup: table ${JSON.stringify(t.name)} is listed twice (SQLite resolves table ` +
+          'names case-insensitively, so names differing only in case are one table). A scope dump names ' +
           'each of its tables once — a repeat is corrupt or crafted, and it is not loaded.',
       );
     }
-    seen.add(t.name);
+    seen.add(key);
     for (const c of t.columns ?? []) sqlIdentifier(c, `column name in table ${JSON.stringify(t.name)}`);
   }
 }
@@ -135,9 +141,13 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
   } catch {
     return false; // node < 22.13 — the caller falls back to JSON
   }
-  // The names below are interpolated into the INSERT — check them first, and check
-  // them here rather than only at the caller, because this is the interpolation site.
+  // Everything the dump asserts about itself is judged BEFORE the destination is
+  // touched: the names that reach SQL as identifiers, and the head of every table's
+  // DDL. Checked here rather than only at the caller because this is the site that
+  // interpolates and executes them — and checked ahead of the `rmSync` so a refused
+  // dump leaves the previous pull's file where it was instead of deleting it first.
   assertDumpIdentifiers(dump.tables);
+  for (const t of dump.tables) assertCreatesDeclaredTable(t.ddl, t.name);
   rmSync(path, { force: true });
   const db = new DatabaseSync(path);
   try {
@@ -145,12 +155,10 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
     // FK-unordered dump would trip a constraint on the first child row.
     for (const t of orderTablesByForeignKeys(dump.tables)) {
       // A dump's `ddl` is untrusted SQL text, and `exec` runs EVERY statement in it —
-      // so `CREATE TABLE x (…); ATTACH DATABASE …;` used to execute both. Two things
-      // together fix that, and the order between them is the point: the text must
-      // OPEN as this table's CREATE TABLE (checked first, so nothing hostile has run
-      // by the time we decide), and `prepare`/`run` then compiles and executes only
-      // that first statement, leaving anything appended to it inert.
-      assertCreatesDeclaredTable(t.ddl, t.name);
+      // so `CREATE TABLE x (…); ATTACH DATABASE …;` used to execute both. `prepare`
+      // compiles only the first statement and `run` executes only that one, and the
+      // check above has already pinned that first statement to this table's CREATE
+      // TABLE, so whatever follows it in the text is inert.
       db.prepare(t.ddl).run();
       if (t.rows.length === 0) continue;
       const cols = t.columns.map((c) => `"${c}"`).join(', ');
