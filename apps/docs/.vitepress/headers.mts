@@ -102,13 +102,66 @@ export function csp(scriptHashes: string[], widgetOrigin?: string): string {
 }
 
 /**
- * A resource the built HTML loads from another origin.
+ * The tags that can load a subresource the CSP governs.
  *
  * Navigation links are deliberately not collected — CSP does not govern where an
  * `<a href>` goes, and the site links out to GitHub on every page.
  */
-const EXTERNAL_RESOURCE =
-  /<(?:script[^>]*\ssrc|link[^>]*\srel="(?:stylesheet|preload|modulepreload)[^"]*"[^>]*\shref|img[^>]*\ssrc|iframe[^>]*\ssrc)="(https?:\/\/[^"]+)"/g;
+const RESOURCE_TAG = /<(script|link|img|iframe)\b([^>]*)>/gi;
+
+/** One attribute: bare, or double-, single- or un-quoted. */
+const ATTRIBUTE = /([a-zA-Z_:][-\w:.]*)(?:\s*=\s*("[^"]*"|'[^']*'|[^\s"'`=<>]+))?/g;
+
+/**
+ * A tag's attributes, by lowercased name.
+ *
+ * Order and quote style are the whole point of parsing rather than matching. The
+ * regex this replaced required `rel` before `href` and double quotes on both, so
+ * `<link href="https://fonts.example/x.css" rel="stylesheet">` — which is what
+ * VitePress emits for a `head` entry whose object happens to put `href` first —
+ * walked straight past the guard and failed in the browser instead.
+ */
+function attributes(raw: string): Map<string, string> {
+  const attrs = new Map<string, string>();
+  for (const match of raw.matchAll(ATTRIBUTE)) {
+    const name = (match[1] ?? '').toLowerCase();
+    const value = match[2] ?? '';
+    const unquoted = /^["']/.test(value) ? value.slice(1, -1) : value;
+    // First wins, as a browser does with a repeated attribute.
+    if (name && !attrs.has(name)) attrs.set(name, unquoted);
+  }
+  return attrs;
+}
+
+/** The `rel` values that make a `<link href>` a fetch rather than a hint or a link. */
+const FETCHING_RELS = new Set(['stylesheet', 'preload', 'modulepreload']);
+
+/**
+ * Every absolute http(s) subresource the HTML loads.
+ *
+ * Exported for the test: the parsing is the part with the sharp edge, and driving
+ * it through a built site would only prove the cases that site happens to contain.
+ */
+export function externalResourceUrls(html: string): string[] {
+  const urls: string[] = [];
+  for (const match of html.matchAll(RESOURCE_TAG)) {
+    const tag = (match[1] ?? '').toLowerCase();
+    const attrs = attributes(match[2] ?? '');
+    const url =
+      tag === 'link'
+        ? (attrs.get('rel') ?? '')
+            .toLowerCase()
+            .split(/\s+/)
+            .some((rel) => FETCHING_RELS.has(rel))
+          ? attrs.get('href')
+          : undefined
+        : attrs.get('src');
+    // A relative or `data:` URL is same-origin or already named in the policy;
+    // only another origin can be the thing the CSP has not been told about.
+    if (url && /^https?:\/\//i.test(url)) urls.push(url);
+  }
+  return urls;
+}
 
 /**
  * Refuse to emit a policy the built site already violates.
@@ -126,8 +179,8 @@ export function assertNoUnallowedOrigins(outDir: string, allowed: readonly strin
   const permitted = new Set(allowed.map((o) => new URL(o).origin));
   const offenders = new Map<string, string>();
   for (const file of htmlFiles(outDir)) {
-    for (const [, url] of readFileSync(file, 'utf8').matchAll(EXTERNAL_RESOURCE)) {
-      const origin = new URL(url as string).origin;
+    for (const url of externalResourceUrls(readFileSync(file, 'utf8'))) {
+      const origin = new URL(url).origin;
       if (!permitted.has(origin)) offenders.set(origin, file);
     }
   }
