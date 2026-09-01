@@ -10,7 +10,13 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertNoUnallowedOrigins, csp, externalResourceUrls } from '../.vitepress/headers.mts';
+import { fileURLToPath } from 'node:url';
+import {
+  assertNoUnallowedOrigins,
+  csp,
+  externalResourceUrls,
+  widgetDeskOrigins,
+} from '../.vitepress/headers.mts';
 
 const FONT = 'https://fonts.example/style.css';
 
@@ -107,7 +113,7 @@ describe('assertNoUnallowedOrigins', () => {
 
 describe('csp', () => {
   it('names the widget origin in both the directives that have to agree', () => {
-    const policy = csp(["'sha256-abc'"], 'https://ticket0.example');
+    const policy = csp(["'sha256-abc'"], ['https://ticket0.example']);
     expect(policy).toContain(`script-src 'self' 'sha256-abc' https://ticket0.example`);
     expect(policy).toContain(`connect-src 'self' https://ticket0.example`);
   });
@@ -116,5 +122,50 @@ describe('csp', () => {
     const policy = csp(["'sha256-abc'"]);
     expect(policy).toContain(`script-src 'self' 'sha256-abc';`);
     expect(policy).toContain(`connect-src 'self';`);
+  });
+});
+
+/**
+ * The widget a page mounts itself.
+ *
+ * This is the case the built site cannot show: the component appends the `<script>` from
+ * JavaScript, so the origin guard sees nothing, the build is green, and the browser is
+ * the first thing to notice — on production, where the header is real.
+ */
+describe('widgetDeskOrigins', () => {
+  function pages(...markdown: string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'docs-widget-'));
+    mkdirSync(join(dir, 'guide'), { recursive: true });
+    markdown.forEach((md, i) => writeFileSync(join(dir, 'guide', `p${i}.md`), md));
+    return dir;
+  }
+
+  it('reads the desk out of a mounted component', () => {
+    const dir = pages('# Support\n\n<Ticket0Widget desk="https://ticket0.example" />\n');
+    expect(widgetDeskOrigins(dir)).toEqual(['https://ticket0.example']);
+  });
+
+  it('reduces a desk to its origin and reports each one once', () => {
+    const dir = pages(
+      `<Ticket0Widget desk="https://ticket0.example/" />`,
+      `<Ticket0Widget class="x" desk='https://ticket0.example' />`,
+      `<Ticket0Widget desk="https://other.example" />`,
+    );
+    expect(widgetDeskOrigins(dir)).toEqual(['https://other.example', 'https://ticket0.example']);
+  });
+
+  it('finds nothing in pages that mount nothing', () => {
+    expect(widgetDeskOrigins(pages('# Just prose'))).toEqual([]);
+  });
+
+  // The regression itself: the desk the checked-in support page mounts has to end up in
+  // the policy with the site-wide flag unset, which is how production builds.
+  it('puts every desk the docs mount into the policy', () => {
+    const docs = fileURLToPath(new URL('..', import.meta.url));
+    const desks = widgetDeskOrigins(docs);
+    expect(desks).toContain('https://ticket0.substrat.net');
+    const policy = csp([], desks);
+    expect(policy).toContain(`script-src 'self' ${desks.join(' ')}`);
+    expect(policy).toContain(`connect-src 'self' ${desks.join(' ')}`);
   });
 });
