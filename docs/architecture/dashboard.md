@@ -119,10 +119,12 @@ own scope before any of this runs.
 What move 2 claims beyond that is **not** what the code does today, in two ways:
 
 - **The credential is fleet-wide, so the server does not enforce the narrowing.** The Dashboard
-  authenticates to the shared control plane with `SERVICE_TOKEN`, and
-  `packages/control-plane-api/src/api.ts` resolves any accepted service or staff credential to
-  the same `kind: 'staff'` principal — one with reach over every tenant. The control plane is
-  never told which tenant a call is on behalf of, so it cannot refuse one that names another.
+  authenticates to the shared control plane with `SERVICE_TOKEN`, which
+  `packages/control-plane-api/src/api.ts` turns into a `kind: 'staff'` principal — the same class,
+  and the same reach over every tenant, that a Substrat operator's SSO session gets. (Only the
+  *actor* differs: a staff session names the human it authenticated, one per row of the D1
+  roster, whereas every service-token call is the single fixed `SERVICE_ACTOR`.) The control plane
+  is never told which tenant a call is on behalf of, so it cannot refuse one that names another.
   "Cross-tenant is impossible by construction" therefore holds only as far as
   `apps/dashboard/src/worker.ts` — the same process that holds the token. It is a client-side
   narrowing, and a bug in the Dashboard is a cross-tenant bug rather than a 403.
