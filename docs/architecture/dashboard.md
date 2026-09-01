@@ -6,8 +6,10 @@ description: The tenant-facing self-service surface. apps/dashboard.
 
 # The Dashboard — the tenant-facing self-service surface
 
-**Status:** **built** — `apps/dashboard`. Sibling to [control-plane.md](control-plane.md) (the operator
-console) and [kernel-design.md](kernel-design.md) (tenancy, permissions, provisioning). The prompt:
+**Status:** **built** — `apps/dashboard`. One half of §4's authority model is enforced in the
+caller rather than by the control plane (#977); §4 says exactly where. Sibling to
+[control-plane.md](control-plane.md) (the operator console) and
+[kernel-design.md](kernel-design.md) (tenancy, permissions, provisioning). The prompt:
 *"Vercel, but for Substrat."*
 
 ## 1. What it is, and why it is not the console
@@ -97,15 +99,46 @@ The Dashboard-as-a-vertical gives it the right shape, in two moves the kernel al
 2. **Effect through a platform authority narrowed to the tenant — a privileged seam.** The
    underlying `HostAdmin` call is made by the Dashboard as **host code**, with a platform actor
    **fixed to the caller's own tenant** (read from the dashboard scope's node). The tenant is not
-   an argument the customer supplies; it is ambient, so *cross-tenant is impossible by
-   construction* — the same move the #97 connector-authority seam makes ("authority is inherited,
-   not re-declared"). Every effected action lands on the audit spine attributed to the customer's
-   principal, not to a shared operator.
+   an argument the customer supplies; it is ambient — the same move the #97 connector-authority
+   seam makes ("authority is inherited, not re-declared") — and every effected action lands on
+   the audit spine attributed to the customer's own principal, not to a shared operator.
 
 So "a tenant-admin manages only their tenant" is **not** a new check bolted onto the control-plane
 API. It is: the kernel's permission model deciding *can they*, and a **tenant-narrowed platform
 actor** deciding *where* — the two halves the kernel already enforces for every scope operation and
 every connection.
+
+### Move 1 is built; move 2 is enforced in the caller (#977)
+
+The seam exists and has the right shape. `TenantNarrowedControlPlane`
+(`apps/dashboard/src/authority.ts`) takes `tenantId` as a **constructor** argument, fixed from the
+caller's session, and no method on it accepts one — so Dashboard operation code physically cannot
+name another tenant. Move 1 is likewise real: an operation checks its permission in the customer's
+own scope before any of this runs.
+
+What move 2 claims beyond that is **not** what the code does today, in two ways:
+
+- **The credential is fleet-wide, so the server does not enforce the narrowing.** The Dashboard
+  authenticates to the shared control plane with `SERVICE_TOKEN`, and
+  `packages/control-plane-api/src/api.ts` resolves any accepted service or staff credential to
+  the same `kind: 'staff'` principal — one with reach over every tenant. The control plane is
+  never told which tenant a call is on behalf of, so it cannot refuse one that names another.
+  "Cross-tenant is impossible by construction" therefore holds only as far as
+  `apps/dashboard/src/worker.ts` — the same process that holds the token. It is a client-side
+  narrowing, and a bug in the Dashboard is a cross-tenant bug rather than a 403.
+- **The audit row names the machine, not the customer.** Writes are stamped with the fixed
+  `SERVICE_ACTOR` (`apps/control-plane/src/worker.ts`), so the admin log records *the Dashboard
+  did this*, not *this customer's admin did this*. The `x-platform-actor` header the client sends
+  alongside the token is read only under `ALLOW_DEV_ACTOR` — local dev and tests — and is ignored
+  on a real deploy.
+
+**What closes it: a tenant-scoped credential class on the control-plane side** (#977). The shape
+already exists next door: `packages/control-plane-api/src/push-token.ts` mints a **tenant-scoped**
+CI credential that resolves to a `kind: 'builder'` principal carrying its own `tenantId`, and the
+API's route allowlist plus its per-route ownership checks then enforce the narrowing server-side.
+The Dashboard's on-behalf-of calls want the same treatment, with the customer's principal carried
+far enough that the audit row can name it. Until that lands, read move 2 above as the target, not
+as a property of the deployed system.
 
 ### The privileged seam, concretely
 
@@ -117,7 +150,8 @@ to the dashboard scope's tenant and refuses any argument that names another. Opt
 lives (an open question, §6): a dedicated host capability the Dashboard deployment is granted, or a
 "control-plane connector" reusing the connector seam's egress + authority machinery. Either way the
 safety rests on three things already true elsewhere: the permission check runs first, the tenant is
-ambient not supplied, and the action is audited.
+ambient not supplied, and the action is audited — subject to the two qualifications above, since
+today the second is enforced by the caller and the third names `SERVICE_ACTOR`.
 
 This also settles the recursion cleanly: the Dashboard vertical is *deployed once* (like Meridian),
 and each customer runs a *scope* of it. The bootstrap (creating the customer's tenant + first
