@@ -52,10 +52,10 @@ Details: [Domain model & invariants](./model).
   vertical's. The engine validates fills against the pinned template shape; it authors no
   templates.
 - **Talk to external signature providers** — the engine emits a request and a connector
-  dispatches it; it imports no vendor SDK and makes no network call. Note the *inbound* half
-  (webhook ingress, and an authority seam letting a non-principal callback invoke an
-  operation) is **not built** — see [#96](https://github.com/substrat-run/substrat/issues/96)
-  and [#97](https://github.com/substrat-run/substrat/issues/97).
+  dispatches it; it imports no vendor SDK and makes no network call. The *inbound* half
+  (ingress, and an authority seam letting a non-principal callback invoke an operation) is
+  built and lives outside this engine too — see
+  [the connector seam](/connectors/#the-seam-a-connector-plugs-into).
 - **Render or reconcile a document** — a `document` instance holds a ref and a hash, never
   bytes, and recomputing that hash from your own rows is your obligation, not the engine's.
 - **Branching/conditional templates, scheduled instantiation, PDF rendering, a photo

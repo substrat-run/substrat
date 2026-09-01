@@ -3,7 +3,7 @@
 Turns a signature request from the [protocol engine](/engines/protocol/) into a real signing
 flow at **Scrive**, authenticated with Swedish **BankID**.
 
-::: warning Published (0.13.8), with two honest caveats a consumer must own
+::: warning Published, with two honest caveats a consumer must own
 Both halves work and it now ships as a public package: a request becomes a started Scrive document
 (**outbound**, verified against `api-testbed.scrive.com`), and a completed signature is recorded
 back into the scope (**inbound**, via `reconcileScriveDispatch` on the [authority seam](/connectors/#the-seam-a-connector-plugs-into)).
@@ -22,8 +22,8 @@ unverified. See [What's missing](#what-s-missing).
 |---|---|
 | **Provider** | Scrive eSign, `se_bankid` authentication-to-sign |
 | **Category** | E-signing & identity |
-| **Status** | Published `0.13.8` — both halves built (outbound + return path + poll driver); two caveats: the vertical must schedule the poll, and BankID is off on the testbed |
-| **Package** | `@substrat-run/connector-scrive` (published, `0.13.8`, public) |
+| **Status** | Published — both halves built (outbound + return path + poll driver); two caveats: the vertical must schedule the poll, and BankID is off on the testbed |
+| **Package** | [`@substrat-run/connector-scrive`](https://www.npmjs.com/package/@substrat-run/connector-scrive) — public, `0.x`; npm carries the current version |
 | **Consumes** | `protocol.signatures-requested` |
 | **Registered with** | `registerConnector('scrive', 'protocol.signatures-requested', …)` |
 
