@@ -39,6 +39,10 @@ export const conformance = declareEntityChecks({
       model: 'conformance/none',
       error: 'The conformance kit could not run the assistant',
     },
+    // Names a turn that does not exist, and that is enough: what this pair proves is
+    // the ENTITY check, which runs before the row is looked up. The not-found that
+    // follows is not a denial, and the kit reads it as one it may ignore.
+    'ticket0/mark-turn-sent': { turnId: 'conformance-turn-sent' },
     'ticket0/record-answer': {
       turnId: 'conformance-turn',
       model: 'conformance/none',

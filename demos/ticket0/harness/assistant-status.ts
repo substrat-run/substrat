@@ -33,12 +33,24 @@ export interface AssistantStatus {
     since: string;
     turns: number;
     failed: number;
+    /** Written and not sent. A supervised desk produces nothing else. */
+    drafted: number;
+    /** The desk answers through the supervised principal: it drafts, a person sends. */
+    supervised: boolean;
     recent: {
       id: string;
       conversation_id: string;
       subject: string;
       model: string;
       error: string | null;
+      created_at: string;
+    }[];
+    /** The newest drafted answers, so a panel can send somebody to them. */
+    waiting: {
+      id: string;
+      conversation_id: string;
+      subject: string;
+      model: string;
       created_at: string;
     }[];
   };

@@ -192,6 +192,7 @@ export interface DeskSettings {
   allowed_origins: string;
   verification_secret: string;
   business_hours: string | null;
+  assistant_autonomous: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -275,7 +276,14 @@ export interface Ticket0Client {
    *
    * `GET /assistant/health` — `ticket0/assistant-health`
    */
-  assistantHealth(): Promise<{ since: string; turns: number; failed: number; recent: ({ id: string; conversation_id: string; subject: string; model: string; error: string | null; created_at: string })[] }>;
+  assistantHealth(): Promise<{ since: string; turns: number; failed: number; drafted: number; supervised: boolean; recent: ({ id: string; conversation_id: string; subject: string; model: string; error: string | null; created_at: string })[]; waiting: { id: string; conversation_id: string; subject: string; model: string; created_at: string }[] }>;
+
+  /**
+   * Whether this desk’s assistant sends its own answers
+   *
+   * `GET /widget/assistant-mode` — `ticket0/assistant-mode`
+   */
+  assistantMode(): Promise<{ autonomous: boolean }>;
 
   /**
    * Close a resolved conversation for good
@@ -296,7 +304,7 @@ export interface Ticket0Client {
    *
    * `PATCH /desk` — `ticket0/configure-desk`
    */
-  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; created_at: string; updated_at: string }>;
+  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; created_at: string; updated_at: string }>;
 
   /**
    * Save a canned answer
@@ -342,7 +350,7 @@ export interface Ticket0Client {
    *
    * `GET /desk` — `ticket0/get-desk`
    */
-  getDesk(): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; created_at: string; updated_at: string }>;
+  getDesk(): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; created_at: string; updated_at: string }>;
 
   /**
    * One canned answer
@@ -452,6 +460,13 @@ export interface Ticket0Client {
    * `POST /me/notifications/{notificationId}/read` — `ticket0/mark-notification-read`
    */
   markNotificationRead(input: { notificationId: string }): Promise<Notification>;
+
+  /**
+   * Record that a drafted turn was sent to the customer
+   *
+   * `POST /conversations/{conversationId}/answers/{turnId}/sent` — `ticket0/mark-turn-sent`
+   */
+  markTurnSent(input: { conversationId: string; turnId: string }): Promise<AiTurn>;
 
   /**
    * Merge this conversation into another
@@ -865,6 +880,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/assignee`, "POST", omit(input, ["conversationId"]), undefined),
     assistantHealth: () =>
       send("/assistant/health", "GET", undefined, undefined),
+    assistantMode: () =>
+      send("/widget/assistant-mode", "GET", undefined, undefined),
     close: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/close`, "POST", omit(input, ["conversationId"]), undefined),
     closeUsagePeriod: (input: Args) =>
@@ -909,6 +926,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/turns`, "GET", undefined, omit(input, ["conversationId"])),
     markNotificationRead: (input: Args) =>
       send(`/me/notifications/${encodeURIComponent(String(input.notificationId))}/read`, "POST", omit(input, ["notificationId"]), undefined),
+    markTurnSent: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/answers/${encodeURIComponent(String(input.turnId))}/sent`, "POST", omit(input, ["conversationId","turnId"]), undefined),
     merge: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/merge`, "POST", omit(input, ["conversationId"]), undefined),
     myConversations: () =>

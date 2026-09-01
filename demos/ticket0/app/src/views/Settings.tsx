@@ -1167,19 +1167,51 @@ function Knowledge() {
  * And a turn that failed was, until its reason was recorded, a note that said "I
  * could not answer this one" and nothing else. This shows the model, says plainly
  * when it is not one, and lists the newest failures by conversation.
+ *
+ * It also answers the question that used to be unanswerable here: WHO SENDS. A
+ * supervised desk drafts every answer and waits for a person, which is not a failure
+ * and so appeared nowhere — the panel counted failures, found none, and called a desk
+ * that had answered nobody in days healthy. The drafted count and the toggle below are
+ * that hole closed.
  */
 function Assistant({ go }: { go: (v: View) => void }) {
   const [status, setStatus] = useState<AssistantStatus | null>(null);
   const [loadFailed, setLoadFailed] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveFailed, setSaveFailed] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = () =>
     assistantStatus()
       .then((s) => {
         setStatus(s);
         setLoadFailed(null);
       })
       .catch((e: Error) => setLoadFailed(e.message));
+
+  useEffect(() => {
+    void load();
+    // Once, on open — the toggle re-reads for itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  /**
+   * Hand the assistant the autonomous role, or take it back.
+   *
+   * Re-reads rather than assuming: what this changes is which PRINCIPAL answers, and
+   * the answer to "did that take" is the desk's, not this component's.
+   */
+  const setAutonomous = async (autonomous: boolean) => {
+    setSaving(true);
+    setSaveFailed(null);
+    try {
+      await api.configureDesk({ assistantAutonomous: autonomous });
+      await load();
+    } catch (e) {
+      setSaveFailed((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   if (!status) {
     return loadFailed ? (
@@ -1253,6 +1285,91 @@ function Assistant({ go }: { go: (v: View) => void }) {
         )}
       </div>
 
+      <div className="card" style={{ padding: '14px 16px', marginBottom: 14 }}>
+        <div className="micro" style={{ marginBottom: 6 }}>
+          Who sends
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Dot color={health.supervised ? '#c98a1a' : 'var(--green)'} />
+          <span style={{ font: "500 13px 'Geist', sans-serif" }}>
+            {health.supervised ? 'Supervised — a person sends' : 'The assistant answers directly'}
+          </span>
+          <button
+            onClick={() => void setAutonomous(health.supervised)}
+            disabled={saving}
+            style={{
+              marginLeft: 'auto',
+              padding: '5px 11px',
+              borderRadius: 6,
+              border: '1px solid var(--hairline-2)',
+              background: 'transparent',
+              cursor: saving ? 'default' : 'pointer',
+              font: "500 12px 'Geist', sans-serif",
+              opacity: saving ? 0.5 : 1,
+            }}
+          >
+            {health.supervised ? 'Let it answer' : 'Put it back under review'}
+          </button>
+        </div>
+        <div className="t-small" style={{ marginTop: 8, color: 'var(--text-secondary)' }}>
+          {health.supervised ? (
+            <>
+              The assistant writes an answer and stops. Nothing reaches a customer until
+              somebody opens the conversation and sends it — so an unattended desk answers
+              nobody, however well the model is working.
+            </>
+          ) : (
+            <>
+              The assistant replies to customers on its own, without anyone reading it first.
+              Its answers are still recorded, cited and metered like any other.
+            </>
+          )}
+        </div>
+        {saveFailed ? (
+          <div className="t-small" style={{ marginTop: 8, color: 'var(--danger-3)' }}>
+            {saveFailed}
+          </div>
+        ) : null}
+      </div>
+
+      {health.supervised && health.waiting.length > 0 ? (
+        <div
+          style={{
+            padding: '10px 12px',
+            marginBottom: 14,
+            background: 'var(--warn-bg, var(--danger-bg))',
+            border: '1px solid var(--hairline-2)',
+            borderRadius: 6,
+            font: "400 12px/1.55 'Geist', sans-serif",
+          }}
+        >
+          <strong>
+            {health.drafted} answer{health.drafted === 1 ? '' : 's'} waiting for a person.
+          </strong>{' '}
+          The assistant has written {health.drafted === 1 ? 'it' : 'them'} and cannot send{' '}
+          {health.drafted === 1 ? 'it' : 'them'}.
+          <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {health.waiting.map((w) => (
+              <button
+                key={w.id}
+                onClick={() => go({ name: 'conversation', id: w.conversation_id })}
+                style={{
+                  border: 0,
+                  background: 'transparent',
+                  padding: 0,
+                  cursor: 'pointer',
+                  font: "500 12px 'Geist', sans-serif",
+                  color: 'var(--accent-text)',
+                  textAlign: 'left',
+                }}
+              >
+                {w.subject || 'Untitled conversation'} · {ago(w.created_at)}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       <div className="card" style={{ overflow: 'hidden' }}>
         <div
           style={{
@@ -1266,6 +1383,13 @@ function Assistant({ go }: { go: (v: View) => void }) {
           <span className="micro">Last 24 hours</span>
           <span className="t-small">
             {health.turns} turn{health.turns === 1 ? '' : 's'} ·{' '}
+            {/* Drafted sits between the two on purpose: it is neither a success the
+                customer saw nor an error, and leaving it out is what made a desk that
+                sent nothing look identical to one that had nothing to send. */}
+            <span style={{ color: health.drafted > 0 ? '#c98a1a' : undefined }}>
+              {health.drafted} drafted
+            </span>{' '}
+            ·{' '}
             <span style={{ color: health.failed > 0 ? 'var(--danger-3)' : undefined }}>
               {health.failed} failed
             </span>
@@ -1273,8 +1397,9 @@ function Assistant({ go }: { go: (v: View) => void }) {
         </div>
         {health.recent.length === 0 ? (
           <div className="t-meta" style={{ padding: '18px 16px' }}>
-            No failed turns. Every message the assistant was asked to answer got a turn
-            recorded — answered, drafted, or escalated to a person.
+            {health.drafted > 0
+              ? 'No failed turns — but see above: the answers this desk wrote are waiting for a person, not with the customers who asked.'
+              : 'No failed turns. Every message the assistant was asked to answer got a turn recorded — answered, drafted, or escalated to a person.'}
           </div>
         ) : (
           health.recent.map((f) => (

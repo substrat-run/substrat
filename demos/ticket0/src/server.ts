@@ -296,7 +296,18 @@ async function answerFor(
   };
   const chosen = modelFor({ spec: process.env.TICKET0_MODEL, host: modelHost, attribution });
   try {
-    const assistant = await host.getScope(desk.assistant.principal, desk.tenant, desk.scope);
+    /**
+     * WHICH assistant answers — read from the desk, exactly as the worker reads it, so
+     * Settings → Assistant means the same thing on both hosts. The seed sets it
+     * (Substrat's desk autonomous, Kestrel's supervised); the toggle changes it; the
+     * kernel is what enforces it, since the two principals hold different keys.
+     */
+    const widget = await host.getScope(desk.widget.principal, desk.tenant, desk.scope);
+    const { autonomous } = (await widget.invoke('ticket0/assistant-mode', {})) as {
+      autonomous: boolean;
+    };
+    const who = autonomous ? desk.assistantAutonomous : desk.assistant;
+    const assistant = await host.getScope(who.principal, desk.tenant, desk.scope);
     const outcome = await answerConversation(
       { invoke: (op, input) => assistant.invoke(op, input) as Promise<never> },
       { conversationId: m.conversationId, messageId: m.messageId, question: m.body },

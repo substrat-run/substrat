@@ -238,4 +238,11 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_ai_turns ADD COLUMN error TEXT;
     `,
   },
+  {
+    // add-ticket0_desk_settings-assistant_autonomous
+    version: '0005',
+    sql: `
+      ALTER TABLE ticket0_desk_settings ADD COLUMN assistant_autonomous INTEGER;
+    `,
+  },
 ];

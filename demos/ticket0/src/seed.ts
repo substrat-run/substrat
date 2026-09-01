@@ -38,7 +38,15 @@ export interface Desk {
   readonly scope: ReturnType<typeof scopeId.parse>;
   readonly admin: Person;
   readonly agent: Person;
+  /** The supervised assistant: writes an answer, cannot send it. */
   readonly assistant: Person;
+  /**
+   * The same assistant trusted to send — a SECOND principal, not the first one
+   * promoted, because a role tuple cannot be taken back (#1161) and a desk has to be
+   * able to change its mind. Which of the two answers is `assistant_autonomous` on the
+   * desk, exactly as on the hosted worker.
+   */
+  readonly assistantAutonomous: Person;
   readonly customer: Person;
   readonly relay: Person;
   /** The principal the embedded widget runs as. Holds one key and nothing else. */
@@ -114,11 +122,16 @@ interface DeskSpec {
   readonly fromAddress: string;
   readonly docsUrl: string;
   readonly docsLabel: string;
-  /** Which assistant role this desk hands its AI. The entire policy difference. */
+  /**
+   * Which assistant this desk lets answer. The entire policy difference — and now a
+   * SETTING rather than a role assignment, so the demo's two desks differ in the same
+   * way a hosted desk differs from itself before and after an admin decides.
+   */
   readonly assistantRole: 'assistant' | 'assistant-autonomous';
   readonly admin: Person;
   readonly agent: Person;
   readonly assistant: Person;
+  readonly assistantAutonomous: Person;
   readonly customer: Person;
   readonly relay: Person;
   readonly widget: Person;
@@ -255,8 +268,11 @@ async function seedDesk(
 
   await assign(spec.admin, 'desk-admin');
   await assign(spec.agent, 'agent');
-  // The one line that decides whether this desk's AI talks to customers.
-  await assign(spec.assistant, spec.assistantRole);
+  // BOTH assistants exist on every desk, each holding exactly its own role. Which one
+  // answers is the desk's `assistant_autonomous` setting, below — the same shape the
+  // hosted worker provisions, so the toggle means the same thing on both hosts.
+  await assign(spec.assistant, 'assistant');
+  await assign(spec.assistantAutonomous, 'assistant-autonomous');
   await assign(spec.customer, 'customer');
   await assign(spec.relay, 'relay');
   await assign(spec.widget, 'widget');
@@ -272,6 +288,8 @@ async function seedDesk(
     // Both: the canonical site, and the demo's stand-in for it. An origin the desk
     // has not listed is refused at the door, which is what the demo shows.
     allowedOrigins: [spec.origin, ...spec.devOrigins],
+    // The one line that decides whether this desk's AI talks to customers.
+    assistantAutonomous: spec.assistantRole === 'assistant-autonomous',
   });
 
   // Prices, so the cost view has something to render. Per token, which is why they
@@ -319,12 +337,17 @@ async function seedDesk(
     avatarUrl: null,
     signature: `${spec.agent.name}\n${spec.name} Support`,
   });
-  const assistantStub = await host.getScope(spec.assistant.principal, tenant, scope);
-  await assistantStub.invoke('ticket0/set-agent-profile', {
-    displayName: ASSISTANT_NAME,
-    avatarUrl: null,
-    signature: null,
-  });
+  // Both assistant principals, under one name: which of them a desk answers as is a
+  // policy decision, and a byline that changed with it would leak the setting into
+  // every customer's thread.
+  for (const who of [spec.assistant, spec.assistantAutonomous]) {
+    const assistantStub = await host.getScope(who.principal, tenant, scope);
+    await assistantStub.invoke('ticket0/set-agent-profile', {
+      displayName: ASSISTANT_NAME,
+      avatarUrl: null,
+      signature: null,
+    });
+  }
 
   // --- The customer appears, vouched for by their own site -------------------
   // Opened by the WIDGET service, the way an embedded chat would: the customer's own
@@ -399,6 +422,7 @@ async function seedDesk(
     admin: spec.admin,
     agent: spec.agent,
     assistant: spec.assistant,
+    assistantAutonomous: spec.assistantAutonomous,
     customer: spec.customer,
     relay: spec.relay,
     widget: spec.widget,
@@ -626,6 +650,7 @@ export async function seed(host: ScopeHost): Promise<World> {
     admin: person('Markus', 'markus@substrat.example'),
     agent: person('Anna', 'anna@substrat.example'),
     assistant: person(ASSISTANT_NAME, 'assistant@substrat.example'),
+    assistantAutonomous: person(ASSISTANT_NAME, 'assistant-autonomous@substrat.example'),
     customer: person('Priya', 'priya@customer.example'),
     relay: person('Email relay', 'relay@substrat.example'),
     widget: person('Widget service', 'widget@substrat.example'),
@@ -650,6 +675,7 @@ export async function seed(host: ScopeHost): Promise<World> {
     admin: person('Dana', 'dana@kestrel.example'),
     agent: person('Omar', 'omar@kestrel.example'),
     assistant: person(ASSISTANT_NAME, 'assistant@kestrel.example'),
+    assistantAutonomous: person(ASSISTANT_NAME, 'assistant-autonomous@kestrel.example'),
     customer: person('Tomas', 'tomas@othercustomer.example'),
     relay: person('Email relay', 'relay@kestrel.example'),
     widget: person('Widget service', 'widget@kestrel.example'),

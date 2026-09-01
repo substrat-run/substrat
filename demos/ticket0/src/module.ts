@@ -233,9 +233,12 @@ function desk(ctx: OperationContext): DeskRow {
   const now = ctx.now();
   ctx.sql.exec(
     `INSERT INTO ticket0_desk_settings
-       (id, from_address, greeting, allowed_origins, verification_secret, business_hours, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [DESK, 'support@example.com', 'Hi - how can we help?', '[]', ulid(), null, now, now],
+       (id, from_address, greeting, allowed_origins, verification_secret, business_hours,
+        assistant_autonomous, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    // Supervised, written down rather than left null: a new desk HAS decided, and the
+    // decision is the conservative one.
+    [DESK, 'support@example.com', 'Hi - how can we help?', '[]', ulid(), null, 0, now, now],
   );
   return ctx.sql.query<DeskRow>('SELECT * FROM ticket0_desk_settings WHERE id = ?', [DESK])[0]!;
 }
@@ -523,6 +526,22 @@ function originsOf(urls: string[]): string[] {
 function allowedOrigins(ctx: OperationContext): string[] {
   const parsed = JSON.parse(desk(ctx).allowed_origins) as unknown;
   return Array.isArray(parsed) ? parsed.filter((o): o is string => typeof o === 'string') : [];
+}
+
+/**
+ * Has this desk said its assistant may answer customers directly?
+ *
+ * Only an explicit 1 counts. Null is a desk that has never decided — the column
+ * arrived after the table shipped — and anything else is a value nobody wrote on
+ * purpose; both read as supervised, because the safe answer to "may a machine talk
+ * to my customers unattended" is the one you have to opt into.
+ *
+ * This decides which PRINCIPAL the host answers as. It is not itself the enforcement:
+ * flip it with no `assistant-autonomous` principal minted and the desk still cannot
+ * send, because the permission lives on the principal and not on this row.
+ */
+function isAutonomous(ctx: OperationContext): boolean {
+  return desk(ctx).assistant_autonomous === 1;
 }
 
 /**
@@ -938,13 +957,21 @@ const operations = {
     const current = desk(ctx);
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
-          SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?, updated_at = ?
+          SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?,
+              assistant_autonomous = ?, updated_at = ?
         WHERE id = ?`,
       [
         input.fromAddress ?? current.from_address,
         input.greeting ?? current.greeting,
         input.allowedOrigins ? JSON.stringify(originsOf(input.allowedOrigins)) : current.allowed_origins,
         input.businessHours === undefined ? current.business_hours : input.businessHours,
+        // Stored as 0/1 rather than left null once decided, so "supervised" is a
+        // choice on the row and not merely the absence of one.
+        input.assistantAutonomous === undefined
+          ? current.assistant_autonomous
+          : input.assistantAutonomous
+            ? 1
+            : 0,
         ctx.now(),
         DESK,
       ],
@@ -955,7 +982,12 @@ const operations = {
       schemaVersion: 1,
       entity: { entityType: 'deskSettings', entityId: row.id },
       piiClass: 'none',
-      payload: { id: row.id, from_address: row.from_address, allowed_origins: row.allowed_origins },
+      payload: {
+        id: row.id,
+        from_address: row.from_address,
+        allowed_origins: row.allowed_origins,
+        assistant_autonomous: row.assistant_autonomous,
+      },
     });
     return publicDesk(row);
   },
@@ -2059,6 +2091,27 @@ const operations = {
     return row;
   },
 
+  'ticket0/mark-turn-sent': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationReplyPublic, conversationRef(input.conversationId)),
+    );
+    conversationOrThrow(ctx, input.conversationId);
+    const turn = ctx.sql.query<AiTurnRow>(
+      'SELECT * FROM ticket0_ai_turns WHERE id = ? AND conversation_id = ?',
+      [input.turnId, input.conversationId],
+    )[0];
+    if (!turn) throw substratError('not_found', `turn not found: ${input.turnId}`);
+    /**
+     * Only a DRAFT becomes an answer. An `escalated` or `failed` turn stayed what it
+     * was for a reason, and an `answered` one is already there — so a retry writes
+     * nothing rather than writing it again.
+     */
+    if (turn.outcome === 'drafted') {
+      ctx.sql.exec("UPDATE ticket0_ai_turns SET outcome = 'answered' WHERE id = ?", [turn.id]);
+    }
+    return ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [turn.id])[0]!;
+  },
+
   /**
    * The assistant never got to run, and the widget — the principal that accepted the
    * message — writes that down. Same row shape as `record-answer`'s failure, minus
@@ -2126,9 +2179,10 @@ const operations = {
   'ticket0/assistant-health': async (ctx) => {
     assertAllowed(await ctx.check(T0_PERM.deskConfigure));
     const since = new Date(new Date(ctx.now()).getTime() - HEALTH_WINDOW_MS).toISOString();
-    const counts = ctx.sql.query<{ turns: number; failed: number | null }>(
+    const counts = ctx.sql.query<{ turns: number; failed: number | null; drafted: number | null }>(
       `SELECT COUNT(*) AS turns,
-              SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed
+              SUM(CASE WHEN outcome = 'failed' THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN outcome = 'drafted' THEN 1 ELSE 0 END) AS drafted
          FROM ticket0_ai_turns
         WHERE created_at >= ?`,
       [since],
@@ -2149,11 +2203,35 @@ const operations = {
         LIMIT ?`,
       [HEALTH_RECENT],
     );
+    /**
+     * The answers nobody has sent yet — the other half of "is the assistant working".
+     *
+     * Windowed like the counts rather than listed forever: a drafted turn from last
+     * month is a conversation somebody decided about, not a queue.
+     */
+    const waiting = ctx.sql.query<{
+      id: string;
+      conversation_id: string;
+      subject: string;
+      model: string;
+      created_at: string;
+    }>(
+      `SELECT t.id, t.conversation_id, c.subject, t.model, t.created_at
+         FROM ticket0_ai_turns t
+         JOIN ticket0_conversations c ON c.id = t.conversation_id
+        WHERE t.outcome = 'drafted' AND t.created_at >= ?
+        ORDER BY t.created_at DESC, t.id DESC
+        LIMIT ?`,
+      [since, HEALTH_RECENT],
+    );
     return {
       since,
       turns: counts?.turns ?? 0,
       failed: Number(counts?.failed ?? 0),
+      drafted: Number(counts?.drafted ?? 0),
+      supervised: !isAutonomous(ctx),
       recent,
+      waiting,
     };
   },
 
@@ -2562,6 +2640,11 @@ const operations = {
   'ticket0/widget-origins': async (ctx) => {
     assertAllowed(await ctx.check(T0_PERM.conversationWidget));
     return { origins: allowedOrigins(ctx) };
+  },
+
+  'ticket0/assistant-mode': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationWidget));
+    return { autonomous: isAutonomous(ctx) };
   },
 
   'ticket0/widget-start': async (ctx, input) => {

@@ -132,14 +132,25 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
 export const OWNER_ROLE_KEY = 'desk-admin';
 
 /**
- * The desk's three SERVICE principals — held by no human, minted once per scope when
- * the platform provisions it (`worker.ts`), and each holding exactly the keys its job
- * needs. `assistantRole` is deliberately absent: which of the two assistant roles a
- * desk hands its AI is the one policy decision this vertical makes out loud, so a
- * hosted desk starts SUPERVISED (`assistant` — drafts, never sends) and an admin
- * upgrades it deliberately rather than by default.
+ * The desk's SERVICE principals — held by no human, minted once per scope when the
+ * platform provisions it (`worker.ts`), and each holding exactly the keys its job needs.
+ *
+ * ## Why the assistant is here TWICE
+ *
+ * Which of the two assistant roles a desk hands its AI is the one policy decision this
+ * vertical makes out loud, and a desk must be able to change its mind. It cannot do
+ * that by moving one principal between roles: `assignScopeRole` writes a role tuple and
+ * the platform has nothing that takes one back (#1161), so an upgrade would be a
+ * one-way door — turn the assistant loose once and no admin could ever put it back
+ * under review.
+ *
+ * So both principals exist from provision, each genuinely holding what its role holds,
+ * and the desk's `assistant_autonomous` setting decides which one the HOST answers as.
+ * Flipping it either way is then a column write, and the kernel is still what decides
+ * whether an answer may reach a customer — `assistant` holds no `conversation:reply-public`
+ * and `assistant-autonomous` does. A desk that has never decided is supervised.
  */
-export const SERVICE_ROLES = ['widget', 'assistant', 'relay'] as const;
+export const SERVICE_ROLES = ['widget', 'assistant', 'assistant-autonomous', 'relay'] as const;
 export type ServiceRole = (typeof SERVICE_ROLES)[number];
 
 /**

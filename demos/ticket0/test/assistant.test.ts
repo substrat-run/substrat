@@ -40,7 +40,10 @@ let dir: string;
 let host: ScopeHost;
 let world: World;
 
-const at = (desk: Desk, role: 'admin' | 'agent' | 'assistant' | 'widget'): Promise<ScopeStub> =>
+const at = (
+  desk: Desk,
+  role: 'admin' | 'agent' | 'assistant' | 'assistantAutonomous' | 'widget',
+): Promise<ScopeStub> =>
   host.getScope(desk[role].principal, desk.tenant, desk.scope);
 
 /** A model that answers predictably, so the test is about the plumbing. */
@@ -357,7 +360,16 @@ describe('answering a customer', () => {
       body: question,
     })) as { id: string; conversation_id: string };
 
-    const assistant = await at(desk, 'assistant');
+    /**
+     * Pick the answering principal the way BOTH hosts pick it — the desk's own
+     * `assistant_autonomous` setting, read as the widget service. Hard-coding the
+     * supervised account here would have this test asserting something neither
+     * `worker.ts` nor `server.ts` does.
+     */
+    const { autonomous } = (await widget.invoke('ticket0/assistant-mode', {})) as {
+      autonomous: boolean;
+    };
+    const assistant = await at(desk, autonomous ? 'assistantAutonomous' : 'assistant');
     const outcome = await answerConversation(
       asTarget(assistant),
       {
@@ -382,11 +394,25 @@ describe('answering a customer', () => {
     const assistantMessages = conv.entries.filter((m) => m.author_kind === 'assistant');
     expect(assistantMessages.some((m) => m.visibility === 'internal')).toBe(true);
     expect(assistantMessages.some((m) => m.visibility === 'public')).toBe(true);
+
+    /**
+     * And the ROW says so.
+     *
+     * The turn is written `drafted` before the send and used to stay that way forever,
+     * so an answer the customer had already read still offered a "send this draft"
+     * card, counted as undelivered in the deflection report, and sat in the health
+     * panel's waiting list. The returned outcome was right; the stored one was not.
+     */
+    const turns = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-turns', {
+      conversationId: r.conversationId,
+    })) as Page<{ id: string; outcome: string }>;
+    expect(turns.entries.find((t) => t.id === r.turnId)?.outcome).toBe('answered');
   });
 
   /**
    * The pair. Same function, same model, same question — and the only difference in
-   * the whole system is which role Kestrel's assistant account holds.
+   * the whole system is which account the desk's setting sends the question to, and
+   * which keys THAT account holds.
    */
   it('Kestrel’s desk: the identical call drafts instead, and nothing goes out', async () => {
     const r = await ask(world.kestrel, 'How do I rotate an API key?');
@@ -514,7 +540,11 @@ describe('answering a customer', () => {
     // The assistant can write but cannot read: retrieval throws before any model runs.
     // Before this the throw left `answerConversation` — and the host's catch — holding
     // the only copy of the reason.
-    const assistant = await at(world.substrat, 'assistant');
+    //
+    // Substrat's desk is autonomous, so this is the principal it answers as — which is
+    // what lets the closing assertion hold: even the failure sentence goes out publicly
+    // here, where on a supervised desk it would wait with everything else.
+    const assistant = await at(world.substrat, 'assistantAutonomous');
     const halfBroken = {
       invoke: <T,>(op: string, input: unknown) =>
         op === 'ticket0/search-kb'
@@ -635,6 +665,67 @@ describe('answering a customer', () => {
     mountAssistantStatus(asAgent, async () => agent, () => fakeDescription);
     expect((await asAgent.request('/api/assistant/status')).status).toBe(403);
     await expect(agent.invoke('ticket0/assistant-health', {})).rejects.toThrow(/permission denied/i);
+  });
+
+  /**
+   * The regression this whole change exists for.
+   *
+   * A supervised desk answers nobody and fails nothing, so a health read that counts
+   * only failures calls it healthy — which is what a live desk did for days while every
+   * answer it wrote sat in an inbox. The counts have to distinguish "nothing went
+   * wrong" from "nothing went out".
+   */
+  it('a desk that drafts everything does not report itself healthy', async () => {
+    const dana = await at(world.kestrel, 'admin');
+    const before = (await dana.invoke('ticket0/assistant-health', {})) as {
+      drafted: number;
+      failed: number;
+      supervised: boolean;
+      waiting: { conversation_id: string; subject: string }[];
+    };
+    // Kestrel is the supervised desk, and it says so rather than leaving an admin to
+    // infer it from an absence.
+    expect(before.supervised).toBe(true);
+
+    const r = await ask(world.kestrel, 'How do I rotate an API key?');
+    expect(r.outcome).toBe('drafted');
+
+    const after = (await dana.invoke('ticket0/assistant-health', {})) as {
+      turns: number;
+      drafted: number;
+      failed: number;
+      supervised: boolean;
+      waiting: { conversation_id: string; subject: string }[];
+    };
+    expect(after.drafted).toBe(before.drafted + 1);
+    // The thing that went wrong: this stayed 0 while the customer got nothing.
+    expect(after.failed).toBe(before.failed);
+    expect(after.turns).toBeGreaterThanOrEqual(after.drafted);
+    // And the waiting answer is reachable, by conversation, so somebody can go send it.
+    expect(after.waiting.map((w) => w.conversation_id)).toContain(r.conversationId);
+    expect(after.waiting[0]?.subject).toBeTruthy();
+  });
+
+  /**
+   * The other side: an answer that WENT leaves nothing waiting.
+   *
+   * The desk still has drafted turns — the seed writes some, for the draft card, and a
+   * returning customer lands back on a thread that already carries one — so this
+   * asserts about the TURN it just answered rather than about a zero or a thread.
+   */
+  it('an autonomous desk reports itself unsupervised, and a sent answer waits for nobody', async () => {
+    const admin = await at(world.substrat, 'admin');
+    const r = await ask(world.substrat, 'How do I run a migration against a live scope?');
+    expect(r.outcome).toBe('answered');
+
+    const health = (await admin.invoke('ticket0/assistant-health', {})) as {
+      supervised: boolean;
+      waiting: { id: string }[];
+    };
+    expect(health.supervised).toBe(false);
+    // The turn is keyed by the message it answered, and an answered turn waits for
+    // nobody.
+    expect(health.waiting.map((w) => w.id)).not.toContain(r.turnId);
   });
 
   it('a reason is cut to what a turn will hold, and never empty', () => {
