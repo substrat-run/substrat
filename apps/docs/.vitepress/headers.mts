@@ -24,6 +24,18 @@
  * So the hashes are read back out of the HTML VitePress just wrote. Three
  * distinct scripts across 107 pages today; the count is derived, not assumed.
  *
+ * ## Why the mounted desks are read out of the markdown
+ *
+ * The site-wide embed is a `<script>` in `<head>`, so it is in the built HTML and the
+ * origin guard below sees it. The per-page form is not: `guide/support.md` mounts a
+ * `<Ticket0Widget desk="…">` component, and the component appends the `<script>` from
+ * JavaScript after the page has mounted. Nothing about that origin reaches the HTML,
+ * so a policy derived only from the build named `'self'` and the three hashes — and
+ * substrat.net blocked its own support widget while every build stayed green.
+ *
+ * So the desks are read out of the pages the site is built from, and every one of them
+ * is in the policy whether or not the site-wide flag is set.
+ *
  * ## What is deliberately loose
  *
  * `style-src` keeps `'unsafe-inline'`. Mermaid injects a `<style>` element per
@@ -40,14 +52,28 @@ import { join, resolve } from 'node:path';
 /** Inline `<script>` — one with a `src` is a fetch, governed by the origin list instead. */
 const INLINE_SCRIPT = /<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/g;
 
-function htmlFiles(dir: string): string[] {
+/**
+ * Every file under `dir` with the given suffix.
+ *
+ * `node_modules`, the build output and the dot-directories are skipped: the source walk
+ * runs over `apps/docs` itself, where descending into `node_modules` would read tens of
+ * thousands of files to find nothing.
+ */
+function filesWith(dir: string, suffix: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const path = join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...htmlFiles(path));
-    else if (entry.name.endsWith('.html')) out.push(path);
+    if (entry.isDirectory()) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist')
+        continue;
+      out.push(...filesWith(path, suffix));
+    } else if (entry.name.endsWith(suffix)) out.push(path);
   }
   return out;
+}
+
+function htmlFiles(dir: string): string[] {
+  return filesWith(dir, '.html');
 }
 
 /**
@@ -68,17 +94,38 @@ export function inlineScriptHashes(outDir: string): string[] {
   return [...hashes].sort();
 }
 
+/** A page mounting the widget itself: `<Ticket0Widget desk="https://ticket0.substrat.net" />`. */
+const WIDGET_MOUNT = /<Ticket0Widget\b[^>]*\bdesk\s*=\s*("[^"]*"|'[^']*')/g;
+
+/**
+ * Every desk a checked-in page mounts the support widget on.
+ *
+ * Read from the markdown rather than from the build because the tag compiles away: the
+ * component appends the `<script>` after mount, so the built HTML says nothing about the
+ * origin the browser is about to be asked to fetch from. See the header.
+ */
+export function widgetDeskOrigins(srcDir: string): string[] {
+  const origins = new Set<string>();
+  for (const file of filesWith(srcDir, '.md')) {
+    for (const [, quoted] of readFileSync(file, 'utf8').matchAll(WIDGET_MOUNT)) {
+      origins.add(new URL((quoted ?? '').slice(1, -1)).origin);
+    }
+  }
+  return [...origins].sort();
+}
+
 /**
  * The policy, as the directive list.
  *
- * `widgetOrigin` is the ticket0 support widget's API when the opt-in build flag
- * is set (config.mts). It is a real third-party script on the docs origin, so
- * it has to be named in both `script-src` and `connect-src` — and the fact that
- * it has to be named is most of why this file is worth having.
+ * `widgetOrigins` are the ticket0 support widget's APIs: the desk every page that mounts
+ * the widget names, plus the site-wide one when the opt-in build flag is set (config.mts).
+ * Each is a real third-party script on the docs origin, so it has to be named in both
+ * `script-src` and `connect-src` — and the fact that it has to be named is most of why
+ * this file is worth having.
  */
-export function csp(scriptHashes: string[], widgetOrigin?: string): string {
-  const script = ["'self'", ...scriptHashes, widgetOrigin].filter(Boolean);
-  const connect = ["'self'", widgetOrigin].filter(Boolean);
+export function csp(scriptHashes: string[], widgetOrigins: readonly string[] = []): string {
+  const script = ["'self'", ...scriptHashes, ...widgetOrigins];
+  const connect = ["'self'", ...widgetOrigins];
   return [
     `default-src 'self'`,
     `script-src ${script.join(' ')}`,
@@ -193,10 +240,23 @@ export function assertNoUnallowedOrigins(outDir: string, allowed: readonly strin
   );
 }
 
-/** Write `_headers` into the built site. */
-export function emitHeaders(outDir: string, widgetOrigin?: string): string {
-  assertNoUnallowedOrigins(outDir, widgetOrigin ? [widgetOrigin] : []);
-  const policy = csp(inlineScriptHashes(outDir), widgetOrigin);
+/**
+ * Write `_headers` into the built site.
+ *
+ * `srcDir` is the markdown the site was built from — the only place a per-page widget
+ * mount is still visible. `siteWideWidget` is the opt-in site-wide embed, which is in
+ * the HTML as well but is named here so a dev build and a production build derive the
+ * policy the same way.
+ */
+export function emitHeaders(outDir: string, srcDir: string, siteWideWidget?: string): string {
+  const widgets = [
+    ...new Set([
+      ...(siteWideWidget ? [new URL(siteWideWidget).origin] : []),
+      ...widgetDeskOrigins(srcDir),
+    ]),
+  ].sort();
+  assertNoUnallowedOrigins(outDir, widgets);
+  const policy = csp(inlineScriptHashes(outDir), widgets);
   const body = [
     '# GENERATED by .vitepress/headers.mts during `vitepress build` — do not edit by hand.',
     '# The script hashes are read out of the built HTML, so they follow every rebuild.',

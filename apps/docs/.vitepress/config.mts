@@ -55,7 +55,14 @@ export default withMermaid(defineConfig({
     // whose script hashes are read back out of the HTML this build just wrote
     // (headers.mts explains why they cannot be written down). Emitted last: it
     // hashes the inline scripts on every page, and the twins above add none.
-    emitHeaders(siteConfig.outDir, process.env.TICKET0_WIDGET ? WIDGET_API : undefined);
+    // srcDir too: a page can mount the widget itself (`<Ticket0Widget desk="…" />` in
+    // guide/support.md), and that tag compiles away — the origin is nowhere in the HTML
+    // this policy would otherwise be derived from.
+    emitHeaders(
+      siteConfig.outDir,
+      siteConfig.srcDir,
+      process.env.TICKET0_WIDGET ? WIDGET_API : undefined,
+    );
   },
 
   themeConfig: {
