@@ -51,7 +51,7 @@ import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { z, listPageQuery, LIST_SORT_PARAM } from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
-import { classifyError, messageOf } from './errors.js';
+import { classifyError, messageOf, problemResponse } from './errors.js';
 
 /**
  * The protocol revisions this server speaks, newest first.
@@ -253,9 +253,50 @@ function serverNameOf(tools: McpTool[]): string {
   return best;
 }
 
+/**
+ * What this endpoint publishes about itself as an OAuth 2.0 **protected resource**
+ * (RFC 9728) — the half of MCP authorization that belongs to the resource server.
+ *
+ * Without it a client has to be handed a token out of band: the 401 says "no" and
+ * nothing says where to go. With it, a client that gets a 401 reads the
+ * `WWW-Authenticate` challenge, fetches the document it names, learns which
+ * authorization server issues for this resource, and runs its own flow.
+ *
+ * **It cannot be derived, which is why it is a parameter.** The only thing that knows
+ * a vertical's issuer is its auth composition, and on a hosted install the issuer is
+ * per-scope configuration rather than a constant — one script serving many issuers.
+ * So the endpoint stays zero-config; DISCOVERY costs the one line that passes this.
+ * `authorizationServersOf` in `@substrat-run/vertical-auth` builds it from an
+ * instance's resolved configuration.
+ *
+ * Client REGISTRATION is deliberately absent from all of this: how a client obtains a
+ * `client_id` — dynamic registration, or a client-ID metadata document — is a question
+ * for the authorization server, which never reaches here. A resource server validates
+ * an access token and has no opinion about who minted the client.
+ */
+export interface ProtectedResourceOptions {
+  /**
+   * Issuer URLs that mint access tokens for this resource. A function is resolved per
+   * request, because a hosted vertical's issuer is per-install.
+   *
+   * An empty array is a legitimate answer — an instance nobody has configured a login
+   * for — and publishes a document with no `authorization_servers` rather than a
+   * document naming an issuer that does not exist.
+   */
+  readonly authorizationServers:
+    | readonly string[]
+    | ((c: Context) => readonly string[] | Promise<readonly string[]>);
+  /** Advertised `scopes_supported`. Omit when the issuer does not scope by resource. */
+  readonly scopesSupported?: readonly string[];
+  /** The canonical resource identifier. Defaults to this endpoint's own absolute URL. */
+  readonly resource?: string;
+}
+
 export interface MountMcpOptions {
   /** Where to mount. Defaults to `${basePath}/mcp` — i.e. `/api/mcp` on the fleet's convention. */
   readonly path?: string;
+  /** OAuth 2.0 protected-resource metadata (RFC 9728). Omit ⇒ bearer, configured out of band. */
+  readonly protectedResource?: ProtectedResourceOptions;
   /**
    * What the handshake reports. The name defaults to the module prefix the operations
    * share; a vertical that wants its real version passes it, since nothing in a
@@ -321,6 +362,7 @@ export function mountMcp(
 ): { path: string; tools: number } {
   const tools = mcpToolsOf(operations);
   const path = options.path ?? `${options.basePath ?? '/api'}/mcp`;
+  const wellKnown = `/.well-known/oauth-protected-resource${path}`;
   const byName = new Map(tools.map((t) => [t.name, t]));
   const serverInfo = {
     name: options.serverInfo?.name ?? serverNameOf(tools),
@@ -427,6 +469,46 @@ export function mountMcp(
     }
   };
 
+  const pr = options.protectedResource;
+
+  /**
+   * The `WWW-Authenticate` challenge a 401 from this endpoint carries.
+   *
+   * Emitted whether or not metadata is configured: a bare `Bearer` still tells a client
+   * the scheme, and silence tells it nothing. `resource_metadata` is added only when we
+   * actually serve the document, because a challenge pointing at a 404 is worse than a
+   * challenge pointing nowhere.
+   */
+  const challengeFor = (c: Context): string => {
+    if (!pr) return 'Bearer';
+    const url = new URL(c.req.url);
+    return `Bearer resource_metadata="${url.origin}${wellKnown}"`;
+  };
+
+  if (pr) {
+    const document = async (c: Context) => {
+      const servers =
+        typeof pr.authorizationServers === 'function'
+          ? await pr.authorizationServers(c)
+          : pr.authorizationServers;
+      const origin = new URL(c.req.url).origin;
+      return c.json({
+        resource: pr.resource ?? `${origin}${path}`,
+        // Omitted rather than empty when nothing is configured: a client reads an empty
+        // list as "this resource has no issuer", which is a different claim from "this
+        // install has not been configured yet" and sends it down a wrong path.
+        ...(servers.length > 0 ? { authorization_servers: [...servers] } : {}),
+        bearer_methods_supported: ['header'],
+        ...(pr.scopesSupported ? { scopes_supported: [...pr.scopesSupported] } : {}),
+      });
+    };
+    // RFC 9728 inserts the resource's path into the well-known URL, so a host serving
+    // several protected resources describes each one separately. The root form is
+    // served too, because clients that predate the path-insertion rule ask for it.
+    app.get(wellKnown, document);
+    app.get('/.well-known/oauth-protected-resource', document);
+  }
+
   app.post(path, async (c) => {
     let body: unknown;
     try {
@@ -440,13 +522,26 @@ export function mountMcp(
     if (messages.length === 0) return c.json(rpcError(null, -32600, 'Invalid Request'), 400);
 
     const replies: object[] = [];
-    for (const msg of messages) {
-      if (!msg || typeof msg !== 'object') {
-        replies.push(rpcError(null, -32600, 'Invalid Request'));
-        continue;
+    try {
+      for (const msg of messages) {
+        if (!msg || typeof msg !== 'object') {
+          replies.push(rpcError(null, -32600, 'Invalid Request'));
+          continue;
+        }
+        const reply = await handle(c, msg);
+        if (reply) replies.push(reply);
       }
-      const reply = await handle(c, msg);
-      if (reply) replies.push(reply);
+    } catch (err) {
+      // A 401 is the one failure that has somewhere to point. Re-thrown carrying its own
+      // `res`, which `problemResponse` hands back untouched — that path exists precisely
+      // so a route can attach a `WWW-Authenticate` — so the vertical keeps its error
+      // envelope AND the client gets the challenge that starts its authorization flow.
+      const status = err instanceof HTTPException ? err.status : classifyError(err)?.status;
+      if (status !== 401 || (err instanceof HTTPException && err.res)) throw err;
+      const built = problemResponse(c, err);
+      const res = new Response(built.body, { status: built.status, headers: built.headers });
+      res.headers.set('WWW-Authenticate', challengeFor(c));
+      throw new HTTPException(401, { res });
     }
     // Nothing to answer means every message was a notification: 202, no body.
     if (replies.length === 0) return c.body(null, 202);

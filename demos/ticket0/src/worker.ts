@@ -57,6 +57,7 @@ import { createAnthropic } from '@ai-sdk/anthropic';
 import {
   AuthConfigError,
   IdentityDO,
+  authorizationServersOf,
   instanceAuthFor,
   mintOwnerClaimLink,
   sha256Hex,
@@ -691,7 +692,11 @@ async function answerFor(
 // ── The declared API, the spec, and the platform contract ────────────────────
 
 // The same table `server.ts` mounts (src/routes.ts), derived from spec/model.ts.
-mountApi(app, stub);
+// The issuer is read per request: one serving script answers for every desk, and each
+// desk's `substrat:auth` names its own.
+mountApi(app, stub, async (c) =>
+  authorizationServersOf(await instanceConfig(c.env as Env, nodeFor(c.req.raw, c.env as Env))),
+);
 
 // The OpenAPI 3.1 document, built from the operation catalog. Session-gated like the
 // rest of /api/*: the spec enumerates the surface, so it is for signed-in callers.

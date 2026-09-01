@@ -1,8 +1,13 @@
 # The MCP surface
 
-Every deployed vertical serves an [MCP](https://modelcontextprotocol.io) endpoint at
-`/api/mcp`, and **you write nothing to get it**. If your vertical mounts its operations —
-which is how it has routes at all — it has an MCP server, with one tool per operation.
+A vertical whose routes come from `mountOperations` serves an
+[MCP](https://modelcontextprotocol.io) endpoint at `/api/mcp`, and **writes nothing to
+get it** — one tool per operation, derived from the same declarations the route table is.
+
+That is the whole prerequisite, and it is worth stating plainly: this rides on the
+**derived** route table. A vertical that still hand-writes its routes has no operations
+catalog to render, so it has no tool list either — it gets the endpoint by adopting
+`mountOperations`, not by configuring anything here.
 
 ```
 POST https://your-vertical.example/api/mcp
@@ -54,6 +59,58 @@ gets wrong:
   with `isError: true`, so the agent reads *"you may not do that"* and picks something
   else. Returning a transport error there would make one refusal look like a broken
   session.
+
+## Finding where to authenticate
+
+A 401 that only says "no" is a dead end: the client has no way to learn which issuer to
+talk to, and somebody has to paste a token in by hand. So the endpoint can publish
+[RFC 9728](https://www.rfc-editor.org/rfc/rfc9728) protected-resource metadata and point
+its challenge at it.
+
+```
+401 Unauthorized
+WWW-Authenticate: Bearer resource_metadata="https://desk.example/.well-known/oauth-protected-resource/api/mcp"
+```
+
+```json
+{
+  "resource": "https://desk.example/api/mcp",
+  "authorization_servers": ["https://issuer.example"],
+  "bearer_methods_supported": ["header"]
+}
+```
+
+**This is the one thing that cannot be derived**, and therefore the one line of wiring:
+
+```ts
+import { authorizationServersOf } from '@substrat-run/vertical-auth';
+
+mountApi(app, stub, async (c) => authorizationServersOf(await instanceConfig(c.env, nodeFor(c.req.raw, c.env))));
+```
+
+The only thing that knows a vertical's issuer is its auth composition, and on a hosted
+install the issuer is *per-scope configuration* — one serving script answers for many
+desks, each with its own. So it is resolved per request rather than fixed at mount.
+
+Omit it and the endpoint still works; the challenge is a bare `Bearer` and a token is
+configured out of band. A challenge is never pointed at a document that is not served —
+naming a 404 costs the client a round trip and tells it less than the bare scheme did.
+
+An instance nobody has configured a login for publishes a document with **no**
+`authorization_servers` rather than an empty list: "this resource has no issuer" and
+"nobody has set this up yet" are different claims, and a client acts differently on them.
+
+### What is deliberately not here
+
+**Client registration.** How a client obtains a `client_id` — dynamic registration
+([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)), or a client-ID metadata document —
+is a question for the *authorization server*. A resource server validates an access token
+and has no opinion about who minted the client, so that work belongs at the issuer, not
+here.
+
+**Audience validation** is already in place where it is configured: set `OIDC_AUDIENCE`
+(or `audience` on a delivered `substrat:auth`) and a token minted for another resource is
+rejected. Worth setting before you hand the URL to anyone.
 
 ## Paged reads
 

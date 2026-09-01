@@ -3,8 +3,10 @@ import type { EnvVarSpec } from '@substrat-run/contracts';
 import {
   AUTH_CONFIG_KEY,
   AuthConfigError,
+  authorizationServersOf,
   instanceAuthFor,
   parseAuthChoice,
+  selectAuthProvider,
 } from '../src/instance-auth.js';
 
 /** The auth half of a vertical's declared env — the shape all four demos share. */
@@ -100,5 +102,48 @@ describe('parseAuthChoice', () => {
     expect(parseAuthChoice('{not json')).toBeNull();
     expect(parseAuthChoice(JSON.stringify({ mode: 'builtin' }))).toBeNull();
     expect(parseAuthChoice(JSON.stringify({ mode: 'oidc', issuer: 'not-a-url' }))).toBeNull();
+  });
+});
+
+/**
+ * `authorizationServersOf` names the issuer this instance's configuration selected —
+ * the `authorization_servers` an MCP endpoint publishes (RFC 9728).
+ *
+ * It restates `selectAuthProvider`'s precedence, so these cases exist to stop the two
+ * from drifting: for every configuration that yields a provider, discovery must name an
+ * issuer, and it must be the one that provider verifies against.
+ */
+describe('authorizationServersOf', () => {
+  const settingsOf = (o: Record<string, string | undefined> = {}) => ({ AUTH_PROVIDER: undefined, OIDC_ISSUER: undefined, ...o });
+
+  it('prefers a delivered choice over the deployment default, as provider selection does', () => {
+    const opts = {
+      identity: { mode: 'oidc' as const, issuer: 'https://delivered.example', clientId: 'c' },
+      settings: settingsOf({ AUTH_PROVIDER: 'oidc', OIDC_ISSUER: 'https://deployment.example' }),
+    };
+    expect(authorizationServersOf(opts)).toEqual(['https://delivered.example']);
+    // The provider agrees, which is the point of asserting both here.
+    expect(() => selectAuthProvider({ ...opts, sessionSecret: 's' })).not.toThrow();
+  });
+
+  it('falls back to the deployment default', () => {
+    expect(
+      authorizationServersOf({ identity: null, settings: settingsOf({ AUTH_PROVIDER: 'oidc', OIDC_ISSUER: 'https://fixed.example' }) }),
+    ).toEqual(['https://fixed.example']);
+  });
+
+  /**
+   * DESCRIBES rather than refuses. `selectAuthProvider` throws here because a request
+   * cannot proceed without a provider; metadata is a description, and an instance with
+   * no login truthfully has no authorization server to name.
+   */
+  it('answers empty — never throws — where provider selection refuses', () => {
+    const unconfigured = { identity: null, settings: settingsOf() };
+    expect(authorizationServersOf(unconfigured)).toEqual([]);
+    expect(() => selectAuthProvider({ ...unconfigured, sessionSecret: 's' })).toThrow(AuthConfigError);
+
+    const halfConfigured = { identity: { mode: 'oidc' as const, clientId: 'c' }, settings: settingsOf() };
+    expect(authorizationServersOf(halfConfigured)).toEqual([]);
+    expect(() => selectAuthProvider({ ...halfConfigured, sessionSecret: 's' })).toThrow(AuthConfigError);
   });
 });

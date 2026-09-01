@@ -325,3 +325,103 @@ describe('the endpoint itself', () => {
     expect(body.error.code).toBe(-32601);
   });
 });
+
+/**
+ * The other half of MCP authorization: a client that gets a 401 has to be able to find
+ * out WHERE to authenticate. Without this the 401 is a dead end and a token has to be
+ * configured by hand.
+ */
+describe('protected-resource metadata (RFC 9728)', () => {
+  /** A mount whose `resolveStub` always refuses, so every call is the 401 path. */
+  function unauthenticated(mcp?: Record<string, unknown>) {
+    const app = new Hono();
+    mountOperations(
+      app,
+      operations,
+      async () => {
+        throw new HTTPException(401, { message: 'anonymous' });
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { ...(mcp ? { mcp: mcp as any } : {}) },
+    );
+    return app;
+  }
+
+  const post = (app: Hono) =>
+    app.request('/api/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    });
+
+  it('serves the document at the path-inserted well-known URL', async () => {
+    const app = unauthenticated({ protectedResource: { authorizationServers: ['https://issuer.example'] } });
+    const res = await app.request('/.well-known/oauth-protected-resource/api/mcp');
+    expect(res.status).toBe(200);
+    const doc = (await res.json()) as Record<string, unknown>;
+    expect(doc['authorization_servers']).toEqual(['https://issuer.example']);
+    expect(doc['bearer_methods_supported']).toEqual(['header']);
+    expect(String(doc['resource'])).toMatch(/\/api\/mcp$/);
+  });
+
+  it('serves the root form too, for a client that predates path insertion', async () => {
+    const app = unauthenticated({ protectedResource: { authorizationServers: ['https://issuer.example'] } });
+    expect((await app.request('/.well-known/oauth-protected-resource')).status).toBe(200);
+  });
+
+  it('resolves the issuer per request, because a hosted install has its own', async () => {
+    const seen: string[] = [];
+    const app = unauthenticated({
+      protectedResource: {
+        authorizationServers: (c: { req: { url: string } }) => {
+          seen.push(new URL(c.req.url).host);
+          return [`https://issuer.example/${new URL(c.req.url).host}`];
+        },
+      },
+    });
+    const res = await app.request('https://desk-a.example/.well-known/oauth-protected-resource/api/mcp');
+    const doc = (await res.json()) as Record<string, unknown>;
+    expect(doc['authorization_servers']).toEqual(['https://issuer.example/desk-a.example']);
+    expect(seen).toEqual(['desk-a.example']);
+  });
+
+  /**
+   * An empty list is a fact about an unconfigured install, not an error. Publishing
+   * `authorization_servers: []` would claim the resource has no issuer, which sends a
+   * client somewhere different from "nobody has configured this yet".
+   */
+  it('omits the field rather than publishing an empty issuer list', async () => {
+    const app = unauthenticated({ protectedResource: { authorizationServers: [] } });
+    const doc = (await (await app.request('/.well-known/oauth-protected-resource/api/mcp')).json()) as Record<string, unknown>;
+    expect(doc['authorization_servers']).toBeUndefined();
+    expect(doc['resource']).toBeDefined();
+  });
+
+  it('points a 401 at the document it actually serves', async () => {
+    const app = unauthenticated({ protectedResource: { authorizationServers: ['https://issuer.example'] } });
+    const res = await post(app);
+    expect(res.status).toBe(401);
+    expect(res.headers.get('WWW-Authenticate')).toBe(
+      'Bearer resource_metadata="http://localhost/.well-known/oauth-protected-resource/api/mcp"',
+    );
+  });
+
+  /**
+   * A challenge naming a document nobody serves is worse than one naming nothing: the
+   * client spends a round trip on a 404 and learns less than the bare scheme told it.
+   */
+  it('challenges with the bare scheme when no metadata is configured', async () => {
+    const res = await post(unauthenticated());
+    expect(res.status).toBe(401);
+    expect(res.headers.get('WWW-Authenticate')).toBe('Bearer');
+  });
+
+  it('keeps the vertical’s own error envelope on the challenged 401', async () => {
+    const res = await post(unauthenticated({ protectedResource: { authorizationServers: ['https://i.example'] } }));
+    expect(res.headers.get('content-type')).toMatch(/problem\+json/);
+  });
+
+  it('serves no well-known document when metadata is not configured', async () => {
+    expect((await unauthenticated().request('/.well-known/oauth-protected-resource/api/mcp')).status).toBe(404);
+  });
+});
