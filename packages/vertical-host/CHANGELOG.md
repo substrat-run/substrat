@@ -1,5 +1,26 @@
 # @substrat-run/vertical-host
 
+## 0.97.0
+
+### Minor Changes
+
+- 9fcfebc: A vertical now serves an MCP endpoint, and writes nothing to get it. `mountOperations` renders the operations it is already mounting a third way — REST, OpenAPI, and now one MCP tool per operation at `${basePath}/mcp` — dispatching through the same `resolveStub` and the same permission checks. `http` is the declaration: an operation that faces the network is a tool, one that does not is not, and there is no `mcp: true` to restate a fact the route already carries. Descriptions come from `summary`, input schemas from the declared Zod object, and read-only/destructive hints from the method.
+
+  It defaults on because it adds no reachability: every tool is a route that already existed, behind the same bearer verification and the same `assertAllowed(ctx.check(…))`. What that buys is a split a hand-rolled server usually gets wrong — authentication stays transport-level, so an anonymous call is an HTTP 401 that starts a client's authorization flow, while authorization is in-band, so a refused permission is a readable tool error the agent can work around rather than a broken session. A paged read's tool schema names `limit`/`cursor`/`order`/`sort` explicitly, since an MCP call has no query string to carry them and a list that looks unpaged is read as a whole table.
+
+  The one knob is optional and per operation: `mcp: false` keeps a machine-facing route — a connector's return path, a relay's ingest, a widget service's surface — out of the tool list, and `mcp: { description }` says more than an API-document summary where tool selection needs it. A new vertical writes neither. `mountOperations(…, { mcp: false })` turns the endpoint off entirely.
+
+  The endpoint also publishes RFC 9728 protected-resource metadata, so a client that gets a 401 can find out where to authenticate instead of being handed a token by hand: the challenge names a `.well-known/oauth-protected-resource` document, and the document names the issuer. That one fact cannot be derived — a hosted vertical's issuer is per-scope configuration, one serving script answering for many installs — so it is the single line of wiring, resolved per request, and `authorizationServersOf` in `@substrat-run/vertical-auth` builds it from an instance's resolved config. Omit it and the endpoint still works with a bare `Bearer` challenge; a challenge is never pointed at a document that is not served. Client registration stays out: how a client gets a `client_id` is the authorization server's question, not a resource server's.
+
+### Patch Changes
+
+- Updated dependencies [cc1bbcd]
+- Updated dependencies [9fcfebc]
+- Updated dependencies [59121f6]
+  - @substrat-run/model-providers@0.4.0
+  - @substrat-run/contracts@0.97.0
+  - @substrat-run/kernel@0.97.0
+
 ## 0.96.0
 
 ### Minor Changes
