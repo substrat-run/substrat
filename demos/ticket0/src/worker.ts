@@ -261,8 +261,13 @@ async function mintServices(env: Env, node: DeskNode): Promise<ServicePrincipals
    * The original read "reuse all three, or mint all three", which is correct exactly
    * until a service role is added: every desk already provisioned then has an
    * `existing` record, takes the reuse path forever, and never receives the new
-   * principal — the feature ships and reaches no desk that predates it. Filling gaps
-   * makes the platform's reconcile the thing that repairs them.
+   * principal — the feature ships and reaches no desk that predates it.
+   *
+   * Filling gaps is only half of it: the platform's reconcile has to REACH this hook,
+   * and until `@substrat-run/vertical-host` ran `onProvision` on that route it did not.
+   * A repair that re-projects roles and stops leaves a desk missing whatever the
+   * vertical mints for itself, with no other way to get it — `/internal/provision` is
+   * called at install and never again.
    */
   const minted = SERVICE_ROLES.filter((role) => !existing?.[role]);
   const services = servicePrincipals.parse({

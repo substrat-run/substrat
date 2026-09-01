@@ -345,6 +345,32 @@ describe('mountPlatformSurface — flavored routes and their hooks', () => {
     expect(seen).toEqual([grants, grants]);
   });
 
+  /**
+   * The repair has to include the vertical's OWN half, or it repairs nothing a vertical
+   * created for itself. An install that predates a new service principal has no other
+   * route to one: `/internal/provision` is called at install and never again.
+   */
+  it('reconcile runs onProvision with the resolved owner', async () => {
+    const seen: unknown[] = [];
+    const res = await appWith(fakeHost(), {
+      resolveOwner: async () => OWNER as never,
+      onProvision: async (_env, body) => {
+        seen.push(body);
+      },
+    }).request(
+      '/internal/reconcile',
+      {
+        method: 'POST',
+        headers: authed({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ tenantId: TENANT, scopeId: SCOPE }),
+      },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    // The owner it was handed is the RE-SOURCED one — the body carries none.
+    expect(seen).toEqual([{ tenantId: TENANT, scopeId: SCOPE, owner: OWNER }]);
+  });
+
   it('reconcile 501s when no resolveOwner is supplied', async () => {
     const res = await appWith(fakeHost()).request(
       '/internal/reconcile',
