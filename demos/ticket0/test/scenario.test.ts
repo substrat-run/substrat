@@ -414,6 +414,49 @@ describe('search finds a thread, and a person', () => {
     expect(found.entries).toHaveLength(0);
   });
 
+  /**
+   * The walk direction is advertised in the emitted document, so it has to be obeyed.
+   * A read that offers `?order=` and answers `desc` either way is a page that lies —
+   * and the cursor comparison has to follow the direction, or the second page is the
+   * first one again.
+   */
+  it('the advertised order is the order — both ways, and the cursor follows it', async () => {
+    const anna = await at(world.substrat, 'agent');
+    // Two characters every subject on this desk contains, so the walk has several
+    // rows to order rather than one.
+    const q = 'a';
+    const all = (await anna.invoke('ticket0/search-conversations', {
+      q: `${q}n`,
+    })) as Page<Conversation>;
+    if (all.entries.length < 2) throw new Error('needs at least two matches to order');
+
+    const asc = (await anna.invoke('ticket0/search-conversations', {
+      q: `${q}n`,
+      order: 'asc',
+    })) as Page<Conversation>;
+    const ids = asc.entries.map((c) => c.id);
+    expect([...ids].sort()).toEqual(ids);
+    // ...and descending is the same set the other way up, not the same page twice.
+    expect(all.entries.map((c) => c.id)).toEqual([...ids].reverse());
+
+    // One row per page, so the cursor is exercised rather than merely accepted.
+    const first = (await anna.invoke('ticket0/search-conversations', {
+      q: `${q}n`,
+      order: 'asc',
+      limit: 1,
+    })) as Page<Conversation>;
+    expect(first.entries[0]!.id).toBe(ids[0]);
+    const second = (await anna.invoke('ticket0/search-conversations', {
+      q: `${q}n`,
+      order: 'asc',
+      limit: 1,
+      cursor: first.nextCursor!,
+    })) as Page<Conversation>;
+    // The page AFTER the cursor, not the one before it — the failure an unflipped
+    // `id < ?` produces is an empty second page, which reads as "no more results".
+    expect(second.entries[0]!.id).toBe(ids[1]);
+  });
+
   it('the declared filters still narrow a search', async () => {
     const anna = await at(world.substrat, 'agent');
     const wrongChannel = (await anna.invoke('ticket0/search-conversations', {

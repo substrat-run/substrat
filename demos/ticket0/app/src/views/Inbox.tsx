@@ -123,8 +123,20 @@ export function Inbox({
   /** What is in the box, and what has been asked for — not the same thing mid-word. */
   const [q, setQ] = useState('');
   const [term, setTerm] = useState('');
-  /** People whose email or name matches the term. The "who is this" half of #1081. */
-  const [matches, setMatches] = useState<Contact[]>([]);
+  /**
+   * People whose email or name matches the term — the "who is this" half of #1081,
+   * stamped with the term they answer.
+   *
+   * Stamped rather than a bare array, because the term moves faster than the request:
+   * without it, the previous term's people stay on screen and stay CLICKABLE while
+   * the new ones are in flight, and picking one narrows the inbox to somebody the
+   * search no longer matches. A stale list is dropped by rendering, not by hoping the
+   * response is quick.
+   */
+  const [matches, setMatches] = useState<{ term: string; entries: Contact[] }>({
+    term: '',
+    entries: [],
+  });
   const [page, setPage] = useState<{ entries: Conversation[]; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
@@ -202,19 +214,19 @@ export function Inbox({
    */
   useEffect(() => {
     if (term.length < SEARCH_MIN) {
-      setMatches([]);
+      setMatches({ term: '', entries: [] });
       return;
     }
     let live = true;
     api
       .searchContacts({ q: term })
       .then((p) => {
-        if (live) setMatches(p.entries);
+        if (live) setMatches({ term, entries: p.entries });
       })
       // A desk whose agent cannot read contacts still gets the conversation search.
       // A banner about the half that is not theirs would be noise.
       .catch(() => {
-        if (live) setMatches([]);
+        if (live) setMatches({ term, entries: [] });
       });
     return () => {
       live = false;
@@ -375,7 +387,7 @@ export function Inbox({
           not smuggled into the list — it is its own strip, and picking one narrows the
           inbox to that person's history through the walk's own `contact_id` filter.
         */}
-        {searching && matches.length > 0 ? (
+        {searching && matches.term === term && matches.entries.length > 0 ? (
           <div
             style={{
               display: 'flex',
@@ -390,7 +402,7 @@ export function Inbox({
             <span className="micro-6" style={{ color: 'var(--muted)' }}>
               People
             </span>
-            {matches.map((c) => (
+            {matches.entries.map((c) => (
               <Chip key={c.id} active={false} onClick={() => pick(c.id)}>
                 {nameOf(c)}
                 {c.email ? <span style={{ color: 'var(--muted)' }}> · {c.email}</span> : null}

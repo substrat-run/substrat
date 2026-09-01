@@ -1210,16 +1210,20 @@ const operations = {
     const limit = input.limit ?? LIST_PAGE_DEFAULT;
     const like = likeTerm(input.q);
     const params: SqlValue[] = [like, like];
-    // Newest first, so the cursor walks DOWN and `id < ?` is what excludes the page
-    // already seen. A ULID sorts chronologically, which is why the id is the key.
+    // Newest first by default, and the caller's `?order=` is honoured rather than
+    // ignored — a walk advertised in the emitted document and quietly overridden here
+    // is a page that lies. The comparison follows the direction: descending excludes
+    // what has been seen with `id < ?`, ascending with `id > ?`. A ULID sorts
+    // chronologically, which is why the id is the key.
+    const desc = (input.order ?? 'desc') === 'desc';
     let sql = `SELECT id, external_id, principal, email, display_name, verified_at, created_at
                  FROM ticket0_contacts
                 WHERE (email LIKE ? ESCAPE '\\' OR display_name LIKE ? ESCAPE '\\')`;
     if (input.cursor) {
-      sql += ' AND id < ?';
+      sql += desc ? ' AND id < ?' : ' AND id > ?';
       params.push(input.cursor);
     }
-    sql += ' ORDER BY id DESC LIMIT ?';
+    sql += ` ORDER BY id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
     params.push(limit);
     return pageOf(ctx.sql.query<ContactRow>(sql, params), limit, (row) => row.id);
   },
@@ -1265,11 +1269,14 @@ const operations = {
       sql += ` AND c.${key} = ?`;
       params.push(value);
     }
+    // Newest first by default, and the caller's `?order=` honoured — see the note on
+    // `search-contacts` for why an advertised direction is not optional to obey.
+    const desc = (input.order ?? 'desc') === 'desc';
     if (input.cursor) {
-      sql += ' AND c.id < ?';
+      sql += desc ? ' AND c.id < ?' : ' AND c.id > ?';
       params.push(input.cursor);
     }
-    sql += ' ORDER BY c.id DESC LIMIT ?';
+    sql += ` ORDER BY c.id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
     params.push(limit);
     return pageOf(ctx.sql.query<ConversationRow>(sql, params), limit, (row) => row.id);
   },
