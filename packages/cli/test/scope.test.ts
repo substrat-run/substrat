@@ -112,6 +112,67 @@ describe('a backup names its own tables — and those names reach SQL (#1143)', 
     expect(called).toBe(0); // refused locally — the dump never left the machine
   });
 
+  it('a second statement appended to a table DDL never executes', async () => {
+    // The names here are all plain — this is the hole `assertDumpIdentifiers` does
+    // NOT cover: the DDL text itself, which `exec` would have run in full.
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          tenantId: 'acme',
+          scopeId: 's-2',
+          capturedAt: '2026-09-01T00:00:00.000Z',
+          masked: true,
+          tables: [
+            {
+              name: 'crm_vendors',
+              ddl: 'CREATE TABLE crm_vendors (id TEXT PRIMARY KEY); CREATE TABLE smuggled (id TEXT);',
+              columns: ['id'],
+              rows: [['v1']],
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const outDir = join(dir, 'compound');
+
+    await pullScope({
+      controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-2', full: false, outDir,
+    });
+
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(join(outDir, 'acme__s-2.sqlite'), { readOnly: true });
+    try {
+      const names = (
+        db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`).all() as { name: string }[]
+      ).map((t) => t.name);
+      expect(names).toEqual(['crm_vendors']); // 'smuggled' was compiled away, not run
+      expect(db.prepare('SELECT id FROM crm_vendors').all()).toEqual([{ id: 'v1' }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('refuses a DDL that creates something other than the table it is declared for', async () => {
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          tenantId: 'acme',
+          scopeId: 's-3',
+          capturedAt: '2026-09-01T00:00:00.000Z',
+          masked: true,
+          tables: [{ name: 'crm_vendors', ddl: 'CREATE TABLE something_else (id TEXT)', columns: ['id'], rows: [] }],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+
+    await expect(
+      pullScope({
+        controlPlaneUrl: 'http://cp', header: {}, tenantId: 'acme', scopeId: 's-3', full: false, outDir: join(dir, 'wrong'),
+      }),
+    ).rejects.toThrow(/does not create that table/);
+  });
+
   it('pull refuses a crafted dump instead of writing it to disk', async () => {
     globalThis.fetch = (async () =>
       new Response(

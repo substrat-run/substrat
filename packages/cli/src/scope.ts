@@ -110,7 +110,22 @@ async function writeSqlite(path: string, dump: PulledDump): Promise<boolean> {
     // Insert parents before children — this writer defers no FK check, so an
     // FK-unordered dump would trip a constraint on the first child row.
     for (const t of orderTablesByForeignKeys(dump.tables)) {
-      db.exec(t.ddl);
+      // A dump's `ddl` is untrusted SQL text, and `exec` runs EVERY statement in it —
+      // so `CREATE TABLE x (…); ATTACH DATABASE …;` used to execute both. `prepare`
+      // compiles only the first statement and `run` executes only that one, which
+      // makes SQLite's own parser the boundary instead of a regex over the text.
+      db.prepare(t.ddl).run();
+      // The one statement that did run still has to be the table the dump declared —
+      // otherwise a `ddl` whose FIRST statement is the hostile one walks through.
+      const made = db
+        .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+        .get(t.name) as { name: string } | undefined;
+      if (!made) {
+        throw new Error(
+          `refusing this backup: the DDL for table ${JSON.stringify(t.name)} does not create that table. ` +
+            'A scope dump whose schema and its own table list disagree is corrupt or crafted — it is not loaded.',
+        );
+      }
       if (t.rows.length === 0) continue;
       const cols = t.columns.map((c) => `"${c}"`).join(', ');
       const marks = t.columns.map(() => '?').join(', ');
