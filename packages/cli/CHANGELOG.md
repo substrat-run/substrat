@@ -1,5 +1,38 @@
 # @substrat-run/cli
 
+## 0.26.2
+
+### Patch Changes
+
+- 171f9eb: `scope pull` and `scope restore` refuse a backup whose table or column names are not
+  plain SQL identifiers. A dump names its own tables, and a name is interpolated into
+  SQL because a bind parameter cannot stand in for an identifier — so a crafted
+  `.dump.json` or `.sqlite` could close the quoting and run statements of its own
+  against the local file. The names are now checked before any of them reaches SQL,
+  and the error says which one was refused.
+
+  A dump's schema text is held to the same line: `scope pull` compiles a table's DDL
+  as a single statement rather than executing everything the text contains, so
+  `CREATE TABLE x (…); ATTACH DATABASE …;` creates the table and nothing else, and a
+  DDL that does not create the table it is declared for is refused.
+
+- c41fbf0: `substrat.usesModels` reaches the push again, so a vertical that declares it gets `env.AI`.
+
+  The declaration was read from package.json, typed on the push options, sent by `push()`
+  and honoured by the control plane — but `cli.ts` never passed it from the meta into
+  either call site (`push`, `preview create`). So the upload always carried nothing, every
+  version's manifest recorded nothing, and the control plane's binding injection — which
+  requires the version to have ASKED — never fired for any vertical, on any push, from
+  `#1072` until now. Nothing was red, because every link in the chain was correct on its own.
+
+  The visible symptom was a hosted ticket0 desk answering `offline/extractive` with
+  Settings → Assistant reporting a missing `CLOUDFLARE_AI_API_TOKEN` — accurate, since with
+  no binding the row falls back to its HTTP transport and the platform holds no credential
+  there by design.
+
+  A vertical already pushed needs a re-push to pick the binding up: `usesModels` is
+  versioned with the code, like `outbound`.
+
 ## 0.26.1
 
 ### Patch Changes
