@@ -387,10 +387,10 @@ operations + the `ModuleRegistration`. Keep the split — the linter and tests e
 - **The pricing moment is the pattern to copy**: read the engine's reported lines with
   `getReportedLines(ctx, orderId)` → apply the vertical's price list → call the engine's
   `completeWorkOrder`. One transaction, invariants intact.
-- **Catching an engine error requires `ctx.atomic`.** An engine call composed inside your
-  transaction has no boundary of its own, so a bare `catch` around it leaves you holding
-  its partial writes — the rows its invariants were protecting — and then commits them.
-  Wrap it instead:
+- **Swallowing an engine error requires `ctx.atomic`.** An engine call composed inside your
+  transaction has no boundary of its own, so a `catch` that handles the failure and carries
+  on leaves you holding its partial writes — the rows its invariants were protecting — and
+  then commits them. Wrap it instead:
 
   ```ts
   try {
@@ -403,9 +403,13 @@ operations + the `ModuleRegistration`. Keep the split — the linter and tests e
 
   A succeeded `ctx.atomic` is still provisional: if the operation later throws, its writes
   go too. Sub-transactions nest but must not interleave — starting two concurrently throws.
-  Outside `ctx.atomic`, catching an engine error is forbidden and `boundary-lint` rejects
-  it; there is no escape hatch, because there is no good reason to swallow one unprotected.
-  `try`/`finally` with no `catch` is fine, and so is a `catch` that always rethrows.
+  The line is whether the failure still reaches the caller. A catch that **swallows** an
+  engine error — one that does not rethrow — is what needs the boundary, and outside
+  `ctx.atomic` `boundary-lint` rejects it with no escape hatch. A catch that always
+  rethrows (`catch (e) { log(e); throw e }`) needs nothing, and neither does
+  `try`/`finally` with no `catch`: the operation still fails and the whole transaction
+  rolls back, which is already the outcome the rule protects. Reach for `ctx.atomic` when
+  you intend to *continue* past the failure.
 - Portal listing: iterate and `ctx.check(perm, entityRef)` **per entity** — a proof walk,
   not UI filtering.
 - **An entity's history is `readTimeline(ctx, entity, input)` from `@substrat-run/kernel`** —

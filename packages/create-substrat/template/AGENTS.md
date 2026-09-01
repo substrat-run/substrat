@@ -146,11 +146,12 @@ consumers). Rules 1–5 are enforced mechanically by `boundary-lint`.
     fails at *runtime* (`expected a Zod schema`) with an error pointing nowhere near the
     cause.
 
-## Catching an engine error requires `ctx.atomic`
+## Swallowing an engine error requires `ctx.atomic`
 
-An engine call composed inside your transaction has no boundary of its own. A bare `catch`
-around it leaves you holding its partial writes — the rows its invariants were protecting —
-and then commits them. Give the call a boundary instead:
+An engine call composed inside your transaction has no boundary of its own. A `catch` that
+handles the failure and carries on therefore leaves you holding the engine's partial
+writes — the rows its invariants were protecting — and then commits them. Give the call a
+boundary instead:
 
 ```ts
 try {
@@ -164,11 +165,16 @@ try {
 A succeeded `ctx.atomic` is still provisional: if the operation later throws, its writes go
 too. Sub-transactions nest but must not interleave — starting two concurrently throws.
 
-Outside `ctx.atomic`, catching an engine error is forbidden and `boundary-lint` rejects it,
-with **no** escape hatch — there is no legitimate reason to swallow one unprotected.
-`try`/`finally` with no `catch` is fine, and so is a `catch` that always rethrows
-(`catch (e) { log(e); throw e }`): the operation still fails and the whole transaction rolls
-back, which is the outcome the rule is protecting.
+The line is whether the failure still reaches the caller. A catch that **swallows** an
+engine error — one that does not rethrow — is what needs the boundary, and outside
+`ctx.atomic` `boundary-lint` rejects it with **no** escape hatch. A catch that always
+rethrows (`catch (e) { log(e); throw e }`) needs nothing, and neither does `try`/`finally`
+with no `catch`: the operation still fails and the whole transaction rolls back, which is
+already the outcome the rule protects. `ctx.atomic` is what you reach for when you intend
+to *continue* past the failure.
+
+"Always rethrows" is read literally — the catch's last statement is the `throw`. A `throw`
+buried in an `if` block is not that, because the catch runs on past it.
 
 ## Declare every link edge
 
