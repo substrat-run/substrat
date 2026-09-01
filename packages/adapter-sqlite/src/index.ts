@@ -344,6 +344,13 @@ export interface SqliteScopeHostOptions {
    * absence window to lapse, a metering period to roll, or a booking hold to
    * expire cannot get there by waiting. Hand in a frozen or scripted clock and
    * the interesting case becomes assertable.
+   *
+   * It is also what the host itself judges elapsed time against (#956), not only
+   * what module code reads: tuple expiry in the built-in checker — so a grant with
+   * an `expiresAt` actually stops granting when the clock passes it — plus session
+   * expiry, entitlement expiry, schedule cadence and a migration's `applied_at`.
+   * Wall-clock writes that only stamp *when something happened* (an outbox row, an
+   * admin-log entry) are untouched and stay on the real clock.
    */
   clock?: Clock;
 }
@@ -981,6 +988,10 @@ export class SqliteScopeHost implements ScopeHost {
         directory: this.directory,
         scopeDb: (scopeId) => this.scopesById.get(scopeId)?.db,
         getRole: (tenantId, key) => this.roles.get(`${tenantId}/${key}`),
+        // #956: the evaluator judges `expires_at` against the host's clock, so a
+        // scripted one can actually expire a grant. A caller-supplied `checker`
+        // keeps its own time source — this only binds the built-in one.
+        clock: () => this.clock(),
       });
     this.admin = this.buildAdmin();
   }
@@ -2813,7 +2824,7 @@ export class SqliteScopeHost implements ScopeHost {
     // holds a live `system:<moduleId>` grant. This is what makes a foreign-vertical
     // scope (one this module was never provisioned on) a quiet no-op, and what makes
     // "disable scheduling for this tenant" a plain grant revoke — no error, no run.
-    const nowIso = new Date().toISOString();
+    const nowIso = this.clock();
     const hasGrant = rt.db
       .prepare(
         `SELECT 1 FROM _substrat_tuples
@@ -2832,7 +2843,7 @@ export class SqliteScopeHost implements ScopeHost {
        )`,
     );
 
-    const now = Date.now();
+    const now = Date.parse(nowIso);
     for (const schedule of mod.schedules) {
       const row = rt.db
         .prepare('SELECT last_run_at FROM _substrat_schedule_state WHERE schedule_op = ?')
@@ -3936,13 +3947,13 @@ export class SqliteScopeHost implements ScopeHost {
            WHERE tenant_id = ? AND entitlement_key = ?
              AND (expires_at IS NULL OR expires_at > ?)`,
         )
-        .get(tenantId, key, new Date().toISOString()) !== undefined
+        .get(tenantId, key, this.clock()) !== undefined
     );
   }
 
   /** Every key the tenant is granted, expiry flagged — the "held" half of a denial (#691). */
   private heldEntitlements(tenantId: TenantId): { key: string; expired: boolean }[] {
-    const now = new Date().toISOString();
+    const now = this.clock();
     return (
       this.directory
         .prepare(
@@ -7538,7 +7549,7 @@ export class SqliteScopeHost implements ScopeHost {
             `SELECT entitlement_key, plan, quota, expires_at FROM _substrat_entitlements
              WHERE tenant_id = ? AND entitlement_key = ? AND (expires_at IS NULL OR expires_at > ?)`,
           )
-          .get(rt.tenantId, key, new Date().toISOString()) as
+          .get(rt.tenantId, key, this.clock()) as
           | { entitlement_key: string; plan: string | null; quota: number | null; expires_at: string | null }
           | undefined;
         return row
@@ -7551,7 +7562,7 @@ export class SqliteScopeHost implements ScopeHost {
             `SELECT entitlement_key, plan, quota, expires_at FROM _substrat_entitlements
              WHERE tenant_id = ? AND (expires_at IS NULL OR expires_at > ?)`,
           )
-          .all(rt.tenantId, new Date().toISOString()) as {
+          .all(rt.tenantId, this.clock()) as {
           entitlement_key: string;
           plan: string | null;
           quota: number | null;
@@ -7628,7 +7639,7 @@ export class SqliteScopeHost implements ScopeHost {
                 .prepare(
                   'INSERT INTO _substrat_migrations (module_id, version, applied_at) VALUES (?, ?, ?)',
                 )
-                .run(moduleId, migration.version, new Date().toISOString());
+                .run(moduleId, migration.version, this.clock());
             }
             rt.db.exec('COMMIT');
           } catch (err) {
