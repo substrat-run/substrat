@@ -61,10 +61,12 @@ The lifecycle:
                    ┌──────────── snoozed ────────────┐
                    │  (wakes on a timer or a reply)  │
                    ▼                                 │
-  new ──────► open ──────────────────────────► resolved ──────► closed
-               ▲                                  │
-               └────────── reopened ──────────────┘
-                     (customer replies again)
+  new ──────► open ──────────────────────────► resolved
+   │           ▲ │                                │ │
+   │           └─┼──────── reopened ──────────────┘ │
+   │             │   (customer replies again)       │
+   │             ▼                                  ▼
+   └───────────────────────────────────────────► closed
 ```
 
 - **new → open** happens the moment anyone — assistant or human — takes it seriously.
@@ -72,11 +74,18 @@ The lifecycle:
 - **resolved is not the end.** A customer who replies to a resolved conversation reopens
   it, in the same thread, with the same history. This is the single most important thing
   about the lifecycle and the reason a conversation is *not* a work order (section 3).
-- **closed** is the end, and only time or a human puts it there.
+- **closed** is the end, and only a human puts it there — from anywhere.
 
-Two transitions must not be skippable, and they are the ones a naive implementation gets
-wrong: nothing reaches `resolved` without at least one public reply having been sent, and
-nothing reaches `closed` except from `resolved`.
+One transition must not be skippable, and it is the one a naive implementation gets
+wrong: nothing reaches `resolved` without at least one public reply having been sent.
+
+**Closing is not resolving, and that is why closing is unconditional.** A desk gets
+threads it will never answer — a widget somebody opened and walked away from, a spam
+message, a duplicate. Requiring `resolved` on the way to `closed` sounds tidy and traps
+every one of them: unanswerable, so unresolvable, so in the inbox for good. The two verbs
+are told apart by what they write instead. Only `resolve` stamps `resolved_at`, and the
+reports count that stamp rather than the state — so a conversation closed straight out of
+`new` leaves the desk's answered-work numbers exactly where they were.
 
 Conversations also **merge** — the same person asking the same thing twice in two channels
 is one problem, not two. A merged conversation keeps its history and forwards to its

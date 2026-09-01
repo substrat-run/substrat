@@ -901,7 +901,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   // ─── The inbox ───────────────────────────────────────────────────────────────
 
   'ticket0/list-conversations': {
-    summary: 'The desk’s conversations',
+    summary: 'The desk’s conversations — everything but the closed ones, unless asked',
     permission: 'conversation:read',
     /**
      * The filters, declared as INPUT as well as `filterable`.
@@ -927,6 +927,20 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       // whole of "what did this customer write last time" — a person found through
       // `search-contacts`, then their history — so it is wired rather than dropped.
       contact_id: z.string().optional(),
+      /**
+       * The default is NOT "every conversation" — it is every conversation that is
+       * not `closed`, and this is the flag that says otherwise.
+       *
+       * An inbox whose default is literally everything grows monotonically and can
+       * never be emptied: closing a thread bumps `updated_at`, so the sort this
+       * screen defaults to puts the thing you just got rid of at the top. The
+       * exclusion is stated here rather than left to the screen because a default
+       * a caller cannot see is a default the API is lying about.
+       *
+       * `state` still wins when it is given — asking for `state=closed` means
+       * closed, flag or no flag. This one only widens the unfiltered read.
+       */
+      include_closed: z.boolean().optional(),
     }),
     output: ticket0Entities.conversation.fields,
     paged: {
@@ -1290,8 +1304,26 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
   },
 
+  /**
+   * Close, from wherever it stands.
+   *
+   * Reachable from every non-terminal state, deliberately, and that is a REVERSAL of
+   * the original machine — which admitted `closed` only from `resolved`. The reversal
+   * is what a desk needs and the old shape could not give: an empty thread, a spam
+   * one, a widget session somebody opened and abandoned, is never going to earn a
+   * public reply, and `ticket0/resolve` refuses without one. So it could not be
+   * resolved and therefore could not be closed — a conversation with no way out of
+   * the inbox at all.
+   *
+   * What the reversal does NOT do is launder a metric. `resolved_at` is written by
+   * `ticket0/resolve` and by nothing else, so a conversation closed straight from
+   * `new` carries none, and the reports — which count `resolved_at`, not `state` —
+   * still count only the conversations somebody actually answered. Closing is the
+   * desk saying "not ours to answer"; resolving is the desk saying "answered". The
+   * two were conflated only because one was the sole route to the other.
+   */
   'ticket0/close': {
-    summary: 'Close a resolved conversation for good',
+    summary: 'Close a conversation for good, answered or not',
     permission: { key: 'conversation:resolve', entity: 'conversation', idFrom: 'conversationId' },
     input: z.object({ conversationId: z.string() }),
     output: ticket0Entities.conversation.fields,
@@ -2285,7 +2317,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
  * appear under `allow`, because tagging, noting and assigning change no state, and a
  * format with only edges would draw a self-loop for every one of them.
  *
- * The three things worth reading twice:
+ * The four things worth reading twice:
  *
  *  1. **`resolved` is not terminal.** `ticket0/ingest-message` is an edge out of it,
  *     back to `open` — a customer replying to a resolved conversation reopens it, in
@@ -2296,6 +2328,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
  *     public reply has been sent" is a condition, and an edge cannot carry one. That
  *     rule is a guard, wired in the manifest and evaluated inside `ticket0/resolve`'s
  *     own transaction. The moment an edge can carry a condition, this is BPMN.
+ *  4. **`closed` is reachable from every state, not only from `resolved`.** It was
+ *     once reachable only from `resolved`, and that combined with rule 3 to trap a
+ *     conversation nobody would ever reply to: unanswerable, therefore unresolvable,
+ *     therefore in the inbox for good. The two verbs are kept apart by what they
+ *     WRITE rather than by where they sit — only `ticket0/resolve` stamps
+ *     `resolved_at`, and the reports count that stamp — so an escape hatch out of
+ *     the inbox cannot be mistaken for work done.
  */
 export const ticket0Lifecycles = defineLifecycles(
   ticket0Entities,
@@ -2310,6 +2349,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/post-public-reply': 'open',
           'ticket0/assign': 'open',
           'ticket0/resolve': 'resolved',
+          'ticket0/close': 'closed',
         },
         allow: [
           'ticket0/post-note',
@@ -2327,6 +2367,7 @@ export const ticket0Lifecycles = defineLifecycles(
         on: {
           'ticket0/snooze': 'snoozed',
           'ticket0/resolve': 'resolved',
+          'ticket0/close': 'closed',
         },
         allow: [
           'ticket0/post-public-reply',
@@ -2349,6 +2390,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/ingest-message': 'open',
           'ticket0/widget-post': 'open',
           'ticket0/resolve': 'resolved',
+          'ticket0/close': 'closed',
         },
         allow: [
           'ticket0/post-note',

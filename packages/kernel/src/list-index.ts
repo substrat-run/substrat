@@ -308,6 +308,10 @@ export interface ListQueryParams {
   readonly sort?: string;
   readonly order?: 'asc' | 'desc';
   readonly cursor?: string;
+  /**
+   * Narrowing, per declared column. A scalar is an equality; an ARRAY is the set
+   * of permitted values (`IN`), and an empty array permits none of them.
+   */
   readonly filters?: Readonly<Record<string, unknown>>;
 }
 
@@ -364,6 +368,27 @@ export function listQuery(plan: ListIndexPlan, params: ListQueryParams): Compose
   for (const [column, value] of filters) {
     if (!plan.filterable.includes(column)) {
       throw new FilterNotDeclared(plan.entityType, column, plan.filterable);
+    }
+    // A SET of permitted values, not a second operator.
+    //
+    // Equality is the only predicate this composes, because `filterable`
+    // provisions an index per column and a set of equalities still uses it. What
+    // an array buys is the read a single `=` cannot state at all: "every state
+    // except the terminal one" — ticket0's inbox, which must not surface closed
+    // conversations by default and has four states that are not `closed`. The
+    // alternative was four requests whose pages cannot be merged, or a `!=` that
+    // would make `filterable` mean something wider than "indexed equality".
+    if (Array.isArray(value)) {
+      // An empty set permits nothing, and that is a fact, not a mistake: a caller
+      // that narrowed to nothing gets no rows rather than every row, which is what
+      // dropping the clause would quietly hand back.
+      if (value.length === 0) {
+        where.push('0 = 1');
+        continue;
+      }
+      where.push(`${column} IN (${value.map(() => '?').join(', ')})`);
+      args.push(...value);
+      continue;
     }
     where.push(`${column} = ?`);
     args.push(value);

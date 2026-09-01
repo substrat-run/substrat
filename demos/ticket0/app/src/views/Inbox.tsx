@@ -79,9 +79,14 @@ const EMPTY: Filters = { state: '', assignee: '', channel: '', priority: '', con
 const OPTIONS: { key: keyof Filters; label: string; values: [string, string][] }[] = [
   {
     key: 'state',
+    // The empty value is 'Active', not 'All', because that is what the read
+    // actually returns: `list-conversations` leaves `closed` out unless a state
+    // names it or `include_closed` asks for it. Labelling it 'All' beside a
+    // 'Closed' option that shows rows the 'All' did not would be the screen
+    // describing a filter the API does not have.
     label: 'State',
     values: [
-      ['', 'All'],
+      ['', 'Active'],
       ['new', 'New'],
       ['open', 'Open'],
       ['snoozed', 'Snoozed'],

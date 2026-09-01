@@ -46,6 +46,7 @@ interface Conversation {
   state: string;
   contact_id: string;
   first_public_reply_at: string | null;
+  resolved_at: string | null;
   assignee: string | null;
   priority: string;
   merged_into: string | null;
@@ -557,7 +558,7 @@ describe('search finds a thread, and a person', () => {
 
 // ---------------------------------------------------------------------------
 
-describe('the lifecycle, and the two things it will not do', () => {
+describe('the lifecycle, what it will not do, and the way out', () => {
   it('a conversation with no reply yet cannot be resolved', async () => {
     // A fresh one, so the reply already sent is not in the way.
     const relay = await at(world.substrat, 'relay');
@@ -574,6 +575,80 @@ describe('the lifecycle, and the two things it will not do', () => {
     await expect(
       anna.invoke('ticket0/resolve', { conversationId: fresh.conversation_id }),
     ).rejects.toThrow(/reply before resolving/i);
+  });
+
+  /**
+   * The escape hatch, and the reason it has to be one.
+   *
+   * The case above is the whole problem: a thread nobody will ever answer cannot be
+   * resolved, and `closed` used to be reachable only from `resolved`. So the desk's
+   * abandoned widget sessions and its spam had no exit at all. Close is now an edge
+   * out of every live state, and this asserts it from the worst one — `new`, with no
+   * reply, no assignee and nothing done to it.
+   */
+  it('an unanswerable conversation can be closed straight from `new`', async () => {
+    const relay = await at(world.substrat, 'relay');
+    const abandoned = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'noreply@spam.example',
+      contactName: 'Nobody',
+      subject: 'WIN A PRIZE',
+      bodyText: 'click here',
+      emailMessageId: '<spam-1@mail.example>',
+    })) as Message;
+
+    const anna = await at(world.substrat, 'agent');
+    const before = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: abandoned.conversation_id,
+    })) as Conversation;
+    expect(before.state).toBe('new');
+
+    const closed = (await anna.invoke('ticket0/close', {
+      conversationId: abandoned.conversation_id,
+    })) as Conversation;
+    expect(closed.state).toBe('closed');
+    // Closing is not answering. The stamp the reports count stays unwritten, so an
+    // inbox emptied this way moves no metric.
+    expect(closed.resolved_at).toBeNull();
+    expect(closed.first_public_reply_at).toBeNull();
+  });
+
+  /**
+   * And the half that makes closing mean anything to the person doing it: the thread
+   * leaves the default inbox. Without this, closing bumps `updated_at` and the sort
+   * this screen defaults to puts the thing you just got rid of at the TOP.
+   */
+  it('a closed conversation leaves the inbox, and comes back only when asked', async () => {
+    const relay = await at(world.substrat, 'relay');
+    const doomed = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'ghost@customer.example',
+      contactName: 'Ghost',
+      subject: 'Opened the widget and walked away',
+      bodyText: '',
+      emailMessageId: '<ghost-1@mail.example>',
+    })) as Message;
+    const anna = await at(world.substrat, 'agent');
+
+    const ids = async (input: Record<string, unknown>): Promise<string[]> => {
+      const page = (await anna.invoke(
+        'ticket0/list-conversations',
+        input,
+      )) as CountedPage<Conversation>;
+      // The total is asserted against the same set the entries came from: a count of
+      // the whole desk beside a filtered page is the number nobody notices is wrong.
+      expect(page.total).toBe(page.entries.length);
+      return page.entries.map((c) => c.id);
+    };
+
+    expect(await ids({ limit: 100 })).toContain(doomed.conversation_id);
+
+    await anna.invoke('ticket0/close', { conversationId: doomed.conversation_id });
+
+    expect(await ids({ limit: 100 })).not.toContain(doomed.conversation_id);
+    expect(await ids({ limit: 100, include_closed: true })).toContain(doomed.conversation_id);
+    // An explicit state outranks the default — asking for closed still means closed.
+    expect(await ids({ limit: 100, state: 'closed' })).toContain(doomed.conversation_id);
   });
 
   it('a resolved conversation reopens when the customer writes again', async () => {
