@@ -1,5 +1,25 @@
 # @substrat-run/vertical-host
 
+## 0.96.0
+
+### Minor Changes
+
+- 218d39a: `mountPublicSurface` — a surface anybody's browser may call, from a page the vertical never
+  served. It mounts a route group that runs as one service principal the vertical names, with
+  no authenticated caller anywhere in the path, and answers CORS in middleware from an async
+  resolver read per request — including the preflight, which is the first place a live
+  embedding allowlist has to be true. An unlisted origin is refused before the handler, so
+  withholding `access-control-allow-origin` is not the only thing standing between a leaked
+  session token and a write.
+
+### Patch Changes
+
+- d0cde56: `/internal/reconcile` now runs the vertical's own `onProvision` hook after the kernel half, so a repair repairs everything a provision creates. Before this it re-projected roles and re-seated the owner and stopped, which meant anything a vertical mints for itself — service principals, a site registration — could never reach a scope that predated it: `/internal/provision` is called at install and never again. Hooks are already required to be idempotent, so this asks nothing new of one.
+- Updated dependencies [db5a3da]
+  - @substrat-run/contracts@0.96.0
+  - @substrat-run/kernel@0.96.0
+  - @substrat-run/model-providers@0.3.2
+
 ## 0.95.1
 
 ### Patch Changes

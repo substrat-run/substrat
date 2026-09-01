@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-callout",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "private": true,
   "license": "Apache-2.0",
   "description": "FSM demo vertical (Callout) — see spec/testrun.md",

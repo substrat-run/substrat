@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/engine-absence",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Substrat engine: approved absence — an append-only entry ledger over an opaque subject, balance as a fold, approval as a state machine",
   "license": "AGPL-3.0-only",
   "repository": {
