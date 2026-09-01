@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-57 operations · 25 narrowed checks · 25 conformance pairs driven
+59 operations · 25 narrowed checks · 25 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -98,7 +98,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 31 | `ticket0/add-kb-source`, `ticket0/assistant-health`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/create-saved-reply`, `ticket0/delete-saved-reply`, `ticket0/desk-metrics`, `ticket0/get-desk`, `ticket0/get-saved-reply`, `ticket0/ingest-message`, `ticket0/list-agents`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-kb-sources`, `ticket0/list-saved-replies`, `ticket0/list-tags`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/read-outbound`, `ticket0/record-delivery`, `ticket0/rotate-verification-secret`, `ticket0/search-kb`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/update-saved-reply`, `ticket0/usage-summary`, `ticket0/wake-snoozed`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
+| Node-level check | 33 | `ticket0/add-kb-source`, `ticket0/assistant-health`, `ticket0/close-usage-period`, `ticket0/configure-desk`, `ticket0/create-saved-reply`, `ticket0/delete-saved-reply`, `ticket0/desk-metrics`, `ticket0/get-desk`, `ticket0/get-saved-reply`, `ticket0/ingest-message`, `ticket0/list-agents`, `ticket0/list-contacts`, `ticket0/list-conversations`, `ticket0/list-kb-sources`, `ticket0/list-saved-replies`, `ticket0/list-tags`, `ticket0/mark-notification-read`, `ticket0/my-notifications`, `ticket0/read-outbound`, `ticket0/record-delivery`, `ticket0/rotate-verification-secret`, `ticket0/search-contacts`, `ticket0/search-conversations`, `ticket0/search-kb`, `ticket0/set-agent-profile`, `ticket0/set-usage-rate`, `ticket0/update-saved-reply`, `ticket0/usage-summary`, `ticket0/wake-snoozed`, `ticket0/widget-origins`, `ticket0/widget-post`, `ticket0/widget-start`, `ticket0/widget-thread` |
 | Per-entity proof walk (`narrows`) | 1 | `ticket0/my-conversations` |
 
 ## 5. Not covered by this artifact

@@ -364,6 +364,112 @@ describe('internal notes stay internal', () => {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Finding a thread at all (#1081).
+ *
+ * The desk could narrow the inbox on six columns and could not answer the question an
+ * agent actually starts from — "the thread about the failed export", "what did this
+ * customer write last time". Placed after the notes block on purpose: by now there is
+ * an internal note to match on, which is what makes the visibility assertion mean
+ * something rather than pass vacuously.
+ */
+describe('search finds a thread, and a person', () => {
+  it('a word from the SUBJECT finds the conversation', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const found = (await anna.invoke('ticket0/search-conversations', {
+      q: 'migration',
+    })) as Page<Conversation>;
+    expect(found.entries.map((c) => c.id)).toContain(story.conversation);
+  });
+
+  it('and so does a word only an INTERNAL note contains — for staff', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const found = (await anna.invoke('ticket0/search-conversations', {
+      q: 'enterprise plan',
+    })) as Page<Conversation>;
+    // The conversation comes back. The note does not: a hit is the thread, never the
+    // text that matched, so a search result can carry nothing of a note out.
+    expect(found.entries.map((c) => c.id)).toContain(story.conversation);
+    expect(found.entries.every((c) => !('body_text' in c))).toBe(true);
+  });
+
+  it('a word nobody wrote finds nothing', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const found = (await anna.invoke('ticket0/search-conversations', {
+      q: 'zeppelin',
+    })) as Page<Conversation>;
+    expect(found.entries).toHaveLength(0);
+  });
+
+  /**
+   * `%` is a wildcard inside a `LIKE` pattern, so an unescaped one matches the whole
+   * desk. Two of them are a term nobody typed into a subject, and the answer has to be
+   * "nothing" rather than "everything".
+   */
+  it('a wildcard character is a character, not a wildcard', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const found = (await anna.invoke('ticket0/search-conversations', {
+      q: '%%',
+    })) as Page<Conversation>;
+    expect(found.entries).toHaveLength(0);
+  });
+
+  it('the declared filters still narrow a search', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const wrongChannel = (await anna.invoke('ticket0/search-conversations', {
+      q: 'migration',
+      channel: 'email',
+    })) as Page<Conversation>;
+    // The story's conversation came in through the widget, so a search filtered to
+    // email must not return it — a filter that quietly widens is worse than none.
+    expect(wrongChannel.entries.map((c) => c.id)).not.toContain(story.conversation);
+  });
+
+  it('another desk’s words are not findable — not filtered out, not present', async () => {
+    const omar = await at(world.kestrel, 'agent');
+    const found = (await omar.invoke('ticket0/search-conversations', {
+      q: 'enterprise plan',
+    })) as Page<Conversation>;
+    expect(found.entries).toHaveLength(0);
+  });
+
+  it('a customer cannot search the desk at all', async () => {
+    const priya = await at(world.substrat, 'customer');
+    await expect(
+      priya.invoke('ticket0/search-conversations', { q: 'enterprise plan' }),
+    ).rejects.toThrow(/permission denied/i);
+  });
+
+  it('a person is findable by the address they gave, and their history follows', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const people = (await anna.invoke('ticket0/search-contacts', {
+      // Half the address, because a lookup nobody can spell in full is the point.
+      q: world.substrat.customer.email.split('@')[0]!,
+    })) as Page<{ id: string; email: string | null }>;
+    const priya = people.entries.find((c) => c.email === world.substrat.customer.email);
+    expect(priya).toBeDefined();
+
+    // The second half of "what did this customer write last time": `contact_id` was
+    // filterable from the start and had no input beside it, so the parameter reached
+    // no handler until now.
+    const theirs = (await anna.invoke('ticket0/list-conversations', {
+      contact_id: priya!.id,
+    })) as CountedPage<Conversation>;
+    expect(theirs.entries.length).toBeGreaterThan(0);
+    expect(theirs.entries.every((c) => c.contact_id === priya!.id)).toBe(true);
+    expect(theirs.entries.map((c) => c.id)).toContain(story.conversation);
+  });
+
+  it('a customer cannot look up other people', async () => {
+    const priya = await at(world.substrat, 'customer');
+    await expect(priya.invoke('ticket0/search-contacts', { q: 'kestrel' })).rejects.toThrow(
+      /permission denied/i,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+
 describe('the lifecycle, and the two things it will not do', () => {
   it('a conversation with no reply yet cannot be resolved', async () => {
     // A fresh one, so the reply already sent is not in the way.

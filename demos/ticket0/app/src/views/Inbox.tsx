@@ -38,7 +38,20 @@ interface Filters {
   assignee: string;
   channel: string;
   priority: string;
+  /** Not a chip — set by picking a person out of the search results (#1081). */
+  contact_id: string;
 }
+
+/**
+ * The floor the two search operations declare (`q: z.string().min(2)`).
+ *
+ * Below it the box is a box and nothing is asked for, rather than a request that
+ * comes back 400 on every second keystroke.
+ */
+const SEARCH_MIN = 2;
+
+/** How long the box waits for typing to stop. A request per keystroke is not a search. */
+const SEARCH_DEBOUNCE_MS = 200;
 
 /** Drop the empties; the rest is exactly the operation's declared input. */
 const asked = (f: Filters) =>
@@ -46,7 +59,22 @@ const asked = (f: Filters) =>
     typeof api.listConversations
   >[0];
 
-const EMPTY: Filters = { state: '', assignee: '', channel: '', priority: '' };
+/**
+ * The same narrowings, minus the one the search read does not declare.
+ *
+ * `contact_id` is a filter on the WALK — one person's history — and the search is
+ * free text across the desk. Picking a person clears the box and typing clears the
+ * person, so the two never both apply; this cast is what keeps that true at the
+ * type level rather than by hoping.
+ */
+const askedForSearch = (f: Filters, q: string) => {
+  const { contact_id: _person, ...rest } = f;
+  return { q, ...asked({ ...rest, contact_id: '' }) } as Parameters<
+    typeof api.searchConversations
+  >[0];
+};
+
+const EMPTY: Filters = { state: '', assignee: '', channel: '', priority: '', contact_id: '' };
 
 const OPTIONS: { key: keyof Filters; label: string; values: [string, string][] }[] = [
   {
@@ -92,6 +120,11 @@ export function Inbox({
   go: (v: View) => void;
 }) {
   const [filters, setFilters] = useState<Filters>({ ...EMPTY });
+  /** What is in the box, and what has been asked for — not the same thing mid-word. */
+  const [q, setQ] = useState('');
+  const [term, setTerm] = useState('');
+  /** People whose email or name matches the term. The "who is this" half of #1081. */
+  const [matches, setMatches] = useState<Contact[]>([]);
   const [page, setPage] = useState<{ entries: Conversation[]; total: number | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
@@ -124,8 +157,11 @@ export function Inbox({
     (fromFilters = false) => {
       if (fromFilters) setPage(null);
       const seq = ++latest.current;
-      api
-        .listConversations(asked(filters))
+      const searching = term.length >= SEARCH_MIN;
+      (searching
+        ? api.searchConversations(askedForSearch(filters, term))
+        : api.listConversations(asked(filters))
+      )
         .then((p) => {
           if (seq !== latest.current) return;
           setPage({ entries: p.entries, total: p.total });
@@ -141,7 +177,7 @@ export function Inbox({
           setError(e.message);
         });
     },
-    [filters],
+    [filters, term],
   );
 
   // A filter change blanks the list; a background tick must not.
@@ -151,6 +187,39 @@ export function Inbox({
     void contacts().then(setPeople);
     void agents().then(setStaff);
   }, []);
+
+  /** Typing settles into a term. Everything downstream hangs off `term`, never `q`. */
+  useEffect(() => {
+    const trimmed = q.trim();
+    const id = setTimeout(() => setTerm(trimmed), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(id);
+  }, [q]);
+
+  /**
+   * The people half of the search, kept beside the conversations rather than behind a
+   * tab: "what did this customer write last time" is one question, and answering it
+   * in two places is how a support agent ends up in the database.
+   */
+  useEffect(() => {
+    if (term.length < SEARCH_MIN) {
+      setMatches([]);
+      return;
+    }
+    let live = true;
+    api
+      .searchContacts({ q: term })
+      .then((p) => {
+        if (live) setMatches(p.entries);
+      })
+      // A desk whose agent cannot read contacts still gets the conversation search.
+      // A banner about the half that is not theirs would be noise.
+      .catch(() => {
+        if (live) setMatches([]);
+      });
+    return () => {
+      live = false;
+    };
+  }, [term]);
 
   /**
    * Hand one conversation over from the list — the bulk control, in the sense that
@@ -200,7 +269,22 @@ export function Inbox({
     );
 
   const mine = filters.assignee === session.principal;
-  const active = Object.values(filters).some(Boolean);
+  const active = Object.values(filters).some(Boolean) || term.length >= SEARCH_MIN;
+  const searching = term.length >= SEARCH_MIN;
+  const person = filters.contact_id ? people.get(filters.contact_id) : undefined;
+
+  /** Typing is a desk-wide search; it and one person's history are not both true. */
+  const type = (value: string) => {
+    setQ(value);
+    if (filters.contact_id) setFilters((f) => ({ ...f, contact_id: '' }));
+  };
+
+  /** Picking a person is the other question, so it puts the box down. */
+  const pick = (contactId: string) => {
+    setQ('');
+    setTerm('');
+    setFilters((f) => ({ ...f, contact_id: contactId }));
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22, width: 1360, maxWidth: '100%' }}>
@@ -221,6 +305,30 @@ export function Inbox({
             <div className="chip">{page?.total ?? page?.entries.length ?? '—'}</div>
           </div>
 
+          {/*
+            The primary navigation, not a refinement of the list — which is why it sits
+            in the header beside the count rather than under the chips. It searches the
+            subject and every message body on the server; two characters is the floor
+            the operation declares.
+          */}
+          <input
+            value={q}
+            onChange={(e) => type(e.target.value)}
+            placeholder="Search conversations and people…"
+            aria-label="Search conversations and people"
+            style={{
+              flex: '1 1 240px',
+              maxWidth: 360,
+              font: "400 13px 'Geist', sans-serif",
+              color: 'var(--text)',
+              background: 'var(--app-bg)',
+              border: '1px solid var(--frame)',
+              borderRadius: 6,
+              padding: '6px 10px',
+              outline: 'none',
+            }}
+          />
+
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             {/* The agent's own queue. First, because it is the one most used. */}
             <Chip
@@ -240,13 +348,56 @@ export function Inbox({
                 onChange={(v) => setFilters((f) => ({ ...f, [o.key]: v }))}
               />
             ))}
+            {/* A picked person is a filter with no chip of its own, so it gets one —
+                otherwise the list is narrowed and the screen never says by whom. */}
+            {filters.contact_id ? (
+              <Chip active onClick={() => setFilters((f) => ({ ...f, contact_id: '' }))}>
+                {person ? nameOf(person) : 'One person'} ✕
+              </Chip>
+            ) : null}
             {active ? (
-              <button className="btn btn-ghost" onClick={() => setFilters({ ...EMPTY })}>
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setFilters({ ...EMPTY });
+                  setQ('');
+                  setTerm('');
+                }}
+              >
                 Clear
               </button>
             ) : null}
           </div>
         </div>
+
+        {/*
+          The "who is this" half. A match on a person is not a conversation, so it is
+          not smuggled into the list — it is its own strip, and picking one narrows the
+          inbox to that person's history through the walk's own `contact_id` filter.
+        */}
+        {searching && matches.length > 0 ? (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              flexWrap: 'wrap',
+              padding: '10px 20px',
+              background: 'var(--surface)',
+              borderBottom: '1px solid var(--hairline)',
+            }}
+          >
+            <span className="micro-6" style={{ color: 'var(--muted)' }}>
+              People
+            </span>
+            {matches.map((c) => (
+              <Chip key={c.id} active={false} onClick={() => pick(c.id)}>
+                {nameOf(c)}
+                {c.email ? <span style={{ color: 'var(--muted)' }}> · {c.email}</span> : null}
+              </Chip>
+            ))}
+          </div>
+        ) : null}
 
         <div
           className="micro-6"
@@ -274,7 +425,14 @@ export function Inbox({
             <Empty title="Loading…" />
           ) : page.entries.length === 0 ? (
             active ? (
-              <Empty title="Nothing matches those filters" note="Clear them to see the whole desk." />
+              <Empty
+                title={searching ? `Nothing matches “${term}”` : 'Nothing matches those filters'}
+                note={
+                  searching
+                    ? 'Subjects and message bodies were both searched.'
+                    : 'Clear them to see the whole desk.'
+                }
+              />
             ) : (
               <Empty
                 title="Zero open conversations"
@@ -323,7 +481,7 @@ export function Inbox({
         >
           <span className="t-small">
             Showing {page?.entries.length ?? 0} of {page?.total ?? page?.entries.length ?? 0}
-            {active ? ' matching' : ''} · sorted by last activity
+            {active ? ' matching' : ''} · sorted by {searching ? 'newest first' : 'last activity'}
           </span>
           <span className="t-small mono" style={{ letterSpacing: '.02em' }}>
             J / K to move · O to open
