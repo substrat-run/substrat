@@ -14,9 +14,11 @@
 // below was checked against the repo — the demo table in verticals/index.md, the
 // engine list in engines/index.md, and the packages themselves.
 
-// The eight demo verticals, in the order they make the argument. `kernel` marks
-// the ones that compose no engine at all: three of eight, which is the strongest
-// evidence that an engine is an option rather than a tax.
+// The eight demo verticals, in the order they make the argument. `kernel` marks the
+// three whose CORE domain no engine matched: Manyfold and Todo compose nothing at all,
+// and Meridian composes `protocol` only for onboarding, at the edge of a domain — leave,
+// time and expenses — that is vertical code on the kernel. Three of eight, which is the
+// strongest evidence that an engine is an option rather than a tax.
 const demos = [
   {
     name: 'Callout', domain: 'field service', layer: 'engine', href: '/verticals/callout',
@@ -166,7 +168,7 @@ const didnt: [string, string][] = [
   ],
   [
     'No transaction management',
-    'The operation is the transaction. The throw on line 8 rolls back the rows, the events, and any platform intent it had enqueued.',
+    'The operation is the transaction. The throw rolls back the rows, the events, and any platform intent it had enqueued.',
   ],
   [
     'No lock, no retry loop',
@@ -225,9 +227,9 @@ const repo = 'https://github.com/substrat-run/substrat';
         <h1>Build almost any business app.</h1>
         <p class="lede">
           Field service, HR, court bookings, a CMS, a coffee shop, a support desk —
-          eight demo verticals on one kernel, and three of them compose no engine at
-          all. Tenancy, identity, permissions, audit and GDPR come with the
-          foundation instead of with your discipline.
+          eight demo verticals on one kernel, and three of them run their core domain
+          on the kernel alone. Tenancy, identity, permissions, audit and GDPR come
+          with the foundation instead of with your discipline.
         </p>
         <div class="cta-row">
           <a class="btn btn-primary" href="/guide/getting-started">Get started</a>
@@ -262,8 +264,8 @@ const repo = 'https://github.com/substrat-run/substrat';
         </a>
       </div>
       <div class="vlegend">
-        <span><i class="layer-kernel" />composes no engine — the kernel alone was enough</span>
-        <span><i class="layer-engine" />composes one or more engines</span>
+        <span><i class="layer-kernel" />core domain on the kernel alone — no engine matched it</span>
+        <span><i class="layer-engine" />composes an engine for its core domain</span>
       </div>
     </section>
 
@@ -362,9 +364,9 @@ const repo = 'https://github.com/substrat-run/substrat';
         <p class="muted lede-narrow">
           They own the invariants that are the same in every business: a state
           machine that can’t skip, an invoice immutable once exported, a booking
-          that can’t double-allocate. <strong>Three of the eight demos above compose
-          none at all</strong> — engines are there when your domain matches one, not
-          a tax when it doesn’t. And no engine talks to a sibling: with <em>N</em>
+          that can’t double-allocate. <strong>Three of the eight demos above need none
+          for their core domain</strong>, and two compose none at all — engines are
+          there when your domain matches one, not a tax when it doesn’t. And no engine talks to a sibling: with <em>N</em>
           engines talking to the kernel there are <em>N</em> contracts to keep
           compatible; between each other there are <em>N</em>².
         </p>
@@ -410,7 +412,7 @@ const repo = 'https://github.com/substrat-run/substrat';
         <div v-for="([title, desc, tag]) in cannots" :key="title" class="lrow">
           <span class="lx">✕</span>
           <span class="ltitle">{{ title }}</span>
-          <span class="muted sm">{{ desc }}</span>
+          <span class="muted sm ldesc">{{ desc }}</span>
           <span class="ltag">{{ tag }}</span>
         </div>
       </div>
@@ -1241,6 +1243,12 @@ h2 {
   }
   .lrow {
     grid-template-columns: 28px minmax(0, 1fr);
+    gap: 6px 14px;
+  }
+  /* Four children in two columns would drop the description into the icon
+     column, so it keeps column 2, under the title. */
+  .lrow .ldesc {
+    grid-column: 2;
   }
   .lrow .ltag {
     display: none;
