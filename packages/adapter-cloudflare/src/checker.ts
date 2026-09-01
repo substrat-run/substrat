@@ -1,6 +1,7 @@
 import {
   objectRef,
   subjectRef,
+  type Coverage,
   type Decision,
   type EntitlementView,
   type EntityRef,
@@ -140,7 +141,88 @@ export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {
   const live = (row: TupleRow, now: string): boolean =>
     (row.expires_at === null || row.expires_at > now) && row.revoked_at === null;
 
+  /**
+   * The subject set a check reasons over: the caller, plus every org it is a live member
+   * of (rule 4). Shared by `check` and `covers`, so the bound and the check cannot
+   * disagree about who someone is — a divergence would compute the bound over a smaller
+   * subject set than the check that later allows the action.
+   *
+   * A CONNECTION has no memberships and never will — it is not a person and belongs to
+   * no org — so the expansion is skipped rather than queried. Its authority is exactly
+   * the grants written against `connection:<id>`.
+   */
+  const subjectsOf = async (
+    subject: CheckSubject,
+    node: Node,
+    now: string,
+  ): Promise<{ ref: string; via?: RelationTuple }[]> => {
+    const selfRef = subjectRef(subject);
+    const out: { ref: string; via?: RelationTuple }[] = [{ ref: selfRef }];
+    if (subject.kind === 'principal') {
+      for (const m of await deps.controlPlane.tenantTuples(node.tenantId, selfRef, 'member')) {
+        if (m.relation === 'member' && live(m, now)) {
+          out.push({ ref: m.object, via: t(m.subject, m.relation, m.object) });
+        }
+      }
+    }
+    return out;
+  };
+
   return {
+    /**
+     * The subject's effective permission set at the node, compared against `required`
+     * (K-21, membership.md §5.1).
+     *
+     * Reads every `role:` and `granted:` tuple for each subject at each level in one
+     * pass rather than re-walking per permission — which matters more here than on the
+     * pure adapter, since each tenant-level read is an RPC to the ControlPlaneDO.
+     *
+     * Entity tuples are never consulted, which is what makes this narrowing-aware: an
+     * entity-narrowed grant has an `entityType:entityId` object and so matches no node
+     * object here, by construction rather than by a filter someone has to remember.
+     */
+    async covers(
+      subject: CheckSubject,
+      required: readonly PermissionKey[],
+      node: Node,
+    ): Promise<Coverage> {
+      if (required.length === 0) return { covered: true, missing: [] };
+
+      const now = new Date().toISOString();
+      const cp = deps.controlPlane;
+      const subjects = await subjectsOf(subject, node, now);
+      const nodeObjects: { obj: string; scoped: boolean }[] = node.scopeId
+        ? [
+            { obj: `scope:${node.scopeId}`, scoped: true },
+            { obj: `tenant:${node.tenantId}`, scoped: false },
+          ]
+        : [{ obj: `tenant:${node.tenantId}`, scoped: false }];
+
+      const held = new Set<string>();
+      for (const nodeObj of nodeObjects) {
+        for (const s of subjects) {
+          const rows = nodeObj.scoped
+            ? scopeTuples(s.ref, '')
+            : await cp.tenantTuples(node.tenantId, s.ref, '');
+          for (const row of rows) {
+            if (row.object !== nodeObj.obj || !live(row, now)) continue;
+            if (row.relation.startsWith('role:')) {
+              const role = await cp.getRole(node.tenantId, row.relation.slice('role:'.length));
+              for (const p of role?.permissions ?? []) held.add(p);
+            } else if (row.relation.startsWith('granted:')) {
+              held.add(row.relation.slice('granted:'.length));
+            }
+          }
+        }
+      }
+
+      const missing: PermissionKey[] = [];
+      for (const p of required) {
+        if (!held.has(p) && !missing.includes(p)) missing.push(p);
+      }
+      return { covered: missing.length === 0, missing };
+    },
+
     async check(
       subject: CheckSubject,
       permission: PermissionKey,
@@ -151,20 +233,8 @@ export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {
       const deny: Decision = { allowed: false, checked: permission, node };
       const cp = deps.controlPlane;
 
-      // Rule 4 — membership: the subject set is the caller plus its orgs.
-      //
-      // A CONNECTION has no memberships and never will — it is not a person and
-      // belongs to no org — so the expansion is skipped rather than queried.
-      // Its authority is exactly the grants written against `connection:<id>`.
-      const selfRef = subjectRef(subject);
-      const subjects: { ref: string; via?: RelationTuple }[] = [{ ref: selfRef }];
-      if (subject.kind === 'principal') {
-        for (const m of await cp.tenantTuples(node.tenantId, selfRef, 'member')) {
-          if (m.relation === 'member' && live(m, now)) {
-            subjects.push({ ref: m.object, via: t(m.subject, m.relation, m.object) });
-          }
-        }
-      }
+      // Rule 4 — membership. Shared with `covers` (§ `subjectsOf`).
+      const subjects = await subjectsOf(subject, node, now);
 
       // Inheritance (rule 2): a scope check also consults tenant-level tuples.
       const nodeObjects: { obj: string; scoped: boolean }[] = node.scopeId

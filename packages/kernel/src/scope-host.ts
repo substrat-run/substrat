@@ -75,6 +75,7 @@ import type {
   DenialFilter,
   DenialSummary,
   PermissionDenial,
+  Coverage,
   BeginImpersonationInput,
   ImpersonationFilter,
   ImpersonationSession,
@@ -386,6 +387,39 @@ export interface OperationContext {
   grant(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
   /** Withdraw a grant this caller could have made. Same guardrails. */
   revoke(principal: PrincipalId, permission: PermissionKey, entity: EntityRef): Promise<void>;
+  /**
+   * May the CALLER confer `roleKey` at this node? (K-21, membership.md §5.1.)
+   *
+   * *A principal may assign role `R` at node `N` only if the assigner already holds
+   * every permission `R` carries at `N`.* Without that bound, the D-22/D-29 checkpoint
+   * that reviews role DEFINITIONS protects nothing: an `admin` assigning themselves
+   * `owner` widens no role, calls no `defineRole`, and appears in no permission diff.
+   *
+   * **Removal takes the same bound.** A junior admin who can strip a role they could not
+   * have granted can lock the owner out of their own tenant; revocation is the mirror of
+   * assignment, not a lesser act. So gate both sides on this.
+   *
+   * ```ts
+   * const bound = await ctx.canAssign(input.roleKey);
+   * if (!bound.covered) {
+   *   throw substratError('forbidden', `cannot assign ${input.roleKey}: missing ${bound.missing.join(', ')}`);
+   * }
+   * ```
+   *
+   * **This is a bound, not the permission check.** The operation still opens with its own
+   * `assertAllowed(await ctx.check('member:manage'))` — that answers *may you manage
+   * members at all*, where this answers *may you confer this much*. Both, in that order.
+   *
+   * Narrowing-aware: an entity-narrowed grant does not satisfy the bound for the
+   * unnarrowed permission, or sharing one record would launder into authority over every
+   * record by way of assignment. Membership does expand — authority held through an org
+   * is authority that can be conferred.
+   *
+   * Throws when `roleKey` names no role in this tenant: an unknown key is a bug in the
+   * caller, not a denial, and returning "not covered" would let a typo read as a
+   * permission problem.
+   */
+  canAssign(roleKey: string): Promise<Coverage>;
   /**
    * Run `fn` as a SUB-TRANSACTION of this operation (#770,
    * docs/architecture/sub-transactions.md) — the boundary that makes catching an

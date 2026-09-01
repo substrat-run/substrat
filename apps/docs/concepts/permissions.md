@@ -311,6 +311,55 @@ screen makes, the next page of a walk and the detail of one row as much as the r
 `demos/todo/app/src/App.tsx` (`ListView`) and `demos/shop/app/src/App.tsx` (the nav tabs)
 are the reference.
 
+## Assigning a role: `ctx.canAssign`
+
+Reviewing role *definitions* protects nothing on its own. Nothing in a checkpoint over
+`defineRole` stops an `admin` from assigning someone — or themselves — to `owner`: no
+role was widened, no `defineRole` was called, and no permission diff shows anything. The
+moment a vertical defines any role carrying role-assignment permission, assignment
+becomes an escalation path.
+
+So there is a bound, and it is a mechanism rather than a convention:
+
+> A principal may assign role `R` at node `N` only if the assigner already holds every
+> permission `R` carries at `N`.
+
+```ts
+'team/invite': async (ctx, input) => {
+  assertAllowed(await ctx.check(MEMBER_MANAGE));      // may you manage members at all
+  const bound = await ctx.canAssign(input.roleKey);   // may you confer THIS much
+  if (!bound.covered) {
+    throw substratError('forbidden', `cannot assign ${input.roleKey}: you do not hold ${bound.missing.join(', ')}`);
+  }
+  …
+}
+```
+
+Two checks, in that order, answering different questions. `canAssign` is a bound, never a
+substitute for the operation's own permission check.
+
+**Removal takes the same bound.** A junior admin who can strip a role they could not have
+granted can lock the owner out of their own tenant. Revocation is the mirror of
+assignment, not a lesser act — so gate both sides on it.
+
+**It is narrowing-aware, and that is the load-bearing part.** Only authority held at the
+*node* counts. A principal whose `workorder:read` is narrowed to one entity does not
+thereby hold `workorder:read` for the purposes of this comparison — otherwise sharing a
+single record would launder into authority over every record, by way of assignment.
+Membership does expand: authority held through an org is authority that can be conferred.
+
+**One resolution, not N checks.** `ctx.check` answers about one permission and walks the
+tuples to do it, so asking it twenty times for a twenty-permission role walks them twenty
+times on every invite acceptance. The kernel resolves the effective set once and compares
+— which is also why the comparison lives in the kernel rather than in each vertical:
+enumerating "who can do what" is the kernel's job, and this is that enumeration turned
+inward.
+
+**Bootstrap.** The rule implies a tenant's first admin cannot assign themselves, and does
+not need to: the initial owner is seeded platform-side during provisioning, which is
+out-of-band host code that already holds the authority. Self-service begins at the second
+member.
+
 ## Defaults
 
 - `denyAllChecker` — the secure default. A host without an explicit checker allows

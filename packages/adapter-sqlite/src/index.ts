@@ -7330,6 +7330,22 @@ export class SqliteScopeHost implements ScopeHost {
       return decision;
     };
 
+    /**
+     * §5.1's assignment bound, resolved against the SAME role table the checker expands
+     * — not a vertical's compile-time `ROLES` array. A tenant's projected role is what
+     * assignment would actually confer, and that is what has to be bounded.
+     */
+    const runCanAssign: OperationContext['canAssign'] = async (roleKey) => {
+      const role = this.roles.get(`${rt.tenantId}/${roleKey}`);
+      if (!role) {
+        throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+      }
+      return checker.covers(subject, role.permissions, {
+        tenantId: rt.tenantId,
+        scopeId: rt.scopeId,
+      });
+    };
+
     return {
       tenantId: rt.tenantId,
       scopeId: rt.scopeId,
@@ -7437,6 +7453,7 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       check: runCheck,
+      canAssign: runCanAssign,
       /**
        * #827. The plan is registration state, the index is scope state: an entity
        * type nobody declared is `NotSearchable` (a wiring mistake), and a declared

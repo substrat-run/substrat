@@ -222,6 +222,29 @@ export const decision = z.discriminatedUnion('allowed', [
 ]);
 export type Decision = z.infer<typeof decision>;
 
+// ============================================================================
+// Coverage — "does this subject already hold everything that role carries?"
+// K-21 / membership.md §5.1: the bound that makes role assignment safe.
+// ============================================================================
+
+/**
+ * The answer to §5.1's bound: may this subject confer this set of permissions?
+ *
+ * **Not a `Decision`, deliberately.** A `Decision` answers about ONE permission and
+ * carries a proof, and this asks about a set — so an allow would need N proofs and a
+ * refusal would have to pick one permission to name. What a caller actually needs on a
+ * refusal is *which* permissions are missing, because that is the sentence a person can
+ * act on: "you cannot assign `owner` — you do not hold `billing:manage`".
+ *
+ * `missing` is empty if and only if `covered`, and is ordered as the request was so an
+ * error message reads predictably.
+ */
+export const coverage = z.object({
+  covered: z.boolean(),
+  missing: z.array(permissionKey),
+});
+export type Coverage = z.infer<typeof coverage>;
+
 /**
  * The grant an allow resolved through (K-34), for stamping onto an emitted event's
  * `authorization`. Every allow proof ends with a `granted:<permission>` tuple, but a ROLE
