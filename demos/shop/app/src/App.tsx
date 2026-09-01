@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, kr, type Cart, type Me, type Quote } from './api';
+import { api, auth, kr, type Cart, type Me, type Quote } from './api';
 import { Storefront } from './views/Storefront';
 import { Portal } from './views/Portal';
-import { Login } from './views/Login';
 import { bagColor } from './components';
+
+/** Where to come back to after the issuer round-trip — the page you were actually on. */
+const here = () => `${location.pathname}${location.hash}`;
 
 function useHashRoute(): string {
   const [route, setRoute] = useState(location.hash.slice(1) || '/');
@@ -27,7 +29,6 @@ declare const __ADMIN_ORIGIN__: string;
 
 export default function App() {
   const [me, setMe] = useState<Me | null>(null);
-  const [loginOpen, setLoginOpen] = useState(false);
   const route = useHashRoute();
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
@@ -99,7 +100,7 @@ export default function App() {
     async (variantId: string) => {
       // Only a logged-in customer can build a cart; everyone else logs in first.
       if (role !== 'customer') {
-        setLoginOpen(true);
+        auth.login(here());
         return;
       }
       try {
@@ -156,31 +157,10 @@ export default function App() {
     }
   }, [cartId, activeCustomerId, pay, quote, notify]);
 
-  const onLoggedIn = useCallback(async () => {
-    const m = await api.me();
-    setMe(m);
-    setLoginOpen(false);
-    setCartId(null);
-    setCart(null);
-    setQuote(null);
-    setReload((n) => n + 1);
-    location.hash = '#/';
-    notify(isStaff(m.role ?? '') ? 'Inloggad — back-office finns i menyn' : 'Inloggad', true);
-  }, [notify]);
-
-  const onLogout = useCallback(async () => {
-    try {
-      await api.signOut();
-    } catch {
-      /* ignore */
-    }
-    setMe(await api.me()); // now anonymous
-    setCartId(null);
-    setCart(null);
-    setQuote(null);
-    setReload((n) => n + 1);
-    location.hash = '#/';
-  }, []);
+  // Signing out is a navigation to the RP's logout endpoint; the browser comes back
+  // anonymous and the mount effect re-reads `/api/me`, so there is no local state to
+  // unwind here. The cart lived on the server against the old principal either way.
+  const onLogout = useCallback(() => auth.logout(), []);
 
   const count = useMemo(() => cart?.lines.reduce((a, l) => a + l.qty, 0) ?? 0, [cart]);
 
@@ -232,7 +212,7 @@ export default function App() {
                 </button>
               </div>
             ) : (
-              <button className="icon-btn" onClick={() => setLoginOpen(true)}>
+              <button className="icon-btn" onClick={() => auth.login(here())}>
                 Logga in
               </button>
             )}
@@ -338,7 +318,6 @@ export default function App() {
         </div>
       </aside>
 
-      {loginOpen && <Login onDone={onLoggedIn} onCancel={() => setLoginOpen(false)} />}
       {toast && <div className={`toast ${toast.ok ? 'ok' : 'err'}`}>{toast.msg}</div>}
     </>
   );

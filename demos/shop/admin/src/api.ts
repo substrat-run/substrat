@@ -104,24 +104,18 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
-/** Better Auth REST endpoints (own error shape) — used by the login screen. */
-async function authCall(path: string, payload?: unknown): Promise<void> {
-  const res = await fetch(`/api/auth${path}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload ?? {}),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-    throw new ApiError(body.message ?? body.error ?? `${res.status}`, res.status);
-  }
-}
+/**
+ * Signing in is a NAVIGATION, not a fetch: the browser leaves for the issuer and comes
+ * back to `/api/auth/callback` with a session cookie. The back office hosts no sign-up —
+ * staff accounts are provisioned at the issuer.
+ */
+export const auth = {
+  login: (returnTo = '/') => location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`),
+  logout: () => location.assign('/api/auth/logout'),
+};
 
 export const api = {
   me: () => call<Me>('/me'),
-  signIn: (email: string, password: string) => authCall('/sign-in/email', { email, password }),
-  signOut: () => authCall('/sign-out'),
 
   // catalogue & stock
   stock: () => call<StockRow[]>('/stock'),

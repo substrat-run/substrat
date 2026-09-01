@@ -6,9 +6,10 @@ description: Remove the credential store from the verticals.
 
 # OIDC-only demos: remove the credential store from the verticals
 
-**Status:** **built** — Callout, Meridian and Manyfold are OIDC-only
-**Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`
-**Author:** design pass, 2026-08-04
+**Status:** **built** — Callout, Meridian, Manyfold, Todo, ticket0 and Shop are OIDC-only
+**Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`; later `demos/todo`,
+`demos/ticket0`, `demos/shop`
+**Author:** design pass, 2026-08-04 · shop added 2026-09-01
 
 ## Motivation
 
@@ -59,6 +60,31 @@ Per demo:
 - **callout** — migrate off its D1 Better Auth (`AUTH_DB`, `auth.ts`, `d1IdentityDirectory`)
   onto `oidcRpAuthProvider`. Its binding today is TOFU **auto-mint** (`auth-adapters.ts:153`);
   keep an equivalent binding under OIDC (auto-mint or owner-claim — decide during build).
+
+## Shop, added later — the storefront case
+
+Shop was never in the original scope and turned out to need no new domain surface, so it
+went over as-is. Two things about it are worth recording, because neither appears in the
+three demos above.
+
+**An anonymous principal is not a credential store.** The storefront must answer "what may
+someone who has not signed in see", and it answers with `publicAuth` — a browse-only
+principal that survives this change untouched. The rule is about credentials the vertical
+would otherwise own, not about unauthenticated access.
+
+**Self-service signup becomes TOFU at the seam.** Shop is the one demo where a stranger
+creates their own account. Sign-up moves to the issuer; the vertical keeps the *binding*
+half — first arrival of an unknown `sub` mints a principal, creates its customer, grants
+entity-narrowed `order:read` on that customer, and links the identity. `dev|nykund` is in
+the cast and deliberately absent from `PERSONA_PRINCIPALS`, so picking it exercises that
+path rather than a pre-bound one.
+
+That path had a latent bug the move exposed: the link was written under provider
+`better-auth` while the lookup asked for `better-auth:kallkalla`, so it could never hit and
+every request from a self-service shopper minted another principal and another customer
+row. One provider constant on both sides is what fixes it. The provider is now named for
+the POOL (`oidc:<slug>`) rather than for whatever issuer currently fills it — a string
+carrying the issuer's name orphans every link in the directory the day the issuer changes.
 
 ## `packages/vertical-auth`
 

@@ -117,7 +117,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. The Vite
   proxy must NOT set `changeOrigin`: the API derives its OIDC `redirect_uri` from the
   forwarded Host header, and rewriting it sends the login callback to the wrong port.
-- **Callout, Meridian, Manyfold, Todo and ticket0 have no dev auth branch.** Their `… dev` scripts
+- **Callout, Meridian, Manyfold, Todo, ticket0 and shop have no dev auth branch.** Their `… dev` scripts
   start `packages/dev-issuer` — a real OIDC provider whose only shortcut is that
   `/authorize` lists names instead of asking for a password — so the local login IS the
   production round-trip and changing issuer is a change of `OIDC_ISSUER`. Each vertical's
@@ -128,16 +128,18 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   the forwarded Host header, and rewriting it sends the callback to the wrong port.
   `ALLOW_DEV_NODE` still exists in the workers and is a different thing — it addresses an
   un-routed local instance and authenticates nobody.
-- **Callout, Meridian, Manyfold, Todo and ticket0 are OIDC-only** (`docs/architecture/oidc-only-demos.md`):
+- **Callout, Meridian, Manyfold, Todo, ticket0 and shop are OIDC-only** (`docs/architecture/oidc-only-demos.md`):
   they run no credential store — login/sign-up/password/reset live at the OIDC issuer, and
   the vertical only maps the authenticated `sub` → a scope principal (owner-claim + invites
   in the per-tenant `IdentityDO`). `demos/auth-server` is the full Better Auth issuer for
-  exercising real accounts; **rally, handlebar and shop still run Better Auth**, and rally
-  and handlebar still carry `ALLOW_DEV_HEADER` (see oidc-only-demos.md for why).
+  exercising real accounts; **rally and handlebar still run Better Auth**, and both still
+  carry `ALLOW_DEV_HEADER` (see oidc-only-demos.md for why). Shop is the one OIDC-only demo
+  that also keeps an **anonymous** principal: a storefront must answer "what may someone who
+  has not signed in see", and a browse-only principal is not a credential store.
 - `pnpm --filter @substrat-run/demo-shop dev` — the shop demo runs **three** processes:
   API :8873, storefront :5273, back-office :5274 (`ADMIN_PORT=…`). Customer-facing and
   staff-facing surfaces are separate Vite apps against one API — the split is chrome and
-  audience, never a second source of truth. Both origins must be trusted by Better Auth.
+  audience, never a second source of truth. Four processes now, with the dev issuer first.
 - One vitest scenario per demo vertical: `pnpm --filter @substrat-run/demo-callout test`
 - `pnpm --filter @substrat-run/docs cf:deploy` — build + ship the docs site to
   [substrat.net](https://substrat.net) (Cloudflare Pages). Every **platform** workspace that

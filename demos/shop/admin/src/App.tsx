@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, type Me } from './api';
+import { api, auth, type Me } from './api';
 import { Overview } from './views/Overview';
 import { Orders } from './views/Orders';
 import { OrderDetail } from './views/OrderDetail';
@@ -50,20 +50,9 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
-  const onLoggedIn = useCallback(async () => {
-    setMe(await api.me());
-    location.hash = '#/';
-  }, []);
-
-  const onLogout = useCallback(async () => {
-    try {
-      await api.signOut();
-    } catch {
-      /* ignore */
-    }
-    setMe(await api.me());
-    location.hash = '#/';
-  }, []);
+  // Both are navigations to the RP endpoints; the browser returns and the mount effect
+  // above re-reads `/api/me`, so there is no local session state to unwind.
+  const onLogout = useCallback(() => auth.logout(), []);
 
   if (!me) return <div className="notice">Laddar…</div>;
 
@@ -72,11 +61,10 @@ export default function App() {
   // The gate: unauthenticated, or authenticated as someone with no back-office
   // business here (a shopper). The kernel would deny every call anyway — this
   // just refuses to render a dashboard that could only show errors.
-  if (!me.authenticated) return <Login onDone={onLoggedIn} />;
+  if (!me.authenticated) return <Login />;
   if (!isStaff(role)) {
     return (
       <Login
-        onDone={onLoggedIn}
         denied={`Inloggad som ${me.display} (${role}) — det här kontot har ingen behörighet till back-office. Logga in som personal.`}
       />
     );
