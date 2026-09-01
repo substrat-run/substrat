@@ -1,5 +1,15 @@
 # @substrat-run/demo-fsm
 
+## 0.3.13
+
+### Patch Changes
+
+- Updated dependencies [b81f21b]
+- Updated dependencies [2b53117]
+  - @substrat-run/engine-protocol@0.12.0
+  - @substrat-run/vertical-auth@0.11.0
+  - @substrat-run/dev-issuer@0.1.10
+
 ## 0.3.12
 
 ### Patch Changes

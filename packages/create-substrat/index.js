@@ -40,7 +40,7 @@ const SUBSTRAT = '^0.95.0';
 const ENGINE_WORKORDER = '^0.10.3';
 const ENGINE_INVOICING = '^0.9.11';
 const BOUNDARY_LINT = '^0.3.0';
-const DEV_ISSUER = '^0.1.9';
+const DEV_ISSUER = '^0.1.10';
 
 const DOCS = 'https://substrat.net';
 

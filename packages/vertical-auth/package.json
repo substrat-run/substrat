@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/vertical-auth",
-  "version": "0.10.1",
-  "description": "Pluggable auth for Substrat verticals \u2014 the AuthProvider contract, an OIDC provider (Supabase/Auth0/AuthHero/Keycloak), a full relying-party login flow, and a per-tenant identity Durable Object (Better Auth + sub\u2192principal directory). Workers-targeted; the vertical worker bundles it.",
+  "version": "0.11.0",
+  "description": "Pluggable auth for Substrat verticals — the AuthProvider contract, an OIDC provider (Supabase/Auth0/AuthHero/Keycloak), a full relying-party login flow, and a per-tenant identity Durable Object (Better Auth + sub→principal directory). Workers-targeted; the vertical worker bundles it.",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
