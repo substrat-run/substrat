@@ -363,9 +363,12 @@ function check() {
     })
     .sort();
 
+  // Read the clock once. Asking twice lets a run that straddles Monday midnight in
+  // Stockholm judge one boundary and report another.
+  const settledThrough = previousWeek(lastCompleteWeek());
+
   if (weeks.length) {
     const present = new Set(weeks);
-    const settledThrough = previousWeek(lastCompleteWeek());
     const stop = weekRange(settledThrough).start;
     const missing = [];
     for (let cursor = weekRange(weeks[0]).start; cursor <= stop; cursor = addDays(cursor, 7)) {
@@ -395,7 +398,7 @@ function check() {
   }
   console.log(
     `changelog: ${files.length} entr(ies), every merge in range accounted for, ` +
-      `no settled week missing through ${previousWeek(lastCompleteWeek())}.`,
+      `no settled week missing through ${settledThrough}.`,
   );
 }
 
