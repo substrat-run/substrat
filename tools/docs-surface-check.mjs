@@ -75,6 +75,8 @@ function exportsOf(engineDir) {
   const all = new Set();
   /** Every `function f(ctx, …)` declared anywhere under `src/`, public or not. */
   const ctxFns = new Set();
+  /** Public name → the local name it was declared under, for `{ a as b }`. */
+  const aliasOf = new Map();
   const seen = new Set();
 
   /**
@@ -104,8 +106,16 @@ function exportsOf(engineDir) {
     // `export { a, b as c } from './x.js'`, single- or multi-line, plus `export * from`.
     for (const m of src.matchAll(/^export\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/gm)) {
       for (const part of m[1].split(',')) {
-        const name = part.trim().split(/\s+as\s+/).pop()?.replace(/^type\s+/, '').trim();
-        if (name) all.add(name);
+        const spec = part.trim().replace(/^type\s+/, '');
+        if (!spec) continue;
+        const [local, exported = local] = spec.split(/\s+as\s+/).map((s) => s.trim());
+        if (!exported) continue;
+        all.add(exported);
+        // `export { holdSlot as holdReservation }` publishes the second name and
+        // declares the first. Without the link, `ctxFns` learns `holdSlot`, `all`
+        // learns `holdReservation`, and the intersection drops the function out of
+        // the reverse check entirely — a public in-scope function no page has to name.
+        if (exported !== local) aliasOf.set(exported, local);
       }
       visit(localFile(rel, m[2]), false);
     }
@@ -115,8 +125,12 @@ function exportsOf(engineDir) {
   };
 
   visit(`${engineDir}/src/index.ts`, true);
-  // In-scope = takes `ctx` AND is actually reachable from the entry point.
-  return { all, inScope: new Set([...ctxFns].filter((n) => all.has(n))) };
+  // In-scope = takes `ctx` AND is actually reachable from the entry point. The
+  // name reported is the PUBLIC one, since that is the one a page must carry.
+  return {
+    all,
+    inScope: new Set([...all].filter((n) => ctxFns.has(n) || ctxFns.has(aliasOf.get(n)))),
+  };
 }
 
 /** `'./lifecycle.js'` beside `engines/x/src/index.ts` → `engines/x/src/lifecycle.ts`. */
