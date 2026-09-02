@@ -14,6 +14,7 @@ import { schema } from './auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { upgradeLegacySchema } from '../db/upgrade.js';
 import { buildAuth } from './auth.js';
+import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
 import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
@@ -135,6 +136,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // env directly; the sender address is the manifest-declared EMAIL_FROM.
       transport: this.transport(),
       sender: senderFor(cfg.EMAIL_FROM),
+      // workerd has no DNS API, so this honours three of the transport contract's four
+      // clauses and says which one it cannot. `cimd-fetch.ts` carries the reasoning.
+      fetchClientMetadataResource,
       // Re-read per request (this whole method is), so the dashboard's sign-up toggle takes
       // effect on the next request rather than the next deploy.
       allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),

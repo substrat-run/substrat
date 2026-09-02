@@ -1,6 +1,7 @@
 import { betterAuth } from 'better-auth';
 import type { drizzleAdapter } from 'better-auth/adapters/drizzle';
-import { oauthProvider } from '@better-auth/oauth-provider';
+import { oauthProvider, type ClientMetadataResourceFetch } from '@better-auth/oauth-provider';
+import { cimd } from '@better-auth/cimd';
 import { jwt } from 'better-auth/plugins/jwt';
 import { admin } from 'better-auth/plugins/admin';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
@@ -48,6 +49,16 @@ export interface AuthDeps {
   transport: EmailTransport;
   /** The sender address for password-reset / verification mail. */
   sender: EmailAddress;
+  /**
+   * How CIMD fetches a client's metadata document — injected, because the guarantee it has
+   * to make is runtime-specific and this module is runtime-agnostic.
+   *
+   * The Node dev server passes `@better-auth/cimd/node`, which resolves DNS once and pins
+   * the answer. The Durable Object passes `src/cimd-fetch.ts`, which cannot (workerd has no
+   * DNS API) and says so. Omit it and CIMD is simply not mounted — an issuer with no way to
+   * fetch a document safely must not advertise that it will.
+   */
+  fetchClientMetadataResource?: ClientMetadataResourceFetch;
   /**
    * May a visitor create their own account? Off unless an operator turns it on (the
    * `ALLOW_SIGNUP` key, settable from the dashboard's Sign-in panel). Off, Better Auth
@@ -173,6 +184,32 @@ export function buildAuth(deps: AuthDeps) {
         // forced.
         allowPublicClientPrelogin: true,
       }),
+      // Client ID Metadata Documents (draft-ietf-oauth-client-id-metadata-document), under
+      // the MCP 2026-07-28 profile. A client identifies itself by an HTTPS URL that IS its
+      // metadata document: no registration write, no client secret, nothing to revoke.
+      //
+      // Mounted only when the caller supplied a transport, because the plugin's contract
+      // for that transport is a security one (see `cimd-fetch.ts`) and an issuer with no
+      // safe way to fetch a document must not advertise that it will. `client_id_metadata
+      // _document_supported: true` is published by the plugin itself, so this one line is
+      // what a client discovers.
+      //
+      // It composes with, rather than replaces, dynamic registration: `allowUnauthenticated
+      // ClientRegistration` above already makes this issuer usable by an MCP client via
+      // RFC 7591. CIMD is the better option for a directory client — nothing is persisted
+      // per client until one actually arrives — not the only one.
+      ...(deps.fetchClientMetadataResource
+        ? [
+            cimd({
+              fetchClientMetadataResource: deps.fetchClientMetadataResource,
+              // The MCP revision pins CIMD draft-00, which makes `client_name` and
+              // `redirect_uris` required rather than optional. Naming the profile is what
+              // turns a document missing them into a refusal here instead of a puzzling
+              // failure at the client.
+              metadataProfile: 'mcp-2026-07-28',
+            }),
+          ]
+        : []),
       admin(),
     ],
     // The `jwt` plugin's `/token` mints a JWT for the CURRENT SESSION. On an authorization
