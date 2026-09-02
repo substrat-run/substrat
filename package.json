@@ -11,6 +11,7 @@
     "lint:boundaries": "node tools/boundary-lint.mjs",
     "lint:cycles": "node tools/workspace-cycles.mjs",
     "lint:deps": "node tools/declared-deps.mjs",
+    "lint:spine-ddl": "node tools/spine-ddl-drift.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:model": "tsx tools/model-diff.mts",
     "lint:api": "tsx tools/api-diff.mts",

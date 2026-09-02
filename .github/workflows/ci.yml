@@ -161,6 +161,13 @@ jobs:
       # would then agree with the generator rather than with the vertical, and a wrong
       # model would pass its own test. The check existed and ran nowhere (#989).
       - run: pnpm lint:tests
+      # The `_substrat_*` spine is built independently by each adapter — the pure one in
+      # adapter-sqlite, the hosted one across scope-do.ts and control-plane-do.ts. The
+      # copies were in step when written and nothing kept them so, which makes a column
+      # added on one side only a divergence between what CI and self-host run and what
+      # production runs (#969). This executes each side's DDL *and* the columns it ALTERs
+      # in afterwards, then compares the schemas a query would actually meet.
+      - run: pnpm lint:spine-ddl
       # ── Scope ────────────────────────────────────────────────────────────
       # Everything above this line runs in full on every PR: the build is what
       # the lints import from, and the lints together take fifteen seconds. The
