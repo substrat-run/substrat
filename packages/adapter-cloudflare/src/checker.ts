@@ -1,42 +1,30 @@
+import type { EntitlementView, RoleDefinition } from '@substrat-run/contracts';
 import {
-  objectRef,
-  subjectRef,
-  type Coverage,
-  type Decision,
-  type EntitlementView,
-  type EntityRef,
-  type Node,
-  type PermissionKey,
-  type CheckSubject,
-  type RelationTuple,
-  type RoleDefinition,
-} from '@substrat-run/contracts';
-import type { PermissionChecker } from '@substrat-run/kernel';
+  createTupleEvaluator,
+  type PermissionChecker,
+  type PermissionTupleReader,
+  type PermissionTupleRow,
+  type ScopeTupleReader,
+} from '@substrat-run/kernel';
 
 /**
- * The built-in constrained relationship-tuple evaluator (design doc §4.2, plan
- * D-23), ported to the Durable-Object split. Identical four-rule algebra to the
- * pure adapter's `createTupleChecker` — role expansion, tenancy-tree
- * inheritance, declared entity parent edges (depth ≤ 4), membership — no
- * negation, no configurable rewrites. Every allow carries its tuple proof.
+ * The Durable-Object adapter's half of the built-in constrained relationship-tuple
+ * evaluator (design doc §4.2, plan D-23): where the tuples live and how they are read.
+ * The four-rule algebra itself — role expansion, tenancy-tree inheritance, declared
+ * entity parent edges (depth ≤ 4), membership, and the proof each allow carries — is
+ * `createTupleEvaluator` in the kernel, shared with the pure adapter so the permission
+ * contract suite tests one evaluator rather than two copies (#969).
  *
  * Tuple placement mirrors the pure adapter, split across DOs: scope-level and
  * entity tuples live in THIS ScopeDO's SQLite (`_substrat_tuples`, read
  * synchronously); tenant-level assignments/grants, roles, and org membership
- * live in the ControlPlaneDO and are reached over RPC (async). The whole
- * evaluation still runs inside the ScopeDO's serialization domain, so
- * check-after-write consistency holds — the "no zookies" property.
+ * live in the ControlPlaneDO and are reached over RPC (async) — which is why the
+ * kernel evaluator lets every read be a promise. The whole evaluation still runs
+ * inside the ScopeDO's serialization domain, so check-after-write consistency
+ * holds — the "no zookies" property.
  */
 
-const ENTITY_WALK_DEPTH = 4;
-
-interface TupleRow {
-  subject: string;
-  relation: string;
-  object: string;
-  expires_at: string | null;
-  revoked_at: string | null;
-}
+type TupleRow = PermissionTupleRow;
 
 /** The slice of the ControlPlaneDO the checker (and the entitlement read surface) consult for
  *  tenant-level data. `listEntitlements` returns only CURRENTLY-HELD grants (expiry applied at
@@ -62,7 +50,7 @@ export interface DoCheckerDeps {
  * the shared control-plane DO on the request path.
  *
  * It returns exactly what the RPC reader returns — rows (including tombstoned ones,
- * which the checker's own `live()` filter drops), and a role or `undefined`. An
+ * which the evaluator's own `live()` filter drops), and a role or `undefined`. An
  * empty projection therefore yields `[]` / `undefined`, i.e. **deny** — fail closed.
  * A revoked role definition is treated as absent (returns `undefined`), so a removed
  * role stops granting the moment its tombstone is projected.
@@ -118,232 +106,55 @@ export function createLocalControlPlaneReader(sql: SqlStorage): ControlPlaneRead
   };
 }
 
-const t = (subject: string, relation: string, object: string): RelationTuple => ({
-  subject: objectRef.parse(subject),
-  relation,
-  object: objectRef.parse(object),
-});
+const TUPLE_COLUMNS = 'subject, relation, object, expires_at, revoked_at';
 
-export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {
-  const scopeTuples = (subject: string, relationPrefix: string): TupleRow[] =>
-    deps.scopeSql
+/**
+ * The scope-local reads, straight off this ScopeDO's own SQL — synchronous, because the
+ * storage is right here. Entity-narrowed grants and the declared `parent` edges are
+ * scope-local by construction, so they sit beside the scope-level tuples.
+ */
+const scopeReader = (sql: SqlStorage): ScopeTupleReader => ({
+  tuples: (subject, relationPrefix) =>
+    sql
       .exec(
-        `SELECT subject, relation, object, expires_at, revoked_at FROM _substrat_tuples
+        `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
          WHERE subject = ? AND relation LIKE ?`,
         subject,
         `${relationPrefix}%`,
       )
-      .toArray() as unknown as TupleRow[];
+      .toArray() as unknown as TupleRow[],
+  grant: (subject, relation, object) =>
+    sql
+      .exec(
+        `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
+         WHERE subject = ? AND relation = ? AND object = ?`,
+        subject,
+        relation,
+        object,
+      )
+      .toArray()[0] as unknown as TupleRow | undefined,
+  parents: (object) =>
+    sql
+      .exec(
+        `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
+         WHERE subject = ? AND relation = 'parent'`,
+        object,
+      )
+      .toArray() as unknown as TupleRow[],
+});
 
-  // A tuple grants only while it is unexpired AND unrevoked. K-21: revocation
-  // tombstones rather than deletes, so a revoked row is still here and still
-  // readable as evidence — it just stops granting.
-  const live = (row: TupleRow, now: string): boolean =>
-    (row.expires_at === null || row.expires_at > now) && row.revoked_at === null;
+export function createDoTupleChecker(deps: DoCheckerDeps): PermissionChecker {
+  const scope = scopeReader(deps.scopeSql);
 
-  /**
-   * The subject set a check reasons over: the caller, plus every org it is a live member
-   * of (rule 4). Shared by `check` and `covers`, so the bound and the check cannot
-   * disagree about who someone is — a divergence would compute the bound over a smaller
-   * subject set than the check that later allows the action.
-   *
-   * A CONNECTION has no memberships and never will — it is not a person and belongs to
-   * no org — so the expansion is skipped rather than queried. Its authority is exactly
-   * the grants written against `connection:<id>`.
-   */
-  const subjectsOf = async (
-    subject: CheckSubject,
-    node: Node,
-    now: string,
-  ): Promise<{ ref: string; via?: RelationTuple }[]> => {
-    const selfRef = subjectRef(subject);
-    const out: { ref: string; via?: RelationTuple }[] = [{ ref: selfRef }];
-    if (subject.kind === 'principal') {
-      for (const m of await deps.controlPlane.tenantTuples(node.tenantId, selfRef, 'member')) {
-        if (m.relation === 'member' && live(m, now)) {
-          out.push({ ref: m.object, via: t(m.subject, m.relation, m.object) });
-        }
-      }
-    }
-    return out;
+  const reader: PermissionTupleReader = {
+    now: () => new Date().toISOString(),
+    tenantTuples: (tenantId, subject, relationPrefix) =>
+      deps.controlPlane.tenantTuples(tenantId, subject, relationPrefix),
+    getRole: (tenantId, key) => deps.controlPlane.getRole(tenantId, key),
+    // A ScopeDO *is* one scope, so its own storage is always the scope store — there is no
+    // id to resolve and no "database not open" case to answer for.
+    scopeFor: () => scope,
   };
 
-  return {
-    /**
-     * The subject's effective permission set at the node, compared against `required`
-     * (K-21, membership.md §5.1).
-     *
-     * Reads every `role:` and `granted:` tuple for each subject at each level in one
-     * pass rather than re-walking per permission — which matters more here than on the
-     * pure adapter, since each tenant-level read is an RPC to the ControlPlaneDO.
-     *
-     * Entity tuples are never consulted, which is what makes this narrowing-aware: an
-     * entity-narrowed grant has an `entityType:entityId` object and so matches no node
-     * object here, by construction rather than by a filter someone has to remember.
-     */
-    async covers(
-      subject: CheckSubject,
-      required: readonly PermissionKey[],
-      node: Node,
-    ): Promise<Coverage> {
-      if (required.length === 0) return { covered: true, missing: [] };
-
-      const now = new Date().toISOString();
-      const cp = deps.controlPlane;
-      const subjects = await subjectsOf(subject, node, now);
-      const nodeObjects: { obj: string; scoped: boolean }[] = node.scopeId
-        ? [
-            { obj: `scope:${node.scopeId}`, scoped: true },
-            { obj: `tenant:${node.tenantId}`, scoped: false },
-          ]
-        : [{ obj: `tenant:${node.tenantId}`, scoped: false }];
-
-      const held = new Set<string>();
-      for (const nodeObj of nodeObjects) {
-        for (const s of subjects) {
-          const rows = nodeObj.scoped
-            ? scopeTuples(s.ref, '')
-            : await cp.tenantTuples(node.tenantId, s.ref, '');
-          for (const row of rows) {
-            if (row.object !== nodeObj.obj || !live(row, now)) continue;
-            if (row.relation.startsWith('role:')) {
-              const role = await cp.getRole(node.tenantId, row.relation.slice('role:'.length));
-              for (const p of role?.permissions ?? []) held.add(p);
-            } else if (row.relation.startsWith('granted:')) {
-              held.add(row.relation.slice('granted:'.length));
-            }
-          }
-        }
-      }
-
-      const missing: PermissionKey[] = [];
-      for (const p of required) {
-        if (!held.has(p) && !missing.includes(p)) missing.push(p);
-      }
-      return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
-    },
-
-    async check(
-      subject: CheckSubject,
-      permission: PermissionKey,
-      node: Node,
-      entity?: EntityRef,
-    ): Promise<Decision> {
-      const now = new Date().toISOString();
-      const deny: Decision = { allowed: false, checked: permission, node };
-      const cp = deps.controlPlane;
-
-      // Rule 4 — membership. Shared with `covers` (§ `subjectsOf`).
-      const subjects = await subjectsOf(subject, node, now);
-
-      // Inheritance (rule 2): a scope check also consults tenant-level tuples.
-      const nodeObjects: { obj: string; scoped: boolean }[] = node.scopeId
-        ? [
-            { obj: `scope:${node.scopeId}`, scoped: true },
-            { obj: `tenant:${node.tenantId}`, scoped: false },
-          ]
-        : [{ obj: `tenant:${node.tenantId}`, scoped: false }];
-
-      const tuplesFor = async (
-        subject: string,
-        prefix: string,
-        scoped: boolean,
-      ): Promise<TupleRow[]> =>
-        scoped ? scopeTuples(subject, prefix) : cp.tenantTuples(node.tenantId, subject, prefix);
-
-      for (const nodeObj of nodeObjects) {
-        for (const subject of subjects) {
-          // Rule 1 — role expansion.
-          for (const row of await tuplesFor(subject.ref, 'role:', nodeObj.scoped)) {
-            if (row.object !== nodeObj.obj || !live(row, now)) continue;
-            const roleKey = row.relation.slice('role:'.length);
-            const role = await cp.getRole(node.tenantId, roleKey);
-            if (role?.permissions.includes(permission)) {
-              return {
-                allowed: true,
-                proof: [
-                  ...(subject.via ? [subject.via] : []),
-                  t(row.subject, row.relation, row.object),
-                  t(`role:${roleKey}`, `granted:${permission}`, nodeObj.obj),
-                ],
-              };
-            }
-          }
-          // Direct grants at the node.
-          for (const row of await tuplesFor(subject.ref, `granted:${permission}`, nodeObj.scoped)) {
-            if (
-              row.object === nodeObj.obj &&
-              row.relation === `granted:${permission}` &&
-              live(row, now)
-            ) {
-              return {
-                allowed: true,
-                proof: [
-                  ...(subject.via ? [subject.via] : []),
-                  t(row.subject, row.relation, row.object),
-                ],
-              };
-            }
-          }
-        }
-      }
-
-      // Rule 3 — entity walk along declared parent edges (entity grants are
-      // scope-local by construction).
-      if (entity) {
-        type Frontier = { ref: string; chain: RelationTuple[] };
-        let frontier: Frontier[] = [{ ref: `${entity.entityType}:${entity.entityId}`, chain: [] }];
-        for (let depth = 0; depth <= ENTITY_WALK_DEPTH && frontier.length > 0; depth++) {
-          // grant lookup at current frontier objects
-          for (const candidate of frontier) {
-            for (const subject of subjects) {
-              const grant = deps.scopeSql
-                .exec(
-                  `SELECT subject, relation, object, expires_at, revoked_at FROM _substrat_tuples
-                   WHERE subject = ? AND relation = ? AND object = ?`,
-                  subject.ref,
-                  `granted:${permission}`,
-                  candidate.ref,
-                )
-                .toArray()[0] as unknown as TupleRow | undefined;
-              if (grant && live(grant, now)) {
-                return {
-                  allowed: true,
-                  proof: [
-                    ...(subject.via ? [subject.via] : []),
-                    ...candidate.chain,
-                    t(grant.subject, grant.relation, grant.object),
-                  ],
-                };
-              }
-            }
-          }
-          // expand one level of parents
-          const next: Frontier[] = [];
-          for (const candidate of frontier) {
-            const parents = deps.scopeSql
-              .exec(
-                `SELECT subject, relation, object, expires_at, revoked_at FROM _substrat_tuples
-                 WHERE subject = ? AND relation = 'parent'`,
-                candidate.ref,
-              )
-              .toArray() as unknown as TupleRow[];
-            for (const p of parents) {
-              // A revoked parent edge stops expanding — without this the tombstone
-              // would work for grants and membership but silently NOT for entity
-              // edges, which is the case open question 15 is actually about.
-              if (!live(p, now)) continue;
-              next.push({
-                ref: p.object,
-                chain: [...candidate.chain, t(p.subject, 'parent', p.object)],
-              });
-            }
-          }
-          frontier = next;
-        }
-      }
-
-      return deny;
-    },
-  };
+  return createTupleEvaluator(reader);
 }

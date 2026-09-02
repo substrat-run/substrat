@@ -90,6 +90,12 @@ export {
 } from './permission-checker.js';
 export { asPrincipal } from './permission-checker.js';
 export type { PermissionChecker } from './permission-checker.js';
+export { createTupleEvaluator } from './permission-eval.js';
+export type {
+  PermissionTupleReader,
+  PermissionTupleRow,
+  ScopeTupleReader,
+} from './permission-eval.js';
 export { createAtomic } from './sub-transaction.js';
 export type { RunSub, AtomicMarks } from './sub-transaction.js';
 export {
