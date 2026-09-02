@@ -104,19 +104,22 @@ is no field anywhere in the widget that would set it.
   the number of proactive messages you may *create*, not on sends.
 - **Freshchat** — campaigns and a visual Journeys builder, with event triggers and
   segmentation, capped by **campaign contacts** a month.
-- **Intercom** — the deepest, and the most explicitly priced: targeted messages to visitors,
-  banners, tours and Series sit behind the **Proactive Support Plus** add-on at $99/month,
-  which includes 500 messages sent and then meters from $0.07 down.
+- **Intercom** — the deepest, and the one that draws the line most explicitly. Banners and
+  tooltips are unlimited on every core plan; posts, mobile push, product tours, carousels,
+  surveys and Series are the **Proactive Support Plus** add-on at $99/month, which includes
+  500 messages sent and then meters from $0.07 down.
 - **Help Scout** — proactive messages inside Beacon, the shallowest of the four; free to
   2,000 unique viewers a month, tiered above that.
 
-**ticket0 today:** nothing. It only answers. Note what the tiering says: nowhere is
-proactive merely a setting on the widget. It is gated behind a tier at Zendesk, capped by
-campaign contacts at Freshchat, sold as a $99/month add-on with metered overage at Intercom,
-and metered above a free allowance at Help Scout — four commercial shapes, none of them
-folded into the desk seat, all with targeting infrastructure behind them. That is strong
-external support for issue #1089's judgement that this is "a genuine fork in what the
-product is".
+**ticket0 today:** nothing. It only answers. What the tiering says is not that proactive
+costs extra everywhere — a banner or a teaser is included at Intercom, and Help Scout's
+Messages are free to 2,000 unique viewers — but that the market draws a line *inside*
+proactive, and draws it in the same place four times. The announcement you show a visitor
+comes with the plan. The moment it acquires an audience — segments, journeys, tours,
+campaigns — it becomes a gated tier at Zendesk, a campaign-contact allowance at Freshchat, a
+$99/month add-on at Intercom and a metered viewer count at Help Scout. That line, not the
+price, is what supports issue #1089's judgement that this is "a genuine fork in what the
+product is": the fork is the targeting machinery, not the message.
 
 ### 3.3 The help centre
 
@@ -254,12 +257,14 @@ column, which is a different and much less urgent kind of missing.
    publishing drags an approval workflow behind it, which both Zendesk and Freshdesk hold
    back for their top tiers. If we build it, build the authoring half and say plainly that
    review is a process, not a gate — or build the gate and charge for it.
-7. **Proactive stays out, and now there is evidence.** Four vendors, four commercial shapes
-   — a tier gate at Zendesk, campaign contacts at Freshchat, a $99/month add-on with metered
-   overage at Intercom, 2,000 free unique viewers then tiers at Help Scout — and targeting
-   infrastructure behind every one. If we ever want the *effect* on our own site, the honest
-   first step is a desk-level greeting teaser with Zendesk's suppression rule
-   (never to someone already in an active conversation), not a campaign engine.
+7. **Proactive stays out — and the evidence says exactly where the line is.** All four ship
+   the cheap half with the plan (Intercom's banners and tooltips are unlimited on every core
+   plan) and sell the targeting half apart from it: a gated tier at Zendesk, campaign
+   contacts at Freshchat, the $99/month add-on at Intercom, metered viewers at Help Scout.
+   That is the same split this list already recommends — if we ever want the *effect* on our
+   own site, a desk-level greeting teaser with Zendesk's suppression rule (never to someone
+   already in an active conversation) is the included half, and a campaign engine is the
+   half everyone charges for.
 8. **Help Scout's contact-based billing deserves a look for Substrat itself.** Pricing the
    size of the customer base rather than the seat count is the one commercial idea in this
    survey we have not considered, and it sits oddly close to how the platform already meters
