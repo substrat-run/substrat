@@ -569,6 +569,16 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     const after = await ok('/api/members', { as: astrid });
     expect(after.some((m: any) => m.name === 'Saga Lindqvist')).toBe(true);
 
+    // And the member row is BOUND to the login that accepted. Joining by invitation is
+    // the only way a real install gains a player, and the consumer was dropping the
+    // principal the acceptance handed it — so `whoami` answered `memberId: null` and
+    // Saga's own app showed her the "you belong to no club here" screen while the desk
+    // could see her on the roster. Asserted through whoami, because that read is the
+    // only thing the player app has.
+    const saga = await ok('/api/whoami', { as: 'dev|saga' });
+    expect(saga.memberId).not.toBeNull();
+    expect(after.find((m: any) => m.name === 'Saga Lindqvist').id).toBe(saga.memberId);
+
     // The wrong email is refused — and the refusal does not say why.
     const second = await ok('/api/invites', {
       as: astrid, method: 'POST',
@@ -594,12 +604,17 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     // the coach does not, and nobody anonymous reaches the engine at all.
     expect((await call('/api/invites', { as: ravi })).status).toBe(200);
     expect((await call('/api/invites', { as: nils })).status).toBe(403);
+    // Anonymous is 401 — the ONE answer this route separates out, and it is not a
+    // refusal of the invitation. The two above (400) still say nothing about which way
+    // the invitation was wrong; this one says nothing about the invitation at all,
+    // because the session is asked about first. The recipient's screen turns it into a
+    // sign-in button instead of telling them their good link was bad.
     expect(
       (await call('/api/invites/accept', {
         method: 'POST',
         body: { invitationId },
       })).status,
-    ).toBe(403);
+    ).toBe(401);
   });
 
   // -- the denials, at the surface a browser actually hits -------------------

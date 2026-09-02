@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
   acceptInvite,
@@ -70,6 +70,37 @@ export default function App() {
   const [tab, setTab] = useState<Tab>(() => (urlParam('tab') as Tab) ?? 'book');
   const [tz, setTz] = useState('Europe/Stockholm');
 
+  /**
+   * Which identity load is the current one.
+   *
+   * Every answer here is scoped to a club, so an answer is only good for the club that
+   * asked. Switch twice quickly and the two `whoami` calls race: the first club's
+   * reply can land second and leave its `memberId` sitting under the second club's
+   * name — which is precisely the cross-club read `pickVenue` exists to prevent. The
+   * responses cannot be cancelled, so the newest load takes a ticket and a reply that
+   * no longer holds the ticket is dropped.
+   */
+  const identitySeq = useRef(0);
+
+  /**
+   * Re-ask who the caller is HERE. Switching club changes which principal you are and
+   * which member record is yours; accepting an invitation changes whether you have one
+   * at all. Both are the same question asked again.
+   */
+  const refreshIdentity = useCallback(async (): Promise<void> => {
+    const seq = ++identitySeq.current;
+    const [who, v] = await Promise.allSettled([api.whoami(), api.venue()]);
+    if (seq !== identitySeq.current) return;
+    setMe(who.status === 'fulfilled' ? who.value : null);
+    if (v.status === 'fulfilled') setTz(v.value.venue.timezone);
+    // An answer means the app is no longer signed out — and this is the path that
+    // matters: a recipient opening a `?join=` link is by definition nobody at this
+    // club yet, so the boot load refuses and parks `signedOut`. Accepting makes them
+    // somebody. Without clearing it, the invitation would succeed and hand them a
+    // login screen.
+    if (who.status === 'fulfilled') setSignedOut(false);
+  }, []);
+
   // The venue has to be applied BEFORE the state update that mounts the screens: React
   // runs child effects before parent effects, so a screen mounted in the same commit
   // would otherwise fire its first fetch against the wrong club.
@@ -81,13 +112,23 @@ export default function App() {
     setVenueState(v);
     setUrl({ venue: v });
     void (async () => {
+      const seq = ++identitySeq.current;
       try {
-        setVenues(await api.myVenues());
+        const list = await api.myVenues();
         // Both reads are per venue, which is the whole of rally's shape: the same login
         // is a different principal — and a different member — at each club.
-        setMe(await api.whoami());
-        setTz((await api.venue()).venue.timezone);
+        const who = await api.whoami();
+        const zone = (await api.venue()).venue.timezone;
+        if (seq !== identitySeq.current) return;
+        // The switcher appears in the SAME commit as the identity it belongs to.
+        // Rendering it as soon as `myVenues` lands put a live club switcher above a
+        // screen still asking who you are — one click during that window and the
+        // in-flight answer for the old club would land last and stick.
+        setVenues(list);
+        setMe(who);
+        setTz(zone);
       } catch {
+        if (seq !== identitySeq.current) return;
         setSignedOut(true);
       }
     })();
@@ -100,12 +141,8 @@ export default function App() {
     // The club is part of what the URL identifies — a slot means nothing
     // without knowing which club's slot it is.
     setUrl({ venue: key, slot: null });
-    // Re-ask BOTH questions: switching club changes which principal you are and which
-    // member record is yours. Carrying the old member id across would read another
-    // club's rows under your own name.
-    void api.whoami().then(setMe).catch(() => setMe(null));
-    void api.venue().then((v) => setTz(v.venue.timezone)).catch(() => {});
-  }, []);
+    void refreshIdentity();
+  }, [refreshIdentity]);
 
   const goTab = useCallback((next: Tab) => {
     setTab(next);
@@ -131,6 +168,11 @@ export default function App() {
           onDone={() => {
             setUrl({ join: null });
             setJoin(null);
+            // Accepting is what made them a member, so the answer this app booted with
+            // is now out of date: `me.memberId` is still null, and the club they just
+            // joined would greet them with the "you are nobody here" screen until a
+            // reload. Ask again on the way out.
+            void refreshIdentity();
           }}
         />
       </div>
@@ -797,16 +839,15 @@ function Matches({ tz, memberId }: { tz: string; memberId: string }) {
 }
 
 /**
- * The screen a shared link lands on. Per the handover (1m/2f): the match is
- * shown FIRST — you decide whether you care before you are asked who you are —
- * and a link that can no longer be taken says so plainly instead of failing.
- */
-/**
- * A club invitation, opened from the link the desk copied. No persona picker
- * here: the whole point is that the recipient is not a member yet. The email
- * field is the proof — the engine re-hashes it against what the club entered,
- * so the invitation id alone opens nothing. (With a real login session the
- * server uses the session's verified email and the field is belt-and-braces.)
+ * A club invitation, opened from the link the desk copied. No persona picker here:
+ * the whole point is that the recipient is not a member yet. What the acceptance is
+ * checked against is the email in the recipient's OWN verified token — the engine
+ * re-hashes it against what the club entered — so the invitation id alone opens
+ * nothing, and this screen asks for no email of its own.
+ *
+ * Which is why it has to be able to send them to sign in: this is the one screen the
+ * app renders while signed out, and the identity it runs on is the one thing it
+ * cannot supply itself.
  */
 function AcceptClubInvite({
   invitationId,
@@ -815,7 +856,7 @@ function AcceptClubInvite({
   invitationId: string;
   onDone: () => void;
 }) {
-  const [state, setState] = useState<'asking' | 'accepted' | 'refused'>('asking');
+  const [state, setState] = useState<'asking' | 'accepted' | 'refused' | 'signed-out'>('asking');
 
   const shell = (body: React.ReactNode) => (
     <div className="scroll" style={{ background: 'var(--ink)', minHeight: '100%' }}>
@@ -838,6 +879,28 @@ function AcceptClubInvite({
         </p>
         <button className="cta" style={{ marginTop: 12 }} onClick={onDone}>
           Till klubben →
+        </button>
+      </div>,
+    );
+
+  // Signed out is not a refusal, and saying so is the whole point of separating them:
+  // the link is fine, the club is expecting them, they simply have not said who they
+  // are yet. Coming back to THIS url — invitation id and venue included — is what makes
+  // the round-trip land on the invitation again rather than on an empty app.
+  if (state === 'signed-out')
+    return shell(
+      <div className="card">
+        <h2>Logga in för att tacka ja</h2>
+        <p className="meta">
+          Klubben kontrollerar inbjudan mot adressen du loggar in med. Logga in med den
+          adress inbjudan skickades till.
+        </p>
+        <button
+          className="cta"
+          style={{ marginTop: 12 }}
+          onClick={() => auth.login(`${location.pathname}${location.search}`)}
+        >
+          Logga in
         </button>
       </div>,
     );
@@ -879,7 +942,10 @@ function AcceptClubInvite({
         onClick={() =>
           acceptInvite(invitationId).then(
             () => setState('accepted'),
-            () => setState('refused'),
+            (e: unknown) =>
+              // 401 is the server saying "I do not know who you are" — a question this
+              // screen can answer. Everything else is about the invitation itself.
+              setState(e instanceof ApiError && e.status === 401 ? 'signed-out' : 'refused'),
           )
         }
       >
@@ -889,6 +955,11 @@ function AcceptClubInvite({
   );
 }
 
+/**
+ * The screen a shared match link lands on. Per the handover (1m/2f): the match is
+ * shown FIRST — you decide whether you care before you are asked who you are — and a
+ * link that can no longer be taken says so plainly instead of failing.
+ */
 function JoinByLink({
   reservationId,
   tz,

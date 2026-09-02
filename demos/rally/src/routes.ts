@@ -15,6 +15,7 @@ import {
   nextPageLink,
   PAGE_LINK_HEADER,
   principalId,
+  substratError,
   type PrincipalId,
   type ScopeId,
   type TenantId,
@@ -273,19 +274,24 @@ export function createRallyApp(
    * (the engine re-hashes the identifier and compares); this route's job is to
    * answer WHO is accepting:
    *
-   *  - A real session: the identifier is the session's VERIFIED email — never
-   *    the body — and a caller with no principal in this tenant gets one minted
-   *    and linked on success. That is the honest bootstrap: signing up made
-   *    them a person, accepting is what makes them a member.
-   *  - The dev header: `x-principal` names the acceptor and the body may name
-   *    the email. An impersonation bypass by design, mounted only when opted
-   *    in — and a dev identity is never linked (no such identity pool exists).
+   * The identifier is the session's VERIFIED email — never the body — and a caller
+   * with no principal in this tenant gets one minted and linked on success. That is
+   * the honest bootstrap: signing up made them a person, accepting is what makes
+   * them a member.
+   *
+   * No session is `unauthenticated` (401), NOT a refusal. Every other answer this
+   * route can give means the invitation itself is spent, revoked, or addressed to
+   * someone else — and the recipient's screen says exactly that. Collapsing the two
+   * told a signed-out recipient their perfectly good link was bad, on the one screen
+   * in the app that is deliberately reachable while signed out, and offered them no
+   * way to sign in. It leaks nothing either: whether an invitation exists is not
+   * asked before the session is.
    */
   app.post('/api/invites/accept', async (c) => {
     const venue = venueOf(c);
     const input = await body(c);
     const subject = await login.subject(c.req.raw.headers);
-    if (!subject?.email) throw new PermissionDenied('not authenticated');
+    if (!subject?.email) throw substratError('unauthenticated', 'not authenticated');
 
     // The identifier the engine re-hashes as proof comes from the VERIFIED token and
     // nowhere else. It used to be able to come from the request body on the dev-header

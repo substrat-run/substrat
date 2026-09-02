@@ -476,41 +476,50 @@ export async function seedRally(host: SqliteScopeHost, dir: string): Promise<Ral
       peakAmount: '310',
     });
 
-    // The SAME humans, in both RallyPoint venues. Their member record is
-    // per-scope — each club's DB holds its own row — but the `party_ref` is one
-    // global player identity carried across both. That is the whole cross-club
-    // identity story, visible in the seed data.
-    for (const [scope, ids] of [
-      [world.s1, 'solna'],
-      [world.s1b, 'nacka'],
-    ] as const) {
-      const stub = await host.getScope(world.astrid, world.t1, scope);
-      // `principalRef` is what lets `rally/whoami` hand a signed-in player their own
-      // member id. Per scope, because the member rows are: Elin is a different member
-      // record at Solna and at Nacka, tied together only by the party ref.
-      const elin = await stub.invoke<{ id: string }>('rally/create-member', {
-        partyRef: world.elinParty, name: 'Elin Kastberg', phone: '070-555 21 09',
-        level: '3.4', principalRef: world.elin,
-      });
-      const johan = await stub.invoke<{ id: string }>('rally/create-member', {
-        partyRef: world.johanParty, name: 'Johan Ek', level: '3.1',
-        principalRef: world.johan,
-      });
-      if (ids === 'solna') {
-        world.elinId = elin.id;
-        world.johanId = johan.id;
-      } else {
-        world.elinNackaId = elin.id;
-        world.johanNackaId = johan.id;
-      }
-    }
-
     world.court1 = solna[0] ?? '';
     world.court2 = solna[1] ?? '';
     world.nackaCourt1 = nacka[0] ?? '';
     world.nackaCourt2 = nacka[1] ?? '';
-    writeFileSync(castPath, JSON.stringify(world, null, 2));
   }
+
+  // The SAME humans, in both RallyPoint venues. Their member record is
+  // per-scope — each club's DB holds its own row — but the `party_ref` is one
+  // global player identity carried across both. That is the whole cross-club
+  // identity story, visible in the seed data.
+  //
+  // OUTSIDE the fresh branch, and re-applied on every boot, for the same reason
+  // `linkRallyLogins` is: a `.data` seeded before `principal_ref` existed (0003) has
+  // the members but not the link, and migrating a column in leaves it NULL. Elin
+  // would then sign in to a club she is visibly a member of and be told she belongs
+  // to none — with nothing in the demo able to repair it. `create-member` adopts a
+  // party it already knows, so re-running binds the login and returns the member id
+  // the cast file already holds.
+  for (const [scope, ids] of [
+    [world.s1, 'solna'],
+    [world.s1b, 'nacka'],
+  ] as const) {
+    const stub = await host.getScope(world.astrid, world.t1, scope);
+    // `principalRef` is what lets `rally/whoami` hand a signed-in player their own
+    // member id. Per scope, because the member rows are: Elin is a different member
+    // record at Solna and at Nacka, tied together only by the party ref.
+    const elin = await stub.invoke<{ id: string }>('rally/create-member', {
+      partyRef: world.elinParty, name: 'Elin Kastberg', phone: '070-555 21 09',
+      level: '3.4', principalRef: world.elin,
+    });
+    const johan = await stub.invoke<{ id: string }>('rally/create-member', {
+      partyRef: world.johanParty, name: 'Johan Ek', level: '3.1',
+      principalRef: world.johan,
+    });
+    if (ids === 'solna') {
+      world.elinId = elin.id;
+      world.johanId = johan.id;
+    } else {
+      world.elinNackaId = elin.id;
+      world.johanNackaId = johan.id;
+    }
+  }
+
+  if (fresh) writeFileSync(castPath, JSON.stringify(world, null, 2));
 
   // Portal grants (idempotent): entity-narrowed per member — see ENTITY_GRANTS.
   // A player is granted per club they belong to. Elin plays at both RallyPoint
@@ -546,17 +555,6 @@ export async function seedRally(host: SqliteScopeHost, dir: string): Promise<Ral
   return world;
 }
 
-/**
- * Bind the demo cast's logins to their principals.
- *
- * Separate from `seedRally` and idempotent, because the auth store is a different
- * database with its own lifecycle: the world may already exist when Better Auth's
- * tables are created fresh, and re-running must not mint a second principal for a
- * person who already has one.
- *
- * A login with no identity in a club resolves to nobody there — that is the point.
- * Signing up makes you a person; joining a club is what the invites engine is for.
- */
 /**
  * Bind each dev persona's OIDC `sub` to the principal it already IS.
  *

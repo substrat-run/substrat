@@ -397,6 +397,15 @@ export interface MemberRow {
   name: string;
   phone: string | null;
   level: string | null;
+  /**
+   * The login this member IS, once they have one (0003). Null at the desk.
+   *
+   * Declared here as well as in `entities.ts`, which is what this row's operations
+   * publish as their output schema: the column arrived in 0003 and only the entity
+   * learned about it, so every `SELECT *` was returning a field the type denied
+   * existed. A reader could not see the one column `rally/whoami` turns on.
+   */
+  principal_ref: string | null;
   created_at: string;
 }
 export interface WalletEntryRow {
@@ -945,6 +954,25 @@ const createMemberOp: OperationHandler<
   // The login, if the desk knows it. Branded on the way in for the same reason the
   // party ref is: a principal column that holds anything is a column nobody can trust.
   const principal = input.principalRef ? principalId.parse(input.principalRef) : null;
+  // `party_ref` is one global human and it is UNIQUE, so "create" for a party this
+  // club already knows is the same member, not a second one — the invariant the
+  // invite consumer already states. Adopting rather than inserting is what lets a
+  // caller that runs more than once (the seed, on a `.data` that already exists)
+  // bind a login to a member row created before there was a column to hold it.
+  // A principal already set is never overwritten: that is a different human's row.
+  const already = ctx.sql.query<{ id: string; principal_ref: string | null }>(
+    'SELECT id, principal_ref FROM rally_members WHERE party_ref = ?',
+    [partyRef],
+  )[0];
+  if (already) {
+    if (principal && !already.principal_ref) {
+      ctx.sql.exec('UPDATE rally_members SET principal_ref = ? WHERE id = ?', [
+        principal,
+        already.id,
+      ]);
+    }
+    return ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [already.id])[0]!;
+  }
   ctx.sql.exec(
     `INSERT INTO rally_members (id, party_ref, name, phone, level, principal_ref, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -2110,11 +2138,21 @@ const revokeInviteOp: OperationHandler<{ invitationId: string }, { ok: true }> =
 };
 
 /**
- * A player accepted — give them a member record at this venue.
+ * A player accepted — give them a member record at this venue, bound to the login
+ * that accepted.
+ *
+ * The `principal_ref` is the half that matters and was being dropped: the payload
+ * carries the very principal the acceptance authorized, and a row written without it
+ * leaves `rally/whoami` answering `memberId: null` for a player who is plainly a
+ * member — the player app then shows them the "you belong to no club here" screen
+ * forever. Joining by invitation is the ONLY way a real install gains a player, so
+ * that was every player outside the seed.
  *
  * Idempotent on `party_ref`, which is UNIQUE: delivery is at-least-once, so this
  * consumer will be re-run, and a second member row would give one human two
- * wallets at the same club.
+ * wallets at the same club. A re-run adopts the login onto a row that has none —
+ * which is also what backfills a member the desk created before this column, or
+ * before its player ever signed in — and never overwrites one already set.
  */
 const onInviteAccepted: ConsumerHandler = (ctx, event) => {
   const payload = z
@@ -2128,15 +2166,26 @@ const onInviteAccepted: ConsumerHandler = (ctx, event) => {
   // Not an error: the kernel membership still stands, RallyPoint simply has no
   // record to create.
   if (!invited) return;
-  const existing = ctx.sql.query<{ id: string }>(
-    'SELECT id FROM rally_members WHERE party_ref = ?',
+  // Branded on the way in, for the same reason `create-member` brands it: a
+  // principal column that holds anything is a column nobody can trust.
+  const principal = principalId.parse(payload.principal);
+  const existing = ctx.sql.query<{ id: string; principal_ref: string | null }>(
+    'SELECT id, principal_ref FROM rally_members WHERE party_ref = ?',
     [invited.party_ref],
   );
-  if (existing[0]) return;
+  if (existing[0]) {
+    if (!existing[0].principal_ref) {
+      ctx.sql.exec('UPDATE rally_members SET principal_ref = ? WHERE id = ?', [
+        principal,
+        existing[0].id,
+      ]);
+    }
+    return;
+  }
   ctx.sql.exec(
-    `INSERT INTO rally_members (id, party_ref, name, phone, level, created_at)
-     VALUES (?, ?, ?, NULL, NULL, ?)`,
-    [ulid(), invited.party_ref, invited.name, ctx.now()],
+    `INSERT INTO rally_members (id, party_ref, name, phone, level, principal_ref, created_at)
+     VALUES (?, ?, ?, NULL, NULL, ?, ?)`,
+    [ulid(), invited.party_ref, invited.name, principal, ctx.now()],
   );
 };
 
