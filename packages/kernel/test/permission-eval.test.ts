@@ -257,6 +257,35 @@ describe('createTupleEvaluator', () => {
     expect(await checker.covers(alice, [], TENANT_NODE)).toEqual({ covered: true, missing: [] });
   });
 
+  it('reads each role definition once per decision, however many subjects hold it', async () => {
+    // On the DO adapter every one of these is an RPC to the control plane, so a subject in
+    // three orgs that all hold `staff` used to cost three round-trips for one answer.
+    const reader = readerFor({
+      tenant: [
+        row(`principal:${ALICE}`, 'member', 'org:a'),
+        row(`principal:${ALICE}`, 'member', 'org:b'),
+      ],
+      scope: [
+        row(`principal:${ALICE}`, 'role:staff', `scope:${S}`),
+        row('org:a', 'role:staff', `scope:${S}`),
+        row('org:b', 'role:staff', `scope:${S}`),
+      ],
+      roles: { staff: staff([TODO_READ]) },
+    });
+    let reads = 0;
+    const counting: PermissionTupleReader = {
+      ...reader,
+      getRole: (tenantId, key) => {
+        reads += 1;
+        return reader.getRole(tenantId, key);
+      },
+    };
+    expect(
+      await createTupleEvaluator(counting).covers(alice, [TODO_WRITE], NODE),
+    ).toMatchObject({ covered: false });
+    expect(reads).toBe(1);
+  });
+
   it('covers is narrowing-aware — an entity grant never satisfies the assignment bound', async () => {
     const checker = createTupleEvaluator(
       readerFor({ scope: [row(`principal:${ALICE}`, 'granted:todo:read', 'list:l1')] }),

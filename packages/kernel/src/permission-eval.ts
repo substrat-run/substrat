@@ -123,6 +123,24 @@ const nodeObjectsOf = (node: Node): { obj: string; scoped: boolean }[] =>
  */
 export function createTupleEvaluator(reader: PermissionTupleReader): PermissionChecker {
   /**
+   * `reader.getRole`, memoized for the length of ONE decision. A subject in three orgs that
+   * all hold `role:staff` asked for the definition three times, and on the DO adapter every
+   * one of those is an RPC to the control plane. The cache is per invocation and never
+   * outlives it, so a decision still reads whatever the roles are when it starts — which is
+   * also what makes it consistent: one decision cannot see a role change halfway through.
+   */
+  const roleReaderFor = (tenantId: string) => {
+    const seen = new Map<string, Promise<RoleDefinition | undefined>>();
+    return (key: string): Promise<RoleDefinition | undefined> => {
+      const hit = seen.get(key);
+      if (hit) return hit;
+      const pending = Promise.resolve(reader.getRole(tenantId, key));
+      seen.set(key, pending);
+      return pending;
+    };
+  };
+
+  /**
    * The subject set a check reasons over: the caller, plus every org it is a live member of
    * (rule 4). Shared by `check` and `covers` so the two cannot disagree about who someone
    * is — a divergence here would let the bound be computed over a smaller subject set than
@@ -173,6 +191,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       const now = reader.now();
       const scope = reader.scopeFor(node);
       const subjects = await subjectsOf(subject, node, now);
+      const getRole = roleReaderFor(node.tenantId);
 
       const held = new Set<string>();
       for (const nodeObj of nodeObjectsOf(node)) {
@@ -185,7 +204,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
           for (const row of rows) {
             if (row.object !== nodeObj.obj || !live(row, now)) continue;
             if (row.relation.startsWith('role:')) {
-              const role = await reader.getRole(node.tenantId, row.relation.slice('role:'.length));
+              const role = await getRole(row.relation.slice('role:'.length));
               for (const p of role?.permissions ?? []) held.add(p);
             } else if (row.relation.startsWith('granted:')) {
               held.add(row.relation.slice('granted:'.length));
@@ -212,6 +231,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
       const now = reader.now();
       const deny: Decision = { allowed: false, checked: permission, node };
       const scope = reader.scopeFor(node);
+      const getRole = roleReaderFor(node.tenantId);
 
       // Rule 4 — membership: the subject set is the caller plus its orgs. Shared with
       // `covers` (§ `subjectsOf`).
@@ -234,7 +254,7 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
           for (const row of await tuplesFor(s.ref, 'role:', nodeObj.scoped)) {
             if (row.object !== nodeObj.obj || !live(row, now)) continue;
             const roleKey = row.relation.slice('role:'.length);
-            const role = await reader.getRole(node.tenantId, roleKey);
+            const role = await getRole(roleKey);
             if (role?.permissions.includes(permission)) {
               return {
                 allowed: true,
@@ -284,6 +304,9 @@ export function createTupleEvaluator(reader: PermissionTupleReader): PermissionC
               }
             }
           }
+          // Nothing consults the frontier past the last depth, so expanding it there is a
+          // read per candidate for an answer no one asks for.
+          if (depth === ENTITY_WALK_DEPTH) break;
           // expand one level of parents
           const next: Frontier[] = [];
           for (const candidate of frontier) {

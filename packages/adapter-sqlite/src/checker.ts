@@ -42,29 +42,35 @@ export interface CheckerDeps {
 
 const TUPLE_COLUMNS = 'subject, relation, object, expires_at, revoked_at';
 
-const scopeReader = (db: Database.Database): ScopeTupleReader => ({
-  tuples: (subject, relationPrefix) =>
-    db
-      .prepare(
+/**
+ * The scope-local reads. Each statement is compiled at most once per decision and only if
+ * that decision reaches it — the evaluator calls `tuples` once per (node object, subject)
+ * pair and `grant` once per frontier candidate, so re-preparing per read recompiled the
+ * same SQL several times over, while a node-level check with no entity never needs the walk
+ * statements at all.
+ */
+const scopeReader = (db: Database.Database): ScopeTupleReader => {
+  let tuplesStmt: Database.Statement | undefined;
+  let grantStmt: Database.Statement | undefined;
+  let parentsStmt: Database.Statement | undefined;
+  return {
+    tuples: (subject, relationPrefix) =>
+      (tuplesStmt ??= db.prepare(
         `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
          WHERE subject = ? AND relation LIKE ?`,
-      )
-      .all(subject, `${relationPrefix}%`) as PermissionTupleRow[],
-  grant: (subject, relation, object) =>
-    db
-      .prepare(
+      )).all(subject, `${relationPrefix}%`) as PermissionTupleRow[],
+    grant: (subject, relation, object) =>
+      (grantStmt ??= db.prepare(
         `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
          WHERE subject = ? AND relation = ? AND object = ?`,
-      )
-      .get(subject, relation, object) as PermissionTupleRow | undefined,
-  parents: (object) =>
-    db
-      .prepare(
+      )).get(subject, relation, object) as PermissionTupleRow | undefined,
+    parents: (object) =>
+      (parentsStmt ??= db.prepare(
         `SELECT ${TUPLE_COLUMNS} FROM _substrat_tuples
          WHERE subject = ? AND relation = 'parent'`,
-      )
-      .all(object) as PermissionTupleRow[],
-});
+      )).all(object) as PermissionTupleRow[],
+  };
+};
 
 /**
  * Build the evaluator described above over one host's directory, scope databases
