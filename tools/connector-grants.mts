@@ -30,11 +30,19 @@
  * print a green light.
  */
 import { SCRIVE_CONNECTION_GRANTS } from '../connectors/scrive/src/index.js';
+import { FORTNOX_CONNECTION_GRANTS } from '../connectors/fortnox/src/index.js';
 import { PROVIDERS } from '../apps/dashboard/src/integrations.js';
 
 /** Each connector's declared standing grants, keyed by the provider its catalog entry uses. */
 const DECLARED: Record<string, readonly string[]> = {
   scrive: SCRIVE_CONNECTION_GRANTS,
+  // Empty, and deliberately so — see `FORTNOX_CONNECTION_GRANTS`. Fortnox lands its
+  // ledger through the consuming vertical's own operation, so the permission is that
+  // vertical's and cannot be named here. What replaces this declaration is a mechanism:
+  // `bindFortnoxScope` refuses a binding whose grant is absent. Listed anyway so the
+  // provider is COVERED by this gate rather than silently outside it — if the connector
+  // ever grows a standing grant of its own, this row is where it becomes load-bearing.
+  fortnox: FORTNOX_CONNECTION_GRANTS,
 };
 
 const fail = (message: string, code: 1 | 2): never => {

@@ -71,6 +71,7 @@ needs may not exist yet.
 | Connector | Category | Status | Provider |
 |---|---|---|---|
 | [Scrive](/connectors/scrive) | E-signing & identity | **Published** ([npm](https://www.npmjs.com/package/@substrat-run/connector-scrive), `0.x`) — both halves built and running in production; two caveats: the vertical schedules the poll, and BankID is off on the testbed | Scrive eSign (Swedish BankID) |
+| [Fortnox](/connectors/fortnox) | Accounting | **Built, unverified** (`0.x`) — poll-only, reads bookkeeping as SIE4; client-credentials auth, so no refresh token to rotate. Three claims still rest on documentation rather than a live call | Fortnox (Swedish accounting) |
 
 Categories, as they will fill in (from the master plan's build list):
 

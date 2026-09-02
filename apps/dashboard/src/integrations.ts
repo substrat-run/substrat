@@ -70,6 +70,31 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // which is the failure this catalog reproduced for months (#841, #711).
     grants: ['protocol:record-signature', 'protocol:attach'],
   },
+  fortnox: {
+    provider: 'fortnox',
+    name: 'Fortnox',
+    description: 'Swedish accounting — reads a company’s bookkeeping as SIE4.',
+    monogram: 'Fx',
+    // The client-credentials triple, keyed exactly as the connector's `fortnoxSecret`
+    // schema parses them. NOT the authorization-code flow's tokens: Fortnox mints an
+    // access token on demand from these three, so there is no refresh token to store
+    // and none to lose to a rotation race.
+    //
+    // `tenantId` is the company's numeric DatabaseNumber, and it is the field an
+    // operator is most likely to get wrong — which is why the connect-time probe reads
+    // `/companyinformation` and checks it comes back naming the same company.
+    fields: [
+      { key: 'clientId', label: 'Client ID', secret: false, placeholder: 'From the Fortnox Developer Portal' },
+      { key: 'clientSecret', label: 'Client secret', secret: true },
+      { key: 'tenantId', label: 'Tenant ID (DatabaseNumber)', secret: false, placeholder: '123456' },
+    ],
+    // Deliberately empty, and `FORTNOX_CONNECTION_GRANTS` says why at length: this
+    // connector lands its ledger through the CONSUMING vertical's own operation, so the
+    // permission it needs is that vertical's and is unknown here. `bindFortnoxScope`
+    // verifies the grant at bind time instead, and refuses without it — so the hole this
+    // list exists to prevent is closed by a mechanism rather than by a declaration.
+    grants: [],
+  },
 };
 
 /** Parse + validate a credential body against the provider's declared fields. */

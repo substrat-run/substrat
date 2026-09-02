@@ -157,6 +157,7 @@ export function guideSidebar() {
       items: [
         { text: 'What is a connector?', link: '/connectors/' },
         { text: 'Scrive (e-signing)', link: '/connectors/scrive' },
+        { text: 'Fortnox (accounting)', link: '/connectors/fortnox' },
       ],
     },
     {
