@@ -44,20 +44,23 @@ product-led SaaS.
 
 ## 2. The commercial shape
 
-Two layers everywhere: a **per-seat subscription** for the desk, plus **metered AI** billed
-on outcomes. The second layer is new and is the industry's live pricing question.
+Two layers everywhere, mixed differently: a **desk subscription** — per seat at Zendesk,
+Intercom and Freshdesk, per *contact helped* at Help Scout — plus **AI metered apart from
+it**. The metered unit differs too: an outcome at Zendesk, Intercom and Help Scout, a
+session at Freshdesk. The second layer is new and is the industry's live pricing question.
 
 | Product | Seats (list, annual) | AI, metered separately |
 |---|---|---|
 | **Zendesk** | Support Team $19; Suite Team $55; Suite Professional $115 per agent/month. Enterprise + Copilot is quote-only. Suite Growth is no longer on the public page; trackers cite $79–89 | Automated resolutions metered by outcome rather than bundled into the seat |
-| **Intercom** | Essential $19; Advanced $85; Expert $132 per seat/month. Free "Lite" seats for internal collaborators on Advanced/Expert | Fin at **$0.99 per resolution** — counted when the customer confirms the answer resolved it, or does not ask again after it |
-| **Freshdesk** | Growth / Pro / Enterprise | Freddy AI Agent **sessions**: 500 free once per account, then **$49 per 100**. A session is one end-user interaction; for email it is a 72-hour window, however many replies it contains |
-| **Help Scout** | **Contact-based**: many conversations with the same person count as one contact. Beacon is on every plan, including free | AI Resolutions and AI Drafts priced as their own lines |
+| **Intercom** | Essential $29; Advanced $85; Expert $132 per seat/month. Free "Lite" seats for internal collaborators on Advanced/Expert | Fin at **$0.99 per resolution** — counted when the customer confirms the answer resolved it, or does not ask again after it |
+| **Freshdesk** | Growth $19; Pro $55; Enterprise $89 per agent/month | Freddy AI Agent **sessions**: 500 free once per account, then **$49 per 100**. A session is every interaction between one end user and the agent inside a **24-hour window**, however many replies it contains — the same window on every channel |
+| **Help Scout** | **Contact-based**: many conversations with the same person count as one contact, and seats are unlimited. Beacon is on every plan, including free. The per-user plans still exist but are legacy | AI Answers metered at **$0.75 per resolution**. AI Drafts is *included* on the contact-based plans — metered ($50 per 100 drafted conversations) only on the legacy user-based ones |
 
 Three observations that matter more than the numbers:
 
-1. **The unit of AI billing is an outcome, never a token.** Resolution (Intercom, Zendesk,
-   Help Scout) or session (Freshdesk). No one in this market bills the customer for model
+1. **The unit of AI billing is the customer's interaction, never a token.** A resolution at
+   Intercom, Zendesk and Help Scout; a 24-hour session at Freshdesk, which charges whether
+   or not the answer landed. No one in this market bills the customer for model
    consumption, because no buyer can forecast it.
 2. **Seats are the floor, not the price.** The metered layer is where the margin moved.
 3. **Help Scout's contact-based billing is the one genuine divergence** — it prices the
@@ -104,9 +107,11 @@ is no field anywhere in the widget that would set it.
 - **Help Scout** — proactive messages inside Beacon, the shallowest of the four.
 
 **ticket0 today:** nothing. It only answers. Note what the tiering says: proactive is a
-separately priced product with targeting infrastructure behind it at all four — which is
-strong external support for #1089's judgement that this is "a genuine fork in what the
-product is", not a widget setting.
+separately metered product with targeting infrastructure behind it at all four — a priced
+line of its own at Zendesk, Freshchat and Intercom, and free only to 2,000 unique viewers a
+month at Help Scout before it starts charging — which is strong external support for
+#1089's judgement that this is "a genuine fork in what the product is", not a widget
+setting.
 
 ### 3.3 The help centre
 
@@ -168,10 +173,12 @@ without a human". CSAT is stored; a resolution outcome is not.
 ### 3.7 Privacy, retention, erasure
 
 This is the axis where the market is weakest and it is worth stating plainly. Zendesk
-supports GDPR on every plan, but **retention policies, data masking, automatic PII
-redaction, access logs and end-user deletion schedules are the Advanced Data Privacy and
-Protection add-on, sold on Suite Enterprise and above**. Erasure below that tier is a manual
-act: redact the fields, then delete the user.
+supports GDPR on every plan, and a *single* ticket deletion schedule — plus an end-user
+schedule carrying one condition — comes with the plan. Everything past that is the add-on:
+**multiple conditional retention policies, data masking, automatic PII redaction, access
+logs and customer-managed encryption keys are Advanced Data Privacy and Protection, sold on
+Suite Enterprise and above**. Below it, erasure at any granularity is a manual act: redact
+the fields, then delete the user.
 
 **ticket0 today:** erasability is a *declared property of the model*, at no tier — `contact`
 declares `email` and `display_name` erasable, `message` declares `body_text` and
@@ -196,11 +203,16 @@ The single most useful output of this survey, for a decision about scope:
 |---|---|
 | Embedded widget with structured pre-chat capture | Proactive messages and campaigns |
 | Anonymous intake **with** an abuse story (verification, suspended queue) | SLA policies, business hours, skills-based routing |
-| A published, searchable help centre | KB approval workflow; multilingual articles; several help centres |
+| A published, searchable help centre (Zendesk: from Suite Team) | KB approval workflow; multilingual articles; several help centres |
 | Attachments on a conversation | Tenant-defined custom fields, ticket forms, multi-brand |
-| Contact + conversation search | Retention policies, PII redaction, deletion schedules (Zendesk: Enterprise add-on) |
+| Contact + conversation search | Conditional retention policies, PII redaction, data masking (Zendesk: the ADPP add-on, Enterprise and above) |
 | Canned/saved replies | Advanced reporting, sandbox, audit logs, SSO |
 | CSAT collection | Outbound webhooks and app platforms |
+
+"Entry tier" is each vendor's cheapest paid plan: Zendesk Support Team $19, Freshdesk Growth
+$19, Intercom Essential $29, Help Scout's entry contact plan. Zendesk is the one vendor
+whose entry plan is a *support* product rather than a suite, which is why the help centre
+arrives a tier later there and nowhere else.
 
 Read against ticket0's open issues, the entry-tier column is where the real deficits are:
 attachments (#1080), abuse handling (#1088), the help centre (#1089), and pre-chat capture
@@ -237,9 +249,10 @@ column, which is a different and much less urgent kind of missing.
    publishing drags an approval workflow behind it, which both Zendesk and Freshdesk hold
    back for their top tiers. If we build it, build the authoring half and say plainly that
    review is a process, not a gate — or build the gate and charge for it.
-7. **Proactive stays out, and now there is evidence.** Separately priced, separately
-   metered, capped and targeted at all four. If we ever want the *effect* on our own site,
-   the honest first step is a desk-level greeting teaser with Zendesk's suppression rule
+7. **Proactive stays out, and now there is evidence.** Separately metered, capped and
+   targeted at all four — its own priced line at Zendesk, Freshchat and Intercom, free only
+   to 2,000 unique viewers a month at Help Scout. If we ever want the *effect* on our own
+   site, the honest first step is a desk-level greeting teaser with Zendesk's suppression rule
    (never to someone already in an active conversation), not a campaign engine.
 8. **Help Scout's contact-based billing deserves a look for Substrat itself.** Pricing the
    size of the customer base rather than the seat count is the one commercial idea in this
