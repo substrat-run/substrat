@@ -69,8 +69,9 @@ const PAIRS = [
         label: 'adapter-cloudflare ScopeDO KERNEL_DDL',
         file: SCOPE_DO,
         anchor: /const KERNEL_DDL = `/,
-        // A ScopeDO's storage is created with the current DDL, so it ALTERs nothing.
-        additions: [],
+        // A ScopeDO that predates a column ALTERs it in on cold start, as whole statements:
+        // DO SQLite restricts PRAGMA, so it attempts and tolerates rather than probing.
+        additions: [{ kind: 'alterStatements' }],
       },
     ],
   },
@@ -169,8 +170,18 @@ function ddlFor(side, src, fragments) {
   });
 }
 
-/** Single-quoted strings in an array literal, in order. */
-const quoted = (block) => [...block.matchAll(/'([^']*)'/g)].map((m) => m[1]);
+/**
+ * Single-quoted strings in an array literal, in order.
+ *
+ * Comments are stripped first, and that is not cosmetic: one apostrophe in prose — a
+ * `KERNEL_DDL's` in the ScopeDO's ALTER list — re-pairs every quote after it and silently
+ * drops five of eight columns from the comparison. The array elements are SQL and column
+ * DDL, neither of which contains `//`.
+ */
+const quoted = (block) =>
+  [...block.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '').matchAll(/'([^']*)'/g)].map(
+    (m) => m[1],
+  );
 
 /**
  * The columns a side ALTERs in after its DDL block. Each match records the source range it
@@ -204,6 +215,28 @@ function additionsFor(side, src) {
         const pairs = quoted(m[1]);
         for (let i = 1; i < pairs.length; i += 2) take(m, m[2], pairs[i]);
       }
+
+      // The one addition path that does not go through the helper: a probe-then-ALTER loop
+      // over `scopes`, the pure adapter's mirror of the DO adapter's SCOPE_COLUMNS_ADDED.
+      const rawLoop = new RegExp(
+        `for \\(const \\[column, ddl\\] of \\[([\\s\\S]*?)\\] as const\\) \\{\\s*` +
+          `if \\(!existing\\.has\\(column\\)\\)\\s*${recv}\\.exec\\(\`ALTER TABLE (\\w+) ADD COLUMN \\$\\{ddl\\}\`\\);\\s*\\}`,
+        'g',
+      );
+      for (const m of src.matchAll(rawLoop)) {
+        const pairs = quoted(m[1]);
+        for (let i = 1; i < pairs.length; i += 2) take(m, m[2], pairs[i]);
+      }
+    } else if (spec.kind === 'alterStatements') {
+      // A ScopeDO cannot probe (DO SQLite restricts PRAGMA), so it attempts a list of whole
+      // ALTER statements and tolerates the duplicate. Same eight columns the pure adapter
+      // reaches through `ensureColumn`, expressed as SQL rather than as arguments.
+      for (const m of src.matchAll(/for \(const alter of \[([\s\S]*?)\]\) \{/g)) {
+        for (const stmt of quoted(m[1])) {
+          const parsed = stmt.match(/^ALTER TABLE (\w+) ADD COLUMN (.+)$/);
+          if (parsed) take(m, parsed[1], parsed[2]);
+        }
+      }
     } else if (spec.kind === 'addColumn') {
       // this.addColumn('table', 'ddl')
       for (const m of src.matchAll(/this\.addColumn\('([^']+)',\s*'([^']+)'\)/g)) {
@@ -222,15 +255,26 @@ function additionsFor(side, src) {
 }
 
 /**
- * Refuse if a file has an `ensureColumn`/`addColumn` call site that no extractor consumed.
- * The alternative is a check that quietly compares an incomplete schema and reports success.
+ * Refuse if a file adds a column by a route no extractor consumed — whether through the
+ * `ensureColumn`/`addColumn` helpers or as a raw `ALTER TABLE <name> ADD COLUMN`. The
+ * alternative is a check that quietly compares an incomplete schema and reports success.
+ *
+ * The two helpers' own bodies are the one thing this must not flag: they ALTER an
+ * interpolated `${table}`, and every call site that reaches them is accounted for above. A
+ * literal table name is what marks an addition that bypasses them.
  */
 function assertEveryCallSiteRead(file, src, ranges) {
   const covered = (i) => ranges.some(([a, b]) => i >= a && i < b);
   const missed = [];
-  for (const m of src.matchAll(/this\.(ensureColumn|addColumn)\(/g)) {
-    if (!covered(m.index)) {
-      missed.push(`${file}:${src.slice(0, m.index).split('\n').length} — ${m[1]}`);
+  const shapes = [
+    [/this\.(ensureColumn|addColumn)\(/g, (m) => m[1]],
+    [/ALTER TABLE\s+([A-Za-z_][A-Za-z0-9_]*)\s+ADD COLUMN/g, (m) => `ALTER TABLE ${m[1]}`],
+  ];
+  for (const [re, name] of shapes) {
+    for (const m of src.matchAll(re)) {
+      if (!covered(m.index)) {
+        missed.push(`${file}:${src.slice(0, m.index).split('\n').length} — ${name(m)}`);
+      }
     }
   }
   if (missed.length > 0) {
