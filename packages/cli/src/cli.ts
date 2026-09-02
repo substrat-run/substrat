@@ -914,7 +914,7 @@ async function cmdModel(): Promise<void> {
   }
   // positional(0) is 'view' itself; the target trails it and may follow `--out <file>`.
   const target = positional(1) ?? '.';
-  const { file, entities } = writeModelView(target, { ...(flag('out') ? { out: flag('out')! } : {}) });
+  const { file, entities } = await writeModelView(target, { ...(flag('out') ? { out: flag('out')! } : {}) });
   console.log(`✓ ${entities} ${entities === 1 ? 'entity' : 'entities'} rendered — open it in a browser:`);
   console.log(file);
 }

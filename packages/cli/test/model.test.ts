@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { defaultOutPath, readModel, renderModelHtml, resolveModelPath, writeModelView } from '../src/model.js';
@@ -133,22 +133,37 @@ describe('model view', () => {
     expect(html).toContain('t_b');
   });
 
-  it('writes the file and reports the path and entity count', () => {
+  it('writes the file and reports the path and entity count', async () => {
     const out = join(dir, 'view.html');
-    const result = writeModelView(dir, { out });
+    const result = await writeModelView(dir, { out });
     expect(result).toEqual({ file: out, entities: 4 });
     expect(readFileSync(out, 'utf8')).toContain('Entity model');
   });
 
-  it('defaults to a stable temp path outside the project', () => {
-    const result = writeModelView(dir);
+  it('defaults to a stable temp path outside the project', async () => {
+    const result = await writeModelView(dir);
     // Never beside model.json: an un-gated generated file in someone's repo is exactly
     // what the three-marks rule refuses.
     expect(result.file.startsWith(dir)).toBe(false);
-    expect(result.file).toBe(defaultOutPath(join(dir, 'model.json')));
+    expect(result.file).toBe(await defaultOutPath(join(dir, 'model.json')));
     // Stable, so a re-render replaces the tab already open rather than leaving a trail.
-    expect(writeModelView(dir).file).toBe(result.file);
+    expect((await writeModelView(dir)).file).toBe(result.file);
     rmSync(result.file, { force: true });
+  });
+
+  it('gives two models in same-named directories two default paths', async () => {
+    // A monorepo with apps/a/api and apps/b/api: the basename alone would have the second
+    // render silently replace the first one's view.
+    const a = join(dir, 'a', 'api');
+    const b = join(dir, 'b', 'api');
+    mkdirSync(a, { recursive: true });
+    mkdirSync(b, { recursive: true });
+    const [pathA, pathB] = await Promise.all([
+      defaultOutPath(join(a, 'model.json')),
+      defaultOutPath(join(b, 'model.json')),
+    ]);
+    expect(pathA).not.toBe(pathB);
+    expect(pathA).toContain('api-');
   });
 
   it('takes a directory or the file itself, and says so when there is neither', () => {
@@ -169,6 +184,14 @@ describe('model view', () => {
     const tableless = join(dir, 'tableless.json');
     writeFileSync(tableless, JSON.stringify({ entities: { a: { fields: {} } } }));
     expect(() => readModel(tableless)).toThrow(/declares no table/);
+
+    // A list-shaped declaration that is not a list would otherwise surface as a TypeError
+    // from inside the layout — which reads as a renderer bug, not as a malformed input.
+    for (const bad of [{ parents: 'list' }, { key: [1] }, { erasable: 'email' }, { primaryKey: {} }]) {
+      const file = join(dir, `bad-${Object.keys(bad)[0]}.json`);
+      writeFileSync(file, JSON.stringify({ entities: { a: { table: 't', fields: {}, ...bad } } }));
+      expect(() => readModel(file)).toThrow(/other than a list of field names/);
+    }
   });
 
   it('escapes what it renders', () => {

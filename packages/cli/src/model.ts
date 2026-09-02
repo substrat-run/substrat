@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import { webcrypto } from 'node:crypto';
 import type { EmittedEntity, EmittedLifecycle, EmittedModel } from '@substrat-run/contracts';
 
 /**
@@ -75,6 +76,16 @@ export function readModel(file: string): EmittedModel {
   for (const [name, entity] of Object.entries(entities as Record<string, unknown>)) {
     if (!entity || typeof entity !== 'object' || typeof (entity as { table?: unknown }).table !== 'string') {
       throw new Error(`${file}: entity '${name}' declares no table — is it a model.json?`);
+    }
+    // The list-shaped declarations, checked here rather than where they are read: a
+    // `"parents": "list"` that got past this surfaces as a TypeError from inside the
+    // layout, which reads as a bug in the renderer instead of as a malformed input.
+    for (const listed of ['parents', 'primaryKey', 'key', 'erasable'] as const) {
+      const value = (entity as Record<string, unknown>)[listed];
+      if (value === undefined) continue;
+      if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
+        throw new Error(`${file}: entity '${name}' declares '${listed}' as something other than a list of field names`);
+      }
     }
   }
   return parsed as EmittedModel;
@@ -370,18 +381,28 @@ Marks: PK primary key · KEY natural key · ERASABLE reachable by an erasure. <c
  * un-gated generated file in someone's repo, and this one is a thing you look at, not a
  * thing you commit. Stable across runs, so a re-render replaces the tab you already have
  * open rather than leaving a trail of files behind.
+ *
+ * The directory's basename alone is not enough to be stable AND distinct — a monorepo with
+ * `apps/a/api` and `apps/b/api` would have the second render silently replace the first
+ * one's view — so the full resolved directory is hashed into the name.
  */
-export function defaultOutPath(modelFile: string): string {
-  const label = basename(dirname(resolve(modelFile))).replace(/[^a-zA-Z0-9._-]/g, '-') || 'model';
-  return join(tmpdir(), 'substrat-model', `${label}.html`);
+export async function defaultOutPath(modelFile: string): Promise<string> {
+  const dir = dirname(resolve(modelFile));
+  const label = basename(dir).replace(/[^a-zA-Z0-9._-]/g, '-') || 'model';
+  const digest = await webcrypto.subtle.digest('SHA-256', new TextEncoder().encode(dir));
+  const short = Buffer.from(digest).toString('hex').slice(0, 8);
+  return join(tmpdir(), 'substrat-model', `${label}-${short}.html`);
 }
 
 /** Read, render, write. Returns the absolute path — the thing worth printing. */
-export function writeModelView(target: string, opts: { readonly out?: string } = {}): ModelViewResult {
+export async function writeModelView(
+  target: string,
+  opts: { readonly out?: string } = {},
+): Promise<ModelViewResult> {
   const modelFile = resolveModelPath(target);
   const model = readModel(modelFile);
   const html = renderModelHtml(model, { source: modelFile });
-  const file = opts.out ? resolve(process.cwd(), opts.out) : defaultOutPath(modelFile);
+  const file = opts.out ? resolve(process.cwd(), opts.out) : await defaultOutPath(modelFile);
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, html);
   return { file, entities: Object.keys(model.entities).length };
