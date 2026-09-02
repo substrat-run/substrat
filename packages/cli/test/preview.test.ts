@@ -91,6 +91,31 @@ describe('preview client', () => {
     await expect(createPreview({ ...base, tag: 'pr-1', versionId: '01J' })).rejects.toThrow(/private/);
   });
 
+  it('reads a problem document the way every other command does (#971)', async () => {
+    stub(() => ({
+      status: 409,
+      body: {
+        type: 'https://substrat.net/problems/conflict',
+        title: 'Conflict',
+        status: 409,
+        detail: 'a preview for tag pr-1 is being created',
+        code: 'conflict',
+      },
+    }));
+    await expect(createPreview({ ...base, tag: 'pr-1', versionId: '01J' })).rejects.toThrow(
+      'preview create failed (409 conflict): a preview for tag pr-1 is being created',
+    );
+  });
+
+  it('names the field a legacy Zod refusal complained about', async () => {
+    // The pre-#113 `{ error, issues }` body: 'invalid request' alone is unactionable.
+    stub(() => ({
+      status: 400,
+      body: { error: 'invalid request', issues: [{ path: ['ttlHours'], message: 'Expected number, received string' }] },
+    }));
+    await expect(listPreviews(base)).rejects.toThrow(/ttlHours: Expected number, received string/);
+  });
+
   it('DELETE hits the tag path and returns the reaped scope', async () => {
     const { calls } = stub(() => ({ body: { deleted: 'S1' } }));
     const out = await deletePreview({ ...base, tag: 'pr-7' });
