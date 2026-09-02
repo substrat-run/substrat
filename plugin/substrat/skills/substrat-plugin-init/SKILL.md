@@ -33,14 +33,14 @@ One question, with a default:
 > import. Shall I write it that way, or do you want everything in `CLAUDE.md`?
 
 Take `AGENTS.md` + the import unless they say otherwise. Two files with one source beats
-one file that only one tool can read.
+one file that only one tool can read. Their answer picks **one** of the two branches in
+step 3, and you follow only that one — the whole point of asking is that the answer
+decides.
 
-## 2. Write the rules file, if it is missing
+## 2. Get the rules text
 
-If `AGENTS.md` already exists, **do not overwrite it** — show the user what it has and stop
-at step 3. A project's own rules file may have been edited on purpose.
-
-If it is missing, fetch the published copy and write it verbatim:
+Whichever file it lands in, the text is the same, and it is fetched rather than
+remembered:
 
 ```
 https://substrat.net/guide/agent-rules.md
@@ -55,9 +55,15 @@ If the fetch fails (offline, or the site is unreachable), say so and stop rather
 writing rules from memory. A remembered 0.x API is the expensive failure this whole plugin
 exists to avoid.
 
-## 3. Write the import
+## 3. Write it, the way they chose
 
-`CLAUDE.md`, exactly:
+**Branch A — `AGENTS.md` + import (the default).**
+
+Write the rules text to `AGENTS.md`, unless it already exists: in that case **do not
+overwrite it** — a project's own rules file may have been edited on purpose. Show the user
+what it has and move on to the import.
+
+Then `CLAUDE.md`, exactly:
 
 ```md
 @AGENTS.md
@@ -73,6 +79,16 @@ AGENTS.md so Cursor and opencode see them too.
 If `CLAUDE.md` already exists and does not import `AGENTS.md`, add the `@AGENTS.md` line at
 the top and leave the rest of the file alone. If it already imports it, there is nothing to
 do.
+
+**Branch B — `CLAUDE.md` only.**
+
+Write the rules text into `CLAUDE.md` itself, and **do not create `AGENTS.md`** — a file
+the user declined is not a file to leave behind. If `CLAUDE.md` already exists, append the
+rules below what is there rather than replacing it, and say where you put them.
+
+Then say the cost out loud, once: Codex, Cursor, opencode and Kiro read `AGENTS.md` and
+will not see these rules. Offer branch A as the one-line fix if they change their mind.
+Do not re-argue it.
 
 ## 4. Record the version marker
 

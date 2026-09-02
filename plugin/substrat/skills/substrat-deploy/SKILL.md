@@ -25,7 +25,9 @@ From the vertical's directory:
 - `package.json`'s `substrat` block carries the slug, name and tenant. `substrat push`
   defaults all of them, so the command usually takes no flags at all.
 - Run the project's own gates first — `npm test`, `npm run typecheck`,
-  `npx @substrat-run/boundary-lint` — and read `AGENTS.md` if you have not. The push runs
+  `npm run lint:boundaries` (the declared script, so a missing local dependency fails
+  rather than `npx` quietly fetching some other version) — and read `AGENTS.md` if you have
+  not. The push runs
   the layer rules on the source before it builds and refuses on a violation, so a red gate
   here is a failed deploy a minute later.
 - Say which tenant and which vertical you are about to push to, and confirm it, before the

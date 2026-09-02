@@ -238,7 +238,7 @@ debugging from first principles walks away from the answer.
 | Symptom | Fix |
 |---|---|
 | `expected a Zod schema` at runtime, pointing nowhere useful | Two copies of Zod. Never add `zod` to `package.json` — import `z` from `@substrat-run/contracts`, so the schema you build and the one the host validates with are the same class. |
-| Killing the dev server kills unrelated ones too | `pkill 'tsx src/server.ts'` matches every Substrat project running on the machine, not just yours. Kill by port: `lsof -ti :<port> \| xargs kill`. |
+| Killing the dev server kills unrelated ones too | `pkill -f 'tsx src/server.ts'` matches every Substrat project running on the machine, not just yours. Kill by port instead: `kill $(lsof -ti :<port>)`. |
 | Green locally, red in CI, with nothing in the diff that explains it | A warm build output hides it. Delete `dist`, reinstall from the lockfile (`--frozen-lockfile`), and re-run the gates before believing a local green. |
 | Green test suite, broken app | The scenario calls operations directly and never reaches `server.ts`, its routes, or the principal picker. Boot the server and drive the flow over HTTP as two personas — one who should succeed and one who should be denied. |
 | Permission denied after you widened a role | Roles are projected into a scope when that scope is provisioned, from `ROLES` in `src/provision.ts`. An existing scope keeps the projection it was born with — re-provision it (or re-seed onto a fresh data directory), then present the permission diff below. |
