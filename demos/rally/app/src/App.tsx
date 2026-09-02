@@ -91,14 +91,15 @@ export default function App() {
     const seq = ++identitySeq.current;
     const [who, v] = await Promise.allSettled([api.whoami(), api.venue()]);
     if (seq !== identitySeq.current) return;
-    setMe(who.status === 'fulfilled' ? who.value : null);
     if (v.status === 'fulfilled') setTz(v.value.venue.timezone);
-    // An answer means the app is no longer signed out — and this is the path that
-    // matters: a recipient opening a `?join=` link is by definition nobody at this
-    // club yet, so the boot load refuses and parks `signedOut`. Accepting makes them
-    // somebody. Without clearing it, the invitation would succeed and hand them a
-    // login screen.
-    if (who.status === 'fulfilled') setSignedOut(false);
+    setMe(who.status === 'fulfilled' ? who.value : null);
+    // Whether there is an answer at all is the same question the boot load asks, so it
+    // gets the same answer. `ready` IS `me !== null`, so a refusal that only cleared
+    // `me` would park the app on "Laddar…" for good — a spinner where the login button
+    // belongs. And the refusal is NOT narrowed to a 401: `authOf` throws
+    // `PermissionDenied` (403) for an absent session and for a login that is nobody at
+    // this club, deliberately indistinguishable, so keying on 401 would catch neither.
+    setSignedOut(who.status !== 'fulfilled');
   }, []);
 
   // The venue has to be applied BEFORE the state update that mounts the screens: React

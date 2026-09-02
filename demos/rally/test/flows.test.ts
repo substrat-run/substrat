@@ -604,6 +604,13 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     // the coach does not, and nobody anonymous reaches the engine at all.
     expect((await call('/api/invites', { as: ravi })).status).toBe(200);
     expect((await call('/api/invites', { as: nils })).status).toBe(403);
+    // ...and it is the ONLY route that separates it out. `/api/whoami` answers 403 to
+    // an absent session AND to a login that is nobody at this club — `authOf` makes
+    // those two deliberately indistinguishable — which is why the app treats any
+    // refused `whoami` as signed-out rather than testing for a 401 it never sends.
+    expect((await call('/api/whoami')).status).toBe(403);
+    expect((await call('/api/whoami', { as: 'dev|ingen' })).status).toBe(403);
+
     // Anonymous is 401 — the ONE answer this route separates out, and it is not a
     // refusal of the invitation. The two above (400) still say nothing about which way
     // the invitation was wrong; this one says nothing about the invitation at all,
