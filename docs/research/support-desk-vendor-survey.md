@@ -99,19 +99,24 @@ is no field anywhere in the widget that would set it.
 ### 3.2 Proactive and outbound
 
 - **Zendesk** — proactive messages require Suite Team or above (explicitly not Support
-  Team), need a messaging widget, cap at 140 messages, and are **not sent to a customer who
-  is already in an active conversation**.
+  Team), need a messaging widget, and are **not sent to a customer who is already in an
+  active conversation**. Included with the tier rather than metered; the limit of 140 is on
+  the number of proactive messages you may *create*, not on sends.
 - **Freshchat** — campaigns and a visual Journeys builder, with event triggers and
-  segmentation, metered by campaign contacts.
-- **Intercom** — the deepest: targeted messages to visitors, banners, tours, Series.
-- **Help Scout** — proactive messages inside Beacon, the shallowest of the four.
+  segmentation, capped by **campaign contacts** a month.
+- **Intercom** — the deepest, and the most explicitly priced: targeted messages to visitors,
+  banners, tours and Series sit behind the **Proactive Support Plus** add-on at $99/month,
+  which includes 500 messages sent and then meters from $0.07 down.
+- **Help Scout** — proactive messages inside Beacon, the shallowest of the four; free to
+  2,000 unique viewers a month, tiered above that.
 
-**ticket0 today:** nothing. It only answers. Note what the tiering says: proactive is a
-separately metered product with targeting infrastructure behind it at all four — a priced
-line of its own at Zendesk, Freshchat and Intercom, and free only to 2,000 unique viewers a
-month at Help Scout before it starts charging — which is strong external support for
-#1089's judgement that this is "a genuine fork in what the product is", not a widget
-setting.
+**ticket0 today:** nothing. It only answers. Note what the tiering says: nowhere is
+proactive merely a setting on the widget. It is gated behind a tier at Zendesk, capped by
+campaign contacts at Freshchat, sold as a $99/month add-on with metered overage at Intercom,
+and metered above a free allowance at Help Scout — four commercial shapes, none of them
+folded into the desk seat, all with targeting infrastructure behind them. That is strong
+external support for issue #1089's judgement that this is "a genuine fork in what the
+product is".
 
 ### 3.3 The help centre
 
@@ -202,7 +207,7 @@ The single most useful output of this survey, for a decision about scope:
 | Table stakes — present at the entry tier everywhere | Sold at tier two or above |
 |---|---|
 | Embedded widget with structured pre-chat capture | Proactive messages and campaigns |
-| Anonymous intake **with** an abuse story (verification, suspended queue) | SLA policies, business hours, skills-based routing |
+| Anonymous intake behind an identity gate — mandatory pre-chat fields, a required email, signed Identify (Zendesk alone adds a verification email and a suspended queue) | SLA policies, business hours, skills-based routing |
 | A published, searchable help centre (Zendesk: from Suite Team) | KB approval workflow; multilingual articles; several help centres |
 | Attachments on a conversation | Tenant-defined custom fields, ticket forms, multi-brand |
 | Contact + conversation search | Conditional retention policies, PII redaction, data masking (Zendesk: the ADPP add-on, Enterprise and above) |
@@ -249,10 +254,11 @@ column, which is a different and much less urgent kind of missing.
    publishing drags an approval workflow behind it, which both Zendesk and Freshdesk hold
    back for their top tiers. If we build it, build the authoring half and say plainly that
    review is a process, not a gate — or build the gate and charge for it.
-7. **Proactive stays out, and now there is evidence.** Separately metered, capped and
-   targeted at all four — its own priced line at Zendesk, Freshchat and Intercom, free only
-   to 2,000 unique viewers a month at Help Scout. If we ever want the *effect* on our own
-   site, the honest first step is a desk-level greeting teaser with Zendesk's suppression rule
+7. **Proactive stays out, and now there is evidence.** Four vendors, four commercial shapes
+   — a tier gate at Zendesk, campaign contacts at Freshchat, a $99/month add-on with metered
+   overage at Intercom, 2,000 free unique viewers then tiers at Help Scout — and targeting
+   infrastructure behind every one. If we ever want the *effect* on our own site, the honest
+   first step is a desk-level greeting teaser with Zendesk's suppression rule
    (never to someone already in an active conversation), not a campaign engine.
 8. **Help Scout's contact-based billing deserves a look for Substrat itself.** Pricing the
    size of the customer base rather than the seat count is the one commercial idea in this
