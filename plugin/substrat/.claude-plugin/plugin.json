@@ -3,7 +3,7 @@
   "name": "substrat",
   "displayName": "Substrat",
   "description": "Build a multi-tenant business app on Substrat — scaffold a vertical, then follow the project's own playbook through the design gate and the two human checkpoints.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "Substrat",
     "url": "https://github.com/substrat-run"

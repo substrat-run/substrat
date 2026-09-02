@@ -58,6 +58,14 @@ rather than answering from memory.
 
 ---
 
+## When something breaks and the symptom points nowhere
+
+A Zod error naming nothing you wrote, a green test suite over a broken app, a kill that
+takes down someone else's dev server. The rules file carries a **symptom → fix** table for
+exactly those — the failures whose symptom is somewhere other than their cause. It is
+`AGENTS.md` in the project, and <https://substrat.net/guide/agent-rules> published. Read
+the row before debugging from first principles.
+
 ## Two things that hold in every situation
 
 - **The two human checkpoints are hard stops.** A migration diff and a permission diff are
