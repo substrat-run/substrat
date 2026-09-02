@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import {
   objectRef,
   subjectRef,
+  type Coverage,
   type Decision,
   type EntityRef,
   type Node,
@@ -93,7 +94,91 @@ export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
   const live = (row: TupleRow, now: string): boolean =>
     (row.expires_at === null || row.expires_at > now) && row.revoked_at === null;
 
+  /**
+   * The subject set a check reasons over: the caller, plus every org it is a live
+   * member of (rule 4). Shared by `check` and `covers` so the two cannot disagree about
+   * who someone is — a divergence here would let the bound be computed over a smaller
+   * subject set than the check that later allows the action.
+   *
+   * A CONNECTION has no memberships and never will (#97): its authority is exactly the
+   * grants written against `connection:<id>`.
+   */
+  const subjectsOf = (
+    subject: CheckSubject,
+    node: Node,
+    now: string,
+  ): { ref: string; via?: RelationTuple }[] => {
+    const selfRef = subjectRef(subject);
+    const out: { ref: string; via?: RelationTuple }[] = [{ ref: selfRef }];
+    for (const m of subject.kind === 'principal'
+      ? tenantTuples(node.tenantId, selfRef, 'member')
+      : []) {
+      if (m.relation === 'member' && live(m, now)) {
+        out.push({ ref: m.object, via: t(m.subject, m.relation, m.object) });
+      }
+    }
+    return out;
+  };
+
   return {
+    /**
+     * The subject's effective permission set at the node, compared against `required`.
+     *
+     * Reads every `role:` and `granted:` tuple for each subject at each node object in
+     * one pass — two statements per (subject, level) pair — rather than re-walking per
+     * permission. Entity tuples are never consulted, which is what makes this
+     * narrowing-aware: an entity-narrowed grant has an `entityType:entityId` object and
+     * so matches no node object here, by construction rather than by a filter someone
+     * has to remember.
+     */
+    async covers(
+      subject: CheckSubject,
+      required: readonly PermissionKey[],
+      node: Node,
+    ): Promise<Coverage> {
+      // Nothing required is trivially covered — and asking the database would be a walk
+      // to prove the empty set is a subset of anything.
+      if (required.length === 0) return { covered: true, missing: [] };
+
+      const now = readNow();
+      const scopeDb = node.scopeId ? deps.scopeDb(node.scopeId) : undefined;
+      const subjects = subjectsOf(subject, node, now);
+      const nodeObjects: { obj: string; scoped: boolean }[] = node.scopeId
+        ? [
+            { obj: `scope:${node.scopeId}`, scoped: true },
+            { obj: `tenant:${node.tenantId}`, scoped: false },
+          ]
+        : [{ obj: `tenant:${node.tenantId}`, scoped: false }];
+
+      const held = new Set<string>();
+      for (const nodeObj of nodeObjects) {
+        for (const s of subjects) {
+          const rows = nodeObj.scoped
+            ? scopeDb
+              ? scopeTuples(scopeDb, s.ref, '')
+              : []
+            : tenantTuples(node.tenantId, s.ref, '');
+          for (const row of rows) {
+            if (row.object !== nodeObj.obj || !live(row, now)) continue;
+            if (row.relation.startsWith('role:')) {
+              const role = deps.getRole(node.tenantId, row.relation.slice('role:'.length));
+              for (const p of role?.permissions ?? []) held.add(p);
+            } else if (row.relation.startsWith('granted:')) {
+              held.add(row.relation.slice('granted:'.length));
+            }
+          }
+        }
+      }
+
+      // Order follows the request so a refusal reads predictably; deduplicated so a
+      // caller passing the same key twice does not see it twice.
+      const missing: PermissionKey[] = [];
+      for (const p of required) {
+        if (!held.has(p) && !missing.includes(p)) missing.push(p);
+      }
+      return missing.length === 0 ? { covered: true, missing: [] } : { covered: false, missing };
+    },
+
     async check(
       subject: CheckSubject,
       permission: PermissionKey,
@@ -104,21 +189,11 @@ export function createTupleChecker(deps: CheckerDeps): PermissionChecker {
       const deny: Decision = { allowed: false, checked: permission, node };
       const scopeDb = node.scopeId ? deps.scopeDb(node.scopeId) : undefined;
 
-      // Rule 4 — membership: the subject set is the caller plus its orgs.
-      //
-      // A CONNECTION has no memberships and never will: it is not a person and
-      // does not belong to an org, so the membership expansion is skipped
-      // rather than returning nothing. Its authority is exactly the grants
-      // written against `connection:<id>` — narrow by construction (#97).
-      const selfRef = subjectRef(subject);
-      const subjects: { ref: string; via?: RelationTuple }[] = [{ ref: selfRef }];
-      for (const m of subject.kind === 'principal'
-        ? tenantTuples(node.tenantId, selfRef, 'member')
-        : []) {
-        if (m.relation === 'member' && live(m, now)) {
-          subjects.push({ ref: m.object, via: t(m.subject, m.relation, m.object) });
-        }
-      }
+      // Rule 4 — membership: the subject set is the caller plus its orgs. Shared with
+      // `covers` (§ `subjectsOf`), so the bound and the check cannot disagree about who
+      // someone is — a divergence there would compute the bound over a smaller subject
+      // set than the check that later allows the action.
+      const subjects = subjectsOf(subject, node, now);
 
       // Inheritance (rule 2): a scope check also consults tenant-level tuples.
       const nodeObjects: { obj: string; scoped: boolean }[] = node.scopeId

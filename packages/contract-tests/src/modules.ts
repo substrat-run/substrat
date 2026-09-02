@@ -1113,6 +1113,12 @@ export const permMod: ModuleRegistration = {
       );
       return { granted: true };
     }) as OperationHandler<never, unknown>,
+    // The §5.1 assignment bound. UNGUARDED for the same reason `perm/share` is: the
+    // guardrail under test is inside the verb, and an operation-level check in front of
+    // it would only prove the check.
+    'perm/can-assign': (async (ctx, input) => {
+      return ctx.canAssign((input as { roleKey: string }).roleKey);
+    }) as OperationHandler<never, unknown>,
     'perm/unshare': (async (ctx, input) => {
       const i = input as { principal: string; permission: string; entity: EntityRef };
       await ctx.revoke(
