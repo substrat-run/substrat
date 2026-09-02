@@ -165,6 +165,24 @@ export const assetRouting = z.object({
   /** Routes the worker handles BEFORE asset matching — `true` for all, or a glob list. */
   runWorkerFirst: z.union([z.boolean(), z.array(z.string().min(1)).min(1)]).optional(),
 });
+
+/**
+ * Prefixes the PLATFORM routes worker-first, whatever a vertical declared.
+ *
+ * A `.well-known` URI is a protocol surface — RFC 8615 reserves it for exactly that —
+ * so a SPA must never answer one. Left to the vertical this is a rule that rots: the
+ * MCP surface (#112) mounts `/.well-known/oauth-protected-resource/*` because RFC 9728
+ * requires it at the origin root, ticket0's manifest did not list it, and the asset
+ * layer served `index.html` from the edge without ever invoking the worker. The route
+ * was registered correctly and unreachable, which no lint or test can see: it fails one
+ * layer below the code, in production only.
+ *
+ * So the platform adds it rather than asking. A vertical that mounts nothing there is
+ * unaffected — its own catch-all answers 404, which is what the asset layer would have
+ * said anyway.
+ */
+export const PLATFORM_WORKER_FIRST_PREFIXES = ['/.well-known/*'] as const;
+
 export type AssetRouting = z.infer<typeof assetRouting>;
 
 /**
