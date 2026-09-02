@@ -150,7 +150,9 @@ they forbid, so it is a **privileged vertical**: its provisioning operations run
 a **tenant-scoped `HostAdmin`** injected — a facade over the real `HostAdmin` that pins `tenantId`
 to the dashboard scope's tenant and refuses any argument that names another. Options for where that
 lives (an open question, §6): a dedicated host capability the Dashboard deployment is granted, or a
-"control-plane connector" reusing the connector seam's egress + authority machinery. Either way the
+"control-plane connector" reusing the connector seam's egress + authority machinery. [D-60](../decisions/D-060-the-dashboard-is-an-ordinary-sandbox-clean-vertical-its-privile.md)
+proposes a third answer — **neither**, because a sandbox-clean Dashboard needs no privileged
+capability at all — and is awaiting ratification. Either way the
 safety rests on three things already true elsewhere: the permission check runs first, the tenant is
 ambient not supplied, and the action is audited — subject to the two qualifications above, since
 today the second is enforced by the caller and the third names `SERVICE_ACTOR`.

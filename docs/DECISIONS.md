@@ -8,7 +8,7 @@ the entry carries the full rationale.
 data models, lifecycles). The two sequences are historical — one log, two id vocabularies.
 See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 
-101 decisions · 59 plan · 42 kernel
+102 decisions · 60 plan · 42 kernel
 
 | id | date | layer | decision | tracking |
 |---|---|---|---|---|
@@ -113,3 +113,4 @@ See [rfc/docs-restructure.md](rfc/docs-restructure.md) §7.
 | [K-41](decisions/K-041-a-list-read-declares-its-filter-and-sort-vocabulary-and-t.md) | 2026-08-22 | kernel | A list read declares its filter and sort vocabulary, and the kernel composes the walk and the index behind it <br>*amends K-18* | #811, #129, #132 |
 | [K-42](decisions/K-042-an-impersonated-operation-carries-two-actors-and-the-permis.md) | 2026-08-26 | kernel | An impersonated operation carries two actors, and the permission model answers as the impersonated one | #868, #85, #44 |
 | [D-59](decisions/D-059-the-model-provider-seam-is-a-table-platform-billed-inference-is-a-cr.md) | 2026-08-29 | plan | The model-provider seam is a table; platform-billed inference is a credential-resolution rule, not a provider <br>*amends D-30* | #1054 |
+| [D-60](decisions/D-060-the-dashboard-is-an-ordinary-sandbox-clean-vertical-its-privile.md) | 2026-09-02 | plan | The Dashboard is an ordinary sandbox-clean vertical: its privileged half is a platform intent, not a narrowed credential | #1185, #978, #977 |
