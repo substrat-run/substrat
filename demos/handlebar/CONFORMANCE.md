@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-handlebar
 
-11 operations · 1 narrowed check · 2 conformance pairs driven
+12 operations · 1 narrowed check · 2 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -62,7 +62,7 @@ as an assessment rather than as silence.
 | Kind | Count | Operations |
 | --- | --- | --- |
 | Node-level check | 9 | `bike-shop/close-repair`, `bike-shop/complete-repair`, `bike-shop/create-customer`, `bike-shop/create-repair`, `bike-shop/list-customers`, `bike-shop/price-list`, `bike-shop/register-bike`, `bike-shop/start-condition-report`, `bike-shop/upsert-price` |
-| Per-entity proof walk (`narrows`) | 1 | `bike-shop/portal-repairs` |
+| Per-entity proof walk (`narrows`) | 2 | `bike-shop/portal-repairs`, `bike-shop/whoami` |
 
 ## 5. Not covered by this artifact
 
