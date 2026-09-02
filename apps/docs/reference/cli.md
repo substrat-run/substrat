@@ -26,6 +26,7 @@ The package has no runtime dependencies and ships web-standard + `node:*` only. 
 | Command | What it does |
 |---|---|
 | `substrat init --ci github` | Write `.github/workflows/substrat-deploy.yml` — the deploy + preview workflow, generated rather than re-derived. |
+| `substrat model view [dir]` | Render the entity model as a self-contained HTML page and print its path — the design gate, as something you can look at. Offline. |
 | `substrat login` | Sign in via the browser (per-human), or store a CI service token with `--token`. |
 | `substrat whoami` | Print who you are and the workspaces you can build for. |
 | `substrat push [dir]` | Build the vertical and push a version — **admitted** for a private vertical, **pending** for a listed one. No flags needed from inside the project. |
@@ -76,6 +77,33 @@ branch from `.git/HEAD`; `--slug` / `--branch` override, `--out` relocates the f
 existing file is never replaced without `--force`. You still add the
 [push token](/guide/deploying#deploy-from-ci) as the `SUBSTRAT_SERVICE_TOKEN` Actions secret
 yourself; the command prints the steps.
+
+### `model view`
+
+```bash
+substrat model view                       # this directory's model.json
+substrat model view ./apps/helpdesk       # a directory, or the model.json itself
+substrat model view . --out model.html    # place it deliberately
+```
+
+Reads [`model.json`](/concepts/model) and writes **one** HTML file: an ER diagram of the
+entities and the `parents` edges permission flows along, then a card per entity listing its
+fields with the primary key, the natural key and the `erasable` fields marked. Declared
+lifecycles are rendered too, when the model has any. The path is printed on its own last
+line — open it in a browser, or click it in an agent's chat pane.
+
+It reads the **emitted artifact**, not the TypeScript. `model.json` is what
+`pnpm lint:model --check` gates, so the view describes what actually shipped, and it stays
+correct across a change of authoring notation. Run `lint:model` first if you have just
+edited the model.
+
+The page is self-contained — inline CSS and SVG, no script, no CDN — so it opens from a
+file path with no server and no network. It writes to a temp file by default rather than
+next to your source: a rendered view is something you look at, not something you commit.
+
+The point of it is the **design gate**: approving a diagram of your own domain is a
+categorically better checkpoint than approving prose about it, and it needs no login and no
+push, so it works before any code exists.
 
 ### `login`
 

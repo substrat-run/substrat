@@ -31,6 +31,7 @@ import { pullScope, restoreScope, resolveTenantId, adoptScopeServing, adoptVerti
 import { printInstalls } from './installs.js';
 import { createPreview, deletePreview, listPreviews, formatPreviews, parseTtlHours } from './preview.js';
 import { writeCiWorkflow, detectDefaultBranch, nextStepsMessage } from './init.js';
+import { writeModelView } from './model.js';
 import {
   listVerticalHostnames,
   bindSurfaceHostname,
@@ -172,6 +173,12 @@ Usage:
                                               (default 72h; 'none' pins the preview until deleted)
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
+  substrat model view [dir|model.json]        render the entity model as a self-contained
+                    [--out <file>]            HTML page — entities, keys, parent edges,
+                                              erasable fields flagged — and print its path;
+                                              open it in a browser. Reads the checked-in
+                                              model.json, so it needs no login and no push.
+                                              Writes a temp file unless --out places it
   substrat init --ci github [dir]             write .github/workflows/substrat-deploy.yml —
                     [--branch <b>] [--path <packageDir>] [--release trunk|changesets]
                     [--out <path>] [--force]
@@ -889,6 +896,29 @@ async function cmdInit(): Promise<void> {
   process.stdout.write(nextStepsMessage(slug, releaseFlag));
 }
 
+/**
+ * `substrat model view [dir|model.json] [--out <file>]` — the entity model, to look at.
+ *
+ * No control plane and no auth: it reads the checked-in `model.json` off the disk, so it
+ * works at the design gate, before anything has been pushed. The path is printed on its
+ * own last line — that is the click target, and `| tail -1` for a script.
+ */
+async function cmdModel(): Promise<void> {
+  const sub = argv[1];
+  if (sub !== 'view') {
+    console.error(
+      'usage: substrat model view [dir|model.json] [--out <file>]' +
+        (sub && !sub.startsWith('--') ? `\n\n'model ${sub}' is not a subcommand — 'view' is the only one.` : ''),
+    );
+    process.exit(1);
+  }
+  // positional(0) is 'view' itself; the target trails it and may follow `--out <file>`.
+  const target = positional(1) ?? '.';
+  const { file, entities } = writeModelView(target, { ...(flag('out') ? { out: flag('out')! } : {}) });
+  console.log(`✓ ${entities} ${entities === 1 ? 'entity' : 'entities'} rendered — open it in a browser:`);
+  console.log(file);
+}
+
 async function cmdWhoami(): Promise<void> {
   const { controlPlaneUrl, header } = resolveAuth({ cp: flag('cp'), token: flag('token'), tenant: flag('tenant') });
   const { user, tenants } = await fetchWhoami(controlPlaneUrl, header);
@@ -932,6 +962,8 @@ async function main(): Promise<void> {
       return cmdPreview();
     case 'init':
       return cmdInit();
+    case 'model':
+      return cmdModel();
     case 'version':
     case '--version':
     case '-v':
