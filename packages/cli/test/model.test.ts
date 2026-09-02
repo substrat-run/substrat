@@ -201,6 +201,8 @@ describe('model view', () => {
       [{ a: { field: 'state', initial: 'open' } }, /declares no states map/],
       [{ a: { field: 'state', initial: 'open', states: { open: null } } }, /is not an object/],
       [{ a: { field: 'state', initial: 'open', states: { open: { on: 'done' } } } }, /other than a map/],
+      [{ a: { field: 'state', initial: 'open', states: { open: { on: { publish: 1 } } } } }, /names no target state/],
+      [{ a: { field: 3, initial: 'open', states: { open: {} } } }, /other than a name/],
       [[], /not an object keyed by entity/],
     ];
     cases.forEach(([lifecycles, message], i) => {

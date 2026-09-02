@@ -98,13 +98,31 @@ export function readModel(file: string): EmittedModel {
       if (!lc || typeof lc !== 'object' || !states || typeof states !== 'object' || Array.isArray(states)) {
         throw new Error(`${file}: the lifecycle for '${entity}' declares no states map`);
       }
+      for (const field of ['field', 'initial'] as const) {
+        if (typeof (lc as Record<string, unknown>)[field] !== 'string') {
+          throw new Error(`${file}: the lifecycle for '${entity}' declares '${field}' as something other than a name`);
+        }
+      }
       for (const [state, def] of Object.entries(states as Record<string, unknown>)) {
         if (!def || typeof def !== 'object' || Array.isArray(def)) {
           throw new Error(`${file}: state '${state}' of the '${entity}' lifecycle is not an object`);
         }
         const on = (def as { on?: unknown }).on;
-        if (on !== undefined && (!on || typeof on !== 'object' || Array.isArray(on))) {
-          throw new Error(`${file}: state '${state}' of the '${entity}' lifecycle declares 'on' as something other than a map`);
+        if (on !== undefined) {
+          if (!on || typeof on !== 'object' || Array.isArray(on)) {
+            throw new Error(
+              `${file}: state '${state}' of the '${entity}' lifecycle declares 'on' as something other than a map`,
+            );
+          }
+          // The targets too, not only the container: a transition to `1` renders as a
+          // TypeError out of `escapeHtml`, which is the same failure one level down.
+          for (const [op, target] of Object.entries(on as Record<string, unknown>)) {
+            if (typeof target !== 'string') {
+              throw new Error(
+                `${file}: transition '${op}' from state '${state}' of the '${entity}' lifecycle names no target state`,
+              );
+            }
+          }
         }
       }
     }
