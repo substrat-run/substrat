@@ -16,6 +16,7 @@ import { ulid, type Clock } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { shopModule, SHOP_PERM } from './module.js';
+import { PERSONA_PRINCIPALS } from './personas.js';
 
 /**
  * What ANY instance of this vertical has: one tenant, one scope, an owner.
@@ -120,8 +121,14 @@ export function buildShopHost(dir: string, options?: { clock?: Clock }): SqliteS
 /**
  * The identity provider for one storefront. Per instance, because the pool is
  * tenant-bound and a provider string names exactly one pool (K-23).
+ *
+ * Named for the POOL, not for whatever issuer currently fills it: the shop verifies an
+ * OIDC token and maps the subject, so moving from the dev issuer to a real one is a
+ * change of `OIDC_ISSUER` and nothing else. A provider string carrying the issuer's
+ * name (it used to say `better-auth`) would orphan every link in the directory the day
+ * that changed.
  */
-export const shopProvider = (slug: string): string => `better-auth:${slug}`;
+export const shopProvider = (slug: string): string => `oidc:${slug}`;
 
 /**
  * Provision ONE instance of this vertical — what a customer gets (#31 blocker 3).
@@ -146,8 +153,8 @@ export async function provisionShop(
   // accounts, and the shop must never learn the platform exists.
   //
   // Which forces a per-instance provider string. A provider names exactly ONE
-  // pool, so two tenant-bound instances both calling themselves `better-auth`
-  // would collide on the second registration. `shopProvider` derives it from the
+  // pool, so two tenant-bound instances both calling themselves `oidc` would
+  // collide on the second registration. `shopProvider` derives it from the
   // slug — the same rule K-23 states for separate per-tenant deployments.
   await host.admin.registerIdentityPool(staff, {
     provider: shopProvider(input.slug),
@@ -297,4 +304,28 @@ export async function seedShop(host: SqliteScopeHost, dir: string): Promise<Shop
   }
 
   return world;
+}
+
+/**
+ * Bind each dev persona's OIDC `sub` to the principal it already IS, so signing in as
+ * Astrid lands on Astrid's seeded principal rather than minting a new shopper.
+ *
+ * Re-applied on every boot, not once: `seedShop` short-circuits when `cast.json` exists,
+ * so a link written into a `.data` that was later cleared would never be rewritten. It is
+ * idempotent, so running it every time costs nothing.
+ *
+ * Anyone NOT in this cast is a genuine self-service shopper and gets TOFU auto-mint on
+ * first arrival — which is the path a real storefront runs on.
+ */
+export async function linkDevPersonas(host: SqliteScopeHost, world: ShopWorld): Promise<void> {
+  const staff = platformActorId.parse(ulid());
+  for (const [sub, key] of Object.entries(PERSONA_PRINCIPALS)) {
+    await host.admin.linkIdentity(staff, {
+      provider: shopProvider('kallkalla'),
+      externalId: sub,
+      principal: world[key],
+      tenantId: world.t1,
+      scopeId: world.s1,
+    });
+  }
 }

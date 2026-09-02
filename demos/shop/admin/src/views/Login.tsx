@@ -1,31 +1,16 @@
-import { useState } from 'react';
-import { api } from '../api';
+import { auth } from '../api';
 
 /**
- * The back-office gate. Unlike the storefront there is no sign-up: staff
- * accounts are provisioned, not self-served. A shopper who authenticates here
- * gets in as far as the shell and no further — every operation still checks.
+ * The back-office gate. Unlike the storefront there is no sign-up: staff accounts are
+ * provisioned, not self-served. A shopper who authenticates here gets in as far as the
+ * shell and no further — every operation still checks.
+ *
+ * There is no password field, because this app owns no password. Signing in leaves for
+ * `OIDC_ISSUER`, and what comes back is a session cookie over an id_token. `denied` is the
+ * other half of that story: authenticating tells the shop WHO you are, and holding
+ * `stock:manage` or `catalog:manage` is a separate question the kernel answers.
  */
-export function Login({ onDone, denied }: { onDone: () => void; denied?: string | null }) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr(null);
-    setBusy(true);
-    try {
-      await api.signIn(email.trim(), password);
-      onDone();
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
+export function Login({ denied }: { denied?: string | null }) {
   return (
     <div className="gate">
       <div className="gate-card">
@@ -39,32 +24,13 @@ export function Login({ onDone, denied }: { onDone: () => void; denied?: string 
         <h2>Logga in</h2>
         <p className="sub">Personalinloggning för lager och administration.</p>
         {denied && <div className="gate-err" style={{ marginBottom: 10 }}>{denied}</div>}
-        <form className="gate-form" onSubmit={submit}>
-          <input
-            type="email"
-            placeholder="E-post"
-            value={email}
-            autoComplete="username"
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-          <input
-            type="password"
-            placeholder="Lösenord"
-            value={password}
-            autoComplete="current-password"
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-          {err && <div className="gate-err">{err}</div>}
-          <button className="btn" type="submit" disabled={busy}>
-            {busy ? 'Loggar in…' : 'Logga in'}
-          </button>
-        </form>
+        <button className="btn" onClick={() => auth.login('/')}>
+          Logga in
+        </button>
         <p className="hint">
-          Demo: <code>astrid@kallkalla.se</code> (butikschef) eller <code>gustav@kallkalla.se</code> (lager)
-          — lösenord <code>demo1234</code>. Gustav har <code>stock:manage</code> men inte{' '}
-          <code>catalog:manage</code>: samma dashboard, färre knappar.
+          Demo: välj <code>Astrid</code> (butikschef) eller <code>Gustav</code> (lager) i listan
+          hos utfärdaren. Gustav har <code>stock:manage</code> men inte <code>catalog:manage</code>:
+          samma dashboard, färre knappar.
         </p>
       </div>
     </div>

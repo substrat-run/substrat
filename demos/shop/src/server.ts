@@ -5,23 +5,31 @@ import { dirname, join } from 'node:path';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import { PermissionDenied, type ScopeStub } from '@substrat-run/kernel';
+import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
 import { problemResponse } from '@substrat-run/vertical-host';
-import { buildShopHost, seedShop, type ShopWorld } from './index.js';
-import { buildAuth, migrateAuth } from './auth.js';
+import { platformActorId } from '@substrat-run/contracts';
+import { devLogin } from '@substrat-run/dev-issuer';
+import { buildShopHost, seedShop, shopProvider, linkDevPersonas, type ShopWorld } from './index.js';
 import {
-  betterAuthAdapter,
+  oidcAdapter,
   publicAuth,
   resolvePrincipal,
-  seedPersonaLogins,
   type AuthAdapter,
   type AuthResult,
 } from './auth-adapters.js';
 
 /**
  * Dev API server for the Kallkälla Kaffe demo. Deliberately thin: resolve the
- * principal (Better Auth session, or the anonymous browse-only fallback) →
- * getScope → invoke. Every route is a wrapper over an operation.
+ * principal (an OIDC session, or the anonymous browse-only fallback) → getScope
+ * → invoke. Every route is a wrapper over an operation.
+ *
+ * Authentication is an ordinary OIDC round-trip against whatever `OIDC_ISSUER` names —
+ * locally `@substrat-run/dev-issuer`, a real provider you sign into by picking a name.
+ * The shop runs NO credential store: accounts, passwords, sign-up and reset all live at
+ * the issuer, so moving to a real one is a change of `OIDC_ISSUER` and nothing else.
+ *
+ * The anonymous browse principal stays. It is not a credential — it is the storefront's
+ * answer to "what may someone who has not signed in see", and the catalogue depends on it.
  */
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', '.data');
@@ -44,17 +52,17 @@ const ADMIN_ORIGIN = process.env.ADMIN_ORIGIN ?? `http://localhost:${ADMIN_PORT}
 const host = buildShopHost(dataDir);
 const world: ShopWorld = await seedShop(host, dataDir);
 
-// Better Auth — its own store, migrated on startup, then seed the persona logins.
-const auth = buildAuth(dataDir, PORT, [WEB_ORIGIN, ADMIN_ORIGIN]);
-await migrateAuth(auth);
-await seedPersonaLogins(auth, host, world, dataDir);
+// The relying-party half. The cast's `sub`s are re-bound on every boot: `seedShop`
+// short-circuits once `cast.json` exists, so a link written into a `.data` that was later
+// cleared would otherwise never come back.
+const staff = platformActorId.parse(ulid());
+const login = devLogin({ directory: host.admin, actor: staff, provider: shopProvider('kallkalla') });
+await linkDevPersonas(host, world);
 
-// Mounted auth adapters, in precedence order: a real Better Auth session wins;
-// otherwise the anonymous fallback (browse-only). The public adapter must be last.
-const ENABLED = (process.env.AUTH ?? 'better-auth,public').split(',').map((s) => s.trim());
-const adapters: AuthAdapter[] = [];
-if (ENABLED.includes('better-auth')) adapters.push(betterAuthAdapter(auth, host, world));
-if (ENABLED.includes('public')) adapters.push(publicAuth(world));
+// Mounted auth adapters, in precedence order: a real OIDC session wins; otherwise the
+// anonymous fallback (browse-only). The public adapter must be last, and is
+// unconditional — the storefront has no meaning without it.
+const adapters: AuthAdapter[] = [oidcAdapter(login, host, world), publicAuth(world)];
 
 const app = new Hono();
 
@@ -71,14 +79,15 @@ async function body(c: Context): Promise<Record<string, unknown>> {
   return c.req.json<Record<string, unknown>>();
 }
 
-// Better Auth owns everything under /api/auth/* (sign-up, sign-in, session, …).
-app.on(['POST', 'GET'], '/api/auth/*', (c) => auth.handler(c.req.raw));
+// The relying-party endpoints — the redirect out to the issuer, the callback back, and
+// sign-out. No sign-up and no password: this vertical hosts neither.
+app.on(['POST', 'GET'], '/api/auth/*', (c) => login.handle(c.req.raw));
 
 // Who am I right now, my role hint (for nav), and my customer id for checkout.
 app.get('/api/me', async (c) => {
   const r = await resolvePrincipal(adapters, c.req.raw.headers);
   if (!r) return c.json({ authenticated: false, role: 'public' });
-  const authenticated = r.via === 'better-auth';
+  const authenticated = r.via === 'oidc';
   let customerId: string | null = null;
   if (authenticated) {
     try {
@@ -183,5 +192,5 @@ app.post('/api/invoicing/:id/export', async (c) => c.json(await (await stub(c)).
 
 serve({ fetch: app.fetch, port: PORT });
 console.log(`Kallkälla shop demo API on http://localhost:${PORT} — data in ${dataDir}`);
-console.log(`  auth adapters: ${adapters.map((a) => a.id).join(', ')}`);
+console.log(`  auth: OIDC · ${login.issuer} (+ anonymous browse)`);
 console.log(`  storefront: ${WEB_ORIGIN} · admin: ${ADMIN_ORIGIN}`);

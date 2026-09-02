@@ -97,20 +97,6 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return body;
 }
 
-/** Better Auth REST endpoints (own error shape) — used by the login screen. */
-async function authCall(path: string, payload?: unknown): Promise<void> {
-  const res = await fetch(`/api/auth${path}`, {
-    method: 'POST',
-    credentials: 'include',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload ?? {}),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as { message?: string; error?: string };
-    throw new ApiError(body.message ?? body.error ?? `${res.status}`, res.status);
-  }
-}
-
 export interface Me {
   authenticated: boolean;
   principal?: string;
@@ -120,13 +106,18 @@ export interface Me {
   customerId?: string | null;
 }
 
+/**
+ * Signing in is a NAVIGATION, not a fetch: the browser leaves for the issuer, authenticates
+ * there, and comes back to `/api/auth/callback` with a session cookie. There is no
+ * `signUp` here on purpose — creating an account is the issuer's screen, not the shop's.
+ */
+export const auth = {
+  login: (returnTo = '/') => location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`),
+  logout: () => location.assign('/api/auth/logout'),
+};
+
 export const api = {
-  // auth (Better Auth via the neutral seam)
   me: () => call<Me>('/me'),
-  signUp: (email: string, password: string, name: string) =>
-    authCall('/sign-up/email', { email, password, name }),
-  signIn: (email: string, password: string) => authCall('/sign-in/email', { email, password }),
-  signOut: () => authCall('/sign-out'),
 
   // storefront — published rows only; drafts need catalog:manage, which is the
   // back-office's business, not the shop's.
