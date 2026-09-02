@@ -7,6 +7,12 @@
     "conformance": "test/conformance.ts",
     "devServers": [
       {
+        "name": "issuer",
+        "run": "issuer",
+        "portEnv": "ISSUER_PORT",
+        "portFrom": "../../packages/dev-issuer/src/cli.ts"
+      },
+      {
         "name": "api",
         "run": "server",
         "portEnv": "PORT",
@@ -29,25 +35,26 @@
     ]
   },
   "license": "Apache-2.0",
-  "description": "RallyPoint demo vertical (padel/tennis club booking) — see spec/concept.md",
+  "description": "RallyPoint demo vertical (padel/tennis club booking) \u2014 see spec/concept.md",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "server": "tsx src/server.ts",
-    "dev": "concurrently -n api,player,console -c blue,green,magenta \"tsx src/server.ts\" \"pnpm --dir app dev\" \"pnpm --dir admin dev\"",
-    "demo": "pnpm run dev"
+    "dev": "concurrently -n issuer,api,player,console -c magenta,blue,green,cyan \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\" \"pnpm --dir admin dev\"",
+    "demo": "pnpm run dev",
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/dev-issuer": "workspace:^",
     "@substrat-run/engine-booking": "workspace:^",
     "@substrat-run/engine-invites": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
     "@substrat-run/vertical-host": "workspace:^",
-    "better-auth": "^1.7.1",
     "better-sqlite3": "^13.0.3",
     "hono": "^4.6.0",
     "zod": "catalog:"

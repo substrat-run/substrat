@@ -21,6 +21,7 @@ export {
 } from './module.js';
 export {
   buildRallyHost,
+  linkRallyLogins,
   seedRally,
   provisionRally,
   type RallyInstance,
@@ -30,3 +31,4 @@ export {
   ENTITY_GRANTS,
   type RallyWorld,
 } from './seed.js';
+export { PERSONAS, DEV_PROVIDER, PERSONA_PRINCIPALS } from './personas.js';

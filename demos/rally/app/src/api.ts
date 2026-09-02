@@ -1,8 +1,3 @@
-export interface CastMember {
-  name: string;
-  role: string;
-  principal: string;
-}
 export interface Money {
   amount: string;
   currency: string;
@@ -83,10 +78,6 @@ export class ApiError extends Error {
   }
 }
 
-let principal = '';
-export const setPrincipal = (p: string): void => {
-  principal = p;
-};
 
 /** Which club the player is looking at. Each is a separate scope. */
 let venue = 'solna';
@@ -94,24 +85,35 @@ export const setVenue = (v: string): void => {
   venue = v;
 };
 export const getVenue = (): string => venue;
+/**
+ * Signing in is a NAVIGATION, not a fetch: the browser leaves for the issuer and comes
+ * back to `/api/auth/callback` with a session cookie. This app hosts no sign-up.
+ */
+export const auth = {
+  login: (returnTo = '/') => location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`),
+  logout: () => location.assign('/api/auth/logout'),
+};
+
+/**
+ * Who the caller is AT THE SELECTED VENUE — the role hint, and their own member id.
+ * `memberId` is null for staff and for a login with no member record here; both are
+ * facts, not failures.
+ */
+export interface WhoAmI {
+  role: 'club-admin' | 'receptionist' | 'coach' | 'player' | 'none';
+  memberId: string | null;
+}
+
 export interface Venue {
   key: string;
   label: string;
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  // /api/cast is the only route that legitimately runs unauthenticated — it is
-  // how the picker learns who it may be. Anything else firing without a
-  // principal is a mount-ordering bug, and should say so rather than surface as
-  // a mystery 403 from the server.
-  if (!principal && path !== '/api/cast') {
-    throw new ApiError(0, `no principal selected yet — ${path} fired before the picker was ready`);
-  }
   const res = await fetch(path, {
     ...init,
     headers: {
       'content-type': 'application/json',
-      ...(principal ? { 'x-principal': principal } : {}),
       'x-venue': venue,
     },
   });
@@ -123,33 +125,19 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T,>(p: string, b?: unknown): Promise<T> =>
   call<T>(p, { method: 'POST', body: JSON.stringify(b ?? {}) });
 
-/** ULID-shaped principal for a newcomer (Crockford: no I L O U). */
-function newPrincipal(): string {
-  const A = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-  let s = '';
-  for (let i = 0; i < 26; i += 1) s += A[Math.floor(Math.random() * A.length)];
-  return s;
-}
-
 /**
- * Accept a club invitation — deliberately NOT through `call`: the recipient is
- * by definition not yet a member, so there is no persona to send and no
- * principal-guard to satisfy. A fresh principal rides the dev header; with a
- * real session the server ignores it and uses the session's own identity and
- * verified email instead.
+ * Accept a club invitation — deliberately NOT through `call`, because the recipient is
+ * by definition not yet a member of this club and `call`'s ordinary path assumes they
+ * are. What proves the acceptance is the email in the caller's OWN verified token; the
+ * body carries only the invitation id, so an acceptor cannot name the address they are
+ * being checked against. It used to be able to: a fresh principal rode the dev header
+ * and the identifier came from this request body.
  */
-export async function acceptInvite(
-  invitationId: string,
-  identifier: string,
-): Promise<{ state: string }> {
+export async function acceptInvite(invitationId: string): Promise<{ state: string }> {
   const res = await fetch('/api/invites/accept', {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-principal': newPrincipal(),
-      'x-venue': venue,
-    },
-    body: JSON.stringify({ invitationId, identifier }),
+    headers: { 'content-type': 'application/json', 'x-venue': venue },
+    body: JSON.stringify({ invitationId }),
   });
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
@@ -192,6 +180,10 @@ export interface MatchLanding {
 }
 
 export const api = {
+  /** Who am I at this venue, and which member am I here. */
+  whoami: (): Promise<WhoAmI> => call('/api/whoami'),
+  /** Which clubs THIS login can actually act in — resolved per venue, server-side. */
+  myVenues: (): Promise<Venue[]> => call('/api/my-venues'),
   openMatches: (allClubs = false): Promise<OpenMatch[]> =>
     call(allClubs ? '/api/matches?all=1' : '/api/matches'),
   clubs: (): Promise<Club[]> => call('/api/clubs'),
@@ -221,11 +213,6 @@ export const api = {
     post('/api/matches', i),
   joinMatch: (id: string, memberId: string): Promise<{ share: Money }> =>
     post(`/api/matches/${id}/join`, { memberId }),
-  cast: (): Promise<{
-    cast: Record<string, CastMember>;
-    venues: Venue[];
-    members: Record<string, Record<string, string>>;
-  }> => call('/api/cast'),
   venue: (): Promise<VenueSnapshot> => call('/api/venue'),
   courts: (): Promise<CourtListing[]> => call('/api/browse/courts'),
   availability: (resourceId: string, date: string): Promise<SlotFit[]> =>

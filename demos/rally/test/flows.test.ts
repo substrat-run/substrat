@@ -5,8 +5,31 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import type { Hono } from 'hono';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid } from '@substrat-run/kernel';
-import { buildRallyHost, seedRally, type RallyWorld } from '../src/index.js';
+import type { DevLogin } from '@substrat-run/dev-issuer';
+import { buildRallyHost, seedRally, linkRallyLogins, type RallyWorld } from '../src/index.js';
 import { createRallyApp } from '../src/routes.js';
+
+/**
+ * A `DevLogin` double: it asserts a subject from a test header instead of verifying a
+ * signed token. ONLY the token verification is stubbed — everything downstream is real,
+ * so these flows now walk the same `resolveIdentity(venue.tenantId, …)` the server does
+ * and would fail if the persona → principal binding broke.
+ *
+ * `as` is a `sub` now, not a principal. That is the point: the test can no longer name a
+ * principal directly, because neither can anything else.
+ */
+const stubLogin: DevLogin = {
+  issuer: 'https://test.invalid',
+  // The RP redirects are not what these flows test; the double refuses them outright.
+  handle: () => Promise.reject(new Error('stubLogin serves no relying-party endpoints')),
+  subject: (headers) => {
+    const sub = headers.get('x-test-sub');
+    return Promise.resolve(
+      sub ? { sub, email: `${sub.replace('dev|', '')}@test.invalid`, name: sub } : null,
+    );
+  },
+  caller: () => Promise.resolve(null),
+};
 
 /**
  * The flows, walked end to end through the REAL HTTP routes.
@@ -52,7 +75,7 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
       method: opts.method ?? 'GET',
       headers: {
         'content-type': 'application/json',
-        ...(opts.as ? { 'x-principal': opts.as } : {}),
+        ...(opts.as ? { 'x-test-sub': opts.as } : {}),
         ...(opts.venue ? { 'x-venue': opts.venue } : {}),
       },
       ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
@@ -81,17 +104,20 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     dir = mkdtempSync(join(tmpdir(), 'substrat-rally-flows-'));
     host = buildRallyHost(dir);
     w = await seedRally(host, dir);
-    app = createRallyApp(host, w);
+    await linkRallyLogins(host, w);
+    app = createRallyApp(host, w, stubLogin);
 
-    const cast = await ok('/api/cast');
-    astrid = cast.cast.astrid.principal;
-    ravi = cast.cast.ravi.principal;
-    nils = cast.cast.nils.principal;
-    elin = cast.cast.elin.principal;
-    johan = cast.cast.johan.principal;
-    rutger = cast.cast.rutger.principal;
-    elinM = cast.members.solna.elin;
-    johanM = cast.members.solna.johan;
+    astrid = 'dev|astrid';
+    ravi = 'dev|ravi';
+    nils = 'dev|nils';
+    elin = 'dev|elin';
+    johan = 'dev|johan';
+    rutger = 'dev|rutger';
+    // The member ids come from `rally/whoami` now — the seam this migration added. They
+    // used to come from a hardcoded persona → member map the dev server shipped to the
+    // browser, which is exactly what made the player app work only here.
+    elinM = (await ok('/api/whoami', { as: elin })).memberId;
+    johanM = (await ok('/api/whoami', { as: johan })).memberId;
     const courts = await ok('/api/courts', { as: astrid });
     court = courts[0].id;
   });
@@ -514,7 +540,9 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     // the player ref) and no orgId (the server pins it to the venue).
     const { invitationId } = await ok('/api/invites', {
       as: astrid, method: 'POST',
-      body: { name: 'Saga Lindqvist', identifier: 'saga@example.com' },
+      // The address the issuer will assert for `dev|saga` — the acceptance is checked
+      // against the TOKEN now, so the invite has to name the same address.
+      body: { name: 'Saga Lindqvist', identifier: 'saga@test.invalid' },
     });
 
     // The desk sees it under the name the club filed it as.
@@ -528,11 +556,13 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     const before = await ok('/api/members', { as: astrid });
     expect(before.some((m: any) => m.name === 'Saga Lindqvist')).toBe(false);
 
-    // The recipient accepts as a FRESH principal (the dev-header path): the
-    // email in the body is the proof the engine re-hashes.
+    // The recipient accepts as a FRESH login — a subject the directory has never seen.
+    // The proof the engine re-hashes is the email from the VERIFIED token, so the body
+    // carries only the invitation id: the acceptor cannot name their own identifier any
+    // more, which is what the dev-header path used to let them do.
     await ok('/api/invites/accept', {
-      as: ulid(), method: 'POST',
-      body: { invitationId, identifier: 'saga@example.com' },
+      as: 'dev|saga', method: 'POST',
+      body: { invitationId },
     });
 
     // ...and only now does the roster have them.
@@ -542,19 +572,21 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     // The wrong email is refused — and the refusal does not say why.
     const second = await ok('/api/invites', {
       as: astrid, method: 'POST',
-      body: { name: 'Andra Spelaren', identifier: 'andra@example.com' },
+      body: { name: 'Andra Spelaren', identifier: 'andra@test.invalid' },
     });
+    // The wrong PERSON, which is now the only way to be wrong: `dev|fel` presents a
+    // token asserting fel@test.invalid, and the invitation was hashed against andra's.
     const wrong = await call('/api/invites/accept', {
-      as: ulid(), method: 'POST',
-      body: { invitationId: second.invitationId, identifier: 'fel@example.com' },
+      as: 'dev|fel', method: 'POST',
+      body: { invitationId: second.invitationId },
     });
     expect(wrong.status).toBe(400);
 
     // Revoked: the RIGHT email now fails the same, indistinguishable way.
     await ok(`/api/invites/${second.invitationId}/revoke`, { as: astrid, method: 'POST' });
     const revoked = await call('/api/invites/accept', {
-      as: ulid(), method: 'POST',
-      body: { invitationId: second.invitationId, identifier: 'andra@example.com' },
+      as: 'dev|andra', method: 'POST',
+      body: { invitationId: second.invitationId },
     });
     expect(revoked.status).toBe(400);
 
@@ -565,7 +597,7 @@ describe('RallyPoint flows (through the HTTP surface)', () => {
     expect(
       (await call('/api/invites/accept', {
         method: 'POST',
-        body: { invitationId, identifier: 'saga@example.com' },
+        body: { invitationId },
       })).status,
     ).toBe(403);
   });

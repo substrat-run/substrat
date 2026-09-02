@@ -32,7 +32,6 @@ const money = (m: Money): string => `${m.amount} ${m.currency === 'SEK' ? 'kr' :
 interface Props {
   date: string;
   openDrawer: number;
-  memberIds: Record<string, string>;
 }
 
 export default function Calendar({ date, openDrawer }: Props) {

@@ -139,6 +139,22 @@ export const rallyOperations = defineOperations(
   // ENGINE owns and rally's manifest hangs its `member` edge off.
   [bookingEntities],
 )({
+  'rally/whoami': {
+    summary: "Report the caller's role at this venue, and their own member id",
+    // No permission gates it: answering "who am I here" must work for everyone,
+    // including someone who may do nothing. It reveals only the caller's own
+    // grants and their own member row — both already theirs.
+    narrows: {
+      reason: 'every principal may ask who they themselves are at this venue',
+      checks: ['rally:manage-members'],
+    },
+    output: z.object({
+      role: z.enum(['club-admin', 'receptionist', 'coach', 'player', 'none']),
+      /** Null for staff, and for a player whose login is not linked to a member here. */
+      memberId: z.string().nullable(),
+    }),
+    http: { method: 'GET', path: '/whoami' },
+  },
   // --- venue configuration --------------------------------------------------
   'rally/set-venue': {
     summary: 'Set the club name, timezone and hold window',
