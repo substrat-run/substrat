@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-rally
 
-38 operations · 7 narrowed checks · 6 conformance pairs driven
+39 operations · 7 narrowed checks · 6 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -70,7 +70,7 @@ as an assessment rather than as silence.
 | Kind | Count | Operations |
 | --- | --- | --- |
 | Node-level check | 30 | `rally/add-closure`, `rally/availability`, `rally/block-maintenance`, `rally/book-court`, `rally/buy-credits`, `rally/can-admin`, `rally/courts`, `rally/create-member`, `rally/create-open-match`, `rally/get-venue`, `rally/invite-player`, `rally/join-match`, `rally/list-invites`, `rally/list-members`, `rally/match`, `rally/occupancy`, `rally/open-matches`, `rally/price-matrix`, `rally/quote`, `rally/register-court`, `rally/revoke-invite`, `rally/run-billing`, `rally/set-court-hours`, `rally/set-hours`, `rally/set-venue`, `rally/subscribe`, `rally/upsert-pack`, `rally/upsert-plan`, `rally/upsert-price-rule`, `rally/venue-availability` |
-| Per-entity proof walk (`narrows`) | 1 | `rally/portal-bookings` |
+| Per-entity proof walk (`narrows`) | 2 | `rally/portal-bookings`, `rally/whoami` |
 
 ## 5. Not covered by this artifact
 
