@@ -914,7 +914,15 @@ async function cmdModel(): Promise<void> {
   }
   // positional(0) is 'view' itself; the target trails it and may follow `--out <file>`.
   const target = positional(1) ?? '.';
-  const { file, entities } = await writeModelView(target, { ...(flag('out') ? { out: flag('out')! } : {}) });
+  // A valueless `--out` must refuse, not fall back to the temp path: the whole point of
+  // passing it is to control where the file lands, so silently writing somewhere else is
+  // the one outcome nobody asked for.
+  const out = flag('out');
+  if (argv.includes('--out') && (!out || out.startsWith('--'))) {
+    console.error('usage: substrat model view [dir|model.json] [--out <file>]\n\n--out needs a path.');
+    process.exit(1);
+  }
+  const { file, entities } = await writeModelView(target, { ...(out ? { out } : {}) });
   console.log(`✓ ${entities} ${entities === 1 ? 'entity' : 'entities'} rendered — open it in a browser:`);
   console.log(file);
 }

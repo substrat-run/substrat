@@ -88,6 +88,27 @@ export function readModel(file: string): EmittedModel {
       }
     }
   }
+  const lifecycles = (parsed as { lifecycles?: unknown }).lifecycles;
+  if (lifecycles !== undefined) {
+    if (!lifecycles || typeof lifecycles !== 'object' || Array.isArray(lifecycles)) {
+      throw new Error(`${file}: 'lifecycles' is not an object keyed by entity`);
+    }
+    for (const [entity, lc] of Object.entries(lifecycles as Record<string, unknown>)) {
+      const states = (lc as { states?: unknown } | null)?.states;
+      if (!lc || typeof lc !== 'object' || !states || typeof states !== 'object' || Array.isArray(states)) {
+        throw new Error(`${file}: the lifecycle for '${entity}' declares no states map`);
+      }
+      for (const [state, def] of Object.entries(states as Record<string, unknown>)) {
+        if (!def || typeof def !== 'object' || Array.isArray(def)) {
+          throw new Error(`${file}: state '${state}' of the '${entity}' lifecycle is not an object`);
+        }
+        const on = (def as { on?: unknown }).on;
+        if (on !== undefined && (!on || typeof on !== 'object' || Array.isArray(on))) {
+          throw new Error(`${file}: state '${state}' of the '${entity}' lifecycle declares 'on' as something other than a map`);
+        }
+      }
+    }
+  }
   return parsed as EmittedModel;
 }
 

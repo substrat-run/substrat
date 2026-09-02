@@ -194,6 +194,22 @@ describe('model view', () => {
     }
   });
 
+  it('refuses a malformed lifecycle, for the same reason', () => {
+    const entities = { a: { table: 't', fields: {} } };
+    const cases: [unknown, RegExp][] = [
+      [{ a: { field: 'state', initial: 'open', states: null } }, /declares no states map/],
+      [{ a: { field: 'state', initial: 'open' } }, /declares no states map/],
+      [{ a: { field: 'state', initial: 'open', states: { open: null } } }, /is not an object/],
+      [{ a: { field: 'state', initial: 'open', states: { open: { on: 'done' } } } }, /other than a map/],
+      [[], /not an object keyed by entity/],
+    ];
+    cases.forEach(([lifecycles, message], i) => {
+      const file = join(dir, `bad-lifecycle-${i}.json`);
+      writeFileSync(file, JSON.stringify({ entities, lifecycles }));
+      expect(() => readModel(file)).toThrow(message);
+    });
+  });
+
   it('escapes what it renders', () => {
     const nasty = {
       entities: {
