@@ -3,6 +3,7 @@ import { listInvites, revokeInvite, sendInvite, type Invitation } from '@substra
 import {
   addDecimal,
   dataSubjectId,
+  principalId,
   orgId as orgIdSchema,
   manifestEntities,
   moduleManifest,
@@ -302,6 +303,26 @@ export const rallyMigrations = [
         name          TEXT NOT NULL
       );
     `,
+  },
+  {
+    // Appended, never edited — 0001 and 0002 have shipped.
+    //
+    // The principal → member seam. `party_ref` is a `dataSubjectId`: it ties the same
+    // human's member records together ACROSS clubs, which is a different question from
+    // "which login is this". Without a column for the login, a signed-in player had no
+    // way to find their own member id, and `rally/list-members` needs `manage-members`,
+    // which a player deliberately does not hold. The dev server papered over it by
+    // shipping a hardcoded persona → member map in `/api/cast`, so the player app worked
+    // locally and nowhere else.
+    //
+    // NULLABLE, and it stays that way: a member created at the desk for someone who has
+    // never signed in has no principal yet, and that is a normal state, not a missing
+    // value to backfill. It is the LOGIN that is optional here, not the member.
+    version: '0003-member-principal',
+    sql: `
+      ALTER TABLE rally_members ADD COLUMN principal_ref TEXT;
+      CREATE INDEX rally_members_principal ON rally_members (principal_ref);
+    `,
   }
 ];
 
@@ -376,6 +397,15 @@ export interface MemberRow {
   name: string;
   phone: string | null;
   level: string | null;
+  /**
+   * The login this member IS, once they have one (0003). Null at the desk.
+   *
+   * Declared here as well as in `entities.ts`, which is what this row's operations
+   * publish as their output schema: the column arrived in 0003 and only the entity
+   * learned about it, so every `SELECT *` was returning a field the type denied
+   * existed. A reader could not see the one column `rally/whoami` turns on.
+   */
+  principal_ref: string | null;
   created_at: string;
 }
 export interface WalletEntryRow {
@@ -913,7 +943,7 @@ const runBillingOp: OperationHandler<
 };
 
 const createMemberOp: OperationHandler<
-  { partyRef: string; name: string; phone?: string; level?: string },
+  { partyRef: string; name: string; phone?: string; level?: string; principalRef?: string },
   MemberRow
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(RALLY_PERM.manageMembers));
@@ -921,10 +951,32 @@ const createMemberOp: OperationHandler<
   // Parse at the boundary: a member's party_ref is the global player identity and
   // must be a real data-subject id, or crypto-shredding has nothing to key on.
   const partyRef = dataSubjectId.parse(input.partyRef);
+  // The login, if the desk knows it. Branded on the way in for the same reason the
+  // party ref is: a principal column that holds anything is a column nobody can trust.
+  const principal = input.principalRef ? principalId.parse(input.principalRef) : null;
+  // `party_ref` is one global human and it is UNIQUE, so "create" for a party this
+  // club already knows is the same member, not a second one — the invariant the
+  // invite consumer already states. Adopting rather than inserting is what lets a
+  // caller that runs more than once (the seed, on a `.data` that already exists)
+  // bind a login to a member row created before there was a column to hold it.
+  // A principal already set is never overwritten: that is a different human's row.
+  const already = ctx.sql.query<{ id: string; principal_ref: string | null }>(
+    'SELECT id, principal_ref FROM rally_members WHERE party_ref = ?',
+    [partyRef],
+  )[0];
+  if (already) {
+    if (principal && !already.principal_ref) {
+      ctx.sql.exec('UPDATE rally_members SET principal_ref = ? WHERE id = ?', [
+        principal,
+        already.id,
+      ]);
+    }
+    return ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [already.id])[0]!;
+  }
   ctx.sql.exec(
-    `INSERT INTO rally_members (id, party_ref, name, phone, level, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, partyRef, input.name, input.phone ?? null, input.level ?? null, ctx.now()],
+    `INSERT INTO rally_members (id, party_ref, name, phone, level, principal_ref, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, partyRef, input.name, input.phone ?? null, input.level ?? null, principal, ctx.now()],
   );
   return ctx.sql.query<MemberRow>('SELECT * FROM rally_members WHERE id = ?', [id])[0]!;
 };
@@ -953,6 +1005,42 @@ function pageBy<T>(rows: T[], page: ListPage, key: (row: T) => string): Page<T> 
         })();
   return pageOf(rows.slice(after, after + limit), limit, key);
 }
+
+/**
+ * "Who am I at this venue" — the caller's own role hint AND their own member id.
+ *
+ * No permission gate: answering it must work for a principal who may do nothing, and it
+ * reveals only what is already theirs. The role is a UI HINT derived by probing the
+ * caller's own grants; the kernel still enforces the real permission on every operation.
+ *
+ * The member id is the half that did not exist before. A player's whole app is keyed on
+ * it, `party_ref` is a `dataSubjectId` rather than a login, and `rally/list-members`
+ * requires `manage-members` — which a player deliberately does not hold. So the player
+ * app used to read its member id out of a hardcoded persona map the dev server shipped in
+ * `/api/cast`: correct locally, absent in any real install. `principal_ref` (0003) is the
+ * seam, and this is the only read of it a player needs.
+ *
+ * Null memberId is a FACT, not a failure: staff are not members, and a member created at
+ * the desk for someone who has never signed in has no principal yet.
+ */
+const whoamiOp: OperationHandler<undefined, { role: string; memberId: string | null }> = async (
+  ctx,
+) => {
+  const role = (await ctx.check(RALLY_PERM.manageVenue)).allowed
+    ? 'club-admin'
+    : (await ctx.check(RALLY_PERM.manageMembers)).allowed
+      ? 'receptionist'
+      : (await ctx.check(BK.read)).allowed
+        ? 'coach'
+        : (await ctx.check(RALLY_PERM.browse)).allowed
+          ? 'player'
+          : 'none';
+  const mine = ctx.sql.query<{ id: string }>(
+    'SELECT id FROM rally_members WHERE principal_ref = ? LIMIT 1',
+    [ctx.principal],
+  );
+  return { role, memberId: mine[0]?.id ?? null };
+};
 
 const listMembersOp: OperationHandler<PageParams | undefined, Page<MemberRow>> = async (
   ctx,
@@ -2050,11 +2138,21 @@ const revokeInviteOp: OperationHandler<{ invitationId: string }, { ok: true }> =
 };
 
 /**
- * A player accepted — give them a member record at this venue.
+ * A player accepted — give them a member record at this venue, bound to the login
+ * that accepted.
+ *
+ * The `principal_ref` is the half that matters and was being dropped: the payload
+ * carries the very principal the acceptance authorized, and a row written without it
+ * leaves `rally/whoami` answering `memberId: null` for a player who is plainly a
+ * member — the player app then shows them the "you belong to no club here" screen
+ * forever. Joining by invitation is the ONLY way a real install gains a player, so
+ * that was every player outside the seed.
  *
  * Idempotent on `party_ref`, which is UNIQUE: delivery is at-least-once, so this
  * consumer will be re-run, and a second member row would give one human two
- * wallets at the same club.
+ * wallets at the same club. A re-run adopts the login onto a row that has none —
+ * which is also what backfills a member the desk created before this column, or
+ * before its player ever signed in — and never overwrites one already set.
  */
 const onInviteAccepted: ConsumerHandler = (ctx, event) => {
   const payload = z
@@ -2068,15 +2166,26 @@ const onInviteAccepted: ConsumerHandler = (ctx, event) => {
   // Not an error: the kernel membership still stands, RallyPoint simply has no
   // record to create.
   if (!invited) return;
-  const existing = ctx.sql.query<{ id: string }>(
-    'SELECT id FROM rally_members WHERE party_ref = ?',
+  // Branded on the way in, for the same reason `create-member` brands it: a
+  // principal column that holds anything is a column nobody can trust.
+  const principal = principalId.parse(payload.principal);
+  const existing = ctx.sql.query<{ id: string; principal_ref: string | null }>(
+    'SELECT id, principal_ref FROM rally_members WHERE party_ref = ?',
     [invited.party_ref],
   );
-  if (existing[0]) return;
+  if (existing[0]) {
+    if (!existing[0].principal_ref) {
+      ctx.sql.exec('UPDATE rally_members SET principal_ref = ? WHERE id = ?', [
+        principal,
+        existing[0].id,
+      ]);
+    }
+    return;
+  }
   ctx.sql.exec(
-    `INSERT INTO rally_members (id, party_ref, name, phone, level, created_at)
-     VALUES (?, ?, ?, NULL, NULL, ?)`,
-    [ulid(), invited.party_ref, invited.name, ctx.now()],
+    `INSERT INTO rally_members (id, party_ref, name, phone, level, principal_ref, created_at)
+     VALUES (?, ?, ?, NULL, NULL, ?, ?)`,
+    [ulid(), invited.party_ref, invited.name, principal, ctx.now()],
   );
 };
 
@@ -2102,6 +2211,7 @@ export const rallyModule: ModuleRegistration = {
     'rally/cancel-subscription': cancelSubscriptionOp as never,
     'rally/run-billing': runBillingOp as never,
     'rally/create-member': createMemberOp as never,
+    'rally/whoami': whoamiOp as never,
     'rally/list-members': listMembersOp as never,
     'rally/get-venue': getVenueOp as never,
     'rally/courts': browseCourtsOp as never,

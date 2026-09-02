@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   compareDecimal,
   addDecimal,
+  listsDeclaredBy,
   manifestEntities,
   moduleManifest,
   moneyOf,
@@ -108,6 +109,18 @@ export const bikeShopManifest = moduleManifest.parse({
       { entityType: 'protocol', parentType: 'workorder' },
     ],
   }),
+  // #811: DERIVED from the operations' own `paged.over`, never written twice.
+  //
+  // Its ABSENCE was a live bug, and the kind only driving the HTTP path finds:
+  // `bike-shop/list-customers` has always declared `paged.over`, but nothing carried
+  // that declaration to the kernel, so `GET /api/customers` — the Kunder screen —
+  // answered 400 `NotListable` on every call. Every other vertical and engine in the
+  // workspace already had this line. The scenario suite never noticed because it
+  // invokes operations directly and never pages through the kernel.
+  lists: listsDeclaredBy(handlebarOperations, handlebarEntities, [
+    workorderEntities,
+    protocolEntities,
+  ]),
   // MILESTONE C — the manifest-declared guard (engine-protocol.md §6, kernel
   // open question 11). Handlebar's pickup rule: a repair is not closed until
   // the customer has COUNTER-SIGNED the tillståndsrapport — i.e. accepted, on
@@ -453,8 +466,35 @@ const timelineOp: OperationHandler<
   return readTimeline(ctx, entity, input);
 };
 
+/**
+ * "Who am I" for the app shell — the caller's own role hint, resolved from THIS scope.
+ *
+ * No permission gate: every principal in the scope may ask about themselves, and the
+ * answer reveals only their own grants, which are already theirs. The role is a UI HINT
+ * derived by probing those grants; the kernel still enforces the real permission on every
+ * operation regardless of what this returns.
+ *
+ * `portal` (an entity-narrowed customer login) is deliberately not detectable here — a
+ * portal principal holds no node-level permission to probe, so it reads as `none`. That is
+ * not a gap to widen the enum for: the app decides portal chrome by exclusion (neither
+ * staff role ⇒ portal), which is true whoever is asking. It used to be decided by the dev
+ * server's persona table, which made it true locally and false everywhere else.
+ */
+export interface WhoAmI {
+  role: 'workshop-admin' | 'mechanic' | 'none';
+}
+const whoamiOp: OperationHandler<undefined, WhoAmI> = async (ctx) => {
+  const role: WhoAmI['role'] = (await ctx.check(CS_PERM.customerManage)).allowed
+    ? 'workshop-admin'
+    : (await ctx.check(WO.report)).allowed
+      ? 'mechanic'
+      : 'none';
+  return { role };
+};
+
 /** The handlers bound to `handlebarOperations`. `satisfies` is the drift detector. */
 const declaredOperations = {
+  'bike-shop/whoami': whoamiOp,
   'bike-shop/create-customer': createCustomerOp,
   'bike-shop/list-customers': listCustomersOp,
   'bike-shop/register-bike': registerBikeOp,

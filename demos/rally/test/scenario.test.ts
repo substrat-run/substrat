@@ -561,11 +561,64 @@ describe('RallyPoint: inviting a player', () => {
     const roster = (await admin.invoke<Page<MemberRow>>('rally/list-members')).entries;
     expect(roster.find((m) => m.party_ref === partyRef)?.name).toBe('Ny Spelare');
 
+    // Bound to the principal the acceptance authorized — the half the consumer was
+    // dropping. Without it the row exists and answers to nobody: `rally/whoami` reads
+    // `principal_ref` and nothing else, so the newcomer's own app would show them the
+    // "no club here" screen while this very roster listed them.
+    expect(roster.find((m) => m.party_ref === partyRef)?.principal_ref).toBe(newcomer);
+    expect(await theirs.invoke<{ memberId: string | null }>('rally/whoami')).toEqual(
+      expect.objectContaining({ memberId: roster.find((m) => m.party_ref === partyRef)!.id }),
+    );
+
     // The split trail joins: the admin row names the event that caused it.
     const added = (await host.admin.auditLog(RALLY_PLATFORM_ACTOR, { tenantId: w.t1 })).find(
       (e) => e.action === 'addMember',
     );
     expect(added?.causedBy).toEqual(expect.any(String));
+  });
+
+  /**
+   * The repair path for a member who predates the link.
+   *
+   * `principal_ref` arrived in migration 0003, which leaves it NULL on every row that
+   * already existed — and a member the desk created for someone who had never signed
+   * in has none either. Both are the same shape: a real member the player app cannot
+   * recognise. `create-member` is the one operation that can say who a member is, so a
+   * caller that runs more than once (the seed, on a `.data` it did not create) repairs
+   * them by asking again. What it must NOT do is mint a second member — `party_ref` is
+   * one global human, and two rows would be two wallets at one club.
+   */
+  it('binds a login to a member created before there was one, and never twice', async () => {
+    const admin = await host.getScope(w.astrid, w.t1, w.s1);
+    const partyRef = ulid();
+    const before = await admin.invoke<MemberRow>('rally/create-member', {
+      partyRef,
+      name: 'Osignerad Spelare',
+    });
+    expect(before.principal_ref).toBeNull();
+
+    const login = principalId.parse(ulid());
+    const after = await admin.invoke<MemberRow>('rally/create-member', {
+      partyRef,
+      name: 'Osignerad Spelare',
+      principalRef: login,
+    });
+    expect(after.id).toBe(before.id);
+    expect(after.principal_ref).toBe(login);
+
+    // One human, one member row — asked for twice.
+    const roster = (await admin.invoke<Page<MemberRow>>('rally/list-members')).entries;
+    expect(roster.filter((m) => m.party_ref === partyRef)).toHaveLength(1);
+
+    // A principal already bound is never reassigned: that would hand one club member's
+    // record to a different login.
+    const other = principalId.parse(ulid());
+    const again = await admin.invoke<MemberRow>('rally/create-member', {
+      partyRef,
+      name: 'Osignerad Spelare',
+      principalRef: other,
+    });
+    expect(again.principal_ref).toBe(login);
   });
 
   it('does not leak whether an address has already been invited', async () => {

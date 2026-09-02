@@ -78,6 +78,18 @@ export const handlebarOperations = defineOperations(
   HANDLEBAR_PERMISSIONS,
   HANDLEBAR_ENGINE_ENTITIES,
 )({
+  'bike-shop/whoami': {
+    summary: "Report the caller's role in this workshop",
+    // No permission gates it: answering "what may I do" must work for everyone,
+    // including a principal who may do nothing. Same shape as `callout/whoami`.
+    narrows: {
+      reason: 'every principal may ask what they themselves may do',
+      // Also probes the workorder engine's `report`, which the ENGINE declares.
+      checks: ['customer:manage'],
+    },
+    output: z.object({ role: z.enum(['workshop-admin', 'mechanic', 'none']) }),
+    http: { method: 'GET', path: '/whoami' },
+  },
   'bike-shop/create-customer': {
     summary: 'Register a customer',
     permission: 'customer:manage',

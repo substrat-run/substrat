@@ -21,6 +21,8 @@ export const rallyEntities = defineEntities({
       name: z.string(),
       phone: z.string().nullable(),
       level: z.string().nullable(),
+      /** The login this member IS, once they have one (0003). Null at the desk. */
+      principal_ref: z.string().nullable(),
       created_at: z.string(),
     }),
     key: ['party_ref'],

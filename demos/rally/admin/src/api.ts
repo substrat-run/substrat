@@ -1,8 +1,3 @@
-export interface CastMember {
-  name: string;
-  role: string;
-  principal: string;
-}
 export interface Money {
   amount: string;
   currency: string;
@@ -125,10 +120,6 @@ export class ApiError extends Error {
   }
 }
 
-let principal = '';
-export const setPrincipal = (p: string): void => {
-  principal = p;
-};
 
 /** Which club's scope the console is looking at. One API, many scopes. */
 let venue = 'solna';
@@ -137,24 +128,35 @@ export const setVenue = (v: string): void => {
 };
 export const getVenue = (): string => venue;
 
+/**
+ * Signing in is a NAVIGATION, not a fetch: the browser leaves for the issuer and comes
+ * back to `/api/auth/callback` with a session cookie. This app hosts no sign-up.
+ */
+export const auth = {
+  login: (returnTo = '/') => location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`),
+  logout: () => location.assign('/api/auth/logout'),
+};
+
+/**
+ * Who the caller is AT THE SELECTED VENUE — the role hint, and their own member id.
+ * `memberId` is null for staff and for a login with no member record here; both are
+ * facts, not failures.
+ */
+export interface WhoAmI {
+  role: 'club-admin' | 'receptionist' | 'coach' | 'player' | 'none';
+  memberId: string | null;
+}
+
 export interface Venue {
   key: string;
   label: string;
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
-  // /api/cast is the only route that legitimately runs unauthenticated — it is
-  // how the picker learns who it may be. Anything else firing without a
-  // principal is a mount-ordering bug, and should say so rather than surface as
-  // a mystery 403 from the server.
-  if (!principal && path !== '/api/cast') {
-    throw new ApiError(0, `no principal selected yet — ${path} fired before the picker was ready`);
-  }
   const res = await fetch(path, {
     ...init,
     headers: {
       'content-type': 'application/json',
-      ...(principal ? { 'x-principal': principal } : {}),
       'x-venue': venue,
       ...(init?.headers ?? {}),
     },
@@ -171,11 +173,8 @@ const post = <T,>(path: string, body?: unknown): Promise<T> =>
   call<T>(path, { method: 'POST', body: JSON.stringify(body ?? {}) });
 
 export const api = {
-  cast: (): Promise<{
-    cast: Record<string, CastMember>;
-    venues: Venue[];
-    members: Record<string, Record<string, string>>;
-  }> => call('/api/cast'),
+  /** Who am I at this venue, and which member am I here. */
+  whoami: (): Promise<WhoAmI> => call('/api/whoami'),
   myVenues: (): Promise<Venue[]> => call('/api/my-venues'),
   venue: (): Promise<VenueSnapshot> => call('/api/venue'),
   courts: (): Promise<Court[]> => call('/api/courts'),

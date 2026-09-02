@@ -14,9 +14,8 @@
  *
  * What survives here has no declaration behind it:
  *
- *  - **Who the caller is.** `x-principal` is the dev persona seam the node server
- *    authenticates on — a fact about this harness, not about the model.
- *  - **`/cast`**, the persona list the dev server serves. Not an operation.
+ *  - **Who the caller is.** `/api/me` and the relying-party redirects are facts about
+ *    this deployment's issuer, not about the model.
  *  - **Two operations deliberately left unbound.** `protocol/list-for-entity` takes
  *    an entity-agnostic `entityType`; binding it to a URL would let a caller list
  *    the protocols on any entity at all. The server supplies that constant by hand,
@@ -81,12 +80,6 @@ export type CompletedRepair = Awaited<ReturnType<HandlebarClient['completeRepair
 type ChecklistContent = Extract<ProtocolDetail['template']['content'], { kind: 'checklist' }>;
 export type ProtocolItem = ChecklistContent['sections'][number]['items'][number];
 
-export interface CastMember {
-  name: string;
-  role: string;
-  principal: string;
-}
-
 /** What `GET /repairs/{id}/protocols` answers — likewise. */
 export interface ProtocolSummary {
   instance: ProtocolInstance;
@@ -99,38 +92,38 @@ export interface ProtocolSummary {
   countersignedAt: string | null;
 }
 
-export function currentPrincipal(): string | null {
-  return localStorage.getItem('bike-shop-principal');
-}
+/**
+ * Signing in is a NAVIGATION, not a fetch: the browser leaves for the issuer,
+ * authenticates there, and comes back to `/api/auth/callback` with a session cookie.
+ * This app hosts no sign-up — accounts live at the issuer.
+ */
+export const auth = {
+  login: (returnTo = '/') => location.assign(`/api/auth/login?returnTo=${encodeURIComponent(returnTo)}`),
+  logout: () => location.assign('/api/auth/logout'),
+};
 
-export function setPrincipal(principal: string | null): void {
-  if (principal) localStorage.setItem('bike-shop-principal', principal);
-  else localStorage.removeItem('bike-shop-principal');
+/** Who is signed in. 401 while nobody is — the caller renders the sign-in screen. */
+export interface Me {
+  principal: string;
+  display: string;
 }
 
 /**
- * The generated client, carrying this harness's persona header.
+ * The generated client. The session rides in a cookie, so there are no headers to add;
+ * `credentials` is same-origin, which is what the Vite proxy makes this.
  *
  * `errorMessage` is left at its default: the server answers `{ error }`, which is the
  * first shape it reads. The error envelope is the one part of the surface the model
  * does not declare.
  */
-export const api = createClient({
-  headers: (): Record<string, string> => {
-    const principal = currentPrincipal();
-    return principal ? { 'x-principal': principal } : {};
-  },
-});
+export const api = createClient();
 
 /**
  * The one non-operation route and the two unbound operations, sharing the generated
  * client's transport rather than a second fetch wrapper.
  */
 const raw = async <T>(path: string): Promise<T> => {
-  const principal = currentPrincipal();
-  const res = await fetch(`/api${path}`, {
-    headers: principal ? { 'x-principal': principal } : {},
-  });
+  const res = await fetch(`/api${path}`);
   const body = (await res.json()) as T & { error?: string };
   if (!res.ok) throw new Error(body.error ?? `${res.status}`);
   return body;
@@ -144,9 +137,8 @@ const raw = async <T>(path: string): Promise<T> => {
  * events, which a repair passes without anything looking wrong: the list renders,
  * it is just missing its own history from the twenty-first event on.
  *
- * `api.follow` is the generated client's own walk, so the Link parsing, the persona
- * header and the error envelope stay in one place rather than being written a
- * second time here. It collects rather than exposing page controls because the
+ * `api.follow` is the generated client's own walk, so the Link parsing and the error
+ * envelope stay in one place rather than being written a second time here. It collects rather than exposing page controls because the
  * caller asked for the timeline, not for a page of it.
  */
 async function walk<T>(path: string): Promise<T[]> {
@@ -161,8 +153,8 @@ async function walk<T>(path: string): Promise<T[]> {
 }
 
 export const extra = {
-  /** The dev harness's persona list. Not an operation — the node server owns it. */
-  cast: () => raw<Record<string, CastMember>>('/cast'),
+  /** Who is signed in. Not an operation — the RP half of this server owns it. */
+  me: () => raw<Me>('/me'),
   /** `bike-shop/timeline`, unbound: the route pins `entityType` (see the header). */
   timeline: (id: string) => walk<TimelineEntry>(`/repairs/${id}/timeline`),
   /** `protocol/list-for-entity`, unbound for the same reason. */

@@ -1,11 +1,13 @@
 import { RALLY_PLATFORM_ACTOR } from './seed.js';
-import {
-  devHeaderAdapter,
-  identifyCaller,
-  resolvePrincipal,
-  type AuthAdapter,
-  type Venue,
-} from './auth-adapters.js';
+import type { DevLogin } from '@substrat-run/dev-issuer';
+import { DEV_PROVIDER } from './personas.js';
+
+/** One venue: which (tenant, scope) an `x-venue` key names. */
+interface Venue {
+  label: string;
+  tenantId: TenantId;
+  scopeId: ScopeId;
+}
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import {
@@ -13,7 +15,10 @@ import {
   nextPageLink,
   PAGE_LINK_HEADER,
   principalId,
+  substratError,
   type PrincipalId,
+  type ScopeId,
+  type TenantId,
   type Page,
 } from '@substrat-run/contracts';
 import { PermissionDenied, ulid, type ScopeStub } from '@substrat-run/kernel';
@@ -61,17 +66,8 @@ function jsonPage(c: Context, result: unknown) {
 export function createRallyApp(
   host: SqliteScopeHost,
   world: RallyWorld,
-  adapters: AuthAdapter[] = [devHeaderAdapter()],
+  login: DevLogin,
 ): Hono {
-  const CAST: Record<string, { name: string; role: string; principal: PrincipalId }> = {
-    astrid: { name: 'Astrid (klubbchef)', role: 'club-admin', principal: world.astrid },
-    ravi: { name: 'Ravi (reception, Solna)', role: 'receptionist', principal: world.ravi },
-    nils: { name: 'Nils (tränare)', role: 'coach', principal: world.nils },
-    elin: { name: 'Elin (spelare)', role: 'player', principal: world.elin },
-    johan: { name: 'Johan (spelare)', role: 'player', principal: world.johan },
-    rutger: { name: 'Rutger (annan klubb!)', role: 'attacker', principal: world.rutger },
-  };
-
   /**
    * The venues this demo knows about. Two belong to RallyPoint AB and one to a
    * different company — picking the wrong one is not a UI error, it is the tenancy
@@ -100,23 +96,45 @@ export function createRallyApp(
   }
 
   /**
-   * Resolve the caller through the mounted adapters, in order — a real session
-   * wins, the dev header is a fallback the server may not even have mounted.
+   * Resolve the caller: the issuer says WHO, the directory says who that is HERE.
    *
-   * The VENUE is an input, not something derived from the login. Clubs are tenants
-   * and the pool is central, so one login legitimately maps to a different
-   * principal per club; asking "who are you" without saying "where" has no answer
-   * (§4.3, and why `resolveIdentity` takes a tenant since #56).
+   * `login.subject` rather than `login.caller`, and the distinction is the whole of
+   * rally's shape. `caller` asks the directory which tenant a login lives in and takes
+   * the first — right for a vertical with one home per person. Here the VENUE is an
+   * INPUT: clubs are tenants, the pool is central, and one login legitimately maps to a
+   * different principal per club, so asking "who are you" without saying "where" has no
+   * answer (§4.3, and why `resolveIdentity` takes a tenant since #56).
    */
   async function authOf(c: Context): Promise<PrincipalId> {
-    const result = await resolvePrincipal(adapters, c.req.raw.headers, venueOf(c));
-    if (!result) {
+    const venue = venueOf(c);
+    const subject = await login.subject(c.req.raw.headers);
+    const identity = subject
+      ? await host.admin.resolveIdentity(venue.tenantId, DEV_PROVIDER, subject.sub)
+      : null;
+    if (!identity) {
       // Authenticated-but-not-a-member lands here too, and deliberately reads the
       // same as unauthenticated: whether an email belongs to this club is not a
       // question an unauthenticated caller gets answered.
       throw new PermissionDenied('not authenticated for this venue');
     }
-    return result.principal;
+    return identity.principal;
+  }
+
+  /**
+   * The same resolution, asked of ONE named venue rather than the requested one.
+   *
+   * `/api/my-venues` and the fan-outs walk every club, and a central pool means the same
+   * login is a different principal in each — Rutger exists in t2 and nowhere else.
+   * Resolving once against the requested venue and reusing that principal everywhere is
+   * what the `x-principal` header let this file get away with: the header named a
+   * principal directly, so no tenant was ever consulted. Null means "this login is
+   * nobody here", which for a reachability probe is an answer, not an error.
+   */
+  async function authAt(c: Context, venue: Venue): Promise<PrincipalId | null> {
+    const subject = await login.subject(c.req.raw.headers);
+    if (!subject) return null;
+    const identity = await host.admin.resolveIdentity(venue.tenantId, DEV_PROVIDER, subject.sub);
+    return identity?.principal ?? null;
   }
 
   async function stub(c: Context): Promise<ScopeStub> {
@@ -144,20 +162,6 @@ export function createRallyApp(
     return problemResponse(c, err);
   });
 
-  app.get('/api/cast', (c) =>
-    c.json({
-      cast: CAST,
-      venues: Object.entries(VENUES).map(([key, v]) => ({ key, label: v.label })),
-      // Member ids are per venue: the same human has a separate member record in
-      // every club they belong to, tied together only by the global player ref.
-      members: {
-        solna: { elin: world.elinId, johan: world.johanId },
-        nacka: { elin: world.elinNackaId, johan: world.johanNackaId },
-        goteborg: { elin: '', johan: '' },
-      },
-    }),
-  );
-
   /**
    * Which venues THIS caller can actually work in.
    *
@@ -167,11 +171,21 @@ export function createRallyApp(
    * pair, and the role check is what actually decides. A principal with one venue
    * gets no switcher; an owner with several gets the overview.
    */
+  /**
+   * Who the caller is AT THIS VENUE: their role hint, and their own member id.
+   *
+   * Hand-mounted like every other rally route. Ungated at the operation, so a player
+   * with no member record here still gets an answer — `memberId: null` — rather than a
+   * 403 they cannot act on.
+   */
+  app.get('/api/whoami', async (c) => c.json(await (await stub(c)).invoke('rally/whoami')));
+
   app.get('/api/my-venues', async (c) => {
-    const principal = await authOf(c);
     const reachable: { key: string; label: string }[] = [];
     for (const [key, v] of Object.entries(VENUES)) {
       try {
+        const principal = await authAt(c, v);
+        if (!principal) continue; // this login is nobody at that club
         const s = await host.getScope(principal, v.tenantId, v.scopeId);
         await s.invoke('rally/get-venue'); // requires rally:browse in that scope
         reachable.push({ key, label: v.label });
@@ -260,45 +274,47 @@ export function createRallyApp(
    * (the engine re-hashes the identifier and compares); this route's job is to
    * answer WHO is accepting:
    *
-   *  - A real session: the identifier is the session's VERIFIED email — never
-   *    the body — and a caller with no principal in this tenant gets one minted
-   *    and linked on success. That is the honest bootstrap: signing up made
-   *    them a person, accepting is what makes them a member.
-   *  - The dev header: `x-principal` names the acceptor and the body may name
-   *    the email. An impersonation bypass by design, mounted only when opted
-   *    in — and a dev identity is never linked (no such identity pool exists).
+   * The identifier is the session's VERIFIED email — never the body — and a caller
+   * with no principal in this tenant gets one minted and linked on success. That is
+   * the honest bootstrap: signing up made them a person, accepting is what makes
+   * them a member.
+   *
+   * No session is `unauthenticated` (401), NOT a refusal. Every other answer this
+   * route can give means the invitation itself is spent, revoked, or addressed to
+   * someone else — and the recipient's screen says exactly that. Collapsing the two
+   * told a signed-out recipient their perfectly good link was bad, on the one screen
+   * in the app that is deliberately reachable while signed out, and offered them no
+   * way to sign in. It leaks nothing either: whether an invitation exists is not
+   * asked before the session is.
    */
   app.post('/api/invites/accept', async (c) => {
     const venue = venueOf(c);
     const input = await body(c);
-    const headers = c.req.raw.headers;
-    const who = await identifyCaller(adapters, headers);
-    const existing = await resolvePrincipal(adapters, headers, venue);
+    const subject = await login.subject(c.req.raw.headers);
+    if (!subject?.email) throw substratError('unauthenticated', 'not authenticated');
 
-    const fromBody = typeof input.identifier === 'string' ? input.identifier : undefined;
-    const identifier =
-      who && who.provider !== 'dev-header'
-        ? who.email
-        : (who?.email ?? (existing?.via === 'dev-header' ? fromBody : undefined));
-    if (!identifier) throw new PermissionDenied('not authenticated');
-    // A dev identity cannot be linked, so without x-principal there would be a
-    // membership no one can ever authenticate as. Refuse rather than strand it.
-    if (!existing && (!who || who.provider === 'dev-header')) {
-      throw new PermissionDenied('not authenticated');
-    }
+    // The identifier the engine re-hashes as proof comes from the VERIFIED token and
+    // nowhere else. It used to be able to come from the request body on the dev-header
+    // path — which meant the one field the acceptance is checked against was, on that
+    // path, chosen by the caller. There is no such path any more.
+    const identifier = subject.email;
+    const existing = await host.admin.resolveIdentity(venue.tenantId, DEV_PROVIDER, subject.sub);
 
+    // Accepting is the bootstrap: a recipient has no principal in this club yet, but they
+    // do have a login. Signing in made them a person; accepting is what makes them a
+    // member. So a principal is minted here when the directory has none.
     const principal = existing?.principal ?? principalId.parse(ulid());
     const scope = await host.getScope(principal, venue.tenantId, venue.scopeId);
     const accepted = await scope.invoke('invites/accept', {
       invitationId: input.invitationId,
       identifier,
     });
-    // Bind the login to the principal the acceptance just authorized — only
-    // after success, so a refused acceptance leaves no dangling identity link.
-    if (!existing && who && who.provider !== 'dev-header') {
+    // Bind the login to the principal the acceptance just authorized — only after
+    // success, so a refused acceptance leaves no dangling identity link.
+    if (!existing) {
       await host.admin.linkIdentity(RALLY_PLATFORM_ACTOR, {
-        provider: who.provider,
-        externalId: who.externalId,
+        provider: DEV_PROVIDER,
+        externalId: subject.sub,
         principal,
         tenantId: venue.tenantId,
         scopeId: venue.scopeId,
@@ -417,7 +433,11 @@ export function createRallyApp(
    * asking every club in turn.
    */
   app.get('/api/clubs', async (c) => {
-    await authOf(c); // authenticated, but the directory is not per-principal
+    // Authenticated — but NOT "a member of the venue you happen to have selected".
+    // This used to call `authOf`, which demands a principal in the requested venue's
+    // tenant; the club directory is the one read for which that is the wrong question,
+    // because someone browsing for a club to join is by definition not in it yet.
+    if (!(await login.subject(c.req.raw.headers))) throw new PermissionDenied('not authenticated');
     const scopes = await host.admin.listScopes(RALLY_PLATFORM_ACTOR, { status: 'active' });
     const byScope = new Map(Object.entries(VENUES).map(([k, v]) => [v.scopeId as string, k]));
     // Deliberately NOT filtered by principal. Discovery and access are different

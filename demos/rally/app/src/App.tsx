@@ -1,15 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ApiError,
   acceptInvite,
   api,
+  auth,
   dayLabel,
   getVenue,
   hhmm,
-  setPrincipal,
   setVenue,
-  type CastMember,
   type Venue,
+  type WhoAmI,
   COVER_SV,
   type Club,
   type Cover,
@@ -61,39 +61,78 @@ function setUrl(patch: Record<string, string | null>, push = false): void {
 }
 
 export default function App() {
-  const [cast, setCast] = useState<Record<string, CastMember>>({});
+  const [me, setMe] = useState<WhoAmI | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
   const [venues, setVenues] = useState<Venue[]>([]);
-  const [allMembers, setAllMembers] = useState<Record<string, Record<string, string>>>({});
   const [venue, setVenueState] = useState(
     () => localStorage.getItem(`${STORE}-venue`) ?? 'solna',
   );
-  const [who, setWho] = useState(() => localStorage.getItem(STORE) ?? 'elin');
   const [tab, setTab] = useState<Tab>(() => (urlParam('tab') as Tab) ?? 'book');
   const [tz, setTz] = useState('Europe/Stockholm');
 
+  /**
+   * Which identity load is the current one.
+   *
+   * Every answer here is scoped to a club, so an answer is only good for the club that
+   * asked. Switch twice quickly and the two `whoami` calls race: the first club's
+   * reply can land second and leave its `memberId` sitting under the second club's
+   * name — which is precisely the cross-club read `pickVenue` exists to prevent. The
+   * responses cannot be cancelled, so the newest load takes a ticket and a reply that
+   * no longer holds the ticket is dropped.
+   */
+  const identitySeq = useRef(0);
+
+  /**
+   * Re-ask who the caller is HERE. Switching club changes which principal you are and
+   * which member record is yours; accepting an invitation changes whether you have one
+   * at all. Both are the same question asked again.
+   */
+  const refreshIdentity = useCallback(async (): Promise<void> => {
+    const seq = ++identitySeq.current;
+    const [who, v] = await Promise.allSettled([api.whoami(), api.venue()]);
+    if (seq !== identitySeq.current) return;
+    if (v.status === 'fulfilled') setTz(v.value.venue.timezone);
+    setMe(who.status === 'fulfilled' ? who.value : null);
+    // Whether there is an answer at all is the same question the boot load asks, so it
+    // gets the same answer. `ready` IS `me !== null`, so a refusal that only cleared
+    // `me` would park the app on "Laddar…" for good — a spinner where the login button
+    // belongs. And the refusal is NOT narrowed to a 401: `authOf` throws
+    // `PermissionDenied` (403) for an absent session and for a login that is nobody at
+    // this club, deliberately indistinguishable, so keying on 401 would catch neither.
+    setSignedOut(who.status !== 'fulfilled');
+  }, []);
+
+  // The venue has to be applied BEFORE the state update that mounts the screens: React
+  // runs child effects before parent effects, so a screen mounted in the same commit
+  // would otherwise fire its first fetch against the wrong club.
   useEffect(() => {
-    void api.cast().then((r) => {
-      // Apply the principal BEFORE the state update that mounts the screens.
-      // React runs child effects before parent effects, so a screen mounted in
-      // this same commit would otherwise fire its first fetch with no
-      // x-principal header and take a 403.
-      const saved = localStorage.getItem(STORE) ?? 'elin';
-      const start = r.cast[saved] ? saved : (Object.keys(r.cast)[0] ?? '');
-      const p = r.cast[start]?.principal;
-      if (p) setPrincipal(p);
-      // A link's venue wins over the remembered one — you are being sent
-      // somewhere specific.
-      const fromLink = linkParams().venue;
-      const v = fromLink ?? localStorage.getItem(`${STORE}-venue`) ?? 'solna';
-      setVenue(v);
-      setVenueState(v);
-      setUrl({ venue: v });
-      setCast(r.cast);
-      setVenues(r.venues);
-      setAllMembers(r.members);
-      setWho(start);
-      if (p) void api.venue().then((v) => setTz(v.venue.timezone)).catch(() => {});
-    });
+    // A link's venue wins over the remembered one — you are being sent somewhere
+    // specific.
+    const v = linkParams().venue ?? localStorage.getItem(`${STORE}-venue`) ?? 'solna';
+    setVenue(v);
+    setVenueState(v);
+    setUrl({ venue: v });
+    void (async () => {
+      const seq = ++identitySeq.current;
+      try {
+        const list = await api.myVenues();
+        // Both reads are per venue, which is the whole of rally's shape: the same login
+        // is a different principal — and a different member — at each club.
+        const who = await api.whoami();
+        const zone = (await api.venue()).venue.timezone;
+        if (seq !== identitySeq.current) return;
+        // The switcher appears in the SAME commit as the identity it belongs to.
+        // Rendering it as soon as `myVenues` lands put a live club switcher above a
+        // screen still asking who you are — one click during that window and the
+        // in-flight answer for the old club would land last and stick.
+        setVenues(list);
+        setMe(who);
+        setTz(zone);
+      } catch {
+        if (seq !== identitySeq.current) return;
+        setSignedOut(true);
+      }
+    })();
   }, []);
 
   const pickVenue = useCallback((key: string) => {
@@ -103,29 +142,20 @@ export default function App() {
     // The club is part of what the URL identifies — a slot means nothing
     // without knowing which club's slot it is.
     setUrl({ venue: key, slot: null });
-    void api.venue().then((v) => setTz(v.venue.timezone)).catch(() => {});
-  }, []);
+    void refreshIdentity();
+  }, [refreshIdentity]);
 
   const goTab = useCallback((next: Tab) => {
     setTab(next);
     setUrl({ tab: next, slot: null });
   }, []);
 
-  const pickWho = useCallback(
-    (key: string) => {
-      const p = cast[key]?.principal;
-      if (p) setPrincipal(p);
-      localStorage.setItem(STORE, key);
-      setWho(key);
-      if (p) void api.venue().then((v) => setTz(v.venue.timezone)).catch(() => {});
-    },
-    [cast],
-  );
-  const pick = pickWho;
-
-  // A member record is per club — the same human, a different row in each.
-  const memberId = allMembers[venue]?.[who] ?? '';
-  const ready = Boolean(cast[who]);
+  // A member record is per club — the same human, a different row in each. It comes
+  // from `rally/whoami` now: the login's own row, found through `principal_ref`. It used
+  // to come from a hardcoded persona → member map the dev server shipped in `/api/cast`,
+  // which is why the player app worked here and nowhere else.
+  const memberId = me?.memberId ?? '';
+  const ready = me !== null;
   const [invite, setInvite] = useState<string | null>(() => linkParams().match);
   const [join, setJoin] = useState<string | null>(() => linkParams().join);
 
@@ -139,8 +169,28 @@ export default function App() {
           onDone={() => {
             setUrl({ join: null });
             setJoin(null);
+            // Accepting is what made them a member, so the answer this app booted with
+            // is now out of date: `me.memberId` is still null, and the club they just
+            // joined would greet them with the "you are nobody here" screen until a
+            // reload. Ask again on the way out.
+            void refreshIdentity();
           }}
         />
+      </div>
+    );
+  }
+
+  // Signed out: the whole app is behind the issuer. The join-by-link screens above are
+  // deliberately NOT — a recipient is by definition not a member yet.
+  if (signedOut) {
+    return (
+      <div className="phone">
+        <div className="empty">
+          <p>Logga in för att fortsätta.</p>
+          <button className="pill on" onClick={() => auth.login('/')}>
+            Logga in
+          </button>
+        </div>
       </div>
     );
   }
@@ -154,9 +204,6 @@ export default function App() {
           tz={tz}
           memberId={memberId}
           ready={ready}
-          who={who}
-          cast={cast}
-          onPick={pickWho}
           onDone={() => {
             setUrl({ match: null, tab: 'mine' });
             setInvite(null);
@@ -172,13 +219,9 @@ export default function App() {
       <div className="topbar">
         <span className="brand-mark" />
         <span className="wordmark">RALLYPOINT</span>
-        <select className="who" value={who} onChange={(e) => pick(e.target.value)}>
-          {Object.entries(cast).map(([k, m]) => (
-            <option key={k} value={k}>
-              {m.name}
-            </option>
-          ))}
-        </select>
+        <button className="who" onClick={() => auth.logout()}>
+          Logga ut
+        </button>
       </div>
 
       {venues.length > 1 && (
@@ -209,7 +252,7 @@ export default function App() {
           <Matches key={venue} tz={tz} memberId={memberId} />
         )}
         {ready && memberId && tab === 'mine' && <Mine key={venue} tz={tz} />}
-        {ready && tab === 'me' && <Me who={cast[who]!} memberId={memberId} />}
+        {ready && tab === 'me' && <Me role={me.role} memberId={memberId} />}
       </div>
 
       <nav className="nav" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
@@ -797,16 +840,15 @@ function Matches({ tz, memberId }: { tz: string; memberId: string }) {
 }
 
 /**
- * The screen a shared link lands on. Per the handover (1m/2f): the match is
- * shown FIRST — you decide whether you care before you are asked who you are —
- * and a link that can no longer be taken says so plainly instead of failing.
- */
-/**
- * A club invitation, opened from the link the desk copied. No persona picker
- * here: the whole point is that the recipient is not a member yet. The email
- * field is the proof — the engine re-hashes it against what the club entered,
- * so the invitation id alone opens nothing. (With a real login session the
- * server uses the session's verified email and the field is belt-and-braces.)
+ * A club invitation, opened from the link the desk copied. No persona picker here:
+ * the whole point is that the recipient is not a member yet. What the acceptance is
+ * checked against is the email in the recipient's OWN verified token — the engine
+ * re-hashes it against what the club entered — so the invitation id alone opens
+ * nothing, and this screen asks for no email of its own.
+ *
+ * Which is why it has to be able to send them to sign in: this is the one screen the
+ * app renders while signed out, and the identity it runs on is the one thing it
+ * cannot supply itself.
  */
 function AcceptClubInvite({
   invitationId,
@@ -815,8 +857,7 @@ function AcceptClubInvite({
   invitationId: string;
   onDone: () => void;
 }) {
-  const [email, setEmail] = useState('');
-  const [state, setState] = useState<'asking' | 'accepted' | 'refused'>('asking');
+  const [state, setState] = useState<'asking' | 'accepted' | 'refused' | 'signed-out'>('asking');
 
   const shell = (body: React.ReactNode) => (
     <div className="scroll" style={{ background: 'var(--ink)', minHeight: '100%' }}>
@@ -843,6 +884,28 @@ function AcceptClubInvite({
       </div>,
     );
 
+  // Signed out is not a refusal, and saying so is the whole point of separating them:
+  // the link is fine, the club is expecting them, they simply have not said who they
+  // are yet. Coming back to THIS url — invitation id and venue included — is what makes
+  // the round-trip land on the invitation again rather than on an empty app.
+  if (state === 'signed-out')
+    return shell(
+      <div className="card">
+        <h2>Logga in för att tacka ja</h2>
+        <p className="meta">
+          Klubben kontrollerar inbjudan mot adressen du loggar in med. Logga in med den
+          adress inbjudan skickades till.
+        </p>
+        <button
+          className="cta"
+          style={{ marginTop: 12 }}
+          onClick={() => auth.login(`${location.pathname}${location.search}`)}
+        >
+          Logga in
+        </button>
+      </div>,
+    );
+
   if (state === 'refused')
     return shell(
       <div className="card">
@@ -864,24 +927,26 @@ function AcceptClubInvite({
   return shell(
     <div className="card">
       <h2>Du är inbjuden</h2>
+      {/*
+        No email field any more, and its absence is the point. What the club checks the
+        acceptance against is the address in your OWN verified token — so typing one here
+        could only ever be a second, ignorable answer to a question the issuer already
+        settled. It used to be the field the check actually ran on.
+      */}
       <p className="meta">
-        En klubb har bjudit in dig som spelare. Ange e-postadressen som inbjudan skickades till.
+        En klubb har bjudit in dig som spelare. Logga in med den adress inbjudan skickades
+        till — det är den klubben kontrollerar.
       </p>
-      <input
-        type="email"
-        placeholder="E-post"
-        value={email}
-        onChange={(e) => setEmail(e.target.value)}
-        style={{ width: '100%', marginTop: 10 }}
-      />
       <button
         className="cta"
         style={{ marginTop: 10 }}
-        disabled={!email}
         onClick={() =>
-          acceptInvite(invitationId, email).then(
+          acceptInvite(invitationId).then(
             () => setState('accepted'),
-            () => setState('refused'),
+            (e: unknown) =>
+              // 401 is the server saying "I do not know who you are" — a question this
+              // screen can answer. Everything else is about the invitation itself.
+              setState(e instanceof ApiError && e.status === 401 ? 'signed-out' : 'refused'),
           )
         }
       >
@@ -891,23 +956,22 @@ function AcceptClubInvite({
   );
 }
 
+/**
+ * The screen a shared match link lands on. Per the handover (1m/2f): the match is
+ * shown FIRST — you decide whether you care before you are asked who you are — and a
+ * link that can no longer be taken says so plainly instead of failing.
+ */
 function JoinByLink({
   reservationId,
   tz,
   memberId,
   ready,
-  who,
-  cast,
-  onPick,
   onDone,
 }: {
   reservationId: string;
   tz: string;
   memberId: string;
   ready: boolean;
-  who: string;
-  cast: Record<string, CastMember>;
-  onPick: (k: string) => void;
   onDone: () => void;
 }) {
   // `null` from the API is mapped straight to 'missing', so it never lands here.
@@ -1024,26 +1088,23 @@ function JoinByLink({
 
       {!dead && (
         <>
-          {/* Stands in for sign-in: you are asked who you are only once you have
-              seen what you are being asked to join. */}
-          <div className="card">
-            <h2>Vem är du?</h2>
-            <select
-              className="who"
-              style={{ width: '100%', marginTop: 8, marginLeft: 0 }}
-              value={who}
-              onChange={(e) => onPick(e.target.value)}
-            >
-              {Object.entries(cast).map(([k, c]) => (
-                <option key={k} value={k}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
-            {!memberId && (
-              <p className="legend">Du är inte medlem i {m.venueName} — välj någon annan.</p>
-            )}
-          </div>
+          {/* Sign-in comes AFTER the landing, deliberately: you see what you are being
+              asked to join before you are asked who you are. The picker that used to sit
+              here was the persona list, which is not a sign-in — it was a way to become
+              anybody. */}
+          {!ready && (
+            <div className="card">
+              <h2>Vem är du?</h2>
+              <button className="cta" style={{ marginTop: 8 }} onClick={() => auth.login(location.pathname + location.search)}>
+                Logga in för att gå med
+              </button>
+            </div>
+          )}
+          {ready && !memberId && (
+            <div className="card">
+              <p className="legend">Du är inte medlem i {m.venueName}.</p>
+            </div>
+          )}
 
           <button
             className="cta"
@@ -1103,7 +1164,7 @@ function Roster({ players, fillTarget }: { players: RosterEntry[]; fillTarget: n
   );
 }
 
-function Me({ who, memberId }: { who: CastMember; memberId: string }) {
+function Me({ role, memberId }: { role: WhoAmI['role']; memberId: string }) {
   const [people, setPeople] = useState<PlayedWith[]>([]);
   const [clubs, setClubs] = useState<Club[]>([]);
 
@@ -1116,8 +1177,10 @@ function Me({ who, memberId }: { who: CastMember; memberId: string }) {
     <>
       <h1>Profil</h1>
       <div className="card">
-        <h2>{who.name}</h2>
-        <p className="meta">Roll i demot: {who.role}</p>
+        {/* The role comes from the KERNEL now — probed from this login's own grants at
+            this club — rather than from a persona table that said the same thing
+            everywhere. `none` is a real answer: a login with no standing here. */}
+        <p className="meta">Roll i klubben: {role}</p>
       </div>
 
       <div className="card">

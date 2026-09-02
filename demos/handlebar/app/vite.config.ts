@@ -13,7 +13,20 @@ export default defineConfig({
   server: {
     port: WEB_PORT,
     proxy: {
-      '/api': `http://localhost:${API_PORT}`,
+      '/api': {
+        target: `http://localhost:${API_PORT}`,
+        /**
+         * Explicitly false, and it has to be said out loud — ticket0 carries the same
+         * note for the same reason.
+         *
+         * The API derives its OIDC `redirect_uri` from the Host header it receives, so
+         * a rewritten Host sends the login callback to the API's own port — where the
+         * app is not — and the round-trip ends on a 404. Vite's shorthand string form
+         * rewrote it, which is why this is the object form with the flag written down
+         * rather than left to a default.
+         */
+        changeOrigin: false,
+      },
     },
   },
 });

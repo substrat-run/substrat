@@ -6,10 +6,10 @@ description: Remove the credential store from the verticals.
 
 # OIDC-only demos: remove the credential store from the verticals
 
-**Status:** **built** — Callout, Meridian, Manyfold, Todo, ticket0 and Shop are OIDC-only
+**Status:** **built** — every demo vertical is OIDC-only
 **Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`; later `demos/todo`,
-`demos/ticket0`, `demos/shop`
-**Author:** design pass, 2026-08-04 · shop added 2026-09-01
+`demos/ticket0`, `demos/shop`, `demos/handlebar`, `demos/rally`
+**Author:** design pass, 2026-08-04 · shop, handlebar and rally added 2026-09-01
 
 ## Motivation
 
@@ -85,6 +85,77 @@ every request from a self-service shopper minted another principal and another c
 row. One provider constant on both sides is what fixes it. The provider is now named for
 the POOL (`oidc:<slug>`) rather than for whatever issuer currently fills it — a string
 carrying the issuer's name orphans every link in the directory the day the issuer changes.
+
+## Handlebar, added later — the deferral resolved
+
+Handlebar was deferred above because `/api/cast` was answering a domain question: it filled
+the **mechanic dropdown** on the assign action, and there was no `whoami` for the
+staff-vs-portal chrome. Both turned out to be smaller than the deferral assumed.
+
+**The chrome half needed no new surface.** `bike-shop/whoami` is callout's operation with
+handlebar's vocabulary — ungated (answering "what may I do" must work for a principal who
+may do nothing), and derived by probing the caller's OWN grants through `ctx.check`. No new
+permission key, so no permission-diff checkpoint. Portal is decided by EXCLUSION, which is
+true whoever is asking; the persona table's `role: 'portal'` was true only locally.
+
+**The dropdown half was already answered, by callout.** Callout hit the identical problem
+and resolved it by degrading the picker to a free-text field with a note, deferring the real
+list to "a members API of its own". Handlebar takes the same treatment. The dropdown was not
+merely local-only — it rendered EMPTY in any hosted install, so assignment was impossible
+there. A field that says what it is beats a picker that works in one environment.
+
+So no staff table, no migration, and no new permission key: the deferral was about surface
+that a second look showed nobody needed.
+
+### An unrelated bug this surfaced
+
+Driving handlebar's HTTP path — which the migration requires and the scenario suite does not
+do — turned up `GET /api/customers` answering **400 `NotListable`** on every call. The Kunder
+screen has never worked. `bike-shop/list-customers` declares `paged.over`, but the manifest
+never called `listsDeclaredBy()`, so nothing carried that declaration to the kernel and the
+declaration was decorative. Every other vertical and engine in the workspace already had the
+line. Fixed here, because a migration that leaves a main screen broken has not been verified.
+
+**Callout has the same gap** and is not fixed here.
+
+## Rally, added last — the deferral was real, and cost one column
+
+Rally was the only one of the three whose deferral held up: the player app centres on a
+`memberId`, and there was genuinely no way for a signed-in player to find their own.
+`rally_members.party_ref` is a `dataSubjectId` — it ties the same human's member records
+together ACROSS clubs, which is a different question from "which login is this" — and
+`rally/list-members` requires `manage-members`, which a player deliberately does not hold.
+The dev server papered over it by shipping a hardcoded persona → member map inside
+`/api/cast`, so the player app was correct here and broken anywhere else.
+
+**The seam is one nullable column.** Migration `0003-member-principal` adds
+`principal_ref` to `rally_members`, `rally/create-member` takes an optional `principalRef`
+(additive, behaviour-preserving), and `rally/whoami` returns the caller's own row. It stays
+nullable on purpose: a member registered at the desk for someone who has never signed in has
+no principal yet, and that is a normal state rather than a value to backfill. It is the
+LOGIN that is optional here, not the member.
+
+**Resolution is per venue, and that is rally's whole shape.** Clubs are tenants, the pool is
+central, and one login is legitimately a different principal — and a different member — at
+each club. So this vertical uses `login.subject` plus its own
+`resolveIdentity(venue.tenantId, …)`, never `login.caller`, which answers "which tenant is
+this login in" by taking the first. Two routes had to learn the same lesson: `/api/my-venues`
+resolved once and probed every club with that one principal, which the `x-principal` header
+had made invisible because the header named a principal directly and no tenant was ever
+consulted.
+
+### Two things that got stricter on the way
+
+`/api/invites/accept` used to take the identifier it is checked against **from the request
+body** on the dev-header path. The proof now comes from the caller's own verified token and
+nowhere else, so an acceptor cannot name the address they are being checked against. The
+player app's "type the email you were invited as" field is gone with it — it could only ever
+have been a second, ignorable answer to a question the issuer already settled.
+
+`/api/clubs` used to call the venue-scoped resolver, which demands a principal in the
+selected venue's tenant. The club directory is the one read for which that is the wrong
+question: someone browsing for a club to join is by definition not in it yet. It now
+requires only a valid session.
 
 ## `packages/vertical-auth`
 
