@@ -1,5 +1,31 @@
 # @substrat-run/contract-tests
 
+## 0.97.0
+
+### Minor Changes
+
+- 59121f6: A paged read can narrow on a SET of values, not only on one.
+
+  `ctx.page` filters composed `column = ?` and nothing else, so "every state but the
+  terminal one" — the shape every inbox wants for its default view — could not be asked
+  for at all. The alternatives were one request per state, whose pages cannot be merged
+  into a single walk, or a `!=`, which would make `filterable` mean something wider than
+  the indexed equality it provisions for.
+
+  A filter value that is an array now composes `IN (…)`. It is still equality, so it still
+  uses the index `filterable` provisions, and the count runs over the same `WHERE` as the
+  page. An EMPTY array matches no rows rather than being dropped: a caller that narrowed to
+  nothing asked for nothing, and handing back the whole table instead is a permission-shaped
+  bug wherever the set is computed from what the reader may see. Both adapters are held to
+  this by the `ctx.page` contract suite.
+
+### Patch Changes
+
+- Updated dependencies [9fcfebc]
+- Updated dependencies [59121f6]
+  - @substrat-run/contracts@0.97.0
+  - @substrat-run/kernel@0.97.0
+
 ## 0.96.0
 
 ### Patch Changes
@@ -3469,7 +3495,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

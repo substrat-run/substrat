@@ -579,6 +579,24 @@ type OperationShape<O, Entities, Engines, PermKey extends string> = {
     readonly path: CheckedPath<O>;
   };
   /**
+   * This operation's MCP rendering (#112) — the ONE knob, and it is optional.
+   *
+   * An operation that declares `http` is a tool, because `http` already says it faces
+   * the network; there is no `mcp: true`, and a new vertical writes nothing here. Two
+   * things a declaration cannot derive:
+   *
+   * - `false` — **never a tool, for anyone**. The recording and service operations a
+   *   harness calls on its own behalf (`record-answer` and its siblings) are reachable
+   *   over HTTP because a connector posts to them, and are noise in an agent's tool
+   *   list. This is declaration-time curation, and it is the only kind that belongs in
+   *   a model: which tools a given CONSUMER wants is a fact about the consumer (#111),
+   *   not about the operation.
+   * - `description` — what the MODEL is told. `summary` is written for an API document
+   *   ("The desk's settings") and answers "what is this", where tool selection needs
+   *   "when would I reach for this". Say more only where the difference bites.
+   */
+  readonly mcp?: false | { readonly description?: string };
+  /**
    * This read returns a PAGE, not the whole table (#811, #129).
    *
    * A list endpoint that returns everything is a bug with a delay on it: it passes

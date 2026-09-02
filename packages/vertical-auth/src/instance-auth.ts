@@ -130,6 +130,34 @@ export function parseAuthChoice(raw: string | undefined): AuthChoice | null {
  * for a provider it did not finish configuring, which is an operator's mistake, not a
  * tenant's missing choice.
  */
+/**
+ * Which authorization server issues access tokens for this instance (RFC 9728).
+ *
+ * The `authorizationServers` an MCP endpoint publishes, so a client that gets a 401 can
+ * find the issuer instead of being handed a token by hand. Same question
+ * `selectAuthProvider` answers, minus the provider: which issuer did this instance's
+ * configuration select.
+ *
+ * **Never throws.** `selectAuthProvider` refuses a half-configured instance because a
+ * request cannot proceed without a provider; discovery metadata is a description, and an
+ * instance nobody has configured a login for truthfully has no authorization server. It
+ * returns `[]`, and the document omits the field rather than naming an issuer that is
+ * not there.
+ *
+ * It MIRRORS the precedence above — delivered `substrat:auth` first, deployment default
+ * second — and `test/instance-auth.test.ts` pins the two together, because a second
+ * description of one fact is only safe while something refuses to let them disagree.
+ */
+export function authorizationServersOf(opts: {
+  identity: AuthChoice | null;
+  settings: Record<string, string | undefined>;
+}): string[] {
+  const { identity, settings } = opts;
+  if (identity?.mode === 'oidc') return identity.issuer ? [identity.issuer] : [];
+  if (settings.AUTH_PROVIDER === 'oidc') return settings.OIDC_ISSUER ? [settings.OIDC_ISSUER] : [];
+  return [];
+}
+
 export function selectAuthProvider(opts: {
   identity: AuthChoice | null;
   sessionSecret: string;

@@ -256,15 +256,6 @@ importers:
       '@substrat-run/demo-callout':
         specifier: workspace:^
         version: link:../../demos/callout
-      '@substrat-run/demo-manyfold':
-        specifier: workspace:^
-        version: link:../../demos/manyfold
-      '@substrat-run/demo-meridian':
-        specifier: workspace:^
-        version: link:../../demos/meridian
-      '@substrat-run/engine-absence':
-        specifier: workspace:^
-        version: link:../../engines/absence
       '@substrat-run/engine-invites':
         specifier: workspace:^
         version: link:../../engines/invites
@@ -299,6 +290,12 @@ importers:
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite
+      '@substrat-run/demo-meridian':
+        specifier: workspace:^
+        version: link:../../demos/meridian
+      '@substrat-run/engine-absence':
+        specifier: workspace:^
+        version: link:../../engines/absence
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

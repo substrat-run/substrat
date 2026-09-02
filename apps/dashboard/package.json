@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/dashboard",
-  "version": "0.28.13",
+  "version": "0.28.14",
   "private": true,
   "substrat": {
     "permissions": "src/provision.ts"
@@ -21,9 +21,6 @@
     "@substrat-run/adapter-email": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/demo-callout": "workspace:^",
-    "@substrat-run/demo-manyfold": "workspace:^",
-    "@substrat-run/demo-meridian": "workspace:^",
-    "@substrat-run/engine-absence": "workspace:^",
     "@substrat-run/engine-invites": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",
     "@substrat-run/engine-protocol": "workspace:^",
@@ -37,6 +34,8 @@
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/demo-meridian": "workspace:^",
+    "@substrat-run/engine-absence": "workspace:^",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

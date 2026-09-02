@@ -76,7 +76,12 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   `range:` is half-open Monday-to-Monday (`2026-08-17..2026-08-24`, end excluded) because
   a git range wants it that way, while the H1 is prose and inclusive ("17–23 August 2026").
   They are supposed to differ by a day; `--check` derives one from the other and refuses if
-  they part company, so nobody "fixes" the gap again (#988). The prose
+  they part company, so nobody "fixes" the gap again (#988). `--check` also refuses on a
+  **missing week**, which coverage-inside-a-range cannot see: the entries must form a
+  contiguous run of **settled** weeks, a week being settled once the week after it has
+  ended too. That exempts the newest complete week by construction, so the gate never
+  argues with the parking rule below — the price is that an absent week is reported up to
+  two weeks late, which is the only clock-dependent answer in the tool. The prose
   is written for a **platform user** — what changed for them, no PR references — so
   each entry accounts for its merges in a coverage-ledger HTML comment at the end.
   The prose is authored, not generated, and deliberately carries none of the three marks

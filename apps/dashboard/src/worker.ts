@@ -1,13 +1,19 @@
 /**
  * The Dashboard — the tenant-facing self-service surface, as a Cloudflare Worker.
- * See docs/architecture/dashboard.md. M0: sign up → your own tenant is bootstrapped →
+ * See docs/architecture/dashboard.md. Sign up → your own tenant is bootstrapped →
  * create an app (a scope running a vertical, in YOUR tenant) → list your apps.
  *
  * The tenant is never a request argument: it is the account the authenticated user
- * owns, so a caller can only ever provision into their own tenant (§4). For M0 the
- * apps run in THIS deployment (the ScopeDO bundles the app verticals); in
- * production each app is a separate vertical deployment reached via the control
- * plane.
+ * owns, so a caller can only ever provision into their own tenant (§4).
+ *
+ * There is exactly ONE mode: **connected**. Every app is a separate vertical
+ * deployment, provisioned and read through the shared control plane over the
+ * `CONTROL_PLANE_SVC` service binding. The old "M0 embedded" path — where this
+ * worker bundled the app verticals and their engines into its own ScopeDO — is
+ * gone (#978): the dashboard is the one PRIVILEGED deployment, so it must not
+ * carry vertical module code, and per master-plan D-33 a demo is a template that
+ * is COPIED, not imported. This deployment's ScopeDO now runs the dashboard
+ * vertical and nothing else.
  */
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -17,27 +23,13 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
-import { protocolModule } from '@substrat-run/engine-protocol';
-import { absenceModule } from '@substrat-run/engine-absence';
-import { workorderModule } from '@substrat-run/engine-workorder';
-import { invoicingModule } from '@substrat-run/engine-invoicing';
-import { invitesModule } from '@substrat-run/engine-invites';
-// The worker-safe subpath: the Callout domain module + perms only, never the demo's
-// seed/auth (node + better-auth). M0 bundles the vertical here as a stand-in; the
-// production model deploys Callout separately (dashboard.md §6) and — per master-plan
-// D-33 — a demo is a template that is COPIED, not imported. This import is the M0 seam.
-import { calloutModule } from '@substrat-run/demo-callout/module';
-// The worker-safe subpath of the Meridian (HR) vertical: its domain module only, never
-// the demo's node/better-auth seed. M0 bundles it here, same seam as Callout.
-import { meridianModule } from '@substrat-run/demo-meridian/module';
-import { manyfoldModule } from '@substrat-run/demo-manyfold/module';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow } from './module.js';
-import { createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
+import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
-import { listDeploymentsFromCp, listDeploymentsFromHost, verticalDeploymentFromCp, verticalDeploymentFromHost, verticalDeploymentPageFromCp, verticalDeploymentPageFromHost, versionRegistryFromHost, versionAssetsFromHost, assertOwned } from './deployments.js';
+import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -69,14 +61,11 @@ const teamCookieOpts = (origin: string) => ({
   maxAge: TEAM_COOKIE_MAXAGE,
 });
 
-// The app binary: the Dashboard vertical + the verticals an app can run. M0 bundles
-// the app verticals into this deployment's ScopeDO (see the file header), so every
-// module a catalog entry needs must be here: Documents (protocol), Callout — the
-// field-service vertical composing workorder + invoicing + protocol — and Meridian,
-// the HR vertical (it composes protocol for onboarding and absence for the
-// leave ledger since the #634 extraction; absence must register BEFORE meridian
-// so its tables exist when meridian's 0003 handoff migration runs).
-const MODULES = [dashboardModule, invitesModule, protocolModule, absenceModule, workorderModule, invoicingModule, calloutModule, meridianModule, manyfoldModule];
+// The app binary: the Dashboard vertical, and ONLY the Dashboard vertical. `MODULES`
+// is `provision.ts`'s — the same list the permission artifact is rendered from — so
+// what this DO runs and what `PERMISSIONS.md` documents can no longer drift. A
+// customer's app is its own deployment reached through the control plane; the
+// verticals an app can run are never bundled here (#978, D-33).
 export const ScopeDO = defineScopeDO(MODULES, {});
 export { ControlPlaneDO };
 
@@ -91,13 +80,14 @@ interface Env extends OidcEnv {
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /**
-   * CONNECTED mode (production): a service binding to `substrat-control-plane` — the
-   * shared directory the router reads. When bound (with a service token), apps are
-   * provisioned there through the tenant-narrowed seam (§4) so they are REACHABLE,
-   * rather than into this deployment's own DOs. Absent ⇒ the M0 embedded path.
+   * REQUIRED: a service binding to `substrat-control-plane` — the shared directory
+   * the router reads. Apps are provisioned there through the tenant-narrowed seam
+   * (§4) so they are REACHABLE. There is no fallback: a deployment missing this
+   * binding (or `CP_SERVICE_TOKEN`) fails the request loudly rather than quietly
+   * provisioning into its own DOs, where nothing could route to it (#978).
    */
   CONTROL_PLANE_SVC?: Fetcher;
-  /** Shared service credential the control plane resolves to its service actor. */
+  /** Shared service credential the control plane resolves to its service actor. Required. */
   CP_SERVICE_TOKEN?: string;
   /** The platform actor id stamped on shared-plane writes (a fixed dashboard actor). */
   CP_ACTOR?: string;
@@ -159,12 +149,21 @@ interface Env extends OidcEnv {
 const DASHBOARD_CP_ACTOR = platformActorId.parse('01JZ000000000000000000DASH');
 
 /**
- * The tenant-narrowed control-plane seam for a caller (§4), or `null` in embedded
- * mode. The tenant is pinned to the caller's own — read from their dashboard node,
- * never a request argument — so provisioning cannot escape their tenant.
+ * The tenant-narrowed control-plane seam for a caller (§4). The tenant is pinned to
+ * the caller's own — read from their dashboard node, never a request argument — so
+ * provisioning cannot escape their tenant.
+ *
+ * The binding is REQUIRED (#978). It used to be optional, and its absence selected a
+ * second, embedded mode; every surface then carried two arms and the quiet one wrote
+ * into DOs nothing could route to. A misconfigured deployment now says so — loudly,
+ * on the first request that needs the plane — instead of half-working.
  */
-function controlPlaneFor(env: Env, tenantId: DashboardNode['tenantId']): TenantNarrowedControlPlane | null {
-  if (!env.CONTROL_PLANE_SVC || !env.CP_SERVICE_TOKEN) return null;
+function controlPlaneFor(env: Env, tenantId: DashboardNode['tenantId']): TenantNarrowedControlPlane {
+  if (!env.CONTROL_PLANE_SVC || !env.CP_SERVICE_TOKEN) {
+    throw new HTTPException(503, {
+      message: 'the dashboard is not connected to the control plane — bind CONTROL_PLANE_SVC and set CP_SERVICE_TOKEN',
+    });
+  }
   return new TenantNarrowedControlPlane({
     // Host is ignored over a service binding; the control-plane API mounts at `/api`.
     baseUrl: 'https://control-plane/api',
@@ -242,7 +241,7 @@ export class GithubRepoLinkDO extends DurableObject<Env> {
     const cp = controlPlaneFor(this.env, link.tenantId);
     const cfg = githubConfig(this.env);
     // One CP read serves every open PR; a CP hiccup just means the next tick retries.
-    const previews: PreviewRecord[] = cp ? await cp.listPreviews(link.slug).catch(() => []) : [];
+    const previews: PreviewRecord[] = await cp.listPreviews(link.slug).catch(() => []);
     let remaining = 0;
     for (const [key, poll] of polls) {
       const prNumber = Number(key.slice('poll:'.length));
@@ -270,7 +269,6 @@ export class GithubRepoLinkDO extends DurableObject<Env> {
   /** Close ⇒ delete the CP forks; the comment flips to "reaped" only if one existed. */
   private async reap(link: RepoLink, prNumber: number, installationId: string): Promise<void> {
     const cp = controlPlaneFor(this.env, link.tenantId);
-    if (!cp) return;
     let deleted: string | null = null;
     try {
       ({ deleted } = await cp.deletePreview(link.slug, previewTag(prNumber)));
@@ -332,7 +330,6 @@ function repoLinkStub(env: Env, repoFullName: string): RepoLinkStub {
  */
 async function mirrorBuilderIdentity(env: Env, host: ScopeHost, userId: string, t: TenantId): Promise<void> {
   const cp = controlPlaneFor(env, t);
-  if (!cp) return;
   try {
     const team = await host.admin.getTenant(STAFF, t);
     if (!team || team.status !== 'active') return;
@@ -605,11 +602,11 @@ function resolveAuthChoice(
  */
 async function oidcProviderSlugsFor(
   host: ReturnType<typeof hostFor>,
-  cp?: TenantNarrowedControlPlane | null,
+  cp: TenantNarrowedControlPlane,
 ): Promise<Set<string>> {
   await ensureCatalog(host, STAFF);
   const local = await host.admin.listVerticals(STAFF);
-  const remote = cp ? await cp.listCatalog().catch(() => []) : [];
+  const remote = await cp.listCatalog().catch(() => []);
   return oidcIssuerProviderSlugs(local, remote);
 }
 
@@ -638,14 +635,6 @@ const app = new Hono<{ Bindings: Env }>();
 mountOidcRoutes(app);
 
 /**
- * The catalog — the verticals you can instantiate, from the registry. In CONNECTED
- * mode (a shared control plane is bound) we only advertise verticals that plane can
- * actually provision (`connected !== false`); offering one it can't would hand the
- * user a marketplace tile whose install always 501s. Embedded/standalone bundles every
- * module in-process, so it lists them all. Mode is detected exactly as provisioning is
- * (`controlPlaneFor`): both keys present ⇒ connected.
- */
-/**
  * A vertical's install specifics — REGISTRY-DRIVEN (marketplace-publish.md §3): read
  * `entitlements`/`ownerGrants` off the registry row (carried on push from the manifest), with
  * the hardcoded `CATALOG` as the fallback for a first-party not yet re-seeded. Throws 400 if the
@@ -654,7 +643,7 @@ mountOidcRoutes(app);
 async function installSpecFor(
   host: ReturnType<typeof hostFor>,
   slug: string,
-  cp?: TenantNarrowedControlPlane | null,
+  cp: TenantNarrowedControlPlane,
 ): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[]; envSpec: EnvVarSpec[] }> {
   await ensureCatalog(host, STAFF);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === slug);
@@ -669,10 +658,10 @@ async function installSpecFor(
       envSpec: registered?.envSpec ?? cat?.envSpec ?? [],
     };
   }
-  // Connected mode: a pushed vertical registers on the SHARED plane, not this deployment's
-  // own registry — read its install spec from there (visibility-filtered to published + the
-  // caller's own, so a private slug from another tenant stays unknown here).
-  const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === slug) : undefined;
+  // A pushed vertical registers on the SHARED plane, not this deployment's own registry
+  // — read its install spec from there (visibility-filtered to published + the caller's
+  // own, so a private slug from another tenant stays unknown here).
+  const remote = (await cp.listCatalog()).find((v) => v.slug === slug);
   if (!remote) throw new HTTPException(400, { message: `unknown vertical '${slug}'` });
   return {
     entitlements: installEntitlements(slug, remote.entitlements),
@@ -687,9 +676,10 @@ app.get('/api/catalog', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   await ensureCatalog(host, STAFF);
   const rows = availableCatalog(await host.admin.listVerticals(STAFF), { tenantId: node?.tenantId ?? null });
-  // Connected mode: pushed verticals live in the SHARED plane's registry, not this
-  // deployment's own — merge the caller's own + published ones in. Local wins on a shared
-  // slug: the builtin seed here is refreshed each boot, the plane's copy may lag.
+  // Pushed verticals live in the SHARED plane's registry, not this deployment's own —
+  // merge the caller's own + published ones in. Local wins on a shared slug: the builtin
+  // seed here is refreshed each boot, the plane's copy may lag. The seam is tenant-narrowed,
+  // so a caller with no session has none — they see the published builtins and no more.
   const cp = node ? controlPlaneFor(c.env, node.tenantId) : null;
   if (cp) {
     for (const v of await cp.listCatalog()) {
@@ -707,16 +697,17 @@ app.get('/api/catalog', async (c) => {
       }
     }
   }
-  // Installability: a builtin is bundled (embedded) or statically bound/promoted on the
-  // plane; a pushed vertical is installable only once a version is PROMOTED TO PROD —
-  // offering it earlier would sell an install that fails at provision time. The UI shows
-  // a not-yet-promoted owned vertical disabled, pointing at the Verticals page.
+  // Installability: a builtin is statically bound or promoted on the plane; a pushed
+  // vertical is installable only once a version is PROMOTED TO PROD — offering it earlier
+  // would sell an install that fails at provision time. The UI shows a not-yet-promoted
+  // owned vertical disabled, pointing at the Verticals page. Without a session there is no
+  // plane seam to ask, and every row a sessionless caller sees is a published builtin.
   const catalog = await Promise.all(
     rows.map(async (v) => ({
       ...v,
       installable:
         v.source === 'builtin' ||
-        (cp ? await cp.listChannels(v.slug) : await host.admin.listChannels(STAFF, v.slug)).some((ch) => ch.channel === 'prod'),
+        (cp !== null && (await cp.listChannels(v.slug)).some((ch) => ch.channel === 'prod')),
     })),
   );
   return c.json(catalog);
@@ -870,7 +861,7 @@ app.post('/api/teams/delete', async (c) => {
   // shared-plane scopes archive and hostnames stop resolving. Best-effort per app:
   // one stuck app must not leave the rest running.
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const cp = controlPlaneFor(c.env, node.tenantId) ?? undefined;
+  const cp = controlPlaneFor(c.env, node.tenantId);
   for (const a of apps) {
     try {
       await deprovisionApp(host, {
@@ -887,7 +878,7 @@ app.post('/api/teams/delete', async (c) => {
     try {
       await host.admin.unlinkIdentity(STAFF, node.tenantId, principalId.parse(m.principal));
       // The shared plane's mirrored link goes with it (best-effort).
-      if (cp) await cp.unlinkIdentity(principalId.parse(m.principal));
+      await cp.unlinkIdentity(principalId.parse(m.principal));
     } catch {
       // an already-unlinked member (e.g. left earlier) is fine
     }
@@ -1168,55 +1159,53 @@ app.get('/api/apps', async (c) => {
   // platform-side) leaves it null forever while the router happily serves the app.
   // The directory is the source of truth for hostnames — join it for the gaps.
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (cp) {
-    for (const a of apps) {
-      const sid = scopeId.parse(a.app_scope_id);
-      // One directory read serves both heals below; null = "unknown, change nothing".
-      const dir = await cp.scopeStatus(sid);
-      // Reconcile a stale 'provisioning' row against the DIRECTORY — the source of
-      // truth (#424 case 4): a healed retry can complete the whole platform sequence
-      // without ever updating the dashboard's own record, which then spins forever.
-      // Old enough to not be a LIVE install (whose row flips via mark-app-active in
-      // seconds); directory 'active' ⇒ project it onto our row, hostname included.
-      // Best-effort: a viewer session lacks the mark-active permission — the invoke
-      // just fails and the row heals on an owner's next visit instead.
-      if (
-        dir?.status === 'active' &&
-        a.status === 'provisioning' &&
-        Date.parse(a.created_at) < Date.now() - RECONCILE_AFTER_MS
-      ) {
-        const live = (await cp.listHostnames(sid).catch(() => [])).find((h) => h.status === 'active');
-        const healed = (await dash
-          .invoke('dashboard/mark-app-active', {
-            appScopeId: a.app_scope_id,
-            ...(live ? { hostname: live.hostname } : {}),
-          })
-          .catch(() => null)) as DashboardAppRow | null;
-        if (healed) {
-          a.status = healed.status;
-          a.hostname = healed.hostname;
-        }
+  for (const a of apps) {
+    const sid = scopeId.parse(a.app_scope_id);
+    // One directory read serves both heals below; null = "unknown, change nothing".
+    const dir = await cp.scopeStatus(sid);
+    // Reconcile a stale 'provisioning' row against the DIRECTORY — the source of
+    // truth (#424 case 4): a healed retry can complete the whole platform sequence
+    // without ever updating the dashboard's own record, which then spins forever.
+    // Old enough to not be a LIVE install (whose row flips via mark-app-active in
+    // seconds); directory 'active' ⇒ project it onto our row, hostname included.
+    // Best-effort: a viewer session lacks the mark-active permission — the invoke
+    // just fails and the row heals on an owner's next visit instead.
+    if (
+      dir?.status === 'active' &&
+      a.status === 'provisioning' &&
+      Date.parse(a.created_at) < Date.now() - RECONCILE_AFTER_MS
+    ) {
+      const live = (await cp.listHostnames(sid).catch(() => [])).find((h) => h.status === 'active');
+      const healed = (await dash
+        .invoke('dashboard/mark-app-active', {
+          appScopeId: a.app_scope_id,
+          ...(live ? { hostname: live.hostname } : {}),
+        })
+        .catch(() => null)) as DashboardAppRow | null;
+      if (healed) {
+        a.status = healed.status;
+        a.hostname = healed.hostname;
       }
-      // Reconcile the row's LINEAGE against the directory (#389): a staff
-      // rebind-vertical moves the scope onto a different lineage (builtin
-      // 'manyfold' → tenant-owned 'acme/manyfold') and only the directory knows —
-      // the stale slug here misroutes the Update path (prod channels resolve by
-      // `vertical_slug`) and the version display. Best-effort like mark-app-active
-      // above: a viewer session lacks the permission and heals on an owner's visit.
-      if (dir?.vertical && a.vertical_slug && dir.vertical !== a.vertical_slug) {
-        const healed = (await dash
-          .invoke('dashboard/reconcile-app-vertical', {
-            appScopeId: a.app_scope_id,
-            verticalSlug: dir.vertical,
-          })
-          .catch(() => null)) as DashboardAppRow | null;
-        if (healed) a.vertical_slug = healed.vertical_slug;
-      }
-      if (a.hostname || a.status !== 'active') continue;
-      const live = (await cp.listHostnames(scopeId.parse(a.app_scope_id)).catch(() => []))
-        .find((h) => h.status === 'active');
-      if (live) a.hostname = live.hostname;
     }
+    // Reconcile the row's LINEAGE against the directory (#389): a staff
+    // rebind-vertical moves the scope onto a different lineage (builtin
+    // 'manyfold' → tenant-owned 'acme/manyfold') and only the directory knows —
+    // the stale slug here misroutes the Update path (prod channels resolve by
+    // `vertical_slug`) and the version display. Best-effort like mark-app-active
+    // above: a viewer session lacks the permission and heals on an owner's visit.
+    if (dir?.vertical && a.vertical_slug && dir.vertical !== a.vertical_slug) {
+      const healed = (await dash
+        .invoke('dashboard/reconcile-app-vertical', {
+          appScopeId: a.app_scope_id,
+          verticalSlug: dir.vertical,
+        })
+        .catch(() => null)) as DashboardAppRow | null;
+      if (healed) a.vertical_slug = healed.vertical_slug;
+    }
+    if (a.hostname || a.status !== 'active') continue;
+    const live = (await cp.listHostnames(scopeId.parse(a.app_scope_id)).catch(() => []))
+      .find((h) => h.status === 'active');
+    if (live) a.hostname = live.hostname;
   }
   return c.json(pageOf(apps, page.limit, (a) => a.id));
 });
@@ -1257,7 +1246,6 @@ app.get('/api/domains', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const page = pageParams(c);
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) return c.json({ entries: [], nextCursor: null });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   // Unpaged: names + default hostnames must cover EVERY app, whatever page of domains this is.
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
@@ -1313,7 +1301,6 @@ app.post('/api/domains', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'control plane not connected' });
   const body = bindDomainBody.parse(await c.req.json());
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
@@ -1335,7 +1322,6 @@ app.post('/api/domains/:hostname/verify', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'control plane not connected' });
   return c.json(await cp.verifyHostname(c.req.param('hostname')));
 });
 
@@ -1345,7 +1331,6 @@ app.delete('/api/domains/:hostname', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'control plane not connected' });
   const name = c.req.param('hostname').toLowerCase();
   const own = await cp.listTenantHostnames().catch(() => []);
   const match = own.find((h) => h.hostname === name);
@@ -1384,7 +1369,7 @@ app.get('/api/apps/:scopeId/events', async (c) => {
  * Authorized like the sibling tabs: the app is resolved from the caller's OWN
  * tenant-scoped `list-apps` (a foreign scope id 404s), and the read then goes through
  * the tenant-narrowed control plane, which pins `tenantId` — so no query can name
- * another tenant's log. Embedded mode has no control plane, so the tab reports 501.
+ * another tenant's log.
  */
 app.get('/api/apps/:scopeId/audit', async (c) => {
   const host = hostFor(c.env);
@@ -1395,7 +1380,6 @@ app.get('/api/apps/:scopeId/audit', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'the audit log requires the control plane (unavailable in embedded mode)' });
   const page = pageParams(c);
   const scope = scopeId.parse(appRow.app_scope_id);
   return c.json(await cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scope));
@@ -1426,13 +1410,11 @@ app.get('/api/apps/:scopeId/deployments', async (c) => {
   // `mine` decides `owned`: whether the app's vertical is one this tenant pushed, which
   // is what makes prod promotion self-serve (while private) instead of a staff action —
   // the UI words the tab differently for each.
-  const [deployment, boundVersionId, mine] = cp
-    ? await Promise.all([verticalDeploymentPageFromCp(cp, appRow.vertical_slug, page), cp.boundVersionId(scope), cp.listVerticals()])
-    : await Promise.all([
-        verticalDeploymentPageFromHost(host, STAFF, appRow.vertical_slug, page),
-        host.admin.getScopeRecord(STAFF, node.tenantId, scope).then((r) => r?.verticalVersionId ?? null),
-        host.admin.listVerticals(STAFF).then((vs) => vs.filter((v) => v.ownerTenant === node.tenantId)),
-      ]);
+  const [deployment, boundVersionId, mine] = await Promise.all([
+    verticalDeploymentPageFromCp(cp, appRow.vertical_slug, page),
+    cp.boundVersionId(scope),
+    cp.listVerticals(),
+  ]);
   const ownRecord = mine.find((v) => v.slug === appRow.vertical_slug);
   return c.json({
     ...deployment,
@@ -1465,9 +1447,7 @@ app.get('/api/apps/:scopeId/deployments/:versionId/assets', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   const slug = appRow.vertical_slug;
   const versionId = c.req.param('versionId');
-  const assets = cp
-    ? await cp.versionAssets(slug, versionId)
-    : await versionAssetsFromHost(host, STAFF, slug, versionId);
+  const assets = await cp.versionAssets(slug, versionId);
   return c.json({ assets });
 });
 
@@ -1479,9 +1459,8 @@ app.get('/api/apps/:scopeId/deployments/:versionId/assets', async (c) => {
  * READS the registry — approving a widened role stays a human decision on Verticals.
  *
  * Authorized in the caller's OWN dashboard scope like every app-scoped read: the app is
- * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s. Connected mode
- * reads the registry through the tenant-narrowed control plane; embedded mode reads the
- * host's retained manifest with the platform STAFF actor.
+ * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s; the registry
+ * itself is read through the tenant-narrowed control plane.
  */
 app.get('/api/apps/:scopeId/permissions', async (c) => {
   const host = hostFor(c.env);
@@ -1497,12 +1476,7 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
   // Same two reads the Deployments tab makes: the vertical's version registry + the version
   // THIS scope is pinned to. "Running" is the router's truth (the bound version); an update
   // diff compares against the prod channel head, not merely the newest push.
-  const [deployment, boundVersionId] = cp
-    ? await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)])
-    : await Promise.all([
-        verticalDeploymentFromHost(host, STAFF, slug),
-        host.admin.getScopeRecord(STAFF, node.tenantId, scope).then((r) => r?.verticalVersionId ?? null),
-      ]);
+  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
   const prod = deployment.channels.find((ch) => ch.channel === 'prod');
   // Fall back to the prod head only when the scope is unpinned (static binding) — mirrors
   // the Deployments tab's `running` derivation exactly.
@@ -1514,7 +1488,7 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
 
   const registryOf = (versionId: string | null): Promise<PermissionRegistry | null> => {
     if (!versionId) return Promise.resolve(null);
-    return cp ? cp.versionRegistry(slug, versionId) : versionRegistryFromHost(host, STAFF, slug, versionId);
+    return cp.versionRegistry(slug, versionId);
   };
   const [runningRegistry, updateRegistry] = await Promise.all([registryOf(runningId), registryOf(updateId)]);
 
@@ -1543,9 +1517,7 @@ app.get('/api/apps/:scopeId/scopes', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const scopes = cp
-    ? await cp.listScopes(appRow.vertical_slug)
-    : await host.admin.listScopes(STAFF, { tenantId: node.tenantId, vertical: appRow.vertical_slug });
+  const scopes = await cp.listScopes(appRow.vertical_slug);
   return c.json(
     (scopes ?? [])
       .filter((s) => s.status === 'active' || s.status === 'provisioning')
@@ -1576,9 +1548,7 @@ async function resolveBrowsableScope(
   for (const app of apps) {
     if (seen.has(app.vertical_slug)) continue;
     seen.add(app.vertical_slug);
-    const scopes = cp
-      ? await cp.listScopes(app.vertical_slug)
-      : await host.admin.listScopes(STAFF, { tenantId: node.tenantId, vertical: app.vertical_slug });
+    const scopes = await cp.listScopes(app.vertical_slug);
     const hit = (scopes ?? []).find((s) => s.id === requested && (s.status === 'active' || s.status === 'provisioning'));
     if (hit) return { appRow: app, scope: scopeId.parse(hit.id) };
   }
@@ -1592,9 +1562,8 @@ async function resolveBrowsableScope(
  * Authorized in the caller's OWN dashboard scope: the addressed scope is resolved from the
  * tenant-scoped `list-apps` (its default scope) or the tenant's own vertical scopes (a
  * secondary site scope) via `resolveBrowsableScope`, so another tenant's scope id is a 404
- * here — and the platform layer cross-checks (tenantId, scopeId) again below (K-3). Connected
- * mode reads through the tenant-narrowed control plane; embedded mode reads the host directly
- * with the platform STAFF actor. Read-only by construction — no user SQL.
+ * here — and the platform layer cross-checks (tenantId, scopeId) again below (K-3). The read
+ * itself goes through the tenant-narrowed control plane. Read-only by construction — no user SQL.
  */
 app.get('/api/apps/:scopeId/tables', async (c) => {
   const host = hostFor(c.env);
@@ -1604,9 +1573,7 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const tables = cp
-    ? await cp.listScopeTables(scope)
-    : await host.admin.listScopeTables(STAFF, node.tenantId, scope);
+  const tables = await cp.listScopeTables(scope);
   // Never emit an empty 200: an undefined here means the control plane answered with a
   // non-JSON body (e.g. a route it doesn't have yet), which must surface as an error the
   // UI can show — not a silent empty response the client parses as "Unexpected end of JSON".
@@ -1627,9 +1594,7 @@ app.get('/api/apps/:scopeId/tables/:table', async (c) => {
     offset: c.req.query('offset') ? Number(c.req.query('offset')) : undefined,
   });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const page = cp
-    ? await cp.readScopeTable(scope, input)
-    : await host.admin.readScopeTable(STAFF, node.tenantId, scope, input);
+  const page = await cp.readScopeTable(scope, input);
   if (page == null) throw new HTTPException(502, { message: 'the platform returned no data for this table' });
   return c.json(page);
 });
@@ -1648,9 +1613,7 @@ app.post('/api/apps/:scopeId/query', async (c) => {
   const input = queryScopeInput.parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId);
   try {
-    const result = cp
-      ? await cp.queryScope(scope, input.sql)
-      : await host.admin.queryScope(STAFF, node.tenantId, scope, input);
+    const result = await cp.queryScope(scope, input.sql);
     if (result == null) throw new HTTPException(502, { message: 'the platform returned no data for this query' });
     return c.json(result);
   } catch (e) {
@@ -1687,7 +1650,7 @@ app.post('/api/apps/:scopeId/update', async (c) => {
     appScopeId: scopeId.parse(appRow.app_scope_id),
     verticalSlug: appRow.vertical_slug,
     snapshot: body.snapshot,
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(result);
 });
@@ -1713,11 +1676,7 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
   const target = scopeId.parse(appRow.app_scope_id);
   try {
     const cp = controlPlaneFor(c.env, node.tenantId);
-    if (cp) {
-      await cp.bindScopeVersion(target, body.versionId, body.snapshot ? { snapshot: true } : undefined);
-    } else {
-      await host.admin.bindScopeVersion(STAFF, node.tenantId, target, body.versionId, body.snapshot ? { snapshot: true } : undefined);
-    }
+    await cp.bindScopeVersion(target, body.versionId, body.snapshot ? { snapshot: true } : undefined);
     return c.body(null, 204);
   } catch (e) {
     if (e instanceof ControlPlaneError) throw new HTTPException(e.status as ContentfulStatusCode, { message: e.message });
@@ -1739,7 +1698,6 @@ app.get('/api/apps/:scopeId/bookmarks', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) return c.json([]);
   return c.json(await cp.migrationBookmarks(scopeId.parse(appRow.app_scope_id)));
 });
 
@@ -1759,7 +1717,6 @@ app.post('/api/apps/:scopeId/rewind', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const body = z.object({ bookmark: z.string().min(1) }).parse(await c.req.json());
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'rewind needs the shared control plane' });
   return c.json(await cp.rewindScope(scopeId.parse(appRow.app_scope_id), body.bookmark));
 });
 
@@ -1781,7 +1738,7 @@ app.get('/api/apps/:scopeId/snapshots', async (c) => {
   const snapshots = await listAppSnapshots(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(snapshots);
 });
@@ -1802,7 +1759,7 @@ app.post('/api/apps/:scopeId/snapshots', async (c) => {
     appScopeId: scopeId.parse(appRow.app_scope_id),
     ttlDays: body.ttlDays,
     appHostname: appRow.hostname,
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(created, 201);
 });
@@ -1820,7 +1777,7 @@ app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
   const snapshots = await listAppSnapshots(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   const snap = snapshots.find((s) => s.id === c.req.param('snapshotId'));
   if (!snap) throw new HTTPException(404, { message: 'snapshot not found' });
@@ -1828,7 +1785,7 @@ app.delete('/api/apps/:scopeId/snapshots/:snapshotId', async (c) => {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     snapshotScopeId: scopeId.parse(snap.id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json({ deleted: snap.id });
 });
@@ -1852,7 +1809,7 @@ app.get('/api/apps/:scopeId/export', async (c) => {
   const dump = await exportAppData(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(dump);
 });
@@ -1873,7 +1830,7 @@ app.post('/api/apps/:scopeId/restore', async (c) => {
     appScopeId: scopeId.parse(appRow.app_scope_id),
     tables: body.tables,
     appHostname: appRow.hostname,
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.json(result);
 });
@@ -1895,16 +1852,16 @@ app.get('/api/apps/:scopeId/env', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   // The env-spec comes from the REGISTRY (a vertical declares it in its manifest; the
-  // registry carries it), so a pushed builder vertical works the same as a builtin. In
-  // CONNECTED mode a pushed vertical registers on the SHARED plane, not this
-  // deployment's registry — same lookup ladder as installSpecFor: local registry, the
-  // hardcoded catalog, then the shared plane's catalog.
+  // registry carries it), so a pushed builder vertical works the same as a builtin. A
+  // pushed vertical registers on the SHARED plane, not this deployment's registry —
+  // same lookup ladder as installSpecFor: local registry, the hardcoded catalog, then
+  // the shared plane's catalog.
   await ensureCatalog(host, STAFF);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === appRow.vertical_slug);
   let spec = registered?.envSpec ?? CATALOG[appRow.vertical_slug]?.envSpec;
   if (!spec) {
     const cp = controlPlaneFor(c.env, node.tenantId);
-    const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug) : undefined;
+    const remote = (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug);
     spec = (remote?.envSpec as typeof spec) ?? [];
   }
   const values = await dash.invoke('dashboard/list-app-env', { appScopeId: appRow.app_scope_id });
@@ -1936,24 +1893,20 @@ app.put('/api/apps/:scopeId/env', async (c) => {
   let delivered = false;
   let note: string | undefined;
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (cp) {
-    try {
-      await cp.configureInstance(
-        scopeId.parse(appRow.app_scope_id),
-        entries.map((e) => ({ key: e.key, value: e.value })),
-      );
-      delivered = true;
-    } catch (e) {
-      const cause = e instanceof Error ? e.message : String(e);
-      note =
-        e instanceof ControlPlaneError && e.status === 501
-          ? `Saved, but not applied — the app's deployment did not accept live config (${cause}). ` +
-            `A hosted vertical must read its per-scope config at runtime (add /internal/configure ` +
-            `support and bind a version); save again to retry once it does.`
-          : `Saved, but not applied: ${cause}`;
-    }
-  } else {
-    note = 'Saved. This deployment has no delivery seam (embedded mode) — the app reads authored config.';
+  try {
+    await cp.configureInstance(
+      scopeId.parse(appRow.app_scope_id),
+      entries.map((e) => ({ key: e.key, value: e.value })),
+    );
+    delivered = true;
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    note =
+      e instanceof ControlPlaneError && e.status === 501
+        ? `Saved, but not applied — the app's deployment did not accept live config (${cause}). ` +
+          `A hosted vertical must read its per-scope config at runtime (add /internal/configure ` +
+          `support and bind a version); save again to retry once it does.`
+        : `Saved, but not applied: ${cause}`;
   }
   return c.json({ ...(saved as Record<string, unknown>), delivered, ...(note ? { note } : {}) });
 });
@@ -1990,7 +1943,7 @@ async function requiredProvidersBySlug(
     let requires = registered.find((v) => v.slug === slug)?.requires ?? CATALOG[slug]?.requires;
     if (!requires) {
       const cp = controlPlaneFor(env, tenantId);
-      remote ??= cp ? await cp.listCatalog() : [];
+      remote ??= await cp.listCatalog();
       requires = remote.find((v) => v.slug === slug)?.requires ?? [];
     }
     out.set(slug, requires.filter((r) => PROVIDERS[r] !== undefined));
@@ -1999,17 +1952,13 @@ async function requiredProvidersBySlug(
 }
 
 /**
- * The tenant's provider connections for one vertical, read from wherever the CONSUMER
- * reads them: the shared plane's store in connected mode (that is the directory
- * `connector:<provider>` dispatch opens), this deployment's own in embedded mode (where
- * the local connector runtime is the consumer). Metadata only — a connection row cannot
- * carry its secret.
+ * The tenant's provider connections for one vertical, read from where the CONSUMER reads
+ * them: the shared plane's store — the directory a `connector:<provider>` dispatch opens.
+ * Metadata only; a connection row cannot carry its secret.
  */
-async function connectionsFor(host: ScopeHost, env: Env, tenantId: TenantId, vertical?: string) {
+async function connectionsFor(env: Env, tenantId: TenantId, vertical?: string) {
   const cp = controlPlaneFor(env, tenantId);
-  return cp
-    ? await cp.listConnections(vertical === undefined ? {} : { vertical })
-    : await host.admin.listConnections(STAFF, { tenantId, ...(vertical === undefined ? {} : { vertical }) });
+  return cp.listConnections(vertical === undefined ? {} : { vertical });
 }
 
 const connectionView = (r: {
@@ -2052,7 +2001,7 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const required =
     (await requiredProvidersBySlug(host, c.env, node.tenantId, [appRow.vertical_slug])).get(appRow.vertical_slug) ?? [];
-  const rows = await connectionsFor(host, c.env, node.tenantId, appRow.vertical_slug);
+  const rows = await connectionsFor(c.env, node.tenantId, appRow.vertical_slug);
   // Declared providers first, then any live connection whose provider the vertical no
   // longer declares (still real — it can be disconnected here).
   const slugs = [...required];
@@ -2101,24 +2050,14 @@ app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const appScope = scopeId.parse(appRow.app_scope_id);
   let result;
   try {
-    result = cp
-      ? await cp.upsertConnection({
-          scopeId: appScope,
-          provider: spec.provider,
-          ...(label ? { label } : {}),
-          secret,
-          grants: spec.grants,
-          createdBy: authz.principal,
-        })
-      : await upsertLocalConnection(host, STAFF, {
-          tenantId: node.tenantId,
-          scopeId: appScope,
-          vertical: appRow.vertical_slug,
-          spec,
-          secret,
-          ...(label ? { label } : {}),
-          createdBy: authz.principal,
-        });
+    result = await cp.upsertConnection({
+      scopeId: appScope,
+      provider: spec.provider,
+      ...(label ? { label } : {}),
+      secret,
+      grants: spec.grants,
+      createdBy: authz.principal,
+    });
   } catch (e) {
     // #605: the plane checked the candidate with the provider and the provider said no —
     // nothing was written. Pass the provider's own words through with the 422 so the
@@ -2149,12 +2088,11 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   const spec = PROVIDERS[c.req.param('provider')];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = await connectionsFor(host, c.env, node.tenantId, appRow.vertical_slug);
+  const rows = await connectionsFor(c.env, node.tenantId, appRow.vertical_slug);
   const live = liveConnectionFor(rows, spec.provider);
   if (!live) throw new HTTPException(404, { message: 'not connected' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (cp) await cp.revokeConnection(live.id);
-  else await host.admin.revokeConnection(STAFF, live.id);
+  await cp.revokeConnection(live.id);
   return c.body(null, 204);
 });
 
@@ -2171,7 +2109,7 @@ async function inspectableConnection(
   c: Context<{ Bindings: Env }>,
 ): Promise<{
   connectionId: string;
-  cp: NonNullable<ReturnType<typeof controlPlaneFor>>;
+  cp: ReturnType<typeof controlPlaneFor>;
   spec: ProviderSpec;
   /** The row as the directory holds it RIGHT NOW — health included. */
   connection: Connection;
@@ -2186,18 +2124,13 @@ async function inspectableConnection(
   const spec = PROVIDERS[c.req.param('provider') ?? ''];
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
-  const rows = await connectionsFor(host, c.env, node.tenantId, appRow.vertical_slug);
+  const rows = await connectionsFor(c.env, node.tenantId, appRow.vertical_slug);
   const live = liveConnectionFor(rows, spec.provider);
   if (!live) throw new HTTPException(404, { message: 'not connected' });
+  // Inspection runs on the plane: it is the only place the sealed secret can be opened,
+  // and only the connector's own projection is safe to serve (the raw ledger row is
+  // connector bookkeeping — Scrive's carries the callback capability token).
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) {
-    // Embedded mode has no connector runtime of its own — the connectors live with the
-    // control plane, which is also the only place the sealed secret can be opened. Saying
-    // so beats a local read: the dashboard could enumerate the raw ledger, but a ledger
-    // row is connector bookkeeping (Scrive's carries the callback capability token) and
-    // only the connector's own projection is safe to serve.
-    throw new HTTPException(501, { message: 'connection inspection runs on the control plane' });
-  }
   return { connectionId: live.id, cp, spec, connection: live };
 }
 
@@ -2218,7 +2151,7 @@ app.post('/api/apps/:scopeId/integrations/:provider/verify', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   let connection = null;
   if (node) {
-    const rows = await connectionsFor(host, c.env, node.tenantId);
+    const rows = await connectionsFor(c.env, node.tenantId);
     const live = liveConnectionFor(rows, spec.provider);
     connection = live ? connectionView(live) : null;
   }
@@ -2288,7 +2221,7 @@ app.get('/api/integrations', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const requiredBy = await requiredProvidersBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
-  const rows = await connectionsFor(host, c.env, node.tenantId);
+  const rows = await connectionsFor(c.env, node.tenantId);
   return c.json({
     providers: Object.values(PROVIDERS).map((spec) => {
       const targets = apps
@@ -2333,7 +2266,7 @@ app.get('/api/apps/:scopeId/hostnames', async (c) => {
   const bindings = await listAppHostnames(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   // Declared surfaces: local registry first, then the shared plane's catalog for a
   // vertical pushed there — the same lookup ladder the Env tab's spec uses.
@@ -2342,7 +2275,7 @@ app.get('/api/apps/:scopeId/hostnames', async (c) => {
   let surfaces = registered?.surfaces;
   if (!surfaces) {
     const cp = controlPlaneFor(c.env, node.tenantId);
-    const remote = cp ? (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug) : undefined;
+    const remote = (await cp.listCatalog()).find((v) => v.slug === appRow.vertical_slug);
     surfaces = remote?.surfaces ?? [];
   }
   return c.json({ bindings, surfaces, defaultHostname: appRow.hostname });
@@ -2372,7 +2305,7 @@ app.post('/api/apps/:scopeId/hostnames', async (c) => {
       surface: body.surface,
       ...(body.domain ? { customDomain: body.domain } : {}),
       appHostname: appRow.hostname,
-      controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+      controlPlane: controlPlaneFor(c.env, node.tenantId),
     });
     return c.json(bound, 201);
   } catch (e) {
@@ -2396,7 +2329,7 @@ app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
       appScopeId: scopeId.parse(appRow.app_scope_id),
       hostname: c.req.param('hostname'),
       defaultHostname: appRow.hostname,
-      controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+      controlPlane: controlPlaneFor(c.env, node.tenantId),
     });
   } catch (e) {
     if (e instanceof Error && /permission denied/.test(e.message)) throw e;
@@ -2416,9 +2349,8 @@ app.delete('/api/apps/:scopeId/hostnames/:hostname', async (c) => {
  * The app's OWNER SEAT (#925): whether anyone has signed in to claim the instance, and
  * whether the plain first sign-in can still do so. This is the fact that used to be
  * invisible — a provisioned app with an empty seat reachable by whoever signed in first,
- * and nothing anywhere saying so. Connected mode only: the seat lives in the app's own
- * identity directory, which only its deployment can read; embedded mode runs no vertical
- * code, so it has nothing to answer (501, and the UI says "not available").
+ * and nothing anywhere saying so. The seat lives in the app's own identity directory,
+ * which only its deployment can read — so the answer comes back through the plane.
  */
 app.get('/api/apps/:scopeId/owner-seat', async (c) => {
   const host = hostFor(c.env);
@@ -2428,7 +2360,6 @@ app.get('/api/apps/:scopeId/owner-seat', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'the owner seat is only readable for a hosted app' });
   return c.json(await cp.ownerSeat(scope));
 });
 
@@ -2445,7 +2376,6 @@ app.post('/api/apps/:scopeId/owner-claim', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'a claim link can only be minted for a hosted app' });
   return c.json(await cp.mintOwnerClaim(scope), 201);
 });
 
@@ -2466,7 +2396,7 @@ app.get('/api/apps/:scopeId/auth', async (c) => {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     stored: appRow.hostname,
-    ...(cp ? { controlPlane: cp } : {}),
+    controlPlane: cp,
   });
   return c.json({ auth, callbackUrl: hostname ? `https://${hostname}/api/auth/callback` : null });
 });
@@ -2494,7 +2424,7 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
     stored: appRow.hostname,
-    ...(cp ? { controlPlane: cp } : {}),
+    controlPlane: cp,
   });
   if (!hostname) {
     throw new HTTPException(400, { message: 'this app has no hostname yet, so the OIDC callback URL cannot be formed' });
@@ -2510,20 +2440,16 @@ app.put('/api/apps/:scopeId/auth', async (c) => {
   })) as Record<string, string>;
   let delivered = false;
   let note: string | undefined;
-  if (cp) {
-    try {
-      await cp.configureInstance(scopeId.parse(appRow.app_scope_id), [
-        { key: 'substrat:auth', value: JSON.stringify(merged) },
-      ]);
-      delivered = true;
-    } catch (e) {
-      note =
-        e instanceof ControlPlaneError && e.status === 501
-          ? `Saved, but not applied: this app's deployment cannot receive auth settings while running (no live-config support). It applies once the vertical adds /internal/configure.`
-          : `Saved, but not applied: ${e instanceof Error ? e.message : String(e)}`;
-    }
-  } else {
-    note = 'Saved. This deployment has no delivery seam (embedded mode) — the app reads authored config.';
+  try {
+    await cp.configureInstance(scopeId.parse(appRow.app_scope_id), [
+      { key: 'substrat:auth', value: JSON.stringify(merged) },
+    ]);
+    delivered = true;
+  } catch (e) {
+    note =
+      e instanceof ControlPlaneError && e.status === 501
+        ? `Saved, but not applied: this app's deployment cannot receive auth settings while running (no live-config support). It applies once the vertical adds /internal/configure.`
+        : `Saved, but not applied: ${e instanceof Error ? e.message : String(e)}`;
   }
   return c.json({ delivered, ...(note ? { note } : {}) });
 });
@@ -2534,11 +2460,11 @@ app.post('/api/apps', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const body = createAppBody.parse(await c.req.json());
-  // Connected (prod): provision on the shared control plane through the tenant-narrowed
-  // seam so the app is reachable via the router. Absent the binding: the M0 embedded path.
+  // Provision on the shared control plane through the tenant-narrowed seam, so the app
+  // is reachable via the router.
   const cp = controlPlaneFor(c.env, node.tenantId);
-  // The install kill-switch, embedded-mode edge (connected mode is enforced by the
-  // control plane's instances route): a blocked vertical takes no new installs.
+  // The install kill-switch, on this deployment's own registry — the plane enforces it
+  // again on its instances route: a blocked vertical takes no new installs.
   const registeredVertical = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === body.verticalSlug);
   if (registeredVertical?.installsBlocked) {
     throw new HTTPException(403, { message: `new installs of '${body.verticalSlug}' are blocked` });
@@ -2574,7 +2500,7 @@ app.post('/api/apps', async (c) => {
     appEntitlements: entitlements,
     appOwnerGrants: ownerGrants,
     teamHandle,
-    controlPlane: cp ?? undefined,
+    controlPlane: cp,
     // The TEAM's name, never the login's — this seeds the shared directory's tenant
     // row, which the CLI's workspace picker displays.
     tenantName: team?.name ?? 'Workspace',
@@ -2598,7 +2524,7 @@ app.delete('/api/apps/:id', async (c) => {
   await deprovisionApp(host, {
     node,
     appScopeId: scopeId.parse(appRow.app_scope_id),
-    controlPlane: controlPlaneFor(c.env, node.tenantId) ?? undefined,
+    controlPlane: controlPlaneFor(c.env, node.tenantId),
   });
   return c.body(null, 204);
 });
@@ -2632,7 +2558,7 @@ app.post('/api/apps/:scopeId/retry', async (c) => {
     name: appRow.name,
     appEntitlements: entitlements,
     appOwnerGrants: ownerGrants,
-    controlPlane: cp ?? undefined,
+    controlPlane: cp,
     // The TEAM's name, never the login's (same as create).
     tenantName: team?.name ?? 'Workspace',
   });
@@ -2670,7 +2596,7 @@ app.post('/api/apps/:scopeId/resume', async (c) => {
     appOwnerGrants: ownerGrants,
     // Same hostname scheme as create, so the resume mints the URL the install would have.
     teamHandle: team?.name ? slugify(team.name) : undefined,
-    controlPlane: cp ?? undefined,
+    controlPlane: cp,
     tenantName: team?.name ?? 'Workspace',
   });
   return c.json(resumed);
@@ -2678,17 +2604,15 @@ app.post('/api/apps/:scopeId/resume', async (c) => {
 
 /**
  * My deployments (builder-plane.md Phase 4) — the verticals THIS tenant pushed, with
- * their versions + channels. Connected mode reads the shared plane (tenant-filtered);
- * embedded reads the local host. Either way the tenant is the caller's own, from session.
+ * their versions + channels — read from the shared plane, tenant-filtered. The tenant is
+ * the caller's own, from session.
  */
 app.get('/api/deployments', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const deployments = cp
-    ? await listDeploymentsFromCp(cp)
-    : await listDeploymentsFromHost(host, STAFF, node.tenantId);
+  const deployments = await listDeploymentsFromCp(cp);
   return c.json(deployments);
 });
 
@@ -2696,9 +2620,9 @@ app.get('/api/deployments', async (c) => {
  * Observability for MY pushed verticals (design/observability.md §5, view 2). Both
  * routes are thin: the owner-narrowing lives in `TenantNarrowedControlPlane`
  * (rows filtered to owned deployment refs; an unowned ref in the logs query answers
- * `[]` without ever reaching the plane). Connected mode only — embedded mode has no
- * observability backend, and 501 is the platform's shape for an absent capability;
- * the plane's own 501 (no backend configured there either) passes through as such.
+ * `[]` without ever reaching the plane). 501 is the platform's shape for an absent
+ * capability, so the plane's own 501 (no observability backend configured) passes
+ * through as such.
  */
 const cpObservability = async <T>(read: () => Promise<T>): Promise<T> => {
   try {
@@ -2716,7 +2640,6 @@ app.get('/api/observability/metrics', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'observability requires the shared control plane' });
   const hours = Number(c.req.query('hours') ?? '24');
   // `vertical` narrows to one owned vertical's versions (the per-app Observability
   // tab); an unowned slug answers [] in the authority without reaching the plane.
@@ -2729,7 +2652,6 @@ app.get('/api/observability/logs', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'observability requires the shared control plane' });
   // `service` repeats — one per deployed version when the tab shows all of them.
   // Unowned refs are dropped by the authority, so this stays a request, not a claim.
   const services = (c.req.queries('service') ?? []).filter((s) => s.length > 0);
@@ -2767,19 +2689,13 @@ app.post('/api/deployments/:slug/promote', async (c) => {
   const body = promoteBody.parse(await c.req.json());
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const deployments = cp
-    ? await listDeploymentsFromCp(cp)
-    : await listDeploymentsFromHost(host, STAFF, node.tenantId);
+  const deployments = await listDeploymentsFromCp(cp);
   assertOwned(deployments, slug); // your vertical, or 4xx
   const target = deployments.find((d) => d.slug === slug);
   if (body.channel === 'prod' && target?.listed) {
     throw new HTTPException(403, { message: 'production for a published vertical is promoted by the Substrat team' });
   }
-  if (cp) {
-    await cp.promote(slug, body.channel, body.versionId, body.acknowledge);
-  } else {
-    await host.admin.promoteVersion(STAFF, slug, body.channel, body.versionId, body.acknowledge);
-  }
+  await cp.promote(slug, body.channel, body.versionId, body.acknowledge);
   return c.body(null, 204);
 });
 
@@ -2795,20 +2711,16 @@ app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
   const slug = c.req.param('slug');
   const channel = z.enum(['prod']).parse(c.req.param('channel'));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (cp) {
-    assertOwned(await listDeploymentsFromCp(cp), slug);
-    return c.json(await cp.channelHistory(slug, channel));
-  }
-  assertOwned(await listDeploymentsFromHost(host, STAFF, node.tenantId), slug);
-  return c.json(await host.admin.listChannelHistory(STAFF, slug, channel));
+  assertOwned(await listDeploymentsFromCp(cp), slug);
+  return c.json(await cp.channelHistory(slug, channel));
 });
 
 /**
  * One vertical's operational-failure history (#559 step 5) — why MY deploy / preview /
  * provision failed, from the durable record, so a red CI run is explainable from the
- * dashboard without staff involvement. Owned-slug-checked like history above. Embedded
- * mode reads the local host's record; connected mode the shared plane's (tenant-pinned
- * in the authority seam). Newest first; one page is the story, not an archive walk.
+ * dashboard without staff involvement. Owned-slug-checked like history above; read from
+ * the shared plane's record (tenant-pinned in the authority seam). Newest first — one
+ * page is the story, not an archive walk.
  */
 app.get('/api/deployments/:slug/failures', async (c) => {
   const host = hostFor(c.env);
@@ -2816,14 +2728,8 @@ app.get('/api/deployments/:slug/failures', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  if (cp) {
-    assertOwned(await listDeploymentsFromCp(cp), slug);
-    return c.json(await cp.listOpsFailures({ vertical: slug, limit: 50 }));
-  }
-  assertOwned(await listDeploymentsFromHost(host, STAFF, node.tenantId), slug);
-  return c.json(
-    await host.admin.listOpsFailures(STAFF, { tenantId: node.tenantId, vertical: slug, limit: 50 }),
-  );
+  assertOwned(await listDeploymentsFromCp(cp), slug);
+  return c.json(await cp.listOpsFailures({ vertical: slug, limit: 50 }));
 });
 
 /**
@@ -2839,18 +2745,12 @@ app.delete('/api/deployments/:slug', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const deployments = cp
-    ? await listDeploymentsFromCp(cp)
-    : await listDeploymentsFromHost(host, STAFF, node.tenantId);
+  const deployments = await listDeploymentsFromCp(cp);
   assertOwned(deployments, slug); // your vertical, or 4xx
   if (deployments.find((d) => d.slug === slug)?.listed) {
     throw new HTTPException(403, { message: 'a published vertical is removed by the Substrat team' });
   }
-  if (cp) {
-    await cp.deleteVertical(slug);
-  } else {
-    await host.admin.deleteVertical(STAFF, slug);
-  }
+  await cp.deleteVertical(slug);
   return c.body(null, 204);
 });
 
@@ -2860,11 +2760,10 @@ app.delete('/api/deployments/:slug', async (c) => {
 // domain to one — turning a pinned preview into a long-lived test environment. Owned-slug
 // checked like promote; a preview forks the caller's OWN tenant scope and serves no
 // install, so it is self-serve for a vertical they own whether private or LISTED (#513).
-// A control-plane orchestration — connected-plane only (embedded mode has no preview host).
+// A control-plane orchestration — the plane is the only thing that hosts a preview.
 
 const cpOrThrow = (env: Env, tenantId: DashboardNode['tenantId']): TenantNarrowedControlPlane => {
   const cp = controlPlaneFor(env, tenantId);
-  if (!cp) throw new HTTPException(501, { message: 'previews require the shared control plane' });
   return cp;
 };
 

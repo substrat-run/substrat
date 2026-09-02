@@ -2611,6 +2611,20 @@ export function defineScopeDO(
         }
         return decision;
       };
+
+      /**
+       * §5.1's assignment bound, resolved against the SAME role table the checker
+       * expands — the tenant's projected role, not a vertical's compile-time `ROLES`
+       * array, because the projected role is what assignment would actually confer.
+       */
+      const runCanAssign = async (roleKey: string) => {
+        const role = await this.controlPlaneReader().getRole(tenantId, roleKey);
+        if (!role) {
+          throw substratError('not_found', `no such role in this tenant: ${roleKey}`);
+        }
+        return checker.covers(subject, role.permissions, { tenantId, scopeId });
+      };
+
       return {
         tenantId,
         scopeId,
@@ -2702,6 +2716,7 @@ export function defineScopeDO(
           );
         },
         check: runCheck,
+        canAssign: runCanAssign,
         // #827. Mirror of the pure adapter: the plan comes from registration, the
         // rows from this DO's own SQLite, and the index is maintained by triggers
         // that workerd's regulator has to permit — which is exactly what the

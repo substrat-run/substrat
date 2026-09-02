@@ -20,8 +20,9 @@
 	},
 	"durable_objects": {
 		"bindings": [
-			// The Dashboard runs its customers' dashboard scopes AND (M0, single
-			// deployment) the app scopes they provision. Own directory DO.
+			// The Dashboard runs its customers' DASHBOARD scopes — the platform
+			// vertical, and nothing else (#978). A customer's app is its own
+			// deployment, provisioned through CONTROL_PLANE_SVC below.
 			{ "name": "SCOPE", "class_name": "ScopeDO" },
 			{ "name": "CONTROL_PLANE", "class_name": "ControlPlaneDO" },
 			// One per GitHub repo: the repo → tenant-app link + the per-PR preview
@@ -35,11 +36,11 @@
 		{ "tag": "v1", "new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"] },
 		{ "tag": "v2", "new_sqlite_classes": ["GithubRepoLinkDO"] }
 	],
-	// CONNECTED mode (dashboard.md §6): a service binding to the SHARED control plane —
-	// the directory the router reads. When present, apps provision there through the
-	// tenant-narrowed seam (§4, src/authority.ts) so they are REACHABLE at
-	// `<slug>.global.substrat.run`; absent it, the worker falls back to the M0 embedded
-	// path (apps run in this deployment, hostname recorded but not routable). Requires:
+	// REQUIRED (dashboard.md §6): a service binding to the SHARED control plane — the
+	// directory the router reads. Apps provision there through the tenant-narrowed seam
+	// (§4, src/authority.ts) so they are REACHABLE at `<slug>.global.substrat.run`.
+	// There is no fallback: without this binding (or the token below) the dashboard 503s
+	// on every plane-backed surface rather than provisioning somewhere unroutable. Requires:
 	//   wrangler secret put CP_SERVICE_TOKEN     # must equal substrat-control-plane's SERVICE_TOKEN
 	"services": [
 		{ "binding": "CONTROL_PLANE_SVC", "service": "substrat-control-plane" }

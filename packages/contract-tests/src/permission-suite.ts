@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
+  coverage,
   moduleId,
   permissionKey,
   platformActorId,
@@ -139,6 +140,78 @@ export function permissionContractSuite(
 
     afterAll(async () => {
       await fixture.cleanup();
+    });
+
+    /**
+     * §5.1's assignment bound (K-21): a principal may assign role `R` at node `N` only
+     * if they already hold every permission `R` carries at `N`.
+     *
+     * Without it, the D-22/D-29 checkpoint that reviews role DEFINITIONS protects
+     * nothing — an `admin` assigning themselves `owner` widens no role, calls no
+     * `defineRole`, and appears in no permission diff.
+     */
+    describe('ctx.canAssign bounds assignment by the assigner’s own authority', () => {
+      // Parsed, never cast. `covered` and `missing` are two readings of one answer, and
+      // an adapter returning them inconsistent — names in `missing` beside a
+      // `covered: true` — would refuse for the caller that reads one and allow for the
+      // caller that reads the other. The union refuses it here, on both adapters.
+      const bound = async (who: PrincipalId, scope: typeof s1, roleKey: string) => {
+        const stub = await host.getScope(who, t1, scope);
+        return coverage.parse(await stub.invoke('perm/can-assign', { roleKey }));
+      };
+
+      it('covers a role whose permissions the assigner holds', async () => {
+        // alice holds PERM_USE + PERM_READ at the tenant; `tech` carries PERM_READ.
+        expect(await bound(alice, s1, 'tech')).toEqual({ covered: true, missing: [] });
+      });
+
+      it('covers a role equal to the assigner’s own', async () => {
+        expect((await bound(alice, s1, 'admin')).covered).toBe(true);
+      });
+
+      /** The escalation §5.1 exists to stop, in its plainest form. */
+      it('refuses a role carrying more than the assigner holds, and names what is missing', async () => {
+        // bob holds only PERM_READ at s1; `admin` carries PERM_USE too.
+        expect(await bound(bob, s1, 'admin')).toEqual({ covered: false, missing: [PERM_USE] });
+      });
+
+      /**
+       * The load-bearing case. carol's PERM_READ is narrowed to one entity (`box:b1`).
+       * If narrowing satisfied the bound, sharing ONE record would launder into
+       * authority over every record by way of assignment.
+       */
+      it('does not let an entity-narrowed grant satisfy the bound', async () => {
+        // The control first: carol really does hold PERM_READ, but only on that entity.
+        expect((await probe(carol, s1, PERM_READ, { entityType: 'box', entityId: 'b1' })).allowed).toBe(true);
+        expect((await probe(carol, s1, PERM_READ)).allowed).toBe(false);
+        expect(await bound(carol, s1, 'tech')).toEqual({ covered: false, missing: [PERM_READ] });
+      });
+
+      /** Authority held THROUGH an org is authority that can be conferred (rule 4). */
+      it('counts authority a member holds through an org', async () => {
+        // erin holds PERM_READ only via membership of acme.
+        expect((await probe(erin, s1, PERM_READ)).allowed).toBe(true);
+        expect(await bound(erin, s1, 'tech')).toEqual({ covered: true, missing: [] });
+      });
+
+      /** Node-scoped, like every other answer here: bob's role is at s1 and not at s2. */
+      it('answers per node', async () => {
+        expect((await bound(bob, s1, 'tech')).covered).toBe(true);
+        expect((await bound(bob, s2, 'tech')).covered).toBe(false);
+      });
+
+      /** An expired grant confers nothing, so it cannot be conferred onward either. */
+      it('ignores an expired grant', async () => {
+        expect(await bound(dave, s1, 'tech')).toEqual({ covered: false, missing: [PERM_READ] });
+      });
+
+      /**
+       * A typo is a bug in the caller, not a denial. Returning "not covered" would let
+       * a misspelled role key read as a permission problem and be handled as one.
+       */
+      it('throws on a role this tenant does not define', async () => {
+        await expect(bound(alice, s1, 'no-such-role')).rejects.toThrow(/no such role/);
+      });
     });
 
     // -- runtime delegation: ctx.grant / ctx.revoke ---------------------------
