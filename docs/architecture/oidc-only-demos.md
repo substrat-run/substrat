@@ -8,7 +8,7 @@ description: Remove the credential store from the verticals.
 
 **Status:** **built** — every demo vertical is OIDC-only
 **Scope:** `demos/meridian`, `demos/manyfold`, `demos/callout`; later `demos/todo`,
-`demos/ticket0`, `demos/shop`
+`demos/ticket0`, `demos/shop`, `demos/handlebar`, `demos/rally`
 **Author:** design pass, 2026-08-04 · shop, handlebar and rally added 2026-09-01
 
 ## Motivation

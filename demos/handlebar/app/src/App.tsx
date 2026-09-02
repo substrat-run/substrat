@@ -53,12 +53,25 @@ export default function App() {
     );
   }
 
-  let view = <RepairsView />;
-  if (route.startsWith('/repairs/')) view = <RepairDetailView repairId={route.split('/')[2] ?? ''} />;
-  else if (route.startsWith('/invoicing')) view = <InvoicingView />;
-  else if (route.startsWith('/customers')) view = <CustomersView />;
-  else if (route.startsWith('/prices')) view = <PricesView />;
-  else if (route.startsWith('/portal')) view = <PortalView />;
+  // Both reads have to land before anything renders. `role` arrives after `me`, and
+  // `isPortal` reads false while it is still null — so rendering on `me` alone mounts the
+  // staff view for a portal customer for as long as `whoami` is in flight, which fires the
+  // 403 the branch below exists to avoid.
+  if (role === null) return <p className="page muted">Laddar…</p>;
+
+  // Portal chrome offers exactly one screen, so a portal principal gets it whatever the
+  // route says. `/` is not a corner case: `auth.login('/')` is where every login returns,
+  // so selecting a staff view by default put a 403 wall on the FIRST screen a customer
+  // saw. The server is still the one enforcing this — deciding it here only means the
+  // wall is never what we navigate them to.
+  let view = isPortal ? <PortalView /> : <RepairsView />;
+  if (!isPortal) {
+    if (route.startsWith('/repairs/')) view = <RepairDetailView repairId={route.split('/')[2] ?? ''} />;
+    else if (route.startsWith('/invoicing')) view = <InvoicingView />;
+    else if (route.startsWith('/customers')) view = <CustomersView />;
+    else if (route.startsWith('/prices')) view = <PricesView />;
+    else if (route.startsWith('/portal')) view = <PortalView />;
+  }
 
   return (
     <>
