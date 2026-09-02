@@ -354,6 +354,25 @@ function toolError(message: string) {
 }
 
 /**
+ * The status an error is asking for, read WITHOUT `instanceof`.
+ *
+ * A pushed vertical is a BUNDLE, and a bundle can hold two copies of
+ * `hono/http-exception` — one resolved for this package, one for the vertical. Then
+ * `err instanceof HTTPException` is false for a genuine exception, and every branch
+ * keyed on it takes the wrong door. That is not hypothetical: it is what made
+ * production answer a 401 with no `WWW-Authenticate` and an empty `detail` while every
+ * in-process test passed, because a test has exactly one copy.
+ *
+ * `HTTPException` is structurally a `status` plus an optional `res`, so read the shape
+ * and fall back to the kernel's own classification for everything else.
+ */
+function statusOf(err: unknown): number | undefined {
+  const status = (err as { status?: unknown } | null)?.status;
+  if (typeof status === 'number') return status;
+  return classifyError(err)?.status;
+}
+
+/**
  * Mount the MCP endpoint for a module's operations.
  *
  * Called by `mountOperations`, so a vertical gets this without asking. Stateless
@@ -426,9 +445,11 @@ export function mountMcp(
       // error — the agent should read it and choose again, and a JSON-RPC error or
       // an HTTP status would instead look like the session itself is broken. A 401
       // is the one that must not be swallowed: it means "who are you", not "no".
-      if (err instanceof HTTPException && err.status === 401) throw err;
+      // A 401 travels on as a transport failure — read structurally, because the
+      // `instanceof` this used to rely on is false in a bundled vertical, and getting it
+      // wrong here reports "who are you" as a tool error the agent tries to work around.
+      if (statusOf(err) === 401) throw err;
       const seen = classifyError(err);
-      if (seen?.status === 401) throw err;
       return rpcResult(id, toolError(seen ? seen.message : messageOf(err)));
     }
   };
@@ -564,16 +585,28 @@ export function mountMcp(
         if (reply) replies.push(reply);
       }
     } catch (err) {
-      // A 401 is the one failure that has somewhere to point. Re-thrown carrying its own
-      // `res`, which `problemResponse` hands back untouched — that path exists precisely
-      // so a route can attach a `WWW-Authenticate` — so the vertical keeps its error
-      // envelope AND the client gets the challenge that starts its authorization flow.
-      const status = err instanceof HTTPException ? err.status : classifyError(err)?.status;
-      if (status !== 401 || (err instanceof HTTPException && err.res)) throw err;
-      const built = problemResponse(c, err);
-      const res = new Response(built.body, { status: built.status, headers: built.headers });
+      // A 401 is the one failure that has somewhere to point, so it leaves here carrying
+      // the challenge that starts a client's authorization flow.
+      //
+      // **Returned, not thrown, and that distinction was a production bug.** The first
+      // version threw an `HTTPException` holding a prepared `res`, relying on
+      // `problemResponse` to hand it back untouched. In the workspace that works; in a
+      // PUSHED bundle it did not, because `err instanceof HTTPException` compares against
+      // whichever copy of `hono/http-exception` the bundler gave each package — two
+      // copies, and the check is false for a genuine exception. The prepared response was
+      // then discarded and the document rebuilt from an exception carrying no message,
+      // which is exactly what production served: a 401 with an empty `detail` and no
+      // challenge. A handler that already holds the response it wants should return it.
+      if (statusOf(err) !== 401) throw err;
+      // NORMALISED to this package's own exception before rendering, for the same reason
+      // the status is read structurally: `problemFor` cannot classify a foreign one, and
+      // would answer 400 for a refusal we have already established is a 401. Re-wrapping
+      // keeps the message, so the document carries a real `detail` rather than the empty
+      // one production served.
+      const built = problemResponse(c, new HTTPException(401, { message: messageOf(err) }));
+      const res = new Response(built.body, { status: 401, headers: built.headers });
       res.headers.set('WWW-Authenticate', challengeFor(c));
-      throw new HTTPException(401, { res });
+      return res;
     }
     // Nothing to answer means every message was a notification: 202, no body.
     if (replies.length === 0) return c.body(null, 202);

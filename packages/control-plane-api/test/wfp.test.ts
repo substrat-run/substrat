@@ -304,8 +304,66 @@ describe('createWfpUploader — static assets (#340)', () => {
     const meta = JSON.parse(await ((calls[2]!.init.body as FormData).get('metadata') as File).text());
     expect(meta.assets).toEqual({
       jwt: 'completion-jwt',
-      config: { not_found_handling: 'single-page-application', run_worker_first: ['/api/*'] },
+      config: {
+        not_found_handling: 'single-page-application',
+        // The vertical's list, plus the platform's own — see the next case for why.
+        run_worker_first: ['/api/*', '/.well-known/*'],
+      },
     });
+  });
+
+  /**
+   * The bug this exists to stop recurring (#1182 in production).
+   *
+   * `mountOperations` mounts `/.well-known/oauth-protected-resource/*` because RFC 9728
+   * requires the document at the origin root. ticket0's manifest listed `/api/*` and not
+   * that, so Cloudflare's asset layer answered it from the edge with `index.html` and the
+   * worker was never invoked — a correctly registered route, unreachable, with no lint or
+   * test able to see it because it fails one layer below the code.
+   *
+   * So the platform routes `.well-known` worker-first whatever the vertical declared. A
+   * vertical that mounts nothing there is unaffected: its own catch-all answers 404,
+   * which is what the asset layer would have said.
+   */
+  it('routes .well-known worker-first even when the vertical did not ask', async () => {
+    const calls = await driveUpload(
+      withAssets({
+        notFoundHandling: 'single-page-application',
+        runWorkerFirst: ['/api/*'],
+        files: [{ path: '/index.html', hash: 'b'.repeat(32), size: 15, contentType: 'text/html' }],
+      }),
+      (url) => (url.includes('assets-upload-session') ? sessionWith([]) : new Response('{}', { status: 200 })),
+    );
+    const meta = JSON.parse(await ((calls.at(-1)!.init.body as FormData).get('metadata') as File).text());
+    expect(meta.assets.config.run_worker_first).toContain('/.well-known/*');
+  });
+
+  it('adds it once when the vertical already listed it', async () => {
+    const calls = await driveUpload(
+      withAssets({
+        notFoundHandling: 'single-page-application',
+        runWorkerFirst: ['/.well-known/*', '/api/*'],
+        files: [{ path: '/index.html', hash: 'b'.repeat(32), size: 15, contentType: 'text/html' }],
+      }),
+      (url) => (url.includes('assets-upload-session') ? sessionWith([]) : new Response('{}', { status: 200 })),
+    );
+    const meta = JSON.parse(await ((calls.at(-1)!.init.body as FormData).get('metadata') as File).text());
+    // Deduplicated, and the vertical's own order kept — a manifest that already named it
+    // produces byte-identical config rather than a second entry.
+    expect(meta.assets.config.run_worker_first).toEqual(['/.well-known/*', '/api/*']);
+  });
+
+  /** `true` already routes everything worker-first; there is nothing to add. */
+  it('leaves a blanket worker-first declaration alone', async () => {
+    const calls = await driveUpload(
+      withAssets({
+        runWorkerFirst: true,
+        files: [{ path: '/index.html', hash: 'b'.repeat(32), size: 15, contentType: 'text/html' }],
+      }),
+      (url) => (url.includes('assets-upload-session') ? sessionWith([]) : new Response('{}', { status: 200 })),
+    );
+    const meta = JSON.parse(await ((calls.at(-1)!.init.body as FormData).get('metadata') as File).text());
+    expect(meta.assets.config.run_worker_first).toBe(true);
   });
 
   it('empty buckets means every byte is already stored — the session jwt completes it', async () => {

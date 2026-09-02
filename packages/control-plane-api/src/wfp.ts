@@ -1,4 +1,4 @@
-import { assetHash } from '@substrat-run/contracts';
+import { assetHash, PLATFORM_WORKER_FIRST_PREFIXES } from '@substrat-run/contracts';
 import { DeployUploadError, nextMigrationTag } from './deploy.js';
 import type {
   AssetUpload,
@@ -96,12 +96,24 @@ function toBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** The Cloudflare `assets.config` block, from our substrate-vocabulary routing fields. */
+/**
+ * The Cloudflare `assets.config` block, from our substrate-vocabulary routing fields.
+ *
+ * The vertical's `runWorkerFirst` list is UNIONED with the platform's own
+ * (`PLATFORM_WORKER_FIRST_PREFIXES`) — a `.well-known` URI is a protocol surface and a
+ * SPA must never answer one. Only when the vertical gave a list: `true` already routes
+ * everything worker-first, and an absent value means it declared no worker routes to
+ * protect. Deduplicated, and the vertical's own order preserved, so a manifest that
+ * already listed the prefix produces byte-identical config.
+ */
 function assetConfigOf(assets: NonNullable<VerticalBundle['assets']>): Record<string, unknown> {
+  const workerFirst = Array.isArray(assets.runWorkerFirst)
+    ? [...new Set([...assets.runWorkerFirst, ...PLATFORM_WORKER_FIRST_PREFIXES])]
+    : assets.runWorkerFirst;
   return {
     ...(assets.htmlHandling ? { html_handling: assets.htmlHandling } : {}),
     ...(assets.notFoundHandling ? { not_found_handling: assets.notFoundHandling } : {}),
-    ...(assets.runWorkerFirst !== undefined ? { run_worker_first: assets.runWorkerFirst } : {}),
+    ...(workerFirst !== undefined ? { run_worker_first: workerFirst } : {}),
   };
 }
 

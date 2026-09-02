@@ -484,3 +484,58 @@ describe('protected-resource metadata (RFC 9728)', () => {
     expect((await unauthenticated().request('/.well-known/oauth-protected-resource/api/mcp')).status).toBe(404);
   });
 });
+
+/**
+ * The production bug (#1182 shipped, then found by probing prod): a 401 that carried no
+ * `WWW-Authenticate` and an empty `detail`, while every test here passed.
+ *
+ * A pushed vertical is a BUNDLE and can hold two copies of `hono/http-exception`. Any
+ * branch keyed on `err instanceof HTTPException` then takes the wrong door for a genuine
+ * exception. These cases raise a FOREIGN exception — the same shape, a different class —
+ * which is what the second copy produces, and is the condition a single-Hono test can
+ * never reach on its own.
+ */
+describe('a 401 raised by a foreign HTTPException still challenges', () => {
+  /** Structurally an HTTPException; deliberately not the one this package imported. */
+  class ForeignHttpException extends Error {
+    constructor(
+      readonly status: number,
+      readonly res?: Response,
+    ) {
+      super('unauthorized');
+    }
+  }
+
+  const app = () => {
+    const a = new Hono();
+    mountOperations(a, operations, async () => {
+      throw new ForeignHttpException(401);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }, { mcp: { protectedResource: { authorizationServers: ['https://issuer.example'] } } } as any);
+    return a;
+  };
+
+  const post = (a: Hono) =>
+    a.request('/api/mcp', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
+    });
+
+  it('answers 401 rather than treating it as a tool error', async () => {
+    expect((await post(app())).status).toBe(401);
+  });
+
+  it('carries the challenge — the half that was missing in production', async () => {
+    const res = await post(app());
+    expect(res.headers.get('WWW-Authenticate')).toMatch(/^Bearer resource_metadata="/);
+  });
+
+  it('keeps the vertical’s problem envelope, with a real detail', async () => {
+    const res = await post(app());
+    expect(res.headers.get('content-type')).toMatch(/problem\+json/);
+    // The empty `detail` was the tell in production: the document had been rebuilt from
+    // a message-less exception instead of taken from the response the route prepared.
+    expect(((await res.json()) as { detail?: string }).detail).toBeTruthy();
+  });
+});

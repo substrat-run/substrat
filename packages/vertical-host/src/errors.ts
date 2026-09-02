@@ -194,8 +194,19 @@ export function problemOf(
  * An `HTTPException` that already carries its own `res` is handed back untouched — a
  * route that attached a response meant it, and re-rendering it would drop headers
  * (a redirect, a `WWW-Authenticate`) the route chose.
+ *
+ * **Recognised structurally, not by `instanceof`.** A pushed vertical is a bundle, and a
+ * bundle can hold two copies of `hono/http-exception` — one resolved for this package,
+ * one for the vertical. `err instanceof HTTPException` is then false for a genuine
+ * exception, this promise silently stops being kept, and the response the route
+ * carefully attached is discarded in favour of a document rebuilt from an exception that
+ * usually carries no message. That is not hypothetical: it shipped, and production
+ * answered a 401 with an empty `detail` and no `WWW-Authenticate` while every test
+ * passed — because a test has exactly one copy of Hono.
  */
 export function problemResponse(c: Context, err: unknown): Response {
+  const attached = (err as { res?: unknown } | null)?.res;
+  if (attached instanceof Response) return attached;
   if (err instanceof HTTPException && err.res) return err.getResponse();
   const { status, body } = problemFor(err, c.req.path);
   return c.body(JSON.stringify(body), status, { 'content-type': PROBLEM_CONTENT_TYPE });
