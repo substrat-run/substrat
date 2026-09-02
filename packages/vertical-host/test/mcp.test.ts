@@ -506,10 +506,10 @@ describe('a 401 raised by a foreign HTTPException still challenges', () => {
     }
   }
 
-  const app = () => {
+  const app = (prepared?: Response) => {
     const a = new Hono();
     mountOperations(a, operations, async () => {
-      throw new ForeignHttpException(401);
+      throw new ForeignHttpException(401, prepared);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }, { mcp: { protectedResource: { authorizationServers: ['https://issuer.example'] } } } as any);
     return a;
@@ -537,5 +537,40 @@ describe('a 401 raised by a foreign HTTPException still challenges', () => {
     // The empty `detail` was the tell in production: the document had been rebuilt from
     // a message-less exception instead of taken from the response the route prepared.
     expect(((await res.json()) as { detail?: string }).detail).toBeTruthy();
+  });
+
+  // The inverse of the bug above, and just as easy to ship: rebuilding the document
+  // unconditionally would throw away a response the route had already prepared. A
+  // vertical that answers 401 with its own challenge — its own realm, its own
+  // parameters — means the one it wrote, and this mount is not entitled to overwrite it.
+  it('hands back a prepared response untouched, challenge and all', async () => {
+    const res = await post(
+      app(
+        new Response(JSON.stringify({ title: 'Unauthorized', detail: 'token expired' }), {
+          status: 401,
+          headers: {
+            'content-type': 'application/problem+json',
+            'WWW-Authenticate': 'Bearer realm="theirs", error="invalid_token"',
+          },
+        }),
+      ),
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get('WWW-Authenticate')).toBe('Bearer realm="theirs", error="invalid_token"');
+    expect(((await res.json()) as { detail?: string }).detail).toBe('token expired');
+  });
+
+  it('adds the challenge to a prepared response that named none, keeping its body', async () => {
+    const res = await post(
+      app(
+        new Response(JSON.stringify({ title: 'Unauthorized', detail: 'sign in first' }), {
+          status: 401,
+          headers: { 'content-type': 'application/problem+json' },
+        }),
+      ),
+    );
+    expect(res.status).toBe(401);
+    expect(res.headers.get('WWW-Authenticate')).toMatch(/^Bearer resource_metadata="/);
+    expect(((await res.json()) as { detail?: string }).detail).toBe('sign in first');
   });
 });

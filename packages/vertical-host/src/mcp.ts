@@ -598,13 +598,27 @@ export function mountMcp(
       // which is exactly what production served: a 401 with an empty `detail` and no
       // challenge. A handler that already holds the response it wants should return it.
       if (statusOf(err) !== 401) throw err;
-      // NORMALISED to this package's own exception before rendering, for the same reason
-      // the status is read structurally: `problemFor` cannot classify a foreign one, and
-      // would answer 400 for a refusal we have already established is a 401. Re-wrapping
-      // keeps the message, so the document carries a real `detail` rather than the empty
-      // one production served.
-      const built = problemResponse(c, new HTTPException(401, { message: messageOf(err) }));
-      const res = new Response(built.body, { status: 401, headers: built.headers });
+      // A refusal that already PREPARED a response keeps it, whole. That is the promise
+      // `problemResponse` makes for every other route — "a redirect, a `WWW-Authenticate`
+      // the route chose" — and a vertical whose `resolveStub` answers 401 with its own
+      // challenge (a different realm, extra parameters) means the one it wrote. Read
+      // structurally, for the same reason the status is: the exception may be the
+      // bundle's second copy.
+      //
+      // Only a refusal that named NO challenge is normalised to this package's own
+      // exception and rendered here, because `problemFor` cannot classify a foreign one
+      // and would answer 400 for a refusal we have already established is a 401.
+      // Re-wrapping keeps the message, so the document carries a real `detail` rather
+      // than the empty one production served.
+      const prepared = (err as { res?: unknown } | null)?.res;
+      const source =
+        prepared instanceof Response
+          ? prepared
+          : problemResponse(c, new HTTPException(401, { message: messageOf(err) }));
+      if (source.headers.has('WWW-Authenticate')) return source;
+      // Copied rather than mutated: a response that came back from `fetch` carries
+      // immutable headers, and a route is free to have obtained one that way.
+      const res = new Response(source.body, source);
       res.headers.set('WWW-Authenticate', challengeFor(c));
       return res;
     }
