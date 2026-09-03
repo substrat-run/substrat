@@ -420,6 +420,48 @@ describe('assertUiIsServed — a UI nothing would serve (#881)', () => {
   it('--allow-unserved-ui is the override for an app/ this cannot see the truth about', () => {
     expect(() => assertUiIsServed(withUi(), needs(), undefined, true)).not.toThrow();
   });
+
+  /**
+   * The exemption's evidence used to be an artifact of the step this check PRECEDES (#1209).
+   * `assets.generated.*` is written by the declared build and gitignored, so it exists on a
+   * developer's machine (left over from an earlier build) and never on a fresh checkout —
+   * which is every CI run. The push was refused for a UI it would in fact have served, on
+   * exactly the path where nothing local reproduces it.
+   */
+  it('passes the inline pattern BEFORE its module is built — the import is the evidence', () => {
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    // What a fresh clone holds: the worker that serves the app, and no build output.
+    writeFileSync(
+      join(dir, 'src', 'assets.ts'),
+      "import { ASSETS } from './assets.generated.js';\nexport const serve = () => ASSETS;\n",
+    );
+    expect(existsSync(join(dir, 'src', 'assets.generated.ts'))).toBe(false);
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+  });
+
+  it('reads the specifier in every import form, extension or not', () => {
+    for (const source of [
+      "import './assets.generated.js';",
+      "export * from './assets.generated';",
+      "const a = await import('./generated/assets.generated.mjs');",
+      "const a = require('./assets.generated.cjs');",
+    ]) {
+      const dir = withUi();
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'worker.ts'), source);
+      expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+    }
+  });
+
+  it('still REFUSES a src/ that merely mentions the name outside an import', () => {
+    // The widened evidence is an import specifier, not the string: a vertical whose worker
+    // only talks about the pattern in a comment serves nothing, and must still be refused.
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'worker.ts'), '// we could inline assets.generated.ts one day\n');
+    expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/nothing in the push would serve/);
+  });
 });
 
 /**
@@ -731,5 +773,85 @@ export const permissions = {
     const text = formatPermissionSurface({ registry, digest: await permissionDigest(registry) });
     expect(text).toContain('0 key(s), 0 role(s), 0 entity-grant shape(s)');
     expect(text.match(/\(none declared\)/g)).toHaveLength(2);
+  });
+});
+
+/**
+ * `preview create` forwards push's own overrides (#1209).
+ *
+ * The gap this pins was invisible to every unit test because it is not in `push()` at all —
+ * `assertUiIsServed` was correct, `cmdPush` passed the flag, and `cmdPreview` called the same
+ * `push()` without it. So `--allow-unserved-ui` was accepted on the command line, silently
+ * dropped, and the refusal went on naming the flag as the remedy. Previews are per-PR and run
+ * on every push, which makes this the path most likely to meet the check.
+ *
+ * It has to drive the real binary: `cli.ts` runs `main()` on import, so the only place the
+ * flag→option wiring exists is a child process. Nothing is uploaded — the run stops at the UI
+ * preflight (without the flag) or at the build (with it), both before any network call, and
+ * `--version` skips the one registry read `preview create` would otherwise do first.
+ */
+describe('substrat preview create — push overrides reach the same push (#1209)', () => {
+  const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+  const built = existsSync(cli);
+
+  /** A vertical with a scaffolded app/ that nothing declares — what the preflight refuses. */
+  function verticalWithUnservedUi(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-preview-'));
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: '@acme/helpdesk',
+        version: '1.0.0',
+        substrat: { runtimeNeeds: { entry: 'src/worker.ts' } },
+      }),
+    );
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'worker.ts'), 'export default { fetch: () => new Response("ok") };\n');
+    mkdirSync(join(dir, 'app'), { recursive: true });
+    writeFileSync(join(dir, 'app', 'index.html'), '<!doctype html><div id="root"></div>');
+    return dir;
+  }
+
+  /** An `npx` that fails instantly, so the case which gets PAST the preflight stops at the
+   *  build instead of fetching and running wrangler for a bundle no assertion looks at. */
+  function stubNpx(): string {
+    const bin = mkdtempSync(join(tmpdir(), 'substrat-cli-bin-'));
+    writeFileSync(join(bin, 'npx'), '#!/bin/sh\necho "stub wrangler" >&2\nexit 9\n', { mode: 0o755 });
+    return bin;
+  }
+
+  function runPreview(dir: string, ...args: string[]): { status: number; stdout: string; stderr: string } {
+    const home = mkdtempSync(join(tmpdir(), 'substrat-cli-home-'));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      PATH: `${stubNpx()}:${process.env.PATH ?? ''}`,
+      // Enough for `resolveAuth` to answer without a stored login and without a request:
+      // the run never gets far enough to send one (the port is deliberately unusable).
+      SUBSTRAT_CP_URL: 'http://127.0.0.1:1/api',
+      SUBSTRAT_SERVICE_TOKEN: 'test-token',
+      SUBSTRAT_TENANT: 'acme',
+    };
+    const r = spawnSync(
+      process.execPath,
+      [cli, 'preview', 'create', dir, '--tag', 'pr-1', '--version', '0.0.1-pr-1.1', '--skip-lint', ...args],
+      { env, encoding: 'utf8' },
+    );
+    return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  }
+
+  it.runIf(built)('refuses an unserved UI, exactly as `push` does', () => {
+    const r = runPreview(verticalWithUnservedUi());
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/nothing in the push would serve/);
+    expect(r.stderr).toMatch(/--allow-unserved-ui/);
+  });
+
+  it.runIf(built)('and --allow-unserved-ui is honoured rather than silently dropped', () => {
+    const r = runPreview(verticalWithUnservedUi(), '--allow-unserved-ui');
+    // Past the preflight: it reached the build (the stubbed npx), so the flag arrived.
+    expect(r.stderr).not.toMatch(/nothing in the push would serve/);
+    expect(r.stdout).toMatch(/building helpdesk@0\.0\.1-pr-1\.1/);
   });
 });

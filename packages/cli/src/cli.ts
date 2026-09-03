@@ -190,7 +190,9 @@ Usage:
                                               Re-running the same --tag rebinds the new push
                                               onto the same scope and renews its TTL; --refresh
                                               re-forks from prod. --ttl is the GC backstop
-                                              (default 72h; 'none' pins the preview until deleted)
+                                              (default 72h; 'none' pins the preview until deleted).
+                                              Takes push's own overrides too: --skip-lint and
+                                              --allow-unserved-ui
   substrat preview delete --tag <tag> [--slug <s>]  reap a preview (idempotent)
   substrat preview ls [--slug <s>]            list a vertical's active previews
   substrat model view [dir|model.json]        render the entity model as a self-contained
@@ -829,6 +831,10 @@ async function cmdPreview(): Promise<void> {
       // A preview runs the same code on the same runtime, so it is gated the same (#955),
       // by the pre-flight above — whose receipt keeps this from re-scanning the tree.
       skipLint: argv.includes('--skip-lint'),
+      // …and by the same UI preflight (#881), so it needs the same override. Previews are
+      // per-PR and run on every push, which makes this the path most likely to meet the
+      // refusal — and until #1209 the only one where the remedy it names did nothing.
+      allowUnservedUi: argv.includes('--allow-unserved-ui'),
       linted,
       envSpec: meta.envSpec,
       ownerGrants: meta.ownerGrants,

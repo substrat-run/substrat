@@ -409,6 +409,39 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
 }
 
 /**
+ * A quoted module specifier naming the inlined-assets module, in any import form:
+ * `from './assets.generated.js'`, a bare `import './assets.generated.js'`, `import(…)`
+ * and `require(…)` all match. Extension-optional, because TypeScript source may write the
+ * specifier with `.js`, with `.ts`, or with neither.
+ */
+const INLINED_ASSETS_IMPORT = /\b(?:from|import|require)\s*\(?\s*['"][^'"]*assets\.generated(?:\.[cm]?[jt]sx?)?['"]/;
+
+/**
+ * Does the worker serve its front end from an inlined-assets module — the pre-#340 pattern,
+ * where a generated module holds the built bytes and `src/` serves them?
+ *
+ * Two pieces of evidence, and the second one is why this is a function (#1209). The
+ * generated module itself is BUILD OUTPUT and normally gitignored, while `assertUiIsServed`
+ * deliberately runs before the declared build — so on a fresh checkout, which is every CI
+ * run, the file simply is not there yet and the exemption missed a UI it would in fact have
+ * served. The import is the durable half: the worker's own source names the module, and
+ * that source is committed. Either one is enough.
+ */
+function servesInlinedAssets(src: string): boolean {
+  if (!existsSync(src)) return false;
+  const files = walkFiles(src);
+  if (files.some((f) => /assets\.generated\.[cm]?[jt]s$/.test(f))) return true;
+  return files.some((f) => {
+    if (!/\.[cm]?[jt]sx?$/.test(f)) return false;
+    try {
+      return INLINED_ASSETS_IMPORT.test(readFileSync(f, 'utf8'));
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * The UI-reachability preflight (#881): a scaffolded `app/` that the manifest never
  * declares ships a vertical whose front end is real, tested, and answers 404 at its own
  * hostname.
@@ -425,7 +458,7 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
  *   - no `assets` in EITHER vocabulary (runtimeNeeds or a hand-authored wrangler.jsonc),
  *     so nothing is uploaded to the runtime's asset store.
  *   - no inlined-assets module under `src/` — the pre-#340 base64 pattern serves its files
- *     from the worker and therefore declares nothing, correctly.
+ *     from the worker and therefore declares nothing, correctly (`servesInlinedAssets`).
  *
  * `--allow-unserved-ui` is the deliberate override for the case this cannot see from the
  * tree alone: an `app/` that is a mock, a fixture, or built and deployed by somebody else.
@@ -438,10 +471,7 @@ export function assertUiIsServed(
 ): void {
   if (allowUnservedUi || assets) return;
   if (!existsSync(join(dir, 'app', 'index.html'))) return;
-  // The pre-#340 inline pattern: a generated module holding the built bytes, imported by
-  // the worker. It serves the app without declaring assets, and must keep pushing.
-  const src = join(dir, 'src');
-  if (existsSync(src) && walkFiles(src).some((f) => /assets\.generated\.[cm]?[jt]s$/.test(f))) return;
+  if (servesInlinedAssets(join(dir, 'src'))) return;
   throw new Error(
     [
       'this vertical has a UI (app/index.html) that nothing in the push would serve.',

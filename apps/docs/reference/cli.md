@@ -156,7 +156,11 @@ API on `/api/*` and 404s on `/` — a deploy that looks entirely successful. So 
 `app/index.html` exists (Vite's own entry marker, and what the scaffold writes) but there is
 no `assets` block in either vocabulary — `runtimeNeeds.assets` or a hand-authored
 `wrangler.jsonc` — and no inlined-assets module under `src/`, the push stops before uploading
-anything. The fix is the declaration it prints:
+anything. The inlined-assets pattern counts as served whether or not it has been built yet: the
+check accepts either an `assets.generated.*` module under `src/`, or source that **imports** one.
+The module is usually build output and gitignored, and this check runs before your declared
+build, so on a fresh checkout the import is the only evidence there is. The fix for a genuinely
+undeclared UI is the declaration it prints:
 
 ```json
 "runtimeNeeds": {
@@ -298,7 +302,9 @@ scope (or provisions an `--empty` clean-room scope), binds the pushed version, a
 Re-running the same `--tag` **rebinds** onto the same fork (migrations roll forward on one copy) and
 **renews** its TTL; `--refresh` starts from a clean fork. `--ttl` defaults to `72h`; `--ttl none`
 **pins** the preview until you delete it. Default preview pushes use a semver *prerelease* label, so
-they never advance the release version your repo owns. Full workflow — sticky-per-PR + per-build URLs,
+they never advance the release version your repo owns. Because `create` is a push, it takes push's
+own overrides: `--skip-lint` and `--allow-unserved-ui` mean the same thing here as they do there.
+Full workflow — sticky-per-PR + per-build URLs,
 a long-lived test environment, the release candidate — in
 [Environments & previews](/guide/environments-and-previews).
 
