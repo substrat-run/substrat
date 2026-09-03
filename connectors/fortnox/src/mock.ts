@@ -45,18 +45,20 @@ export interface FortnoxMockOptions {
  * A code point with no CP437 representation becomes `?`, exactly as Fortnox would.
  */
 export function pc8Bytes(text: string): Uint8Array {
-  const out = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i] as string;
-    const code = ch.charCodeAt(0);
+  // `for...of` iterates CODE POINTS; `text[i]` would hand back UTF-16 code units, so an
+  // astral character (an emoji in a voucher text, say) would split into two surrogate
+  // halves and emit two `?` bytes where the contract above promises one.
+  const out: number[] = [];
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0x3f;
     if (code < 0x80) {
-      out[i] = code;
+      out.push(code);
       continue;
     }
     const high = CP437_HIGH.indexOf(ch);
-    out[i] = high === -1 ? 0x3f : 0x80 + high;
+    out.push(high === -1 ? 0x3f : 0x80 + high);
   }
-  return out;
+  return new Uint8Array(out);
 }
 
 export class FortnoxMock {

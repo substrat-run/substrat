@@ -38,6 +38,7 @@ import { fileURLToPath } from 'node:url';
 import { connectionId } from '@substrat-run/contracts';
 import type { ConnectorConnection } from '@substrat-run/kernel';
 import { FortnoxApi, FORTNOX_API_BASE, type FortnoxSecret } from '../src/api.js';
+import { financialYearFor } from '../src/aggregate.js';
 import { loadDevSecrets, providerEnv } from './dev-secrets.mjs';
 
 const PKG = dirname(fileURLToPath(import.meta.url));
@@ -116,6 +117,14 @@ if (company.OrganizationNumber !== SANDBOX_ORGNR && !has('force')) {
   process.exit(1);
 }
 
+const VOUCHERS = [
+  { month: '01', day: '15', text: 'Substrat seed – försäljning', net: 1000, vat: 250 },
+  { month: '02', day: '08', text: 'Substrat seed – försäljning', net: 2400, vat: 600 },
+  { month: '03', day: '22', text: 'Substrat seed – försäljning', net: 800, vat: 200 },
+  { month: '05', day: '03', text: 'Substrat seed – försäljning', net: 3125, vat: 781.25 },
+];
+
+
 // ---------------------------------------------------------------------------
 // 2. A financial year, if there is none covering the target year.
 // ---------------------------------------------------------------------------
@@ -125,10 +134,22 @@ interface FinancialYearRow {
   ToDate: string;
 }
 
-let years = await api.financialYears();
-let target = years.find((y) => y.FromDate.startsWith(String(year)));
+// The dates this seed will post to. Derived from VOUCHERS rather than assumed to be
+// 1 Jan–31 Dec, because the year we need is the one that COVERS these.
+const seedFrom = `${year}-${VOUCHERS[0]!.month}-${VOUCHERS[0]!.day}`;
+const seedTo = `${year}-${VOUCHERS[VOUCHERS.length - 1]!.month}-${VOUCHERS[VOUCHERS.length - 1]!.day}`;
 
-if (target === undefined) {
+let years = await api.financialYears();
+
+// Overlap, not `FromDate.startsWith(year)` — and the connector already owns this rule,
+// so use it rather than a second, weaker copy. A broken financial year (1 July–30 June)
+// covers the seed dates while STARTING in the previous calendar year: a prefix match
+// misses it and then tries to create a 1 Jan–31 Dec year on top of it. Fortnox keeps
+// financial years sequential and non-overlapping, so that either fails outright or
+// seeds into a different year than the live suite will read.
+let target = financialYearFor(years, { from: seedFrom, to: seedTo });
+
+if (target === null) {
   // The account chart name is NOT free text and NOT stable across years: Fortnox
   // rejects an unknown one with "Vald kontoplan existerar inte." So ask which ones
   // exist rather than hard-coding "Bas 2026" and breaking every January.
@@ -138,7 +159,7 @@ if (target === undefined) {
     charts.AccountCharts.find((c) => c.Name.startsWith('Bas '))?.Name;
   if (chart === undefined) throw new Error(`no BAS account chart offered: ${JSON.stringify(charts)}`);
 
-  console.log(`→ creating financial year ${year} on "${chart}"`);
+  console.log(`→ no financial year covers ${seedFrom}..${seedTo}; creating ${year} on "${chart}"`);
   const created = await call<{ FinancialYear: FinancialYearRow }>('POST', '/financialyears', {
     FinancialYear: {
       FromDate: `${year}-01-01`,
@@ -148,12 +169,12 @@ if (target === undefined) {
   });
   console.log(`  ✓ financial year Id ${created.FinancialYear.Id}`);
   years = await api.financialYears();
-  target = years.find((y) => y.FromDate.startsWith(String(year)));
+  target = financialYearFor(years, { from: seedFrom, to: seedTo });
 } else {
-  console.log(`→ financial year ${year} already exists (Id ${target.Id})`);
+  console.log(`→ financial year ${target.FromDate}..${target.ToDate} covers the seed dates (Id ${target.Id})`);
 }
 
-if (target === undefined) throw new Error(`financial year ${year} still missing after creation`);
+if (target === null) throw new Error(`no financial year covers ${seedFrom}..${seedTo} after creation`);
 
 // ---------------------------------------------------------------------------
 // 3. Vouchers — spread across months, and balanced.
@@ -163,25 +184,30 @@ if (target === undefined) throw new Error(`financial year ${year} still missing 
 // ledger cannot tell a working grouping from one that drops the month entirely.
 // Every voucher balances to zero, because that is what the live suite asserts and a
 // deliberately unbalanced fixture would make a real parser bug indistinguishable.
-const VOUCHERS = [
-  { month: '01', day: '15', text: 'Substrat seed – försäljning', net: 1000, vat: 250 },
-  { month: '02', day: '08', text: 'Substrat seed – försäljning', net: 2400, vat: 600 },
-  { month: '03', day: '22', text: 'Substrat seed – försäljning', net: 800, vat: 200 },
-  { month: '05', day: '03', text: 'Substrat seed – försäljning', net: 3125, vat: 781.25 },
-];
-
-const existing = await call<{ Vouchers?: { Description?: string }[] }>(
+const existing = await call<{ Vouchers?: { Description?: string; TransactionDate?: string }[] }>(
   'GET',
   `/vouchers?financialyear=${target.Id}`,
 );
-const alreadySeeded = (existing.Vouchers ?? []).filter((v) =>
-  (v.Description ?? '').startsWith('Substrat seed'),
-).length;
 
-if (alreadySeeded >= VOUCHERS.length) {
-  console.log(`→ ${alreadySeeded} seed voucher(s) already present — nothing to write`);
+// Matched by (date, description), not counted. A count assumes the vouchers that exist
+// are a PREFIX of the ones we want: delete January and the count says 3, which posts May
+// a second time and leaves January missing. Fortnox returns `TransactionDate` in the list
+// response (verified against the live API), so identity is available without a fetch per
+// voucher.
+const present = new Set(
+  (existing.Vouchers ?? [])
+    .filter((v) => (v.Description ?? '').startsWith('Substrat seed'))
+    .map((v) => `${v.TransactionDate ?? ''}|${v.Description ?? ''}`),
+);
+
+const missing = VOUCHERS.filter(
+  (v) => !present.has(`${year}-${v.month}-${v.day}|${v.text}`),
+);
+
+if (missing.length === 0) {
+  console.log(`→ all ${VOUCHERS.length} seed voucher(s) already present — nothing to write`);
 } else {
-  for (const v of VOUCHERS.slice(alreadySeeded)) {
+  for (const v of missing) {
     // 1930 bank / 3001 sales / 2611 output VAT — the accounts a BAS chart always has.
     await call('POST', '/vouchers', {
       Voucher: {

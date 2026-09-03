@@ -3,6 +3,7 @@ import { moneyOf } from '@substrat-run/contracts';
 import { parseSie4, sieAmount, sieDate, splitSieLine, decodeSie } from '../src/sie4.js';
 import { financialYearFor, summarizeLedger } from '../src/aggregate.js';
 import { SIE_FIXTURE } from './fixture.js';
+import { pc8Bytes } from '../src/mock.js';
 
 describe('splitSieLine', () => {
   it('keeps a quoted field with spaces whole', () => {
@@ -283,5 +284,23 @@ describe('decodeSie', () => {
   it('accepts a file that declares no #FORMAT at all, as PC8', () => {
     const bytes = pc8(...[...'#FLAGGA 0\n#SIETYP 4\n'].map((c) => c.charCodeAt(0)), 0x94);
     expect(decodeSie(bytes)).toContain('ö');
+  });
+});
+
+describe('pc8Bytes', () => {
+  it('round-trips Swedish text through decodeSie', () => {
+    const text = '#KONTO 3010 "Hyresintäkter bostäder"';
+    expect(decodeSie(pc8Bytes(`#FORMAT PC8\n${text}`))).toContain(text);
+  });
+
+  it('emits one ? per unsupported CODE POINT, not per UTF-16 unit', () => {
+    // An emoji is two UTF-16 units and one code point. Indexing by `.length` would
+    // split it and emit two bytes, which is one more `?` than the contract promises.
+    expect(pc8Bytes('😀')).toEqual(new Uint8Array([0x3f]));
+    expect(pc8Bytes('a😀b')).toEqual(new Uint8Array([0x61, 0x3f, 0x62]));
+  });
+
+  it('encodes the Swedish letters to the bytes Fortnox actually sends', () => {
+    expect(pc8Bytes('äåÄÅöÖ')).toEqual(new Uint8Array([0x84, 0x86, 0x8e, 0x8f, 0x94, 0x99]));
   });
 });
