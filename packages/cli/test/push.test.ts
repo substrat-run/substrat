@@ -469,6 +469,10 @@ describe('assertUiIsServed — a UI nothing would serve (#881)', () => {
     ],
     ['a string that quotes an import', `export const help = "import { A } from './assets.generated.js'";\n`],
     ['a specifier that only ends similarly', "import { x } from './my-assets.generated-helpers.js';\n"],
+    // Ordinary calls that merely reuse the words. `from` in an import takes no parenthesis
+    // and `require` in an import is never a method, so neither of these is an import.
+    ['a call to a function named from', "export const rows = from('./assets.generated.js');\n"],
+    ['a method call named require', "export const a = loader.require('./assets.generated.js');\n"],
   ])('still REFUSES when the only evidence is %s', (_what, source) => {
     const dir = withUi();
     mkdirSync(join(dir, 'src'), { recursive: true });

@@ -487,8 +487,24 @@ function scanLiterals(source: string): { code: string; literals: string[] } {
   return { code, literals };
 }
 
-/** A lifted literal in import position: `from …`, a bare `import …`, `import(…)`, `require(…)`. */
-const IMPORT_OF_LITERAL = /\b(?:from|import|require)\s*\(?\s*\0(\d+)\0/g;
+/**
+ * A lifted literal in import position, one pattern per form the language actually has.
+ *
+ * Split rather than one alternation because the forms differ in what may sit around the
+ * keyword, and a laxer shape reads an ordinary call as an import: `from` in an import takes
+ * no parenthesis (`from('./x')` is a method call), and `require` in an import is never a
+ * member (`loader.require('./x')` is somebody's loader). The `(?<![.$\w])` guard is what
+ * keeps `x.from`/`myRequire` out; `import` needs it too, though only against an identifier
+ * ending in it, since the word itself is reserved.
+ */
+const IMPORT_OF_LITERAL: RegExp[] = [
+  /** `import x from './a'`, `export * from './a'` — no parenthesis, ever. */
+  /(?<![.$\w])from\s*\0(\d+)\0/g,
+  /** `import './a'` and `import('./a')`. */
+  /(?<![.$\w])import\s*\(?\s*\0(\d+)\0/g,
+  /** `require('./a')` — parenthesised, and not a method on something. */
+  /(?<![.$\w])require\s*\(\s*\0(\d+)\0/g,
+];
 
 /** The specifier of the inlined-assets module, with or without an extension — TypeScript
  *  source writes it as `.js`, as `.ts`, or bare, and it may sit in a subdirectory. */
@@ -497,9 +513,11 @@ const INLINED_ASSETS_SPECIFIER = /(?:^|\/)assets\.generated(?:\.[cm]?[jt]sx?)?$/
 /** Does this module import the inlined-assets module? */
 function importsInlinedAssets(source: string): boolean {
   const { code, literals } = scanLiterals(source);
-  for (const m of code.matchAll(IMPORT_OF_LITERAL)) {
-    const specifier = literals[Number(m[1])];
-    if (specifier !== undefined && INLINED_ASSETS_SPECIFIER.test(specifier)) return true;
+  for (const pattern of IMPORT_OF_LITERAL) {
+    for (const m of code.matchAll(pattern)) {
+      const specifier = literals[Number(m[1])];
+      if (specifier !== undefined && INLINED_ASSETS_SPECIFIER.test(specifier)) return true;
+    }
   }
   return false;
 }
