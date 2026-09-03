@@ -432,6 +432,12 @@ function regexAllowed(masked: string[], at: number): boolean {
 /**
  * Comments, string bodies and regex literals blanked; offsets and newlines kept.
  *
+ * **Exported**, and the offsets are why: a caller that needs a literal's TEXT — the CLI's
+ * unserved-UI preflight reads import specifiers this way (#1209) — finds the quotes standing
+ * in the masked copy at the same offsets they occupy in the original, and slices the text
+ * back out of the original there. That keeps one scanner in the repo rather than two that
+ * must agree about regex-versus-division.
+ *
  * Template literals keep their `${…}` expressions — an engine call can live in
  * one, and the braces are balanced either way — and blank only the literal text
  * between them, which is where a stray `{` or quote would otherwise come from.
@@ -444,7 +450,7 @@ function regexAllowed(masked: string[], at: number): boolean {
  * literals and regexes the same way — it has to, or a `//` inside a string would
  * read as a comment — it just does not erase them.
  */
-function maskSource(src: string, opts: { literals?: boolean } = {}): string {
+export function maskSource(src: string, opts: { literals?: boolean } = {}): string {
   const maskLiterals = opts.literals !== false;
   const out = src.split('');
   const n = src.length;

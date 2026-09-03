@@ -27,6 +27,7 @@ import {
   resolvePackages,
   declaredEngines,
   formatViolations,
+  maskSource,
 } from '@substrat-run/boundary-lint';
 import { warnIfStale } from './version.js';
 import { parseJsonBody, readAllEntries } from './http.js';
@@ -409,107 +410,24 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
 }
 
 /**
- * The keywords a regex literal may follow. Every other identifier is a value, and a `/`
- * after a value is division — the distinction `scanLiterals` needs to skip a regex whole.
- */
-const KEYWORD_BEFORE_REGEX = new Set([
-  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw',
-  'case', 'do', 'else', 'yield', 'await',
-]);
-
-/**
- * Source with its comments removed and every string/template literal lifted out, replaced
- * in place by a `\0<n>\0` placeholder.
+ * A string literal as `maskSource` left it: the quotes stand, the body is blank.
  *
- * A scanner, not a parser, but it is the part that matters here: a raw-text regex over
- * source cannot tell an import from a line that merely quotes one, so
- * `// import './assets.generated.js'` and `const help = "import './assets.generated.js'"`
- * would both have granted the exemption below. After this, a specifier is only findable
- * where the language would actually have parsed one — a comment contributes nothing, and a
- * string's contents are a literal rather than code. Regex literals are skipped whole
- * (`/['"]/` must not open a string), using the usual "could a regex start here" rule: after
- * a VALUE it is division, after anything else it is a regex. An identifier is therefore read
- * whole rather than a character at a time — `return` ends in a word character but is not a
- * value, and treating it as one left `return /import '\.\/assets\.generated\.js'/` parsed as
- * code with a string inside it.
+ * The scanner is `boundary-lint`'s own, reused rather than rewritten — it already blanks
+ * comments, string bodies and regex literals for R7 and R8, and a second hand-rolled lexer
+ * here would be one more thing that has to agree with it about regex-versus-division. The
+ * mask is what makes this readable at all: a raw-text regex over source cannot tell an
+ * import from a line that merely quotes one, so `// import './assets.generated.js'` and
+ * `const help = "import './assets.generated.js'"` would both have granted the exemption
+ * below. Against the masked copy neither can — a comment and a string body are blank there,
+ * and a regex literal is blanked whole, so `/['"]/` cannot open a string.
+ *
+ * What the mask keeps is POSITION: same length, same offsets. So a specifier matched here is
+ * read straight back out of the original source, between the quotes the match found.
  */
-function scanLiterals(source: string): { code: string; literals: string[] } {
-  const literals: string[] = [];
-  let code = '';
-  let i = 0;
-  let regexOk = true;
-  while (i < source.length) {
-    const c = source[i]!;
-    const next = source[i + 1];
-    if (c === '/' && next === '/') {
-      while (i < source.length && source[i] !== '\n') i++;
-      continue;
-    }
-    if (c === '/' && next === '*') {
-      i += 2;
-      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
-      i += 2;
-      code += ' ';
-      continue;
-    }
-    if (c === '/' && regexOk) {
-      i++;
-      let inClass = false;
-      while (i < source.length) {
-        const r = source[i]!;
-        if (r === '\\') {
-          i += 2;
-          continue;
-        }
-        if (r === '\n') break;
-        i++;
-        if (r === '[') inClass = true;
-        else if (r === ']') inClass = false;
-        else if (r === '/' && !inClass) break;
-      }
-      code += ' ';
-      regexOk = false;
-      continue;
-    }
-    if (c === "'" || c === '"' || c === '`') {
-      i++;
-      let value = '';
-      while (i < source.length) {
-        const s = source[i]!;
-        if (s === '\\') {
-          value += source[i + 1] ?? '';
-          i += 2;
-          continue;
-        }
-        i++;
-        if (s === c) break;
-        value += s;
-      }
-      code += `\0${literals.length}\0`;
-      literals.push(value);
-      regexOk = false;
-      continue;
-    }
-    if (/[A-Za-z_$]/.test(c)) {
-      // Read the identifier whole: only then is it knowable whether the next `/` follows a
-      // value (`x / 2`) or a keyword that takes an expression (`return /re/`).
-      let word = '';
-      while (i < source.length && /[\w$]/.test(source[i]!)) word += source[i++]!;
-      code += word;
-      regexOk = KEYWORD_BEFORE_REGEX.has(word);
-      continue;
-    }
-    code += c;
-    // After a value (a number, `)`, `]`) a `/` divides; after anything else it can open a
-    // regex. Whitespace carries the previous answer forward.
-    if (!/\s/.test(c)) regexOk = !/[\d)\]]/.test(c);
-    i++;
-  }
-  return { code, literals };
-}
+const MASKED_LITERAL = String.raw`(['"\`])\s*?\1`;
 
 /**
- * A lifted literal in import position, one pattern per form the language actually has.
+ * A literal in import position, one pattern per form the language actually has.
  *
  * Split rather than one alternation because the forms differ in what may sit around the
  * keyword, and a laxer shape reads an ordinary call as an import: `from` in an import takes
@@ -519,13 +437,20 @@ function scanLiterals(source: string): { code: string; literals: string[] } {
  * ending in it, since the word itself is reserved.
  */
 /** `import x from './a'`, `export * from './a'` — no parenthesis, ever. */
-const FROM_LITERAL = /(?<![.$\w])from\s*\0(\d+)\0/g;
+const FROM_LITERAL = new RegExp(String.raw`(?<![.$\w])from\s*` + MASKED_LITERAL, 'g');
 /** `import './a'` and `import('./a')`. */
-const IMPORT_LITERAL = /(?<![.$\w])import\s*\(?\s*\0(\d+)\0/g;
+const IMPORT_LITERAL = new RegExp(String.raw`(?<![.$\w])import\s*\(?\s*` + MASKED_LITERAL, 'g');
 /** `require('./a')` — parenthesised, and not a method on something. */
-const REQUIRE_LITERAL = /(?<![.$\w])require\s*\(\s*\0(\d+)\0/g;
+const REQUIRE_LITERAL = new RegExp(String.raw`(?<![.$\w])require\s*\(\s*` + MASKED_LITERAL, 'g');
 /** The `import`/`export` keyword a `from` belongs to — the LAST one before it. */
 const IMPORT_KEYWORD = /(?<![.$\w])(?:import|export)\b/g;
+
+/** The specifier this match found, read out of the UNMASKED source: the match's own quote
+ *  opens it (nothing before it in any of the patterns above can be one) and ends it. */
+function specifierOf(source: string, m: RegExpExecArray): string {
+  const open = m.index + m[0].indexOf(m[1]!);
+  return source.slice(open + 1, m.index + m[0].length - 1);
+}
 
 /** What stands between the declaration's keyword and its `from`, or undefined if no keyword
  *  precedes it (which is not a declaration this understands). */
@@ -559,11 +484,9 @@ const INLINED_ASSETS_SPECIFIER = /(?:^|\/)assets\.generated(?:\.[cm]?[jt]sx?)?$/
 
 /** Does this module import the inlined-assets module? */
 function importsInlinedAssets(source: string): boolean {
-  const { code, literals } = scanLiterals(source);
-  const isTheModule = (m: RegExpExecArray): boolean => {
-    const specifier = literals[Number(m[1])];
-    return specifier !== undefined && INLINED_ASSETS_SPECIFIER.test(specifier);
-  };
+  const code = maskSource(source);
+  const isTheModule = (m: RegExpExecArray): boolean =>
+    INLINED_ASSETS_SPECIFIER.test(specifierOf(source, m));
   for (const m of code.matchAll(FROM_LITERAL)) {
     if (!isTheModule(m)) continue;
     // The only form that can be erased: `import type … from './assets.generated.js'` names
