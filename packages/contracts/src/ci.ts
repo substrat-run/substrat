@@ -323,6 +323,11 @@ ${cpEnv}
   const testEnv = `      - name: Update the test environment
         if: vars.SUBSTRAT_TEST_SCOPE_ID != ''
 ${cpEnv}
+          # Through env, not \${{ }} inside the script: an expression is substituted into the
+          # script TEXT before bash parses it, so a variable containing shell syntax would run
+          # as a command — here beside a live SUBSTRAT_SERVICE_TOKEN. A repository variable is
+          # set by a maintainer rather than a stranger, which lowers the odds, not the rule.
+          SUBSTRAT_TEST_SCOPE_ID: \${{ vars.SUBSTRAT_TEST_SCOPE_ID }}
         run: |
           set -euo pipefail
           BASE=$(node -p "require('${pkgRef}').version")
@@ -331,7 +336,7 @@ ${cpEnv}
           # "could not read the pushed version id" beats a bare exit 1 from grep.
           VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
           if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi
-          ${cli} scope bind \${{ vars.SUBSTRAT_TEST_SCOPE_ID }} --version "$VID" --snapshot`;
+          ${cli} scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot`;
 
   // --- the PR previews -----------------------------------------------------------------
   //
@@ -437,6 +442,13 @@ ${cpEnv}
 #   SUBSTRAT_TEST_SCOPE_ID      a long-lived scope rebound to every merge (the test env)
 #   SUBSTRAT_PER_BUILD_PREVIEW  set to 1 to also mint a frozen per-build preview URL per push
 
+# The default GITHUB_TOKEN, narrowed to what these jobs actually use. A repository whose
+# default is read/write would otherwise hand every job below write access to issues, packages
+# and the contents of the repo — none of which any of them touch. The one job that needs more
+# elevates for itself: \`preview\` declares \`pull-requests: write\` to leave its comment.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [${branch}]${pathsFilter}
@@ -450,6 +462,24 @@ jobs:
 ${releaseNote}
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # One promotion at a time, and every merge still gets one. Two merges landing together
+    # would otherwise race, and the loser could point prod at the OLDER version — the channel
+    # takes whichever push finishes last, not whichever commit is newer. Queued rather than
+    # cancelled: a superseded deploy is still a version somebody has to be able to find, and
+    # cancelling mid-push can leave a version uploaded but never promoted. \`queue: max\`
+    # because the default (\`queue: single\`) holds ONE run pending, so a third merge arriving
+    # evicts the second and that commit is never deployed at all — the same lost promotion the
+    # group was added to prevent, reached from the other side. Up to 100 wait instead.
+    #
+    # Serialized and bounded is all of it, though — NOT ordered. GitHub queues by the time a
+    # run starts waiting, and states outright that ordering is not guaranteed, so two runs can
+    # still invert and leave prod running the older commit under a HIGHER version number
+    # (\`push\` patch-bumps the registry's highest; it never reads the commit). Closing that
+    # needs a guard refusing to promote a commit the branch has moved past — its own change.
+    concurrency:
+      group: substrat-deploy-${slug}-prod
+      queue: max
+      cancel-in-progress: false
     steps:
 ${setup(release === 'changesets' ? 2 : undefined)}
 ${release_}

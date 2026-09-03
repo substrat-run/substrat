@@ -262,6 +262,19 @@ describe('GitHub App client', () => {
       expect(yaml).toContain("if: github.event_name == 'push'");
     });
 
+    it('serializes prod promotions without dropping one', () => {
+      const yaml = wf();
+      // A group alone is not enough: with the default `queue: single` only one run may sit
+      // pending, so of three merges landing together the middle one is evicted and never
+      // deploys — the same lost promotion the group was added to prevent. `queue: max` lets
+      // up to 100 wait instead. It buys no ordering (GitHub does not guarantee that), and it
+      // is invalid beside `cancel-in-progress: true`, which is why the job never carries that.
+      expect(yaml).toContain(
+        'concurrency:\n      group: substrat-deploy-hr-portal-prod\n      queue: max\n      cancel-in-progress: false',
+      );
+      expect(yaml).not.toContain('cancel-in-progress: true');
+    });
+
     it('gates every push and preview on the project own checks (#955)', () => {
       // A push IS a release. Outside this monorepo the hosted push path is the only path a
       // customer has, so a workflow that goes checkout → install → build → push leaves every
@@ -341,7 +354,20 @@ describe('GitHub App client', () => {
       // "Tracks main" stays a CI step rather than a platform setting (#509 §3) — gated on a
       // repo variable so one generated file serves projects with and without a test env.
       expect(yaml).toContain("if: vars.SUBSTRAT_TEST_SCOPE_ID != ''");
-      expect(yaml).toContain('scope bind ${{ vars.SUBSTRAT_TEST_SCOPE_ID }} --version "$VID" --snapshot');
+      // The id reaches bash through `env`, and the script reads the ENV VAR. Asserted as two
+      // halves because the pair is the point: an expression interpolated into a `run:` block is
+      // substituted into the script text before bash parses it, so a value carrying shell
+      // syntax executes — next to a live SUBSTRAT_SERVICE_TOKEN. This test pinned that exact
+      // shape until it was fixed, so it now pins the safe one instead.
+      expect(yaml).toContain('SUBSTRAT_TEST_SCOPE_ID: ${{ vars.SUBSTRAT_TEST_SCOPE_ID }}');
+      expect(yaml).toContain('scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot');
+      // The variable is referenced EXACTLY twice, and both are safe by construction: an `if:`
+      // is an expression context that never reaches a shell, and the `env:` line is the
+      // passthrough. Counting beats matching the one spelling that was wrong — `scope bind
+      // "${{ vars.… }}"` interpolates just the same, and so does any future line that reaches
+      // for the expression again. A third occurrence anywhere fails this, whatever it looks like.
+      expect(yaml.match(/vars\.SUBSTRAT_TEST_SCOPE_ID/g)).toHaveLength(2);
+      expect(yaml).not.toMatch(/scope bind[^\n]*\$\{\{/);
     });
 
     it('generates PR-preview jobs that create on open/sync and reap on close', () => {
