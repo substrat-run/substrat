@@ -341,7 +341,14 @@ describe('GitHub App client', () => {
       // "Tracks main" stays a CI step rather than a platform setting (#509 §3) — gated on a
       // repo variable so one generated file serves projects with and without a test env.
       expect(yaml).toContain("if: vars.SUBSTRAT_TEST_SCOPE_ID != ''");
-      expect(yaml).toContain('scope bind ${{ vars.SUBSTRAT_TEST_SCOPE_ID }} --version "$VID" --snapshot');
+      // The id reaches bash through `env`, and the script reads the ENV VAR. Asserted as two
+      // halves because the pair is the point: an expression interpolated into a `run:` block is
+      // substituted into the script text before bash parses it, so a value carrying shell
+      // syntax executes — next to a live SUBSTRAT_SERVICE_TOKEN. This test pinned that exact
+      // shape until it was fixed, so it now pins the safe one instead.
+      expect(yaml).toContain('SUBSTRAT_TEST_SCOPE_ID: ${{ vars.SUBSTRAT_TEST_SCOPE_ID }}');
+      expect(yaml).toContain('scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot');
+      expect(yaml).not.toContain('scope bind ${{');
     });
 
     it('generates PR-preview jobs that create on open/sync and reap on close', () => {
