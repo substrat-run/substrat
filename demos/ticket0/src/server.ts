@@ -113,7 +113,12 @@ async function boot() {
     if (!caller) throw new HTTPException(401, { message: 'unauthorized' });
     return host.getScope(caller.principal, caller.tenantId, caller.scopeId);
   };
-  mountApi(app, staffStub);
+  // The MCP endpoint's RFC 9728 document, naming the issuer this desk actually verifies
+  // against. The WORKER has always passed this (`authorizationServersOf`); the dev server
+  // did not, so the local MCP surface answered a 401 that pointed nowhere while the hosted
+  // one pointed home. An MCP client cannot discover where to authenticate from silence,
+  // which made the one surface a developer exercises the one that could not be driven.
+  mountApi(app, staffStub, () => Promise.resolve([login.issuer]));
   // "Re-read" and "Add a source" in the desk — the same route the worker mounts.
   mountKbRefresh(app, staffStub);
 

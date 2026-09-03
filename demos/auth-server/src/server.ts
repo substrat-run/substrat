@@ -17,6 +17,7 @@ import { resolveScopedEnvSpec } from '@substrat-run/contracts';
 import { schema } from './auth-schema.generated.js';
 import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { upgradeLegacySchema } from '../db/upgrade.js';
+import { fetchClientMetadataResource } from '@better-auth/cimd/node';
 import { buildAuth, DEMO_CLIENT, seedDemoClient, type Auth } from './auth.js';
 import { senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
@@ -106,6 +107,10 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     trustedOrigins: [ORIGIN, `http://localhost:${WEB_PORT}`],
     transport,
     sender: senderFor(cfg.EMAIL_FROM),
+    // Node can honour the transport contract in full — resolve once, reject special-use
+    // answers, pin the address, refuse redirects — so the shipped implementation is used
+    // rather than the workerd one this vertical also carries.
+    fetchClientMetadataResource,
     allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
   });
 };

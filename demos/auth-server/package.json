@@ -3,7 +3,7 @@
   "version": "0.3.9",
   "private": true,
   "license": "Apache-2.0",
-  "description": "Standalone Better Auth OIDC provider demo (auth-server) — see spec/concept.md",
+  "description": "Standalone Better Auth OIDC provider demo (auth-server) \u2014 see spec/concept.md",
   "substrat": {
     "slug": "auth-server",
     "name": "Auth Server",
@@ -17,8 +17,8 @@
       {
         "key": "PUBLIC_ORIGIN",
         "label": "Issuer origin",
-        "description": "Optional pin for the OIDC `issuer`. Leave blank on the platform: the issuer derives itself from the hostname each request arrives on (the install’s platform hostname or a bound custom domain), so discovery is always self-consistent. Set only when the request origin cannot be trusted (e.g. standalone behind a rewriting proxy).",
-        "placeholder": "blank ⇒ the hostname the request arrived on",
+        "description": "Optional pin for the OIDC `issuer`. Leave blank on the platform: the issuer derives itself from the hostname each request arrives on (the install\u2019s platform hostname or a bound custom domain), so discovery is always self-consistent. Set only when the request origin cannot be trusted (e.g. standalone behind a rewriting proxy).",
+        "placeholder": "blank \u21d2 the hostname the request arrived on",
         "required": false,
         "secret": false,
         "group": "Issuer"
@@ -26,7 +26,7 @@
       {
         "key": "ADMIN_EMAIL",
         "label": "Admin email",
-        "description": "Bootstrap administrator address. With ADMIN_PASSWORD, the first admin is seeded on init — no setup-screen race. Leave both blank to bootstrap via the setup screen instead.",
+        "description": "Bootstrap administrator address. With ADMIN_PASSWORD, the first admin is seeded on init \u2014 no setup-screen race. Leave both blank to bootstrap via the setup screen instead.",
         "placeholder": "admin@example.com",
         "required": false,
         "secret": false,
@@ -44,7 +44,7 @@
       {
         "key": "ALLOW_SIGNUP",
         "label": "Allow sign-up",
-        "description": "Let visitors create their own account (`true`/`false`). Off by default: an issuer that accepts strangers is a decision, not a default. Administrators can always create accounts from the dashboard, and this key is also togglable there — the dashboard writes this same value.",
+        "description": "Let visitors create their own account (`true`/`false`). Off by default: an issuer that accepts strangers is a decision, not a default. Administrators can always create accounts from the dashboard, and this key is also togglable there \u2014 the dashboard writes this same value.",
         "placeholder": "false",
         "required": false,
         "secret": false,
@@ -53,7 +53,7 @@
       {
         "key": "EMAIL_FROM",
         "label": "Sender address",
-        "description": "The From address for password-reset and verification mail. Its domain must be onboarded for sending. Absent ⇒ a safe default; without an EMAIL binding, mail is dropped.",
+        "description": "The From address for password-reset and verification mail. Its domain must be onboarded for sending. Absent \u21d2 a safe default; without an EMAIL binding, mail is dropped.",
         "placeholder": "no-reply@send.example.com",
         "required": false,
         "secret": false,
@@ -92,12 +92,13 @@
     "gen:schema": "tsx scripts/gen-schema.mts"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "^1.7.1",
+    "@better-auth/cimd": "^1.7.2",
+    "@better-auth/oauth-provider": "^1.7.2",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-email": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
-    "better-auth": "^1.7.1",
+    "better-auth": "^1.7.2",
     "better-sqlite3": "^13.0.3",
     "drizzle-orm": "^0.45.2",
     "hono": "^4.6.0",

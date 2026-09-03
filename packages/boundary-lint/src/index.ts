@@ -235,6 +235,14 @@ export const DEFAULT_HARNESS = [
   // defaults are the LIBRARY's storage contract, not a Substrat row's stamp, so
   // R6 has nothing to say about them.
   'auth-schema.ts',
+  // The auth adapter's own network boundary: the transport that fetches a Client ID
+  // Metadata Document, whose `client_id` IS an HTTPS URL. Same class as the rest of
+  // auth*.ts and imported only by them. R3 bans `fetch` in module code because
+  // capabilities come from `ctx` — but an issuer resolving a CIMD client has no `ctx`
+  // and no connector to delegate to: fetching that document is what the OAuth draft
+  // defines the client id to MEAN. The file exists separately from auth-do.ts precisely
+  // so the guarantees it can and cannot make are reviewable in one place.
+  'cimd-fetch.ts',
   'do-contract.ts',
   // The per-instance CONFIG store hosted in a Durable Object — the durable half of
   // `/internal/configure`. Same class as auth-do.ts: the config a scope runs on is

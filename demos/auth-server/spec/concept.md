@@ -99,6 +99,49 @@ party depends on are the ones the built-in round-trip never exercises — which 
 to not exist at all (#898). `test/untrusted-client.test.ts` drives a client that registers
 itself, and is the reason to keep one.
 
+## Client ID Metadata Documents (CIMD)
+
+A client can identify itself by an HTTPS URL that IS its metadata document
+(`draft-ietf-oauth-client-id-metadata-document`), under the MCP `2026-07-28` profile. No
+registration write, no client secret, nothing to rotate: the issuer fetches the document the
+`client_id` names, validates it, and persists the client through the OAuth provider's own
+registration path with `client_discovery_id = 'cimd'` — which is what stops a document later
+claiming an id an administrator registered by hand.
+
+This is what lets an MCP client reach a **vertical's** MCP endpoint. That endpoint is a
+resource server: it answers 401 with `WWW-Authenticate: Bearer resource_metadata="…"`,
+publishes `/.well-known/oauth-protected-resource` naming this issuer, and has no opinion
+about who minted the client. Registration is entirely this side of the wire.
+
+It **composes with** dynamic registration rather than replacing it. `allowUnauthenticated
+ClientRegistration` already makes this issuer usable via RFC 7591, and a client picks:
+CIMD is the better answer for a directory client, because nothing is written per client
+until one actually arrives.
+
+### The transport is injected, because its guarantee is runtime-specific
+
+`@better-auth/cimd` states a security contract for the fetch that retrieves a document: it
+must resolve the hostname exactly once, reject RFC 6890 special-use addresses, pin the
+approved address, and refuse redirects — defences against DNS rebinding, where a name
+answers publicly when checked and privately when fetched.
+
+| Runtime | Transport | Honoured |
+|---|---|---|
+| Node dev server | `@better-auth/cimd/node` | all four |
+| Durable Object (production) | `src/cimd-fetch.ts` | three — **not** resolve-once-and-pin |
+
+workerd exposes no DNS API, so pinning is not expressible there: by the time `fetch` is
+called the runtime owns resolution and nothing can sit between the two. What substitutes is
+a property of *where the code runs*, not of the code — a Worker egresses from Cloudflare's
+edge and has no route into RFC 1918, loopback or link-local space, so a rebind lands
+somewhere the runtime will not connect. That is a mitigation, and `cimd-fetch.ts` says so
+rather than claiming the guarantee. An issuer that ever needs the real thing moves the fetch
+to a boundary that can resolve — the D-46 egress hop.
+
+`fetchClientMetadataResource` is therefore a declared dependency of `buildAuth`, beside
+`database` and `transport`. **Omit it and CIMD is not mounted at all**: an issuer with no
+safe way to fetch a document must not advertise `client_id_metadata_document_supported`.
+
 ## Storage
 
 One **Durable Object** (`AuthServerDO`) is the whole store — a single global issuer addressed
