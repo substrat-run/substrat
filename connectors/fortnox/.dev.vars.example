@@ -1,0 +1,14 @@
+# Copy to `.dev.vars` (gitignored) to un-skip `test/live.test.ts`.
+#
+# Do not fill this in by hand — `FORTNOX_TENANT_ID` is the company's DatabaseNumber and
+# is shown nowhere in the Developer Portal. Run the consent helper from the repo root:
+#
+#   pnpm fortnox:connect --client-id=<id> --client-secret=<secret>
+#
+# It completes the one-time service consent, reads the DatabaseNumber, verifies that
+# client_credentials minting actually works against it, and prints these three lines.
+#
+# Point it at a TEST DATABASE, not a live company. The Developer Portal creates up to 30.
+FORTNOX_CLIENT_ID=
+FORTNOX_CLIENT_SECRET=
+FORTNOX_TENANT_ID=

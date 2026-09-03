@@ -61,6 +61,18 @@ afterwards, and `fortnoxConsentUrl` always sets it. Your callback exchanges the 
 `GET /3/companyinformation` for `DatabaseNumber`, and that number becomes the connection's
 `tenantId`. After that the code path is never used again.
 
+**To do that round once, locally**, from the repo root:
+
+```
+pnpm fortnox:connect --client-id=<id> --client-secret=<secret>
+```
+
+It serves the callback, completes the consent, reads the `DatabaseNumber`, then **mints again
+with `client_credentials`** to prove the service consent actually works — and prints the three
+lines for `connectors/fortnox/.dev.vars`. That last step is the point: it is this connector's
+whole premise, and it fails loudly here rather than silently skipping a test. `DatabaseNumber` is
+shown nowhere in the Developer Portal, so there is no way to assemble the credential by hand.
+
 **Scopes cannot be widened without a new consent round.** Ask for what the integration will need,
 not what it needs today — this is the single most expensive thing to get wrong, because fixing it
 means going back to every customer.
@@ -137,7 +149,9 @@ to bind time rather than disappearing.
 2. **The live round-trip is unverified.** Everything here is built and tested against
    `FortnoxMock`, and `test/live.test.ts` runs the real API — mint, `companyinformation`,
    `financialyears`, `sie/4` — but **only when `connectors/fortnox/.dev.vars` holds a complete
-   credential**, which as of this writing it does not. Until that has run against a real company,
+   credential**, which as of this writing it does not. The Developer Portal creates up to 30
+   **test databases**, administered like ordinary companies, and one of those is the right
+   target — `pnpm fortnox:connect` (above) is what fills the file. Until that has run,
    three specific claims rest on documentation rather than measurement: that client-credentials
    minting works as described, that the SIE4 response really is ISO-8859-1, and that the response
    envelopes are `FinancialYears` / `CompanyInformation`. It stays a `0.x` release for this reason.

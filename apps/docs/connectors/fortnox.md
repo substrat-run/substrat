@@ -173,9 +173,17 @@ bind time rather than disappearing — see `bindFortnoxScope` above.
 1. **A live verification run.** The three claims in the banner — client-credentials minting, the
    latin1 encoding, the response envelopes — are read from Fortnox's documentation and asserted
    against a mock built from that same reading. `test/live.test.ts` checks all three against the
-   real API and skips until `connectors/fortnox/.dev.vars` holds a credential. It is entirely
-   read-only: the data calls are GETs and the one POST is the token mint, which creates no Fortnox
-   record. This connector has no write path to Fortnox, so it is safe against a production company.
+   real API and skips until `connectors/fortnox/.dev.vars` holds a credential.
+
+   The Developer Portal creates up to **30 test databases**, administered like ordinary companies,
+   and one of those is the right target. Filling the file is not copy-paste — `DatabaseNumber` is
+   shown nowhere in the portal — so `pnpm fortnox:connect --client-id=… --client-secret=…` runs the
+   one-time service consent locally, reads it, verifies `client_credentials` minting against it,
+   and prints the three lines.
+
+   The suite reads only: the data calls are GETs and the one POST is the token mint, which creates
+   no Fortnox record. This connector has no write path to Fortnox, so it is safe against a
+   production company too.
 
 2. **A consumer.** No vertical in this repo binds it yet, so the landing operation exists only in
    the test suite. The seam is proven; the first real mapping is not written.
