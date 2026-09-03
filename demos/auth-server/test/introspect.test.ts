@@ -49,6 +49,10 @@ beforeEach(() => {
   ).run();
   db.prepare("INSERT INTO config (key, value) VALUES ('auth_secret', 'the-signing-secret')").run();
   db.prepare("INSERT INTO config (key, value) VALUES ('cfg:ADMIN_PASSWORD', 'delivered-secret')").run();
+  db.prepare(
+    `INSERT INTO identity_provider (provider_id, client_id, client_secret, tenant_id)
+     VALUES ('microsoft', 'entra-app-id', 'entra-client-secret', 'contoso')`,
+  ).run();
   sql = sqlExecOf(db);
 });
 
@@ -72,7 +76,9 @@ describe('introspectTables', () => {
 describe('introspectTable', () => {
   const rowOf = (table: string, id: string) => {
     const page = introspectTable(sql, table, 50, 0);
-    const keyCol = page.columns.indexOf(table === 'config' ? 'key' : 'id');
+    const keyCol = page.columns.indexOf(
+      table === 'config' ? 'key' : table === 'identity_provider' ? 'provider_id' : 'id',
+    );
     const row = page.rows.find((r) => r[keyCol] === id);
     expect(row).toBeDefined();
     return Object.fromEntries(page.columns.map((c, i) => [c, row![i]]));
@@ -93,6 +99,12 @@ describe('introspectTable', () => {
     // ADMIN_PASSWORD) live in config.value — redacted wholesale.
     expect(rowOf('config', 'auth_secret')['value']).toBe(REDACTED);
     expect(rowOf('config', 'cfg:ADMIN_PASSWORD')['value']).toBe(REDACTED);
+    // The upstream provider's secret is the one credential here that is stored as GIVEN — it
+    // is presented to Microsoft on every token exchange and so cannot be hashed. The client id
+    // and directory stay readable: an operator debugging a federated sign-in needs those.
+    const provider = rowOf('identity_provider', 'microsoft');
+    expect(provider['client_secret']).toBe(REDACTED);
+    expect(provider).toMatchObject({ client_id: 'entra-app-id', tenant_id: 'contoso' });
   });
 
   it('leaves NULL secret cells null, so emptiness stays visible', () => {

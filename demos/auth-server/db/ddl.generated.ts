@@ -199,4 +199,16 @@ export const SCHEMA_STATEMENTS: string[] = [
   // per-instance `cfg:` rows the platform and the dashboard deliver. Not a Better Auth
   // table, so it is declared here rather than derived.
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // The UPSTREAM identity providers an operator has enabled (`src/providers.ts`). Also not a
+  // Better Auth table: the library takes its social providers as CONFIG, and this is where an
+  // issuer that is configured at runtime keeps them instead.
+  `CREATE TABLE IF NOT EXISTS identity_provider (
+    provider_id TEXT PRIMARY KEY NOT NULL,
+    client_id TEXT NOT NULL,
+    client_secret TEXT NOT NULL,
+    tenant_id TEXT,
+    allow_signup INTEGER NOT NULL DEFAULT 0,
+    trust_email INTEGER NOT NULL DEFAULT 0,
+    disabled INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
 ];

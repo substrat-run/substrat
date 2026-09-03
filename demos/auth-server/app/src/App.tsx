@@ -27,9 +27,18 @@ import {
   signUp,
   unbanUser,
   updateOAuthClient,
+  identityProviders,
+  removeIdentityProvider,
+  saveIdentityProvider,
+  signInSocial,
+  socialErrorFrom,
   type AdminUser,
   type ApplicationType,
   type ClientDraft,
+  type ConfiguredProvider,
+  type ProviderCatalogueEntry,
+  type ProviderDraft,
+  type PublicProvider,
   type ConsentRequest,
   type Discovery,
   type IssuerSettings,
@@ -42,7 +51,7 @@ type Phase =
   | { t: 'loading' }
   | { t: 'reset'; token: string }
   | { t: 'setup' }
-  | { t: 'signin'; signupEnabled: boolean; oauthQuery: string | null }
+  | { t: 'signin'; signupEnabled: boolean; oauthQuery: string | null; providers: PublicProvider[]; socialError: string | null }
   | { t: 'signup'; forOidc: boolean; oauthQuery: string | null }
   | { t: 'consent'; request: ConsentRequest }
   | { t: 'not-admin'; session: Session }
@@ -69,7 +78,10 @@ export default function App() {
       const token = url.searchParams.get('token');
       if (token) return setPhase({ t: 'reset', token });
     }
-    const { needsSetup, signupEnabled } = await setupState();
+    const { needsSetup, signupEnabled, providers } = await setupState();
+    // A social sign-in that was refused comes back to `/` carrying its reason. Read it before
+    // anything else re-renders, so the sign-in screen can say what happened.
+    const socialError = socialErrorFrom(url);
     if (needsSetup) return setPhase({ t: 'setup' });
     const session = await currentSession();
     // The pending authorize request, if one sent this person here. The server does NOT
@@ -83,21 +95,21 @@ export default function App() {
     if (url.pathname === '/consent') {
       const request = pendingConsent(url);
       if (session && request) return setPhase({ t: 'consent', request });
-      return setPhase({ t: 'signin', signupEnabled, oauthQuery });
+      return setPhase({ t: 'signin', signupEnabled, oauthQuery, providers, socialError });
     }
     // Sign-up is a pre-auth screen like the other two, and reachable mid-authorize: the
     // pending request lives in a cookie, so creating an account resumes it the same way
     // signing in does. A closed issuer sends this path back to sign-in rather than showing
     // a form the endpoint would refuse.
     if (url.pathname === '/signup') {
-      return setPhase(signupEnabled ? { t: 'signup', forOidc, oauthQuery } : { t: 'signin', signupEnabled, oauthQuery });
+      return setPhase(signupEnabled ? { t: 'signup', forOidc, oauthQuery } : { t: 'signin', signupEnabled, oauthQuery, providers, socialError });
     }
     // `/login` means an RP asked for a sign-in, and that stays true when a session already
     // exists: `prompt=login` (and an expired `max_age`) is a re-authentication request, and
     // answering it with the dashboard strands the flow exactly as `/consent` did.
-    if (url.pathname === '/login') return setPhase({ t: 'signin', signupEnabled, oauthQuery });
+    if (url.pathname === '/login') return setPhase({ t: 'signin', signupEnabled, oauthQuery, providers, socialError });
 
-    if (!session) return setPhase({ t: 'signin', signupEnabled, oauthQuery });
+    if (!session) return setPhase({ t: 'signin', signupEnabled, oauthQuery, providers, socialError });
     setPhase(session.role === 'admin' ? { t: 'dashboard', session } : { t: 'not-admin', session });
   }, []);
 
@@ -124,6 +136,8 @@ export default function App() {
           onDone={doneSigningIn}
           signupEnabled={phase.signupEnabled}
           oauthQuery={phase.oauthQuery}
+          providers={phase.providers}
+          socialError={phase.socialError}
           onSignUp={() => setPhase({ t: 'signup', forOidc: phase.oauthQuery !== null, oauthQuery: phase.oauthQuery })}
         />
       );
@@ -194,11 +208,18 @@ function Setup({ onDone }: { onDone: () => void }) {
 }
 
 function SignIn({
-  onDone, signupEnabled, oauthQuery, onSignUp,
-}: { onDone: () => void; signupEnabled: boolean; oauthQuery: string | null; onSignUp: () => void }) {
+  onDone, signupEnabled, oauthQuery, onSignUp, providers, socialError,
+}: {
+  onDone: () => void;
+  signupEnabled: boolean;
+  oauthQuery: string | null;
+  onSignUp: () => void;
+  providers: PublicProvider[];
+  socialError: string | null;
+}) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(socialError);
   const [notice, setNotice] = useState<string | null>(null);
   // A signed authorize query ⇒ a relying party sent this person here, not an operator opening
   // the console. Same form either way, but promising the dashboard would be a lie about where
@@ -210,6 +231,29 @@ function SignIn({
         <p className="muted">
           {forOidc ? 'Sign in to continue to the application that sent you here.' : 'Sign in to the admin dashboard.'}
         </p>
+        {providers.length > 0 && (
+          <div className="providers">
+            {providers.map((provider) => (
+              <button
+                key={provider.id}
+                className="btn"
+                onClick={async () => {
+                  setErr(null);
+                  try {
+                    // Nothing follows: the response is a redirect to the provider and the
+                    // browser client follows it. The pending authorize request goes along.
+                    await signInSocial(provider.id, oauthQuery);
+                  } catch (e) {
+                    setErr(e instanceof Error ? e.message : String(e));
+                  }
+                }}
+              >
+                Continue with {provider.label}
+              </button>
+            ))}
+            <div className="or"><span>or</span></div>
+          </div>
+        )}
         <Field label="Email" value={email} onChange={setEmail} type="email" />
         <Field label="Password" value={password} onChange={setPassword} type="password" />
         {err && <p className="error">{err}</p>}
@@ -458,6 +502,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
           <UserTable users={users} me={session.sub} onChanged={reload} />
         </section>
         <AccessPanel />
+        <ProvidersPanel issuer={disc?.issuer ?? null} />
         <ClientsPanel />
         <IssuerPanel disc={disc} />
       </main>
@@ -603,6 +648,244 @@ function AccessPanel() {
         </label>
       )}
     </section>
+  );
+}
+
+/* ---- the upstream identity providers ---- */
+
+/**
+ * The directories this issuer will sign people in THROUGH — the other end of the registry
+ * below. "Applications" holds the apps that send people here; this holds the providers this
+ * issuer itself is a relying party of.
+ *
+ * The catalogue is closed on purpose (`src/providers.ts`): each entry is a provider Better
+ * Auth ships endpoints and a profile mapping for, so enabling one is a credential and two
+ * decisions rather than a form full of URLs to get subtly wrong.
+ */
+function ProvidersPanel({ issuer }: { issuer: string | null }) {
+  const [catalogue, setCatalogue] = useState<ProviderCatalogueEntry[] | null>(null);
+  const [providers, setProviders] = useState<ConfiguredProvider[]>([]);
+  const [editing, setEditing] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setErr(null);
+    try {
+      const state = await identityProviders();
+      setCatalogue(state.catalogue);
+      setProviders(state.providers);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  const configured = (id: string) => providers.find((p) => p.id === id);
+  const unconfigured = (catalogue ?? []).filter((entry) => !configured(entry.id));
+
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2>Sign-in providers</h2></div>
+      {err && <p className="error">{err}</p>}
+      {!catalogue ? (
+        <p className="muted">Loading providers…</p>
+      ) : (
+        <>
+          <p className="muted">
+            Directories this issuer signs people in through. Enabling one adds a “Continue with
+            …” button to the login screen — including for people a relying party sent here.
+          </p>
+          {providers.length > 0 && (
+            <table className="grid">
+              <thead>
+                <tr><th>Provider</th><th>Client ID</th><th>Status</th><th></th></tr>
+              </thead>
+              <tbody>
+                {providers.map((provider) => {
+                  const entry = catalogue.find((e) => e.id === provider.id);
+                  return (
+                    <tr key={provider.id}>
+                      <td>
+                        <div>
+                          {entry?.label ?? provider.id}
+                          {provider.allowSignup && <span className="tag">creates accounts</span>}
+                          {provider.trustEmail && <span className="tag">trusted email</span>}
+                        </div>
+                        {provider.tenantId && <code className="client-id">{provider.tenantId}</code>}
+                      </td>
+                      <td><code>{provider.clientId}</code></td>
+                      <td>{provider.disabled ? 'Disabled' : 'Enabled'}</td>
+                      <td className="actions">
+                        <button className="btn tiny" onClick={() => setEditing(provider.id)}>Edit</button>
+                        <button
+                          className="btn tiny danger"
+                          onClick={async () => {
+                            if (!window.confirm(`Remove ${entry?.label ?? provider.id}? People who signed in with it will need another way in.`)) return;
+                            try {
+                              await removeIdentityProvider(provider.id);
+                              await reload();
+                            } catch (e) {
+                              setErr(e instanceof Error ? e.message : String(e));
+                            }
+                          }}
+                        >
+                          Remove
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+          {unconfigured.length > 0 && !editing && (
+            <div className="add-provider">
+              {unconfigured.map((entry) => (
+                <button key={entry.id} className="btn" onClick={() => setEditing(entry.id)}>
+                  + {entry.label}
+                </button>
+              ))}
+            </div>
+          )}
+          {editing && (
+            <ProviderEditor
+              issuer={issuer}
+              entry={catalogue.find((e) => e.id === editing)!}
+              provider={configured(editing) ?? null}
+              onCancel={() => setEditing(null)}
+              onSaved={async () => {
+                setEditing(null);
+                await reload();
+              }}
+            />
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+/**
+ * One provider's credentials and the two decisions that come with it.
+ *
+ * The redirect URI is SHOWN, not asked for: it is derived from the provider id and this
+ * issuer's own origin, and every upstream refuses the sign-in outright if what is registered
+ * there differs by so much as a trailing slash. Making an operator retype it would only
+ * introduce a way to get it wrong.
+ */
+function ProviderEditor({
+  issuer, entry, provider, onCancel, onSaved,
+}: {
+  /**
+   * The issuer's OWN origin, from discovery — not `window.location.origin`. In production they
+   * are the same host; in dev the dashboard is served by Vite on another port, and printing
+   * that one would tell an operator to register a redirect URI the issuer will never send.
+   */
+  issuer: string | null;
+  entry: ProviderCatalogueEntry;
+  provider: ConfiguredProvider | null;
+  onCancel: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const [clientId, setClientId] = useState(provider?.clientId ?? '');
+  const [clientSecret, setClientSecret] = useState('');
+  const [tenantId, setTenantId] = useState(provider?.tenantId ?? '');
+  const [allowSignup, setAllowSignup] = useState(provider?.allowSignup ?? false);
+  const [trustEmail, setTrustEmail] = useState(provider?.trustEmail ?? false);
+  const [disabled, setDisabled] = useState(provider?.disabled ?? false);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setErr(null);
+    const draft: ProviderDraft = {
+      clientId: clientId.trim(),
+      // Empty means "leave the stored secret alone" — an edit that only flips a toggle must
+      // not require re-pasting a credential the operator may no longer have.
+      ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
+      tenantId: tenantId.trim() || null,
+      allowSignup,
+      trustEmail,
+      disabled,
+    };
+    setBusy(true);
+    try {
+      await saveIdentityProvider(entry.id, draft);
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="editor">
+      <h3>{provider ? `Edit ${entry.label}` : `Enable ${entry.label}`}</h3>
+      <label className="field">
+        <span>Redirect URI</span>
+        <code>
+          {(issuer ?? window.location.origin).replace(/\/$/, '')}
+          {provider?.callbackPath ?? `/api/auth/callback/${entry.id}`}
+        </code>
+        <em className="hint">Register this exactly, at {entry.console}. Matched character for character.</em>
+      </label>
+      <Field label="Client ID" value={clientId} onChange={setClientId} />
+      <Field
+        label={provider?.clientSecretSet ? 'Client secret (stored — type to replace)' : 'Client secret'}
+        value={clientSecret}
+        onChange={setClientSecret}
+        type="password"
+        hint={provider?.clientSecretSet ? 'Leave blank to keep the secret already stored.' : undefined}
+      />
+      {entry.tenantField && (
+        <Field
+          label={entry.tenantField.label}
+          value={tenantId}
+          onChange={setTenantId}
+          hint={entry.tenantField.hint}
+        />
+      )}
+      <label className="toggle">
+        <input type="checkbox" checked={allowSignup} onChange={(e) => setAllowSignup(e.target.checked)} />
+        <span>
+          <strong>Let this provider create accounts</strong>
+          <em className="hint">
+            On, anyone who can sign in upstream gets an account here — for a directory you own,
+            that is usually the point. Off, only people who already have an account can use it.
+            Separate from the issuer-wide sign-up toggle, which is about passwords.
+          </em>
+        </span>
+      </label>
+      <label className="toggle">
+        <input type="checkbox" checked={trustEmail} onChange={(e) => setTrustEmail(e.target.checked)} />
+        <span>
+          <strong>Trust this provider’s email addresses</strong>
+          <em className="hint">
+            Lets someone sign in to an account that already exists here with the same address.
+            Without it they are refused with “account not linked” — Microsoft in particular does
+            not assert that an address is verified. The local account must also have a verified
+            email. Only turn this on for a directory that controls its addresses.
+          </em>
+        </span>
+      </label>
+      <label className="toggle">
+        <input type="checkbox" checked={disabled} onChange={(e) => setDisabled(e.target.checked)} />
+        <span>
+          <strong>Disabled</strong>
+          <em className="hint">Keeps the credentials but takes the button off the login screen.</em>
+        </span>
+      </label>
+      {err && <p className="error">{err}</p>}
+      <div className="row">
+        <button className="btn primary" disabled={busy} onClick={() => void save()}>
+          {busy ? 'Saving…' : provider ? 'Save changes' : 'Enable'}
+        </button>
+        <button className="btn" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
   );
 }
 

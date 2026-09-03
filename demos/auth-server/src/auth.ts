@@ -1,4 +1,4 @@
-import { betterAuth } from 'better-auth';
+import { betterAuth, type BetterAuthOptions } from 'better-auth';
 import type { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { oauthProvider, type ClientMetadataResourceFetch } from '@better-auth/oauth-provider';
 import { cimd } from '@better-auth/cimd';
@@ -67,6 +67,19 @@ export interface AuthDeps {
    * through the admin API regardless.
    */
   allowSignup?: boolean;
+  /**
+   * The UPSTREAM providers this issuer federates to, built from the `identity_provider` rows
+   * by `socialProvidersFrom` — "sign in with Microsoft", enabled by an operator rather than
+   * by a deploy. Undefined when none is configured, which is not the same as `{}`: an issuer
+   * with no upstream must not advertise one.
+   */
+  socialProviders?: BetterAuthOptions['socialProviders'];
+  /**
+   * The upstream providers whose verified email is accepted as proof that the person IS the
+   * local account holding that address. Empty by default, and the panel is where an operator
+   * says otherwise per provider — see `trustedProvidersFrom`.
+   */
+  trustedProviders?: string[];
 }
 
 /**
@@ -216,6 +229,31 @@ export function buildAuth(deps: AuthDeps) {
     // server that is a second, session-shaped way to get a bearer token beside
     // `/oauth2/token`, and nothing here uses it: relying parties go through the OIDC flow and
     // verify id_tokens from the public JWKS. Disabled rather than left reachable.
+    /**
+     * Federated sign-in, from the registry rather than from config (`src/providers.ts`). Read
+     * per request like everything else here, so enabling Microsoft in the dashboard answers on
+     * the next request instead of the next deploy.
+     */
+    ...(deps.socialProviders ? { socialProviders: deps.socialProviders } : {}),
+    account: {
+      accountLinking: {
+        /**
+         * Which upstreams may sign a person into an account that already exists here.
+         *
+         * This is not belt-and-braces. Entra does not put `email_verified` in its token, and
+         * Better Auth's Microsoft provider maps that absence to FALSE unless Graph reports the
+         * address as a verified primary — so an administrator creates a user, that user signs
+         * in with Microsoft, and the two are refused a join ("account not linked") unless the
+         * provider is trusted. Trusting a directory the operator owns is right; trusting a
+         * consumer provider by default is not, so this list is empty until someone says so.
+         *
+         * Better Auth still requires the LOCAL row to be email-verified before it will link,
+         * and that gate is the library's own — an attacker who pre-registers at a victim's
+         * address must not inherit the victim's identity. Left alone deliberately.
+         */
+        trustedProviders: deps.trustedProviders ?? [],
+      },
+    },
     disabledPaths: ['/token'],
     secret: deps.secret,
     baseURL: deps.baseURL,

@@ -37,6 +37,14 @@ export interface AdminUser {
 export interface IssuerState {
   needsSetup: boolean;
   signupEnabled: boolean;
+  /** The upstream buttons to draw. Id and label only — see the DO's `issuerState`. */
+  providers: PublicProvider[];
+}
+
+/** An upstream provider as the SIGNED-OUT screen may know it. */
+export interface PublicProvider {
+  id: string;
+  label: string;
 }
 
 export async function setupState(): Promise<IssuerState> {
@@ -253,6 +261,46 @@ export async function discovery(): Promise<Discovery | null> {
 }
 
 
+/**
+ * Sign in through an UPSTREAM provider — "continue with Microsoft".
+ *
+ * The pending authorize request rides along exactly as it does on the password path, and it
+ * has to: this navigates away to Microsoft, and nothing on the far side remembers a relying
+ * party was waiting. `oauthProvider` handles that case explicitly — its before-hook special-
+ * cases `/sign-in/social` and puts the pending request into the OAuth STATE that survives the
+ * round-trip, so the callback that sets the session also resumes the authorize. Drop
+ * `oauth_query` here and sign-in works while the relying party is silently abandoned, which is
+ * #898 wearing a different hat.
+ *
+ * There is nothing to await: the response is a redirect to the provider and the browser
+ * client's `redirectPlugin` follows it. `errorCallbackURL` is what makes a refusal visible —
+ * "account not linked" is a real outcome (see the trust toggle in the providers panel) and
+ * without it the browser comes back to a blank sign-in screen with no reason given.
+ */
+export async function signInSocial(providerId: string, oauthQuery?: string | null): Promise<void> {
+  const { error } = await authClient.signIn.social({
+    provider: providerId,
+    callbackURL: '/',
+    errorCallbackURL: '/?social_error=1',
+    ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
+  } as Parameters<typeof authClient.signIn.social>[0]);
+  if (error) throw new Error(error.message ?? `could not start sign-in with ${providerId}`);
+}
+
+/**
+ * The reason a social sign-in came back refused, as Better Auth puts it on the error redirect.
+ * `account not linked` is the one an operator will actually meet, so it is translated rather
+ * than shown raw — the fix is a toggle in the providers panel, and the message says so.
+ */
+export function socialErrorFrom(url: URL): string | null {
+  if (!url.searchParams.has('social_error') && !url.searchParams.has('error')) return null;
+  const code = url.searchParams.get('error') ?? '';
+  if (code.replace(/[_-]/g, ' ') === 'account not linked') {
+    return 'That account exists here but is not linked to this provider. An administrator can allow linking by trusting the provider, and the local account must have a verified email address.';
+  }
+  return url.searchParams.get('error_description') ?? code ?? 'sign-in was refused';
+}
+
 /* ---- the relying-party registry ---- */
 
 /**
@@ -388,4 +436,53 @@ export async function issuerSettings(): Promise<IssuerSettings> {
 
 export async function setIssuerSettings(patch: IssuerSettings): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+/* ---- the upstream identity providers (`/api/admin`) ---- */
+
+/** A provider the issuer knows how to be a relying party of. Served with the configured rows. */
+export interface ProviderCatalogueEntry {
+  id: string;
+  label: string;
+  tenantField?: { label: string; placeholder: string; hint: string };
+  console: string;
+}
+
+/** One configured upstream. The secret is never sent back — only whether there is one. */
+export interface ConfiguredProvider {
+  id: string;
+  clientId: string;
+  clientSecretSet: boolean;
+  tenantId: string | null;
+  allowSignup: boolean;
+  trustEmail: boolean;
+  disabled: boolean;
+  /** The redirect URI to register upstream, so the panel never makes anyone guess it. */
+  callbackPath: string;
+  updatedAt: number | null;
+}
+
+/** The editable half — `clientSecret` omitted on an edit means "keep the stored one". */
+export interface ProviderDraft {
+  clientId: string;
+  clientSecret?: string;
+  tenantId?: string | null;
+  allowSignup: boolean;
+  trustEmail: boolean;
+  disabled: boolean;
+}
+
+export async function identityProviders(): Promise<{
+  catalogue: ProviderCatalogueEntry[];
+  providers: ConfiguredProvider[];
+}> {
+  return admin('/providers');
+}
+
+export async function saveIdentityProvider(id: string, draft: ProviderDraft): Promise<ConfiguredProvider> {
+  return admin(`/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(draft) });
+}
+
+export async function removeIdentityProvider(id: string): Promise<void> {
+  await admin(`/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }

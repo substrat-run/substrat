@@ -17,6 +17,7 @@ import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
+import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
@@ -123,6 +124,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    *  advertised `issuer` to match the URL discovery was fetched from). */
   private auth(origin: string, overrides?: { allowSignup?: boolean }) {
     const cfg = this.effectiveCfg();
+    const providers = readProviders(this.ctx.storage.sql);
     const baseURL = cfg.PUBLIC_ORIGIN ?? origin;
     const db = drizzle(this.ctx.storage, { schema });
     return buildAuth({
@@ -142,6 +144,10 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Re-read per request (this whole method is), so the dashboard's sign-up toggle takes
       // effect on the next request rather than the next deploy.
       allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
+      // Federated sign-in, read from the registry on the same per-request basis — a provider
+      // enabled in the dashboard answers the next request.
+      socialProviders: socialProvidersFrom(providers),
+      trustedProviders: trustedProvidersFrom(providers),
     });
   }
 
@@ -274,6 +280,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
     return {
       needsSetup: this.needsSetup(),
       signupEnabled: isTruthy(this.effectiveCfg()[ALLOW_SIGNUP]),
+      providers: publicProvidersFrom(readProviders(this.ctx.storage.sql)),
     };
   }
 

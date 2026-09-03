@@ -41,7 +41,7 @@ function fakeAuth() {
           forwarded.push(new URL(request.url).pathname);
           return Response.json({ ok: true, doName });
         },
-        issuerState: async () => ({ needsSetup: true, signupEnabled: false }),
+        issuerState: async () => ({ needsSetup: true, signupEnabled: false, providers: [] }),
         setupFirstAdmin: async () => ({ id: 'user-1' }),
         provisionInstance: async (meta, config) => {
           provisioned.push({ doName, meta, ...(config ? { config } : {}) });
