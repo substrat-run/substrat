@@ -107,7 +107,8 @@ An instance nobody has configured a login for publishes a document with **no**
 ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)), or a client-ID metadata document —
 is a question for the *authorization server*. A resource server validates an access token
 and has no opinion about who minted the client, so that work belongs at the issuer, not
-here.
+here. (The platform's stock issuer supports both — see
+[the auth server](/concepts/identity#the-auth-server-a-full-oidc-provider-you-can-run).)
 
 **Audience validation** is already in place where it is configured: set `OIDC_AUDIENCE`
 (or `audience` on a delivered `substrat:auth`) and a token minted for another resource is
