@@ -1,5 +1,21 @@
 # @substrat-run/dashboard
 
+## 0.28.15
+
+### Patch Changes
+
+- Updated dependencies [05de166]
+- Updated dependencies [07203fb]
+- Updated dependencies [ee70af5]
+  - @substrat-run/adapter-cloudflare@0.98.0
+  - @substrat-run/contracts@0.98.0
+  - @substrat-run/kernel@0.98.0
+  - @substrat-run/demo-callout@0.3.16
+  - @substrat-run/engine-protocol@0.12.3
+  - @substrat-run/engine-invites@0.6.4
+  - @substrat-run/engine-invoicing@0.9.14
+  - @substrat-run/engine-workorder@0.10.6
+
 ## 0.28.14
 
 ### Patch Changes

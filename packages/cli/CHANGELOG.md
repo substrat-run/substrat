@@ -1,5 +1,64 @@
 # @substrat-run/cli
 
+## 0.27.0
+
+### Minor Changes
+
+- c469490: `substrat model view` — render `model.json` as a self-contained HTML page (an ER diagram of
+  the entities and their `parents` edges, a card per entity with the primary key, natural key
+  and `erasable` fields marked, plus any declared lifecycles) and print its path. Inline CSS
+  and SVG, no script and no external reference, so it opens from a file path with no server
+  and no network — which is what makes it usable at the design gate, where approving a
+  diagram of your own domain beats approving prose about it. It reads the emitted artifact
+  `lint:model --check` gates, needs no login, and writes to a temp file unless `--out` places
+  it.
+- 6e22934: `substrat push --check` — run the push's permission preflight on its own. It resolves
+  `package.json` `substrat.permissions`, imports the entry, derives the registry and prints
+  every key (with the module that declares it and its description), every role, every
+  entity-grant shape and the digest promotion compares — then stops, before any credential is
+  resolved and without a network call, so it belongs in a pull-request job. `--json` prints the
+  same surface as data on a clean stdout, for a CI that diffs it against a checked-in copy.
+
+  Every failure exits non-zero with a message naming the pointer: a missing declaration, a
+  pointer naming a file that has moved, an entry that stopped exporting `permissions`, and — new
+  diagnostic, on the push path too — an entry that cannot be bundled and imported outside the
+  vertical's runtime. Verticals gating this in CI can drop their deep import of
+  `@substrat-run/cli/dist/push.js`, which was never a public surface.
+
+### Patch Changes
+
+- 4e190d8: `substrat preview` reads a refused response the way every other command does. Its own
+  error reader was the last one left over from before the shared RFC 9457 reader landed, so
+  a preview failure printed a slice of raw JSON where `push` and `promote` printed the
+  sentence and the code. The shared reader also learned the pre-#113 `{ error, issues }`
+  validation body: a Zod refusal's issues now print as named fields under the message
+  (`ttlHours: Expected number, received string`) instead of `invalid request` alone, on
+  every command rather than only on `preview`.
+- a6d9f80: The unserved-UI preflight now recognises the pre-#340 inline pattern before it has been
+  built, and `preview create` accepts `--allow-unserved-ui`.
+
+  The exemption looked only for an `assets.generated.*` module under `src/` — build output,
+  normally gitignored, and written by the very build step this check deliberately precedes. It
+  therefore found the file on a machine where an earlier build had left one and never on a
+  fresh checkout, so CI was refused for a UI the push would in fact have served. It now also
+  accepts source that **imports** the module, which is the half that is committed.
+
+  `substrat preview create` called the same `push()` without forwarding `--allow-unserved-ui`,
+  so the flag the refusal names was accepted and silently dropped — on the path most likely to
+  meet the check, since previews run per-PR.
+
+  Reading the import needs a scanner that can tell one from a comment or a quoted string, and
+  `boundary-lint` already had it — so `maskSource` (comments, string bodies and regex literals
+  blanked, every offset kept) is now exported rather than copied. The CLI matches against the
+  masked copy and reads the specifier back out of the original at those offsets.
+
+- Updated dependencies [05de166]
+- Updated dependencies [fea0cbb]
+- Updated dependencies [07203fb]
+- Updated dependencies [a6d9f80]
+  - @substrat-run/contracts@0.98.0
+  - @substrat-run/boundary-lint@0.4.0
+
 ## 0.26.5
 
 ### Patch Changes

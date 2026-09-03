@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/model-providers",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "The model-provider seam: one `provider:model` grammar, a table of providers (Anthropic, OpenAI, Google, Mistral, Qwen, Cloudflare, Scaleway, Ollama, any OpenAI-compatible endpoint), the hosting disclosure per provider, the generated rate card and the list-price math over it. Cloudflare is one row, not the design (#1054).",
   "license": "AGPL-3.0-only",
   "repository": {

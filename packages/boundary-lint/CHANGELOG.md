@@ -1,5 +1,43 @@
 # @substrat-run/boundary-lint
 
+## 0.4.0
+
+### Minor Changes
+
+- a6d9f80: The unserved-UI preflight now recognises the pre-#340 inline pattern before it has been
+  built, and `preview create` accepts `--allow-unserved-ui`.
+
+  The exemption looked only for an `assets.generated.*` module under `src/` — build output,
+  normally gitignored, and written by the very build step this check deliberately precedes. It
+  therefore found the file on a machine where an earlier build had left one and never on a
+  fresh checkout, so CI was refused for a UI the push would in fact have served. It now also
+  accepts source that **imports** the module, which is the half that is committed.
+
+  `substrat preview create` called the same `push()` without forwarding `--allow-unserved-ui`,
+  so the flag the refusal names was accepted and silently dropped — on the path most likely to
+  meet the check, since previews run per-PR.
+
+  Reading the import needs a scanner that can tell one from a comment or a quoted string, and
+  `boundary-lint` already had it — so `maskSource` (comments, string bodies and regex literals
+  blanked, every offset kept) is now exported rather than copied. The CLI matches against the
+  masked copy and reads the specifier back out of the original at those offsets.
+
+### Patch Changes
+
+- fea0cbb: `cimd-fetch.ts` joins the default harness list, beside the other `auth*.ts` entries it is
+  imported by.
+
+  R3 bans `fetch` in module code because a module's capabilities come from `ctx`, and a
+  vertical that needs the outside world reaches it through a connector. An issuer resolving a
+  Client ID Metadata Document has neither: the client's `client_id` IS an HTTPS URL, and
+  fetching the document at it is what the OAuth draft defines that identifier to mean. The
+  file is the auth adapter's network boundary, sits beside `auth-do.ts` and `auth-schema.ts`,
+  and is reachable from no `ModuleRegistration`.
+
+  This matters to a scaffolded project the same way `config-do.ts` did: the list is literal, so
+  a name missing from it is a new project failing its own gate on a file the template told it
+  to write.
+
 ## 0.3.0
 
 ### Minor Changes

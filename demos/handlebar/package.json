@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-handlebar",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts",
@@ -69,7 +69,7 @@
     ]
   },
   "license": "Apache-2.0",
-  "description": "Handlebar demo vertical \u2014 the v2 bike-shop skin, see spec/concept.md",
+  "description": "Handlebar demo vertical — the v2 bike-shop skin, see spec/concept.md",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
