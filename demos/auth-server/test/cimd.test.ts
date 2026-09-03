@@ -195,6 +195,20 @@ describe('the workerd transport', () => {
       '198.18.0.1',
       '198.51.100.7',
       '203.0.113.7',
+      // A terminal dot is the same name: `localhost.` IS localhost.
+      'localhost.',
+      'service.local.',
+      'local.',
+      // An IPv4 address hiding inside an IPv6 one. `URL` rewrites the dotted form into
+      // hex (`[::ffff:7f00:1]`), so a screen that only reads dots never sees these.
+      '[::ffff:127.0.0.1]',
+      '[::ffff:169.254.169.254]',
+      '[64:ff9b::10.0.0.1]',
+      // The rest of the IPv6 prefixes, off-canonical spellings included.
+      '[fe9a::1]',
+      '[fd00::1]',
+      // Every IPv4 spelling `URL` canonicalises into a dotted quad on the way in.
+      '2130706433',
     ]) {
       await refuses(`https://${host}/client.json`, host);
     }

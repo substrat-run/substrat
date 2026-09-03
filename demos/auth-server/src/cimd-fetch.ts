@@ -43,51 +43,116 @@ import type { ClientMetadataResourceFetch } from '@better-auth/oauth-provider';
  */
 
 /**
- * Literal special-use hosts, refused before any request.
+ * The IPv4 special-use ranges of RFC 6890, judged on the octets rather than on text.
+ * `URL` canonicalises every IPv4 spelling — decimal, octal, hex — into a dotted quad
+ * before we see it, so this is the only form that needs deciding.
+ */
+function isSpecialUseV4(a: number, b: number, c: number): boolean {
+  if (a === 0 || a === 10 || a === 127) return true; // this-host / private / loopback
+  if (a === 172 && b >= 16 && b <= 31) return true; // private
+  if (a === 192 && b === 168) return true; // private
+  if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a === 192 && b === 0 && c === 0) return true; // IETF protocol assignments
+  if (a === 192 && b === 0 && c === 2) return true; // TEST-NET-1
+  if (a === 192 && b === 88 && c === 99) return true; // 6to4 relay anycast
+  if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
+  if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
+  if (a >= 224) return true; // multicast / reserved / broadcast
+  return false;
+}
+
+const hex4 = (n: number) => n.toString(16).padStart(4, '0');
+
+/**
+ * An IPv6 literal as its eight hextets, or `null` if it is not one.
+ *
+ * Parsed rather than pattern-matched because the ranges that matter are bit prefixes,
+ * and the same address has many spellings: `::ffff:127.0.0.1` and `::ffff:7f00:1` are
+ * one address, and `URL` hands back whichever it prefers.
+ */
+function parseIpv6(text: string): number[] | null {
+  if (!text.includes(':')) return null;
+
+  let rest = text;
+  // A trailing dotted quad (`::ffff:127.0.0.1`) is two hextets in disguise.
+  const dotted = /(\d{1,3}(?:\.\d{1,3}){3})$/.exec(rest);
+  if (dotted) {
+    const [a = -1, b = -1, c = -1, d = -1] = (dotted[1] ?? '').split('.').map(Number);
+    if ([a, b, c, d].some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+    rest = `${rest.slice(0, dotted.index)}${hex4((a << 8) | b)}:${hex4((c << 8) | d)}`;
+  }
+
+  const halves = rest.split('::');
+  if (halves.length > 2) return null;
+  const hextetsOf = (part: string) =>
+    part === ''
+      ? []
+      : part.split(':').map((h) => (/^[0-9a-f]{1,4}$/.test(h) ? parseInt(h, 16) : Number.NaN));
+  const head = hextetsOf(halves[0] ?? '');
+  const tail = halves.length === 2 ? hextetsOf(halves[1] ?? '') : [];
+  if ([...head, ...tail].some(Number.isNaN)) return null;
+
+  const gap = 8 - head.length - tail.length;
+  if (halves.length === 2 ? gap < 0 : gap !== 0) return null;
+  return [...head, ...(Array(halves.length === 2 ? gap : 0).fill(0) as number[]), ...tail];
+}
+
+/** RFC 6890's IPv6 side, plus the three ways an IPv4 address hides inside one. */
+function isSpecialUseIpv6(hextets: number[]): boolean {
+  const [h0 = 0, h1 = 0, h2 = 0, h3 = 0, h4 = 0, h5 = 0, h6 = 0, h7 = 0] = hextets;
+  const zeroPrefix = h0 === 0 && h1 === 0 && h2 === 0 && h3 === 0 && h4 === 0;
+  const embedsV4 =
+    // ::ffff:a.b.c.d (mapped) and ::a.b.c.d (compat — which is also where ::1 and :: land)
+    (zeroPrefix && (h5 === 0xffff || h5 === 0)) ||
+    // 64:ff9b::/96, the well-known NAT64 prefix
+    (h0 === 0x64 && h1 === 0xff9b && h2 === 0 && h3 === 0 && h4 === 0 && h5 === 0);
+  if (embedsV4 && isSpecialUseV4(h6 >> 8, h6 & 0xff, h7 >> 8)) return true;
+
+  if ((h0 & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+  if ((h0 & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
+  if ((h0 & 0xff00) === 0xff00) return true; // multicast ff00::/8 — ff02::1 is every host
+  return false;
+}
+
+/**
+ * Special-use hosts, refused before any request.
  *
  * Names only — a name is all we have. This cannot catch a public name that RESOLVES into
  * special-use space; that is exactly the clause we cannot honour, and pretending a
- * substring check covers it would be worse than the honest gap above.
+ * substring check covers it would be worse than the honest gap above. What it can do is
+ * decide the *literal* correctly however it is spelled, which is why the address forms
+ * below are parsed rather than matched.
  */
 function isSpecialUseHost(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/^\[|]$/g, '');
-  const isIpv6 = host.includes(':');
-  const isIpv4 = /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+  // `URL` hands back the canonical host, which keeps two things a comparison would trip
+  // over: the brackets around an IPv6 literal, and a fully-qualified name's terminal dot.
+  // `localhost.` IS localhost, and one trailing dot is enough to slip past every suffix
+  // test below.
+  const host = hostname
+    .toLowerCase()
+    .replace(/^\[|]$/g, '')
+    .replace(/\.$/, '');
 
-  // A single label never resolves through the public DNS root — `localhost`, `local`,
-  // a container alias, a name a search domain would complete. A CIMD `client_id` is a
-  // public URL by definition, so one label always means the local resolver.
-  if (!isIpv6 && !isIpv4 && !host.includes('.')) return true;
+  if (host.includes(':')) {
+    const hextets = parseIpv6(host);
+    // An address literal we cannot parse is not one to fetch: fail closed.
+    return hextets === null ? true : isSpecialUseIpv6(hextets);
+  }
 
-  if (host === 'localhost' || host.endsWith('.localhost')) return true;
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (v4) return isSpecialUseV4(Number(v4[1]), Number(v4[2]), Number(v4[3]));
+
+  // A single label never resolves through the public DNS root — `localhost`, `local`, a
+  // container alias, a name a search domain would complete. A CIMD `client_id` is a public
+  // URL by definition, so one label always means the local resolver. An empty host lands
+  // here too, and is refused for the same reason.
+  if (!host.includes('.')) return true;
+
+  if (host.endsWith('.localhost')) return true;
   // RFC 6761 special-use names that must never leave a local resolver.
-  if (host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa')) {
-    return true;
-  }
-  // IPv6: loopback / unspecified, link-local (fe80::/10), unique-local (fc00::/7),
-  // multicast (ff00::/8 — `ff02::1` is every host on the link).
-  if (host === '::1' || host === '::') return true;
-  if (/^fe[89ab][0-9a-f]:/i.test(host)) return true;
-  if (/^f[cd][0-9a-f]{2}:/i.test(host)) return true;
-  if (/^ff[0-9a-f]{2}:/i.test(host)) return true;
-  // IPv4 literals, including the ones inside an IPv4-mapped IPv6 address.
-  const v4 = /(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
-  if (v4) {
-    const [a, b, c] = [Number(v4[1]), Number(v4[2]), Number(v4[3])];
-    if (a === 10 || a === 127 || a === 0) return true; // private / loopback / this-host
-    if (a === 172 && b >= 16 && b <= 31) return true; // private
-    if (a === 192 && b === 168) return true; // private
-    if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-    if (a === 192 && b === 0 && c === 0) return true; // IETF protocol assignments
-    if (a === 192 && b === 0 && c === 2) return true; // TEST-NET-1
-    if (a === 198 && (b === 18 || b === 19)) return true; // benchmarking
-    if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
-    if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
-    if (a === 192 && b === 88 && c === 99) return true; // 6to4 relay anycast
-    if (a >= 224) return true; // multicast / reserved / broadcast
-  }
-  return false;
+  return host.endsWith('.local') || host.endsWith('.internal') || host.endsWith('.home.arpa');
 }
 
 /** Raised for a metadata URL this transport refuses to request at all. */
