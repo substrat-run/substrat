@@ -348,7 +348,13 @@ describe('GitHub App client', () => {
       // shape until it was fixed, so it now pins the safe one instead.
       expect(yaml).toContain('SUBSTRAT_TEST_SCOPE_ID: ${{ vars.SUBSTRAT_TEST_SCOPE_ID }}');
       expect(yaml).toContain('scope bind "$SUBSTRAT_TEST_SCOPE_ID" --version "$VID" --snapshot');
-      expect(yaml).not.toContain('scope bind ${{');
+      // The variable is referenced EXACTLY twice, and both are safe by construction: an `if:`
+      // is an expression context that never reaches a shell, and the `env:` line is the
+      // passthrough. Counting beats matching the one spelling that was wrong — `scope bind
+      // "${{ vars.… }}"` interpolates just the same, and so does any future line that reaches
+      // for the expression again. A third occurrence anywhere fails this, whatever it looks like.
+      expect(yaml.match(/vars\.SUBSTRAT_TEST_SCOPE_ID/g)).toHaveLength(2);
+      expect(yaml).not.toMatch(/scope bind[^\n]*\$\{\{/);
     });
 
     it('generates PR-preview jobs that create on open/sync and reap on close', () => {
