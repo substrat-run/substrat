@@ -1339,6 +1339,28 @@ const consumeConnectLinkOp: OperationHandler<z.infer<typeof consumeConnectLinkIn
   };
 };
 
+const restoreConnectLinkInput = z.object({ linkId: z.string().min(1) });
+
+/**
+ * The compensating half of consume: the callback spent the link, then failed to store
+ * the credential — nothing was connected, so the spend is undone and the same link can
+ * carry a fresh consent round. Only a 'used' row goes back (revoked stays revoked), and
+ * only the callback that won the consume race has a 'used' row to restore, so the
+ * single-use guard is untouched. Expiry needs no re-check here: consume and the list
+ * both judge it on the way back in.
+ */
+const restoreConnectLinkOp: OperationHandler<z.infer<typeof restoreConnectLinkInput>, { restored: boolean }> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
+  const input = restoreConnectLinkInput.parse(raw);
+  const flipped = ctx.sql.exec(
+    `UPDATE dashboard_connect_links
+     SET status = 'outstanding', used_at = NULL, account_ref = NULL, account_label = NULL
+     WHERE id = ? AND status = 'used'`,
+    [input.linkId],
+  );
+  return { restored: flipped.changes === 1 };
+};
+
 const revokeConnectLinkInput = z.object({ linkId: z.string().min(1) });
 
 const revokeConnectLinkOp: OperationHandler<z.infer<typeof revokeConnectLinkInput>, { status: ConnectLinkRow['status'] } | null> = async (ctx, raw) => {
@@ -1409,6 +1431,7 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/begin-connection': beginConnectionOp as OperationHandler<never, unknown>,
     'dashboard/mint-connect-link': mintConnectLinkOp as OperationHandler<never, unknown>,
     'dashboard/consume-connect-link': consumeConnectLinkOp as OperationHandler<never, unknown>,
+    'dashboard/restore-connect-link': restoreConnectLinkOp as OperationHandler<never, unknown>,
     'dashboard/revoke-connect-link': revokeConnectLinkOp as OperationHandler<never, unknown>,
     'dashboard/list-connect-links': listConnectLinksOp as OperationHandler<never, unknown>,
   },

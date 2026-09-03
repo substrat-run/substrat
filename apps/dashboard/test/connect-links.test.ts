@@ -82,6 +82,30 @@ describe('dashboard connect links', () => {
     expect(await outstanding()).toEqual([]);
   });
 
+  it('restore un-spends a used link — the storage-failed compensation — and only a used one', async () => {
+    const link = await mint();
+    const first = await consume(link.id);
+    expect(first.ok).toBe(true);
+
+    // The callback's credential store failed: the spend is undone, the audit columns
+    // cleared, and the link is outstanding again — a fresh consent round can spend it.
+    const s = await scope();
+    expect(await s.invoke('dashboard/restore-connect-link', { linkId: link.id })).toEqual({ restored: true });
+    expect((await outstanding()).map((l) => l.id)).toEqual([link.id]);
+    const again = await consume(link.id);
+    expect(again.ok).toBe(true);
+    if (again.ok) expect(again.link.account_ref).toBe('123456');
+
+    // Restore touches ONLY a 'used' row: an outstanding or revoked link is not its
+    // business, so a stray call cannot resurrect a revocation.
+    expect(await s.invoke('dashboard/restore-connect-link', { linkId: ulid() })).toEqual({ restored: false });
+    const revoked = await mint();
+    await s.invoke('dashboard/revoke-connect-link', { linkId: revoked.id });
+    expect(await s.invoke('dashboard/restore-connect-link', { linkId: revoked.id })).toEqual({ restored: false });
+    // The re-spent link is used again and the revoked one stays revoked.
+    expect(await outstanding()).toEqual([]);
+  });
+
   it('a revoked link refuses, and stays revoked', async () => {
     const link = await mint();
     const s = await scope();
@@ -112,6 +136,7 @@ describe('dashboard connect links', () => {
     await expect(
       stranger.invoke('dashboard/consume-connect-link', { linkId: link.id, provider: 'fortnox' }),
     ).rejects.toThrow(/permission/i);
+    await expect(stranger.invoke('dashboard/restore-connect-link', { linkId: link.id })).rejects.toThrow(/permission/i);
     await expect(stranger.invoke('dashboard/revoke-connect-link', { linkId: link.id })).rejects.toThrow(/permission/i);
     await expect(stranger.invoke('dashboard/list-connect-links', {})).rejects.toThrow(/permission/i);
   });

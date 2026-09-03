@@ -2,6 +2,7 @@ import type { FetchLike } from '@substrat-run/kernel';
 
 // Web-standard everywhere this runs; declared locally so the mock pulls in no platform typings.
 declare const URL: new (input: string) => { pathname: string; search: string };
+declare const URLSearchParams: new (init: string) => { get(name: string): string | null };
 declare const btoa: (data: string) => string;
 
 /**
@@ -115,7 +116,7 @@ export class FortnoxMock {
       // The consent flow's one-time exchange: no TenantId header (the exchange is what
       // DISCOVERS the company), and the code spends on first use.
       if (String(init?.body ?? '').includes('grant_type=authorization_code')) {
-        const code = /(?:^|&)code=([^&]*)/.exec(String(init?.body ?? ''))?.[1];
+        const code = new URLSearchParams(String(init?.body ?? '')).get('code') ?? undefined;
         if (this.consentCode === undefined || code !== this.consentCode) {
           return this.json({ error: 'invalid_grant', error_description: 'code spent or unknown' }, 400);
         }

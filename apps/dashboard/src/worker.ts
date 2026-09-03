@@ -2509,7 +2509,9 @@ app.get('/api/integrations/:provider/connect', async (c) => {
  * code and assemble the credential (`completeFortnoxConsent` — the shipped sequence,
  * client-credentials premise proven included), consume the link row (single-use is
  * decided here, atomically), and relay the sealed triple to the platform's connection
- * store exactly as the paste-credential path does. The closing screen names WHICH
+ * store exactly as the paste-credential path does — restoring the link if that store
+ * fails, so a platform hiccup costs a retry rather than a fresh link. The closing
+ * screen names WHICH
  * company was attached — the check that catches a consent granted while signed into
  * the wrong company.
  */
@@ -2559,9 +2561,11 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
   }
 
   // Consume BEFORE storing: of two racing callbacks, exactly one gets past this line.
+  // (Consume-first also keeps a revoked link from ever reaching the store below.)
   let consume: ConnectLinkConsume;
+  let dash;
   try {
-    const dash = await hostFor(c.env).getScope(
+    dash = await hostFor(c.env).getScope(
       principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
     );
     consume = (await dash.invoke('dashboard/consume-connect-link', {
@@ -2588,14 +2592,28 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       createdBy: claim.principal,
     });
   } catch (e) {
+    // Un-spend the link (best effort): the consent's code is gone either way, but the
+    // LINK still stands, so opening it again starts a fresh consent round with no new
+    // link needed. Only this callback holds the 'used' row, so the single-use guard
+    // above is not weakened.
+    let restored = false;
+    try {
+      restored = ((await dash.invoke('dashboard/restore-connect-link', { linkId: claim.linkId })) as { restored: boolean }).restored;
+    } catch {
+      // The refusal copy below falls back to asking for a new link.
+    }
     const detail = e instanceof ControlPlaneError ? e.message : 'storing the credential failed';
     return connectPage('The credential could not be stored', [
       escapeHtml(detail),
-      'The Fortnox consent went through, but no connection was saved. Ask your Substrat administrator for a new link and try again.',
+      'The Fortnox consent went through, but no connection was saved.' +
+        (restored
+          ? ' The connect link is still usable — open it again to retry.'
+          : ' Ask your Substrat administrator for a new link and try again.'),
     ], 503);
   }
 
-  return connectPage(`${escapeHtml(completion.company.CompanyName || 'Your company')} is connected`, [
+  // connectPage escapes the title itself — escaping here again would render &amp;amp;.
+  return connectPage(`${completion.company.CompanyName || 'Your company'} is connected`, [
     `Fortnox company <strong>${escapeHtml(completion.company.CompanyName || '(unnamed)')}</strong>` +
       ` (org.nr ${escapeHtml(completion.company.OrganizationNumber || '—')},` +
       ` database ${escapeHtml(completion.secret.tenantId)}) is now connected to Substrat.` +

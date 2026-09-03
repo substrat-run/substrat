@@ -44,6 +44,15 @@ describe('completeFortnoxConsent', () => {
     );
   });
 
+  it('a code with reserved characters survives the form encoding round-trip', async () => {
+    // The exchange body is application/x-www-form-urlencoded, so `a&b=/+` travels
+    // encoded; the mock must decode it back before comparing, or a perfectly valid
+    // opaque code answers invalid_grant.
+    const mock = new FortnoxMock({ consentCode: 'a&b=/+c d' });
+    const done = await completeFortnoxConsent({ ...options(mock), code: 'a&b=/+c d' });
+    expect(done.secret.tenantId).toBe('123456');
+  });
+
   it('refuses a company with no DatabaseNumber rather than keying a connection on "undefined"', async () => {
     const mock = new FortnoxMock({
       consentCode: 'code-1',

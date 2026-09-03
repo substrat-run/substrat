@@ -24,7 +24,7 @@ import {
 } from '../lib/demo';
 import { Page } from '../components/layout';
 import { card, HonestyBanner, MonoTag, PageTitle, Pill, type PillKind } from '../components/ui';
-import { relativeTime } from '../lib/format';
+import { relativeTime, untilTime } from '../lib/format';
 
 /**
  * Integrations (dashboard-ui.md §4.8) — the connection store, tenant-facing. Two
@@ -517,7 +517,7 @@ function ConnectDialog({
   /** Outstanding consent links for this app+provider — each revocable while unused. */
   const [links, setLinks] = useState<ConnectLinkView[]>([]);
   /** The link just minted for sharing — shown once; listing never returns the URL. */
-  const [minted, setMinted] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [minted, setMinted] = useState<{ url: string; expiresAt: string; copied: boolean } | null>(null);
   const complete = provider.fields.every((f) => (values[f.key] ?? '').trim() !== '') && target !== '';
 
   useEffect(() => {
@@ -555,8 +555,10 @@ function ConnectDialog({
     setErr(null);
     try {
       const link = await api.mintConnectLink(target, provider.provider);
-      setMinted({ url: link.url, expiresAt: link.expiresAt });
-      await navigator.clipboard.writeText(link.url).catch(() => {}); // shown below either way
+      // The clipboard write can be refused (no permission, insecure context) — the URL
+      // is shown below either way, but the message must not claim a copy that failed.
+      const copied = await navigator.clipboard.writeText(link.url).then(() => true, () => false);
+      setMinted({ url: link.url, expiresAt: link.expiresAt, copied });
       const refreshed = await api.connectLinks(target, provider.provider).catch(() => null);
       if (refreshed) setLinks(refreshed.links);
     } catch (e) {
@@ -695,8 +697,8 @@ function ConnectDialog({
                   {minted.url}
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
-                  Copied to the clipboard. Shown once — mint a new link if it is lost. Expires{' '}
-                  {relativeTime(minted.expiresAt)}.
+                  {minted.copied ? 'Copied to the clipboard.' : 'Clipboard access was blocked — copy the URL above by hand.'}{' '}
+                  Shown once — mint a new link if it is lost. Valid {untilTime(minted.expiresAt)}.
                 </div>
               </div>
             )}
@@ -706,7 +708,7 @@ function ConnectDialog({
                 {links.map((l) => (
                   <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5, color: 'var(--text-secondary)' }}>
                     <span>
-                      created {relativeTime(l.createdAt)}, expires {relativeTime(l.expiresAt)}
+                      created {relativeTime(l.createdAt)}, valid {untilTime(l.expiresAt)}
                     </span>
                     <Button variant="ghost" size="sm" onClick={() => revokeLink(l.id)}>
                       Revoke

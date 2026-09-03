@@ -120,7 +120,8 @@ export const fortnoxCompany = z.object({
   CompanyName: z.string().default(''),
   OrganizationNumber: z.string().default(''),
   DatabaseNumber: z.union([z.number(), z.string()]).optional(),
-  CountryCode: z.string().optional(),
+  // The live testbed answers `null` here, not an absent field — both must pass.
+  CountryCode: z.string().nullish(),
 });
 export type FortnoxCompany = z.infer<typeof fortnoxCompany>;
 
