@@ -36,10 +36,13 @@
  *   pnpm fortnox:connect --client-id=<id> --client-secret=<secret>
  *
  * `--redirect-uri` must EXACTLY match one registered in the Developer Portal. Whether
- * Fortnox accepts `http://` or `localhost` there is not documented; if it refuses,
- * register an https URI you control and pass it here — the flow is otherwise identical.
+ * Fortnox accepts `http://` or `localhost` there is not documented. If it refuses, put a
+ * tunnel in front: register the tunnel's https URL, pass it as `--redirect-uri`, and point
+ * the tunnel at `http://localhost:<--listen-port>` (default 8899). This server speaks
+ * plain HTTP either way — terminating TLS is the tunnel's job, not this script's.
  */
 import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { connectionId } from '@substrat-run/contracts';
 import type { ConnectorConnection } from '@substrat-run/kernel';
 import {
@@ -67,8 +70,38 @@ const redirectUri = arg('redirect-uri', 'http://localhost:8899/callback');
 // scopes cannot be widened without a NEW consent round with every customer.
 const scopes = arg('scopes', 'bookkeeping companyinformation').split(/[\s,]+/).filter(Boolean);
 
-const port = Number(new URL(redirectUri).port || '80');
-const state = `substrat-${Date.now()}`;
+const parsedRedirect = new URL(redirectUri);
+if (parsedRedirect.protocol !== 'http:' && parsedRedirect.protocol !== 'https:') {
+  console.error(`fortnox:connect: --redirect-uri must be http:// or https://, got ${parsedRedirect.protocol}`);
+  process.exit(2);
+}
+
+/**
+ * The port this process LISTENS on, which is not always the redirect URI's port.
+ *
+ * The callback server below is `node:http` and speaks no TLS, so an `https://` redirect
+ * URI is not something it can serve directly — that URI has to terminate somewhere else
+ * (a tunnel, a proxy) and be forwarded here in plaintext. Deriving the listen port from
+ * the URI would then be wrong twice over: it would bind 443 for a bare `https://` host
+ * and it would still never complete a handshake.
+ *
+ * So they are separate inputs. An `http://` URI defaults the listen port to its own; an
+ * `https://` one defaults to 8899 and expects a tunnel, and `--listen-port=` overrides
+ * either. This is the fallback the docs promised and could not previously deliver.
+ */
+const defaultListenPort =
+  parsedRedirect.protocol === 'http:' ? Number(parsedRedirect.port || '80') : 8899;
+const listenPort = Number(arg('listen-port', String(defaultListenPort)));
+
+/**
+ * The CSRF binding for this consent round.
+ *
+ * 128 bits from the CSPRNG, not a timestamp: `state` is what proves a callback belongs
+ * to the round this process started, and a predictable value lets anything that can
+ * reach the callback hand this script a code it never asked for. The same standard the
+ * connector already holds itself to for Scrive's callback token.
+ */
+const state = `substrat-${randomBytes(16).toString('hex')}`;
 
 const consentUrl = fortnoxConsentUrl({ clientId, redirectUri, scopes, state });
 
@@ -77,7 +110,14 @@ console.log(`   ${redirectUri}\n`);
 console.log('2. Open this URL and approve, signed in as the sandbox company:\n');
 console.log(`   ${consentUrl}\n`);
 console.log(`   (scopes: ${scopes.join(', ')} — account_type=service)\n`);
-console.log(`3. Waiting for the callback on port ${port}…\n`);
+if (parsedRedirect.protocol === 'https:') {
+  console.log(
+    `   NOTE: an https redirect URI cannot be served here — this callback speaks plain HTTP.\n` +
+      `   Point a tunnel (cloudflared, ngrok) at http://localhost:${listenPort} so ${redirectUri}\n` +
+      `   reaches it, or use the default http://localhost:8899/callback if the portal accepts it.\n`,
+  );
+}
+console.log(`3. Waiting for the callback on port ${listenPort}…\n`);
 
 /** Exchange the one-time code. The only place this flow is ever used. */
 async function exchangeCode(code: string): Promise<string> {
@@ -197,4 +237,4 @@ const server = createServer((req, res) => {
   })();
 });
 
-server.listen(port);
+server.listen(listenPort);

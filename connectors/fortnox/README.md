@@ -63,9 +63,15 @@ afterwards, and `fortnoxConsentUrl` always sets it. Your callback exchanges the 
 
 **To do that round once, locally**, from the repo root:
 
-```
+```text
 pnpm fortnox:connect --client-id=<id> --client-secret=<secret>
 ```
+
+The redirect URI must match one registered in the portal exactly; the default is
+`http://localhost:8899/callback`. Whether Fortnox accepts `http://` or `localhost` is not
+documented — if it refuses, register a tunnel's https URL, pass it as `--redirect-uri`, and point
+the tunnel at `--listen-port` (default 8899). The callback always speaks plain HTTP; terminating
+TLS is the tunnel's job.
 
 It serves the callback, completes the consent, reads the `DatabaseNumber`, then **mints again
 with `client_credentials`** to prove the service consent actually works — and prints the three
