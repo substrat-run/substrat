@@ -13,6 +13,7 @@ import {
   toWireProvider,
   upsertProvider,
 } from './providers.js';
+import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
@@ -192,6 +193,21 @@ const providerPut = z.object({
   disabled: z.boolean(),
 });
 
+/**
+ * BankID's configuration, as the panel sends it. Same convention as the OAuth providers for
+ * credential fields: absent means "keep the stored one", and empty strings are refused rather
+ * than read as an instruction to clear a working credential. `caCert: null` is the one
+ * explicit clear — it removes a trust-anchor override, falling back to the embedded root.
+ */
+const bankidPut = z.object({
+  environment: z.enum(['test', 'production']),
+  clientCert: z.string().min(1).optional(),
+  clientKey: z.string().min(1).optional(),
+  caCert: z.string().min(1).nullable().optional(),
+  allowSignup: z.boolean(),
+  disabled: z.boolean(),
+});
+
 /** Loopback hosts, where OAuth 2.1 still permits plain HTTP for a native client. */
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
@@ -303,6 +319,34 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     deleteProvider(deps.sql, providerId);
     return c.json({ deleted: providerId });
+  });
+
+  /* ---- BankID ---- */
+
+  /**
+   * BankID is configured beside the OAuth upstreams but not among them (`src/bankid.ts` for
+   * why: no client id, no redirect — a certificate and two decisions). One read, one PUT, one
+   * DELETE, singleton by nature. The key material goes in and never comes back out.
+   */
+  app.get('/bankid', (c) => {
+    const cfg = readBankIdConfig(deps.sql);
+    return c.json({ bankid: cfg ? toWireBankId(cfg) : null });
+  });
+
+  app.put('/bankid', async (c) => {
+    const input = parsedBody(bankidPut, await c.req.json().catch(() => null));
+    const existing = readBankIdConfig(deps.sql);
+    if ((!input.clientCert || !input.clientKey) && !existing) {
+      throw new HTTPException(400, { message: 'a client certificate and key are required to enable BankID' });
+    }
+    const saved = putBankIdConfig(deps.sql, input, existing);
+    return c.json(toWireBankId(saved), existing ? 200 : 201);
+  });
+
+  app.delete('/bankid', (c) => {
+    if (!readBankIdConfig(deps.sql)) throw new HTTPException(404, { message: 'BankID is not configured' });
+    deleteBankIdConfig(deps.sql);
+    return c.json({ deleted: 'bankid' });
   });
 
   /**

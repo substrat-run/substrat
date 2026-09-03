@@ -126,3 +126,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .add-provider { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .add-provider .btn { width: auto; margin-top: 0; }
 .editor code { display: block; padding: 8px 11px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+
+/* BankID — the QR sits on white whatever the theme, or the app cannot scan it. */
+.bankid-qr { display: flex; justify-content: center; margin: 8px 0 12px; }
+.bankid-qr img { background: #fff; border-radius: 8px; padding: 8px; }

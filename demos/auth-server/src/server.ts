@@ -26,6 +26,8 @@ import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from './settings.js';
 import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
+import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
+import { nodeBankIdTransport } from './bankid-transport-node.js';
 
 /**
  * Dev API server for the auth-server demo — Better Auth over a local better-sqlite3 file,
@@ -99,6 +101,17 @@ const config = (): Record<string, string | undefined> =>
  * `allowSignup` is overridable for the bootstrap paths — creating the FIRST administrator is
  * not self-service registration, and must work on an issuer with sign-up closed.
  */
+/** BankID for `buildAuth`, from the stored config. Node can always present the client
+ *  certificate, so an enabled configuration is the only condition. */
+const bankidFor = (cfg: BankIdConfig | undefined) =>
+  cfg && !cfg.disabled
+    ? {
+        apiUrl: bankIdApiUrl(cfg.environment),
+        transport: nodeBankIdTransport(cfg),
+        allowSignup: cfg.allowSignup,
+      }
+    : undefined;
+
 const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
   const cfg = config();
   const providers = readProviders(sql);
@@ -116,6 +129,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
     socialProviders: socialProvidersFrom(providers),
     trustedProviders: trustedProvidersFrom(providers),
+    bankid: bankidFor(readBankIdConfig(sql)),
   });
 };
 
@@ -163,13 +177,14 @@ const demo = await seedDemo();
 
 const app = new Hono();
 
-app.get('/api/setup-state', (c) =>
-  c.json({
+app.get('/api/setup-state', (c) => {
+  const bankid = publicBankIdFrom(readBankIdConfig(sql), true);
+  return c.json({
     needsSetup: needsSetup(),
     signupEnabled: isTruthy(config()[ALLOW_SIGNUP]),
-    providers: publicProvidersFrom(readProviders(sql)),
-  }),
-);
+    providers: [...publicProvidersFrom(readProviders(sql)), ...(bankid ? [bankid] : [])],
+  });
+});
 
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<{ email?: string; password?: string; name?: string }>();

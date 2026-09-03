@@ -243,6 +243,16 @@ export const DEFAULT_HARNESS = [
   // defines the client id to MEAN. The file exists separately from auth-do.ts precisely
   // so the guarantees it can and cannot make are reviewable in one place.
   'cimd-fetch.ts',
+  // The auth adapter's BankID pieces — same class as the rest of auth*.ts, imported only
+  // by them. `bankid-transport-node.ts` is a declared network boundary exactly as
+  // `cimd-fetch.ts` is: the issuer IS the relying party calling BankID's mTLS API, with
+  // no `ctx` and no connector to delegate to, and the file exists separately so what it
+  // can and cannot guarantee is reviewable in one place. The clock reads in the other two
+  // are Better Auth's storage contract (order timestamps, config `updatedAt`) — the same
+  // reasoning that puts `auth-schema.ts` here — not a Substrat row's stamp.
+  'bankid.ts',
+  'bankid-plugin.ts',
+  'bankid-transport-node.ts',
   'do-contract.ts',
   // The per-instance CONFIG store hosted in a Durable Object — the durable half of
   // `/internal/configure`. Same class as auth-do.ts: the config a scope runs on is

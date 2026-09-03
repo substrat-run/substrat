@@ -1,8 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import {
   answerConsent,
   authClient,
+  bankidCancel,
+  bankidCollect,
+  bankidQr,
+  bankidSettings,
+  bankidStart,
   banUser,
+  removeBankid,
+  saveBankidSettings,
   APPLICATION_TYPES,
   createFirstAdmin,
   createOAuthClient,
@@ -34,6 +42,8 @@ import {
   socialErrorFrom,
   type AdminUser,
   type ApplicationType,
+  type BankIdSettings,
+  type BankIdStart,
   type ClientDraft,
   type ConfiguredProvider,
   type ProviderCatalogueEntry,
@@ -221,10 +231,16 @@ function SignIn({
   const [password, setPassword] = useState('');
   const [err, setErr] = useState<string | null>(socialError);
   const [notice, setNotice] = useState<string | null>(null);
+  const [bankidOpen, setBankidOpen] = useState(false);
   // A signed authorize query ⇒ a relying party sent this person here, not an operator opening
   // the console. Same form either way, but promising the dashboard would be a lie about where
   // they end up.
   const forOidc = oauthQuery !== null;
+  // BankID is in the same providers list but is not a redirect: the browser stays here while
+  // the person approves in the app, so its button opens a screen instead of leaving.
+  if (bankidOpen) {
+    return <BankIdSignIn oauthQuery={oauthQuery} onDone={onDone} onBack={() => setBankidOpen(false)} />;
+  }
   return (
     <Centered>
       <Card title="Substrat Auth">
@@ -239,6 +255,7 @@ function SignIn({
                 className="btn"
                 onClick={async () => {
                   setErr(null);
+                  if (provider.id === 'bankid') return setBankidOpen(true);
                   try {
                     // Nothing follows: the response is a redirect to the provider and the
                     // browser client follows it. The pending authorize request goes along.
@@ -348,6 +365,149 @@ function SignUp({
         </button>
         <button className="btn link" onClick={onSignIn}>
           I already have an account
+        </button>
+      </Card>
+    </Centered>
+  );
+}
+
+/**
+ * What each BankID `hintCode` means, in the words of the person waiting. An unknown code
+ * falls back to the scan instruction while pending and a plain failure once failed —
+ * BankID adds codes over time, and an unmapped one must degrade to something true.
+ */
+const BANKID_HINTS: Record<string, string> = {
+  outstandingTransaction: 'Open the BankID app and scan the QR code.',
+  noClient: 'Open the BankID app and scan the QR code.',
+  started: 'Looking for your BankID…',
+  userSign: 'Confirm with your security code in the BankID app.',
+  userCancel: 'The sign-in was cancelled in the BankID app.',
+  expiredTransaction: 'The BankID sign-in timed out. Start again.',
+  certificateErr: 'This BankID is blocked or invalid. Contact your bank.',
+  startFailed: 'The BankID app could not be reached. Start again.',
+};
+
+/**
+ * The BankID flow, in one screen: an order is started on mount, the animated QR re-draws
+ * every second (each frame fetched from the issuer — the code is computed there), and
+ * `collect` polls every two seconds until the order completes, fails, or the person leaves.
+ * Same-device sign-in is the `autoStartUrl` link; the polling picks the session up either way.
+ *
+ * Completing IS signing in — the collect response set the session cookie — and a pending
+ * authorize request resumes exactly as the password path resumes: the issuer answers the
+ * completing poll with the redirect envelope, and this navigates to the relying party.
+ * Leaving the screen with the order still open cancels it at BankID rather than letting it
+ * sit approvable for three more minutes.
+ */
+function BankIdSignIn({
+  oauthQuery, onDone, onBack,
+}: { oauthQuery: string | null; onDone: () => void; onBack: () => void }) {
+  const [order, setOrder] = useState<BankIdStart | null>(null);
+  const [qrImage, setQrImage] = useState<string | null>(null);
+  const [hint, setHint] = useState('Open the BankID app and scan the QR code.');
+  const [err, setErr] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  /** Set once the flow settled (session made, or redirect leaving) — the unmount cleanup
+   *  must not cancel an order that just succeeded. */
+  const settled = useRef(false);
+  const liveOrder = useRef<string | null>(null);
+
+  const begin = useCallback(async () => {
+    setErr(null);
+    setFailed(false);
+    setHint('Open the BankID app and scan the QR code.');
+    try {
+      const started = await bankidStart();
+      liveOrder.current = started.orderRef;
+      setOrder(started);
+      setQrImage(await QRCode.toDataURL(started.qr, { margin: 1, width: 208 }));
+    } catch (e) {
+      setFailed(true);
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void begin();
+    return () => {
+      if (!settled.current && liveOrder.current) void bankidCancel(liveOrder.current);
+    };
+  }, [begin]);
+
+  // A fresh QR frame every second — the animated code, per BankID's guidelines.
+  useEffect(() => {
+    if (!order || failed) return;
+    const timer = setInterval(async () => {
+      try {
+        setQrImage(await QRCode.toDataURL(await bankidQr(order.orderRef), { margin: 1, width: 208 }));
+      } catch {
+        // The order is gone (completed or expired) — the collect poll is the one that says so.
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [order, failed]);
+
+  // Poll collect every two seconds — the API's own guidance, and specifically not faster.
+  useEffect(() => {
+    if (!order || failed) return;
+    const timer = setInterval(async () => {
+      try {
+        const result = await bankidCollect(order.orderRef, oauthQuery);
+        if ('redirect' in result && result.redirect && result.url) {
+          // An authorize request resumed — the browser belongs to the relying party now.
+          settled.current = true;
+          window.location.href = result.url;
+          return;
+        }
+        const poll = result as { status: string; hintCode: string | null };
+        if (poll.status === 'complete') {
+          settled.current = true;
+          onDone();
+        } else if (poll.status === 'failed') {
+          setFailed(true);
+          setHint(BANKID_HINTS[poll.hintCode ?? ''] ?? 'The sign-in failed. Start again.');
+        } else if (poll.hintCode) {
+          setHint(BANKID_HINTS[poll.hintCode] ?? 'Open the BankID app and scan the QR code.');
+        }
+      } catch (e) {
+        // A refusal with words (no account linked, banned) — show it and stop polling.
+        setFailed(true);
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [order, failed, oauthQuery, onDone]);
+
+  return (
+    <Centered>
+      <Card title="Sign in with BankID">
+        {!failed && qrImage && (
+          <div className="bankid-qr">
+            <img src={qrImage} alt="BankID QR code" width={208} height={208} />
+          </div>
+        )}
+        {!failed && <p className="muted">{hint}</p>}
+        {failed && !err && <p className="error">{hint}</p>}
+        {err && <p className="error">{err}</p>}
+        {!failed && order && (
+          <a className="btn" href={order.autoStartUrl}>
+            Open BankID on this device
+          </a>
+        )}
+        {failed && (
+          <button className="btn primary" onClick={() => void begin()}>
+            Try again
+          </button>
+        )}
+        <button
+          className="btn link"
+          onClick={() => {
+            if (!settled.current && liveOrder.current) void bankidCancel(liveOrder.current);
+            liveOrder.current = null;
+            onBack();
+          }}
+        >
+          Back
         </button>
       </Card>
     </Centered>
@@ -503,6 +663,7 @@ function Dashboard({ session, onSignOut }: { session: Session; onSignOut: () => 
         </section>
         <AccessPanel />
         <ProvidersPanel issuer={disc?.issuer ?? null} />
+        <BankIdPanel />
         <ClientsPanel />
         <IssuerPanel disc={disc} />
       </main>
@@ -896,6 +1057,192 @@ function ProviderEditor({
       <div className="row">
         <button className="btn primary" disabled={busy} onClick={() => void save()}>
           {busy ? 'Saving…' : provider ? 'Save changes' : 'Enable'}
+        </button>
+        <button className="btn" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+/* ---- BankID ---- */
+
+/**
+ * BankID sits beside the OAuth providers but is configured on its own terms: an environment,
+ * an mTLS client certificate, and one decision (may it create accounts). No redirect URI to
+ * register and no client id — the issuer CALLS BankID, presenting the certificate.
+ */
+function BankIdPanel() {
+  const [settings, setSettings] = useState<BankIdSettings | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    setErr(null);
+    try {
+      setSettings(await bankidSettings());
+      setLoaded(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>BankID</h2>
+        {loaded && !settings && !editing && (
+          <button className="btn" onClick={() => setEditing(true)}>+ Enable BankID</button>
+        )}
+      </div>
+      {err && <p className="error">{err}</p>}
+      {!loaded ? (
+        <p className="muted">Loading…</p>
+      ) : (
+        <>
+          <p className="muted">
+            Swedish e-ID sign-in. People approve in the BankID app — by scanning an animated QR
+            code, or on the same device — and their verified personal number is the account key.
+          </p>
+          {settings && (
+            <table className="grid">
+              <thead>
+                <tr><th>Environment</th><th>Certificate</th><th>Status</th><th></th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    {settings.environment === 'production' ? 'Production' : 'Test'}
+                    {settings.allowSignup && <span className="tag">creates accounts</span>}
+                  </td>
+                  <td>{settings.certSet ? 'stored' : '—'}{settings.caSet && <span className="tag">custom CA</span>}</td>
+                  <td>{settings.disabled ? 'Disabled' : 'Enabled'}</td>
+                  <td className="actions">
+                    <button className="btn tiny" onClick={() => setEditing(true)}>Edit</button>
+                    <button
+                      className="btn tiny danger"
+                      onClick={async () => {
+                        if (!window.confirm('Remove BankID? The stored certificate is deleted and the button leaves the login screen. Accounts people created with it remain.')) return;
+                        try {
+                          await removeBankid();
+                          setEditing(false);
+                          await reload();
+                        } catch (e) {
+                          setErr(e instanceof Error ? e.message : String(e));
+                        }
+                      }}
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+          {editing && (
+            <BankIdEditor
+              settings={settings}
+              onCancel={() => setEditing(false)}
+              onSaved={async () => {
+                setEditing(false);
+                await reload();
+              }}
+            />
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
+function BankIdEditor({
+  settings, onCancel, onSaved,
+}: { settings: BankIdSettings | null; onCancel: () => void; onSaved: () => void | Promise<void> }) {
+  const [environment, setEnvironment] = useState<'test' | 'production'>(settings?.environment ?? 'test');
+  const [cert, setCert] = useState('');
+  const [key, setKey] = useState('');
+  const [allowSignup, setAllowSignup] = useState(settings?.allowSignup ?? true);
+  const [disabled, setDisabled] = useState(settings?.disabled ?? false);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await saveBankidSettings({
+        environment,
+        // Empty means "keep the stored PEMs" — flipping a toggle must not require re-pasting
+        // a credential, same convention as the OAuth providers' secret field.
+        ...(cert.trim() ? { clientCert: cert.trim() } : {}),
+        ...(key.trim() ? { clientKey: key.trim() } : {}),
+        allowSignup,
+        disabled,
+      });
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="editor">
+      <h3>{settings ? 'Edit BankID' : 'Enable BankID'}</h3>
+      <label className="field">
+        <span>Environment</span>
+        <select value={environment} onChange={(e) => setEnvironment(e.target.value as 'test' | 'production')}>
+          <option value="test">test — appapi2.test.bankid.com</option>
+          <option value="production">production — appapi2.bankid.com</option>
+        </select>
+        <em className="hint">
+          The test environment takes the shared test certificate (FPTestcert5, from the BankID
+          developer portal) and test-mode BankID apps. Production requires the certificate your
+          bank issued to your organisation.
+        </em>
+      </label>
+      <label className="field">
+        <span>{settings?.certSet ? 'Client certificate (stored — paste to replace)' : 'Client certificate (PEM)'}</span>
+        <textarea rows={4} value={cert} onChange={(e) => setCert(e.target.value)} placeholder={'-----BEGIN CERTIFICATE-----'} />
+        <em className="hint">
+          From a .p12: <code>openssl pkcs12 -in FPTestcert5_20240610.p12 -clcerts -nokeys -legacy</code>
+          &nbsp;(test passphrase <code>qwerty123</code>).
+        </em>
+      </label>
+      <label className="field">
+        <span>{settings?.certSet ? 'Private key (stored — paste to replace)' : 'Private key (PEM)'}</span>
+        <textarea rows={4} value={key} onChange={(e) => setKey(e.target.value)} placeholder={'-----BEGIN PRIVATE KEY-----'} />
+        <em className="hint">
+          <code>openssl pkcs12 -in FPTestcert5_20240610.p12 -nocerts -nodes -legacy</code>. Stored
+          in this issuer&apos;s own database and never shown again.
+        </em>
+      </label>
+      <label className="toggle">
+        <input type="checkbox" checked={allowSignup} onChange={(e) => setAllowSignup(e.target.checked)} />
+        <span>
+          <strong>Let BankID create accounts</strong>
+          <em className="hint">
+            On, a first sign-in creates an account keyed by the verified personal number. Off,
+            only personal numbers an administrator already linked can get in — BankID carries no
+            email, so there is nothing else to match a person by.
+          </em>
+        </span>
+      </label>
+      <label className="toggle">
+        <input type="checkbox" checked={disabled} onChange={(e) => setDisabled(e.target.checked)} />
+        <span>
+          <strong>Disabled</strong>
+          <em className="hint">Keeps the certificate but takes the button off the login screen.</em>
+        </span>
+      </label>
+      {err && <p className="error">{err}</p>}
+      <div className="row">
+        <button className="btn primary" disabled={busy} onClick={() => void save()}>
+          {busy ? 'Saving…' : settings ? 'Save changes' : 'Enable'}
         </button>
         <button className="btn" onClick={onCancel}>Cancel</button>
       </div>
