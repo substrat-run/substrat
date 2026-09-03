@@ -473,11 +473,41 @@ describe('assertUiIsServed — a UI nothing would serve (#881)', () => {
     // and `require` in an import is never a method, so neither of these is an import.
     ['a call to a function named from', "export const rows = from('./assets.generated.js');\n"],
     ['a method call named require', "export const a = loader.require('./assets.generated.js');\n"],
+    // TypeScript erases these: the emitted worker has no reference to the module at all,
+    // so naming it in a type position serves nothing.
+    ['an import type declaration', "import type { AssetMap } from './assets.generated.js';\nexport const x = 1;\n"],
+    ['an export type declaration', "export type { AssetMap } from './assets.generated.js';\n"],
+    [
+      'a named clause whose every binding is a type',
+      "import { type AssetMap, type Asset } from './assets.generated.js';\nexport const x = 1;\n",
+    ],
   ])('still REFUSES when the only evidence is %s', (_what, source) => {
     const dir = withUi();
     mkdirSync(join(dir, 'src'), { recursive: true });
     writeFileSync(join(dir, 'src', 'worker.ts'), source);
     expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/nothing in the push would serve/);
+  });
+
+  it('accepts a value import that follows a type-only one — the clause read is per statement', () => {
+    // The type-only skip must not swallow the real import two lines down: the clause scanned
+    // is the one belonging to THIS `from`, not the file's first import keyword.
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'worker.ts'),
+      "import type { AssetMap } from './types.js';\nimport { ASSETS } from './assets.generated.js';\nexport const x: AssetMap = ASSETS;\n",
+    );
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+  });
+
+  it('accepts a mixed clause — one runtime binding beside the types is a real import', () => {
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'worker.ts'),
+      "import { type AssetMap, ASSETS } from './assets.generated.js';\nexport const x: AssetMap = ASSETS;\n",
+    );
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
   });
 
   it('is not fooled by a quote inside a regex literal into missing a real import', () => {

@@ -497,14 +497,40 @@ function scanLiterals(source: string): { code: string; literals: string[] } {
  * keeps `x.from`/`myRequire` out; `import` needs it too, though only against an identifier
  * ending in it, since the word itself is reserved.
  */
-const IMPORT_OF_LITERAL: RegExp[] = [
-  /** `import x from './a'`, `export * from './a'` — no parenthesis, ever. */
-  /(?<![.$\w])from\s*\0(\d+)\0/g,
-  /** `import './a'` and `import('./a')`. */
-  /(?<![.$\w])import\s*\(?\s*\0(\d+)\0/g,
-  /** `require('./a')` — parenthesised, and not a method on something. */
-  /(?<![.$\w])require\s*\(\s*\0(\d+)\0/g,
-];
+/** `import x from './a'`, `export * from './a'` — no parenthesis, ever. */
+const FROM_LITERAL = /(?<![.$\w])from\s*\0(\d+)\0/g;
+/** `import './a'` and `import('./a')`. */
+const IMPORT_LITERAL = /(?<![.$\w])import\s*\(?\s*\0(\d+)\0/g;
+/** `require('./a')` — parenthesised, and not a method on something. */
+const REQUIRE_LITERAL = /(?<![.$\w])require\s*\(\s*\0(\d+)\0/g;
+/** The `import`/`export` keyword a `from` belongs to — the LAST one before it. */
+const IMPORT_KEYWORD = /(?<![.$\w])(?:import|export)\b/g;
+
+/** What stands between the declaration's keyword and its `from`, or undefined if no keyword
+ *  precedes it (which is not a declaration this understands). */
+function clauseBefore(code: string, at: number): string | undefined {
+  const prefix = code.slice(0, at);
+  let last: RegExpExecArray | undefined;
+  for (const m of prefix.matchAll(IMPORT_KEYWORD)) last = m;
+  return last ? prefix.slice(last.index + last[0].length) : undefined;
+}
+
+/**
+ * Is this the clause of a declaration TypeScript ERASES — `import type … from`,
+ * `export type … from`, or one whose every named binding is `type`-prefixed?
+ *
+ * Such a declaration names the module without importing anything at runtime, so it is not
+ * evidence that the worker serves the app: the emitted JavaScript has no reference to the
+ * inlined-assets module at all.
+ */
+function isTypeOnlyClause(clause: string): boolean {
+  const c = clause.trim();
+  if (/^type\b/.test(c)) return true;
+  const named = /^\{([^}]*)\}$/.exec(c);
+  if (!named) return false;
+  const bindings = named[1]!.split(',').map((b) => b.trim()).filter(Boolean);
+  return bindings.length > 0 && bindings.every((b) => /^type\b/.test(b));
+}
 
 /** The specifier of the inlined-assets module, with or without an extension — TypeScript
  *  source writes it as `.js`, as `.ts`, or bare, and it may sit in a subdirectory. */
@@ -513,11 +539,21 @@ const INLINED_ASSETS_SPECIFIER = /(?:^|\/)assets\.generated(?:\.[cm]?[jt]sx?)?$/
 /** Does this module import the inlined-assets module? */
 function importsInlinedAssets(source: string): boolean {
   const { code, literals } = scanLiterals(source);
-  for (const pattern of IMPORT_OF_LITERAL) {
-    for (const m of code.matchAll(pattern)) {
-      const specifier = literals[Number(m[1])];
-      if (specifier !== undefined && INLINED_ASSETS_SPECIFIER.test(specifier)) return true;
-    }
+  const isTheModule = (m: RegExpExecArray): boolean => {
+    const specifier = literals[Number(m[1])];
+    return specifier !== undefined && INLINED_ASSETS_SPECIFIER.test(specifier);
+  };
+  for (const m of code.matchAll(FROM_LITERAL)) {
+    if (!isTheModule(m)) continue;
+    // The only form that can be erased: `import type … from './assets.generated.js'` names
+    // the module and imports nothing. Anything the clause scan cannot read is treated as a
+    // real import — the conservative direction here is to keep refusing, not to exempt.
+    const clause = clauseBefore(code, m.index);
+    if (clause !== undefined && isTypeOnlyClause(clause)) continue;
+    return true;
+  }
+  for (const pattern of [IMPORT_LITERAL, REQUIRE_LITERAL]) {
+    for (const m of code.matchAll(pattern)) if (isTheModule(m)) return true;
   }
   return false;
 }
