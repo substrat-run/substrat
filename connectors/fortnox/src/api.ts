@@ -179,6 +179,24 @@ function errorMessage(body: string, status: number): string {
   return slice === '' ? `HTTP ${status}` : slice;
 }
 
+/**
+ * `JSON.parse`, but a non-JSON body stays inside this module's error contract.
+ *
+ * Both parse sites run AFTER `res.ok`, which is exactly when this bites: a proxy,
+ * captive portal or gateway that answers `200` with an HTML page makes a bare
+ * `JSON.parse` throw a `SyntaxError`, and the caller loses `status`, `body` and
+ * `refused` — the three fields {@link FortnoxApiError} exists to carry, and the ones a
+ * sweep reports and a probe branches on. A parse failure is a fact about the response,
+ * so it is reported as one.
+ */
+function asJson(body: string, what: string): unknown {
+  try {
+    return JSON.parse(body);
+  } catch {
+    throw new FortnoxApiError(`${what} was not JSON`, 502, body);
+  }
+}
+
 export class FortnoxApi {
   private readonly conn: ConnectorConnection;
   private readonly apiBase: string;
@@ -247,7 +265,7 @@ export class FortnoxApi {
         body,
       );
     }
-    const parsed = tokenResponse.safeParse(JSON.parse(body));
+    const parsed = tokenResponse.safeParse(asJson(body, 'Fortnox token response'));
     if (!parsed.success) {
       throw new FortnoxApiError('Fortnox token response was not the documented shape', 502, body);
     }
@@ -272,7 +290,7 @@ export class FortnoxApi {
         body,
       );
     }
-    return JSON.parse(body);
+    return asJson(body, `Fortnox GET ${path}`);
   }
 
   /** The company — the probe read, and where a connect flow learns `DatabaseNumber`. */

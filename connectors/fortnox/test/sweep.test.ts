@@ -194,7 +194,7 @@ describe('fortnox connector — inbound sync', () => {
     expect(page.company.name).toBe('Fastighets AB Älvsjö');
     expect(page.costCentres).toContainEqual({ code: '2002', name: 'Kvarteret Önskan' });
     expect(page.balances.find((b) => b.account === '6570')?.amount).toEqual({
-      amount: '95.00',
+      amount: '95',
       currency: 'SEK',
     });
   });
@@ -300,9 +300,72 @@ describe('fortnox connector — inbound sync', () => {
   it('stops syncing an unbound scope', async () => {
     await bind();
     await unbindFortnoxScope(host, connId, s);
+    // The sweep skipping a tombstone is not the same claim as the EXPORTED list
+    // skipping one: `unbindFortnoxScope` writes `null` under the same key, and a
+    // caller reading `b.scopeId` off that gets a TypeError from a value the types
+    // swore was a `FortnoxBinding`.
+    expect(await listFortnoxBindings(host, connId)).toEqual([]);
     const result = await sweepFortnoxLedger(host, connId, options());
     expect(result.found).toBe(0);
     expect(landed).toHaveLength(0);
+  });
+
+  it('re-syncs when the window moves, even though the payload is byte-identical', async () => {
+    // A financial year that straddles calendar years — ordinary in Sweden, and the case
+    // that made hashing the payload alone lose data. A December sweep lands only the
+    // 2026 months; the January sweep selects the SAME year by overlap and downloads the
+    // SAME bytes, so a payload-only hash returned `changed: false` and the 2027 months
+    // never landed until the books happened to change.
+    fortnox = new FortnoxMock({
+      financialYears: [{ Id: 7, FromDate: '2026-07-01', ToDate: '2027-06-30' }],
+    });
+    fortnox.setSie(
+      7,
+      [
+        '#FNAMN "Brutet AB"',
+        '#VALUTA SEK',
+        '#RAR 0 20260701 20270630',
+        '#KONTO 4160 "Reparationer"',
+        '#VER A 1 20261115 "Hösten"',
+        '{',
+        '#TRANS 4160 {} 100.00',
+        '}',
+        '#VER A 2 20270215 "Våren"',
+        '{',
+        '#TRANS 4160 {} 200.00',
+        '}',
+        '',
+      ].join('\r\n'),
+    );
+    await bind();
+
+    const december = await sweepFortnoxLedger(host, connId, {
+      ...options(),
+      period: { from: '2026-01-01', to: '2026-12-31' },
+    });
+    expect(december.synced).toHaveLength(1);
+    expect(landed).toHaveLength(1);
+    expect(landed[0]!.balances.map((b) => b.month)).toEqual(['2026-11']);
+
+    const january = await sweepFortnoxLedger(host, connId, {
+      ...options(),
+      period: { from: '2027-01-01', to: '2027-12-31' },
+    });
+    expect(january.unchanged).toBe(0);
+    expect(january.synced).toHaveLength(1);
+    expect(landed).toHaveLength(2);
+    expect(landed[1]!.balances.map((b) => b.month)).toEqual(['2027-02']);
+    // Different rows must never present the same idempotency key to a consumer's upsert.
+    expect(landed[1]!.syncId).not.toBe(landed[0]!.syncId);
+  });
+
+  it('still skips when both the payload and the window are unchanged', async () => {
+    // The guard above must not cost the cheap no-op the sweep depends on.
+    await bind();
+    await sweepFortnoxLedger(host, connId, options());
+    const again = await sweepFortnoxLedger(host, connId, options());
+    expect(again.unchanged).toBe(1);
+    expect(landed).toHaveLength(1);
   });
 
   it('reports nothing to sync when no financial year overlaps the period', async () => {

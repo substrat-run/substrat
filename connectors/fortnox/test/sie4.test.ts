@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { moneyOf } from '@substrat-run/contracts';
 import { parseSie4, sieAmount, sieDate, splitSieLine } from '../src/sie4.js';
 import { financialYearFor, summarizeLedger } from '../src/aggregate.js';
 import { SIE_FIXTURE } from './fixture.js';
@@ -52,6 +53,30 @@ describe('sieAmount', () => {
     expect(sieAmount('abc')).toBe('0');
     expect(sieAmount('-')).toBe('0');
     expect(sieAmount(undefined)).toBe('0');
+  });
+
+  it('answers 0 for a digit-free value rather than passing it to moneyOf', () => {
+    // These matched the old pattern and were returned verbatim. `moneyAmount` is
+    // `/^-?\\d+(\\.\\d{1,6})?$/`, so `'.'` reaching it throws — one malformed field
+    // killing a whole year's sync instead of costing a single row.
+    expect(sieAmount('.')).toBe('0');
+    expect(sieAmount('+.')).toBe('0');
+    expect(sieAmount('+')).toBe('0');
+  });
+
+  it('always emits a leading digit, because moneyAmount demands one', () => {
+    expect(sieAmount('.5')).toBe('0.5');
+    expect(sieAmount('-.75')).toBe('-0.75');
+    // A trailing dot carries no information and is equally invalid downstream.
+    expect(sieAmount('12.')).toBe('12');
+  });
+
+  it('emits only values moneyOf accepts, for every shape SIE can carry', () => {
+    // The property that matters: whatever this returns must survive `moneyOf`. Asserting
+    // it here means a future loosening of the regex cannot quietly reintroduce a crash.
+    for (const raw of ['.', '+.', '-', '', 'abc', '.5', '12.', '1 234,50', '-50000.00', '+120']) {
+      expect(() => moneyOf(sieAmount(raw), 'SEK')).not.toThrow();
+    }
   });
 });
 
@@ -134,14 +159,16 @@ describe('summarizeLedger', () => {
     const july = summary.balances.find(
       (b) => b.account === '4160' && b.costCentre === '2002' && b.month === '2026-07',
     );
-    expect(july?.amount.amount).toBe('7499.50');
+    // Canonical, not the file's formatting: every cell now goes through `addDecimal`,
+    // so a one-row cell is shaped like a summed one instead of echoing its input.
+    expect(july?.amount.amount).toBe('7499.5');
   });
 
   it('keeps rows with no cost centre in their own bucket', () => {
     const summary = summarizeLedger(ledger);
     const bank = summary.balances.find((b) => b.account === '6570');
     expect(bank?.costCentre).toBeNull();
-    expect(bank?.amount.amount).toBe('95.00');
+    expect(bank?.amount.amount).toBe('95');
   });
 
   it('selects dimension 1 as the cost centre, not whichever object came first', () => {
@@ -160,6 +187,36 @@ describe('summarizeLedger', () => {
 
   it('is stable — the same ledger summarizes to the same order twice', () => {
     expect(summarizeLedger(ledger)).toEqual(summarizeLedger(ledger));
+  });
+
+  it('does not merge two cells whose parts collide under a space delimiter', () => {
+    // `#OBJEKT` codes are quoted free text, so a cost centre may contain a space. Keyed
+    // on spaces, ('4160 2001', 'X') and ('4160', '2001 X') produce one key and two
+    // unrelated balances silently sum into a single cell.
+    const collide = parseSie4(
+      [
+        '#VALUTA SEK',
+        '#VER A 1 20260101 "a"',
+        '{',
+        '#TRANS "4160 2001" {"1" "X"} 100.00',
+        '#TRANS 4160 {"1" "2001 X"} 200.00',
+        '}',
+        '',
+      ].join('\r\n'),
+    );
+    const summary = summarizeLedger(collide);
+    expect(summary.balances).toHaveLength(2);
+    expect(summary.balances.map((b) => b.amount.amount).sort()).toEqual(['100', '200']);
+  });
+
+  it('canonicalizes a single-transaction cell, not only a summed one', () => {
+    // A cell with one row used to store the raw SIE string and hand it straight to
+    // `moneyOf`, so a >6dp amount — fine for SIE, invalid for `moneyAmount` — threw.
+    const precise = parseSie4(
+      ['#VALUTA SEK', '#VER A 1 20260101 "a"', '{', '#TRANS 4160 {} 1.1234567', '}', ''].join('\r\n'),
+    );
+    expect(() => summarizeLedger(precise)).not.toThrow();
+    expect(summarizeLedger(precise).balances[0]!.amount.amount).toBe('1.123456');
   });
 });
 

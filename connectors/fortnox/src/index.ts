@@ -151,7 +151,12 @@ export interface FortnoxBinding {
   lastSync?: {
     financialYearId: number;
     syncedAt: string;
-    /** SHA-256 of the SIE payload. Unchanged ⇒ the sync is skipped without landing. */
+    /**
+     * SHA-256 of the SIE payload AND the window it was read through. Unchanged ⇒ the
+     * sync is skipped without landing. The window is in here because what lands is the
+     * payload filtered to it, so the same bytes read through a different period are a
+     * different result — see the note where this is computed.
+     */
     contentHash: string;
     balances: number;
   };
@@ -275,7 +280,13 @@ export async function listFortnoxBindings(
   connectionId: ConnectionId,
 ): Promise<FortnoxBinding[]> {
   const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
-  return rows.map((r) => r.value as FortnoxBinding);
+  // Tombstones filtered, exactly as the sweep and the activity projection do.
+  // `unbindFortnoxScope` writes `null` under the same key, and casting that to
+  // `FortnoxBinding` hands a caller a typed value that throws on the first property
+  // read — a lie the type system cannot catch.
+  return rows
+    .filter((r) => r.value !== null && typeof r.value === 'object')
+    .map((r) => r.value as FortnoxBinding);
 }
 
 /**
@@ -361,7 +372,23 @@ export async function syncFortnoxScope(
   }
 
   const sie = await api.sieFile(financialYear.Id);
-  const contentHash = await sha256Hex(sie);
+  // The WINDOW is part of the sync's identity, not just the payload.
+  //
+  // What lands is `summarizeLedger(ledger, period)` — the payload filtered to the
+  // window — so hashing the payload alone makes two genuinely different results share
+  // an identity, and the skip below then drops the second one. A broken financial year
+  // is all it takes: with `#RAR` running 2026-07-01..2027-06-30, a December sweep uses
+  // the default period 2026-01-01..2026-12-31 and lands only the 2026 months; a January
+  // sweep selects the SAME year by overlap, downloads the SAME unchanged payload, and
+  // returns `changed: false` — so the 2027 months never land until the books happen to
+  // change. Non-calendar financial years are ordinary in Sweden, so this was reachable
+  // rather than theoretical. An explicit back-fill over a different window inside an
+  // already-synced year was a silent no-op for the same reason.
+  //
+  // Folding the window in fixes the second half too: `syncId` IS this hash, and it is
+  // the consumer's idempotency key. Two windows that land different rows must never
+  // present the same key to an upsert.
+  const contentHash = await sha256Hex(`${financialYear.Id}\n${period.from}\n${period.to}\n${sie}`);
   if (binding.lastSync?.contentHash === contentHash) {
     return {
       scopeId: binding.scopeId,

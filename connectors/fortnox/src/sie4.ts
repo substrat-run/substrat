@@ -204,10 +204,20 @@ export function sieDate(raw: string | undefined): string {
 export function sieAmount(raw: string | undefined): string {
   if (raw === undefined) return '0';
   const cleaned = raw.replace(/[\s\u00a0]/g, '').replace(',', '.');
-  if (!/^[+-]?\d*\.?\d*$/.test(cleaned) || cleaned === '' || cleaned === '-' || cleaned === '+') {
-    return '0';
-  }
-  return cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
+  const m = /^([+-]?)(\d*)(?:\.(\d*))?$/.exec(cleaned);
+  // At least one digit SOMEWHERE, or this is not a number. `.`, `+.` and `-` all
+  // matched the old pattern and were returned verbatim; `.` then reached `moneyOf`
+  // downstream, whose `moneyAmount` regex rejects it \u2014 so one malformed field killed
+  // the whole year's sync rather than costing a single row.
+  if (!m || `${m[2] ?? ''}${m[3] ?? ''}` === '') return '0';
+  const sign = m[1] === '-' ? '-' : '';
+  // A LEADING DIGIT, always. `moneyAmount` is `/^-?\d+(\.\d{1,6})?$/`, so `.5` is
+  // invalid there however reasonable it looks here.
+  const int = m[2] === '' || m[2] === undefined ? '0' : m[2];
+  const frac = m[3] ?? '';
+  // A trailing `.` (`12.`) is dropped rather than kept: it is also invalid downstream,
+  // and it carries no information.
+  return frac === '' ? `${sign}${int}` : `${sign}${int}.${frac}`;
 }
 
 /**

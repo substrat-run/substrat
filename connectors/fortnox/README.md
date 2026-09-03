@@ -82,7 +82,9 @@ if (!probe.ok && probe.refused) throw new Error(probe.error!);
 // 2. Open the connection with the client-credentials triple.
 await host.admin.createConnection(actor, {
   id, tenantId, vertical, provider: 'fortnox', label,
-  secret: { clientId, clientSecret, tenantId: databaseNumber },  // sealed by the host's SecretBox
+  // String(): `DatabaseNumber` comes off the API as a number, and `fortnoxSecret`
+  // wants a digit-only STRING (it is a header value, never arithmetic).
+  secret: { clientId, clientSecret, tenantId: String(databaseNumber) },  // sealed by the SecretBox
 });
 
 // 3. Grant the connection the permission YOUR landing operation checks, then bind.
@@ -140,9 +142,9 @@ to bind time rather than disappearing.
    minting works as described, that the SIE4 response really is ISO-8859-1, and that the response
    envelopes are `FinancialYears` / `CompanyInformation`. It stays a `0.x` release for this reason.
 
-   `test/live.test.ts` is read-only in its entirety — every call is a GET, and this connector has
-   no write path to Fortnox at all — so running it against a production company cannot damage
-   anything.
+   `test/live.test.ts` reads only: the data calls are GETs, and the one POST is the token mint,
+   which creates no Fortnox record. This connector has no write path to Fortnox at all, so
+   running it against a production company cannot damage anything.
 
 3. **SIE4 is ISO-8859-1, and nothing in the response says so.** Decoding it as UTF-8 does not
    throw; it silently mangles every å/ä/ö in every account name and cost-centre label. That is a

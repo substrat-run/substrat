@@ -88,10 +88,19 @@ export function summarizeLedger(
       const month = date.slice(0, 7);
       if (month === '') continue;
       const costCentre = t.objects[COST_CENTRE_DIMENSION] ?? null;
-      const key = `${t.account} ${costCentre ?? ''} ${month}`;
+      // NUL as the delimiter, because SIE cannot carry one in a field. A space could:
+      // `#OBJEKT` codes are quoted free text, so `{"1" "KV 1"}` is legal, and joining on
+      // spaces lets two distinct (account, cost centre, month) triples produce one key —
+      // silently summing two unrelated balances into a single cell.
+      const key = `${t.account}\u0000${costCentre ?? ''}\u0000${month}`;
       const existing = sums.get(key);
+      // Seeded through `addDecimal` rather than stored raw, so a cell with ONE
+      // transaction is as canonical as a cell with two. `t.amount` is whatever the file
+      // said; `moneyOf` below demands `moneyAmount`'s shape, and a >6dp value satisfies
+      // the first and not the second — so a single-row cell was the one path that could
+      // reach `moneyOf` unnormalized.
       if (existing) existing.amount = addDecimal(existing.amount, t.amount);
-      else sums.set(key, { account: t.account, costCentre, month, amount: t.amount });
+      else sums.set(key, { account: t.account, costCentre, month, amount: addDecimal('0', t.amount) });
       seenAccounts.add(t.account);
       if (costCentre !== null) seenCentres.add(costCentre);
     }
