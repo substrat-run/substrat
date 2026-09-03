@@ -38,6 +38,13 @@ export interface ProviderSpec {
   /** The credential form. Every field is required — a provider credential is a set, not a sum of options. */
   fields: ProviderField[];
   /**
+   * `'redirect'` when the primary connect is an OAuth-style consent round (#1220): the
+   * UI leads with a Connect button (and a copyable connect link for when the provider
+   * admin has no dashboard login) instead of the credential form. The form stays — it
+   * is the operator fallback, and the shape a connected credential is rotated in.
+   */
+  connectFlow?: 'redirect';
+  /**
    * The permission keys granted to the connection on the connecting app's scope — the
    * whole authority a leaked provider token would carry, readable in the permission diff.
    */
@@ -75,6 +82,9 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     name: 'Fortnox',
     description: 'Swedish accounting — reads a company’s bookkeeping as SIE4.',
     monogram: 'Fx',
+    // The service-consent round (#1220): the customer never sees the client pair —
+    // it is a platform secret, and the consent yields the third value (tenantId).
+    connectFlow: 'redirect',
     // The client-credentials triple, keyed exactly as the connector's `fortnoxSecret`
     // schema parses them. NOT the authorization-code flow's tokens: Fortnox mints an
     // access token on demand from these three, so there is no refresh token to store

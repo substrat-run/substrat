@@ -89,6 +89,16 @@ shown nowhere in the Developer Portal, so there is no way to assemble the creden
 not what it needs today — this is the single most expensive thing to get wrong, because fixing it
 means going back to every customer.
 
+### The hosted flow is the same code
+
+A deployment that connects customers from a screen (the dashboard's Fortnox Connect button and
+its shareable connect links, #1220) runs `completeFortnoxConsent` when the consent redirect comes
+back: the code exchange, the `companyinformation` read, and the client-credentials proof are the
+exported sequence, not a reimplementation of it. The caller supplies the code, the registered
+redirect URI and a `fetch`; what comes back is the sealed-ready secret plus the company it names —
+show that company to the person who clicked approve, because a consent granted while signed into
+the wrong company-switcher entry looks identical up to that moment.
+
 ## Using it
 
 ```ts

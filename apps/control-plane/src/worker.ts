@@ -817,12 +817,18 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
       // directory, the sealed credential, and (via its connectorDelegation) the scope
       // write-back seam, so the SAME closure a self-host registers runs unchanged.
       // One handler per registered connector (#990) — an added connector cannot be
-      // dispatchable-but-unregistered here.
+      // dispatchable-but-unregistered here. A poll-only connector (Fortnox) declares
+      // no dispatch, so its intent kind stays undrainable — correctly, since nothing
+      // legitimate can enqueue one.
       ...Object.fromEntries(
-        CONNECTORS.map((connector) => [
-          connectorDispatchKind(connector.provider),
-          connectorDispatchHandler({ host, connector: connector.dispatch(env) }),
-        ]),
+        CONNECTORS.flatMap((connector) => {
+          const dispatch = connector.dispatch?.(env);
+          if (!dispatch) return [];
+          return [[
+            connectorDispatchKind(connector.provider),
+            connectorDispatchHandler({ host, connector: dispatch }),
+          ]];
+        }),
       ),
     },
     {

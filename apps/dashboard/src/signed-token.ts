@@ -22,6 +22,7 @@ import { b64url, b64urlToBytes } from './b64.js';
 /** The purposes the dashboard signs for. The `:v1` is the key-derivation version. */
 export const INVITE_TOKEN_PURPOSE = 'substrat-dashboard:invite-token:v1';
 export const GITHUB_STATE_PURPOSE = 'substrat-dashboard:github-oauth-state:v1';
+export const CONNECT_LINK_PURPOSE = 'substrat-dashboard:connect-link:v1';
 
 const HKDF_SALT = 'substrat-dashboard';
 

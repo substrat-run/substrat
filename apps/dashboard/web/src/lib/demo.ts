@@ -158,6 +158,7 @@ export const MOCK_APP_INTEGRATIONS: AppIntegrationsView = {
       description: 'E-signing for documents and protocols.',
       monogram: 'Sc',
       fields: SCRIVE_FIELDS,
+      connectFlow: null,
       required: true,
       connection: null,
     },
@@ -172,6 +173,7 @@ export const MOCK_ACCOUNT_INTEGRATIONS: AccountIntegrationsView = {
       description: 'E-signing for documents and protocols.',
       monogram: 'Sc',
       fields: SCRIVE_FIELDS,
+      connectFlow: null,
       connections: [
         {
           id: '01MOCKCONNECTION0000000000',

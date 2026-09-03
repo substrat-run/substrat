@@ -7,6 +7,7 @@ import {
   scopeId as scopeIdSchema,
   tenantId as tenantIdSchema,
   type ConnectionActivity,
+  type ConnectionCredential,
   type ConnectionProbe,
   type ConnectionId,
 } from '@substrat-run/contracts';
@@ -63,6 +64,7 @@ export {
   type LedgerSummary,
 } from './aggregate.js';
 export { FortnoxMock, type FortnoxMockOptions } from './mock.js';
+export { completeFortnoxConsent, type FortnoxConsentCompletion } from './connect.js';
 
 /**
  * The Fortnox connector — the INBOUND half of accounting integration.
@@ -663,6 +665,41 @@ export async function fortnoxConnectionActivity(
     live: false,
   });
 }
+
+/**
+ * The stored credential, REDUCED (#605) — identifiers whole, secrets masked.
+ *
+ * `tenantId` is deliberately unmasked: it is the company's DatabaseNumber — an
+ * identifier, not a secret — and it is the field an operator most needs to read when a
+ * connection syncs the wrong company's books.
+ */
+export async function fortnoxCredentialSummary(
+  host: ScopeHost,
+  connection: { tenantId: string; vertical: string },
+): Promise<ConnectionCredential> {
+  const open = await host.admin.openConnection(
+    tenantIdSchema.parse(connection.tenantId),
+    connection.vertical,
+    'fortnox',
+  );
+  if (!open) {
+    throw new Error(
+      `no live 'fortnox' connection for tenant ${connection.tenantId} / vertical '${connection.vertical}'`,
+    );
+  }
+  const secret = fortnoxSecret.parse(open.secret);
+  return {
+    fields: [
+      { key: 'clientId', label: 'Client ID', value: secret.clientId, masked: false },
+      { key: 'clientSecret', label: 'Client secret', value: maskSecret(secret.clientSecret), masked: true },
+      { key: 'tenantId', label: 'Tenant ID (DatabaseNumber)', value: secret.tenantId, masked: false },
+    ],
+  };
+}
+
+/** A bullet run plus the last four — or nothing at all when there is too little to hide behind. */
+const maskSecret = (value: string): string =>
+  value.length < 8 ? '••••••••' : `••••••••${value.slice(-4)}`;
 
 /** Open the live Fortnox connection for a (tenant, vertical), with health recorded. */
 async function openFortnoxConnection(

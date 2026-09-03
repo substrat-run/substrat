@@ -25,7 +25,7 @@ import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-ru
 import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
-import { dashboardModule, type DashboardAppRow } from './module.js';
+import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
@@ -37,7 +37,8 @@ import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, list
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64urlToBytes } from './b64.js';
-import { signClaim, verifyClaim, INVITE_TOKEN_PURPOSE, GITHUB_STATE_PURPOSE } from './signed-token.js';
+import { signClaim, verifyClaim, INVITE_TOKEN_PURPOSE, GITHUB_STATE_PURPOSE, CONNECT_LINK_PURPOSE } from './signed-token.js';
+import { completeFortnoxConsent, fortnoxConsentUrl, FortnoxApiError } from '@substrat-run/connector-fortnox';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 
 /** The identity provider: the platform's AuthHero instance, via the identity pool. */
@@ -134,6 +135,25 @@ interface Env extends OidcEnv {
    */
   SUPPORT_DESK_ORIGIN?: string;
   SUPPORT_WIDGET_SECRET?: string;
+  /**
+   * The Fortnox Developer Portal client pair (#1220) — PLATFORM secrets, one pair for
+   * every customer this integration serves; a customer never sees or enters them. What
+   * differs per customer is the third credential value (the company's DatabaseNumber),
+   * and it is what the consent round discovers. Absent ⇒ the Fortnox Connect button and
+   * connect links answer "not configured" (503); the paste-credential fallback and every
+   * already-stored connection keep working.
+   */
+  FORTNOX_CLIENT_ID?: string;
+  FORTNOX_CLIENT_SECRET?: string;
+  /** Host overrides for a stubbed test; unset means the real Fortnox hosts. */
+  FORTNOX_OAUTH_BASE?: string;
+  FORTNOX_API_BASE?: string;
+  /**
+   * The consent scopes, space-separated (default `bookkeeping companyinformation`).
+   * Decide the FULL set before the first real customer: Fortnox scopes cannot be
+   * widened without a new consent round with every connected company.
+   */
+  FORTNOX_SCOPES?: string;
   /**
    * The AES-256 key that seals stored connection credentials (connections.md §3.3).
    * base64 of 32 bytes (`openssl rand -base64 32`). A DEDICATED secret — never derived
@@ -1976,12 +1996,15 @@ const connectionView = (r: {
   createdAt: r.createdAt,
 });
 
-const providerForm = (spec: ProviderSpec) => ({
+const providerForm = (spec: ProviderSpec, env: Env) => ({
   provider: spec.provider,
   name: spec.name,
   description: spec.description,
   monogram: spec.monogram,
   fields: spec.fields,
+  // Advertised only when the flow is actually usable on THIS deployment — a declared
+  // flow with no platform client pair would render a Connect button that 503s.
+  connectFlow: spec.connectFlow === 'redirect' && fortnoxConfig(env) !== null ? ('redirect' as const) : null,
 });
 
 /**
@@ -2012,7 +2035,7 @@ app.get('/api/apps/:scopeId/integrations', async (c) => {
     providers: slugs.map((p) => {
       const live = liveConnectionFor(rows, p);
       return {
-        ...providerForm(PROVIDERS[p]!),
+        ...providerForm(PROVIDERS[p]!, c.env),
         required: required.includes(p),
         connection: live ? connectionView(live) : null,
       };
@@ -2233,7 +2256,7 @@ app.get('/api/integrations', async (c) => {
           connected: rows.some((r) => r.provider === spec.provider && r.status !== 'revoked' && r.vertical === a.vertical_slug),
         }));
       return {
-        ...providerForm(spec),
+        ...providerForm(spec, c.env),
         connections: rows
           .filter((r) => r.provider === spec.provider && r.status !== 'revoked')
           .map((r) => ({
@@ -2245,6 +2268,359 @@ app.get('/api/integrations', async (c) => {
       };
     }),
   });
+});
+
+// -- OAuth-style provider connect (#1220) ------------------------------------
+// The consent-round flow for a provider whose credential a customer cannot paste
+// (Fortnox: the client pair is a PLATFORM secret, and the third value only exists
+// after a consent). Shape mirrors the GitHub App flow above — authorize in-scope,
+// sign the round's state, complete at the callback — with two deliberate additions:
+// the state names a DB row (`dashboard_connect_links`), which is what makes a link
+// single-use and revocable; and the callback requires NO dashboard session, because
+// the person approving at Fortnox (finance, an external accounting firm) is often
+// not a dashboard member at all. The authority throughout is the MINTING admin's:
+// proven by permission check at mint, carried by signature, re-checked at consume.
+
+interface FortnoxConnectConfig {
+  clientId: string;
+  clientSecret: string;
+  scopes: string[];
+  oauthBase?: string;
+  apiBase?: string;
+}
+
+function fortnoxConfig(env: Env): FortnoxConnectConfig | null {
+  if (!env.FORTNOX_CLIENT_ID || !env.FORTNOX_CLIENT_SECRET) return null;
+  return {
+    clientId: env.FORTNOX_CLIENT_ID,
+    clientSecret: env.FORTNOX_CLIENT_SECRET,
+    scopes: (env.FORTNOX_SCOPES ?? 'bookkeeping companyinformation').split(/[\s,]+/).filter(Boolean),
+    ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+    ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
+  };
+}
+
+/** The signed half of a connect link — names the row; the row decides liveness. */
+interface ConnectLinkClaim {
+  linkId: string;
+  tenantId: string;
+  /** The minting tenant's own dashboard scope — where the link row lives. */
+  scopeId: string;
+  /** The app the connection (and its grants) will land on. */
+  appScopeId: string;
+  /** The minting admin — the authority every later step runs as. */
+  principal: string;
+  provider: string;
+  exp: number;
+}
+
+const connectLinkView = (r: ConnectLinkRow) => ({
+  id: r.id,
+  provider: r.provider,
+  appScopeId: r.app_scope_id,
+  status: r.status,
+  createdBy: r.created_by,
+  createdAt: r.created_at,
+  expiresAt: r.expires_at,
+});
+
+const escapeHtml = (s: string): string =>
+  s.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
+
+/**
+ * The consent round's terminal screens. Plain self-contained HTML: the person on
+ * this page may have no dashboard login, so nothing here assumes the SPA, a session,
+ * or a next step beyond closing the tab.
+ */
+const connectPage = (title: string, lines: string[], status: 200 | 400 | 403 | 409 | 503 = 200): Response =>
+  new Response(
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">` +
+      `<title>${escapeHtml(title)}</title>` +
+      `<style>body{font-family:system-ui,sans-serif;background:#f6f6f4;color:#1a1a1a;margin:0;display:flex;min-height:100vh;align-items:center;justify-content:center}` +
+      `main{background:#fff;border:1px solid #e2e2de;border-radius:12px;padding:32px 36px;max-width:480px;box-shadow:0 1px 3px rgba(0,0,0,.06)}` +
+      `h1{font-size:18px;margin:0 0 12px}p{font-size:14px;line-height:1.55;margin:8px 0;color:#444}</style></head>` +
+      `<body><main><h1>${escapeHtml(title)}</h1>${lines.map((l) => `<p>${l}</p>`).join('')}</main></body></html>`,
+    { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } },
+  );
+
+/** The refusal screens for a link that no longer works, one per consume reason. */
+const connectLinkRefusal = (reason: Exclude<ConnectLinkConsume, { ok: true }>['reason']): Response => {
+  switch (reason) {
+    case 'used':
+      return connectPage('This connect link was already used', [
+        'A Fortnox company has already been connected through this link.',
+        'If another company should be connected too, ask your Substrat administrator for a new link.',
+      ], 409);
+    case 'revoked':
+      return connectPage('This connect link was revoked', [
+        'A Substrat administrator withdrew this link before it was used.',
+        'Nothing was connected. Ask them for a new link if the connection is still wanted.',
+      ], 403);
+    case 'expired':
+      return connectPage('This connect link has expired', [
+        'Nothing was connected. Ask your Substrat administrator for a new link.',
+      ], 403);
+    default:
+      return connectPage('This connect link is not valid', [
+        'Nothing was connected. Ask your Substrat administrator for a new link.',
+      ], 403);
+  }
+};
+
+/**
+ * Mint a connect link for this app: the URL behind BOTH the Connect button (the UI
+ * navigates straight to it) and "copy connect link" (it is handed to whoever
+ * administers the provider — no dashboard login needed to use it). Single-use and
+ * revocable via its `dashboard_connect_links` row; the default 7-day life is for the
+ * send-it-to-finance case, and a button click spends it within seconds.
+ */
+app.post('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const spec = PROVIDERS[c.req.param('provider')];
+  if (!spec || spec.connectFlow !== 'redirect') throw new HTTPException(404, { message: 'provider has no connect flow' });
+  if (!fortnoxConfig(c.env)) throw new HTTPException(503, { message: `${spec.name} connect is not configured on this deployment` });
+  const body = (await c.req.json().catch(() => ({}))) as { ttlMs?: number };
+  // The permission-checked act; the row is written as this principal in the same scope.
+  await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
+  const row = (await dash.invoke('dashboard/mint-connect-link', {
+    provider: spec.provider,
+    appScopeId: appRow.app_scope_id,
+    ...(typeof body.ttlMs === 'number' ? { ttlMs: body.ttlMs } : {}),
+  })) as ConnectLinkRow;
+  const claim: ConnectLinkClaim = {
+    linkId: row.id,
+    tenantId: node.tenantId,
+    scopeId: node.scopeId,
+    appScopeId: appRow.app_scope_id,
+    principal: node.principal,
+    provider: spec.provider,
+    exp: Date.parse(row.expires_at),
+  };
+  const token = await signClaim(c.env.SESSION_SECRET, CONNECT_LINK_PURPOSE, claim);
+  const origin = new URL(c.req.url).origin;
+  return c.json(
+    {
+      ...connectLinkView(row),
+      url: `${origin}/api/integrations/${spec.provider}/connect?token=${encodeURIComponent(token)}`,
+    },
+    201,
+  );
+});
+
+/** The outstanding (unexpired, unrevoked, unused) links for this app + provider. */
+app.get('/api/apps/:scopeId/integrations/:provider/connect-links', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const spec = PROVIDERS[c.req.param('provider')];
+  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
+  await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
+  const rows = (await dash.invoke('dashboard/list-connect-links', {
+    appScopeId: appRow.app_scope_id,
+    provider: spec.provider,
+  })) as ConnectLinkRow[];
+  return c.json({ links: rows.map(connectLinkView) });
+});
+
+/** Revoke an outstanding link — the signature it rides becomes worthless. Idempotent. */
+app.delete('/api/apps/:scopeId/integrations/:provider/connect-links/:linkId', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const spec = PROVIDERS[c.req.param('provider')];
+  if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
+  await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
+  const result = (await dash.invoke('dashboard/revoke-connect-link', { linkId: c.req.param('linkId') })) as
+    | { status: string }
+    | null;
+  if (!result) throw new HTTPException(404, { message: 'unknown link' });
+  return c.body(null, 204);
+});
+
+/**
+ * A connect link's landing: verify the signature, check the row still stands, and
+ * hand the browser to Fortnox's consent screen. NO session — the recipient is often
+ * not a dashboard member. The row is NOT consumed here (a preview fetcher or a
+ * curious click must not burn the link); consumption happens at the callback, when
+ * a consent actually came back.
+ */
+app.get('/api/integrations/:provider/connect', async (c) => {
+  const spec = PROVIDERS[c.req.param('provider')];
+  if (!spec || spec.connectFlow !== 'redirect') throw new HTTPException(404, { message: 'provider has no connect flow' });
+  const claim = await verifyClaim<ConnectLinkClaim>(
+    c.env.SESSION_SECRET, CONNECT_LINK_PURPOSE, c.req.query('token') ?? '', Date.now(),
+  );
+  if (!claim || claim.provider !== spec.provider) {
+    return connectPage('This connect link is not valid', [
+      'The link is malformed or has expired. Ask your Substrat administrator for a new one.',
+    ], 403);
+  }
+  const cfg = fortnoxConfig(c.env);
+  if (!cfg) {
+    return connectPage('Fortnox connect is not configured', [
+      'This deployment holds no Fortnox integration credentials. Nothing was connected.',
+    ], 503);
+  }
+  // The row must still stand — a revoked or spent link refuses HERE, before Fortnox
+  // ever shows a consent screen for it.
+  const host = hostFor(c.env);
+  let live = false;
+  try {
+    const dash = await host.getScope(
+      principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
+    );
+    const rows = (await dash.invoke('dashboard/list-connect-links', {
+      appScopeId: claim.appScopeId,
+      provider: spec.provider,
+    })) as ConnectLinkRow[];
+    live = rows.some((r) => r.id === claim.linkId);
+  } catch {
+    // The minting admin lost access (or the scope is gone) — their links die with it.
+    live = false;
+  }
+  if (!live) return connectLinkRefusal('unknown');
+  const origin = new URL(c.req.url).origin;
+  return c.redirect(
+    fortnoxConsentUrl({
+      clientId: cfg.clientId,
+      redirectUri: `${origin}/api/integrations/fortnox/callback`,
+      scopes: cfg.scopes,
+      state: c.req.query('token')!,
+      ...(cfg.oauthBase ? { oauthBase: cfg.oauthBase } : {}),
+    }),
+  );
+});
+
+/**
+ * The consent callback. State is judged FIRST — nothing that fails to prove it
+ * belongs to a minted round can decide anything, including whether a reported error
+ * is real (the same law as the local connect script). Then, in order: exchange the
+ * code and assemble the credential (`completeFortnoxConsent` — the shipped sequence,
+ * client-credentials premise proven included), consume the link row (single-use is
+ * decided here, atomically), and relay the sealed triple to the platform's connection
+ * store exactly as the paste-credential path does — restoring the link if that store
+ * fails, so a platform hiccup costs a retry rather than a fresh link. The closing
+ * screen names WHICH
+ * company was attached — the check that catches a consent granted while signed into
+ * the wrong company.
+ */
+app.get('/api/integrations/fortnox/callback', async (c) => {
+  const claim = await verifyClaim<ConnectLinkClaim>(
+    c.env.SESSION_SECRET, CONNECT_LINK_PURPOSE, c.req.query('state') ?? '', Date.now(),
+  );
+  if (!claim || claim.provider !== 'fortnox') {
+    return connectPage('Not a connect round this dashboard started', [
+      'The callback carried no valid state. Nothing was connected.',
+    ], 403);
+  }
+  const oauthError = c.req.query('error');
+  if (oauthError) {
+    return connectPage('Fortnox declined the connection', [
+      `Fortnox answered: <strong>${escapeHtml(oauthError)}</strong> ${escapeHtml(c.req.query('error_description') ?? '')}`,
+      'Nothing was connected. The link is still usable — you can try again.',
+    ], 400);
+  }
+  const code = c.req.query('code');
+  if (!code) return connectPage('Missing consent code', ['The callback carried no code. Nothing was connected.'], 400);
+  const cfg = fortnoxConfig(c.env);
+  if (!cfg) {
+    return connectPage('Fortnox connect is not configured', [
+      'This deployment holds no Fortnox integration credentials. Nothing was connected.',
+    ], 503);
+  }
+
+  const origin = new URL(c.req.url).origin;
+  let completion;
+  try {
+    completion = await completeFortnoxConsent({
+      clientId: cfg.clientId,
+      clientSecret: cfg.clientSecret,
+      code,
+      redirectUri: `${origin}/api/integrations/fortnox/callback`,
+      fetch: globalThis.fetch as unknown as Parameters<typeof completeFortnoxConsent>[0]['fetch'],
+      ...(cfg.oauthBase ? { oauthBase: cfg.oauthBase } : {}),
+      ...(cfg.apiBase ? { apiBase: cfg.apiBase } : {}),
+    });
+  } catch (e) {
+    const detail = e instanceof FortnoxApiError ? e.message : 'the exchange with Fortnox failed';
+    return connectPage('The connection could not be completed', [
+      escapeHtml(detail),
+      'Nothing was connected. A reloaded tab spends its code — open the connect link again to retry.',
+    ], 400);
+  }
+
+  // Consume BEFORE storing: of two racing callbacks, exactly one gets past this line.
+  // (Consume-first also keeps a revoked link from ever reaching the store below.)
+  let consume: ConnectLinkConsume;
+  let dash;
+  try {
+    dash = await hostFor(c.env).getScope(
+      principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
+    );
+    consume = (await dash.invoke('dashboard/consume-connect-link', {
+      linkId: claim.linkId,
+      provider: 'fortnox',
+      accountRef: completion.secret.tenantId,
+      accountLabel: completion.company.CompanyName || undefined,
+    })) as ConnectLinkConsume;
+  } catch {
+    return connectLinkRefusal('unknown');
+  }
+  if (!consume.ok) return connectLinkRefusal(consume.reason);
+
+  const label = completion.company.CompanyName
+    ? `Fortnox — ${completion.company.CompanyName}`
+    : 'Fortnox';
+  try {
+    await controlPlaneFor(c.env, tenantId.parse(claim.tenantId)).upsertConnection({
+      scopeId: scopeId.parse(claim.appScopeId),
+      provider: 'fortnox',
+      label,
+      secret: completion.secret as unknown as Record<string, string>,
+      grants: [],
+      createdBy: claim.principal,
+    });
+  } catch (e) {
+    // Un-spend the link (best effort): the consent's code is gone either way, but the
+    // LINK still stands, so opening it again starts a fresh consent round with no new
+    // link needed. Only this callback holds the 'used' row, so the single-use guard
+    // above is not weakened.
+    let restored = false;
+    try {
+      restored = ((await dash.invoke('dashboard/restore-connect-link', { linkId: claim.linkId })) as { restored: boolean }).restored;
+    } catch {
+      // The refusal copy below falls back to asking for a new link.
+    }
+    const detail = e instanceof ControlPlaneError ? e.message : 'storing the credential failed';
+    return connectPage('The credential could not be stored', [
+      escapeHtml(detail),
+      'The Fortnox consent went through, but no connection was saved.' +
+        (restored
+          ? ' The connect link is still usable — open it again to retry.'
+          : ' Ask your Substrat administrator for a new link and try again.'),
+    ], 503);
+  }
+
+  // connectPage escapes the title itself — escaping here again would render &amp;amp;.
+  return connectPage(`${completion.company.CompanyName || 'Your company'} is connected`, [
+    `Fortnox company <strong>${escapeHtml(completion.company.CompanyName || '(unnamed)')}</strong>` +
+      ` (org.nr ${escapeHtml(completion.company.OrganizationNumber || '—')},` +
+      ` database ${escapeHtml(completion.secret.tenantId)}) is now connected to Substrat.` +
+      ` ${completion.financialYears} financial year${completion.financialYears === 1 ? '' : 's'} readable.`,
+    'If this is not the company you meant to connect, tell your Substrat administrator — they can disconnect it from the dashboard.',
+    'You can close this tab.',
+  ]);
 });
 
 /**
