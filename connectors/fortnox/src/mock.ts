@@ -1,4 +1,5 @@
 import type { FetchLike } from '@substrat-run/kernel';
+import { CP437_HIGH } from './sie4.js';
 
 // Web-standard everywhere this runs; declared locally so the mock pulls in no platform typings.
 declare const URL: new (input: string) => { pathname: string; search: string };
@@ -9,13 +10,13 @@ declare const btoa: (data: string) => string;
  * whole sweep without a provider account.
  *
  * **What a mock proves:** that our shape works — the client-credentials mint, the
- * latin1 decode, the year-overlap pick, the paging, the unchanged-hash skip.
+ * PC8/CP437 decode, the year-overlap pick, the paging, the unchanged-hash skip.
  * **What it cannot prove:** that our reading of Fortnox's API is correct. The mock IS
  * our reading. Green here means *ready to check against a real company*, which is what
  * `test/live.test.ts` does when a credential is present.
  *
  * The one thing it models with real bytes rather than a convenient string is the SIE
- * response: {@link FortnoxMock.sieBytes} encodes to ISO-8859-1, so a connector that
+ * response: {@link FortnoxMock.sieBytes} encodes to PC8/CP437, so a connector that
  * forgot to decode explicitly fails here rather than in production with mangled
  * account names.
  */
@@ -31,14 +32,33 @@ export interface FortnoxMockOptions {
   expiresIn?: number;
 }
 
-/** Encode to ISO-8859-1. Any code point above 0xff becomes `?`, exactly as Fortnox would. */
-export function latin1Bytes(text: string): Uint8Array {
-  const out = new Uint8Array(text.length);
-  for (let i = 0; i < text.length; i += 1) {
-    const code = text.charCodeAt(i);
-    out[i] = code <= 0xff ? code : 0x3f;
+/**
+ * Encode to PC8 (code page 437) — the charset a real Fortnox SIE export declares in
+ * `#FORMAT` and actually sends.
+ *
+ * This used to encode ISO-8859-1, and that single wrong premise is what let a wrong
+ * decoder pass every test in this package: the mock encoded latin1, the reader decoded
+ * latin1, and the two agreed with each other while disagreeing with Fortnox. Only the
+ * live suite could see it. Encoding here the way the provider really does is what makes
+ * the mock evidence about Fortnox rather than about our own assumption.
+ *
+ * A code point with no CP437 representation becomes `?`, exactly as Fortnox would.
+ */
+export function pc8Bytes(text: string): Uint8Array {
+  // `for...of` iterates CODE POINTS; `text[i]` would hand back UTF-16 code units, so an
+  // astral character (an emoji in a voucher text, say) would split into two surrogate
+  // halves and emit two `?` bytes where the contract above promises one.
+  const out: number[] = [];
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0x3f;
+    if (code < 0x80) {
+      out.push(code);
+      continue;
+    }
+    const high = CP437_HIGH.indexOf(ch);
+    out.push(high === -1 ? 0x3f : 0x80 + high);
   }
-  return out;
+  return new Uint8Array(out);
 }
 
 export class FortnoxMock {
@@ -86,7 +106,7 @@ export class FortnoxMock {
       ok: status >= 200 && status < 300,
       status,
       text: async () => text,
-      arrayBuffer: async () => latin1Bytes(text).buffer as ArrayBuffer,
+      arrayBuffer: async () => pc8Bytes(text).buffer as ArrayBuffer,
     } as Awaited<ReturnType<FetchLike>>;
   }
 
@@ -140,7 +160,7 @@ export class FortnoxMock {
       if (text === undefined) {
         return this.json({ ErrorInformation: { message: 'no such financial year' } }, 404);
       }
-      const bytes = latin1Bytes(text);
+      const bytes = pc8Bytes(text);
       return {
         ok: true,
         status: 200,

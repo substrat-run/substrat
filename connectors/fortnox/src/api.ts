@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { ConnectorConnection } from '@substrat-run/kernel';
+import { decodeSie } from './sie4.js';
 
 // Web-standard everywhere this runs (Node, Workers); declared locally so the
 // connector pulls in no platform typings, exactly as `connector-scrive` does.
@@ -116,11 +117,36 @@ export type FortnoxFinancialYear = z.infer<typeof fortnoxFinancialYear>;
  * received belongs to. It is also the cheapest authenticated read Fortnox offers, so
  * it doubles as the credential probe.
  */
+/**
+ * A text field Fortnox may send as an explicit `null`.
+ *
+ * `.optional()` is not enough, and the difference cost a live failure: it permits an
+ * ABSENT key, while Fortnox sends the key with `null` in it for anything the company
+ * has not filled in. A sandbox with a blank address answers `CountryCode: null`,
+ * `ZipCode: null`, `VisitAddress: null` — verified against api.fortnox.se 2026-09-03 —
+ * and the parse threw where the mock, which always sent complete strings, had passed.
+ * That is exactly the seam the live suite exists to hold: the mock is our reading of
+ * the docs on both sides of the call, so only a real company can disagree with it.
+ *
+ * Null and absent both mean "not set here", so both become the fallback.
+ */
+const fortnoxText = (fallback = '') =>
+  z
+    .union([z.string(), z.null()])
+    .optional()
+    .transform((v) => v ?? fallback);
+
 export const fortnoxCompany = z.object({
-  CompanyName: z.string().default(''),
-  OrganizationNumber: z.string().default(''),
-  DatabaseNumber: z.union([z.number(), z.string()]).optional(),
-  CountryCode: z.string().optional(),
+  CompanyName: fortnoxText(),
+  OrganizationNumber: fortnoxText(),
+  // Normalized to `undefined` rather than kept as `null`, because every caller asks
+  // `=== undefined` before stringifying it — and `String(null)` is the tenant id
+  // `"null"`, which would key a connection to a company that does not exist.
+  DatabaseNumber: z
+    .union([z.number(), z.string(), z.null()])
+    .optional()
+    .transform((v) => v ?? undefined),
+  CountryCode: fortnoxText(),
 });
 export type FortnoxCompany = z.infer<typeof fortnoxCompany>;
 
@@ -310,11 +336,14 @@ export class FortnoxApi {
   /**
    * The whole year's bookkeeping as one SIE4 file — the read this connector exists for.
    *
-   * **The response is ISO-8859-1, not UTF-8**, and nothing in the response says so.
-   * Decoding it as UTF-8 does not throw; it silently mangles every å/ä/ö in every
-   * account name, cost-centre label and verification text — which is a corrupted
-   * ledger that looks like a working one. So the bytes are taken as an ArrayBuffer and
-   * decoded explicitly, and this is the only place in the connector that knows.
+   * **The response is PC8 (code page 437), not UTF-8 and not latin1**, and nothing in
+   * the HTTP response says so — only the file's own `#FORMAT` post does. Decoding it
+   * wrong mangles every å/ä/ö in every account name, cost-centre label and verification
+   * text, which is a corrupted ledger that looks like a working one. Decoding as latin1
+   * does not even fail loudly: every byte is a valid latin1 code point, so it produces
+   * no replacement character and no throw. That is what shipped here until a live call
+   * disproved it. So the bytes are taken as an ArrayBuffer and handed to `decodeSie`,
+   * which owns the charset decision for the whole connector.
    */
   async sieFile(financialYearId: number): Promise<string> {
     const token = await this.accessToken();
@@ -330,6 +359,7 @@ export class FortnoxApi {
         body,
       );
     }
-    return new TextDecoder('iso-8859-1').decode(await res.arrayBuffer());
+    // PC8/CP437, not latin1 — see `decodeSie`. Fortnox declares it in `#FORMAT`.
+    return decodeSie(await res.arrayBuffer());
   }
 }

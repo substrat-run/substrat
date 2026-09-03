@@ -50,7 +50,8 @@
     "lint:conformance": "tsx tools/conformance-emit.mts",
     "lint:auth-schema": "tsx demos/auth-server/scripts/gen-schema.mts",
     "lint:scaffold": "node tools/scaffold-check.mjs",
-    "fortnox:connect": "tsx connectors/fortnox/scripts/connect.mts"
+    "fortnox:connect": "tsx connectors/fortnox/scripts/connect.mts",
+    "fortnox:seed": "tsx connectors/fortnox/scripts/seed-sandbox.mts"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
