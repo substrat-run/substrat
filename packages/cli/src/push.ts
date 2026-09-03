@@ -409,6 +409,15 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
 }
 
 /**
+ * The keywords a regex literal may follow. Every other identifier is a value, and a `/`
+ * after a value is division — the distinction `scanLiterals` needs to skip a regex whole.
+ */
+const KEYWORD_BEFORE_REGEX = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'throw',
+  'case', 'do', 'else', 'yield', 'await',
+]);
+
+/**
  * Source with its comments removed and every string/template literal lifted out, replaced
  * in place by a `\0<n>\0` placeholder.
  *
@@ -419,7 +428,10 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
  * where the language would actually have parsed one — a comment contributes nothing, and a
  * string's contents are a literal rather than code. Regex literals are skipped whole
  * (`/['"]/` must not open a string), using the usual "could a regex start here" rule: after
- * a value it is division, after an operator or a bracket it is a regex.
+ * a VALUE it is division, after anything else it is a regex. An identifier is therefore read
+ * whole rather than a character at a time — `return` ends in a word character but is not a
+ * value, and treating it as one left `return /import '\.\/assets\.generated\.js'/` parsed as
+ * code with a string inside it.
  */
 function scanLiterals(source: string): { code: string; literals: string[] } {
   const literals: string[] = [];
@@ -478,10 +490,19 @@ function scanLiterals(source: string): { code: string; literals: string[] } {
       regexOk = false;
       continue;
     }
+    if (/[A-Za-z_$]/.test(c)) {
+      // Read the identifier whole: only then is it knowable whether the next `/` follows a
+      // value (`x / 2`) or a keyword that takes an expression (`return /re/`).
+      let word = '';
+      while (i < source.length && /[\w$]/.test(source[i]!)) word += source[i++]!;
+      code += word;
+      regexOk = KEYWORD_BEFORE_REGEX.has(word);
+      continue;
+    }
     code += c;
-    // After a value (identifier, `)`, `]`) a `/` divides; after anything else it can open a
+    // After a value (a number, `)`, `]`) a `/` divides; after anything else it can open a
     // regex. Whitespace carries the previous answer forward.
-    if (!/\s/.test(c)) regexOk = !/[\w$)\]]/.test(c);
+    if (!/\s/.test(c)) regexOk = !/[\d)\]]/.test(c);
     i++;
   }
   return { code, literals };

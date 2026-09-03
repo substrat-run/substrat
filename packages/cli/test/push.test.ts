@@ -481,6 +481,13 @@ describe('assertUiIsServed — a UI nothing would serve (#881)', () => {
       'a named clause whose every binding is a type',
       "import { type AssetMap, type Asset } from './assets.generated.js';\nexport const x = 1;\n",
     ],
+    // A regex literal after a keyword. `return` ends in a word character but is not a value,
+    // so the `/` opens a regex — read as division instead, its body parses as code with a
+    // string in it and the whole thing reads as an import.
+    [
+      'an import quoted inside a regex literal',
+      "export const f = () => { return /import '\\.\\/assets\\.generated\\.js'/; };\n",
+    ],
   ])('still REFUSES when the only evidence is %s', (_what, source) => {
     const dir = withUi();
     mkdirSync(join(dir, 'src'), { recursive: true });
