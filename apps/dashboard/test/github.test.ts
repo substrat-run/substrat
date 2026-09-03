@@ -267,8 +267,8 @@ describe('GitHub App client', () => {
       // A group alone is not enough: with the default `queue: single` only one run may sit
       // pending, so of three merges landing together the middle one is evicted and never
       // deploys — the same lost promotion the group was added to prevent. `queue: max` lets
-      // them wait in arrival order instead. It is also invalid beside
-      // `cancel-in-progress: true`, which is why the deploy job must never carry that.
+      // up to 100 wait instead. It buys no ordering (GitHub does not guarantee that), and it
+      // is invalid beside `cancel-in-progress: true`, which is why the job never carries that.
       expect(yaml).toContain(
         'concurrency:\n      group: substrat-deploy-hr-portal-prod\n      queue: max\n      cancel-in-progress: false',
       );

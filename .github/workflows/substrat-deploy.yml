@@ -57,10 +57,16 @@ jobs:
     # would otherwise race, and the loser could point prod at the OLDER version — the channel
     # takes whichever push finishes last, not whichever commit is newer. Queued rather than
     # cancelled: a superseded deploy is still a version somebody has to be able to find, and
-    # cancelling mid-push can leave a version uploaded but never promoted. `queue: max` is
-    # what makes that true — the default (`queue: single`) holds ONE run pending, so a third
-    # merge arriving evicts the second and that commit is never deployed at all, which is the
-    # same lost deploy the group was added to prevent. Up to 100 may wait, in arrival order.
+    # cancelling mid-push can leave a version uploaded but never promoted. `queue: max`
+    # because the default (`queue: single`) holds ONE run pending, so a third merge arriving
+    # evicts the second and that commit is never deployed at all — the same lost promotion the
+    # group was added to prevent, reached from the other side. Up to 100 wait instead.
+    #
+    # Serialized and bounded is all of it, though — NOT ordered. GitHub queues by the time a
+    # run starts waiting, and states outright that ordering is not guaranteed, so two runs can
+    # still invert and leave prod running the older commit under a HIGHER version number
+    # (`push` patch-bumps the registry's highest; it never reads the commit). Closing that
+    # needs a guard refusing to promote a commit the branch has moved past — its own change.
     concurrency:
       group: substrat-deploy-ticket0-prod
       queue: max
