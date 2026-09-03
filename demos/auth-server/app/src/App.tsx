@@ -1554,6 +1554,9 @@ function ClientEditor({
         return setErr(`Metadata: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    // The textarea does not own `theme` (its hint says so) — a raw one pasted there must
+    // not survive past the fields, which would otherwise win only when non-empty.
+    delete metadata.theme;
     // Reassemble the theme: the untouched extra keys, then the fields (empty = remove).
     const fields: [string, string][] = [
       ['title', themeTitle],
