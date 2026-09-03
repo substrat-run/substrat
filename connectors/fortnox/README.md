@@ -67,6 +67,12 @@ afterwards, and `fortnoxConsentUrl` always sets it. Your callback exchanges the 
 pnpm fortnox:connect --client-id=<id> --client-secret=<secret>
 ```
 
+Or paste the portal pair into `connectors/fortnox/.dev.vars` (gitignored) as
+`FORTNOX_CLIENT_ID` / `FORTNOX_CLIENT_SECRET` and run `pnpm fortnox:connect` with no flags —
+it reads that file for defaults, so a retry needs no arguments and no secret reaches shell
+history. It prints the `FORTNOX_TENANT_ID` line to add, which is the one value that cannot be
+typed by hand.
+
 The redirect URI must match one registered in the portal exactly; the default is
 `http://localhost:8899/callback`. Whether Fortnox accepts `http://` or `localhost` is not
 documented — if it refuses, register a tunnel's https URL, pass it as `--redirect-uri`, and point

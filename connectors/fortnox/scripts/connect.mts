@@ -35,6 +35,11 @@
  *
  *   pnpm fortnox:connect --client-id=<id> --client-secret=<secret>
  *
+ * The portal pair can instead be pasted once into `connectors/fortnox/.dev.vars` as
+ * `FORTNOX_CLIENT_ID` / `FORTNOX_CLIENT_SECRET` — this reads that file as defaults, so a
+ * retry needs no flags and no secret goes into shell history. It fills in the third
+ * value, which is the one that cannot be typed by hand.
+ *
  * `--redirect-uri` must EXACTLY match one registered in the Developer Portal. Whether
  * Fortnox accepts `http://` or `localhost` there is not documented. If it refuses, put a
  * tunnel in front: register the tunnel's https URL, pass it as `--redirect-uri`, and point
@@ -43,6 +48,9 @@
  */
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { connectionId } from '@substrat-run/contracts';
 import type { ConnectorConnection } from '@substrat-run/kernel';
 import {
@@ -52,11 +60,45 @@ import {
   fortnoxConsentUrl,
 } from '../src/api.js';
 
+const DEV_VARS = join(dirname(fileURLToPath(import.meta.url)), '..', '.dev.vars');
+
+/**
+ * `.dev.vars` read as a source of defaults — the same file, and the same parser, that
+ * `test/live.test.ts` uses.
+ *
+ * Two of the three values come from the Developer Portal and never change, so making
+ * this script re-read them from the file it is going to fill means the portal pair is
+ * pasted ONCE rather than retyped into a shell (where a secret lands in history) on
+ * every attempt. The file is gitignored.
+ */
+function devVars(): Record<string, string> {
+  if (!existsSync(DEV_VARS)) return {};
+  const out: Record<string, string> = {};
+  for (const line of readFileSync(DEV_VARS, 'utf8').split('\n')) {
+    const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
+    if (m && m[2] !== '') out[m[1]!] = m[2]!;
+  }
+  return out;
+}
+const fileVars = devVars();
+
+/**
+ * A flag, else the environment, else `.dev.vars`, else a default.
+ *
+ * Env names are `FORTNOX_`-prefixed and identical to the file's keys. That prefix is not
+ * cosmetic: reading a bare `CLIENT_SECRET` off the ambient environment is how this
+ * script would have picked up some *other* integration's credential from an exported
+ * shell variable and sent it to Fortnox.
+ */
 const arg = (name: string, fallback?: string): string => {
+  const key = `FORTNOX_${name.toUpperCase().replace(/-/g, '_')}`;
   const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
-  const value = hit?.slice(`--${name}=`.length) ?? process.env[name.toUpperCase().replace(/-/g, '_')] ?? fallback;
+  const value = hit?.slice(`--${name}=`.length) ?? process.env[key] ?? fileVars[key] ?? fallback;
   if (value === undefined || value === '') {
-    console.error(`fortnox:connect: missing --${name}=…`);
+    console.error(
+      `fortnox:connect: missing --${name}=…\n` +
+        `  (or set ${key} in the environment, or in connectors/fortnox/.dev.vars)`,
+    );
     process.exit(2);
   }
   return value;
@@ -225,10 +267,18 @@ const server = createServer((req, res) => {
       const years = await api.financialYears();
       console.log(`   ✓ client_credentials works — ${years.length} financial year(s) readable\n`);
 
-      console.log('Paste into connectors/fortnox/.dev.vars (gitignored):\n');
-      console.log(`FORTNOX_CLIENT_ID=${clientId}`);
-      console.log(`FORTNOX_CLIENT_SECRET=${clientSecret}`);
-      console.log(`FORTNOX_TENANT_ID=${tenantId}\n`);
+      // Only the discovered value is echoed when the file already holds the pair —
+      // reprinting a secret that is already on disk puts it in the terminal for nothing.
+      const hasPair = fileVars.FORTNOX_CLIENT_ID !== undefined && fileVars.FORTNOX_CLIENT_SECRET !== undefined;
+      if (hasPair) {
+        console.log('Add this line to connectors/fortnox/.dev.vars (the rest is already there):\n');
+        console.log(`FORTNOX_TENANT_ID=${tenantId}\n`);
+      } else {
+        console.log('Paste into connectors/fortnox/.dev.vars (gitignored):\n');
+        console.log(`FORTNOX_CLIENT_ID=${clientId}`);
+        console.log(`FORTNOX_CLIENT_SECRET=${clientSecret}`);
+        console.log(`FORTNOX_TENANT_ID=${tenantId}\n`);
+      }
       console.log('Then: pnpm --filter @substrat-run/connector-fortnox test\n');
       server.close();
       process.exit(0);
