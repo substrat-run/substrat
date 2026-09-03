@@ -462,13 +462,17 @@ jobs:
 ${releaseNote}
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    # One promotion at a time. Two merges landing together would otherwise race, and the
-    # loser could point prod at the OLDER version — the channel takes whichever push
-    # finishes last, not whichever commit is newer. Queued rather than cancelled: a
-    # superseded deploy is still a version somebody has to be able to find, and cancelling
-    # mid-push can leave a version uploaded but never promoted.
+    # One promotion at a time, and every merge still gets one. Two merges landing together
+    # would otherwise race, and the loser could point prod at the OLDER version — the channel
+    # takes whichever push finishes last, not whichever commit is newer. Queued rather than
+    # cancelled: a superseded deploy is still a version somebody has to be able to find, and
+    # cancelling mid-push can leave a version uploaded but never promoted. \`queue: max\` is
+    # what makes that true — the default (\`queue: single\`) holds ONE run pending, so a third
+    # merge arriving evicts the second and that commit is never deployed at all, which is the
+    # same lost deploy the group was added to prevent. Up to 100 may wait, in arrival order.
     concurrency:
       group: substrat-deploy-${slug}-prod
+      queue: max
       cancel-in-progress: false
     steps:
 ${setup(release === 'changesets' ? 2 : undefined)}

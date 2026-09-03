@@ -262,6 +262,19 @@ describe('GitHub App client', () => {
       expect(yaml).toContain("if: github.event_name == 'push'");
     });
 
+    it('serializes prod promotions without dropping one', () => {
+      const yaml = wf();
+      // A group alone is not enough: with the default `queue: single` only one run may sit
+      // pending, so of three merges landing together the middle one is evicted and never
+      // deploys — the same lost promotion the group was added to prevent. `queue: max` lets
+      // them wait in arrival order instead. It is also invalid beside
+      // `cancel-in-progress: true`, which is why the deploy job must never carry that.
+      expect(yaml).toContain(
+        'concurrency:\n      group: substrat-deploy-hr-portal-prod\n      queue: max\n      cancel-in-progress: false',
+      );
+      expect(yaml).not.toContain('cancel-in-progress: true');
+    });
+
     it('gates every push and preview on the project own checks (#955)', () => {
       // A push IS a release. Outside this monorepo the hosted push path is the only path a
       // customer has, so a workflow that goes checkout → install → build → push leaves every
