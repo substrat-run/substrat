@@ -184,6 +184,11 @@ const MANIFEST = {
       CP_ACTOR: 'DASH_CP_ACTOR',
       // The same desk secret the console holds — see the control plane's note above.
       SUPPORT_WIDGET_SECRET: 'SUPPORT_WIDGET_SECRET',
+      // The Fortnox Developer Portal client pair (#1220) — platform secrets behind the
+      // dashboard's Fortnox Connect button + connect links. Optional: unset, the
+      // consent flow answers "not configured" and the paste-credential path remains.
+      FORTNOX_CLIENT_ID: 'FORTNOX_CLIENT_ID',
+      FORTNOX_CLIENT_SECRET: 'FORTNOX_CLIENT_SECRET',
     },
   },
   router: {

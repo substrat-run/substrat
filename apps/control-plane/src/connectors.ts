@@ -12,6 +12,14 @@ import {
   scriveCredentialSummary,
   sweepScriveReconciliations,
 } from '@substrat-run/connector-scrive';
+import {
+  FORTNOX_CONNECTION_GRANTS,
+  fortnoxConnectionActivity,
+  fortnoxCredentialSummary,
+  probeFortnoxConnection,
+  probeFortnoxSecret,
+  sweepFortnoxLedger,
+} from '@substrat-run/connector-fortnox';
 
 /**
  * The env slice the connectors read — declared HERE rather than in `worker.ts`, so a
@@ -37,6 +45,14 @@ export interface ConnectorEnv {
    * minted under. Absent ⇒ dispatch is poll-only, which is complete, just slower.
    */
   PLATFORM_CP_URL?: string;
+  /**
+   * Fortnox host overrides, for a test deployment pointed at a stub. Unset means the
+   * REAL hosts (`api.fortnox.se`, `apps.fortnox.se`) — safe as a default where
+   * Scrive's was not (#990), because Fortnox has no separate testbed origin to be
+   * wrongly defaulted to: sandbox companies live on the production hosts.
+   */
+  FORTNOX_API_BASE?: string;
+  FORTNOX_OAUTH_BASE?: string;
 }
 
 /** One uniform answer for every callback rejection; the WHY stays server-side. */
@@ -74,8 +90,14 @@ export interface ConnectorRegistration {
   /**
    * #574 phase 3 — the outbound half. The SAME closure a self-host registers
    * in-process; only the host running it changes.
+   *
+   * OPTIONAL, because a poll-only connector is a complete connector: Fortnox has no
+   * dispatch by design (nothing inside a scope initiates a bookkeeping read — the
+   * books change at the provider, and the sweep finds out by looking). Absent means
+   * no `connector:<provider>` intent kind is drainable, which is right: an intent of
+   * that kind could only ever have been enqueued by mistake.
    */
-  dispatch(env: ConnectorEnv): ConnectorHandler;
+  dispatch?(env: ConnectorEnv): ConnectorHandler;
   /** The poll floor (#574): re-read the provider's truth and write it back. */
   sweep(env: ConnectorEnv): ConnectorSweeper;
   /**
@@ -182,11 +204,47 @@ const SCRIVE: ConnectorRegistration = {
 };
 
 /**
+ * Fortnox (#1203, #1220) — inbound accounting, poll-only. No dispatch (nothing in a
+ * scope initiates the work) and no callback (Fortnox pushes nothing); the consent
+ * round that CREATES a connection is the dashboard's (`/api/integrations/fortnox/…`),
+ * which relays the sealed triple here like any other credential. What this
+ * registration adds is everything after that: the connect-time probe (#605) that
+ * refuses a broken triple before it lands, the sweep that polls each bound scope's
+ * books, and the inspection views a console reads.
+ */
+const FORTNOX: ConnectorRegistration = {
+  provider: 'fortnox',
+  grants: FORTNOX_CONNECTION_GRANTS,
+  inspector: (env) => ({
+    probe: async (h, row) =>
+      probeFortnoxConnection(h, row, {
+        fetch: fetchImpl(),
+        ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
+        ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+      }),
+    activity: async (h, row) => fortnoxConnectionActivity(h, row.id),
+    credential: (h, row) => fortnoxCredentialSummary(h, row),
+    probeCandidate: async (secret) =>
+      probeFortnoxSecret(secret, {
+        fetch: fetchImpl(),
+        ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
+        ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+      }),
+  }),
+  sweep: (env) => async (h, id, o) =>
+    sweepFortnoxLedger(h, id, {
+      ...o,
+      ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
+      ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
+    }),
+};
+
+/**
  * Every connector this control plane operates. **Adding one is adding one entry here**
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX];
 
 /** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {

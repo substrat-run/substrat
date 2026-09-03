@@ -339,6 +339,32 @@ export const dashboardMigrations = [
       );
     `,
   },
+  {
+    version: '0013-connect-links',
+    sql: `
+      -- Outstanding provider-consent rounds (#1220): one row per minted connect link
+      -- for an OAuth-style provider (Fortnox). The signed token a recipient holds
+      -- names this row; the row is what makes the link SINGLE-USE (consumed exactly
+      -- once, at the consent callback) and REVOCABLE (an outstanding link an admin
+      -- regrets is killed here, and the signature it rides becomes worthless). The
+      -- recipient needs no dashboard login — the authority is the minting admin's,
+      -- checked at mint AND re-checked at consume, so removing the admin also voids
+      -- their outstanding links. What the consent attached (the provider's company)
+      -- is recorded at consume time: the audit answer to "who connected THAT".
+      CREATE TABLE dashboard_connect_links (
+        id             TEXT PRIMARY KEY,
+        provider       TEXT NOT NULL,
+        app_scope_id   TEXT NOT NULL,
+        status         TEXT NOT NULL CHECK (status IN ('outstanding','used','revoked')),
+        created_by     TEXT NOT NULL,
+        created_at     TEXT NOT NULL,
+        expires_at     TEXT NOT NULL,
+        used_at        TEXT,
+        account_ref    TEXT,
+        account_label  TEXT
+      );
+    `,
+  },
 ];
 
 export interface DashboardAppRow {
@@ -1220,6 +1246,130 @@ const beginConnectionOp: OperationHandler<z.infer<typeof beginConnectionInput>, 
   return { principal: ctx.principal };
 };
 
+// -- connect links (#1220) ---------------------------------------------------
+// The DB-backed half of an OAuth-style provider connect. `begin-connection` above
+// authorizes a paste-credential connect that completes within one request; a consent
+// ROUND leaves the dashboard (a browser visits the provider, possibly a different
+// person's browser, possibly days later), so its authorization is reified as a row +
+// a signed token. Mint and revoke are the admin's own permission-checked acts;
+// consume runs when the consent returns, AS the minting principal (the worker proves
+// that principal from the token's signature), and re-checks the same permission — a
+// link outlives neither its author's access nor a revocation.
+
+const CONNECT_LINK_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const CONNECT_LINK_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** One minted connect link, as the module exposes it (never the signed token itself). */
+export interface ConnectLinkRow {
+  id: string;
+  provider: string;
+  app_scope_id: string;
+  status: 'outstanding' | 'used' | 'revoked';
+  created_by: string;
+  created_at: string;
+  expires_at: string;
+  used_at: string | null;
+  account_ref: string | null;
+  account_label: string | null;
+}
+
+const mintConnectLinkInput = z.object({
+  provider: z.string().min(1).max(64),
+  appScopeId: z.string().min(1),
+  /** How long the link lives; clamped to 30 days. Default 7 days. */
+  ttlMs: z.number().int().positive().max(CONNECT_LINK_MAX_TTL_MS).optional(),
+});
+
+const mintConnectLinkOp: OperationHandler<z.infer<typeof mintConnectLinkInput>, ConnectLinkRow> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
+  const input = mintConnectLinkInput.parse(raw);
+  const id = ulid();
+  const now = ctx.now();
+  const expiresAt = new Date(
+    Date.parse(now) + (input.ttlMs ?? CONNECT_LINK_DEFAULT_TTL_MS),
+  ).toISOString();
+  ctx.sql.exec(
+    `INSERT INTO dashboard_connect_links (id, provider, app_scope_id, status, created_by, created_at, expires_at)
+     VALUES (?, ?, ?, 'outstanding', ?, ?, ?)`,
+    [id, input.provider, input.appScopeId, ctx.principal, now, expiresAt],
+  );
+  return ctx.sql.query<ConnectLinkRow>('SELECT * FROM dashboard_connect_links WHERE id = ?', [id])[0]!;
+};
+
+const consumeConnectLinkInput = z.object({
+  linkId: z.string().min(1),
+  provider: z.string().min(1).max(64),
+  /** What the consent attached — recorded for the audit trail, shown nowhere else. */
+  accountRef: z.string().max(256).optional(),
+  accountLabel: z.string().max(256).optional(),
+});
+
+/**
+ * Why a consume was refused, as a value rather than a thrown string: the callback
+ * renders a different page for each, and parsing error messages to tell them apart
+ * is how a wording change becomes a wrong screen.
+ */
+export type ConnectLinkConsume =
+  | { ok: true; link: ConnectLinkRow }
+  | { ok: false; reason: 'unknown' | 'used' | 'revoked' | 'expired' };
+
+const consumeConnectLinkOp: OperationHandler<z.infer<typeof consumeConnectLinkInput>, ConnectLinkConsume> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
+  const input = consumeConnectLinkInput.parse(raw);
+  const row = ctx.sql.query<ConnectLinkRow>(
+    'SELECT * FROM dashboard_connect_links WHERE id = ? AND provider = ?',
+    [input.linkId, input.provider],
+  )[0];
+  if (!row) return { ok: false, reason: 'unknown' };
+  if (row.status === 'used') return { ok: false, reason: 'used' };
+  if (row.status === 'revoked') return { ok: false, reason: 'revoked' };
+  // ISO 8601 UTC text on both sides, so lexicographic comparison IS chronological.
+  if (row.expires_at <= ctx.now()) return { ok: false, reason: 'expired' };
+  // Single-use is enforced by the WHERE, not the read above: two concurrent callbacks
+  // both read 'outstanding', but only one UPDATE matches and the other answers 'used'.
+  const flipped = ctx.sql.exec(
+    `UPDATE dashboard_connect_links SET status = 'used', used_at = ?, account_ref = ?, account_label = ?
+     WHERE id = ? AND status = 'outstanding'`,
+    [ctx.now(), input.accountRef ?? null, input.accountLabel ?? null, input.linkId],
+  );
+  if (flipped.changes !== 1) return { ok: false, reason: 'used' };
+  return {
+    ok: true,
+    link: ctx.sql.query<ConnectLinkRow>('SELECT * FROM dashboard_connect_links WHERE id = ?', [input.linkId])[0]!,
+  };
+};
+
+const revokeConnectLinkInput = z.object({ linkId: z.string().min(1) });
+
+const revokeConnectLinkOp: OperationHandler<z.infer<typeof revokeConnectLinkInput>, { status: ConnectLinkRow['status'] } | null> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
+  const input = revokeConnectLinkInput.parse(raw);
+  ctx.sql.exec(
+    `UPDATE dashboard_connect_links SET status = 'revoked' WHERE id = ? AND status = 'outstanding'`,
+    [input.linkId],
+  );
+  const row = ctx.sql.query<ConnectLinkRow>('SELECT * FROM dashboard_connect_links WHERE id = ?', [input.linkId])[0];
+  return row ? { status: row.status } : null;
+};
+
+const listConnectLinksInput = z.object({
+  appScopeId: z.string().min(1).optional(),
+  provider: z.string().min(1).max(64).optional(),
+});
+
+/** Outstanding links only — a used or revoked row is history, not something to revoke. */
+const listConnectLinksOp: OperationHandler<z.infer<typeof listConnectLinksInput>, ConnectLinkRow[]> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(DASHBOARD_PERM.manageIntegrations));
+  const input = listConnectLinksInput.parse(raw);
+  return ctx.sql.query<ConnectLinkRow>(
+    `SELECT * FROM dashboard_connect_links
+     WHERE status = 'outstanding' AND expires_at > ?
+       AND (? IS NULL OR app_scope_id = ?) AND (? IS NULL OR provider = ?)
+     ORDER BY created_at DESC`,
+    [ctx.now(), input.appScopeId ?? null, input.appScopeId ?? null, input.provider ?? null, input.provider ?? null],
+  );
+};
+
 export const dashboardModule: ModuleRegistration = {
   manifest: dashboardManifest,
   migrations: dashboardMigrations,
@@ -1257,5 +1407,9 @@ export const dashboardModule: ModuleRegistration = {
     'dashboard/leave-self': leaveSelfOp as OperationHandler<never, unknown>,
     'dashboard/delete-team': deleteTeamOp as OperationHandler<never, unknown>,
     'dashboard/begin-connection': beginConnectionOp as OperationHandler<never, unknown>,
+    'dashboard/mint-connect-link': mintConnectLinkOp as OperationHandler<never, unknown>,
+    'dashboard/consume-connect-link': consumeConnectLinkOp as OperationHandler<never, unknown>,
+    'dashboard/revoke-connect-link': revokeConnectLinkOp as OperationHandler<never, unknown>,
+    'dashboard/list-connect-links': listConnectLinksOp as OperationHandler<never, unknown>,
   },
 };

@@ -11,6 +11,7 @@ import {
   type ConnectionIntentView,
   type ConnectionProbeView,
   type ConnectionView,
+  type ConnectLinkView,
   type ProviderField,
 } from '../lib/api';
 import { DEV_MOCK } from '../lib/mock';
@@ -479,6 +480,13 @@ function IntegrationDetail({
  * The connect / rotate dialog: the provider's declared fields, all required (a provider
  * credential is a set, not a sum of options). `pickTarget` adds the account-level app
  * selector — the credential always lands on ONE app's vertical.
+ *
+ * A provider with `connectFlow: 'redirect'` (#1220) leads with the consent round
+ * instead: **Continue to {name}** mints a single-use connect link and follows it, and
+ * **Copy connect link** mints one to hand to whoever administers the provider account —
+ * they need no dashboard login. The credential form stays behind a toggle as the
+ * operator fallback. Rotation is the same consent round again (it rotates the live
+ * connection in place), so the dialog is identical either way.
  */
 function ConnectDialog({
   provider,
@@ -488,7 +496,7 @@ function ConnectDialog({
   onDone,
   onClose,
 }: {
-  provider: { provider: string; name: string; monogram: string; fields: ProviderField[] };
+  provider: { provider: string; name: string; monogram: string; fields: ProviderField[]; connectFlow?: 'redirect' | null };
   rotate: boolean;
   /** The fixed target app (the per-app tab). Omit to render the account-level picker. */
   scopeId?: string;
@@ -496,6 +504,8 @@ function ConnectDialog({
   onDone: () => void;
   onClose: () => void;
 }) {
+  const redirect = provider.connectFlow === 'redirect';
+  const [manual, setManual] = useState(!redirect);
   const [values, setValues] = useState<Record<string, string>>({});
   const [target, setTarget] = useState<string>(scopeId ?? pickTarget?.[0]?.scopeId ?? '');
   const [busy, setBusy] = useState(false);
@@ -504,7 +514,68 @@ function ConnectDialog({
   const [refusal, setRefusal] = useState<{ message: string; probe?: ConnectionProbeView } | null>(null);
   /** The PLATFORM can't store a credential here (503) — nothing to do with what was typed. */
   const [unavailable, setUnavailable] = useState<string | null>(null);
+  /** Outstanding consent links for this app+provider — each revocable while unused. */
+  const [links, setLinks] = useState<ConnectLinkView[]>([]);
+  /** The link just minted for sharing — shown once; listing never returns the URL. */
+  const [minted, setMinted] = useState<{ url: string; expiresAt: string } | null>(null);
   const complete = provider.fields.every((f) => (values[f.key] ?? '').trim() !== '') && target !== '';
+
+  useEffect(() => {
+    if (!redirect || DEV_MOCK || target === '') return;
+    let live = true;
+    api
+      .connectLinks(target, provider.provider)
+      .then((v) => live && setLinks(v.links))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [redirect, target, provider.provider]);
+
+  /** Mint a fresh single-use link and follow it — the Connect button's whole journey. */
+  const goConnect = async () => {
+    if (target === '' || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      // Short-lived on purpose: this link is spent within seconds, by this browser.
+      const link = await api.mintConnectLink(target, provider.provider, { ttlMs: 10 * 60 * 1000 });
+      window.location.assign(link.url);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 503) setUnavailable(e.message);
+      else setErr(e instanceof ApiError ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+
+  /** Mint a shareable link (the 7-day default) for a provider admin with no login here. */
+  const copyLink = async () => {
+    if (target === '' || busy) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const link = await api.mintConnectLink(target, provider.provider);
+      setMinted({ url: link.url, expiresAt: link.expiresAt });
+      await navigator.clipboard.writeText(link.url).catch(() => {}); // shown below either way
+      const refreshed = await api.connectLinks(target, provider.provider).catch(() => null);
+      if (refreshed) setLinks(refreshed.links);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 503) setUnavailable(e.message);
+      else setErr(e instanceof ApiError ? e.message : String(e));
+    }
+    setBusy(false);
+  };
+
+  const revokeLink = async (linkId: string) => {
+    try {
+      await api.revokeConnectLink(target, provider.provider, linkId);
+    } catch {
+      // The refetch shows the surviving state either way.
+    }
+    const refreshed = await api.connectLinks(target, provider.provider).catch(() => null);
+    if (refreshed) setLinks(refreshed.links);
+    setMinted(null);
+  };
 
   const submit = async () => {
     if (!complete || busy) return;
@@ -535,17 +606,37 @@ function ConnectDialog({
     <Dialog
       open
       title={`${rotate ? 'Rotate' : 'Connect'} ${provider.name}`}
-      confirmLabel={busy ? 'Saving…' : rotate ? 'Rotate credentials' : 'Connect'}
-      confirmDisabled={!complete || busy}
+      confirmLabel={
+        redirect && !manual
+          ? busy
+            ? 'Opening…'
+            : `Continue to ${provider.name}`
+          : busy
+            ? 'Saving…'
+            : rotate
+              ? 'Rotate credentials'
+              : 'Connect'
+      }
+      confirmDisabled={redirect && !manual ? target === '' || busy : !complete || busy}
       onCancel={onClose}
-      onConfirm={submit}
+      onConfirm={redirect && !manual ? goConnect : submit}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Monogram text={provider.monogram} size={32} />
           <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
-            Checked with {provider.name} before it is stored, then sealed in the connection vault — apps use it, never
-            see it.{rotate ? ' Rotating keeps the same connection; every grant on it survives.' : ''}
+            {redirect && !manual ? (
+              <>
+                Connecting happens at {provider.name}: an administrator of your {provider.name} account approves once,
+                and the credential is sealed in the connection vault — nothing is typed here.
+                {rotate ? ' Re-approving keeps the same connection; every grant on it survives.' : ''}
+              </>
+            ) : (
+              <>
+                Checked with {provider.name} before it is stored, then sealed in the connection vault — apps use it,
+                never see it.{rotate ? ' Rotating keeps the same connection; every grant on it survives.' : ''}
+              </>
+            )}
           </div>
         </div>
 
@@ -582,17 +673,70 @@ function ConnectDialog({
             style={{ width: 320 }}
           />
         )}
-        {provider.fields.map((f) => (
-          <Input
-            key={f.key}
-            label={f.label}
-            type={f.secret ? 'password' : 'text'}
-            placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
-            value={values[f.key] ?? ''}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
-            mono
-          />
-        ))}
+
+        {/* The shareable half of the consent round: the person who administers the
+            provider account is often not a member here, so the round travels as a URL —
+            single-use, expiring, and revocable below until someone spends it. */}
+        {redirect && !manual && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Button variant="ghost" size="sm" onClick={copyLink} disabled={target === '' || busy}>
+                Copy connect link
+              </Button>
+              <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+                For whoever administers {provider.name} — no dashboard login needed. Single-use, valid 7 days.
+              </span>
+            </div>
+            {minted && (
+              <div style={{ ...card, padding: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div
+                  style={{ fontSize: 11.5, fontFamily: 'var(--font-mono)', wordBreak: 'break-all', color: 'var(--text-secondary)', userSelect: 'all' }}
+                >
+                  {minted.url}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  Copied to the clipboard. Shown once — mint a new link if it is lost. Expires{' '}
+                  {relativeTime(minted.expiresAt)}.
+                </div>
+              </div>
+            )}
+            {links.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <div style={{ fontSize: 11.5, fontWeight: 600, color: 'var(--text-primary)' }}>Outstanding links</div>
+                {links.map((l) => (
+                  <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5, color: 'var(--text-secondary)' }}>
+                    <span>
+                      created {relativeTime(l.createdAt)}, expires {relativeTime(l.expiresAt)}
+                    </span>
+                    <Button variant="ghost" size="sm" onClick={() => revokeLink(l.id)}>
+                      Revoke
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {(!redirect || manual) &&
+          provider.fields.map((f) => (
+            <Input
+              key={f.key}
+              label={f.label}
+              type={f.secret ? 'password' : 'text'}
+              placeholder={f.placeholder ?? (f.secret ? '••••••••' : '')}
+              value={values[f.key] ?? ''}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValues((v) => ({ ...v, [f.key]: e.target.value }))}
+              mono
+            />
+          ))}
+        {redirect && (
+          <div>
+            <Button variant="ghost" size="sm" onClick={() => setManual((m) => !m)}>
+              {manual ? `Use the ${provider.name} consent flow instead` : 'Enter credentials manually'}
+            </Button>
+          </div>
+        )}
         {err && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>Couldn’t save — {err}</div>}
       </div>
     </Dialog>

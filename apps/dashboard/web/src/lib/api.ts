@@ -543,6 +543,13 @@ export interface AppIntegration {
   description: string;
   monogram: string;
   fields: ProviderField[];
+  /**
+   * `'redirect'` when the primary connect is an OAuth-style consent round (#1220):
+   * the UI leads with a Connect button and a copyable connect link, and the
+   * credential form becomes the operator fallback. Null when the flow is not
+   * declared — or declared but unconfigured on this deployment.
+   */
+  connectFlow: 'redirect' | null;
   required: boolean;
   connection: ConnectionView | null;
 }
@@ -561,8 +568,23 @@ export interface AccountIntegration {
   description: string;
   monogram: string;
   fields: ProviderField[];
+  /** See {@link AppIntegration.connectFlow}. */
+  connectFlow: 'redirect' | null;
   connections: Array<ConnectionView & { vertical: string; apps: Array<{ scopeId: string; name: string }> }>;
   connectTargets: Array<{ scopeId: string; name: string; vertical: string; connected: boolean }>;
+}
+
+/** One outstanding consent-round link (#1220) — single-use, revocable, expiring. */
+export interface ConnectLinkView {
+  id: string;
+  provider: string;
+  appScopeId: string;
+  status: 'outstanding' | 'used' | 'revoked';
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+  /** Present on the mint response only — the URL is never listed back. */
+  url?: string;
 }
 
 /** `GET /api/integrations` */
@@ -1028,6 +1050,27 @@ export const api = {
   /** Disconnect a provider (terminal — reconnecting creates a new connection). */
   disconnectIntegration: (scopeId: string, provider: string) =>
     call<void>(`/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}`, { method: 'DELETE' }),
+  /**
+   * Mint a consent-round connect link (#1220). The `url` in the answer is both the
+   * Connect button's destination (navigate to it now) and the copyable link for a
+   * provider admin with no dashboard login. Single-use; revocable while outstanding.
+   */
+  mintConnectLink: (scopeId: string, provider: string, input: { ttlMs?: number } = {}) =>
+    call<ConnectLinkView & { url: string }>(
+      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/connect-links`,
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  /** The outstanding connect links for this app + provider. */
+  connectLinks: (scopeId: string, provider: string) =>
+    call<{ links: ConnectLinkView[] }>(
+      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/connect-links`,
+    ),
+  /** Revoke an outstanding connect link — the URL it minted stops working. */
+  revokeConnectLink: (scopeId: string, provider: string, linkId: string) =>
+    call<void>(
+      `/apps/${encodeURIComponent(scopeId)}/integrations/${encodeURIComponent(provider)}/connect-links/${encodeURIComponent(linkId)}`,
+      { method: 'DELETE' },
+    ),
   /** The account-level integrations overview: all providers, connections, and connectable apps. */
   integrations: () => call<AccountIntegrationsView>('/integrations'),
   /** The app's hostname bindings + the vertical's declared surfaces (Domains tab). */

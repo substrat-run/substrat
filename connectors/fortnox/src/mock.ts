@@ -29,6 +29,13 @@ export interface FortnoxMockOptions {
   sie?: Record<number, string>;
   /** Seconds a minted token claims to live. */
   expiresIn?: number;
+  /**
+   * The one-time consent code the authorization-code exchange accepts — what a
+   * consent-flow test (`completeFortnoxConsent`) presents. SINGLE-use, as Fortnox's
+   * is: the second exchange of the same code answers `invalid_grant`, which is the
+   * reloaded-callback-tab case a connect flow must survive.
+   */
+  consentCode?: string;
 }
 
 /** Encode to ISO-8859-1. Any code point above 0xff becomes `?`, exactly as Fortnox would. */
@@ -52,6 +59,8 @@ export class FortnoxMock {
   private readonly years: NonNullable<FortnoxMockOptions['financialYears']>;
   private readonly sie: Record<number, string>;
   private readonly expiresIn: number;
+  /** Spends to `undefined` on the first successful exchange. */
+  private consentCode: string | undefined;
 
   /** Every token this mock has minted — a test asserts the mint happened exactly once. */
   readonly mints: string[] = [];
@@ -73,6 +82,7 @@ export class FortnoxMock {
     ];
     this.sie = options.sie ?? {};
     this.expiresIn = options.expiresIn ?? 3600;
+    this.consentCode = options.consentCode;
   }
 
   /** Replace one year's SIE payload — how a test simulates "the books changed". */
@@ -101,6 +111,23 @@ export class FortnoxMock {
       const expected = `Basic ${btoa(`${this.clientId}:${this.clientSecret}`)}`;
       if (auth !== expected) {
         return this.json({ error: 'invalid_client', error_description: 'bad client credentials' }, 401);
+      }
+      // The consent flow's one-time exchange: no TenantId header (the exchange is what
+      // DISCOVERS the company), and the code spends on first use.
+      if (String(init?.body ?? '').includes('grant_type=authorization_code')) {
+        const code = /(?:^|&)code=([^&]*)/.exec(String(init?.body ?? ''))?.[1];
+        if (this.consentCode === undefined || code !== this.consentCode) {
+          return this.json({ error: 'invalid_grant', error_description: 'code spent or unknown' }, 400);
+        }
+        this.consentCode = undefined;
+        const token = `consent-token-${this.mints.length + 1}`;
+        this.mints.push(token);
+        return this.json({
+          access_token: token,
+          token_type: 'bearer',
+          expires_in: this.expiresIn,
+          scope: 'bookkeeping companyinformation',
+        });
       }
       if ((headers['TenantId'] ?? '') !== this.tenantId) {
         // Fortnox answers 400 here, not 404 — a wrong TenantId reads like a bad client

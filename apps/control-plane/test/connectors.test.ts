@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SCRIVE_CALLBACK_ROUTE, SCRIVE_CONNECTION_GRANTS } from '@substrat-run/connector-scrive';
+import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
 import {
   CONNECTORS,
   connectionInspectorsFor,
@@ -23,6 +24,7 @@ describe('connector registry', () => {
   it('derives every wiring surface from the same array', () => {
     const providers = CONNECTORS.map((c) => c.provider);
     expect(providers).toContain('scrive');
+    expect(providers).toContain('fortnox');
     expect(Object.keys(connectionInspectorsFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorSweepersFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorGrantsFor()).sort()).toEqual([...providers].sort());
@@ -35,6 +37,33 @@ describe('connector registry', () => {
     // The failure this reproduces (#716/#841): a hand-kept copy beside the connector
     // that drifted for months. `toBe` on the identity, not `toEqual` on the contents.
     expect(connectorGrantsFor()['scrive']).toBe(SCRIVE_CONNECTION_GRANTS);
+    expect(connectorGrantsFor()['fortnox']).toBe(FORTNOX_CONNECTION_GRANTS);
+  });
+
+  it('a poll-only connector registers with no dispatch and no callback — by design, not omission', () => {
+    // Fortnox (#1203): nothing inside a scope initiates a bookkeeping read, so there
+    // is no dispatch handler to wire and no `connector:fortnox` intent kind to drain.
+    // The registration is complete without them; what MUST be present is the sweep
+    // (the whole trigger surface) and the inspection roles the console reads.
+    const fortnox = CONNECTORS.find((c) => c.provider === 'fortnox')!;
+    expect(fortnox.dispatch).toBeUndefined();
+    expect(fortnox.callback).toBeUndefined();
+    const inspector = connectionInspectorsFor({})['fortnox']!;
+    expect(inspector.probe).toBeDefined();
+    expect(inspector.activity).toBeDefined();
+    expect(inspector.credential).toBeDefined();
+    expect(inspector.probeCandidate).toBeDefined();
+    expect(connectorSweepersFor({})['fortnox']).toBeDefined();
+  });
+
+  it('refuses a malformed Fortnox candidate without spending a provider round trip', async () => {
+    const inspector = connectionInspectorsFor({})['fortnox']!;
+    // No fetch is reachable here (the inspector got a real fetchImpl, but a malformed
+    // credential must be refused before any call) — a throw would mean it tried.
+    const probe = await inspector.probeCandidate!({ clientId: 'ci' });
+    expect(probe.ok).toBe(false);
+    expect(probe.refused).toBe(true);
+    expect(probe.error).toMatch(/clientSecret/);
   });
 
   it('mounts each connector callback at the route the connector itself declares', () => {
@@ -54,7 +83,7 @@ describe('connector registry', () => {
     // drain's handler map or the sweep's sweeper map must not take the whole pass down
     // over one connector's unset var. So constructing them is fine…
     const sweeper = scrive.sweep(blank);
-    const dispatcher = scrive.dispatch(blank);
+    const dispatcher = scrive.dispatch!(blank);
     // …and using them is what refuses.
     await expect(
       sweeper(null as never, 'con_x' as never, { fetch: null as never }),
