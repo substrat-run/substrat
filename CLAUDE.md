@@ -340,7 +340,11 @@ CI runs more than those. The checks that emit nothing and simply refuse — the 
 turn a rule in this file into a red build — are `lint:boundaries` (`node
 tools/boundary-lint.mjs`), `lint:cycles` (`tools/workspace-cycles.mjs`), `lint:deps`
 (`tools/declared-deps.mjs`: an import whose package the graph does not declare),
-`lint:tests`, and `lint:changelog --check` — which asserts a hand-written digest accounts
+`lint:spine-ddl` (`tools/spine-ddl-drift.mjs`: the `_substrat_*` spine is built
+independently by each adapter, and the copies have nothing keeping them in step — it
+executes each side's DDL *plus* the columns it ALTERs in afterwards and compares the
+schemas a query would actually meet, so only a real divergence between what self-host runs
+and what production runs is red, #969), `lint:tests`, and `lint:changelog --check` — which asserts a hand-written digest accounts
 for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`
 is the exception that runs **off** the PR — post-release and weekly, for the reason its
 bullet above gives.
