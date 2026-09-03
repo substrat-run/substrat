@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-rally",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "substrat": {
     "permissions": "src/seed.ts",
@@ -35,7 +35,7 @@
     ]
   },
   "license": "Apache-2.0",
-  "description": "RallyPoint demo vertical (padel/tennis club booking) \u2014 see spec/concept.md",
+  "description": "RallyPoint demo vertical (padel/tennis club booking) — see spec/concept.md",
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
