@@ -6,13 +6,14 @@ import type { ConnectorConnection } from '@substrat-run/kernel';
 import { FortnoxApi, type FortnoxSecret } from '../src/api.js';
 import { financialYearFor, summarizeLedger } from '../src/aggregate.js';
 import { parseSie4 } from '../src/sie4.js';
-import { loadDevSecrets } from '../scripts/dev-secrets.mjs';
+import { loadDevSecrets, providerEnv } from '../scripts/dev-secrets.mjs';
 
 /**
  * The real thing — this talks to `api.fortnox.se`.
  *
  * It runs ONLY when `secrets/connectors.env` (or this package's legacy `.dev.vars`, both
- * gitignored) holds a complete client-credentials triple, so CI without secrets skips it
+ * gitignored) or the `FORTNOX_*` environment holds a complete client-credentials triple,
+ * so CI without secrets skips it
  * and a local run against a real company exercises the actual API. This is the test that turns "ready to check
  * against reality" into "checked" — the mock's whole limitation is that it is the
  * author's reading of the docs on both sides of the call.
@@ -37,11 +38,16 @@ const dir = dirname(fileURLToPath(import.meta.url));
 
 function loadSecret(): FortnoxSecret | null {
   // One file for every connector — see `scripts/dev-secrets.mts` for why this is not
-  // `secrets/platform.<env>.env`. The package's own `.dev.vars` still works as a fallback.
-  const env = loadDevSecrets(
-    join(dir, '..', '..', '..', 'secrets', 'connectors.env'),
-    join(dir, '..', '.dev.vars'),
-  );
+  // `secrets/platform.<env>.env`. The package's own `.dev.vars` still works as a fallback,
+  // and `FORTNOX_*` in the environment wins over both, so a CI job holding the credential
+  // in its secret store needs no file at all.
+  const env = {
+    ...loadDevSecrets(
+      join(dir, '..', '..', '..', 'secrets', 'connectors.env'),
+      join(dir, '..', '.dev.vars'),
+    ),
+    ...providerEnv('FORTNOX_'),
+  };
   const { FORTNOX_CLIENT_ID, FORTNOX_CLIENT_SECRET, FORTNOX_TENANT_ID } = env;
   // Present but incomplete — skip rather than fail on a partial paste.
   if (!FORTNOX_CLIENT_ID || !FORTNOX_CLIENT_SECRET || !FORTNOX_TENANT_ID) return null;

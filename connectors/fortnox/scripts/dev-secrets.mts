@@ -51,4 +51,24 @@ export function loadDevSecrets(sharedPath: string, legacyPath: string): Record<s
   return { ...parseEnvFile(legacyPath), ...parseEnvFile(sharedPath) };
 }
 
+/**
+ * The provider's own environment variables, as an overlay to merge over the files.
+ *
+ * `FORTNOX_CLIENT_ID=… pnpm … test` has to reach the suite: a CI job that holds the
+ * credential in its secret store should not have to materialize a file to run the live
+ * test. The prefix is the point — a bare `CLIENT_SECRET` exported in a shell is some
+ * other integration's, and sending it to Fortnox is precisely the accident the
+ * `<PROVIDER>_` keys exist to prevent.
+ *
+ * Blank counts as absent, as in the files, so `FORTNOX_TENANT_ID=` left over in an
+ * environment does not blank out a value the file supplies.
+ */
+export function providerEnv(prefix: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith(prefix) && v !== undefined && v !== '') out[k] = v;
+  }
+  return out;
+}
+
 export { parseEnvFile };

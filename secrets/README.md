@@ -43,7 +43,10 @@ pnpm fortnox:connect                    # one-time service consent → prints FO
 ```
 
 Each connector's own `.dev.vars` still works and is overridden by this file, so an existing
-checkout keeps running until it is migrated.
+checkout keeps running until it is migrated. A `<PROVIDER>_` variable in the environment
+beats both — `FORTNOX_CLIENT_ID=… pnpm --filter @substrat-run/connector-fortnox test` runs
+the live suite with no file at all, which is how a job holding the credential in a secret
+store reaches it.
 
 ## Quick start (prod)
 

@@ -7,7 +7,8 @@ import { ScriveApi, type ScriveParty, type ScriveSecret } from '../src/api.js';
 /**
  * The real thing — this talks to `api-testbed.scrive.com`.
  *
- * It runs ONLY when `connectors/scrive/.dev.vars` (gitignored) holds a complete
+ * It runs ONLY when `secrets/connectors.env`, this package's legacy `.dev.vars` (both
+ * gitignored) or the `SCRIVE_*` environment holds a complete
  * OAuth1 credential, so CI without secrets skips it and a local run with the
  * testbed creds exercises the actual API. This is the test that makes "ready to
  * check against reality" into "checked" — the mock's whole limitation is that it
@@ -30,6 +31,22 @@ import { ScriveApi, type ScriveParty, type ScriveSecret } from '../src/api.js';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * The `SCRIVE_*` environment, as an overlay to merge over the files.
+ *
+ * `SCRIVE_CLIENT_ID=… pnpm … test` has to reach this suite: a CI job holding the testbed
+ * credential in its secret store should not have to write a file to run it. The prefix
+ * is the point — a bare `CLIENT_SECRET` exported in a shell belongs to some other
+ * integration. Blank counts as absent, as in the files.
+ */
+function providerEnv(prefix: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith(prefix) && v !== undefined && v !== '') out[k] = v;
+  }
+  return out;
+}
+
 /** Parse a flat `KEY=value` env file. Blank values count as absent. */
 function parseEnvFile(path: string): Record<string, string> {
   if (!existsSync(path)) return {};
@@ -48,10 +65,12 @@ function loadSecret(): (ScriveSecret & { baseUrl: string }) | null {
   // credential belongs in a sealed connection, never in a worker's ambient env.
   //
   // This package's own `.dev.vars` still works, and is overridden by the shared file, so
-  // a checkout that already has one keeps running until it is migrated.
+  // a checkout that already has one keeps running until it is migrated. `SCRIVE_*` in the
+  // environment wins over both.
   const env = {
     ...parseEnvFile(join(dir, '..', '.dev.vars')),
     ...parseEnvFile(join(dir, '..', '..', '..', 'secrets', 'connectors.env')),
+    ...providerEnv('SCRIVE_'),
   };
   const { SCRIVE_CLIENT_ID, SCRIVE_CLIENT_SECRET, SCRIVE_TOKEN_ID, SCRIVE_TOKEN_SECRET } = env;
   if (!SCRIVE_CLIENT_ID || !SCRIVE_CLIENT_SECRET || !SCRIVE_TOKEN_ID || !SCRIVE_TOKEN_SECRET) {
