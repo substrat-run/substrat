@@ -147,6 +147,7 @@ input defaults from the project; flags override each:
 | workspace | `"substrat": { "tenant" }` in `package.json` — the **pin** | `--tenant`, `SUBSTRAT_TENANT` |
 | UI served? | refuse if `app/index.html` exists and nothing in the manifest would serve it | `--allow-unserved-ui` |
 | layer rules | refuse if [boundary-lint](/concepts/modules) finds a violation in your module code | `--skip-lint` |
+| permission surface | derived from `"substrat": { "permissions" }` and shipped in the manifest | check it without pushing: [`--check`](#push-check-the-local-gate-without-pushing) |
 
 **Push refuses a UI that nothing would serve.** A front end ships as native assets: the push
 runs your declared `build`, hashes the output and uploads it to the runtime's asset store.
@@ -192,6 +193,39 @@ one:
   against, so it passed over your SQL without looking.
 
 `--skip-lint` pushes ungated deliberately, and prints that it did.
+
+#### `push --check` — the local gate, without pushing
+
+```bash
+substrat push --check           # layer rules + the declared permission surface
+substrat push --check --json    # the same surface as data, for a CI diff
+```
+
+Runs everything a push does **locally** and stops there: the layer rules, then your declared
+permission surface — resolve `"substrat": { "permissions" }`, import the entry, derive the
+registry, print every key with the module that declares it and its description, every role,
+every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
+network call**, so it belongs in a pull-request job:
+
+```
+permission surface — helpdesk: 19 key(s), 7 role(s), 1 entity-grant shape(s)
+
+keys:
+  conversation:read   [@acme/helpdesk]  See every conversation in this desk
+  …
+digest: 3a1e93e81599723a94ebaaa4d1b356b4  (digests.permission — the promotion checkpoint compares this)
+```
+
+Three things break a push and all three are otherwise silent until the moment you deploy: the
+pointer is missing or names a file that has moved, the entry stops exporting `permissions`, or
+the entry cannot be imported outside your vertical's runtime (a worker-only import, an
+import-time side effect wanting a live host). Each one exits non-zero here with a message
+naming the pointer — which is the whole point of having the command: gate the surface with the
+CLI, not with a second implementation of the derivation and not by importing the CLI's build
+output.
+
+`--json` prints `{ registry, digest }` and nothing else on stdout (the gate's notes move to
+stderr), so `substrat push --check --json > permissions.json` is a diffable artifact.
 
 The push builds the bundle (`wrangler deploy --dry-run`, running your own `build.command`),
 reads the declared surface (your own DO classes, D1 databases, compatibility date/flags, entry

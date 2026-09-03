@@ -5,6 +5,8 @@
  *   substrat login  [--cp <url>] [--token <serviceToken>]
  *   substrat push   [dir]  [--slug <slug>] [--version <v>] [--name <name>]
  *                   [--cp <url>] [--token <serviceToken>]
+ *   substrat push   [dir] --check [--json]   the local gate: layer rules + the declared
+ *                   permission surface, no login and no network (#1205)
  *
  * `push` defaults dir to '.', slug/name from the vertical's package.json (`substrat` block
  * or derived), and version to the registry's latest patch-bumped — flags override each.
@@ -21,7 +23,16 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { loadConfig, saveConfig, resolveAuth } from './config.js';
 import { browserLogin } from './login.js';
-import { push, readVerticalMeta, nextVersion, previewVersion, pinTenant, assertLayerRules } from './push.js';
+import {
+  push,
+  readVerticalMeta,
+  nextVersion,
+  previewVersion,
+  pinTenant,
+  assertLayerRules,
+  checkPermissionSurface,
+  formatPermissionSurface,
+} from './push.js';
 import { printVersions } from './versions.js';
 import { promote, type PromoteResult } from './promote.js';
 import { setListing, requestPublish } from './listing.js';
@@ -108,6 +119,15 @@ Usage:
                                                the source before the build and a violation
                                                refuses the push; --skip-lint deploys
                                                ungated code deliberately
+  substrat push     [dir] --check [--json]     run the push's LOCAL gate and stop: the layer
+                                               rules, then the declared permission surface —
+                                               resolve "substrat": { "permissions" }, import
+                                               it, derive the registry, print it with the
+                                               digest promotion compares. No login, no
+                                               network; non-zero exit on any failure, so a
+                                               vertical's CI gates its surface with the CLI
+                                               instead of the CLI's internals. --json prints
+                                               the registry as data instead of prose
   substrat promote  <slug> --version <versionId>
                     [--ack-permissions] [--ack-migrations]  (prod is the only channel)
   substrat publish  <slug>                    request listing on the public marketplace (staff reviews)
@@ -320,9 +340,34 @@ async function cmdPush(): Promise<void> {
   // tree from spending a network call first, where a failed one would stand in place of the
   // diagnostic. The receipt is what keeps the two calls from being two scans — see
   // assertLayerRules.
-  const linted = assertLayerRules(dir, argv.includes('--skip-lint'));
+  // `--check --json` (#1205) is a machine-readable artifact: the registry is the only thing
+  // on stdout, so the gate's own notes go to stderr rather than into whatever file the caller
+  // redirected into. Every other push logs them exactly where it always did.
+  const jsonCheck = argv.includes('--check') && argv.includes('--json');
+  const linted = assertLayerRules(dir, argv.includes('--skip-lint'), jsonCheck ? console.error : console.log);
 
   const meta = readVerticalMeta(dir);
+
+  // `--check` (#1205): everything the push does to the DECLARED SURFACE, and nothing else.
+  // It resolves `substrat.permissions`, imports the entry, derives the registry and hashes
+  // it — the same code path the push ships from, so a vertical gating this in CI needs no
+  // second implementation and no deep import of the CLI's build output. Returns BEFORE
+  // `resolveAuth`/`nextVersion`, so it needs no login and makes no network call; the layer
+  // rules above have already run, which makes `substrat push --check` the whole local gate.
+  // Every failure throws (main() prints it and exits non-zero) — that is the gate.
+  if (argv.includes('--check')) {
+    const surface = await checkPermissionSurface(dir);
+    // `--json` is the SAME surface as data — for the CI that wants to diff the registry
+    // against a checked-in copy rather than read it. Printed alone (never after the prose),
+    // so `substrat push --check --json > permissions.json` is a usable artifact.
+    console.log(
+      jsonCheck
+        ? JSON.stringify({ registry: surface.registry, digest: surface.digest }, null, 2)
+        : formatPermissionSurface(surface, flag('slug') || meta.slug || undefined),
+    );
+    return;
+  }
+
   const slug = flag('slug') ?? meta.slug;
   const name = flag('name') ?? meta.name;
   if (!slug) {

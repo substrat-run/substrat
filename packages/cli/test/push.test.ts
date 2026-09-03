@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { dirname, join, isAbsolute, resolve } from 'node:path';
 import {
   buildPermissionRegistry,
@@ -12,7 +14,7 @@ import {
   matchesOutboundHost,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, formatPermissionSurface, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -591,5 +593,143 @@ describe('cli.ts — every declared field readVerticalMeta reads reaches push()'
       return sites.length < 2;
     });
     expect(missing).toEqual([]);
+  });
+});
+
+/**
+ * `substrat push --check` — the permission preflight, reachable (#1205).
+ *
+ * The derivation was always here; what was missing was a way to RUN it that is not a deep
+ * import of `dist/push.js`, which no `exports` map declares and any file move breaks. So the
+ * assertions below are about reachability and refusal, not about the derivation itself
+ * (`buildPermissionRegistry` above owns that): the command exists, it needs no credential and
+ * no network, it prints the surface it would ship, and every one of the failure modes that
+ * used to stay silent until deploy exits non-zero with a diagnostic naming the pointer.
+ *
+ * The end-to-end cases drive the REAL binary in a child process, because that is the only
+ * place the bundle-and-import step runs — vitest's module runner cannot load the runtime temp
+ * file `deriveRegistry` writes, which is why the guard-path tests above stop short of it.
+ * CI builds (`pnpm -r build`) before it tests, so `dist/cli.js` is always there; an unbuilt
+ * local checkout skips rather than reddening on something the change did not break.
+ */
+describe('substrat push --check — the permission preflight as a command (#1205)', () => {
+  const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+  const built = existsSync(cli);
+
+  /** A vertical tree whose only content is a permission entry — no engines to resolve, no
+   *  imports to externalise, so the bundle step exercises the path and nothing else. */
+  function verticalWith(entry: string, pkg: Record<string, unknown> = {}): string {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-check-'));
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({ name: '@acme/helpdesk', version: '1.0.0', substrat: { permissions: 'perms.mjs' }, ...pkg }),
+    );
+    writeFileSync(join(dir, 'perms.mjs'), entry);
+    return dir;
+  }
+
+  const SURFACE = `
+export const permissions = {
+  modules: [
+    { manifest: { id: '@substrat-run/engine-workorder', permissions: [
+      { key: 'workorder:read', description: 'Read work orders' },
+      { key: 'workorder:create', description: 'Create a work order' },
+    ] } },
+  ],
+  roles: [{ key: 'dispatcher', permissions: ['workorder:create', 'workorder:read'], source: 'vertical' }],
+  entityGrants: [{ entityType: 'work-order', permissions: ['workorder:read'] }],
+};
+`;
+
+  /** Run the built CLI with NO stored credential and no control-plane URL: a check that
+   *  needed either would fail here rather than in somebody's CI. */
+  function runCheck(dir: string, ...args: string[]): { status: number; stdout: string; stderr: string } {
+    const home = mkdtempSync(join(tmpdir(), 'substrat-cli-home-'));
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home };
+    delete env.SUBSTRAT_CP_URL;
+    delete env.SUBSTRAT_SERVICE_TOKEN;
+    delete env.SUBSTRAT_TENANT;
+    const r = spawnSync(process.execPath, [cli, 'push', dir, '--check', ...args], { env, encoding: 'utf8' });
+    return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  }
+
+  it.runIf(built)('prints the surface a push would ship, with no login and no network', () => {
+    const r = runCheck(verticalWith(SURFACE));
+    expect(r.status).toBe(0);
+    // Every key, with the module that declares it and its description — the readable half
+    // of the permission checkpoint.
+    expect(r.stdout).toMatch(/workorder:create\s+\[@substrat-run\/engine-workorder]\s+Create a work order/);
+    expect(r.stdout).toMatch(/workorder:read\s+\[@substrat-run\/engine-workorder]\s+Read work orders/);
+    expect(r.stdout).toMatch(/dispatcher\s+\(vertical, 2 key\(s\)\)/);
+    expect(r.stdout).toContain('work-order: workorder:read');
+    expect(r.stdout).toMatch(/digest: [0-9a-f]{32}/);
+    // It stopped before the push: nothing authenticated, nothing uploaded.
+    expect(r.stdout).not.toContain('authenticating with');
+    expect(r.stdout).not.toContain('uploading');
+  });
+
+  it.runIf(built)('--json prints the same surface as data, digest and all', async () => {
+    const r = runCheck(verticalWith(SURFACE), '--json');
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout) as { registry: PermissionRegistry; digest: string };
+    expect(out.registry.permissions.map((p) => p.key)).toEqual(['workorder:create', 'workorder:read']);
+    expect(out.registry.roles).toEqual([
+      { key: 'dispatcher', permissions: ['workorder:create', 'workorder:read'], source: 'vertical' },
+    ]);
+    expect(out.registry.entityGrants).toEqual([{ entityType: 'work-order', permissions: ['workorder:read'] }]);
+    // The digest is `digests.permission` itself — the value promotion compares — not a
+    // second hash of the printed text.
+    expect(out.digest).toBe(await permissionDigest(out.registry));
+  });
+
+  it.runIf(built)('refuses an entry that stops exporting `permissions`', () => {
+    const r = runCheck(verticalWith(`export const roles = [];\n`));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/exports no `permissions`/);
+  });
+
+  it.runIf(built)('refuses an entry that cannot be imported outside the vertical’s runtime', () => {
+    // The third failure mode: it exports the right name, but reading it needs a live host.
+    const r = runCheck(verticalWith(`throw new Error('needs a live host');\nexport const permissions = {};\n`));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/could not be bundled and imported as data/);
+    expect(r.stderr).toContain('perms.mjs');
+  });
+
+  it('refuses a missing pointer and a pointer naming a file that has moved', async () => {
+    // Both fail before the bundle step, so they hold with or without a built CLI.
+    await expect(checkPermissionSurface(scratch({ name: 'x' }))).rejects.toThrow(/declares no permission surface/);
+    await expect(
+      checkPermissionSurface(scratch({ substrat: { permissions: 'src/moved.ts' } })),
+    ).rejects.toThrow(/points at "src\/moved.ts", which does not exist/);
+  });
+
+  it('names the directory when there is no package.json at all, not an ENOENT trace', async () => {
+    // The likeliest mistake for a command a CI job runs from wherever it happens to stand.
+    await expect(checkPermissionSurface(scratch())).rejects.toThrow(/no package.json under .+ — run this from/);
+  });
+
+  it('formats a surface identically on every run, so a diff is a real change', async () => {
+    const registry = buildPermissionRegistry({
+      modules: [
+        { manifest: { id: '@substrat-run/engine-a', permissions: [{ key: 'a:read', description: 'Read' }] } },
+      ] as never,
+      roles: [{ key: 'admin', permissions: ['a:read'] as never, source: 'vertical' }],
+      entityGrants: [{ entityType: 'order', permissions: ['a:read'] as never }],
+    });
+    const surface = { registry, digest: await permissionDigest(registry) };
+    const text = formatPermissionSurface(surface, 'helpdesk');
+    expect(text).toBe(formatPermissionSurface(surface, 'helpdesk'));
+    expect(text).toContain('permission surface — helpdesk: 1 key(s), 1 role(s), 1 entity-grant shape(s)');
+    expect(text).toContain('a:read  [@substrat-run/engine-a]  Read');
+    expect(text).toContain('order: a:read');
+    expect(text.trimEnd().endsWith(surface.digest + '  (digests.permission — the promotion checkpoint compares this)')).toBe(true);
+  });
+
+  it('says "none declared" rather than printing nothing for an empty surface', async () => {
+    const registry = buildPermissionRegistry({ modules: [], roles: [] });
+    const text = formatPermissionSurface({ registry, digest: await permissionDigest(registry) });
+    expect(text).toContain('0 key(s), 0 role(s), 0 entity-grant shape(s)');
+    expect(text.match(/\(none declared\)/g)).toHaveLength(2);
   });
 });
