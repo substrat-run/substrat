@@ -207,7 +207,7 @@ registry, print every key with the module that declares it and its description, 
 every entity-grant shape, and the digest promotion compares. It needs **no login and makes no
 network call**, so it belongs in a pull-request job:
 
-```
+```text
 permission surface — helpdesk: 19 key(s), 7 role(s), 1 entity-grant shape(s)
 
 keys:
