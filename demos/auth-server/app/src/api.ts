@@ -304,6 +304,40 @@ export function socialErrorFrom(url: URL): string | null {
   return url.searchParams.get('error_description') || code || 'sign-in was refused';
 }
 
+/* ---- per-client theming ---- */
+
+/**
+ * The theme a relying party's operator stored in its client `metadata.theme` — the
+ * vocabulary `src/branding.ts` defines and sanitizes (Clerk-shaped names, one CSS custom
+ * property each; see `applyClientTheme` in App.tsx for the mapping). Every key optional;
+ * an empty object is the unbranded default, and is also what an unknown or disabled
+ * client id answers — deliberately indistinguishable, so this read is not a registry oracle.
+ */
+export interface ClientTheme {
+  colorPrimary?: string;
+  colorPrimaryForeground?: string;
+  colorBackground?: string;
+  colorPanel?: string;
+  colorInput?: string;
+  colorText?: string;
+  colorMutedText?: string;
+  borderRadius?: string;
+  logoUrl?: string;
+  title?: string;
+}
+
+/** The sanitized theme for a client id. Any failure is the default theme, never an error —
+ *  a person mid-sign-in must reach the form whatever happened to the branding read. */
+export async function clientBranding(clientId: string): Promise<ClientTheme> {
+  try {
+    const res = await fetch(`/api/branding?client_id=${encodeURIComponent(clientId)}`);
+    if (!res.ok) return {};
+    return ((await res.json()) as { theme?: ClientTheme }).theme ?? {};
+  } catch {
+    return {};
+  }
+}
+
 /* ---- BankID sign-in ---- */
 
 /**

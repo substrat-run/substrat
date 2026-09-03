@@ -38,7 +38,9 @@ function fakeAuth() {
       touched.push(doName);
       return {
         fetch: async (request: Request) => {
-          forwarded.push(new URL(request.url).pathname);
+          // Path AND query — `/__branding` forwards its `client_id` in the query string.
+          const url = new URL(request.url);
+          forwarded.push(`${url.pathname}${url.search}`);
           return Response.json({ ok: true, doName });
         },
         issuerState: async () => ({ needsSetup: true, signupEnabled: false, providers: [] }),
@@ -300,6 +302,16 @@ describe('the /internal/* surface never reaches the SPA', () => {
     expect(res.headers.get('content-type')).toContain('application/json');
     const body = (await res.json()) as { error: string };
     expect(body.error).toContain('auth-server does not implement');
+  });
+});
+
+describe('the public branding read (/api/branding)', () => {
+  it('forwards to the issuer DO as /__branding with the client id intact', async () => {
+    const res = await app.request('/api/branding?client_id=abc123', {}, env);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toMatchObject({ ok: true });
+    expect(auth.forwarded).toEqual(['/__branding?client_id=abc123']);
   });
 });
 

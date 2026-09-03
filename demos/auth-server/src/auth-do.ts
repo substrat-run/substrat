@@ -16,6 +16,7 @@ import { upgradeLegacySchema } from '../db/upgrade.js';
 import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
+import { clientBranding } from './branding.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
 import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
@@ -334,8 +335,10 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
   }
 
   /**
-   * The DO's HTTP surface. Two `/__*` control paths — `/__session` resolves the request to
-   * `{ sub, email, name, role }` (or null), and `/__admin/*` is the issuer's own admin API
+   * The DO's HTTP surface. Three `/__*` control paths — `/__session` resolves the request to
+   * `{ sub, email, name, role }` (or null), `/__branding` is the public per-client theme read
+   * for the login/consent screens (see `branding.ts` — it answers identically for unknown and
+   * unthemed clients, so it needs no gate), and `/__admin/*` is the issuer's own admin API
    * (the relying-party registry + settings, `admin`-gated inside). Everything else is a
    * Better Auth request — sign-in, sign-up, the whole OIDC surface (discovery, authorize,
    * token, jwks, userinfo), and Better Auth's own admin API.
@@ -349,6 +352,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
       });
     if (url.pathname === '/__session') return Response.json(await session(request.headers));
+    if (url.pathname === '/__branding') {
+      return Response.json(clientBranding(this.ctx.storage.sql, url.searchParams.get('client_id')));
+    }
     if (url.pathname.startsWith('/__admin')) {
       const api = new Hono().route(
         '/__admin',

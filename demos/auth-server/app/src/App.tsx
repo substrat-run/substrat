@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import {
   answerConsent,
   authClient,
+  clientBranding,
   bankidCancel,
   bankidCollect,
   bankidQr,
@@ -45,6 +46,7 @@ import {
   type BankIdSettings,
   type BankIdStart,
   type ClientDraft,
+  type ClientTheme,
   type ConfiguredProvider,
   type ProviderCatalogueEntry,
   type ProviderDraft,
@@ -68,6 +70,40 @@ type Phase =
   | { t: 'dashboard'; session: Session };
 
 /**
+ * The wire vocabulary (`src/branding.ts`) mapped onto the custom properties `tokens.css`
+ * declares — the ENTIRE contract between a client's `metadata.theme` and these screens.
+ * Values arrive sanitized (hex colors, a px radius), so setting them is safe; `setProperty`
+ * takes them as one CSS value, never as parseable stylesheet text.
+ */
+const THEME_VARS: [keyof ClientTheme, string][] = [
+  ['colorPrimary', '--accent'],
+  ['colorPrimaryForeground', '--accent-contrast'],
+  ['colorBackground', '--bg'],
+  ['colorPanel', '--panel'],
+  ['colorInput', '--panel-2'],
+  ['colorText', '--text'],
+  ['colorMutedText', '--muted'],
+  ['borderRadius', '--radius'],
+];
+
+/**
+ * Apply (or, with `{}`, fully remove) a client theme. Removal matters: `refresh()` runs
+ * again after sign-in, and the dashboard must come back in the issuer's own colors rather
+ * than whichever relying party's flow ran last.
+ */
+function applyClientTheme(theme: ClientTheme): void {
+  const root = document.documentElement.style;
+  for (const [key, cssVar] of THEME_VARS) {
+    const value = theme[key];
+    if (value) root.setProperty(cssVar, value);
+    else root.removeProperty(cssVar);
+  }
+  // The card's larger radius follows the input radius instead of being its own key.
+  if (theme.borderRadius) root.setProperty('--radius-lg', `${parseInt(theme.borderRadius, 10) + 6}px`);
+  else root.removeProperty('--radius-lg');
+}
+
+/**
  * This app is TWO surfaces behind one origin: the admin dashboard, and the issuer's own
  * user-facing OIDC pages. `src/auth.ts` configures `loginPage: '/login'` and
  * `consentPage: '/consent'`, and Better Auth redirects people there mid-authorize — so those
@@ -80,6 +116,7 @@ type Phase =
  */
 export default function App() {
   const [phase, setPhase] = useState<Phase>({ t: 'loading' });
+  const [theme, setTheme] = useState<ClientTheme>({});
 
   const refresh = useCallback(async () => {
     // A password-reset link lands the user here with a token — handle that first.
@@ -99,6 +136,15 @@ export default function App() {
     // the person does next, or the relying party never hears the answer.
     const oauthQuery = pendingOAuthQuery(url);
     const forOidc = oauthQuery !== null;
+
+    // The application that sent this person here decides how these screens look — its
+    // operator's `metadata.theme`, read per client id. Only inside an authorize hand-off:
+    // the dashboard itself is never themed, and `{}` here is what un-themes it again.
+    const clientTheme = forOidc && url.searchParams.get('client_id')
+      ? await clientBranding(url.searchParams.get('client_id')!)
+      : {};
+    applyClientTheme(clientTheme);
+    setTheme(clientTheme);
 
     // An authorize request is waiting on an answer. Without a session the consent code cannot
     // be honoured, so fall back to sign-in — Better Auth resumes from its own prompt cookie.
@@ -148,6 +194,7 @@ export default function App() {
           oauthQuery={phase.oauthQuery}
           providers={phase.providers}
           socialError={phase.socialError}
+          theme={theme}
           onSignUp={() => setPhase({ t: 'signup', forOidc: phase.oauthQuery !== null, oauthQuery: phase.oauthQuery })}
         />
       );
@@ -158,12 +205,13 @@ export default function App() {
         <SignUp
           forOidc={phase.forOidc}
           oauthQuery={phase.oauthQuery}
+          theme={theme}
           onDone={doneSigningIn}
           onSignIn={() => void refresh()}
         />
       );
     case 'consent':
-      return <Consent request={phase.request} />;
+      return <Consent request={phase.request} theme={theme} />;
     case 'not-admin':
       return (
         <Centered>
@@ -218,7 +266,7 @@ function Setup({ onDone }: { onDone: () => void }) {
 }
 
 function SignIn({
-  onDone, signupEnabled, oauthQuery, onSignUp, providers, socialError,
+  onDone, signupEnabled, oauthQuery, onSignUp, providers, socialError, theme,
 }: {
   onDone: () => void;
   signupEnabled: boolean;
@@ -226,6 +274,7 @@ function SignIn({
   onSignUp: () => void;
   providers: PublicProvider[];
   socialError: string | null;
+  theme: ClientTheme;
 }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -239,11 +288,11 @@ function SignIn({
   // BankID is in the same providers list but is not a redirect: the browser stays here while
   // the person approves in the app, so its button opens a screen instead of leaving.
   if (bankidOpen) {
-    return <BankIdSignIn oauthQuery={oauthQuery} onDone={onDone} onBack={() => setBankidOpen(false)} />;
+    return <BankIdSignIn oauthQuery={oauthQuery} theme={theme} onDone={onDone} onBack={() => setBankidOpen(false)} />;
   }
   return (
     <Centered>
-      <Card title="Substrat Auth">
+      <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
         <p className="muted">
           {forOidc ? 'Sign in to continue to the application that sent you here.' : 'Sign in to the admin dashboard.'}
         </p>
@@ -327,8 +376,8 @@ function SignIn({
  * before this component would have re-rendered — the same `resumed` dance as sign-in.
  */
 function SignUp({
-  forOidc, oauthQuery, onDone, onSignIn,
-}: { forOidc: boolean; oauthQuery: string | null; onDone: () => void; onSignIn: () => void }) {
+  forOidc, oauthQuery, theme, onDone, onSignIn,
+}: { forOidc: boolean; oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onSignIn: () => void }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -336,7 +385,7 @@ function SignUp({
   const [busy, setBusy] = useState(false);
   return (
     <Centered>
-      <Card title="Create your account">
+      <Card title="Create your account" logo={theme.logoUrl}>
         <p className="muted">
           {forOidc
             ? 'Create an account to continue to the application that sent you here.'
@@ -400,8 +449,8 @@ const BANKID_HINTS: Record<string, string> = {
  * sit approvable for three more minutes.
  */
 function BankIdSignIn({
-  oauthQuery, onDone, onBack,
-}: { oauthQuery: string | null; onDone: () => void; onBack: () => void }) {
+  oauthQuery, theme, onDone, onBack,
+}: { oauthQuery: string | null; theme: ClientTheme; onDone: () => void; onBack: () => void }) {
   const [order, setOrder] = useState<BankIdStart | null>(null);
   const [qrImage, setQrImage] = useState<string | null>(null);
   const [hint, setHint] = useState('Open the BankID app and scan the QR code.');
@@ -480,7 +529,7 @@ function BankIdSignIn({
 
   return (
     <Centered>
-      <Card title="Sign in with BankID">
+      <Card title="Sign in with BankID" logo={theme.logoUrl}>
         {!failed && qrImage && (
           <div className="bankid-qr">
             <img src={qrImage} alt="BankID QR code" width={208} height={208} />
@@ -567,7 +616,7 @@ const SCOPE_TEXT: Record<string, string> = {
  * carrying `access_denied`. Either way the RP hears back, which is the whole point: before
  * this screen existed, both answers were "you are now looking at an admin dashboard" (#898).
  */
-function Consent({ request }: { request: ConsentRequest }) {
+function Consent({ request, theme }: { request: ConsentRequest; theme: ClientTheme }) {
   const [client, setClient] = useState<OAuthClient | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -596,7 +645,7 @@ function Consent({ request }: { request: ConsentRequest }) {
 
   return (
     <Centered>
-      <Card title="Authorize access">
+      <Card title="Authorize access" logo={theme.logoUrl}>
         <p className="muted">
           <strong>{who}</strong> wants to sign you in with your Substrat Auth account.
         </p>
@@ -1470,9 +1519,26 @@ function ClientEditor({
   const [icon, setIcon] = useState(client?.logo_uri ?? '');
   const [uris, setUris] = useState((client?.redirect_uris ?? []).join('\n'));
   const [skipConsent, setSkipConsent] = useState(Boolean(client?.skip_consent));
-  const [meta, setMeta] = useState(
-    client?.metadata && Object.keys(client.metadata).length ? JSON.stringify(client.metadata, null, 2) : '',
-  );
+
+  /**
+   * The stored theme (`metadata.theme` — the vocabulary src/branding.ts sanitizes). The
+   * common keys get their own fields below; everything else in the metadata object stays in
+   * the raw JSON textarea, which therefore shows metadata WITHOUT `theme` — one owner per
+   * key, so a save can never have the two halves fighting over the same value. Theme keys
+   * without a field (colorInput, colorText, …) are carried through a save untouched.
+   */
+  const storedTheme = (client?.metadata?.theme ?? {}) as Record<string, unknown>;
+  const themeText = (key: string): string => (typeof storedTheme[key] === 'string' ? (storedTheme[key] as string) : '');
+  const [themeTitle, setThemeTitle] = useState(themeText('title'));
+  const [themeLogo, setThemeLogo] = useState(themeText('logoUrl'));
+  const [themePrimary, setThemePrimary] = useState(themeText('colorPrimary'));
+  const [themePrimaryFg, setThemePrimaryFg] = useState(themeText('colorPrimaryForeground'));
+  const [themeBackground, setThemeBackground] = useState(themeText('colorBackground'));
+  const [themePanel, setThemePanel] = useState(themeText('colorPanel'));
+  const [meta, setMeta] = useState(() => {
+    const { theme: _theme, ...rest } = client?.metadata ?? {};
+    return Object.keys(rest).length ? JSON.stringify(rest, null, 2) : '';
+  });
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -1488,6 +1554,23 @@ function ClientEditor({
         return setErr(`Metadata: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
+    // The textarea does not own `theme` (its hint says so) — a raw one pasted there must
+    // not survive past the fields, which would otherwise win only when non-empty.
+    delete metadata.theme;
+    // Reassemble the theme: the untouched extra keys, then the fields (empty = remove).
+    const fields: [string, string][] = [
+      ['title', themeTitle],
+      ['logoUrl', themeLogo],
+      ['colorPrimary', themePrimary],
+      ['colorPrimaryForeground', themePrimaryFg],
+      ['colorBackground', themeBackground],
+      ['colorPanel', themePanel],
+    ];
+    const theme: Record<string, unknown> = Object.fromEntries(
+      Object.entries(storedTheme).filter(([key]) => !fields.some(([field]) => field === key)),
+    );
+    for (const [key, value] of fields) if (value.trim()) theme[key] = value.trim();
+    if (Object.keys(theme).length) metadata.theme = theme;
     const draft: ClientDraft = {
       client_name: name.trim(),
       application_type: type,
@@ -1541,10 +1624,25 @@ function ClientEditor({
           </em>
         </span>
       </label>
+      <h3>Appearance</h3>
+      <p className="muted small">
+        How the sign-in, sign-up and consent screens look when this application sends someone
+        here. Colors are hex (<code>#0a6847</code>); blank means the issuer&apos;s default.
+      </p>
+      <Field label="Sign-in title" value={themeTitle} onChange={setThemeTitle} hint="Replaces “Substrat Auth” as the sign-in heading." />
+      <Field label="Logo URL" value={themeLogo} onChange={setThemeLogo} hint="https:// or data:image/ — shown above the heading." />
+      <Field label="Primary color" value={themePrimary} onChange={setThemePrimary} hint="Buttons and links." />
+      <Field label="Primary text color" value={themePrimaryFg} onChange={setThemePrimaryFg} hint="Text on the primary color — keep the contrast readable." />
+      <Field label="Background color" value={themeBackground} onChange={setThemeBackground} />
+      <Field label="Card color" value={themePanel} onChange={setThemePanel} />
       <label className="field">
         <span>Metadata (JSON)</span>
-        <textarea rows={4} value={meta} onChange={(e) => setMeta(e.target.value)} placeholder={'{\n  "theme": "dark"\n}'} />
-        <em className="hint">Stored as-is and handed to your login/consent pages. The issuer never reads it.</em>
+        <textarea rows={4} value={meta} onChange={(e) => setMeta(e.target.value)} placeholder={'{\n  "plan": "internal"\n}'} />
+        <em className="hint">
+          Stored as-is on the client. The <code>theme</code> key is owned by the fields above
+          (further keys: <code>colorInput</code>, <code>colorText</code>, <code>colorMutedText</code>,{' '}
+          <code>borderRadius</code> — settable via the API); everything else the issuer never reads.
+        </em>
       </label>
       {err && <p className="error">{err}</p>}
       <div className="row">
@@ -1587,9 +1685,11 @@ function Centered({ children }: { children: React.ReactNode }) {
   return <div className="centered">{children}</div>;
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({ title, logo, children }: { title: string; logo?: string; children: React.ReactNode }) {
   return (
     <div className="card">
+      {/* alt="" — the logo repeats the title visually; announcing it twice helps nobody. */}
+      {logo && <img className="brand-logo" src={logo} alt="" />}
       <h1>{title}</h1>
       {children}
     </div>
