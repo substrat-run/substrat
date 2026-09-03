@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { moneyOf } from '@substrat-run/contracts';
-import { parseSie4, sieAmount, sieDate, splitSieLine } from '../src/sie4.js';
+import { parseSie4, sieAmount, sieDate, splitSieLine, decodeSie } from '../src/sie4.js';
 import { financialYearFor, summarizeLedger } from '../src/aggregate.js';
 import { SIE_FIXTURE } from './fixture.js';
 
@@ -238,5 +238,50 @@ describe('financialYearFor', () => {
 
   it('answers null when nothing overlaps', () => {
     expect(financialYearFor(years, { from: '2020-01-01', to: '2020-12-31' })).toBeNull();
+  });
+});
+
+/**
+ * The charset, held by a test that can actually fail.
+ *
+ * These bytes are a real Fortnox export's header, byte for byte, taken from
+ * api.fortnox.se on 2026-09-03. The connector shipped decoding them as ISO-8859-1 and
+ * every test in this package passed, because the mock encoded latin1 too — the two
+ * agreed with each other while disagreeing with Fortnox. Cheap to hold here, so the
+ * live suite is not the only thing standing between us and mojibake on a screen.
+ */
+describe('decodeSie', () => {
+  /** `för` as CP437 sends it: o-umlaut is 0x94, which latin1 reads as a control char. */
+  const pc8 = (...bytes: number[]) => new Uint8Array(bytes);
+  const header = (charset: string) =>
+    [...`#FLAGGA 0\n#FORMAT ${charset}\n#SIETYP 4\n`].map((c) => c.charCodeAt(0));
+
+  it('decodes CP437 high bytes to the Swedish letters they stand for', () => {
+    // "#KONTO 1011 "f<0x94>r"" — the exact shape a real chart of accounts has.
+    const bytes = pc8(...header('PC8'), ...[...'#KONTO 1011 "f'].map((c) => c.charCodeAt(0)), 0x94, 0x72, 0x22);
+    expect(decodeSie(bytes)).toContain('för');
+  });
+
+  it('maps every Swedish letter Fortnox actually emits', () => {
+    // ä å Ä Å ö Ö — the six that appear in a BAS chart of accounts.
+    const bytes = pc8(...header('PC8'), 0x84, 0x86, 0x8e, 0x8f, 0x94, 0x99);
+    expect(decodeSie(bytes)).toContain('äåÄÅöÖ');
+  });
+
+  it('leaves ASCII untouched', () => {
+    const text = '#KONTO 1930 "Bank"';
+    const bytes = pc8(...header('PC8'), ...[...text].map((c) => c.charCodeAt(0)));
+    expect(decodeSie(bytes)).toContain(text);
+  });
+
+  it('refuses a charset it does not implement rather than guessing', () => {
+    // Guessing is what produced plausible-looking wrong data for a year. A throw is
+    // the only failure mode a caller can notice.
+    expect(() => decodeSie(pc8(...header('UTF8')))).toThrow(/UTF8 is not supported/);
+  });
+
+  it('accepts a file that declares no #FORMAT at all, as PC8', () => {
+    const bytes = pc8(...[...'#FLAGGA 0\n#SIETYP 4\n'].map((c) => c.charCodeAt(0)), 0x94);
+    expect(decodeSie(bytes)).toContain('ö');
   });
 });

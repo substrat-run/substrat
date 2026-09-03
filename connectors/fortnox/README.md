@@ -158,25 +158,37 @@ to bind time rather than disappearing.
 1. **Your deployment must schedule the poll** (step 4). The connector provides the driver; it
    cannot hold a timer — that is a deployment concern. Without one wired, a binding is inert.
 
-2. **The live round-trip is unverified.** Everything here is built and tested against
-   `FortnoxMock`, and `test/live.test.ts` runs the real API — mint, `companyinformation`,
-   `financialyears`, `sie/4` — but **only when `connectors/fortnox/.dev.vars` holds a complete
-   credential**, which as of this writing it does not. The Developer Portal creates up to 30
-   **test databases**, administered like ordinary companies, and one of those is the right
-   target — `pnpm fortnox:connect` (above) is what fills the file. Until that has run,
-   three specific claims rest on documentation rather than measurement: that client-credentials
-   minting works as described, that the SIE4 response really is ISO-8859-1, and that the response
-   envelopes are `FinancialYears` / `CompanyInformation`. It stays a `0.x` release for this reason.
+2. **The live round-trip is verified**, against a Fortnox test company (2026-09-03), and it
+   found two real bugs — see caveat 3. `test/live.test.ts` runs the real API — mint,
+   `companyinformation`, `financialyears`, `sie/4` — whenever `secrets/connectors.env` (shared
+   by every connector) holds a complete credential, and skips otherwise, so CI without secrets
+   stays green. `pnpm fortnox:connect` is what fills that file; `DatabaseNumber` is shown nowhere
+   in the Developer Portal, so it cannot be typed by hand.
+
+   What the live run settled: `grant_type=client_credentials` with a `TenantId` header really does
+   mint with no refresh token in the response, and the envelopes really are `FinancialYears` /
+   `CompanyInformation`. What it disproved is in caveat 3.
 
    `test/live.test.ts` reads only: the data calls are GETs, and the one POST is the token mint,
    which creates no Fortnox record. This connector has no write path to Fortnox at all, so
-   running it against a production company cannot damage anything.
+   running it against a production company cannot damage anything. Putting test data INTO a
+   sandbox is therefore a separate script — `pnpm fortnox:seed` — which refuses any company whose
+   organisation number is not Fortnox's sandbox marker `555555-5555`. Note that an empty sandbox
+   makes the charset and double-entry assertions silently not run at all, so seed before judging
+   a red.
 
-3. **SIE4 is ISO-8859-1, and nothing in the response says so.** Decoding it as UTF-8 does not
-   throw; it silently mangles every å/ä/ö in every account name and cost-centre label. That is a
-   corrupted ledger that looks like a working one. `FortnoxApi.sieFile` is the only place that
-   knows, and `FortnoxMock` serves real latin1 bytes so a regression fails in the suite rather than
-   in production.
+3. **SIE4 is PC8 (code page 437) — not latin1, and not UTF-8.** The file says so in `#FORMAT`;
+   the HTTP response does not. Decoding as UTF-8 throws on the first Swedish letter, which is the
+   *good* failure. Decoding as latin1 is the bad one: every byte 0x00–0xFF is a valid latin1 code
+   point, so nothing throws and no replacement character appears — you simply get account names
+   with the wrong letters. **This connector shipped that way**, and the whole package stayed green,
+   because `FortnoxMock` encoded latin1 too: the reader and the fixture agreed with each other
+   while both disagreed with Fortnox. Only the live suite could see it.
+
+   `decodeSie` (`src/sie4.ts`) owns the charset, reads `#FORMAT`, and refuses one it does not
+   implement rather than guessing. `TextDecoder` is no help — CP437 is not in the WHATWG registry,
+   and `TextDecoder('iso-8859-1')` is really windows-1252 — so it carries a mapping table for
+   0x80–0xFF. `FortnoxMock` now encodes CP437 the way Fortnox does.
 
 4. **Pick the financial year by OVERLAP, never containment.** A newly-acquired company's first
    financial year can start mid-month (24 April, say). A search for "the year containing 1 January"
@@ -196,9 +208,11 @@ to bind time rather than disappearing.
 ## Testing
 
 `FortnoxMock` implements the token endpoint and the three REST reads in memory, so the whole sweep
-runs without a Fortnox account — credential minting, latin1 decoding, year selection, paging,
+runs without a Fortnox account — credential minting, PC8/CP437 decoding, year selection, paging,
 the unchanged-hash skip, and the bind-time grant refusal.
 
 **What a mock proves:** that our shape works. **What it cannot prove:** that our reading of
-Fortnox's API is correct — the mock *is* our reading. Green here means *ready to check against a
-real company*, which is caveat 2.
+Fortnox's API is correct — the mock *is* our reading. That is not a hypothetical here: the mock
+encoded the wrong charset for as long as the reader decoded it, and they agreed with each other
+right up until a real call disagreed with both. Green here means *ready to check against a real
+company*, and the checking is `test/live.test.ts`.
