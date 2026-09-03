@@ -117,3 +117,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .secret-once .kv { grid-template-columns: 100px 1fr; }
 .secret-once .row { display: flex; gap: 8px; }
 .secret-once .row .btn { width: auto; margin-top: 0; }
+
+/* upstream providers: the login-screen buttons, and the panel that enables them */
+.providers { margin-bottom: 4px; }
+.providers .btn { width: 100%; margin-bottom: 8px; }
+.providers .or { display: flex; align-items: center; gap: 10px; margin: 14px 0 10px; color: var(--muted); font-size: 11.5px; }
+.providers .or::before, .providers .or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.add-provider { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.add-provider .btn { width: auto; margin-top: 0; }
+.editor code { display: block; padding: 8px 11px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }

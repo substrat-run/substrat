@@ -25,6 +25,7 @@ import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from './settings.js';
+import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 
 /**
  * Dev API server for the auth-server demo — Better Auth over a local better-sqlite3 file,
@@ -100,6 +101,7 @@ const config = (): Record<string, string | undefined> =>
  */
 const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
   const cfg = config();
+  const providers = readProviders(sql);
   return buildAuth({
     database: drizzleAdapter(db, { provider: 'sqlite', schema }),
     secret: process.env.AUTH_SECRET ?? 'dev-secret-not-for-production-000000000000',
@@ -112,6 +114,8 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // rather than the workerd one this vertical also carries.
     fetchClientMetadataResource,
     allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
+    socialProviders: socialProvidersFrom(providers),
+    trustedProviders: trustedProvidersFrom(providers),
   });
 };
 
@@ -160,7 +164,11 @@ const demo = await seedDemo();
 const app = new Hono();
 
 app.get('/api/setup-state', (c) =>
-  c.json({ needsSetup: needsSetup(), signupEnabled: isTruthy(config()[ALLOW_SIGNUP]) }),
+  c.json({
+    needsSetup: needsSetup(),
+    signupEnabled: isTruthy(config()[ALLOW_SIGNUP]),
+    providers: publicProvidersFrom(readProviders(sql)),
+  }),
 );
 
 app.post('/api/setup', async (c) => {

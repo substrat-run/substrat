@@ -4,13 +4,25 @@ import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
+import {
+  PROVIDER_CATALOGUE,
+  deleteProvider,
+  descriptorOf,
+  readProvider,
+  readProviders,
+  toWireProvider,
+  upsertProvider,
+} from './providers.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
  * endpoint for. Two things:
  *
  *  1. **Whether people may create their own account** (`ALLOW_SIGNUP`).
- *  2. **Every registered client, for an administrator.** The plugin's `/oauth2/get-clients`
+ *  2. **The UPSTREAM identity providers** an operator has enabled (`src/providers.ts`) —
+ *     "sign in with Microsoft". Better Auth takes those as CONFIG, so an issuer that is
+ *     configured at runtime has to hold them itself; there is no library endpoint to proxy.
+ *  3. **Every registered client, for an administrator.** The plugin's `/oauth2/get-clients`
  *     is a "my applications" read — it filters by the CALLER's `userId` (or organization
  *     reference). An issuer's registry is not per-owner: it holds clients another admin
  *     registered and clients that registered THEMSELVES with no user at all, and an operator
@@ -164,6 +176,22 @@ const clientPatch = z
   })
   .partial();
 
+/**
+ * One upstream provider, as the dashboard sends it.
+ *
+ * `clientSecret` is optional and, when present, must be non-empty: an empty string arriving
+ * from an untouched form field would otherwise overwrite a working credential with nothing.
+ * Absent means keep; the route refuses absence on a first save.
+ */
+const providerPut = z.object({
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1).optional(),
+  tenantId: z.string().nullable().optional(),
+  allowSignup: z.boolean(),
+  trustEmail: z.boolean(),
+  disabled: z.boolean(),
+});
+
 /** Loopback hosts, where OAuth 2.1 still permits plain HTTP for a native client. */
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
 
@@ -225,6 +253,56 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     putDeliveredConfig(deps.sql, [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]);
     return c.json(settingsView());
+  });
+
+  /* ---- the upstream identity providers ---- */
+
+  /**
+   * The catalogue and what is configured against it, in one read — the panel needs both to
+   * draw itself, and they are meaningless apart. The client secret is not here and cannot be
+   * asked for: it is a live credential this issuer presents to the upstream, so `clientSecretSet`
+   * is the only thing said about it, exactly as `client_secret_set` is for a relying party.
+   */
+  app.get('/providers', (c) =>
+    c.json({
+      catalogue: PROVIDER_CATALOGUE,
+      providers: readProviders(deps.sql).map(toWireProvider),
+    }),
+  );
+
+  /**
+   * Add or edit one upstream. A PUT because the id is the operator's choice from a closed
+   * catalogue rather than something minted here — enabling Microsoft twice is enabling it once.
+   *
+   * `clientSecret` is optional on an edit and absent means "keep the stored one", so changing a
+   * tenant id or a toggle does not require re-pasting a credential the operator may not have
+   * kept. It is required the first time, which is where `upsertProvider` refuses.
+   */
+  app.put('/providers/:providerId', async (c) => {
+    const providerId = c.req.param('providerId');
+    if (!descriptorOf(providerId)) throw new HTTPException(400, { message: `unknown provider '${providerId}'` });
+    const input = parsedBody(providerPut, await c.req.json().catch(() => null));
+    const existing = readProvider(deps.sql, providerId);
+    if (!input.clientSecret && !existing) {
+      throw new HTTPException(400, { message: 'a client secret is required to enable a provider' });
+    }
+    upsertProvider(deps.sql, providerId, input, existing);
+    return c.json(toWireProvider(readProvider(deps.sql, providerId)!), existing ? 200 : 201);
+  });
+
+  /**
+   * Remove an upstream — the credential goes with the row, and this issuer stops offering the
+   * button. Accounts already linked to it are NOT touched: a `user`/`account` pair is the
+   * person's identity here, not the provider's, and deleting people is the admin API's verb.
+   * Re-adding the provider later re-links them by `(issuer, account_id)`.
+   */
+  app.delete('/providers/:providerId', (c) => {
+    const providerId = c.req.param('providerId');
+    if (!readProvider(deps.sql, providerId)) {
+      throw new HTTPException(404, { message: `provider '${providerId}' is not configured` });
+    }
+    deleteProvider(deps.sql, providerId);
+    return c.json({ deleted: providerId });
   });
 
   /**

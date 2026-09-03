@@ -71,6 +71,9 @@ operator console needs something else:
 | List | ours | the plugin's `/oauth2/get-clients` answers "the clients YOU created". A registry also holds another admin's and self-registered ones. |
 | Edit / disable / remove | ours | every client-mutating endpoint the plugin exposes requires `client.userId === session.user.id`, so a self-registered client could never be withdrawn by anybody; and `disabled` is not in its update body at all. These touch plain columns — no ids, no secrets — and re-validate the redirect URIs the plugin would have. |
 
+The **Sign-in providers** panel is entirely ours — the library has no registry to proxy, since
+it expects those to be config. See "Upstream identity providers" below.
+
 A client secret is shown **once**, at the moment it is minted; it is stored hashed, so no
 later read could return it even deliberately. `skip_consent` is a column now rather than a
 `trustedClients` entry in source, which is why the dashboard can offer it at all.
@@ -98,6 +101,46 @@ neither redirect, and the seeded demo RP is exactly that. So the paths every ext
 party depends on are the ones the built-in round-trip never exercises — which is how they came
 to not exist at all (#898). `test/untrusted-client.test.ts` drives a client that registers
 itself, and is the reason to keep one.
+
+## Upstream identity providers
+
+The issuer has a registry at each end of it, and they are easy to confuse. **Applications**
+holds the relying parties DOWNSTREAM — apps that send people here to sign in. **Sign-in
+providers** holds the directories UPSTREAM — providers this issuer is itself a relying party
+of, so that a person can "continue with Microsoft" instead of typing a password. A vendor's
+own app appears in the first; the vendor's Entra tenant appears in the second.
+
+Better Auth takes its social providers as **config**, which for an issuer configured at deploy
+time would mean a pair of declared env keys per provider and a redeploy to add one. They are
+**rows** instead (`identity_provider`, `src/providers.ts`): an operator adds one from the
+dashboard, and because both runtimes rebuild Better Auth per request — the same property the
+sign-up toggle relies on — the button appears on the login screen on the next request.
+
+The catalogue is deliberately **closed** (Microsoft, Google, GitHub). Each entry is a provider
+the library ships endpoints and a profile mapping for, so enabling one is a credential plus two
+decisions rather than a form of URLs to get subtly wrong. The redirect URI is **shown, not
+asked for**: it is `{issuer}/api/auth/callback/{provider}`, derived, and every upstream refuses
+a sign-in whose registered URI differs by a character.
+
+The two decisions are per provider, and neither has a safe default that suits everyone:
+
+- **Let this provider create accounts** (`disableSignUp` inverted). Separate from the
+  issuer-wide `ALLOW_SIGNUP`, which is about passwords. A vendor federating a directory it owns
+  usually wants this on and that one off: everyone in the directory gets in, nobody else can
+  register.
+- **Trust this provider's email addresses** (`accountLinking.trustedProviders`). Without it, an
+  administrator creates a user, that user signs in with Microsoft, and Better Auth declines to
+  join the two — "account not linked". Entra does not assert `email_verified`, so this is the
+  normal case rather than an edge one. Trusting a directory that controls its addresses is
+  right; trusting a consumer provider by default is not. Better Auth additionally requires the
+  LOCAL account to be email-verified before it will link, which is its own gate against someone
+  pre-registering at a victim's address, and is left alone.
+
+A pending authorize request survives the round-trip: `oauthProvider`'s before-hook special-
+cases `/sign-in/social` and puts the request into the OAuth state, so the callback that
+establishes the session also resumes the authorize and returns the person to the relying party
+that sent them. Dropping `oauth_query` on that path would sign someone in while silently
+abandoning the application waiting on them — #898, wearing a different hat.
 
 ## Client ID Metadata Documents (CIMD)
 

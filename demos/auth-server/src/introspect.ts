@@ -48,6 +48,11 @@ export const REDACTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   // which were NOT hashed.
   legacy_oauth_application: ['client_secret'],
   legacy_oauth_access_token: ['access_token', 'refresh_token'],
+  // The one credential here that is NOT a hash and cannot be one: this issuer presents it to
+  // the upstream provider on every token exchange, so it is stored as given. That makes it the
+  // most valuable cell in the store — a working credential for someone else's directory — and
+  // the Data tab is a convenience read.
+  identity_provider: ['client_secret'],
   config: ['value'],
 };
 

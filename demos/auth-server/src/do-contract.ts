@@ -28,6 +28,12 @@ export interface ConfigEntry {
 export interface IssuerState {
   needsSetup: boolean;
   signupEnabled: boolean;
+  /**
+   * The upstream providers the login screen may offer — id and label, nothing else. A
+   * signed-out visitor learns only what pressing the button would tell them anyway, and a
+   * disabled row is simply absent.
+   */
+  providers: { id: string; label: string }[];
 }
 
 /** The DO's callable surface (avoids leaking the full class type through the binding). */
