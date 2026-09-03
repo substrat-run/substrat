@@ -752,6 +752,12 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
           )}
           {editing && (
             <ProviderEditor
+              // The table stays clickable while the editor is open, so Edit on a second
+              // provider changes `editing` without unmounting this. Same element type in the
+              // same position ⇒ React keeps the instance and its `useState` initialisers do
+              // not re-run, so the form would still hold the FIRST provider's credentials and
+              // save them onto the second one's row. The key is what makes it a remount.
+              key={editing}
               issuer={issuer}
               entry={catalogue.find((e) => e.id === editing)!}
               provider={configured(editing) ?? null}
@@ -946,6 +952,9 @@ function ClientsPanel() {
       {secret && <SecretOnce {...secret} onDismiss={() => setSecret(null)} />}
       {editing && (
         <ClientEditor
+          // Same reason as the providers panel above: Edit on a second client while this is
+          // open would otherwise keep the first one's form state and save it onto the second.
+          key={editing === 'new' ? 'new' : editing.client_id}
           client={editing === 'new' ? null : editing}
           onCancel={() => setEditing(null)}
           onSaved={async (result) => {

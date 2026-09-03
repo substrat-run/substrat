@@ -298,7 +298,10 @@ export function socialErrorFrom(url: URL): string | null {
   if (code.replace(/[_-]/g, ' ') === 'account not linked') {
     return 'That account exists here but is not linked to this provider. An administrator can allow linking by trusting the provider, and the local account must have a verified email address.';
   }
-  return url.searchParams.get('error_description') ?? code ?? 'sign-in was refused';
+  // `||`, not `??`: an absent `error` is read as `''` above, and a nullish fallback would
+  // return that empty string — which renders as no message at all, leaving exactly the blank
+  // sign-in screen this function exists to prevent.
+  return url.searchParams.get('error_description') || code || 'sign-in was refused';
 }
 
 /* ---- the relying-party registry ---- */
