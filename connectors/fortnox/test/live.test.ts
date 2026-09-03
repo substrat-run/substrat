@@ -1,4 +1,3 @@
-import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -7,19 +6,22 @@ import type { ConnectorConnection } from '@substrat-run/kernel';
 import { FortnoxApi, type FortnoxSecret } from '../src/api.js';
 import { financialYearFor, summarizeLedger } from '../src/aggregate.js';
 import { parseSie4 } from '../src/sie4.js';
+import { loadDevSecrets, providerEnv } from '../scripts/dev-secrets.mjs';
 
 /**
  * The real thing — this talks to `api.fortnox.se`.
  *
- * It runs ONLY when `connectors/fortnox/.dev.vars` (gitignored) holds a complete
- * client-credentials triple, so CI without secrets skips it and a local run against a
- * real company exercises the actual API. This is the test that turns "ready to check
+ * It runs ONLY when `secrets/connectors.env` (or this package's legacy `.dev.vars`, both
+ * gitignored) or the `FORTNOX_*` environment holds a complete client-credentials triple,
+ * so CI without secrets skips it
+ * and a local run against a real company exercises the actual API. This is the test that turns "ready to check
  * against reality" into "checked" — the mock's whole limitation is that it is the
  * author's reading of the docs on both sides of the call.
  *
- * **Read-only, entirely.** Every call here is a GET. This connector has no write path
- * to Fortnox at all, so there is no cleanup to do and nothing it can damage in a live
- * company's books — which is what makes running it against production data acceptable.
+ * **Read-only.** The data calls are GETs; the one POST is the token mint, which creates
+ * no Fortnox record. This connector has no write path to Fortnox at all, so there is no
+ * cleanup to do and nothing it can damage in a live company's books — which is what makes
+ * running it against production data acceptable.
  *
  * What it proves, and what only a live call can:
  *
@@ -35,13 +37,17 @@ import { parseSie4 } from '../src/sie4.js';
 const dir = dirname(fileURLToPath(import.meta.url));
 
 function loadSecret(): FortnoxSecret | null {
-  const path = join(dir, '..', '.dev.vars');
-  if (!existsSync(path)) return null;
-  const env: Record<string, string> = {};
-  for (const line of readFileSync(path, 'utf8').split('\n')) {
-    const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-    if (m) env[m[1]!] = m[2]!;
-  }
+  // One file for every connector — see `scripts/dev-secrets.mts` for why this is not
+  // `secrets/platform.<env>.env`. The package's own `.dev.vars` still works as a fallback,
+  // and `FORTNOX_*` in the environment wins over both, so a CI job holding the credential
+  // in its secret store needs no file at all.
+  const env = {
+    ...loadDevSecrets(
+      join(dir, '..', '..', '..', 'secrets', 'connectors.env'),
+      join(dir, '..', '.dev.vars'),
+    ),
+    ...providerEnv('FORTNOX_'),
+  };
   const { FORTNOX_CLIENT_ID, FORTNOX_CLIENT_SECRET, FORTNOX_TENANT_ID } = env;
   // Present but incomplete — skip rather than fail on a partial paste.
   if (!FORTNOX_CLIENT_ID || !FORTNOX_CLIENT_SECRET || !FORTNOX_TENANT_ID) return null;

@@ -35,10 +35,10 @@
  *
  *   pnpm fortnox:connect --client-id=<id> --client-secret=<secret>
  *
- * The portal pair can instead be pasted once into `connectors/fortnox/.dev.vars` as
- * `FORTNOX_CLIENT_ID` / `FORTNOX_CLIENT_SECRET` — this reads that file as defaults, so a
- * retry needs no flags and no secret goes into shell history. It fills in the third
- * value, which is the one that cannot be typed by hand.
+ * The portal pair can instead be pasted once into `secrets/connectors.env` as
+ * `FORTNOX_CLIENT_ID` / `FORTNOX_CLIENT_SECRET` — one file for every connector, read here
+ * as defaults, so a retry needs no flags and no secret goes into shell history. It fills
+ * in the third value, which is the one that cannot be typed by hand.
  *
  * `--redirect-uri` must EXACTLY match one registered in the Developer Portal. Whether
  * Fortnox accepts `http://` or `localhost` there is not documented. If it refuses, put a
@@ -48,7 +48,6 @@
  */
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connectionId } from '@substrat-run/contracts';
@@ -59,28 +58,21 @@ import {
   FORTNOX_OAUTH_BASE,
   fortnoxConsentUrl,
 } from '../src/api.js';
+import { loadDevSecrets } from './dev-secrets.mjs';
 
-const DEV_VARS = join(dirname(fileURLToPath(import.meta.url)), '..', '.dev.vars');
+const PKG = join(dirname(fileURLToPath(import.meta.url)), '..');
+const SHARED_SECRETS = join(PKG, '..', '..', 'secrets', 'connectors.env');
+const LEGACY_DEV_VARS = join(PKG, '.dev.vars');
 
 /**
- * `.dev.vars` read as a source of defaults — the same file, and the same parser, that
- * `test/live.test.ts` uses.
+ * The portal pair, read from `secrets/connectors.env` (shared by every connector) or the
+ * package's own legacy `.dev.vars`. See {@link loadDevSecrets} for why the shared file is
+ * NOT `secrets/platform.<env>.env`.
  *
- * Two of the three values come from the Developer Portal and never change, so making
- * this script re-read them from the file it is going to fill means the portal pair is
- * pasted ONCE rather than retyped into a shell (where a secret lands in history) on
- * every attempt. The file is gitignored.
+ * Reading a file the script is going to complete means the pair is pasted once rather
+ * than retyped into a shell — where a secret lands in history — on every attempt.
  */
-function devVars(): Record<string, string> {
-  if (!existsSync(DEV_VARS)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(DEV_VARS, 'utf8').split('\n')) {
-    const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-    if (m && m[2] !== '') out[m[1]!] = m[2]!;
-  }
-  return out;
-}
-const fileVars = devVars();
+const fileVars = loadDevSecrets(SHARED_SECRETS, LEGACY_DEV_VARS);
 
 /**
  * A flag, else the environment, else `.dev.vars`, else a default.
@@ -97,7 +89,7 @@ const arg = (name: string, fallback?: string): string => {
   if (value === undefined || value === '') {
     console.error(
       `fortnox:connect: missing --${name}=…\n` +
-        `  (or set ${key} in the environment, or in connectors/fortnox/.dev.vars)`,
+        `  (or set ${key} in the environment, or in secrets/connectors.env)`,
     );
     process.exit(2);
   }
@@ -271,10 +263,10 @@ const server = createServer((req, res) => {
       // reprinting a secret that is already on disk puts it in the terminal for nothing.
       const hasPair = fileVars.FORTNOX_CLIENT_ID !== undefined && fileVars.FORTNOX_CLIENT_SECRET !== undefined;
       if (hasPair) {
-        console.log('Add this line to connectors/fortnox/.dev.vars (the rest is already there):\n');
+        console.log('Add this line to secrets/connectors.env (the rest is already there):\n');
         console.log(`FORTNOX_TENANT_ID=${tenantId}\n`);
       } else {
-        console.log('Paste into connectors/fortnox/.dev.vars (gitignored):\n');
+        console.log('Paste into secrets/connectors.env (gitignored):\n');
         console.log(`FORTNOX_CLIENT_ID=${clientId}`);
         console.log(`FORTNOX_CLIENT_SECRET=${clientSecret}`);
         console.log(`FORTNOX_TENANT_ID=${tenantId}\n`);

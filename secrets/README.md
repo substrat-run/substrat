@@ -17,6 +17,37 @@ Keep the filled files in a password manager; only the `.example` templates are c
 store at all; only the shop, rally, handlebar and the auth-server issuer still use Better
 Auth.)
 
+## Connector credentials are a different file, on purpose
+
+`secrets/connectors.env` (template: `connectors.env.example`) holds the provider
+credentials the connectors' **live test suites** use — Fortnox, Scrive, and whatever comes
+next — one file, keyed `<PROVIDER>_*`. It replaces a `.dev.vars` per connector, which does
+not scale past two.
+
+**`scripts/secrets.mjs` does not read it and never pushes it, and that separation is the
+point.** Everything in `platform.<env>.env` is uploaded to the deployed workers by `push`.
+A provider credential must not go there: in production its home is a **sealed connection**
+in the directory, opened per (tenant, vertical, provider), which is what keeps a leaked
+token to one tenant's one integration instead of the fleet. A provider credential sitting
+in a worker's ambient env is the hole [#862](https://github.com/substrat-run/substrat/issues/862)
+closed.
+
+So these values do one job: point a local test at a provider's **sandbox**. Fortnox creates
+up to 30 test databases; Scrive has a testbed. Each live suite skips when its keys are
+absent, so CI stays offline without it.
+
+```bash
+cp secrets/connectors.env.example secrets/connectors.env
+$EDITOR secrets/connectors.env          # paste the Fortnox portal pair
+pnpm fortnox:connect                    # one-time service consent → prints FORTNOX_TENANT_ID
+```
+
+Each connector's own `.dev.vars` still works and is overridden by this file, so an existing
+checkout keeps running until it is migrated. A `<PROVIDER>_` variable in the environment
+beats both — `FORTNOX_CLIENT_ID=… pnpm --filter @substrat-run/connector-fortnox test` runs
+the live suite with no file at all, which is how a job holding the credential in a secret
+store reaches it.
+
 ## Quick start (prod)
 
 ```bash

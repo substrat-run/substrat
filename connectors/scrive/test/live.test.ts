@@ -7,7 +7,8 @@ import { ScriveApi, type ScriveParty, type ScriveSecret } from '../src/api.js';
 /**
  * The real thing — this talks to `api-testbed.scrive.com`.
  *
- * It runs ONLY when `connectors/scrive/.dev.vars` (gitignored) holds a complete
+ * It runs ONLY when `secrets/connectors.env`, this package's legacy `.dev.vars` (both
+ * gitignored) or the `SCRIVE_*` environment holds a complete
  * OAuth1 credential, so CI without secrets skips it and a local run with the
  * testbed creds exercises the actual API. This is the test that makes "ready to
  * check against reality" into "checked" — the mock's whole limitation is that it
@@ -30,14 +31,47 @@ import { ScriveApi, type ScriveParty, type ScriveSecret } from '../src/api.js';
 
 const dir = dirname(fileURLToPath(import.meta.url));
 
-function loadSecret(): (ScriveSecret & { baseUrl: string }) | null {
-  const path = join(dir, '..', '.dev.vars');
-  if (!existsSync(path)) return null;
-  const env: Record<string, string> = {};
+/**
+ * The `SCRIVE_*` environment, as an overlay to merge over the files.
+ *
+ * `SCRIVE_CLIENT_ID=… pnpm … test` has to reach this suite: a CI job holding the testbed
+ * credential in its secret store should not have to write a file to run it. The prefix
+ * is the point — a bare `CLIENT_SECRET` exported in a shell belongs to some other
+ * integration. Blank counts as absent, as in the files.
+ */
+function providerEnv(prefix: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (k.startsWith(prefix) && v !== undefined && v !== '') out[k] = v;
+  }
+  return out;
+}
+
+/** Parse a flat `KEY=value` env file. Blank values count as absent. */
+function parseEnvFile(path: string): Record<string, string> {
+  if (!existsSync(path)) return {};
+  const out: Record<string, string> = {};
   for (const line of readFileSync(path, 'utf8').split('\n')) {
     const m = /^([A-Z0-9_]+)=(.*)$/.exec(line.trim());
-    if (m) env[m[1]!] = m[2]!;
+    if (m && m[2] !== '') out[m[1]!] = m[2]!;
   }
+  return out;
+}
+
+function loadSecret(): (ScriveSecret & { baseUrl: string }) | null {
+  // `secrets/connectors.env` holds every connector's local provider credential in ONE
+  // file — deliberately NOT `secrets/platform.<env>.env`, which is the worker-secret push
+  // map (`scripts/secrets.mjs push` uploads all of it to Cloudflare). A provider
+  // credential belongs in a sealed connection, never in a worker's ambient env.
+  //
+  // This package's own `.dev.vars` still works, and is overridden by the shared file, so
+  // a checkout that already has one keeps running until it is migrated. `SCRIVE_*` in the
+  // environment wins over both.
+  const env = {
+    ...parseEnvFile(join(dir, '..', '.dev.vars')),
+    ...parseEnvFile(join(dir, '..', '..', '..', 'secrets', 'connectors.env')),
+    ...providerEnv('SCRIVE_'),
+  };
   const { SCRIVE_CLIENT_ID, SCRIVE_CLIENT_SECRET, SCRIVE_TOKEN_ID, SCRIVE_TOKEN_SECRET } = env;
   if (!SCRIVE_CLIENT_ID || !SCRIVE_CLIENT_SECRET || !SCRIVE_TOKEN_ID || !SCRIVE_TOKEN_SECRET) {
     return null; // present but incomplete — skip rather than fail on a partial paste
