@@ -194,7 +194,7 @@ one:
 
 `--skip-lint` pushes ungated deliberately, and prints that it did.
 
-#### `push --check` — the local gate, without pushing
+#### `push --check` (the local gate, without pushing)
 
 ```bash
 substrat push --check           # layer rules + the declared permission surface
