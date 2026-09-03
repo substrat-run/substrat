@@ -157,26 +157,41 @@ const server = createServer((req, res) => {
   const error = url.searchParams.get('error');
   const returnedState = url.searchParams.get('state');
 
-  const done = (message: string) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  const done = (message: string, status = 200) => {
+    res.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end(message);
   };
 
+  // ---------------------------------------------------------------------------
+  // `state` is checked FIRST, and a mismatch is not fatal — both because of the
+  // tunnel.
+  //
+  // Allowing an https redirect URI means this callback can be publicly reachable, and
+  // anything that reaches it can send `?error=…` or a wrong `state`. Handling either of
+  // those by exiting turns one stray request — a scanner, a preview fetcher, a retried
+  // tab — into a killed consent round, and the real callback then arrives at a closed
+  // port. That is a denial of service on our own flow, introduced by the tunnel support
+  // rather than present before it.
+  //
+  // So nothing that fails to prove it belongs to THIS round can end the round. Only a
+  // callback carrying our own 128-bit state is allowed to decide anything — including
+  // whether a reported error is real.
+  // ---------------------------------------------------------------------------
+  if (returnedState !== state) {
+    // Deliberately the same answer for a wrong state and a missing one: a caller
+    // guessing gets no signal about which half it got right.
+    console.error(`   … ignored an unsolicited callback (state mismatch) — still waiting`);
+    return done('Not the consent round this process started — ignoring.', 403);
+  }
+
   if (error) {
+    // Our state, so this refusal is genuinely ours and ends the round.
     done(`Fortnox refused: ${error}`);
     console.error(`\n✗ Fortnox refused the consent: ${error} ${url.searchParams.get('error_description') ?? ''}`);
     server.close();
     process.exit(1);
   }
-  if (!code) return done('Waiting for a code…');
-  // The state is ours and round-trips; a mismatch means this callback is not the one we
-  // started, and continuing would exchange a code we did not ask for.
-  if (returnedState !== state) {
-    done('State mismatch — ignoring this callback.');
-    console.error(`\n✗ state mismatch: expected ${state}, got ${returnedState ?? '(none)'}`);
-    server.close();
-    process.exit(1);
-  }
+  if (!code) return done('Waiting for a code…', 400);
 
   done('Consent received. You can close this tab and return to the terminal.');
 
