@@ -409,12 +409,100 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
 }
 
 /**
- * A quoted module specifier naming the inlined-assets module, in any import form:
- * `from './assets.generated.js'`, a bare `import './assets.generated.js'`, `import(…)`
- * and `require(…)` all match. Extension-optional, because TypeScript source may write the
- * specifier with `.js`, with `.ts`, or with neither.
+ * Source with its comments removed and every string/template literal lifted out, replaced
+ * in place by a `\0<n>\0` placeholder.
+ *
+ * A scanner, not a parser, but it is the part that matters here: a raw-text regex over
+ * source cannot tell an import from a line that merely quotes one, so
+ * `// import './assets.generated.js'` and `const help = "import './assets.generated.js'"`
+ * would both have granted the exemption below. After this, a specifier is only findable
+ * where the language would actually have parsed one — a comment contributes nothing, and a
+ * string's contents are a literal rather than code. Regex literals are skipped whole
+ * (`/['"]/` must not open a string), using the usual "could a regex start here" rule: after
+ * a value it is division, after an operator or a bracket it is a regex.
  */
-const INLINED_ASSETS_IMPORT = /\b(?:from|import|require)\s*\(?\s*['"][^'"]*assets\.generated(?:\.[cm]?[jt]sx?)?['"]/;
+function scanLiterals(source: string): { code: string; literals: string[] } {
+  const literals: string[] = [];
+  let code = '';
+  let i = 0;
+  let regexOk = true;
+  while (i < source.length) {
+    const c = source[i]!;
+    const next = source[i + 1];
+    if (c === '/' && next === '/') {
+      while (i < source.length && source[i] !== '\n') i++;
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      i += 2;
+      while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i++;
+      i += 2;
+      code += ' ';
+      continue;
+    }
+    if (c === '/' && regexOk) {
+      i++;
+      let inClass = false;
+      while (i < source.length) {
+        const r = source[i]!;
+        if (r === '\\') {
+          i += 2;
+          continue;
+        }
+        if (r === '\n') break;
+        i++;
+        if (r === '[') inClass = true;
+        else if (r === ']') inClass = false;
+        else if (r === '/' && !inClass) break;
+      }
+      code += ' ';
+      regexOk = false;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      i++;
+      let value = '';
+      while (i < source.length) {
+        const s = source[i]!;
+        if (s === '\\') {
+          value += source[i + 1] ?? '';
+          i += 2;
+          continue;
+        }
+        i++;
+        if (s === c) break;
+        value += s;
+      }
+      code += `\0${literals.length}\0`;
+      literals.push(value);
+      regexOk = false;
+      continue;
+    }
+    code += c;
+    // After a value (identifier, `)`, `]`) a `/` divides; after anything else it can open a
+    // regex. Whitespace carries the previous answer forward.
+    if (!/\s/.test(c)) regexOk = !/[\w$)\]]/.test(c);
+    i++;
+  }
+  return { code, literals };
+}
+
+/** A lifted literal in import position: `from …`, a bare `import …`, `import(…)`, `require(…)`. */
+const IMPORT_OF_LITERAL = /\b(?:from|import|require)\s*\(?\s*\0(\d+)\0/g;
+
+/** The specifier of the inlined-assets module, with or without an extension — TypeScript
+ *  source writes it as `.js`, as `.ts`, or bare, and it may sit in a subdirectory. */
+const INLINED_ASSETS_SPECIFIER = /(?:^|\/)assets\.generated(?:\.[cm]?[jt]sx?)?$/;
+
+/** Does this module import the inlined-assets module? */
+function importsInlinedAssets(source: string): boolean {
+  const { code, literals } = scanLiterals(source);
+  for (const m of code.matchAll(IMPORT_OF_LITERAL)) {
+    const specifier = literals[Number(m[1])];
+    if (specifier !== undefined && INLINED_ASSETS_SPECIFIER.test(specifier)) return true;
+  }
+  return false;
+}
 
 /**
  * Does the worker serve its front end from an inlined-assets module — the pre-#340 pattern,
@@ -434,7 +522,7 @@ function servesInlinedAssets(src: string): boolean {
   return files.some((f) => {
     if (!/\.[cm]?[jt]sx?$/.test(f)) return false;
     try {
-      return INLINED_ASSETS_IMPORT.test(readFileSync(f, 'utf8'));
+      return importsInlinedAssets(readFileSync(f, 'utf8'));
     } catch {
       return false;
     }

@@ -454,13 +454,38 @@ describe('assertUiIsServed — a UI nothing would serve (#881)', () => {
     }
   });
 
-  it('still REFUSES a src/ that merely mentions the name outside an import', () => {
-    // The widened evidence is an import specifier, not the string: a vertical whose worker
-    // only talks about the pattern in a comment serves nothing, and must still be refused.
+  /**
+   * The evidence is an import the language would have PARSED, not the text of one. A
+   * raw-text regex would take a commented-out import or a string that quotes one and
+   * exempt a UI that really is unserved — the exact failure the check exists to catch,
+   * reintroduced by the fix for #1209.
+   */
+  it.each([
+    ['a passing mention', '// we could inline assets.generated.ts one day\n'],
+    ['a commented-out import', "// import { ASSETS } from './assets.generated.js';\nexport const x = 1;\n"],
+    [
+      'a block comment holding the example',
+      "/**\n * import { ASSETS } from './assets.generated.js';\n */\nexport const x = 1;\n",
+    ],
+    ['a string that quotes an import', `export const help = "import { A } from './assets.generated.js'";\n`],
+    ['a specifier that only ends similarly', "import { x } from './my-assets.generated-helpers.js';\n"],
+  ])('still REFUSES when the only evidence is %s', (_what, source) => {
     const dir = withUi();
     mkdirSync(join(dir, 'src'), { recursive: true });
-    writeFileSync(join(dir, 'src', 'worker.ts'), '// we could inline assets.generated.ts one day\n');
+    writeFileSync(join(dir, 'src', 'worker.ts'), source);
     expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/nothing in the push would serve/);
+  });
+
+  it('is not fooled by a quote inside a regex literal into missing a real import', () => {
+    // The scanner has to skip regex literals whole: a `['"]` class left mid-string would
+    // swallow the import below and refuse a vertical that serves its UI perfectly well.
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'worker.ts'),
+      "const quoted = /['\"]/;\nimport { ASSETS } from './assets.generated.js';\nexport const x = [quoted, ASSETS];\n",
+    );
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
   });
 });
 
