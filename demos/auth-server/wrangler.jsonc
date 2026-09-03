@@ -42,4 +42,12 @@
 	//   EMAIL          — the Cloudflare Email Service `send_email` binding (password-reset +
 	//                    verification mail). Absent ⇒ the in-memory mock (mail is dropped).
 	//   EMAIL_FROM     — the sender address (its domain must be onboarded for sending).
+	//
+	// BankID (optional, standalone only): workerd's fetch takes no per-request client
+	// certificate, so the RP mTLS credential rides a certificate binding —
+	//   wrangler mtls-certificate upload --cert bankid.crt --key bankid.key --name bankid-rp
+	//   "mtls_certificates": [{ "binding": "BANKID", "certificate_id": "<uuid from above>" }]
+	// Without the binding, a stored BankID configuration stays parked: the login screen
+	// offers no BankID button rather than a flow the worker cannot finish. The Node dev
+	// server needs none of this — it presents the PEMs from the dashboard-stored config.
 }

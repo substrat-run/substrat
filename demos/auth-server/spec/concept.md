@@ -142,6 +142,42 @@ establishes the session also resumes the authorize and returns the person to the
 that sent them. Dropping `oauth_query` on that path would sign someone in while silently
 abandoning the application waiting on them — #898, wearing a different hat.
 
+## BankID
+
+Swedish e-ID sign-in, beside the OAuth upstreams but not among them: BankID is not a redirect
+flow. The issuer **calls** BankID's RP API v6.0 over mutually authenticated TLS — start an
+order, poll `collect` every two seconds — while the person approves in the BankID app, reached
+by an animated QR code (other device) or an `autostarttoken` URL (same device). A completed
+order carries the verified **personal number and name**; the personal number is the account
+key (`account` row, provider `bankid`), so signing in twice lands in the same account. BankID
+asserts identity, not an email address, so a first sign-in either creates an account (the
+panel's "create accounts" toggle) or is refused with instructions — there is no address to
+match an existing user by.
+
+The pieces (`src/bankid.ts`, `src/bankid-plugin.ts`): the flow is a Better Auth **plugin**
+(`/bankid/start`, `/qr`, `/collect`, `/cancel` under `/api/auth`), because completion must end
+in a real Better Auth session — which also picks up the `admin` plugin's ban check (a hook on
+session creation) and `oauthProvider`'s resume hooks (a completing `collect` carrying
+`oauth_query` answers with the redirect to the relying party, the same #898 contract as every
+other sign-in path). Pending orders live in the `verification` table; the QR secret never
+reaches the browser — the issuer computes each one-second frame, per BankID's own guidance,
+and the recipe is pinned to BankID's documented example in `test/bankid.test.ts`.
+
+The **mTLS client certificate** is the runtime seam. Configuration is one JSON row in `config`
+(dashboard panel: environment, PEM cert + key, two toggles — redacted by introspection, carried
+by the dump). The Node dev server presents those PEMs directly (`src/bankid-transport-node.ts`,
+pinning BankID's own root CAs — their API servers are not publicly trusted); a standalone
+worker presents a `mtls_certificates` binding (`BANKID`, see wrangler.jsonc), workerd's fetch
+having no per-request client cert. No binding ⇒ the button is not offered — a configured flow
+the runtime cannot finish stays parked rather than half-working.
+
+Trying it: the **test environment** takes the shared `FPTestcert5` certificate from
+[bankid.com/en/utvecklare/test](https://www.bankid.com/en/utvecklare/test) (passphrase
+`qwerty123`; the panel shows the two `openssl` lines that PEM it) and a BankID app switched to
+test mode via the [test portal](https://developers.bankid.com/test-portal/testing), where you
+mint test identities. Production requires the certificate your bank issues to your
+organisation.
+
 ## Client ID Metadata Documents (CIMD)
 
 A client can identify itself by an HTTPS URL that IS its metadata document
