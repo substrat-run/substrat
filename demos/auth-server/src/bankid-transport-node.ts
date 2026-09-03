@@ -1,5 +1,5 @@
 import { request } from 'node:https';
-import { BANKID_ROOT_CA, type BankIdConfig, type BankIdTransport } from './bankid.js';
+import { BANKID_ROOT_CA, BANKID_TIMEOUT_MS, type BankIdConfig, type BankIdTransport } from './bankid.js';
 
 /**
  * The Node half of the BankID seam: an HTTPS POST that presents the RP client certificate
@@ -49,6 +49,10 @@ export function nodeBankIdTransport(
         },
       );
       req.on('error', reject);
+      // `setTimeout` only ANNOUNCES idleness — nothing is torn down unless the handler does
+      // it. Destroying with an error rejects through the 'error' path above, so a stalled
+      // connection becomes a message on the sign-in screen instead of a spinner forever.
+      req.setTimeout(BANKID_TIMEOUT_MS, () => req.destroy(new Error('BankID did not answer in time')));
       req.end(JSON.stringify(body));
     });
 }

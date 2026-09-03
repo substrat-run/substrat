@@ -1172,6 +1172,11 @@ function BankIdEditor({
 
   const save = async () => {
     setErr(null);
+    // The issuer refuses half a credential too; saying it here saves a round-trip. A cert
+    // and its key only work as the pair they were issued as.
+    if (Boolean(cert.trim()) !== Boolean(key.trim())) {
+      return setErr('The certificate and key replace each other as a pair — paste both, or leave both blank to keep the stored ones.');
+    }
     setBusy(true);
     try {
       await saveBankidSettings({

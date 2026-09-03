@@ -336,7 +336,15 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.put('/bankid', async (c) => {
     const input = parsedBody(bankidPut, await c.req.json().catch(() => null));
     const existing = readBankIdConfig(deps.sql);
-    if ((!input.clientCert || !input.clientKey) && !existing) {
+    // The certificate and its key replace each other only AS A PAIR: accepting one half
+    // would merge it with the stored other half, and a mismatched pair does not fail here —
+    // it fails as a refused TLS handshake the next time someone tries to sign in.
+    if ((input.clientCert === undefined) !== (input.clientKey === undefined)) {
+      throw new HTTPException(400, {
+        message: 'the client certificate and key replace each other as a pair — paste both, or neither',
+      });
+    }
+    if (!input.clientCert && !existing) {
       throw new HTTPException(400, { message: 'a client certificate and key are required to enable BankID' });
     }
     const saved = putBankIdConfig(deps.sql, input, existing);

@@ -174,6 +174,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       apiUrl: bankIdApiUrl(cfg.environment),
       transport: fetchBankIdTransport((url, init) => binding.fetch(url, init)),
       allowSignup: cfg.allowSignup,
+      // Set by Cloudflare's edge on every request and not forgeable through it — the one
+      // address this worker can honestly report to BankID as the end user's.
+      clientIpHeader: 'cf-connecting-ip',
     };
   }
 

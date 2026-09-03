@@ -50,6 +50,15 @@ export interface BankIdPluginOptions {
   transport: BankIdTransport;
   /** May a completed order that matches no account create one? The panel's toggle. */
   allowSignup: boolean;
+  /**
+   * The ONE request header the runtime vouches for as the end user's address — BankID
+   * requires it, as their fraud signal. Named by the caller because trust is the runtime's
+   * to assert, not this plugin's to guess: the worker names `cf-connecting-ip` (set by
+   * Cloudflare's edge, unforgeable through it), the Node dev server stamps its own header
+   * from the accepted socket. Sniffing `x-forwarded-for` here would let any caller CHOOSE
+   * the address this issuer reports to BankID.
+   */
+  clientIpHeader: string;
 }
 
 /** Mirrors Better Auth's `createLocalAccountIssuer('bankid')` — the helper is not exported
@@ -103,13 +112,10 @@ export const bankidPlugin = (opts: BankIdPluginOptions) => {
         { method: 'POST', body: z.object({}).optional(), requireRequest: true },
         async (ctx) => {
           // BankID requires the END USER's address as the RP sees it (their fraud signal,
-          // not ours). Behind Cloudflare that is `cf-connecting-ip`; behind a proxy the
-          // first `x-forwarded-for` hop; a local dev request has only its own socket.
-          const headers = ctx.request?.headers;
+          // not ours) — read from the single header the runtime vouches for, never from
+          // whatever forwarding headers arrived (see `clientIpHeader`).
           const endUserIp =
-            headers?.get('cf-connecting-ip') ??
-            headers?.get('x-forwarded-for')?.split(',')[0]?.trim() ??
-            '127.0.0.1';
+            ctx.request?.headers?.get(opts.clientIpHeader)?.split(',')[0]?.trim() || '127.0.0.1';
           const order = await startOrder(opts.transport, opts.apiUrl, { endUserIp }).catch(rpError);
           const startedAt = Date.now();
           await ctx.context.internalAdapter.createVerificationValue({

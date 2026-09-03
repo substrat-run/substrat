@@ -124,6 +124,7 @@ function rebuild(overrides?: { allowSignup?: boolean; mounted?: boolean; issuerS
             apiUrl: API_URL,
             transport: bankid.transport,
             allowSignup: overrides?.allowSignup ?? true,
+            clientIpHeader: 'x-test-client-ip',
           },
         }),
   });
@@ -279,11 +280,32 @@ describe('the admin surface', () => {
     const anon = await api.request('http://localhost/bankid');
     expect(anon.status).toBe(401);
   });
+
+  it('refuses half a credential — a new cert with the old key would fail only at the next handshake', async () => {
+    await adminCall('/bankid', {
+      method: 'PUT',
+      body: JSON.stringify({ environment: 'test', clientCert: PEM_CERT, clientKey: PEM_KEY, allowSignup: true, disabled: false }),
+    });
+    for (const half of [{ clientCert: '-----BEGIN CERTIFICATE-----\nnew\n-----END CERTIFICATE-----' }, { clientKey: '-----BEGIN PRIVATE KEY-----\nnew\n-----END PRIVATE KEY-----' }]) {
+      const res = await adminCall('/bankid', {
+        method: 'PUT',
+        body: JSON.stringify({ environment: 'test', allowSignup: true, disabled: false, ...half }),
+      });
+      expect(res.status).toBe(400);
+    }
+    // The stored pair is untouched by either refusal.
+    expect(readBankIdConfig(sql)).toMatchObject({ clientCert: PEM_CERT, clientKey: PEM_KEY });
+  });
 });
 
 describe('the sign-in flow', () => {
-  it('starts an order, forwarding the caller IP BankID requires', async () => {
-    const started = await call('/api/auth/bankid/start', {}, { 'x-forwarded-for': '203.0.113.7, 10.0.0.1' });
+  it('starts an order, forwarding only the IP the runtime vouches for', async () => {
+    // `x-forwarded-for` arrives too and must be IGNORED: a caller who can choose the
+    // address this issuer reports to BankID is polluting their fraud signal at will.
+    const started = await call('/api/auth/bankid/start', {}, {
+      'x-test-client-ip': '203.0.113.7',
+      'x-forwarded-for': '198.51.100.99',
+    });
     expect(started.status).toBe(200);
     const body = (await started.json()) as { orderRef: string; autoStartUrl: string; qr: string };
     expect(body.orderRef).toBe(ORDER_REF);

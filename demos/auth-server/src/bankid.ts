@@ -214,6 +214,14 @@ export function publicBankIdFrom(
  */
 export type BankIdTransport = (url: string, body: unknown) => Promise<{ status: number; body: unknown }>;
 
+/**
+ * How long a transport waits before giving up. The SPA polls `collect` every two seconds and
+ * a person is standing at the screen, so a stalled connection has to become an error someone
+ * sees — an unbounded await leaves the sign-in spinner honest-looking and dead. Both shipped
+ * transports apply this; a custom one should too.
+ */
+export const BANKID_TIMEOUT_MS = 15_000;
+
 const orderResponse = z.object({
   orderRef: z.string(),
   autoStartToken: z.string(),
@@ -292,7 +300,10 @@ export async function cancelOrder(transport: BankIdTransport, apiUrl: string, or
 /** A transport over any `fetch`-shaped function that already presents the client certificate
  *  (Cloudflare's mTLS-certificate binding, in the worker). */
 export function fetchBankIdTransport(
-  fetchImpl: (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{
+  fetchImpl: (
+    url: string,
+    init: { method: string; headers: Record<string, string>; body: string; signal: AbortSignal },
+  ) => Promise<{
     status: number;
     json(): Promise<unknown>;
   }>,
@@ -302,6 +313,7 @@ export function fetchBankIdTransport(
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(BANKID_TIMEOUT_MS),
     });
     return { status: res.status, body: await res.json().catch(() => undefined) };
   };
