@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { lint, resolvePackages, declaredEngines, type Violation } from '../src/index.js';
+import { lint, maskSource, resolvePackages, declaredEngines, type Violation } from '../src/index.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures: a standalone vertical with engines installed in node_modules, which
@@ -1037,5 +1037,54 @@ describe('config', () => {
     const violations = lint(root);
     expect(rules(violations)).toEqual(['R5']);
     expect(violations[0]!.message).toContain('@acme/engine-thing');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The scanner as PUBLIC API. `maskSource` is exported, and the CLI's unserved-UI
+// preflight (#1209) reads import specifiers through it: it matches against the
+// masked copy and then slices the text back out of the ORIGINAL at those offsets.
+// That only works while the mask is offset-preserving and leaves the quotes
+// standing, so those two properties are pinned here rather than left to the
+// callers that happen to depend on them.
+// ---------------------------------------------------------------------------
+
+describe('maskSource', () => {
+  it('preserves length, offsets and newlines', () => {
+    const src = [
+      "// import { ASSETS } from './assets.generated.js';",
+      "import { ASSETS } from './assets.generated.js';",
+      '/* a block\n   comment */',
+      'export const re = /["\']/;',
+    ].join('\n');
+    const masked = maskSource(src);
+
+    expect(masked).toHaveLength(src.length);
+    expect(masked.split('\n')).toHaveLength(src.split('\n').length);
+    for (let i = 0; i < src.length; i++) {
+      if (src[i] === '\n') expect(masked[i]).toBe('\n');
+    }
+  });
+
+  it('blanks a comment, a string body and a regex body — but not the quotes', () => {
+    const src = "import { A } from './a.js'; // from './b.js'\nconst s = \"from './c.js'\";\n";
+    const masked = maskSource(src);
+
+    // The quotes stand where they stood, so a specifier is still locatable…
+    const m = /(?<![.$\w])from\s*(['"])\s*?\1/.exec(masked);
+    expect(m).not.toBeNull();
+    const open = m!.index + m![0].indexOf(m![1]!);
+    expect(src.slice(open + 1, m!.index + m![0].length - 1)).toBe('./a.js');
+
+    // …and it is the only one: the comment's `from` and the string's are both gone.
+    expect([...masked.matchAll(/(?<![.$\w])from/g)]).toHaveLength(1);
+  });
+
+  it('blanks a regex body whole, so a quote inside one cannot open a string', () => {
+    const src = "export const f = () => { return /import '\\.\\/assets\\.generated\\.js'/; };\n";
+    const masked = maskSource(src);
+
+    expect(masked).not.toContain("'");
+    expect(masked).not.toContain('import ');
   });
 });

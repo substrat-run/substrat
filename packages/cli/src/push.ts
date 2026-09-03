@@ -27,6 +27,7 @@ import {
   resolvePackages,
   declaredEngines,
   formatViolations,
+  maskSource,
 } from '@substrat-run/boundary-lint';
 import { warnIfStale } from './version.js';
 import { parseJsonBody, readAllEntries } from './http.js';
@@ -409,6 +410,124 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
 }
 
 /**
+ * A string literal as `maskSource` left it: the quotes stand, the body is blank.
+ *
+ * The scanner is `boundary-lint`'s own, reused rather than rewritten — it already blanks
+ * comments, string bodies and regex literals for R7 and R8, and a second hand-rolled lexer
+ * here would be one more thing that has to agree with it about regex-versus-division. The
+ * mask is what makes this readable at all: a raw-text regex over source cannot tell an
+ * import from a line that merely quotes one, so `// import './assets.generated.js'` and
+ * `const help = "import './assets.generated.js'"` would both have granted the exemption
+ * below. Against the masked copy neither can — a comment and a string body are blank there,
+ * and a regex literal is blanked whole, so `/['"]/` cannot open a string.
+ *
+ * What the mask keeps is POSITION: same length, same offsets. So a specifier matched here is
+ * read straight back out of the original source, between the quotes the match found.
+ */
+const MASKED_LITERAL = String.raw`(['"\`])\s*?\1`;
+
+/**
+ * A literal in import position, one pattern per form the language actually has.
+ *
+ * Split rather than one alternation because the forms differ in what may sit around the
+ * keyword, and a laxer shape reads an ordinary call as an import: `from` in an import takes
+ * no parenthesis (`from('./x')` is a method call), and `require` in an import is never a
+ * member (`loader.require('./x')` is somebody's loader). The `(?<![.$\w])` guard is what
+ * keeps `x.from`/`myRequire` out; `import` needs it too, though only against an identifier
+ * ending in it, since the word itself is reserved.
+ */
+/** `import x from './a'`, `export * from './a'` — no parenthesis, ever. */
+const FROM_LITERAL = new RegExp(String.raw`(?<![.$\w])from\s*` + MASKED_LITERAL, 'g');
+/** `import './a'` and `import('./a')`. */
+const IMPORT_LITERAL = new RegExp(String.raw`(?<![.$\w])import\s*\(?\s*` + MASKED_LITERAL, 'g');
+/** `require('./a')` — parenthesised, and not a method on something. */
+const REQUIRE_LITERAL = new RegExp(String.raw`(?<![.$\w])require\s*\(\s*` + MASKED_LITERAL, 'g');
+/** The `import`/`export` keyword a `from` belongs to — the LAST one before it. */
+const IMPORT_KEYWORD = /(?<![.$\w])(?:import|export)\b/g;
+
+/** The specifier this match found, read out of the UNMASKED source: the match's own quote
+ *  opens it (nothing before it in any of the patterns above can be one) and ends it. */
+function specifierOf(source: string, m: RegExpExecArray): string {
+  const open = m.index + m[0].indexOf(m[1]!);
+  return source.slice(open + 1, m.index + m[0].length - 1);
+}
+
+/** What stands between the declaration's keyword and its `from`, or undefined if no keyword
+ *  precedes it (which is not a declaration this understands). */
+function clauseBefore(code: string, at: number): string | undefined {
+  const prefix = code.slice(0, at);
+  let last: RegExpExecArray | undefined;
+  for (const m of prefix.matchAll(IMPORT_KEYWORD)) last = m;
+  return last ? prefix.slice(last.index + last[0].length) : undefined;
+}
+
+/**
+ * Is this the clause of a declaration TypeScript ERASES — `import type … from`,
+ * `export type … from`, or one whose every named binding is `type`-prefixed?
+ *
+ * Such a declaration names the module without importing anything at runtime, so it is not
+ * evidence that the worker serves the app: the emitted JavaScript has no reference to the
+ * inlined-assets module at all.
+ */
+function isTypeOnlyClause(clause: string): boolean {
+  const c = clause.trim();
+  if (/^type\b/.test(c)) return true;
+  const named = /^\{([^}]*)\}$/.exec(c);
+  if (!named) return false;
+  const bindings = named[1]!.split(',').map((b) => b.trim()).filter(Boolean);
+  return bindings.length > 0 && bindings.every((b) => /^type\b/.test(b));
+}
+
+/** The specifier of the inlined-assets module, with or without an extension — TypeScript
+ *  source writes it as `.js`, as `.ts`, or bare, and it may sit in a subdirectory. */
+const INLINED_ASSETS_SPECIFIER = /(?:^|\/)assets\.generated(?:\.[cm]?[jt]sx?)?$/;
+
+/** Does this module import the inlined-assets module? */
+function importsInlinedAssets(source: string): boolean {
+  const code = maskSource(source);
+  const isTheModule = (m: RegExpExecArray): boolean =>
+    INLINED_ASSETS_SPECIFIER.test(specifierOf(source, m));
+  for (const m of code.matchAll(FROM_LITERAL)) {
+    if (!isTheModule(m)) continue;
+    // The only form that can be erased: `import type … from './assets.generated.js'` names
+    // the module and imports nothing. Anything the clause scan cannot read is treated as a
+    // real import — the conservative direction here is to keep refusing, not to exempt.
+    const clause = clauseBefore(code, m.index);
+    if (clause !== undefined && isTypeOnlyClause(clause)) continue;
+    return true;
+  }
+  for (const pattern of [IMPORT_LITERAL, REQUIRE_LITERAL]) {
+    for (const m of code.matchAll(pattern)) if (isTheModule(m)) return true;
+  }
+  return false;
+}
+
+/**
+ * Does the worker serve its front end from an inlined-assets module — the pre-#340 pattern,
+ * where a generated module holds the built bytes and `src/` serves them?
+ *
+ * Two pieces of evidence, and the second one is why this is a function (#1209). The
+ * generated module itself is BUILD OUTPUT and normally gitignored, while `assertUiIsServed`
+ * deliberately runs before the declared build — so on a fresh checkout, which is every CI
+ * run, the file simply is not there yet and the exemption missed a UI it would in fact have
+ * served. The import is the durable half: the worker's own source names the module, and
+ * that source is committed. Either one is enough.
+ */
+function servesInlinedAssets(src: string): boolean {
+  if (!existsSync(src)) return false;
+  const files = walkFiles(src);
+  if (files.some((f) => /assets\.generated\.[cm]?[jt]s$/.test(f))) return true;
+  return files.some((f) => {
+    if (!/\.[cm]?[jt]sx?$/.test(f)) return false;
+    try {
+      return importsInlinedAssets(readFileSync(f, 'utf8'));
+    } catch {
+      return false;
+    }
+  });
+}
+
+/**
  * The UI-reachability preflight (#881): a scaffolded `app/` that the manifest never
  * declares ships a vertical whose front end is real, tested, and answers 404 at its own
  * hostname.
@@ -425,7 +544,7 @@ export function readRuntimeNeeds(dir: string): RuntimeNeeds | undefined {
  *   - no `assets` in EITHER vocabulary (runtimeNeeds or a hand-authored wrangler.jsonc),
  *     so nothing is uploaded to the runtime's asset store.
  *   - no inlined-assets module under `src/` — the pre-#340 base64 pattern serves its files
- *     from the worker and therefore declares nothing, correctly.
+ *     from the worker and therefore declares nothing, correctly (`servesInlinedAssets`).
  *
  * `--allow-unserved-ui` is the deliberate override for the case this cannot see from the
  * tree alone: an `app/` that is a mock, a fixture, or built and deployed by somebody else.
@@ -438,10 +557,7 @@ export function assertUiIsServed(
 ): void {
   if (allowUnservedUi || assets) return;
   if (!existsSync(join(dir, 'app', 'index.html'))) return;
-  // The pre-#340 inline pattern: a generated module holding the built bytes, imported by
-  // the worker. It serves the app without declaring assets, and must keep pushing.
-  const src = join(dir, 'src');
-  if (existsSync(src) && walkFiles(src).some((f) => /assets\.generated\.[cm]?[jt]s$/.test(f))) return;
+  if (servesInlinedAssets(join(dir, 'src'))) return;
   throw new Error(
     [
       'this vertical has a UI (app/index.html) that nothing in the push would serve.',

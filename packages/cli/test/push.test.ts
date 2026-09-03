@@ -420,6 +420,114 @@ describe('assertUiIsServed — a UI nothing would serve (#881)', () => {
   it('--allow-unserved-ui is the override for an app/ this cannot see the truth about', () => {
     expect(() => assertUiIsServed(withUi(), needs(), undefined, true)).not.toThrow();
   });
+
+  /**
+   * The exemption's evidence used to be an artifact of the step this check PRECEDES (#1209).
+   * `assets.generated.*` is written by the declared build and gitignored, so it exists on a
+   * developer's machine (left over from an earlier build) and never on a fresh checkout —
+   * which is every CI run. The push was refused for a UI it would in fact have served, on
+   * exactly the path where nothing local reproduces it.
+   */
+  it('passes the inline pattern BEFORE its module is built — the import is the evidence', () => {
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    // What a fresh clone holds: the worker that serves the app, and no build output.
+    writeFileSync(
+      join(dir, 'src', 'assets.ts'),
+      "import { ASSETS } from './assets.generated.js';\nexport const serve = () => ASSETS;\n",
+    );
+    expect(existsSync(join(dir, 'src', 'assets.generated.ts'))).toBe(false);
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+  });
+
+  it('reads the specifier in every import form, extension or not', () => {
+    for (const source of [
+      "import './assets.generated.js';",
+      "export * from './assets.generated';",
+      "const a = await import('./generated/assets.generated.mjs');",
+      "const a = require('./assets.generated.cjs');",
+    ]) {
+      const dir = withUi();
+      mkdirSync(join(dir, 'src'), { recursive: true });
+      writeFileSync(join(dir, 'src', 'worker.ts'), source);
+      expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+    }
+  });
+
+  /**
+   * The evidence is an import the language would have PARSED, not the text of one. A
+   * raw-text regex would take a commented-out import or a string that quotes one and
+   * exempt a UI that really is unserved — the exact failure the check exists to catch,
+   * reintroduced by the fix for #1209.
+   */
+  it.each([
+    ['a passing mention', '// we could inline assets.generated.ts one day\n'],
+    ['a commented-out import', "// import { ASSETS } from './assets.generated.js';\nexport const x = 1;\n"],
+    [
+      'a block comment holding the example',
+      "/**\n * import { ASSETS } from './assets.generated.js';\n */\nexport const x = 1;\n",
+    ],
+    ['a string that quotes an import', `export const help = "import { A } from './assets.generated.js'";\n`],
+    ['a specifier that only ends similarly', "import { x } from './my-assets.generated-helpers.js';\n"],
+    // Ordinary calls that merely reuse the words. `from` in an import takes no parenthesis
+    // and `require` in an import is never a method, so neither of these is an import.
+    ['a call to a function named from', "export const rows = from('./assets.generated.js');\n"],
+    ['a method call named require', "export const a = loader.require('./assets.generated.js');\n"],
+    // TypeScript erases these: the emitted worker has no reference to the module at all,
+    // so naming it in a type position serves nothing.
+    ['an import type declaration', "import type { AssetMap } from './assets.generated.js';\nexport const x = 1;\n"],
+    ['an export type declaration', "export type { AssetMap } from './assets.generated.js';\n"],
+    [
+      'a named clause whose every binding is a type',
+      "import { type AssetMap, type Asset } from './assets.generated.js';\nexport const x = 1;\n",
+    ],
+    // A regex literal after a keyword. `return` ends in a word character but is not a value,
+    // so the `/` opens a regex — read as division instead, its body parses as code with a
+    // string in it and the whole thing reads as an import.
+    [
+      'an import quoted inside a regex literal',
+      "export const f = () => { return /import '\\.\\/assets\\.generated\\.js'/; };\n",
+    ],
+  ])('still REFUSES when the only evidence is %s', (_what, source) => {
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'worker.ts'), source);
+    expect(() => assertUiIsServed(dir, needs(), undefined)).toThrow(/nothing in the push would serve/);
+  });
+
+  it('accepts a value import that follows a type-only one — the clause read is per statement', () => {
+    // The type-only skip must not swallow the real import two lines down: the clause scanned
+    // is the one belonging to THIS `from`, not the file's first import keyword.
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'worker.ts'),
+      "import type { AssetMap } from './types.js';\nimport { ASSETS } from './assets.generated.js';\nexport const x: AssetMap = ASSETS;\n",
+    );
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+  });
+
+  it('accepts a mixed clause — one runtime binding beside the types is a real import', () => {
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'worker.ts'),
+      "import { type AssetMap, ASSETS } from './assets.generated.js';\nexport const x: AssetMap = ASSETS;\n",
+    );
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+  });
+
+  it('is not fooled by a quote inside a regex literal into missing a real import', () => {
+    // The scanner has to skip regex literals whole: a `['"]` class left mid-string would
+    // swallow the import below and refuse a vertical that serves its UI perfectly well.
+    const dir = withUi();
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(
+      join(dir, 'src', 'worker.ts'),
+      "const quoted = /['\"]/;\nimport { ASSETS } from './assets.generated.js';\nexport const x = [quoted, ASSETS];\n",
+    );
+    expect(() => assertUiIsServed(dir, needs(), undefined)).not.toThrow();
+  });
 });
 
 /**
@@ -731,5 +839,85 @@ export const permissions = {
     const text = formatPermissionSurface({ registry, digest: await permissionDigest(registry) });
     expect(text).toContain('0 key(s), 0 role(s), 0 entity-grant shape(s)');
     expect(text.match(/\(none declared\)/g)).toHaveLength(2);
+  });
+});
+
+/**
+ * `preview create` forwards push's own overrides (#1209).
+ *
+ * The gap this pins was invisible to every unit test because it is not in `push()` at all —
+ * `assertUiIsServed` was correct, `cmdPush` passed the flag, and `cmdPreview` called the same
+ * `push()` without it. So `--allow-unserved-ui` was accepted on the command line, silently
+ * dropped, and the refusal went on naming the flag as the remedy. Previews are per-PR and run
+ * on every push, which makes this the path most likely to meet the check.
+ *
+ * It has to drive the real binary: `cli.ts` runs `main()` on import, so the only place the
+ * flag→option wiring exists is a child process. Nothing is uploaded — the run stops at the UI
+ * preflight (without the flag) or at the build (with it), both before any network call, and
+ * `--version` skips the one registry read `preview create` would otherwise do first.
+ */
+describe('substrat preview create — push overrides reach the same push (#1209)', () => {
+  const cli = fileURLToPath(new URL('../dist/cli.js', import.meta.url));
+  const built = existsSync(cli);
+
+  /** A vertical with a scaffolded app/ that nothing declares — what the preflight refuses. */
+  function verticalWithUnservedUi(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-cli-preview-'));
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: '@acme/helpdesk',
+        version: '1.0.0',
+        substrat: { runtimeNeeds: { entry: 'src/worker.ts' } },
+      }),
+    );
+    mkdirSync(join(dir, 'src'), { recursive: true });
+    writeFileSync(join(dir, 'src', 'worker.ts'), 'export default { fetch: () => new Response("ok") };\n');
+    mkdirSync(join(dir, 'app'), { recursive: true });
+    writeFileSync(join(dir, 'app', 'index.html'), '<!doctype html><div id="root"></div>');
+    return dir;
+  }
+
+  /** An `npx` that fails instantly, so the case which gets PAST the preflight stops at the
+   *  build instead of fetching and running wrangler for a bundle no assertion looks at. */
+  function stubNpx(): string {
+    const bin = mkdtempSync(join(tmpdir(), 'substrat-cli-bin-'));
+    writeFileSync(join(bin, 'npx'), '#!/bin/sh\necho "stub wrangler" >&2\nexit 9\n', { mode: 0o755 });
+    return bin;
+  }
+
+  function runPreview(dir: string, ...args: string[]): { status: number; stdout: string; stderr: string } {
+    const home = mkdtempSync(join(tmpdir(), 'substrat-cli-home-'));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      PATH: `${stubNpx()}:${process.env.PATH ?? ''}`,
+      // Enough for `resolveAuth` to answer without a stored login and without a request:
+      // the run never gets far enough to send one (the port is deliberately unusable).
+      SUBSTRAT_CP_URL: 'http://127.0.0.1:1/api',
+      SUBSTRAT_SERVICE_TOKEN: 'test-token',
+      SUBSTRAT_TENANT: 'acme',
+    };
+    const r = spawnSync(
+      process.execPath,
+      [cli, 'preview', 'create', dir, '--tag', 'pr-1', '--version', '0.0.1-pr-1.1', '--skip-lint', ...args],
+      { env, encoding: 'utf8' },
+    );
+    return { status: r.status ?? -1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+  }
+
+  it.runIf(built)('refuses an unserved UI, exactly as `push` does', () => {
+    const r = runPreview(verticalWithUnservedUi());
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/nothing in the push would serve/);
+    expect(r.stderr).toMatch(/--allow-unserved-ui/);
+  });
+
+  it.runIf(built)('and --allow-unserved-ui is honoured rather than silently dropped', () => {
+    const r = runPreview(verticalWithUnservedUi(), '--allow-unserved-ui');
+    // Past the preflight: it reached the build (the stubbed npx), so the flag arrived.
+    expect(r.stderr).not.toMatch(/nothing in the push would serve/);
+    expect(r.stdout).toMatch(/building helpdesk@0\.0\.1-pr-1\.1/);
   });
 });
