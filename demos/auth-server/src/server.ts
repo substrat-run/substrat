@@ -26,6 +26,8 @@ import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from './settings.js';
 import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
+import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
+import { nodeBankIdTransport } from './bankid-transport-node.js';
 
 /**
  * Dev API server for the auth-server demo — Better Auth over a local better-sqlite3 file,
@@ -99,6 +101,26 @@ const config = (): Record<string, string | undefined> =>
  * `allowSignup` is overridable for the bootstrap paths — creating the FIRST administrator is
  * not self-service registration, and must work on an issuer with sign-up closed.
  */
+/**
+ * The header this server vouches for as the end user's IP (BankID requires one). Stamped
+ * onto every `/api/auth/*` request FROM THE ACCEPTED SOCKET below, overwriting anything a
+ * caller sent — `x-forwarded-for` stays untrusted, because nothing sits in front of this
+ * dev server that would make it trustworthy.
+ */
+const CLIENT_IP_HEADER = 'x-bankid-client-ip';
+
+/** BankID for `buildAuth`, from the stored config. Node can always present the client
+ *  certificate, so an enabled configuration is the only condition. */
+const bankidFor = (cfg: BankIdConfig | undefined) =>
+  cfg && !cfg.disabled
+    ? {
+        apiUrl: bankIdApiUrl(cfg.environment),
+        transport: nodeBankIdTransport(cfg),
+        allowSignup: cfg.allowSignup,
+        clientIpHeader: CLIENT_IP_HEADER,
+      }
+    : undefined;
+
 const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
   const cfg = config();
   const providers = readProviders(sql);
@@ -116,6 +138,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
     socialProviders: socialProvidersFrom(providers),
     trustedProviders: trustedProvidersFrom(providers),
+    bankid: bankidFor(readBankIdConfig(sql)),
   });
 };
 
@@ -163,13 +186,14 @@ const demo = await seedDemo();
 
 const app = new Hono();
 
-app.get('/api/setup-state', (c) =>
-  c.json({
+app.get('/api/setup-state', (c) => {
+  const bankid = publicBankIdFrom(readBankIdConfig(sql), true);
+  return c.json({
     needsSetup: needsSetup(),
     signupEnabled: isTruthy(config()[ALLOW_SIGNUP]),
-    providers: publicProvidersFrom(readProviders(sql)),
-  }),
-);
+    providers: [...publicProvidersFrom(readProviders(sql)), ...(bankid ? [bankid] : [])],
+  });
+});
 
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<{ email?: string; password?: string; name?: string }>();
@@ -205,8 +229,21 @@ app.get('/.well-known/:document{(openid-configuration|oauth-authorization-server
   authFor().handler(c.req.raw),
 );
 
-// The whole Better Auth surface (sign-in, reset, OIDC, admin API).
-app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => authFor().handler(c.req.raw));
+// The whole Better Auth surface (sign-in, reset, OIDC, admin API). The client-IP header is
+// re-stamped from the accepted socket first — @hono/node-server hands the Node request in as
+// the env — so the value the BankID plugin reads is this server's own observation, never the
+// caller's claim.
+app.on(['GET', 'POST', 'OPTIONS'], '/api/auth/*', (c) => {
+  const socket = (c.env as { incoming?: { socket?: { remoteAddress?: string } } }).incoming?.socket;
+  // Node reports an IPv4 peer on a dual-stack listener as `::ffff:a.b.c.d` — send BankID
+  // the plain IPv4 it wraps.
+  const address = (socket?.remoteAddress ?? '127.0.0.1').replace(/^::ffff:/i, '');
+  // The copy exists to own mutable headers; the cast is the undici-vs-hono Request
+  // collision the tsconfig split describes, not a real shape difference.
+  const req = new Request(c.req.raw);
+  req.headers.set(CLIENT_IP_HEADER, address);
+  return authFor().handler(req as unknown as typeof c.req.raw);
+});
 
 app.onError((err, c) => {
   const status = err instanceof HTTPException ? err.status : 400;

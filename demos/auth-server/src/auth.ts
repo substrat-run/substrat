@@ -6,6 +6,7 @@ import { jwt } from 'better-auth/plugins/jwt';
 import { admin } from 'better-auth/plugins/admin';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { resetPasswordEmail, verifyEmail } from './email.js';
+import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 
 /**
  * The Better Auth instance that IS this standalone OIDC provider. Runtime-agnostic: the
@@ -80,6 +81,13 @@ export interface AuthDeps {
    * says otherwise per provider — see `trustedProvidersFrom`.
    */
   trustedProviders?: string[];
+  /**
+   * BankID sign-in (`src/bankid.ts` / `src/bankid-plugin.ts`), mounted only when the caller
+   * has both a stored configuration AND a runtime able to present the mTLS client
+   * certificate — the Node dev server always, the worker only with an mTLS binding. Absent,
+   * the endpoints do not exist, which is the honest version of a flow that could not finish.
+   */
+  bankid?: BankIdPluginOptions;
 }
 
 /**
@@ -223,6 +231,8 @@ export function buildAuth(deps: AuthDeps) {
             }),
           ]
         : []),
+      // BankID sign-in — see the `bankid` dep above for when this is (and is not) mounted.
+      ...(deps.bankid ? [bankidPlugin(deps.bankid)] : []),
       admin(),
     ],
     // The `jwt` plugin's `/token` mints a JWT for the CURRENT SESSION. On an authorization

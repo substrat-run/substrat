@@ -4,7 +4,8 @@
  * per-voucher REST endpoints.
  *
  * Deliberately a parser over a *text* input, with no I/O of its own: the decoding
- * from ISO-8859-1 happens at the seam that owns the bytes ({@link FortnoxApi.sieFile}),
+ * from PC8/CP437 happens in {@link decodeSie} below, called at the seam that owns the
+ * bytes ({@link FortnoxApi.sieFile}),
  * so this file is pure and testable against a fixture, and a caller reading SIE from
  * somewhere else (an upload, an archive) can use it unchanged.
  *
@@ -22,6 +23,72 @@
  *   ignored rather than fatal: SIE files carry vendor extensions, and refusing a
  *   file over a post we do not read would break on a Fortnox release that adds one.
  */
+
+/**
+ * Bytes 0x80–0xFF of code page 437, in order — the half of PC8 that is not ASCII.
+ *
+ * Generated from the code page, not typed from memory. Only the Swedish letters are
+ * load-bearing here (0x84 ä, 0x86 å, 0x8E Ä, 0x8F Å, 0x94 ö, 0x99 Ö), but a partial
+ * table would silently mangle everything else, so the whole upper half is present.
+ */
+export const CP437_HIGH =
+  '\u00c7\u00fc\u00e9\u00e2\u00e4\u00e0\u00e5\u00e7\u00ea\u00eb\u00e8\u00ef\u00ee\u00ec\u00c4\u00c5' +
+  '\u00c9\u00e6\u00c6\u00f4\u00f6\u00f2\u00fb\u00f9\u00ff\u00d6\u00dc\u00a2\u00a3\u00a5\u20a7\u0192' +
+  '\u00e1\u00ed\u00f3\u00fa\u00f1\u00d1\u00aa\u00ba\u00bf\u2310\u00ac\u00bd\u00bc\u00a1\u00ab\u00bb' +
+  '\u2591\u2592\u2593\u2502\u2524\u2561\u2562\u2556\u2555\u2563\u2551\u2557\u255d\u255c\u255b\u2510' +
+  '\u2514\u2534\u252c\u251c\u2500\u253c\u255e\u255f\u255a\u2554\u2569\u2566\u2560\u2550\u256c\u2567' +
+  '\u2568\u2564\u2565\u2559\u2558\u2552\u2553\u256b\u256a\u2518\u250c\u2588\u2584\u258c\u2590\u2580' +
+  '\u03b1\u00df\u0393\u03c0\u03a3\u03c3\u00b5\u03c4\u03a6\u0398\u03a9\u03b4\u221e\u03c6\u03b5\u2229' +
+  '\u2261\u00b1\u2265\u2264\u2320\u2321\u00f7\u2248\u00b0\u2219\u00b7\u221a\u207f\u00b2\u25a0\u00a0';
+
+/**
+ * Decode a SIE file's bytes, honouring the charset it declares in `#FORMAT`.
+ *
+ * ## Why this is not `TextDecoder`
+ *
+ * SIE4 files are **PC8, which is code page 437** — an MS-DOS charset that predates the
+ * standard and is NOT in the WHATWG Encoding registry, so `new TextDecoder('cp437')`
+ * throws `RangeError` in every runtime. There is no web-standard decoder to reach for,
+ * which is why the table above exists rather than an import.
+ *
+ * ## Why the wrong decoder was invisible
+ *
+ * This previously decoded as `iso-8859-1`, and nothing complained — twice over. Every
+ * byte 0x00–0xFF is a valid latin1 code point, so a mis-decode can never produce U+FFFD
+ * and the "no replacement character" check that guarded this could not fail by
+ * construction. And `TextDecoder('iso-8859-1')` is really **windows-1252**, so Fortnox's
+ * `0x94` ö arrived as `”`. The result was correct-looking Swedish account names with the
+ * wrong letters in them — wrong data on a screen, never a throw. Confirmed against
+ * api.fortnox.se 2026-09-03, whose export declares `#FORMAT PC8`.
+ *
+ * A file declaring any other charset is REFUSED rather than decoded on a guess: PC8 is
+ * what SIE4 mandates and what every Fortnox export observed so far sends, and a wrong
+ * guess is invisible rather than loud.
+ */
+export function decodeSie(bytes: ArrayBuffer | Uint8Array): string {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+
+  // `#FORMAT` is ASCII and sits in the header, so it can be read before the charset is
+  // known — the one thing safe to decode without having decided first.
+  const header = String.fromCharCode(...view.subarray(0, 512));
+  const declared = /^#FORMAT\s+"?([A-Za-z0-9-]+)"?/m.exec(header)?.[1]?.toUpperCase();
+  if (declared !== undefined && declared !== 'PC8') {
+    // Refusing beats guessing. Reading a charset wrong does not throw anywhere
+    // downstream — it yields plausible Swedish account names with the wrong letters,
+    // which is precisely the failure that survived a year of green tests here.
+    throw new Error(
+      `SIE #FORMAT ${declared} is not supported — this reader implements PC8 (CP437) only`,
+    );
+  }
+
+  let out = '';
+  for (const byte of view) {
+    // The index is provably in range (0x00–0x7F took the other branch), so the
+    // fallback is unreachable; it is here only because the compiler cannot see that.
+    out += byte < 0x80 ? String.fromCharCode(byte) : (CP437_HIGH[byte - 0x80] ?? '\ufffd');
+  }
+  return out;
+}
 
 /** A parsed `#KONTO` — the chart of accounts. */
 export interface SieAccount {

@@ -304,6 +304,50 @@ export function socialErrorFrom(url: URL): string | null {
   return url.searchParams.get('error_description') || code || 'sign-in was refused';
 }
 
+/* ---- BankID sign-in ---- */
+
+/**
+ * BankID is not a redirect flow: the browser stays HERE while the person approves in the
+ * BankID app, so these four calls are the whole conversation. `start` opens an order; the
+ * QR endpoint serves a fresh frame each second (the code is computed server-side — the
+ * secret behind it never reaches this page); `collect` polls every two seconds and, on
+ * completion, IS the sign-in — the response sets the session cookie.
+ *
+ * A pending authorize request resumes exactly as the password path does: `oauth_query`
+ * rides in the collect body, and the issuer answers the completing poll with the redirect
+ * envelope instead of a status. The caller watches for it and navigates.
+ */
+export interface BankIdStart {
+  orderRef: string;
+  /** `bankid:///?autostarttoken=…` — same-device start, rendered as a link/button. */
+  autoStartUrl: string;
+  /** The first animated-QR frame (the raw `bankid.…` string, not an image). */
+  qr: string;
+}
+
+export type BankIdCollectResult =
+  | { status: 'pending' | 'failed' | 'complete'; hintCode: string | null }
+  | { redirect: boolean; url: string };
+
+export async function bankidStart(): Promise<BankIdStart> {
+  return authApi('/bankid/start', { method: 'POST', body: JSON.stringify({}) });
+}
+
+export async function bankidQr(orderRef: string): Promise<string> {
+  return (await authApi<{ qr: string }>('/bankid/qr', { method: 'POST', body: JSON.stringify({ orderRef }) })).qr;
+}
+
+export async function bankidCollect(orderRef: string, oauthQuery?: string | null): Promise<BankIdCollectResult> {
+  return authApi('/bankid/collect', {
+    method: 'POST',
+    body: JSON.stringify({ orderRef, ...(oauthQuery ? { oauth_query: oauthQuery } : {}) }),
+  });
+}
+
+export async function bankidCancel(orderRef: string): Promise<void> {
+  await authApi('/bankid/cancel', { method: 'POST', body: JSON.stringify({ orderRef }) }).catch(() => undefined);
+}
+
 /* ---- the relying-party registry ---- */
 
 /**
@@ -488,4 +532,39 @@ export async function saveIdentityProvider(id: string, draft: ProviderDraft): Pr
 
 export async function removeIdentityProvider(id: string): Promise<void> {
   await admin(`/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+/* ---- BankID configuration (`/api/admin`) ---- */
+
+/** The stored BankID configuration, as the panel may know it — certificates in, never out. */
+export interface BankIdSettings {
+  environment: 'test' | 'production';
+  certSet: boolean;
+  caSet: boolean;
+  allowSignup: boolean;
+  disabled: boolean;
+  updatedAt: number;
+}
+
+/** The editable half. Cert/key omitted on an edit means "keep the stored ones";
+ *  `caCert: null` clears a trust-anchor override back to the embedded BankID root. */
+export interface BankIdDraft {
+  environment: 'test' | 'production';
+  clientCert?: string;
+  clientKey?: string;
+  caCert?: string | null;
+  allowSignup: boolean;
+  disabled: boolean;
+}
+
+export async function bankidSettings(): Promise<BankIdSettings | null> {
+  return (await admin<{ bankid: BankIdSettings | null }>('/bankid')).bankid;
+}
+
+export async function saveBankidSettings(draft: BankIdDraft): Promise<BankIdSettings> {
+  return admin('/bankid', { method: 'PUT', body: JSON.stringify(draft) });
+}
+
+export async function removeBankid(): Promise<void> {
+  await admin('/bankid', { method: 'DELETE' });
 }

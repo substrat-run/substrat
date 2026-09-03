@@ -28,8 +28,8 @@ import { loadDevSecrets, providerEnv } from '../scripts/dev-secrets.mjs';
  * 1. `grant_type=client_credentials` with a `TenantId` header actually mints, which is
  *    the claim this connector's whole credential model rests on. If Fortnox required
  *    the authorization-code flow here, everything else is wrong.
- * 2. The SIE4 response really is ISO-8859-1. The mock asserts our handling of that; only
- *    this asserts the premise.
+ * 2. The SIE4 response's real charset. The mock asserts our HANDLING; only this asserts
+ *    the premise — and the premise was wrong: it is PC8/CP437, not ISO-8859-1.
  * 3. `financialyears` and `sie/4` return the documented shapes, under the response
  *    envelopes (`FinancialYears`, `CompanyInformation`) the parsers unwrap.
  */
@@ -100,7 +100,7 @@ describe.skipIf(secret === null)('fortnox connector — live API', () => {
     }
   });
 
-  it('downloads SIE4 as latin1 and parses into a ledger that balances', async () => {
+  it('downloads SIE4 as PC8/CP437 and parses into a ledger that balances', async () => {
     const years = await api.financialYears();
     const latest = years.sort((a, b) => (a.FromDate < b.FromDate ? 1 : -1))[0]!;
     const sie = await api.sieFile(latest.Id);
@@ -112,11 +112,18 @@ describe.skipIf(secret === null)('fortnox connector — live API', () => {
     const ledger = parseSie4(sie);
     expect(ledger.accounts.length).toBeGreaterThan(0);
 
-    // The latin1 proof, stated as a property rather than against a fixed name: decoding
-    // UTF-8 bytes as latin1 (or the reverse) leaves the replacement character behind.
-    // A real Swedish chart of accounts has none.
+    // The charset proof. The previous version of this check looked for U+FFFD and
+    // COULD NOT FAIL: every byte 0x00–0xFF is a valid latin1 code point, so decoding
+    // CP437 as latin1 produces no replacement character — it produced `f”r` for `för`
+    // and the assertion passed. These three can each actually fail.
     const names = ledger.accounts.map((a) => a.name).join(' ');
     expect(names).not.toContain('�');
+    // A C1 control in an account name means high bytes were read with the wrong table.
+    // Correctly decoded Swedish text contains none.
+    expect(names).not.toMatch(/[\u0080-\u009f]/);
+    // And positively: a Swedish chart of accounts HAS these letters. Without this, a
+    // decoder that dropped every high byte would still satisfy both checks above.
+    expect(names).toMatch(/[\u00e5\u00e4\u00f6\u00c5\u00c4\u00d6]/);
 
     // Double-entry: every voucher's rows sum to zero. This is the strongest available
     // check that the amount column was read from the right field — an off-by-one in the

@@ -18,6 +18,13 @@ import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
 import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
+import {
+  bankIdApiUrl,
+  fetchBankIdTransport,
+  publicBankIdFrom,
+  readBankIdConfig,
+  type BankIdConfig,
+} from './bankid.js';
 import { PlatformRelayEmailTransport } from '@substrat-run/adapter-email';
 import { transportFor, senderFor } from './email.js';
 import { AUTH_SERVER_ENV } from './manifest.js';
@@ -58,6 +65,11 @@ export interface AuthServerDoEnv {
    *  it POSTs to. Absent in a standalone deploy — there the `EMAIL` binding sends directly. */
   PLATFORM_SECRET?: string;
   CONTROL_PLANE_URL?: string;
+  /** A Cloudflare mTLS-certificate binding (`mtls_certificates` in wrangler.jsonc) holding the
+   *  BankID RP client certificate — the worker's only way to present one, since workerd's
+   *  `fetch` takes no per-request client cert. STANDALONE deploys only; absent (every hosted
+   *  dispatch instance), BankID stays configured-but-unoffered rather than half-working. */
+  BANKID?: { fetch(input: string, init?: RequestInit): Promise<Response> };
 }
 
 export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
@@ -148,7 +160,24 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // enabled in the dashboard answers the next request.
       socialProviders: socialProvidersFrom(providers),
       trustedProviders: trustedProvidersFrom(providers),
+      bankid: this.bankid(readBankIdConfig(this.ctx.storage.sql)),
     });
+  }
+
+  /** BankID for `buildAuth` — only when configured, enabled, AND this worker can present the
+   *  client certificate (the mTLS binding above). The binding's certificate is fixed at deploy
+   *  time; the panel's environment choice still decides which API it is presented to. */
+  private bankid(cfg: BankIdConfig | undefined) {
+    const binding = this.env.BANKID;
+    if (!cfg || cfg.disabled || !binding) return undefined;
+    return {
+      apiUrl: bankIdApiUrl(cfg.environment),
+      transport: fetchBankIdTransport((url, init) => binding.fetch(url, init)),
+      allowSignup: cfg.allowSignup,
+      // Set by Cloudflare's edge on every request and not forgeable through it — the one
+      // address this worker can honestly report to BankID as the end user's.
+      clientIpHeader: 'cf-connecting-ip',
+    };
   }
 
   /**
@@ -277,10 +306,11 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * and it says nothing a visitor could not learn by posting to the endpoints themselves.
    */
   async issuerState(): Promise<IssuerState> {
+    const bankid = publicBankIdFrom(readBankIdConfig(this.ctx.storage.sql), Boolean(this.env.BANKID));
     return {
       needsSetup: this.needsSetup(),
       signupEnabled: isTruthy(this.effectiveCfg()[ALLOW_SIGNUP]),
-      providers: publicProvidersFrom(readProviders(this.ctx.storage.sql)),
+      providers: [...publicProvidersFrom(readProviders(this.ctx.storage.sql)), ...(bankid ? [bankid] : [])],
     };
   }
 

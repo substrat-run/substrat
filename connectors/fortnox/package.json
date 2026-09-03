@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-fortnox",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Substrat connector: Fortnox accounting (Swedish). Reads a company's bookkeeping as SIE4 on a poll and lands it into a scope through the vertical's own operation. Auth is OAuth2 client-credentials against a service consent, so there is no refresh token to rotate. Host code — swept on a ScopeHost, never module code.",
   "license": "AGPL-3.0-only",
   "repository": {
