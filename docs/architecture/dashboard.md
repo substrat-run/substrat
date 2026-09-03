@@ -152,7 +152,9 @@ to the dashboard scope's tenant and refuses any argument that names another. Opt
 lives (an open question, §6): a dedicated host capability the Dashboard deployment is granted, or a
 "control-plane connector" reusing the connector seam's egress + authority machinery. [D-60](../decisions/D-060-the-dashboard-is-an-ordinary-sandbox-clean-vertical-its-privile.md)
 proposes a third answer — **neither**, because a sandbox-clean Dashboard needs no privileged
-capability at all — and is awaiting ratification. Either way the
+*mutation* capability at all: its writes ride `ctx.requestPlatform`, and what stays in the shell is
+a read-only, tenant-scoped seam for the platform-owned facts it displays — and is awaiting
+ratification. Either way the
 safety rests on three things already true elsewhere: the permission check runs first, the tenant is
 ambient not supplied, and the action is audited — subject to the two qualifications above, since
 today the second is enforced by the caller and the third names `SERVICE_ACTOR`.
