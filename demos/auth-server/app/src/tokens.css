@@ -1,3 +1,9 @@
+/*
+ * These custom properties are the THEMING CONTRACT for the hosted OIDC pages: a relying
+ * party's `metadata.theme` (see src/branding.ts for the vocabulary) is applied by setting
+ * exactly these variables at runtime (`applyClientTheme` in App.tsx). Renaming one is a
+ * breaking change to every themed client, not a refactor.
+ */
 :root {
   --bg: #0f1115;
   --panel: #171a21;
@@ -6,8 +12,11 @@
   --text: #e7e9ee;
   --muted: #9aa3b2;
   --accent: #6ea8fe;
+  --accent-contrast: #0b1220;
   --danger: #f0728a;
   --warn: #f0b072;
+  --radius: 8px;
+  --radius-lg: 14px;
   color-scheme: dark;
 }
 
@@ -25,25 +34,26 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .centered { min-height: 100%; display: grid; place-items: center; padding: 24px; }
 .card {
   width: 360px; max-width: 100%; background: var(--panel);
-  border: 1px solid var(--line); border-radius: 14px; padding: 28px;
+  border: 1px solid var(--line); border-radius: var(--radius-lg); padding: 28px;
 }
 .card h1 { font-size: 18px; margin: 0 0 14px; }
+.card .brand-logo { display: block; max-height: 48px; max-width: 200px; margin: 0 0 14px; }
 
 .field { display: block; margin: 0 0 12px; }
 .field > span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
 .field input, .field select {
-  width: 100%; padding: 9px 11px; border-radius: 8px;
+  width: 100%; padding: 9px 11px; border-radius: var(--radius);
   border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font-size: 14px;
 }
 .field .hint { display: block; margin-top: 4px; font-size: 11.5px; color: var(--muted); font-style: normal; }
 
 .btn {
   appearance: none; border: 1px solid var(--line); background: var(--panel-2);
-  color: var(--text); padding: 9px 14px; border-radius: 8px; font-size: 13.5px; cursor: pointer;
+  color: var(--text); padding: 9px 14px; border-radius: var(--radius); font-size: 13.5px; cursor: pointer;
 }
 .btn:hover { border-color: #3a4150; }
 .btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #0b1220; font-weight: 600; width: 100%; margin-top: 4px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; width: 100%; margin-top: 4px; }
 .btn.link { background: none; border: none; color: var(--accent); padding: 8px 0 0; width: 100%; }
 .btn.tiny { padding: 4px 9px; font-size: 12px; margin-left: 6px; }
 .btn.danger { color: var(--danger); }

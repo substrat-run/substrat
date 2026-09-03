@@ -27,6 +27,7 @@ import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from './settings.js';
 import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
+import { clientBranding } from './branding.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
 
 /**
@@ -215,6 +216,10 @@ const sessionOf = async (headers: Headers): Promise<SessionSubject | null> => {
 };
 
 app.get('/api/session', async (c) => c.json(await sessionOf(c.req.raw.headers)));
+
+// The per-client theme for the login/consent screens — same shared read the worker's DO
+// serves at `/__branding` (see src/branding.ts for why it is public and ungated).
+app.get('/api/branding', (c) => c.json(clientBranding(sql, c.req.query('client_id'))));
 
 // The issuer's own admin API — the relying-party registry and settings. The SAME factory the
 // worker's DO mounts, over this dev database, so the dashboard is exercised identically here.

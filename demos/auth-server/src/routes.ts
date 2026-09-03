@@ -159,6 +159,19 @@ app.get('/api/session', async (c) => {
 });
 
 /**
+ * The per-client theme for the login/consent screens (`src/branding.ts`). Public and
+ * ungated on purpose: it answers `{ theme: {} }` identically for an unknown, disabled or
+ * unthemed client id, so it discloses nothing about the registry — unlike a name lookup,
+ * which stays behind the plugin's signed-query prelogin endpoint.
+ */
+app.get('/api/branding', async (c) => {
+  const url = new URL(c.req.url);
+  url.pathname = '/__branding';
+  const res = await issuerFor(c.env, c.req.raw).fetch(new Request(url, { headers: c.req.raw.headers }));
+  return c.json(await res.json());
+});
+
+/**
  * OIDC discovery and the RFC 8414 authorization-server metadata, at the ROOT — where a
  * standard relying party looks, deriving `{issuer}/.well-known/openid-configuration` from the
  * issuer it was configured with.

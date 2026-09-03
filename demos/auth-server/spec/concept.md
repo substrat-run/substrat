@@ -221,6 +221,26 @@ to a boundary that can resolve — the D-46 egress hop.
 `database` and `transport`. **Omit it and CIMD is not mounted at all**: an issuer with no
 safe way to fetch a document must not advertise `client_id_metadata_document_supported`.
 
+## Per-client theming
+
+The hosted pages (`/login`, `/signup`, `/consent`) are styled **per relying party**: the
+client that sent someone here decides how the screens look, through a `theme` object in its
+own `metadata` — the free-form column the registry already has, written by the existing
+admin PATCH, so there is no second write path and no migration. The vocabulary is
+deliberately Clerk-shaped (`colorPrimary`, `colorBackground`, `borderRadius`, `logoUrl`,
+`title`, …); `src/branding.ts` defines and sanitizes it, and each key maps onto one CSS
+custom property in the SPA's `tokens.css`. The dashboard's client editor exposes the common
+keys as an **Appearance** section; the rest ride in the metadata JSON.
+
+The public read (`GET /api/branding?client_id=…`, `/__branding` in the DO) returns **only**
+the sanitized theme — never the client's name, icon or existence. Unknown, disabled and
+unthemed clients all answer `{ theme: {} }` byte-identically, so the endpoint cannot become
+the registry-enumeration oracle that `public-client-prelogin`'s signed-query gate exists to
+prevent; naming the application stays that endpoint's job. Values are validated key by key
+on the way out (hex colors, a bounded px radius, https/data-image logo URLs), because they
+land in CSS custom properties and an `<img src>` on the most security-sensitive origin this
+demo owns — and a typo in one color drops that color, not the whole theme.
+
 ## Storage
 
 One **Durable Object** (`AuthServerDO`) is the whole store — a single global issuer addressed
