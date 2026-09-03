@@ -82,7 +82,16 @@ function stableStringify(v: unknown): string {
  * surface — absence is never silently an empty surface (D-41).
  */
 export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
-  const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+  const pkgPath = join(dir, 'package.json');
+  // Named rather than left as an ENOENT trace: `substrat push --check` (#1205) is run from
+  // wherever a CI job happens to stand, and "wrong directory" is the likeliest reason there
+  // is no package.json to read.
+  if (!existsSync(pkgPath)) {
+    throw new Error(
+      `no package.json under ${resolve(dir)} — run this from the vertical's directory, or name it (\`substrat push <dir>\`).`,
+    );
+  }
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
     substrat?: { permissions?: string };
   };
   const entry = pkg.substrat?.permissions;
@@ -101,18 +110,33 @@ export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
   // immediately after import. The unique name avoids the ESM import cache across pushes.
   const out = join(dir, `.substrat.permissions.${Date.now()}.mjs`);
   try {
-    await build({
-      entryPoints: [entryPath],
-      bundle: true,
-      platform: 'node',
-      format: 'esm',
-      packages: 'external',
-      outfile: out,
-      logLevel: 'silent',
-    });
-    // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
-    // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
-    const mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as { permissions?: PermissionsInput };
+    let mod: { permissions?: PermissionsInput };
+    try {
+      await build({
+        entryPoints: [entryPath],
+        bundle: true,
+        platform: 'node',
+        format: 'esm',
+        packages: 'external',
+        outfile: out,
+        logLevel: 'silent',
+      });
+      // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
+      // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
+      mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as { permissions?: PermissionsInput };
+    } catch (e) {
+      // The third silent-until-deploy failure (#1205): the entry exists and exports the right
+      // name, but cannot be read OUTSIDE the vertical's runtime — a worker-only import, a
+      // `node:*` on a path the bundler follows, an import-time side effect wanting a live host.
+      // Named as that, rather than as a bare esbuild/ESM stack, because the remedy is specific:
+      // `definePermissions(...)` returns a plain object, so the module holding it must stay
+      // importable as data.
+      throw new Error(
+        `substrat.permissions points at "${entry}", which could not be bundled and imported as data — ` +
+          `the declared surface must be readable without a live host (no worker-only imports on the ` +
+          `path it pulls in, no import-time side effects).\n${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     if (!mod.permissions) {
       throw new Error(
         `${entry} exports no \`permissions\`. Export ` +
@@ -133,6 +157,73 @@ export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
  */
 export async function permissionDigest(registry: PermissionRegistry): Promise<string> {
   return sha256(Buffer.from(stableStringify(registry)));
+}
+
+/** The declared permission surface as `substrat push --check` reports it: the registry the
+ *  push would ship, and the digest the promotion checkpoint would compare. */
+export interface PermissionSurface {
+  readonly registry: PermissionRegistry;
+  /** `digests.permission` — moves iff a key, description, role or grant shape moves. */
+  readonly digest: string;
+}
+
+/**
+ * The push's permission preflight, on its own (#1205).
+ *
+ * Everything a push does to the declared surface — resolve `package.json`
+ * `substrat.permissions`, bundle the entry, import it, derive the registry, hash it — happens
+ * before any credential is needed and touches no network. A vertical that wants that as a CI
+ * gate was reaching it by deep-importing `dist/push.js`, which is not a public surface: no
+ * `exports` map declares it, so any file move breaks a consumer nothing upstream knows about.
+ * The alternative — a second implementation of the derivation — is the two-descriptions defect
+ * this whole area exists to remove. So the gate is the CLI's own command, and the internals
+ * stay internal.
+ *
+ * Every failure is a throw carrying its own remedy (see `deriveRegistry`): a missing pointer,
+ * a pointer naming a file that has moved, an entry that stopped exporting `permissions`, and
+ * an entry that cannot be imported outside the vertical's runtime. The CLI's top-level handler
+ * turns each into a non-zero exit, which is what makes this usable as a gate.
+ */
+export async function checkPermissionSurface(dir: string): Promise<PermissionSurface> {
+  const registry = await deriveRegistry(dir);
+  return { registry, digest: await permissionDigest(registry) };
+}
+
+/**
+ * Render a checked surface for a human reading CI output: every key with the module(s) that
+ * declare it and its description, every role with the keys it holds, every entity-grant shape,
+ * then the digest. Sorted throughout (`buildPermissionRegistry` guarantees it), so two runs of
+ * the same tree produce byte-identical text and a diff between them is a real surface change.
+ */
+export function formatPermissionSurface(surface: PermissionSurface, label?: string): string {
+  const { registry, digest } = surface;
+  const lines: string[] = [];
+  const counts = [
+    `${registry.permissions.length} key(s)`,
+    `${registry.roles.length} role(s)`,
+    `${registry.entityGrants.length} entity-grant shape(s)`,
+  ].join(', ');
+  lines.push(`permission surface${label ? ` — ${label}` : ''}: ${counts}`);
+  const width = Math.max(0, ...registry.permissions.map((p) => p.key.length));
+  lines.push('', 'keys:');
+  if (registry.permissions.length === 0) lines.push('  (none declared)');
+  for (const p of registry.permissions) {
+    lines.push(`  ${p.key.padEnd(width)}  [${p.declaredBy.join(', ')}]  ${p.description}`);
+  }
+  lines.push('', 'roles:');
+  if (registry.roles.length === 0) lines.push('  (none declared)');
+  for (const r of registry.roles) {
+    lines.push(`  ${r.key}  (${r.source}, ${r.permissions.length} key(s))`);
+    for (const key of r.permissions) lines.push(`    ${key}`);
+  }
+  if (registry.entityGrants.length > 0) {
+    lines.push('', 'entity grants:');
+    for (const g of registry.entityGrants) {
+      lines.push(`  ${g.entityType}: ${g.permissions.join(', ')}`);
+    }
+  }
+  lines.push('', `digest: ${digest}  (digests.permission — the promotion checkpoint compares this)`);
+  return lines.join('\n');
 }
 
 /**
@@ -435,31 +526,41 @@ export interface LayerRulesChecked {
   readonly skipped: boolean;
 }
 
-export function assertLayerRules(dir: string, skipLint = false): LayerRulesChecked {
+/**
+ * `log` is where the gate's own narration goes, and it is a parameter because one caller
+ * needs it off stdout: `substrat push --check --json` prints the registry as the ONLY thing
+ * on stdout, so a redirect into a file is a usable artifact. Everything else takes the
+ * default and reads exactly as before.
+ */
+export function assertLayerRules(
+  dir: string,
+  skipLint = false,
+  log: (message: string) => void = console.log,
+): LayerRulesChecked {
   const root = resolve(dir);
   if (skipLint) {
-    console.log('note: --skip-lint — the layer rules were NOT checked; this push is ungated');
+    log('note: --skip-lint — the layer rules were NOT checked; this push is ungated');
     return { root, skipped: true };
   }
   const config = loadBoundaryLintConfig(root);
   const packages = resolvePackages(root, config);
   const linted = packages.filter((p) => p.lint);
   if (linted.length === 0) {
-    console.log(
+    log(
       'note: boundary-lint found no module code to check (expected `src/`, or a ' +
         '`boundary-lint.config.json` naming it) — this push is ungated',
     );
     return { root, skipped: false };
   }
   if (packages.every((p) => p.lint) && declaredEngines(root, config).length > 0) {
-    console.log(
+    log(
       'note: engines are declared but none resolved under node_modules/@substrat-run — ' +
         'R5 (tables private) checked nothing this push',
     );
   }
   const violations = lint(root, config);
   if (violations.length === 0) {
-    console.log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
+    log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
     return { root, skipped: false };
   }
   throw new Error(
