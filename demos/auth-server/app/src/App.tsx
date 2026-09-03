@@ -726,6 +726,14 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
                             if (!window.confirm(`Remove ${entry?.label ?? provider.id}? People who signed in with it will need another way in.`)) return;
                             try {
                               await removeIdentityProvider(provider.id);
+                              // Close the editor if it was showing THIS provider. The table
+                              // stays clickable while it is open, so Remove can be pressed on
+                              // the row being edited — and the key that fixes provider-to-
+                              // provider switching cannot help here, because the id has not
+                              // changed. Without this the form survives its own row, flips to
+                              // "Enable", and keeps the deleted client id and toggles.
+                              // Functional, so a newer editor opened meanwhile is left alone.
+                              setEditing((current) => (current === provider.id ? null : current));
                               await reload();
                             } catch (e) {
                               setErr(e instanceof Error ? e.message : String(e));
@@ -1031,6 +1039,12 @@ function ClientsPanel() {
                       void act(async () => {
                         if (!confirm(`Remove “${client.client_name ?? client.client_id}”? Its tokens and consents go with it.`)) return;
                         await deleteOAuthClient(client.client_id);
+                        // Same as the providers panel: the editor outlives the row it edits
+                        // unless it is told, and its next save would PATCH a client that is
+                        // gone.
+                        setEditing((current) =>
+                          current !== 'new' && current?.client_id === client.client_id ? null : current,
+                        );
                       })
                     }
                   >
