@@ -3,6 +3,7 @@ import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { envVarSpec, capability, type ModuleManifest } from './manifest.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
+import { emittedModel } from './model.js';
 
 // The deploy manifest is the JSON part a `substrat push` sends alongside the
 // module files (self-serve-deploy.md). It lives here — not in the transport
@@ -622,6 +623,14 @@ export const deployManifest = z.object({
   /** The surfaces the vertical serves (package.json `substrat.surfaces`, K-26 multi-surface) —
    *  labels only, carried to the registry for the hostname-binding picker. Metadata, not code. */
   surfaces: z.array(declaredSurface).optional(),
+  /** The vertical's emitted entity model (#1214): the checked-in `model.json` — entities,
+   *  their field schemas, parent edges, and declared lifecycles (#844) — carried so the
+   *  dashboard can render the DEPLOYED version's model, the way `registry` already carries
+   *  the permission surface. Metadata, not code, and not in any digest: it describes what
+   *  the migrations built, it does not build anything. Optional twice over — a vertical
+   *  with no `model.json` beside its package.json pushes without one, and versions pushed
+   *  by a pre-#1214 CLI stay readable. */
+  model: emittedModel.optional(),
   /** The vertical's declared permission surface (D-39/D-41): keys+descriptions, role templates,
    *  entity-grant shapes — the machine-readable twin of PERMISSIONS.md, derived at push from the
    *  vertical's `definePermissions(...)` entry. REQUIRED: a deployable vertical must declare its

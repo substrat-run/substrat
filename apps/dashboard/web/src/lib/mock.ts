@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -135,6 +135,58 @@ export const MOCK_APP_PERMISSIONS: AppPermissionsView = {
       ],
     },
   },
+};
+
+/**
+ * Dev-preview sample for the Model tab (#1214). Mirrors MOCK_APP_PERMISSIONS' helpdesk:
+ * the running 0.2.0 declares two entities and a ticket lifecycle; no update model, so the
+ * tab's running view renders alone.
+ */
+export const MOCK_APP_MODEL: AppModelView = {
+  running: {
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7V200',
+    version: '0.2.0',
+    model: {
+      entities: {
+        ticket: {
+          table: 'helpdesk_tickets',
+          fields: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              queue_id: { type: 'string' },
+              subject: { type: 'string' },
+              requester_email: { type: 'string' },
+              status: { enum: ['open', 'pending', 'closed'] },
+            },
+            required: ['id', 'queue_id', 'subject', 'requester_email', 'status'],
+          },
+          parents: ['queue'],
+          erasable: ['requester_email'],
+        },
+        queue: {
+          table: 'helpdesk_queues',
+          fields: {
+            type: 'object',
+            properties: { id: { type: 'string' }, name: { type: 'string' } },
+            required: ['id', 'name'],
+          },
+        },
+      },
+      lifecycles: {
+        ticket: {
+          field: 'status',
+          initial: 'open',
+          states: {
+            open: { on: { 'helpdesk/close': 'closed', 'helpdesk/await-reply': 'pending' } },
+            pending: { on: { 'helpdesk/close': 'closed' } },
+            closed: {},
+          },
+        },
+      },
+    },
+  },
+  update: null,
 };
 
 const now = Date.parse('2026-07-22T18:00:00Z');

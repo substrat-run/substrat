@@ -317,6 +317,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../../packages/contracts
+      '@substrat-run/model-view':
+        specifier: workspace:^
+        version: link:../../../packages/model-view
       '@substrat-run/ui':
         specifier: workspace:^
         version: link:../../../packages/ui
@@ -1663,6 +1666,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      '@substrat-run/model-view':
+        specifier: workspace:^
+        version: link:../model-view
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
@@ -1868,6 +1874,22 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0)
+
+  packages/model-view:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 22.20.1
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(tsx@4.23.1)(yaml@2.9.0)
 
   packages/oidc-rp:
     dependencies:

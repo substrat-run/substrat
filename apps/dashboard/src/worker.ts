@@ -20,7 +20,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type TenantId } from '@substrat-run/contracts';
+import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -1517,6 +1517,48 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
     update: updateId
       ? { versionId: updateId, version: updateVersion?.version ?? null, registry: updateRegistry }
       : null,
+  });
+});
+
+/**
+ * One app's Model tab (#1214): the emitted entity model — entities, field schemas, parent
+ * edges, declared lifecycles (#844) — of the version this app actually RUNS, plus the
+ * version an available update would move it to, so the tab can show what an update changes.
+ * The same two reads as the Permissions tab, against the same retained manifest; only the
+ * field differs. `model` is null for a version pushed by a pre-#1214 CLI or a vertical
+ * with no model.json — the tab renders an empty state for both.
+ *
+ * Authorized in the caller's OWN dashboard scope like every app-scoped read: the app is
+ * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s; the model
+ * itself is read through the tenant-narrowed control plane.
+ */
+app.get('/api/apps/:scopeId/model', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const slug = appRow.vertical_slug;
+  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
+  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
+  const runningId = boundVersionId ?? prod?.versionId ?? null;
+  const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
+  const updateId = prod && prod.versionId !== boundVersionId ? prod.versionId : null;
+  const updateVersion = updateId ? deployment.versions.find((v) => v.id === updateId) : undefined;
+
+  const modelOf = (versionId: string | null): Promise<EmittedModel | null> => {
+    if (!versionId) return Promise.resolve(null);
+    return cp.versionModel(slug, versionId);
+  };
+  const [runningModel, updateModel] = await Promise.all([modelOf(runningId), modelOf(updateId)]);
+
+  return c.json({
+    running: { versionId: runningId, version: runningVersion?.version ?? null, model: runningModel },
+    update: updateId ? { versionId: updateId, version: updateVersion?.version ?? null, model: updateModel } : null,
   });
 });
 
