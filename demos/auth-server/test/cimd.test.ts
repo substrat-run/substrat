@@ -184,6 +184,17 @@ describe('the workerd transport', () => {
       // Link-local, which is where a cloud instance's credential endpoint lives.
       '169.254.169.254',
       '[::1]',
+      // A single label — never public, whatever a local resolver would make of it.
+      'local',
+      'auth-server',
+      // IPv6 multicast: every host on the link.
+      '[ff02::1]',
+      // The rest of RFC 6890 that is not obviously private but is not routable either.
+      '192.0.0.9',
+      '192.0.2.10',
+      '198.18.0.1',
+      '198.51.100.7',
+      '203.0.113.7',
     ]) {
       await refuses(`https://${host}/client.json`, host);
     }
@@ -193,11 +204,27 @@ describe('the workerd transport', () => {
     await refuses('https://user:pw@client.example/client.json', 'credentials');
   });
 
-  it('allows an ordinary public https URL', () => {
-    // Does not fetch — asserts only that validation lets it through to `fetch`.
-    expect(() => {
-      const p = fetchClientMetadataResource('https://client.example/client.json');
-      void Promise.resolve(p).catch(() => undefined); // the network failure is not the subject
-    }).not.toThrow();
+  it('passes an ordinary public https URL through, asking for no redirect', async () => {
+    // `fetch` is stubbed rather than networked: the subject is what this transport HANDS
+    // to the runtime, and a real request to a made-up name would only add DNS latency and
+    // a failure mode that is not the one under test.
+    const seen: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = ((input: Parameters<typeof globalThis.fetch>[0], init?: RequestInit) => {
+      seen.push({ url: String(input), init });
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    }) as typeof globalThis.fetch;
+
+    try {
+      const res = await fetchClientMetadataResource('https://client.example/client.json');
+      expect(res.status).toBe(200);
+    } finally {
+      globalThis.fetch = real;
+    }
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.url).toBe('https://client.example/client.json');
+    // The one clause of the plugin's transport contract workerd can meet exactly.
+    expect(seen[0]?.init?.redirect).toBe('manual');
   });
 });
