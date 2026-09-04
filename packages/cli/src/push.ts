@@ -11,11 +11,13 @@ import {
   assetsNeed,
   buildPermissionRegistry,
   deployManifest,
+  emittedModel,
   runtimeNeeds,
   RUNTIME_BASELINE,
   type AssetEntry,
   type AssetsNeed,
   type DeclaredBinding,
+  type EmittedModel,
   type PermissionRegistry,
   type PermissionsInput,
   type RuntimeNeeds,
@@ -947,6 +949,13 @@ export async function push(
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
   const registry = await deriveRegistry(opts.dir);
 
+  // The emitted entity model (#1214), read from the checked-in `model.json` beside
+  // package.json — the artifact of record (#697) — so the dashboard can render the
+  // DEPLOYED version's model. Absence is fine (a vertical that has not adopted the
+  // entity registry pushes without one); a model.json that fails the shape is refused,
+  // because shipping a manifest the control plane would bounce helps nobody.
+  const model = readDeclaredModel(opts.dir);
+
   // Parsed with the SAME schema the control plane applies at the trust boundary
   // (contracts' deployManifest, re-parsed server-side in control-plane-api). Drift
   // between what the CLI builds and what the server accepts fails here, before the
@@ -1009,6 +1018,9 @@ export async function push(
     ...(opts.sendsEmail ? { sendsEmail: true } : {}),
     ...(opts.usesModels ? { usesModels: true } : {}),
     ...(opts.surfaces ? { surfaces: opts.surfaces } : {}),
+    // The emitted entity model (#1214) — metadata like envSpec/surfaces, not in any digest:
+    // it describes what the migrations built, it does not build anything.
+    ...(model ? { model } : {}),
     // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
     // because absence means "pre-#303 push" to the egress worker (unenforced, metered
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is
@@ -1149,6 +1161,33 @@ export function readVerticalMeta(dir: string): VerticalMeta {
     surfaces: s?.surfaces,
     outbound: s?.outbound,
   };
+}
+
+/**
+ * The vertical's emitted entity model (#1214), from the `model.json` beside its
+ * package.json — the artifact `pnpm lint:model` emits and gates (#697). `undefined` when
+ * there is none: a vertical that has not adopted the entity registry pushes exactly as it
+ * did before. A present-but-malformed file REFUSES the push with the artifact named — it
+ * means the file was hand-edited or emitted by an incompatible toolchain, and the control
+ * plane would bounce the manifest anyway; failing here costs no network round-trip.
+ */
+export function readDeclaredModel(dir: string): EmittedModel | undefined {
+  const file = join(dir, 'model.json');
+  if (!existsSync(file)) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (e) {
+    throw new Error(`${file} is not valid JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const result = emittedModel.safeParse(parsed);
+  if (!result.success) {
+    throw new Error(
+      `${file} is not an emitted model — re-emit it (pnpm lint:model) rather than hand-editing.\n` +
+        result.error.issues.map((i) => `  ${i.path.join('.') || '(root)'}: ${i.message}`).join('\n'),
+    );
+  }
+  return result.data;
 }
 
 /**

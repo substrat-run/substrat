@@ -253,6 +253,44 @@ export interface EmittedModel {
 }
 
 /**
+ * The same shapes as Zod schemas, for re-parsing an emitted `model.json` at a trust
+ * boundary — the deploy manifest carries one (#1214), and the control plane re-parses
+ * rather than trusting the CLI's serialization, exactly as it does the permission
+ * registry. Structural, not semantic: it holds the shape the interfaces above promise
+ * (a `parents` that is a list of names, a transition that names a target state), and
+ * deliberately does NOT re-check coherence — `emitModel`/`emitLifecycles` already
+ * refused an incoherent declaration at emit time, and a reader of stored history must
+ * not start refusing a model an older emitter legitimately produced.
+ */
+export const emittedState = z.object({
+  on: z.record(z.string(), z.string()).optional(),
+  allow: z.array(z.string()).optional(),
+  extensible: z.literal(true).optional(),
+  terminal: z.literal(true).optional(),
+});
+
+export const emittedLifecycle = z.object({
+  field: z.string().min(1),
+  initial: z.string().min(1),
+  states: z.record(z.string(), emittedState),
+});
+
+export const emittedEntity = z.object({
+  table: z.string().min(1),
+  /** The entity's field schema as JSON Schema (`z.toJSONSchema` output) — carried opaque. */
+  fields: z.record(z.string(), z.unknown()),
+  parents: z.array(z.string()).optional(),
+  primaryKey: z.array(z.string()).optional(),
+  key: z.array(z.string()).optional(),
+  erasable: z.array(z.string()).optional(),
+});
+
+export const emittedModel = z.object({
+  entities: z.record(z.string(), emittedEntity),
+  lifecycles: z.record(z.string(), emittedLifecycle).optional(),
+});
+
+/**
  * Render the registry to plain JSON. Deterministic: entities and their fields
  * are emitted in sorted order, so the checked-in artifact diffs cleanly and a
  * reordered declaration is not a spurious change.

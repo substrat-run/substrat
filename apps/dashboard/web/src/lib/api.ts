@@ -1,4 +1,4 @@
-import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EmittedModel, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -257,6 +257,22 @@ export interface VersionRegistry {
 export interface AppPermissionsView {
   running: VersionRegistry;
   update: VersionRegistry | null;
+}
+
+/** One version + its emitted entity model — a running or update target on the Model tab. */
+export interface VersionModel {
+  versionId: string | null;
+  version: string | null;
+  /** `null` when the version was pushed by a pre-#1214 CLI or ships no model.json. */
+  model: EmittedModel | null;
+}
+/**
+ * The app's Model tab payload (#1214): the emitted entity model of the version this app
+ * RUNS, plus the version an available update would move it to (`update`, else null).
+ */
+export interface AppModelView {
+  running: VersionModel;
+  update: VersionModel | null;
 }
 
 /** One PITR rewind point an app recorded before a migration pass (#286). */
@@ -934,6 +950,7 @@ export const api = {
   /** The declared permission surface (D-39, #336) of the version this app runs, plus the
    *  update target's, for the Permissions tab's table + update diff. */
   appPermissions: (scopeId: string) => call<AppPermissionsView>(`/apps/${encodeURIComponent(scopeId)}/permissions`),
+  appModel: (scopeId: string) => call<AppModelView>(`/apps/${encodeURIComponent(scopeId)}/model`),
   /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
   appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),
   /** The tables of the app's own database (Data tab). */

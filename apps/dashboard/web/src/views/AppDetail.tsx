@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
-import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
+import { renderModelHtml } from '@substrat-run/model-view';
 import { relativeTime, shortDate, shortId, untilTime } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
@@ -179,6 +180,7 @@ export function AppDetail({
       )}
       {main === 'deployments' && <Deployments app={app} />}
       {main === 'observability' && <AppObservability app={app} />}
+      {main === 'model' && <Model app={app} />}
       {main === 'permissions' && <Permissions app={app} />}
       {main === 'audit' && <Audit app={app} />}
       {main === 'previews' && <Previews app={app} />}
@@ -921,6 +923,71 @@ function diffRegistries(from: PermissionRegistry, to: PermissionRegistry): Regis
     changedKeys: [...toKeys.entries()].filter(([k, d]) => fromKeys.has(k) && fromKeys.get(k) !== d).map(([k]) => k),
     roleChanges,
   };
+}
+
+/**
+ * The Model tab (#1214). The emitted entity model — the ER diagram, entity cards, and
+ * declared lifecycles (#844) — of the version this app RUNS, rendered by the same
+ * `@substrat-run/model-view` core `substrat model view` uses, so the tenant sees exactly
+ * the page the builder approved at the design gate. The rendered page is self-contained
+ * (inline CSS + SVG, no script, nothing external), so it goes into a sandboxed iframe via
+ * `srcdoc` — no network, no script execution, styled by its own light/dark palette.
+ */
+function Model({ app }: { app: AppRow }) {
+  const [view, setView] = useState<AppModelView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (DEV_MOCK) {
+      setView(MOCK_APP_MODEL);
+      return;
+    }
+    let live = true;
+    setView(null);
+    setErr(null);
+    api
+      .appModel(app.app_scope_id)
+      .then((v) => live && setView(v))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  const running = view?.running;
+  const html = useMemo(() => {
+    if (!running?.model) return null;
+    const coordinate = `${app.vertical_slug}@${running.version ?? running.versionId ?? 'unknown'}`;
+    return renderModelHtml(running.model, { source: coordinate, title: coordinate });
+  }, [running, app.vertical_slug]);
+
+  if (err) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--status-danger-fg)' }}>Couldn’t load the model — {err}</div>;
+  if (!view) return <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading model…</div>;
+
+  const entityCount = running?.model ? Object.keys(running.model.entities).length : 0;
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ ...card, padding: 20, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <Eyebrow>Entity model</Eyebrow>
+        {running?.version ? <MonoTag>{running.version}</MonoTag> : <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>no running version</span>}
+        <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          {running?.model ? `${entityCount} declared ${entityCount === 1 ? 'entity' : 'entities'} — the model the version this app runs was built from` : 'the model the version this app runs was built from'}
+        </span>
+        {view.update && <><div style={{ flex: 1 }} /><span style={{ fontSize: 12, color: 'var(--status-info-fg)' }}>Update available → <MonoTag>{view.update.version}</MonoTag></span></>}
+      </div>
+      {html ? (
+        <iframe
+          title="Entity model"
+          sandbox=""
+          srcDoc={html}
+          style={{ ...card, width: '100%', minHeight: 640, border: '1px solid var(--border-default)', borderRadius: 10, background: 'var(--surface-card)' }}
+        />
+      ) : (
+        <div style={{ ...card, padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>
+          This version recorded no entity model. Models ship with a push: a vertical with a checked-in <code>model.json</code> (emitted by <code>pnpm lint:model</code>) carries it automatically from the next <code>substrat push</code> onwards.
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**

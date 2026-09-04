@@ -7,6 +7,7 @@ import type {
   ConnectionGrantRecord,
   ConnectionProbe,
   DeployAssets,
+  EmittedModel,
   ListPage,
   OpsFailureEntry,
   Page,
@@ -571,6 +572,23 @@ export class TenantNarrowedControlPlane {
         `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/registry`,
       );
       return res?.registry ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The emitted entity model (#1214) one version ships — entities, field schemas, parent
+   * edges, declared lifecycles — out of the same retained manifest as the registry above.
+   * `null` for a version pushed by a pre-#1214 CLI or a vertical with no model.json;
+   * `null` on any non-200, so the caller treats "unknown" and "none" the same.
+   */
+  async versionModel(verticalSlug: string, versionId: string): Promise<EmittedModel | null> {
+    try {
+      const res = await this.call<{ model: EmittedModel | null }>(
+        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/model`,
+      );
+      return res?.model ?? null;
     } catch {
       return null;
     }

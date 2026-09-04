@@ -470,6 +470,7 @@ export const APP_FILTER = ['All apps', 'Acme HR', 'Acme Legal', 'Acme Field Ops'
 export const APP_TABS: Array<{ value: string; label: string; count?: number; future?: boolean }> = [
   { value: 'overview', label: 'Overview' },
   { value: 'data', label: 'Data' },
+  { value: 'model', label: 'Model' },
   { value: 'deployments', label: 'Deployments', future: true },
   { value: 'observability', label: 'Observability' },
   { value: 'permissions', label: 'Permissions' },

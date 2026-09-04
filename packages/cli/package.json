@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/cli",
   "version": "0.27.0",
-  "description": "The substrat CLI — authenticated deploy tooling: push a vertical to the platform, manage its versions and channels",
+  "description": "The substrat CLI \u2014 authenticated deploy tooling: push a vertical to the platform, manage its versions and channels",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -35,6 +35,7 @@
   "dependencies": {
     "@substrat-run/boundary-lint": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/model-view": "workspace:^",
     "esbuild": "^0.25.0"
   },
   "devDependencies": {

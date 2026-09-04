@@ -751,6 +751,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // The declared permission registry of one version (D-39, #336) — owner-narrowed in the
     // handler like the versions list; the builder-facing Permissions tab reads it.
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/registry$/ },
+    // The emitted entity model of one version (#1214) — owner-narrowed the same way;
+    // the dashboard's Model tab reads it.
+    { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
@@ -3190,6 +3193,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
     const registry = json ? (storedDeployManifest.parse(JSON.parse(json)).registry ?? null) : null;
     return c.json({ registry });
+  });
+
+  // The emitted entity model (#1214) one version ships: entities, field schemas, parent
+  // edges, declared lifecycles — read out of the same retained manifest as the registry
+  // above, and owner-narrowed the same way. `model` is null for a version pushed by a
+  // pre-#1214 CLI or by a vertical with no model.json — the dashboard's Model tab renders
+  // an empty state for both, and distinguishing them buys the tenant nothing.
+  app.get('/verticals/:slug/versions/:id/model', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
+    const model = json ? (storedDeployManifest.parse(JSON.parse(json)).model ?? null) : null;
+    return c.json({ model });
   });
 
   // The static files (#340) one version ships: path, size, content type, content address —

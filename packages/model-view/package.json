@@ -1,0 +1,43 @@
+{
+  "name": "@substrat-run/model-view",
+  "version": "0.1.0",
+  "description": "Render an emitted Substrat model.json as one self-contained HTML page — the ER diagram, the entity cards, the declared lifecycles",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "packages/model-view"
+  },
+  "homepage": "https://substrat.net/concepts/model",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}
