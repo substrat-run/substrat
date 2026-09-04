@@ -535,6 +535,10 @@ export interface ConfiguredProvider {
   clientId: string;
   clientSecretSet: boolean;
   tenantId: string | null;
+  /** Set ⇔ a custom (generic OIDC) provider: the upstream's issuer URL. */
+  issuer: string | null;
+  /** The custom provider's display name — what its sign-in button says. */
+  label: string | null;
   allowSignup: boolean;
   trustEmail: boolean;
   disabled: boolean;
@@ -548,6 +552,9 @@ export interface ProviderDraft {
   clientId: string;
   clientSecret?: string;
   tenantId?: string | null;
+  /** Custom providers only: required there, refused on a catalogue id. */
+  issuer?: string | null;
+  label?: string | null;
   allowSignup: boolean;
   trustEmail: boolean;
   disabled: boolean;

@@ -175,4 +175,37 @@ describe('upgrading a 1.6 store', () => {
     for (const stmt of SCHEMA_STATEMENTS) fresh.exec(stmt);
     expect(upgradeLegacySchema(sqlExecOf(fresh))).toEqual({ renamed: [], added: [] });
   });
+
+  it('adds issuer and label to a pre-generic identity_provider, keeping its rows', () => {
+    // A store from the #1213 era: the table exists in its original shape, with Microsoft
+    // configured. `IF NOT EXISTS` would leave it columnless and every provider read would
+    // fail at runtime — this is the account.issuer story on a different table.
+    const store = new Database(':memory:');
+    store.exec(`CREATE TABLE identity_provider (
+      provider_id TEXT PRIMARY KEY NOT NULL,
+      client_id TEXT NOT NULL,
+      client_secret TEXT NOT NULL,
+      tenant_id TEXT,
+      allow_signup INTEGER NOT NULL DEFAULT 0,
+      trust_email INTEGER NOT NULL DEFAULT 0,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL DEFAULT 1)`);
+    store
+      .prepare('INSERT INTO identity_provider (provider_id, client_id, client_secret) VALUES (?, ?, ?)')
+      .run('microsoft', 'entra-app-id', 'entra-secret');
+
+    const upgrade = upgradeLegacySchema(sqlExecOf(store));
+    for (const stmt of SCHEMA_STATEMENTS) store.exec(stmt);
+
+    expect(upgrade.added).toEqual(
+      expect.arrayContaining(['identity_provider.issuer', 'identity_provider.label', 'identity_provider.endpoints']),
+    );
+    const row = store
+      .prepare('SELECT client_secret, issuer, label, endpoints FROM identity_provider WHERE provider_id = ?')
+      .get('microsoft') as { client_secret: string; issuer: string | null; label: string | null; endpoints: string | null };
+    // NULL is the backfill: every pre-existing row IS a catalogue row, and NULL is what marks one.
+    expect(row).toEqual({ client_secret: 'entra-secret', issuer: null, label: null, endpoints: null });
+    // Idempotent, like the rest of the upgrade.
+    expect(upgradeLegacySchema(sqlExecOf(store))).toEqual({ renamed: [], added: [] });
+  });
 });

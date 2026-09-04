@@ -201,12 +201,18 @@ export const SCHEMA_STATEMENTS: string[] = [
   `CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
   // The UPSTREAM identity providers an operator has enabled (`src/providers.ts`). Also not a
   // Better Auth table: the library takes its social providers as CONFIG, and this is where an
-  // issuer that is configured at runtime keeps them instead.
+  // issuer that is configured at runtime keeps them instead. `issuer` set marks a GENERIC
+  // OIDC row with `label` as its display name and `endpoints` as its discovery document,
+  // resolved at save time (`src/providers.ts`); all three are NULL on a catalogue row. An
+  // existing store gains the columns in `db/upgrade.ts` — IF NOT EXISTS cannot add a column.
   `CREATE TABLE IF NOT EXISTS identity_provider (
     provider_id TEXT PRIMARY KEY NOT NULL,
     client_id TEXT NOT NULL,
     client_secret TEXT NOT NULL,
     tenant_id TEXT,
+    issuer TEXT,
+    label TEXT,
+    endpoints TEXT,
     allow_signup INTEGER NOT NULL DEFAULT 0,
     trust_email INTEGER NOT NULL DEFAULT 0,
     disabled INTEGER NOT NULL DEFAULT 0,

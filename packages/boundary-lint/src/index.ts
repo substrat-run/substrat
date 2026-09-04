@@ -243,6 +243,12 @@ export const DEFAULT_HARNESS = [
   // defines the client id to MEAN. The file exists separately from auth-do.ts precisely
   // so the guarantees it can and cannot make are reviewable in one place.
   'cimd-fetch.ts',
+  // The auth adapter's other declared network boundary, in exactly `cimd-fetch.ts`'s class:
+  // resolving an OIDC issuer URL to its discovery document (RFC 8414) when an operator SAVES
+  // a custom sign-in provider. The issuer IS the relying party here — no `ctx`, no connector
+  // to delegate to — and the file exists separately from the provider registry so the fetch
+  // is reviewable in one place while the registry stays module code under the full rules.
+  'provider-discovery.ts',
   // The auth adapter's BankID pieces — same class as the rest of auth*.ts, imported only
   // by them. `bankid-transport-node.ts` is a declared network boundary exactly as
   // `cimd-fetch.ts` is: the issuer IS the relying party calling BankID's mTLS API, with

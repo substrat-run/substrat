@@ -872,6 +872,12 @@ function AccessPanel() {
  * Auth ships endpoints and a profile mapping for, so enabling one is a credential and two
  * decisions rather than a form full of URLs to get subtly wrong.
  */
+/**
+ * The editor sentinel for "a custom provider being created". Not a valid provider id — the
+ * server only accepts lowercase slugs — so it can never collide with a configured row.
+ */
+const NEW_CUSTOM = '::custom';
+
 function ProvidersPanel({ issuer }: { issuer: string | null }) {
   const [catalogue, setCatalogue] = useState<ProviderCatalogueEntry[] | null>(null);
   const [providers, setProviders] = useState<ConfiguredProvider[]>([]);
@@ -907,6 +913,8 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
           <p className="muted">
             Directories this issuer signs people in through. Enabling one adds a “Continue with
             …” button to the login screen — including for people a relying party sent here.
+            “Custom (OIDC)” takes any standards-compliant issuer by URL — Keycloak, Okta,
+            Auth0, or another auth server like this one.
           </p>
           {providers.length > 0 && (
             <table className="grid">
@@ -920,11 +928,13 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
                     <tr key={provider.id}>
                       <td>
                         <div>
-                          {entry?.label ?? provider.id}
+                          {entry?.label ?? provider.label ?? provider.id}
+                          {provider.issuer && <span className="tag">custom OIDC</span>}
                           {provider.allowSignup && <span className="tag">creates accounts</span>}
                           {provider.trustEmail && <span className="tag">trusted email</span>}
                         </div>
                         {provider.tenantId && <code className="client-id">{provider.tenantId}</code>}
+                        {provider.issuer && <code className="client-id">{provider.issuer}</code>}
                       </td>
                       <td><code>{provider.clientId}</code></td>
                       <td>{provider.disabled ? 'Disabled' : 'Enabled'}</td>
@@ -933,7 +943,7 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
                         <button
                           className="btn tiny danger"
                           onClick={async () => {
-                            if (!window.confirm(`Remove ${entry?.label ?? provider.id}? People who signed in with it will need another way in.`)) return;
+                            if (!window.confirm(`Remove ${entry?.label ?? provider.label ?? provider.id}? People who signed in with it will need another way in.`)) return;
                             try {
                               await removeIdentityProvider(provider.id);
                               // Close the editor if it was showing THIS provider. The table
@@ -959,13 +969,16 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
               </tbody>
             </table>
           )}
-          {unconfigured.length > 0 && !editing && (
+          {!editing && (
             <div className="add-provider">
               {unconfigured.map((entry) => (
                 <button key={entry.id} className="btn" onClick={() => setEditing(entry.id)}>
                   + {entry.label}
                 </button>
               ))}
+              {/* NEW_CUSTOM is not a valid provider id (the server only accepts lowercase
+                  slugs), so it can never collide with a configured row. */}
+              <button className="btn" onClick={() => setEditing(NEW_CUSTOM)}>+ Custom (OIDC)</button>
             </div>
           )}
           {editing && (
@@ -977,7 +990,7 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
               // save them onto the second one's row. The key is what makes it a remount.
               key={editing}
               issuer={issuer}
-              entry={catalogue.find((e) => e.id === editing)!}
+              entry={catalogue.find((e) => e.id === editing) ?? null}
               provider={configured(editing) ?? null}
               onCancel={() => setEditing(null)}
               onSaved={async () => {
@@ -999,6 +1012,10 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
  * issuer's own origin, and every upstream refuses the sign-in outright if what is registered
  * there differs by so much as a trailing slash. Making an operator retype it would only
  * introduce a way to get it wrong.
+ *
+ * With no catalogue `entry` this edits a CUSTOM (generic OIDC) provider instead: the operator
+ * names it (the id becomes the callback path segment, so it is asked once and then fixed),
+ * labels its button, and pastes the upstream's issuer URL — discovery derives the endpoints.
  */
 function ProviderEditor({
   issuer, entry, provider, onCancel, onSaved,
@@ -1009,11 +1026,14 @@ function ProviderEditor({
    * that one would tell an operator to register a redirect URI the issuer will never send.
    */
   issuer: string | null;
-  entry: ProviderCatalogueEntry;
+  entry: ProviderCatalogueEntry | null;
   provider: ConfiguredProvider | null;
   onCancel: () => void;
   onSaved: () => void | Promise<void>;
 }) {
+  const [customId, setCustomId] = useState(provider?.id ?? '');
+  const [label, setLabel] = useState(provider?.label ?? '');
+  const [issuerUrl, setIssuerUrl] = useState(provider?.issuer ?? '');
   const [clientId, setClientId] = useState(provider?.clientId ?? '');
   const [clientSecret, setClientSecret] = useState('');
   const [tenantId, setTenantId] = useState(provider?.tenantId ?? '');
@@ -1023,6 +1043,9 @@ function ProviderEditor({
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const providerId = entry?.id ?? provider?.id ?? customId.trim();
+  const displayName = entry?.label ?? provider?.label ?? (label.trim() || 'custom provider');
+
   const save = async () => {
     setErr(null);
     const draft: ProviderDraft = {
@@ -1031,13 +1054,14 @@ function ProviderEditor({
       // not require re-pasting a credential the operator may no longer have.
       ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
       tenantId: tenantId.trim() || null,
+      ...(entry ? {} : { issuer: issuerUrl.trim(), label: label.trim() }),
       allowSignup,
       trustEmail,
       disabled,
     };
     setBusy(true);
     try {
-      await saveIdentityProvider(entry.id, draft);
+      await saveIdentityProvider(providerId, draft);
       await onSaved();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -1047,14 +1071,36 @@ function ProviderEditor({
 
   return (
     <div className="editor">
-      <h3>{provider ? `Edit ${entry.label}` : `Enable ${entry.label}`}</h3>
+      <h3>{provider ? `Edit ${displayName}` : entry ? `Enable ${entry.label}` : 'Add a custom OIDC provider'}</h3>
+      {!entry && (
+        <>
+          <Field
+            label="Provider ID"
+            value={provider?.id ?? customId}
+            onChange={setCustomId}
+            disabled={Boolean(provider)}
+            hint={provider
+              ? 'Fixed — it is the callback path segment the upstream has registered.'
+              : 'Lowercase letters, digits and hyphens (e.g. acme-sso). It becomes the callback path segment, so it cannot change later.'}
+          />
+          <Field label="Button label" value={label} onChange={setLabel} hint="The login screen offers “Continue with <this>”." />
+          <Field
+            label="Issuer URL"
+            value={issuerUrl}
+            onChange={setIssuerUrl}
+            hint="The upstream's OIDC issuer, e.g. https://id.example.com — its discovery document provides the endpoints."
+          />
+        </>
+      )}
       <label className="field">
         <span>Redirect URI</span>
         <code>
           {(issuer ?? window.location.origin).replace(/\/$/, '')}
-          {provider?.callbackPath ?? `/api/auth/callback/${entry.id}`}
+          {provider?.callbackPath ?? `/api/auth/callback/${providerId || '<provider-id>'}`}
         </code>
-        <em className="hint">Register this exactly, at {entry.console}. Matched character for character.</em>
+        <em className="hint">
+          Register this exactly, at {entry ? entry.console : 'the upstream provider’s client registration'}. Matched character for character.
+        </em>
       </label>
       <Field label="Client ID" value={clientId} onChange={setClientId} />
       <Field
@@ -1064,7 +1110,7 @@ function ProviderEditor({
         type="password"
         hint={provider?.clientSecretSet ? 'Leave blank to keep the secret already stored.' : undefined}
       />
-      {entry.tenantField && (
+      {entry?.tenantField && (
         <Field
           label={entry.tenantField.label}
           value={tenantId}
@@ -1105,7 +1151,7 @@ function ProviderEditor({
       {err && <p className="error">{err}</p>}
       <div className="row">
         <button className="btn primary" disabled={busy} onClick={() => void save()}>
-          {busy ? 'Saving…' : provider ? 'Save changes' : 'Enable'}
+          {busy ? 'Saving…' : provider ? 'Save changes' : entry ? 'Enable' : 'Add provider'}
         </button>
         <button className="btn" onClick={onCancel}>Cancel</button>
       </div>
@@ -1697,12 +1743,12 @@ function Card({ title, logo, children }: { title: string; logo?: string; childre
 }
 
 function Field({
-  label, value, onChange, type = 'text', hint,
-}: { label: string; value: string; onChange: (v: string) => void; type?: string; hint?: string }) {
+  label, value, onChange, type = 'text', hint, disabled,
+}: { label: string; value: string; onChange: (v: string) => void; type?: string; hint?: string; disabled?: boolean }) {
   return (
     <label className="field">
       <span>{label}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} />
+      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} />
       {hint && <em className="hint">{hint}</em>}
     </label>
   );

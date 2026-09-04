@@ -80,5 +80,17 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
     upgrade.added.push('account.issuer');
   }
 
+  // Generic OIDC providers (#1213's follow-up): `identity_provider` grew `issuer`, `label`
+  // and `endpoints`, and `IF NOT EXISTS` cannot add a column to a store that already has the
+  // table. Nullable-with-no-backfill is correct here — every pre-existing row IS a catalogue
+  // row, and NULL is exactly what marks one.
+  const identityProvider = columnsOf(sql, 'identity_provider');
+  if (identityProvider.length > 0 && !identityProvider.includes('issuer')) {
+    sql.exec('ALTER TABLE identity_provider ADD COLUMN issuer TEXT');
+    sql.exec('ALTER TABLE identity_provider ADD COLUMN label TEXT');
+    sql.exec('ALTER TABLE identity_provider ADD COLUMN endpoints TEXT');
+    upgrade.added.push('identity_provider.issuer', 'identity_provider.label', 'identity_provider.endpoints');
+  }
+
   return upgrade;
 }

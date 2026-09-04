@@ -122,6 +122,25 @@ decisions rather than a form of URLs to get subtly wrong. The redirect URI is **
 asked for**: it is `{issuer}/api/auth/callback/{provider}`, derived, and every upstream refuses
 a sign-in whose registered URI differs by a character.
 
+Beside the catalogue there is one open door: a **custom (generic OIDC) provider** — Keycloak,
+Okta, Auth0, another auth server like this one. It is the same row with three more columns
+(`issuer`, `label`, `endpoints`) and the same shape of ask: the issuer URL is the ONE address
+OIDC lets everything else be derived from, so the form is a name, a label, a URL and a
+credential — never five endpoints typed by hand. The endpoints come from the issuer's own
+discovery document (`{issuer}/.well-known/openid-configuration`), **resolved once, at save
+time, and stored on the row** — a wrong URL is refused while the operator is still in the
+form. Save-time is load-bearing, not caching: both runtimes rebuild Better Auth per request,
+and `genericOAuth` given a `discoveryUrl` fetches it in `init` — one outbound fetch per
+upstream per request, and, for an upstream whose discovery routes back to this issuer (two of
+these auth servers federating to each other), an unbounded fetch recursion that OOMs the
+process. Both observed. Scopes are pinned to `openid profile email` (this issuer federates
+identity, not APIs), and PKCE is on. The plugin registers these as **first-class social
+providers** — same `/sign-in/social`, same `/callback/{id}`, so the redirect-URI rule, the two
+decisions, and the authorize-resume below apply unchanged. The operator-chosen id becomes the
+callback path segment, so it is a slug, fixed after creation, and refused where it would
+shadow a provider the library ships built-in (a custom row named `gitlab` would be the real
+GitLab's button with someone else's endpoints).
+
 The two decisions are per provider, and neither has a safe default that suits everyone:
 
 - **Let this provider create accounts** (`disableSignUp` inverted). Separate from the

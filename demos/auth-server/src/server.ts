@@ -25,7 +25,7 @@ import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from './settings.js';
-import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
+import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
@@ -138,6 +138,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     fetchClientMetadataResource,
     allowSignup: overrides?.allowSignup ?? isTruthy(cfg[ALLOW_SIGNUP]),
     socialProviders: socialProvidersFrom(providers),
+    genericProviders: genericProvidersFrom(providers),
     trustedProviders: trustedProvidersFrom(providers),
     bankid: bankidFor(readBankIdConfig(sql)),
   });
