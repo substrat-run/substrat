@@ -15,6 +15,11 @@ import { absenceModule } from '@substrat-run/engine-absence';
 import { meridianModule } from './module.js';
 import { HR_PERM } from './manifest.js';
 
+// The manifest's config surface rides the same import `substrat push` already makes for
+// `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
+// single envSpec declaration and package.json carries no copy.
+export { MERIDIAN_ENV as envSpec } from './manifest.js';
+
 /**
  * Provisioning ONE instance of this vertical — what a customer receives.
  *

@@ -29,8 +29,8 @@ export const SHOP_PERM = {
  * value one tenant saved for one install — a spec `default` rides as a worker binding
  * shared by every install of the serving script.
  *
- * MIRRORED in package.json `substrat.envSpec` (what `substrat push` carries — it reads
- * JSON, not TS); keep the two in sync.
+ * The single declaration (#1206): `src/provision.ts` re-exports this as `envSpec`, which
+ * is what `substrat push` uploads — package.json carries no copy.
  */
 export const SHOP_ENV: EnvVarSpec[] = [
   {

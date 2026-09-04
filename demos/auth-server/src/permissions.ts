@@ -1,5 +1,10 @@
 import { definePermissions } from '@substrat-run/contracts';
 
+// The manifest's config surface rides the same import `substrat push` already makes for
+// `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
+// single envSpec declaration and package.json carries no copy.
+export { AUTH_SERVER_ENV as envSpec } from './manifest.js';
+
 /**
  * The auth-server's permission surface — explicitly empty (D-41). It registers no kernel
  * modules and stamps no role templates: it is a standalone Better Auth issuer whose entire

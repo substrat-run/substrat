@@ -12,12 +12,14 @@ import {
   buildPermissionRegistry,
   deployManifest,
   emittedModel,
+  envVarSpec,
   runtimeNeeds,
   RUNTIME_BASELINE,
   type AssetEntry,
   type AssetsNeed,
   type DeclaredBinding,
   type EmittedModel,
+  type EnvVarSpec,
   type PermissionRegistry,
   type PermissionsInput,
   type RuntimeNeeds,
@@ -83,8 +85,19 @@ function stableStringify(v: unknown): string {
  * builder's own entry is not a new trust boundary. A missing pointer, a missing entry, or an
  * entry that exports no `permissions` is a hard error: a deployable vertical must declare its
  * surface — absence is never silently an empty surface (D-41).
+ *
+ * The same import also reads an optional `envSpec` export (#1206): the manifest's declared
+ * config surface, re-exported from the entry so `src/manifest.ts` is its single declaration.
+ * Optional because pre-#1206 verticals declare it in package.json `substrat.envSpec` instead —
+ * see `resolveDeclaredEnvSpec` for how the two are reconciled.
  */
-export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
+export interface DeclaredSurface {
+  readonly registry: PermissionRegistry;
+  /** The entry's `envSpec` export, validated — undefined when the entry exports none. */
+  readonly envSpec: EnvVarSpec[] | undefined;
+}
+
+export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
   const pkgPath = join(dir, 'package.json');
   // Named rather than left as an ENOENT trace: `substrat push --check` (#1205) is run from
   // wherever a CI job happens to stand, and "wrong directory" is the likeliest reason there
@@ -113,7 +126,7 @@ export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
   // immediately after import. The unique name avoids the ESM import cache across pushes.
   const out = join(dir, `.substrat.permissions.${Date.now()}.mjs`);
   try {
-    let mod: { permissions?: PermissionsInput };
+    let mod: { permissions?: PermissionsInput; envSpec?: unknown };
     try {
       await build({
         entryPoints: [entryPath],
@@ -126,7 +139,10 @@ export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
       });
       // @vite-ignore: this is a real filesystem path imported at runtime, never a bundler input —
       // the comment keeps vitest/vite from trying to resolve it through their transform pipeline.
-      mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as { permissions?: PermissionsInput };
+      mod = (await import(/* @vite-ignore */ pathToFileURL(out).href)) as {
+        permissions?: PermissionsInput;
+        envSpec?: unknown;
+      };
     } catch (e) {
       // The third silent-until-deploy failure (#1205): the entry exists and exports the right
       // name, but cannot be read OUTSIDE the vertical's runtime — a worker-only import, a
@@ -146,10 +162,83 @@ export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
           `\`const permissions = definePermissions({ modules, roles, entityGrants })\`.`,
       );
     }
-    return buildPermissionRegistry(mod.permissions);
+    let spec: EnvVarSpec[] | undefined;
+    if (mod.envSpec !== undefined) {
+      if (!Array.isArray(mod.envSpec)) {
+        throw new Error(`${entry} exports \`envSpec\`, but it is not an array of env-var specs.`);
+      }
+      try {
+        spec = mod.envSpec.map((e) => envVarSpec.parse(e));
+      } catch (e) {
+        throw new Error(
+          `${entry} exports an \`envSpec\` that is not a valid env-var spec list.\n` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+    return { registry: buildPermissionRegistry(mod.permissions), envSpec: spec };
   } finally {
     rmSync(out, { force: true });
   }
+}
+
+/** The declared permission surface alone — `deriveDeclaredSurface` for the callers that
+ *  want only the registry (D-41). */
+export async function deriveRegistry(dir: string): Promise<PermissionRegistry> {
+  return (await deriveDeclaredSurface(dir)).registry;
+}
+
+/**
+ * Which `envSpec` a push ships (#1206). The code-side declaration (the entry's `envSpec`
+ * export — `src/manifest.ts`, re-exported) is canonical when it exists: it is the copy the
+ * worker actually reads at runtime (`resolveEnvSpec(manifest.envSpec, env)`), so a key
+ * declared only there used to be a key nobody could ever set — the settings form is rendered
+ * from what the push uploads, and the push read only package.json. Deriving closes that.
+ *
+ * A vertical that has NOT adopted the export keeps the pre-#1206 behaviour: package.json
+ * `substrat.envSpec` ships, unchanged. One that has adopted it and still carries the
+ * package.json copy is refused on drift rather than warned: the duplicated copy silently
+ * losing a key is the exact defect, and a warning in CI logs is a diff surfaced nowhere.
+ * An identical leftover copy passes with a note, so adoption is a two-step that cannot
+ * wedge a release between its steps.
+ */
+export function resolveDeclaredEnvSpec(
+  derived: EnvVarSpec[] | undefined,
+  pkgCopy: readonly unknown[] | undefined,
+  log: (message: string) => void = console.log,
+): readonly unknown[] | undefined {
+  if (!derived) return pkgCopy;
+  if (pkgCopy !== undefined) {
+    let pkgParsed: EnvVarSpec[] | undefined;
+    try {
+      pkgParsed = Array.isArray(pkgCopy) ? pkgCopy.map((e) => envVarSpec.parse(e)) : undefined;
+    } catch {
+      pkgParsed = undefined;
+    }
+    if (!pkgParsed || stableStringify(pkgParsed) !== stableStringify(derived)) {
+      const keysOf = (s: EnvVarSpec[] | undefined) => new Set((s ?? []).map((e) => e.key));
+      const code = keysOf(derived);
+      const pkg = keysOf(pkgParsed);
+      const onlyCode = [...code].filter((k) => !pkg.has(k));
+      const onlyPkg = [...pkg].filter((k) => !code.has(k));
+      const detail =
+        onlyCode.length || onlyPkg.length
+          ? [
+              onlyCode.length ? `only in the code declaration: ${onlyCode.join(', ')}` : '',
+              onlyPkg.length ? `only in package.json: ${onlyPkg.join(', ')}` : '',
+            ]
+              .filter(Boolean)
+              .join('; ')
+          : 'same keys, differing content';
+      throw new Error(
+        `envSpec is declared twice and the copies disagree (${detail}). The code declaration ` +
+          `(the \`envSpec\` export beside \`permissions\`) is what ships — delete ` +
+          `package.json's \`substrat.envSpec\` block, which no longer does anything.`,
+      );
+    }
+    log('note: package.json `substrat.envSpec` duplicates the code declaration — it is ignored and can be deleted.');
+  }
+  return derived;
 }
 
 /**
@@ -168,6 +257,9 @@ export interface PermissionSurface {
   readonly registry: PermissionRegistry;
   /** `digests.permission` — moves iff a key, description, role or grant shape moves. */
   readonly digest: string;
+  /** The code-side `envSpec` declaration, when the entry exports one (#1206) — already
+   *  checked against any leftover package.json copy, so a drift threw before this existed. */
+  readonly envSpec?: readonly EnvVarSpec[];
 }
 
 /**
@@ -188,8 +280,15 @@ export interface PermissionSurface {
  * turns each into a non-zero exit, which is what makes this usable as a gate.
  */
 export async function checkPermissionSurface(dir: string): Promise<PermissionSurface> {
-  const registry = await deriveRegistry(dir);
-  return { registry, digest: await permissionDigest(registry) };
+  const { registry, envSpec: derived } = await deriveDeclaredSurface(dir);
+  // The envSpec drift check (#1206) runs here too, so `--check` in CI refuses exactly what a
+  // push would. The duplicate-copy note is push-time chatter, not part of the check artifact.
+  const envSpec = resolveDeclaredEnvSpec(derived, readVerticalMeta(dir).envSpec, () => {});
+  return {
+    registry,
+    digest: await permissionDigest(registry),
+    ...(derived ? { envSpec: envSpec as readonly EnvVarSpec[] } : {}),
+  };
 }
 
 /**
@@ -223,6 +322,12 @@ export function formatPermissionSurface(surface: PermissionSurface, label?: stri
     lines.push('', 'entity grants:');
     for (const g of registry.entityGrants) {
       lines.push(`  ${g.entityType}: ${g.permissions.join(', ')}`);
+    }
+  }
+  if (surface.envSpec) {
+    lines.push('', `env keys (code-declared, #1206): ${surface.envSpec.length}`);
+    for (const e of surface.envSpec) {
+      lines.push(`  ${e.key}${e.required ? '  (required)' : ''}${e.secret ? '  (secret)' : ''}`);
     }
   }
   lines.push('', `digest: ${digest}  (digests.permission — the promotion checkpoint compares this)`);
@@ -711,7 +816,9 @@ export interface PushOptions {
    */
   tenant?: string;
   /** The vertical's declared env-spec (from package.json `substrat.envSpec`), carried to the
-   *  registry so the platform can render a config form for it. Validated control-plane-side. */
+   *  registry so the platform can render a config form for it. Validated control-plane-side.
+   *  The FALLBACK copy only (#1206): when the permissions entry exports `envSpec`, that
+   *  code-side declaration ships instead, and this copy drifting from it refuses the push. */
   envSpec?: readonly unknown[];
   /** Registry-driven install fields (marketplace-publish.md §3), from package.json `substrat.*`. */
   ownerGrants?: readonly unknown[];
@@ -947,7 +1054,10 @@ export async function push(
   // The declared permission surface (D-39/D-41), DERIVED from the vertical's typed
   // `definePermissions(...)` entry — shipped in the manifest and hashed into digests.permission
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
-  const registry = await deriveRegistry(opts.dir);
+  // The same import reads the entry's `envSpec` export (#1206); when it exists it is the copy
+  // that ships, and a drifted package.json duplicate refuses the push.
+  const { registry, envSpec: derivedEnvSpec } = await deriveDeclaredSurface(opts.dir);
+  const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);
 
   // The emitted entity model (#1214), read from the checked-in `model.json` beside
   // package.json — the artifact of record (#697) — so the dashboard can render the
@@ -1006,8 +1116,9 @@ export async function push(
       : {}),
     // The vertical's declared config surface, carried to the registry (control-plane-side
     // validated) so the platform renders a settings form for it. Not part of any admission
-    // digest — it's metadata, not code.
-    ...(opts.envSpec ? { envSpec: opts.envSpec } : {}),
+    // digest — it's metadata, not code. Resolved above: the code-side declaration when the
+    // entry exports one, else package.json's copy (#1206).
+    ...(envSpec ? { envSpec } : {}),
     // Registry-driven install metadata (marketplace-publish.md §3) — carried so the dashboard
     // installs without a hardcoded catalog entry. Metadata, not code; not in any digest.
     ...(opts.ownerGrants ? { ownerGrants: opts.ownerGrants } : {}),

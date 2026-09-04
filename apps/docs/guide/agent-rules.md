@@ -93,9 +93,9 @@ dashboard reports `delivered: false`, and the app never sees it. That includes t
 back through `resolveScopedEnvSpec` (`instanceConfig`). Read settings that way and
 never off `env` directly: an `envSpec` default rides as a worker binding shared by
 every install of one serving script, so `env.FOO` is the same string for every
-tenant no matter what any of them saved. Declare a setting in **both**
-`src/manifest.ts` (`SHOP_ENV`) and package.json `substrat.envSpec` — `substrat
-push` reads the JSON, not the TypeScript.
+tenant no matter what any of them saved. Declare a setting once, in
+`src/manifest.ts` (`SHOP_ENV`) — `src/provision.ts` re-exports it as `envSpec`,
+which is what `substrat push` uploads; package.json carries no copy.
 
 ## The rules (non-negotiable)
 

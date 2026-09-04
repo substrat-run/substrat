@@ -9,8 +9,8 @@ import { moduleManifest, permissionKey, type EnvVarSpec } from '@substrat-run/co
  * how a per-install issuer saved in the dashboard silently never arrived (#374/#972).
  * Harness secrets (ROUTER_SECRET, PLATFORM_SECRET) are deliberately NOT declared.
  *
- * MIRRORED in `package.json` `substrat.envSpec` (what `substrat push` carries — it reads
- * JSON, not TS); keep the two in sync.
+ * The single declaration (#1206): `src/provision.ts` re-exports this as `envSpec`, which
+ * is what `substrat push` uploads — package.json carries no copy.
  */
 export const MANYFOLD_ENV: EnvVarSpec[] = [
   {

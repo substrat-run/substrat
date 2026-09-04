@@ -44,8 +44,8 @@ export const T0_PERM = {
  * deployment-wide binding shared by every install of one serving script, so every
  * tenant would be billed against whoever set it last (#374).
  *
- * Mirrored in package.json `substrat.envSpec`, which is what `substrat push` sends —
- * the same duplication Meridian carries; no gate ties the two together yet.
+ * The single declaration (#1206): `src/provision.ts` re-exports this as `envSpec`, which
+ * is what `substrat push` uploads — package.json carries no copy.
  */
 export const TICKET0_ENV: EnvVarSpec[] = [
   {
