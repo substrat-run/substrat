@@ -241,8 +241,12 @@ function renderEntity(name: string, entity: EmittedEntity): string {
   const pk = new Set(primaryKeyOf(entity));
   const key = new Set(entity.key ?? []);
   const erasable = new Set(entity.erasable ?? []);
+  // `fields` is carried as opaque JSON Schema, so `required` is not shape-checked by
+  // `parseModel` the way the entity-level lists are — guard it here: a malformed value
+  // renders every field as optional rather than throwing from inside the renderer.
+  const requiredRaw = (entity.fields as { required?: unknown } | undefined)?.required;
   const required = new Set(
-    ((entity.fields as { required?: unknown } | undefined)?.required as string[] | undefined) ?? [],
+    Array.isArray(requiredRaw) ? requiredRaw.filter((f): f is string => typeof f === 'string') : [],
   );
 
   const rows = fieldNames(entity).map((field) => {

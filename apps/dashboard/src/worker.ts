@@ -1502,8 +1502,10 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
   // the Deployments tab's `running` derivation exactly.
   const runningId = boundVersionId ?? prod?.versionId ?? null;
   const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
-  // An update is offered iff prod points somewhere other than where this scope is pinned.
-  const updateId = prod && prod.versionId !== boundVersionId ? prod.versionId : null;
+  // An update is offered iff prod points somewhere other than the version this scope RUNS —
+  // the effective version, not the raw pin: an unpinned (static-binding) scope runs the prod
+  // head already, and comparing prod to the null pin offered that same head as its own "update".
+  const updateId = prod && prod.versionId !== runningId ? prod.versionId : null;
   const updateVersion = updateId ? deployment.versions.find((v) => v.id === updateId) : undefined;
 
   const registryOf = (versionId: string | null): Promise<PermissionRegistry | null> => {
@@ -1547,7 +1549,9 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   const prod = deployment.channels.find((ch) => ch.channel === 'prod');
   const runningId = boundVersionId ?? prod?.versionId ?? null;
   const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
-  const updateId = prod && prod.versionId !== boundVersionId ? prod.versionId : null;
+  // Against the EFFECTIVE running version, not the raw pin: an unpinned scope runs the prod
+  // head, and comparing prod to the null pin would offer that same head as its own "update".
+  const updateId = prod && prod.versionId !== runningId ? prod.versionId : null;
   const updateVersion = updateId ? deployment.versions.find((v) => v.id === updateId) : undefined;
 
   const modelOf = (versionId: string | null): Promise<EmittedModel | null> => {

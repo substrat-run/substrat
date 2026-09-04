@@ -189,6 +189,7 @@ export function guideSidebar() {
       items: [
         { text: '@substrat-run/contracts', link: '/reference/contracts' },
         { text: '@substrat-run/model-emit', link: '/reference/model-emit' },
+        { text: '@substrat-run/model-view', link: '/reference/model-view' },
         { text: '@substrat-run/kernel', link: '/reference/kernel' },
         { text: '@substrat-run/adapter-sqlite', link: '/reference/adapter-sqlite' },
         { text: '@substrat-run/adapter-cloudflare', link: '/reference/adapter-cloudflare' },

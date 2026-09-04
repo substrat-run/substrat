@@ -74,6 +74,18 @@ describe('model-view', () => {
     ).toThrow(/declares no states map/);
   });
 
+  it('renders a malformed fields.required as all-optional rather than throwing', () => {
+    // `fields` is opaque JSON Schema, so `required` slips past parseModel's list checks —
+    // the renderer must not turn that into a TypeError from `new Set(3)`.
+    const odd = {
+      entities: {
+        a: { table: 't', fields: { type: 'object', properties: { id: { type: 'string' } }, required: 3 } },
+      },
+    };
+    const html = renderModelHtml(parseModel(odd, 'm'), { source: 'm' });
+    expect(html).toContain('<span class="opt">?</span>');
+  });
+
   it('escapes what it renders', () => {
     const nasty = {
       entities: { '<img x>': { table: 't', fields: { type: 'object', properties: {} } } },
