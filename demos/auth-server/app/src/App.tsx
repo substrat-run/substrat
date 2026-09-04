@@ -1048,6 +1048,12 @@ function ProviderEditor({
 
   const save = async () => {
     setErr(null);
+    // Refused here, not by the server: an empty id would make the PUT's path `/providers/`,
+    // which matches no route and comes back as a 404 that names no field.
+    if (!providerId) {
+      setErr('A provider ID is required — it becomes the callback path segment.');
+      return;
+    }
     const draft: ProviderDraft = {
       clientId: clientId.trim(),
       // Empty means "leave the stored secret alone" — an edit that only flips a toggle must

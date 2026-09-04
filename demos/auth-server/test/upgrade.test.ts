@@ -208,4 +208,40 @@ describe('upgrading a 1.6 store', () => {
     // Idempotent, like the rest of the upgrade.
     expect(upgradeLegacySchema(sqlExecOf(store))).toEqual({ renamed: [], added: [] });
   });
+
+  it('finishes an interrupted identity_provider upgrade — each column is guarded on its own', () => {
+    // A boot that stopped between the ALTERs: `issuer` landed, `label` and `endpoints` did
+    // not. Nothing wraps the upgrade in a transaction on the Node runtime, so a guard on
+    // `issuer` alone would skip the whole block and leave the table half-shaped for good.
+    const store = new Database(':memory:');
+    store.exec(`CREATE TABLE identity_provider (
+      provider_id TEXT PRIMARY KEY NOT NULL,
+      client_id TEXT NOT NULL,
+      client_secret TEXT NOT NULL,
+      tenant_id TEXT,
+      issuer TEXT,
+      allow_signup INTEGER NOT NULL DEFAULT 0,
+      trust_email INTEGER NOT NULL DEFAULT 0,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL DEFAULT 1)`);
+
+    const upgrade = upgradeLegacySchema(sqlExecOf(store));
+    expect(upgrade.added).toEqual(['identity_provider.label', 'identity_provider.endpoints']);
+    const columns = (store.prepare('PRAGMA table_info("identity_provider")').all() as { name: string }[]).map(
+      (r) => r.name,
+    );
+    expect(columns).toEqual(expect.arrayContaining(['issuer', 'label', 'endpoints']));
+  });
+
+  it('finishes an interrupted account upgrade — the issuer backfill reruns until no row is null', () => {
+    // The crash window on the other table: the ALTER landed, the fill did not. The fill is
+    // idempotent (`WHERE issuer IS NULL`, and the adapter always writes the column), so it
+    // runs on every boot rather than only beside its ALTER.
+    db.exec('ALTER TABLE account ADD COLUMN issuer TEXT');
+    const upgrade = upgradeLegacySchema(sql);
+    expect(upgrade.added).not.toContain('account.issuer');
+    expect((db.prepare("SELECT issuer FROM account WHERE id = 'a1'").get() as { issuer: string }).issuer).toBe(
+      'local:credential',
+    );
+  });
 });

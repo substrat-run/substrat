@@ -1,4 +1,4 @@
-import { discoveryUrlOf, type ProviderEndpoints } from './providers.js';
+import { discoveryUrlOf, isHttpsOrLoopback, type ProviderEndpoints } from './providers.js';
 
 /**
  * The auth adapter's discovery boundary — the ONE place this issuer fetches another issuer's
@@ -34,6 +34,18 @@ export async function resolveIssuerEndpoints(issuer: string): Promise<ProviderEn
       `${url} is not an OIDC discovery document (issuer, authorization_endpoint and token_endpoint are required)`,
     );
   }
+  // The document must be talking about the issuer that was asked for. Its self-declared
+  // issuer becomes the account namespace (`accountIssuer`, keyed with the upstream's `sub`),
+  // so a document free to declare any issuer could collide with another configured provider's
+  // accounts — OIDC discovery requires the match for exactly this reason.
+  if (doc.issuer.replace(/\/+$/, '') !== expectedIssuerOf(issuer)) {
+    throw new Error(
+      `${url} declares issuer '${doc.issuer}', which is not the issuer that was asked for — the two must match`,
+    );
+  }
+  for (const key of ['authorization_endpoint', 'token_endpoint', 'userinfo_endpoint', 'end_session_endpoint'] as const) {
+    assertUsableEndpoint(key, doc[key]);
+  }
   return {
     issuer: doc.issuer,
     authorization_endpoint: doc.authorization_endpoint,
@@ -41,4 +53,33 @@ export async function resolveIssuerEndpoints(issuer: string): Promise<ProviderEn
     ...(doc.userinfo_endpoint ? { userinfo_endpoint: doc.userinfo_endpoint } : {}),
     ...(doc.end_session_endpoint ? { end_session_endpoint: doc.end_session_endpoint } : {}),
   };
+}
+
+/**
+ * What the document's `issuer` has to equal: the operator's input, minus the well-known
+ * suffix `discoveryUrlOf` tolerates and any trailing slashes — the same normalisation the
+ * fetch itself applied, so a pasted discovery URL still matches its own document.
+ */
+function expectedIssuerOf(issuer: string): string {
+  const trimmed = issuer.replace(/\/+$/, '');
+  const wellKnown = trimmed.indexOf('/.well-known/');
+  return wellKnown === -1 ? trimmed : trimmed.slice(0, wellKnown);
+}
+
+/**
+ * The issuer URL already passed the HTTPS-or-loopback rule at the admin route; the endpoints
+ * the document hands back are what people, authorization codes and the client secret are
+ * actually sent to, so each one has to pass the same rule before it is stored.
+ */
+function assertUsableEndpoint(name: string, value: string | undefined): void {
+  if (!value) return;
+  let endpoint: URL;
+  try {
+    endpoint = new URL(value);
+  } catch {
+    throw new Error(`the discovery document's ${name} ('${value}') is not an absolute URL`);
+  }
+  if (!isHttpsOrLoopback(endpoint)) {
+    throw new Error(`the discovery document's ${name} must be https (or http on loopback): ${value}`);
+  }
 }

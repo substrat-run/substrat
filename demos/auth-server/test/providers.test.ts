@@ -200,6 +200,18 @@ beforeEach(() => {
       if (target === 'https://id.acme.test/.well-known/openid-configuration') {
         return Response.json(ACME_DISCOVERY);
       }
+      if (target === 'https://impostor.acme.test/.well-known/openid-configuration') {
+        // Serves ACME's document verbatim — a discovery document claiming someone else's issuer.
+        return Response.json(ACME_DISCOVERY);
+      }
+      if (target === 'https://sneaky.acme.test/.well-known/openid-configuration') {
+        // A consistent issuer, but an endpoint downgraded to plain HTTP off loopback.
+        return Response.json({
+          issuer: 'https://sneaky.acme.test',
+          authorization_endpoint: 'http://sneaky.acme.test/oauth/authorize',
+          token_endpoint: 'https://sneaky.acme.test/oauth/token',
+        });
+      }
       if (target === 'http://localhost:8080/realms/dev/.well-known/openid-configuration') {
         return Response.json({
           issuer: 'http://localhost:8080/realms/dev',
@@ -350,6 +362,23 @@ describe('the providers admin surface', () => {
     const res = await addAcme(cookie, { issuer: 'https://not-an-issuer.test' });
     expect(res.status).toBe(400);
     expect(((await res.json()) as { error: string }).error).toContain('discovery');
+    expect(readProviders(sql)).toEqual([]);
+  });
+
+  it('refuses a discovery document that lies about its issuer or downgrades an endpoint', async () => {
+    const cookie = await signInAs(ADMIN);
+    // The document at impostor.acme.test declares id.acme.test's issuer. That issuer becomes
+    // the account namespace (`accountIssuer` + the upstream's `sub`), so accepting it would
+    // let one upstream squat another configured provider's accounts.
+    const impostor = await addAcme(cookie, { issuer: 'https://impostor.acme.test' });
+    expect(impostor.status).toBe(400);
+    expect(((await impostor.json()) as { error: string }).error).toContain('issuer');
+    // An HTTPS issuer whose document points an endpoint at plain HTTP off loopback: the
+    // endpoints are where people, authorization codes and the client secret actually go, so
+    // each one passes the same HTTPS-or-loopback rule the issuer URL did.
+    const sneaky = await addAcme(cookie, { issuer: 'https://sneaky.acme.test' });
+    expect(sneaky.status).toBe(400);
+    expect(((await sneaky.json()) as { error: string }).error).toContain('https');
     expect(readProviders(sql)).toEqual([]);
   });
 

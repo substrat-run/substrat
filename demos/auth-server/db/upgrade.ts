@@ -71,25 +71,33 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
   }
 
   const account = columnsOf(sql, 'account');
-  if (account.length > 0 && !account.includes('issuer')) {
-    // Added nullable (SQLite cannot add a NOT NULL column without a constant default) and
-    // then filled. The adapter always writes the column from here on, so the only rows that
-    // could be null are these, and they are all filled in the same statement.
-    sql.exec('ALTER TABLE account ADD COLUMN issuer TEXT');
+  if (account.length > 0) {
+    if (!account.includes('issuer')) {
+      // Added nullable — SQLite cannot add a NOT NULL column without a constant default.
+      sql.exec('ALTER TABLE account ADD COLUMN issuer TEXT');
+      upgrade.added.push('account.issuer');
+    }
+    // The adapter always writes the column from here on, so a null row can only be the
+    // upgrade's own — including one a crash left behind between the ALTER above and this
+    // fill, which is why the fill runs whenever the table exists rather than only beside
+    // its ALTER. Nothing wraps these statements in a transaction on the Node runtime.
     sql.exec("UPDATE account SET issuer = 'local:' || provider_id WHERE issuer IS NULL");
-    upgrade.added.push('account.issuer');
   }
 
   // Generic OIDC providers (#1213's follow-up): `identity_provider` grew `issuer`, `label`
   // and `endpoints`, and `IF NOT EXISTS` cannot add a column to a store that already has the
   // table. Nullable-with-no-backfill is correct here — every pre-existing row IS a catalogue
   // row, and NULL is exactly what marks one.
+  // Guarded per column, not by `issuer` alone: nothing wraps these ALTERs in a transaction
+  // on the Node runtime, so a boot that stopped between them must find the next one still
+  // adding the columns it got to rather than skipping the block.
   const identityProvider = columnsOf(sql, 'identity_provider');
-  if (identityProvider.length > 0 && !identityProvider.includes('issuer')) {
-    sql.exec('ALTER TABLE identity_provider ADD COLUMN issuer TEXT');
-    sql.exec('ALTER TABLE identity_provider ADD COLUMN label TEXT');
-    sql.exec('ALTER TABLE identity_provider ADD COLUMN endpoints TEXT');
-    upgrade.added.push('identity_provider.issuer', 'identity_provider.label', 'identity_provider.endpoints');
+  if (identityProvider.length > 0) {
+    for (const column of ['issuer', 'label', 'endpoints']) {
+      if (identityProvider.includes(column)) continue;
+      sql.exec(`ALTER TABLE identity_provider ADD COLUMN ${column} TEXT`);
+      upgrade.added.push(`identity_provider.${column}`);
+    }
   }
 
   return upgrade;

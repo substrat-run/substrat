@@ -6,11 +6,13 @@ import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
 import {
   GENERIC_ID_PATTERN,
+  LOOPBACK_HOSTS,
   PROVIDER_CATALOGUE,
   deleteProvider,
   descriptorOf,
   isReservedProviderId,
   readProvider,
+  isHttpsOrLoopback,
   readProviders,
   toWireProvider,
   upsertProvider,
@@ -216,9 +218,6 @@ const bankidPut = z.object({
   disabled: z.boolean(),
 });
 
-/** Loopback hosts, where OAuth 2.1 still permits plain HTTP for a native client. */
-const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-
 /**
  * The redirect-URI rule the plugin applies at registration, applied again here because an
  * edit does not pass through the plugin. A `web` client must use HTTPS off loopback; a
@@ -234,7 +233,7 @@ function assertRedirectUri(value: string, applicationType: string): void {
     throw new HTTPException(400, { message: `'${value}' is not an absolute URI` });
   }
   if (url.hash) throw new HTTPException(400, { message: `'${value}' must not carry a fragment` });
-  if (applicationType === 'web' && url.protocol === 'http:' && !LOOPBACK.has(url.hostname)) {
+  if (applicationType === 'web' && url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) {
     throw new HTTPException(400, {
       message: `web clients require https redirect URIs on non-loopback hosts: ${value}`,
     });
@@ -258,7 +257,7 @@ function assertIssuerUrl(value: string): void {
   if (url.hash || url.search) {
     throw new HTTPException(400, { message: 'an issuer URL carries no query or fragment' });
   }
-  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && LOOPBACK.has(url.hostname))) {
+  if (!isHttpsOrLoopback(url)) {
     throw new HTTPException(400, { message: `an issuer URL must be https (or http on loopback): ${value}` });
   }
 }

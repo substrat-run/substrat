@@ -99,6 +99,19 @@ export function isReservedProviderId(providerId: string): boolean {
   return (socialProviderList as readonly string[]).includes(providerId);
 }
 
+/** Loopback hosts, where OAuth 2.1 still permits plain HTTP for local development. */
+export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/**
+ * The rule every URL an operator can point this issuer at must pass: HTTPS, or HTTP on a
+ * loopback host so a local Keycloak works in dev. Applied to the issuer URL at save time AND
+ * to every endpoint its discovery document declares — an HTTPS issuer must not be able to
+ * route authorization codes or client credentials to a plain-HTTP endpoint.
+ */
+export function isHttpsOrLoopback(url: URL): boolean {
+  return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
+}
+
 /**
  * The discovery document for an issuer URL. Operators paste the ISSUER (what OIDC calls it,
  * what a relying party is configured with, what this issuer's own dashboard displays about
