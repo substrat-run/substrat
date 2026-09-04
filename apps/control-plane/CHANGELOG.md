@@ -1,5 +1,12 @@
 # @substrat-run/control-plane
 
+## 0.13.15
+
+### Patch Changes
+
+- Updated dependencies [b5a6ca0]
+  - @substrat-run/connector-fortnox@0.4.0
+
 ## 0.13.14
 
 ### Patch Changes

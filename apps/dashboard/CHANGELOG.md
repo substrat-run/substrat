@@ -1,5 +1,12 @@
 # @substrat-run/dashboard
 
+## 0.28.16
+
+### Patch Changes
+
+- Updated dependencies [b5a6ca0]
+  - @substrat-run/connector-fortnox@0.4.0
+
 ## 0.28.15
 
 ### Patch Changes
