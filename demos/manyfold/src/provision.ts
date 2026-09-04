@@ -11,6 +11,11 @@ import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { manyfoldModule } from './module.js';
 import { MF_PERM } from './manifest.js';
 
+// The manifest's config surface rides the same import `substrat push` already makes for
+// `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
+// single envSpec declaration and package.json carries no copy.
+export { MANYFOLD_ENV as envSpec } from './manifest.js';
+
 /**
  * Provisioning ONE instance of Manyfold — what a team receives when they install
  * it from the marketplace. One tenant, a set of SITES (each a scope), one owner

@@ -14,6 +14,11 @@ import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-pro
 import { calloutModule } from './module.js';
 import { SC_PERM } from './manifest.js';
 
+// The manifest's config surface rides the same import `substrat push` already makes for
+// `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
+// single envSpec declaration and package.json carries no copy.
+export { CALLOUT_ENV as envSpec } from './manifest.js';
+
 /**
  * Provisioning ONE instance of this vertical — what a customer receives.
  *

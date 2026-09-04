@@ -14,6 +14,11 @@
 import { definePermissions, type PermissionKey, type RoleDefinition } from '@substrat-run/contracts';
 import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
 import { T0_PERM } from './manifest.js';
+
+// The manifest's config surface rides the same import `substrat push` already makes for
+// `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
+// single envSpec declaration and package.json carries no copy.
+export { TICKET0_ENV as envSpec } from './manifest.js';
 import { ticket0Module } from './module.js';
 
 export const MODULES = [meteringModule, ticket0Module];

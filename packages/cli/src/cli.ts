@@ -364,7 +364,13 @@ async function cmdPush(): Promise<void> {
     // so `substrat push --check --json > permissions.json` is a usable artifact.
     console.log(
       jsonCheck
-        ? JSON.stringify({ registry: surface.registry, digest: surface.digest }, null, 2)
+        ? JSON.stringify(
+            // The envSpec rides only when code-declared (#1206), so a pre-#1206 vertical's
+            // artifact stays byte-identical.
+            { registry: surface.registry, digest: surface.digest, ...(surface.envSpec ? { envSpec: surface.envSpec } : {}) },
+            null,
+            2,
+          )
         : formatPermissionSurface(surface, flag('slug') || meta.slug || undefined),
     );
     return;

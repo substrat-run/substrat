@@ -30,8 +30,9 @@ import { PERM as ABSENCE_PERM } from '@substrat-run/engine-absence';
  * are deliberately NOT declared: they are deployment trust anchors, and keeping them out
  * of the spec keeps them out of the per-scope overlay (declared keys are the allow-list).
  *
- * MIRRORED in `package.json` `substrat.envSpec` (what `substrat push` carries — it reads
- * JSON, not TS); `test/envspec.test.ts` fails the build if the two drift.
+ * The single declaration (#1206): `src/provision.ts` re-exports this as `envSpec`, which
+ * is what `substrat push` uploads — package.json carries no copy, and
+ * `test/envspec.test.ts` guards the wiring.
  */
 export const MERIDIAN_ENV: EnvVarSpec[] = [
   {

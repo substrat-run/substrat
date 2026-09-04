@@ -8,6 +8,11 @@ import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-inv
 import { bikeShopModule } from './module.js';
 import { SHOP_PERM } from './manifest.js';
 
+// The manifest's config surface rides the same import `substrat push` already makes for
+// `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
+// single envSpec declaration and package.json carries no copy.
+export { SHOP_ENV as envSpec } from './manifest.js';
+
 // ============================================================================
 // The vertical's PROVISIONING surface — everything a deployment needs to know
 // about modules, roles and grant shapes, with NO node imports. Split from

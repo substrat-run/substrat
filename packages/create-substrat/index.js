@@ -101,21 +101,10 @@ function packageJson(name) {
             { binding: 'CONFIG', class: 'ConfigDO' },
           ],
         },
-        // The declared per-instance settings — MIRRORED from src/manifest.ts
-        // (`SHOP_ENV`), because `substrat push` reads JSON, not TS. The dashboard
-        // renders its Settings form from this; keep the two in sync.
-        envSpec: [
-          {
-            key: 'SHOP_NAME',
-            label: 'Workshop name',
-            description: 'The workshop name shown to customers. Set per install.',
-            placeholder: 'Söder Cykel & Service',
-            default: 'Substrat Bike Shop',
-            required: false,
-            secret: false,
-            group: 'General',
-          },
-        ],
+        // No envSpec copy here (#1206): the declared per-instance settings live in
+        // src/manifest.ts (`SHOP_ENV`), re-exported as `envSpec` from the permissions
+        // entry — `substrat push` reads them off that same import. The dashboard
+        // renders its Settings form from what the push uploads.
         devServers: DEV_SERVERS,
       },
       scripts: {

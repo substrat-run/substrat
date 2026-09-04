@@ -35,36 +35,6 @@
       "protocol:read",
       "protocol:void"
     ],
-    "envSpec": [
-      {
-        "key": "AUTH_PROVIDER",
-        "label": "Auth provider",
-        "description": "OIDC-only: the vertical runs no built-in credential store. When no per-scope `substrat:auth` choice is delivered, 'oidc' verifies bearer tokens against OIDC_ISSUER (standalone deploys); anything else leaves the instance without a configured issuer.",
-        "placeholder": "oidc",
-        "default": "oidc",
-        "required": false,
-        "secret": false,
-        "group": "Auth"
-      },
-      {
-        "key": "OIDC_ISSUER",
-        "label": "OIDC issuer",
-        "description": "The issuer URL bearer tokens are verified against when the provider is 'oidc'. Covers Supabase, Auth0, AuthHero, Keycloak, …",
-        "placeholder": "https://auth.example.com",
-        "required": false,
-        "secret": false,
-        "group": "Auth"
-      },
-      {
-        "key": "OIDC_AUDIENCE",
-        "label": "OIDC audience",
-        "description": "Expected `aud` claim of verified bearer tokens (optional; issuer-dependent).",
-        "placeholder": "https://api.example.com",
-        "required": false,
-        "secret": false,
-        "group": "Auth"
-      }
-    ],
     "tenant": "substrat-9yjbbn",
     "devServers": [
       {

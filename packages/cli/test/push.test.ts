@@ -14,7 +14,7 @@ import {
   matchesOutboundHost,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, formatPermissionSurface, readVerticalMeta, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -839,6 +839,92 @@ export const permissions = {
     const text = formatPermissionSurface({ registry, digest: await permissionDigest(registry) });
     expect(text).toContain('0 key(s), 0 role(s), 0 entity-grant shape(s)');
     expect(text.match(/\(none declared\)/g)).toHaveLength(2);
+  });
+
+  it.runIf(built)('reports the code-declared envSpec, so the config surface is in the check artifact', () => {
+    const r = runCheck(
+      verticalWith(
+        SURFACE +
+          `export const envSpec = [{ key: 'SHOP_NAME', description: 'The shop name', required: true }];\n`,
+      ),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('env keys (code-declared, #1206): 1');
+    expect(r.stdout).toContain('SHOP_NAME  (required)');
+  });
+
+  it.runIf(built)('refuses when a leftover package.json envSpec copy has drifted from the export (#1206)', () => {
+    const dir = verticalWith(
+      SURFACE + `export const envSpec = [{ key: 'SHOP_NAME', description: 'The shop name' }];\n`,
+      { substrat: { permissions: 'perms.mjs', envSpec: [{ key: 'OLD_KEY', description: 'Stale copy' }] } },
+    );
+    const r = runCheck(dir);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/envSpec is declared twice and the copies disagree/);
+    expect(r.stderr).toContain('only in the code declaration: SHOP_NAME');
+    expect(r.stderr).toContain('only in package.json: OLD_KEY');
+  });
+
+  it.runIf(built)('refuses an envSpec export that is not a valid env-var spec list', () => {
+    const r = runCheck(verticalWith(SURFACE + `export const envSpec = [{ key: 'lowercase' }];\n`));
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/`envSpec` that is not a valid env-var spec list/);
+  });
+});
+
+/**
+ * Which envSpec a push ships (#1206) — the pure decision, unit-tested because the
+ * bundle-and-import that produces `derived` cannot run under vitest (see above). The
+ * property that matters: adopting the code-side export can never silently lose a key —
+ * a drifted duplicate REFUSES, and only an identical or absent package.json copy passes.
+ */
+describe('resolveDeclaredEnvSpec — the code declaration wins, drift refuses (#1206)', () => {
+  const spec = (key: string, description = 'A key') => ({
+    key,
+    description,
+    required: false,
+    secret: false,
+  });
+
+  it('falls back to the package.json copy when the entry exports none (pre-#1206 verticals)', () => {
+    const pkgCopy = [{ key: 'A_KEY', description: 'A key' }];
+    expect(resolveDeclaredEnvSpec(undefined, pkgCopy, () => {})).toBe(pkgCopy);
+    expect(resolveDeclaredEnvSpec(undefined, undefined, () => {})).toBeUndefined();
+  });
+
+  it('ships the code declaration when it is the only copy', () => {
+    const derived = [spec('A_KEY')];
+    expect(resolveDeclaredEnvSpec(derived, undefined, () => {})).toBe(derived);
+  });
+
+  it('tolerates an identical leftover copy, with a note — adoption is a two-step', () => {
+    const derived = [spec('A_KEY')];
+    // The copy omits the defaulted fields; parsing normalises it, so it still counts as equal.
+    const pkgCopy = [{ key: 'A_KEY', description: 'A key' }];
+    const notes: string[] = [];
+    expect(resolveDeclaredEnvSpec(derived, pkgCopy, (m) => notes.push(m))).toBe(derived);
+    expect(notes.join('\n')).toContain('can be deleted');
+  });
+
+  it('refuses a drifted copy, naming the keys on each side', () => {
+    const derived = [spec('NEW_KEY'), spec('SHARED')];
+    const pkgCopy = [spec('OLD_KEY'), spec('SHARED')];
+    expect(() => resolveDeclaredEnvSpec(derived, pkgCopy, () => {})).toThrow(
+      /only in the code declaration: NEW_KEY.*only in package.json: OLD_KEY/,
+    );
+  });
+
+  it('refuses same keys with differing content — a changed default is drift too', () => {
+    const derived = [{ ...spec('A_KEY'), default: 'new' }];
+    const pkgCopy = [{ ...spec('A_KEY'), default: 'old' }];
+    expect(() => resolveDeclaredEnvSpec(derived, pkgCopy, () => {})).toThrow(/same keys, differing content/);
+  });
+
+  it('refuses a copy that no longer even parses — stale junk is drift, not a pass', () => {
+    const derived = [spec('A_KEY')];
+    expect(() => resolveDeclaredEnvSpec(derived, [{ key: 'lowercase' }], () => {})).toThrow(
+      /declared twice and the copies disagree/,
+    );
   });
 });
 

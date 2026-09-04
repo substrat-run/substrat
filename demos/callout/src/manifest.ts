@@ -11,8 +11,8 @@ import { calloutEntities } from './entities.js';
  * (delivered > env > default, #398), never via bare `env.X`. Harness secrets
  * (ROUTER_SECRET, PLATFORM_SECRET, ALLOW_DEV_HEADER) are deliberately NOT declared.
  *
- * MIRRORED in `package.json` `substrat.envSpec` (what `substrat push` carries — it reads
- * JSON, not TS); keep the two in sync.
+ * The single declaration (#1206): `src/provision.ts` re-exports this as `envSpec`, which
+ * is what `substrat push` uploads — package.json carries no copy.
  */
 export const CALLOUT_ENV: EnvVarSpec[] = [
   {
