@@ -742,11 +742,13 @@ export interface LayerRulesChecked {
   /** The absolute directory this check covered. */
   readonly root: string;
   /**
-   * `--skip-lint` — nothing was checked. Carried because a receipt that cannot say so is a
-   * receipt that launders the bypass: handed to a `push()` that did NOT ask to skip, it
-   * would stand in for a check that never ran, and without even the ungated notice.
+   * What the check found — the value that rides the push as `origin.gate`, so the platform
+   * records it on the version (#955). `skipped` (`--skip-lint`) and `none` (no module code
+   * found) both mean nothing was checked, and are carried because a receipt that cannot say
+   * so is a receipt that launders the bypass: handed to a `push()` that did NOT ask to skip,
+   * it would stand in for a check that never ran, and without even the ungated notice.
    */
-  readonly skipped: boolean;
+  readonly gate: NonNullable<VersionOrigin['gate']>;
 }
 
 /**
@@ -763,7 +765,7 @@ export function assertLayerRules(
   const root = resolve(dir);
   if (skipLint) {
     log('note: --skip-lint — the layer rules were NOT checked; this push is ungated');
-    return { root, skipped: true };
+    return { root, gate: 'skipped' };
   }
   const config = loadBoundaryLintConfig(root);
   const packages = resolvePackages(root, config);
@@ -773,7 +775,7 @@ export function assertLayerRules(
       'note: boundary-lint found no module code to check (expected `src/`, or a ' +
         '`boundary-lint.config.json` naming it) — this push is ungated',
     );
-    return { root, skipped: false };
+    return { root, gate: 'none' };
   }
   if (packages.every((p) => p.lint) && declaredEngines(root, config).length > 0) {
     log(
@@ -784,7 +786,7 @@ export function assertLayerRules(
   const violations = lint(root, config);
   if (violations.length === 0) {
     log(`boundary-lint: all layer rules hold (${linted.length} package(s))`);
-    return { root, skipped: false };
+    return { root, gate: 'passed' };
   }
   throw new Error(
     [
@@ -974,11 +976,13 @@ export async function push(
   // the source tree and needs nothing else — a violation is refused in a second rather than
   // after a wrangler build whose output was never going to be admissible. Skipped only for
   // the caller that just ran it on this same directory AND under the same skip decision
-  // (`opts.linted`, the CLI's pre-flight) — a skipped receipt is not a check.
-  const linted = opts.linted;
-  if (linted?.root !== resolve(opts.dir) || linted.skipped !== Boolean(opts.skipLint)) {
-    assertLayerRules(opts.dir, opts.skipLint);
-  }
+  // (`opts.linted`, the CLI's pre-flight) — a skipped receipt is not a check. The receipt
+  // is KEPT either way: its verdict rides the upload as `origin.gate` below.
+  const linted =
+    opts.linted?.root === resolve(opts.dir) &&
+    (opts.linted.gate === 'skipped') === Boolean(opts.skipLint)
+      ? opts.linted
+      : assertLayerRules(opts.dir, opts.skipLint);
 
   // Substrate-vocabulary path (D-38): when `substrat.runtimeNeeds` is present the builder
   // authored no wrangler config, so none is read — the CLI derives it. The generated file
@@ -1154,8 +1158,11 @@ export async function push(
   if (opts.tenant) form.set('tenant', opts.tenant);
   if (opts.allowFork) form.set('allowFork', '1');
   // Provenance rides beside the pin for the same reason: it describes THIS push, not the
-  // code, so it stays out of every digest. Self-reported — a label, never authority.
-  form.set('origin', JSON.stringify(pushOrigin()));
+  // code, so it stays out of every digest. Self-reported — a label, never authority. The
+  // gate receipt rides with it (#955): the platform never sees the source this push was
+  // linted against, so recording what the gate found — or that it was skipped — is the
+  // only way an ungated version is a stored fact rather than a lost stdout warning.
+  form.set('origin', JSON.stringify({ ...pushOrigin(), gate: linted.gate }));
   for (const m of modules) {
     form.set(m.name, new Blob([m.content], { type: 'application/javascript+module' }), m.name);
   }

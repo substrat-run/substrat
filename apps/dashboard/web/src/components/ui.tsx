@@ -109,9 +109,38 @@ export function MonoTag({ children, color }: { children: ReactNode; color?: stri
 export function OriginTag({
   origin,
 }: {
-  origin?: { source: 'git' | 'cli'; gitRepo?: string; gitCommit?: string; gitRef?: string } | null;
+  origin?: {
+    source: 'git' | 'cli';
+    gitRepo?: string;
+    gitCommit?: string;
+    gitRef?: string;
+    gate?: 'passed' | 'skipped' | 'none';
+  } | null;
 }) {
   if (!origin) return null;
+  // The push-time layer-rule receipt (#955). Only a recorded bypass is flagged: `skipped`
+  // is a deliberate --skip-lint, `none` means the gate found nothing to check. A version
+  // with no receipt at all predates the receipt (or skipped the CLI) — like the rest of
+  // this tag, absence of evidence stays absent rather than being guessed at, and `passed`
+  // stays quiet because gated is the expected state, not an achievement.
+  const ungated =
+    origin.gate === 'skipped' || origin.gate === 'none' ? (
+      <span
+        style={{
+          color: 'var(--status-warning-fg)',
+          background: 'var(--status-warning-bg)',
+          borderRadius: 4,
+          padding: '0 4px',
+        }}
+        title={
+          origin.gate === 'skipped'
+            ? 'Pushed with --skip-lint — the layer rules were not checked'
+            : 'boundary-lint found no module code to check — the layer rules were not checked'
+        }
+      >
+        ungated
+      </span>
+    ) : null;
   const style: CSSProperties = {
     display: 'inline-flex',
     alignItems: 'center',
@@ -126,6 +155,7 @@ export function OriginTag({
       <span style={style} title="Pushed from a terminal (substrat push)">
         <Ic name="terminal" size={11} />
         cli
+        {ungated}
       </span>
     );
   }
@@ -146,6 +176,7 @@ export function OriginTag({
       ) : (
         label
       )}
+      {ungated}
     </span>
   );
 }

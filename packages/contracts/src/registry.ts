@@ -213,6 +213,18 @@ export const versionOrigin = z.object({
   gitCommit: z.string().min(1).optional(),
   /** The branch/tag the workflow ran for (`GITHUB_REF_NAME`). */
   gitRef: z.string().min(1).optional(),
+  /**
+   * The push-time layer-rule gate (#955): what `substrat push`'s boundary-lint run found
+   * before this version was uploaded. `passed` = every rule held; `skipped` = pushed with
+   * `--skip-lint`; `none` = no module code was found, so nothing was checked. ABSENT = the
+   * push carried no receipt at all — a pre-receipt CLI, or a caller that skipped the CLI
+   * entirely — which reads as ungated, deliberately: the platform never lints the uploaded
+   * bundle (it receives built output, not source), so the CLI's own check is the only one
+   * there is, and a version that cannot show a receipt was not checked by it. Self-reported
+   * like the rest of this object — a label the dashboard shows and a hook an admit policy
+   * can gate on, never proof.
+   */
+  gate: z.enum(['passed', 'skipped', 'none']).optional(),
 });
 export type VersionOrigin = z.infer<typeof versionOrigin>;
 

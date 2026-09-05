@@ -189,12 +189,14 @@ export interface DeploymentVersion {
   /** Updating TO this version crosses a migration boundary (#286) — badged in the UI. */
   schemaChange?: boolean;
   /** Where the push came from: git CI (with repo/commit) vs a terminal. Null = pushed
-   *  before origin tracking. */
+   *  before origin tracking. `gate` is the push-time layer-rule receipt (#955): absent =
+   *  no receipt rode the push, so nothing checked the layer rules. */
   origin?: {
     source: 'git' | 'cli';
     gitRepo?: string;
     gitCommit?: string;
     gitRef?: string;
+    gate?: 'passed' | 'skipped' | 'none';
   } | null;
   createdAt: string;
 }
