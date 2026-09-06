@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/model-view",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Render an emitted Substrat model.json as one self-contained HTML page — the ER diagram, the entity cards, the declared lifecycles",
   "license": "Apache-2.0",
   "repository": {

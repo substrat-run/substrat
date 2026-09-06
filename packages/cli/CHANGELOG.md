@@ -1,5 +1,69 @@
 # @substrat-run/cli
 
+## 0.28.0
+
+### Minor Changes
+
+- 92a3a98: `envSpec` is declared once, in the code (#1206). `substrat push` now reads the vertical's
+  config surface off the same import it already makes for `permissions`: the entry named by
+  `substrat.permissions` may re-export the manifest's spec as `envSpec`, and when it does,
+  that code-side declaration — the copy the worker actually reads at runtime — is what the
+  push uploads. Before this, push read only package.json `substrat.envSpec`, so a key added
+  to `src/manifest.ts` alone was a key nobody could ever set: no settings-form field, no
+  stored value, and the app silently serving the manifest default.
+
+  A vertical that has not adopted the export pushes exactly as before (package.json's copy
+  still ships). One that has adopted it and still carries a _drifted_ package.json copy is
+  refused — with the differing keys named — rather than warned; an identical leftover copy
+  passes with a note to delete it. `substrat push --check` runs the same refusal and reports
+  the code-declared keys (in `--json` too), so CI catches the drift before a push does, and
+  `preview create` goes through the same path. The scaffold template now declares its
+  settings once, in `src/manifest.ts`, re-exported from `src/provision.ts` — the generated
+  package.json carries no `envSpec` block.
+
+- e398034: The push gate's verdict rides the push, so an ungated version is a recorded fact (#955).
+  `substrat push` already refuses a layer-rule violation before anything is uploaded; what
+  it found now travels beside the manifest as `origin.gate` — `passed`, `skipped`
+  (`--skip-lint`), or `none` (no module code found) — and the platform stores it on the
+  version, where the dashboard flags a `skipped`/`none` push as ungated. A version with no
+  receipt at all (an older CLI, or a caller that bypassed the CLI and hit the deploy API
+  directly) reads as ungated too, which is the honest default: the platform receives a
+  built bundle, never the source the rules are written against, so the CLI's own check is
+  the only gate there is and a version that cannot show a receipt was not checked by it.
+  Self-reported like the rest of `origin` — a label and a policy hook, never proof.
+
+  Nothing changes for a vertical that pushes clean: the receipt says `passed` and the
+  dashboard stays quiet.
+
+- 28a82c0: The entity model ships with a push, and the dashboard renders it (#1214). A vertical with
+  a checked-in `model.json` (the artifact `pnpm lint:model` emits, #697) now carries it in
+  the deploy manifest — metadata beside `envSpec` and `surfaces`, in no digest — and the
+  dashboard's new Model tab renders the DEPLOYED version's model: the ER diagram, the entity
+  cards, and the declared lifecycles (#844), for exactly the version the app runs.
+
+  The rendering core moved out of the CLI into a new published package,
+  `@substrat-run/model-view`: the pure `model.json → self-contained HTML` half of
+  `substrat model view` (#756), with no `node:*` imports, so the CLI, the dashboard worker
+  and the browser bundle all draw the same page from the same artifact. `substrat model
+view` behaves exactly as before. Contracts gains `emittedModel` — the Zod twin of the
+  `EmittedModel` interface — so the control plane re-parses the model at the trust boundary
+  instead of trusting the CLI's serialization, and the control plane grows the matching
+  owner-narrowed read: `GET /verticals/:slug/versions/:id/model`.
+
+  A vertical with no `model.json` pushes exactly as before, and versions pushed by an older
+  CLI stay readable — the tab shows an empty state pointing at the next push.
+
+### Patch Changes
+
+- Updated dependencies [e398034]
+- Updated dependencies [74a7ee2]
+- Updated dependencies [28a82c0]
+- Updated dependencies [d124e9a]
+- Updated dependencies [8e29866]
+  - @substrat-run/contracts@0.99.0
+  - @substrat-run/boundary-lint@0.4.2
+  - @substrat-run/model-view@0.2.0
+
 ## 0.27.0
 
 ### Minor Changes

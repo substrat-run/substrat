@@ -1,5 +1,85 @@
 # @substrat-run/contracts
 
+## 0.99.0
+
+### Minor Changes
+
+- e398034: The push gate's verdict rides the push, so an ungated version is a recorded fact (#955).
+  `substrat push` already refuses a layer-rule violation before anything is uploaded; what
+  it found now travels beside the manifest as `origin.gate` — `passed`, `skipped`
+  (`--skip-lint`), or `none` (no module code found) — and the platform stores it on the
+  version, where the dashboard flags a `skipped`/`none` push as ungated. A version with no
+  receipt at all (an older CLI, or a caller that bypassed the CLI and hit the deploy API
+  directly) reads as ungated too, which is the honest default: the platform receives a
+  built bundle, never the source the rules are written against, so the CLI's own check is
+  the only gate there is and a version that cannot show a receipt was not checked by it.
+  Self-reported like the rest of `origin` — a label and a policy hook, never proof.
+
+  Nothing changes for a vertical that pushes clean: the receipt says `passed` and the
+  dashboard stays quiet.
+
+- 28a82c0: The entity model ships with a push, and the dashboard renders it (#1214). A vertical with
+  a checked-in `model.json` (the artifact `pnpm lint:model` emits, #697) now carries it in
+  the deploy manifest — metadata beside `envSpec` and `surfaces`, in no digest — and the
+  dashboard's new Model tab renders the DEPLOYED version's model: the ER diagram, the entity
+  cards, and the declared lifecycles (#844), for exactly the version the app runs.
+
+  The rendering core moved out of the CLI into a new published package,
+  `@substrat-run/model-view`: the pure `model.json → self-contained HTML` half of
+  `substrat model view` (#756), with no `node:*` imports, so the CLI, the dashboard worker
+  and the browser bundle all draw the same page from the same artifact. `substrat model
+view` behaves exactly as before. Contracts gains `emittedModel` — the Zod twin of the
+  `EmittedModel` interface — so the control plane re-parses the model at the trust boundary
+  instead of trusting the CLI's serialization, and the control plane grows the matching
+  owner-narrowed read: `GET /verticals/:slug/versions/:id/model`.
+
+  A vertical with no `model.json` pushes exactly as before, and versions pushed by an older
+  CLI stay readable — the tab shows an empty state pointing at the next push.
+
+- d124e9a: The generated deploy workflow can no longer point prod at older code when its queue
+  resumes out of order (#1216). GitHub serializes the `substrat-deploy-<slug>-prod`
+  concurrency group but explicitly does not order it, so a run holding an older commit
+  could resume after a newer one had already promoted — and because `substrat push`
+  patch-bumps without reading the commit, prod would then serve the older code under a
+  _higher_ version number, with nothing in the dashboard or admin log saying so.
+
+  The workflow now splits the push from the pointer move and guards between them: the
+  version is uploaded as before (findable, migrations rehearsed), and the promote runs
+  only while the run still owns the release coordinate — the branch tip in trunk mode;
+  in changesets mode, only while the tip's package.json still declares the pushed
+  version, an exact equality: a later merge that keeps the version (a changeset landing)
+  does not block the promote, and the skip happens only when the tip declares a
+  _different_ version, whose own run then owns the pointer (a commit check there would
+  leave a release pushed but never promoted). A superseded run skips the promote with a
+  loud `::warning::` and exits green. The trade is deliberate: if
+  that newer run then fails, the superseded merge landed with no promotion at all, and
+  prod holds until the next green merge — prod never goes backwards, at the price that a
+  merge may not promote. The guard reads the tip through the GitHub API with the default
+  read-only token, right before the promote, so the race window is two commands rather
+  than the length of a build.
+
+  Existing repos pick this up the next time the workflow is regenerated — `substrat init
+--ci github` for a trunk repo, `substrat init --ci github --release changesets` for a
+  changesets repo (the flag is not remembered, and omitting it regenerates the trunk
+  shape) — or the dashboard's one-click CI setup.
+
+- 8e29866: The signals dimension vocabulary lands (#1231): `@substrat-run/contracts` gains
+  `SIGNAL_DIMENSIONS` and `signalStamp` — the one set of names
+  (`tenant / scope / vertical / version / operation / eventType / connection`) every
+  observability-facing record is stamped with, defined once so a chart, a failure list and
+  a graph node all mean the same thing by `version` and an aggregate can click through to
+  its exemplars with filters intact.
+
+  Two facts move under it immediately. Ops-failure rows (#559) now carry the `version`
+  dimension — the version-registry id the failure happened under, stamped at the preview,
+  provision and intent-drain write sites, filterable via `listOpsFailures` and
+  `GET /ops-failures?version=…`, with an old row's NULL reading as "predates the stamp" —
+  which is what lets a failure be read against the push that produced it. And the
+  observability seam's `RecentLogEvent.eventType` (the Workers invocation shape:
+  `fetch`/`rpc`/`scheduled`) is renamed `invocation`, because the vocabulary reserves
+  `eventType` for a DOMAIN event's type and that field was the one place the two could be
+  confused in a filter.
+
 ## 0.98.1
 
 ### Patch Changes
@@ -4605,7 +4685,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
