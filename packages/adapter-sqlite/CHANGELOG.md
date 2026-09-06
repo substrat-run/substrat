@@ -1,5 +1,35 @@
 # @substrat-run/adapter-sqlite
 
+## 0.99.0
+
+### Minor Changes
+
+- 8e29866: The signals dimension vocabulary lands (#1231): `@substrat-run/contracts` gains
+  `SIGNAL_DIMENSIONS` and `signalStamp` — the one set of names
+  (`tenant / scope / vertical / version / operation / eventType / connection`) every
+  observability-facing record is stamped with, defined once so a chart, a failure list and
+  a graph node all mean the same thing by `version` and an aggregate can click through to
+  its exemplars with filters intact.
+
+  Two facts move under it immediately. Ops-failure rows (#559) now carry the `version`
+  dimension — the version-registry id the failure happened under, stamped at the preview,
+  provision and intent-drain write sites, filterable via `listOpsFailures` and
+  `GET /ops-failures?version=…`, with an old row's NULL reading as "predates the stamp" —
+  which is what lets a failure be read against the push that produced it. And the
+  observability seam's `RecentLogEvent.eventType` (the Workers invocation shape:
+  `fetch`/`rpc`/`scheduled`) is renamed `invocation`, because the vocabulary reserves
+  `eventType` for a DOMAIN event's type and that field was the one place the two could be
+  confused in a filter.
+
+### Patch Changes
+
+- Updated dependencies [e398034]
+- Updated dependencies [28a82c0]
+- Updated dependencies [d124e9a]
+- Updated dependencies [8e29866]
+  - @substrat-run/contracts@0.99.0
+  - @substrat-run/kernel@0.99.0
+
 ## 0.98.1
 
 ### Patch Changes
@@ -3890,7 +3920,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
