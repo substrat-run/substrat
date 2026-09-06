@@ -175,4 +175,73 @@ describe('upgrading a 1.6 store', () => {
     for (const stmt of SCHEMA_STATEMENTS) fresh.exec(stmt);
     expect(upgradeLegacySchema(sqlExecOf(fresh))).toEqual({ renamed: [], added: [] });
   });
+
+  it('adds issuer and label to a pre-generic identity_provider, keeping its rows', () => {
+    // A store from the #1213 era: the table exists in its original shape, with Microsoft
+    // configured. `IF NOT EXISTS` would leave it columnless and every provider read would
+    // fail at runtime — this is the account.issuer story on a different table.
+    const store = new Database(':memory:');
+    store.exec(`CREATE TABLE identity_provider (
+      provider_id TEXT PRIMARY KEY NOT NULL,
+      client_id TEXT NOT NULL,
+      client_secret TEXT NOT NULL,
+      tenant_id TEXT,
+      allow_signup INTEGER NOT NULL DEFAULT 0,
+      trust_email INTEGER NOT NULL DEFAULT 0,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL DEFAULT 1)`);
+    store
+      .prepare('INSERT INTO identity_provider (provider_id, client_id, client_secret) VALUES (?, ?, ?)')
+      .run('microsoft', 'entra-app-id', 'entra-secret');
+
+    const upgrade = upgradeLegacySchema(sqlExecOf(store));
+    for (const stmt of SCHEMA_STATEMENTS) store.exec(stmt);
+
+    expect(upgrade.added).toEqual(
+      expect.arrayContaining(['identity_provider.issuer', 'identity_provider.label', 'identity_provider.endpoints']),
+    );
+    const row = store
+      .prepare('SELECT client_secret, issuer, label, endpoints FROM identity_provider WHERE provider_id = ?')
+      .get('microsoft') as { client_secret: string; issuer: string | null; label: string | null; endpoints: string | null };
+    // NULL is the backfill: every pre-existing row IS a catalogue row, and NULL is what marks one.
+    expect(row).toEqual({ client_secret: 'entra-secret', issuer: null, label: null, endpoints: null });
+    // Idempotent, like the rest of the upgrade.
+    expect(upgradeLegacySchema(sqlExecOf(store))).toEqual({ renamed: [], added: [] });
+  });
+
+  it('finishes an interrupted identity_provider upgrade — each column is guarded on its own', () => {
+    // A boot that stopped between the ALTERs: `issuer` landed, `label` and `endpoints` did
+    // not. Nothing wraps the upgrade in a transaction on the Node runtime, so a guard on
+    // `issuer` alone would skip the whole block and leave the table half-shaped for good.
+    const store = new Database(':memory:');
+    store.exec(`CREATE TABLE identity_provider (
+      provider_id TEXT PRIMARY KEY NOT NULL,
+      client_id TEXT NOT NULL,
+      client_secret TEXT NOT NULL,
+      tenant_id TEXT,
+      issuer TEXT,
+      allow_signup INTEGER NOT NULL DEFAULT 0,
+      trust_email INTEGER NOT NULL DEFAULT 0,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL DEFAULT 1)`);
+
+    const upgrade = upgradeLegacySchema(sqlExecOf(store));
+    expect(upgrade.added).toEqual(['identity_provider.label', 'identity_provider.endpoints']);
+    const columns = (store.prepare('PRAGMA table_info("identity_provider")').all() as { name: string }[]).map(
+      (r) => r.name,
+    );
+    expect(columns).toEqual(expect.arrayContaining(['issuer', 'label', 'endpoints']));
+  });
+
+  it('finishes an interrupted account upgrade — the issuer backfill reruns until no row is null', () => {
+    // The crash window on the other table: the ALTER landed, the fill did not. The fill is
+    // idempotent (`WHERE issuer IS NULL`, and the adapter always writes the column), so it
+    // runs on every boot rather than only beside its ALTER.
+    db.exec('ALTER TABLE account ADD COLUMN issuer TEXT');
+    const upgrade = upgradeLegacySchema(sql);
+    expect(upgrade.added).not.toContain('account.issuer');
+    expect((db.prepare("SELECT issuer FROM account WHERE id = 'a1'").get() as { issuer: string }).issuer).toBe(
+      'local:credential',
+    );
+  });
 });

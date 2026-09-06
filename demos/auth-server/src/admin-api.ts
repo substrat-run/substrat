@@ -5,14 +5,20 @@ import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ALLOW_SIGNUP, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
 import {
+  GENERIC_ID_PATTERN,
+  LOOPBACK_HOSTS,
   PROVIDER_CATALOGUE,
   deleteProvider,
   descriptorOf,
+  isReservedProviderId,
   readProvider,
+  isHttpsOrLoopback,
   readProviders,
   toWireProvider,
   upsertProvider,
+  type ProviderEndpoints,
 } from './providers.js';
+import { resolveIssuerEndpoints } from './provider-discovery.js';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
 
 /**
@@ -188,6 +194,10 @@ const providerPut = z.object({
   clientId: z.string().min(1),
   clientSecret: z.string().min(1).optional(),
   tenantId: z.string().nullable().optional(),
+  /** Generic rows only: the upstream's issuer URL. Required there, refused on a catalogue id. */
+  issuer: z.string().min(1).nullable().optional(),
+  /** Generic rows only: what the login button says. */
+  label: z.string().min(1).max(60).nullable().optional(),
   allowSignup: z.boolean(),
   trustEmail: z.boolean(),
   disabled: z.boolean(),
@@ -208,9 +218,6 @@ const bankidPut = z.object({
   disabled: z.boolean(),
 });
 
-/** Loopback hosts, where OAuth 2.1 still permits plain HTTP for a native client. */
-const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
-
 /**
  * The redirect-URI rule the plugin applies at registration, applied again here because an
  * edit does not pass through the plugin. A `web` client must use HTTPS off loopback; a
@@ -226,10 +233,32 @@ function assertRedirectUri(value: string, applicationType: string): void {
     throw new HTTPException(400, { message: `'${value}' is not an absolute URI` });
   }
   if (url.hash) throw new HTTPException(400, { message: `'${value}' must not carry a fragment` });
-  if (applicationType === 'web' && url.protocol === 'http:' && !LOOPBACK.has(url.hostname)) {
+  if (applicationType === 'web' && url.protocol === 'http:' && !LOOPBACK_HOSTS.has(url.hostname)) {
     throw new HTTPException(400, {
       message: `web clients require https redirect URIs on non-loopback hosts: ${value}`,
     });
+  }
+}
+
+/**
+ * The rule for a GENERIC provider's issuer URL. HTTPS, because the discovery document fetched
+ * from it decides where this issuer sends people and their authorization codes — with the
+ * loopback exception every other rule here grants, so a local Keycloak works in dev. No
+ * query or fragment: an issuer is an origin plus an optional path (RFC 8414), and anything
+ * after that is a pasted authorize URL, not an issuer.
+ */
+function assertIssuerUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new HTTPException(400, { message: `'${value}' is not an absolute URL` });
+  }
+  if (url.hash || url.search) {
+    throw new HTTPException(400, { message: 'an issuer URL carries no query or fragment' });
+  }
+  if (!isHttpsOrLoopback(url)) {
+    throw new HTTPException(400, { message: `an issuer URL must be https (or http on loopback): ${value}` });
   }
 }
 
@@ -287,8 +316,14 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   );
 
   /**
-   * Add or edit one upstream. A PUT because the id is the operator's choice from a closed
-   * catalogue rather than something minted here — enabling Microsoft twice is enabling it once.
+   * Add or edit one upstream. A PUT because the id is the operator's choice — from the closed
+   * catalogue, or a slug they named a GENERIC OIDC provider themselves — rather than something
+   * minted here: enabling Microsoft twice is enabling it once.
+   *
+   * The id decides which kind of row this is. A catalogue id takes no issuer (the library owns
+   * those endpoints); any other id IS a generic provider and must bring one, plus a label for
+   * its button. The id is refused where it would collide with a provider Better Auth ships
+   * built-in — a generic row named `gitlab` would silently shadow the real GitLab.
    *
    * `clientSecret` is optional on an edit and absent means "keep the stored one", so changing a
    * tenant id or a toggle does not require re-pasting a credential the operator may not have
@@ -296,13 +331,58 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    */
   app.put('/providers/:providerId', async (c) => {
     const providerId = c.req.param('providerId');
-    if (!descriptorOf(providerId)) throw new HTTPException(400, { message: `unknown provider '${providerId}'` });
     const input = parsedBody(providerPut, await c.req.json().catch(() => null));
+    if (descriptorOf(providerId)) {
+      // Loudly, not silently dropped: an issuer arriving with a catalogue id means the caller
+      // thinks it is configuring endpoints that the library will never read.
+      if (input.issuer) {
+        throw new HTTPException(400, { message: `'${providerId}' is a built-in provider and does not take an issuer URL` });
+      }
+    } else {
+      if (isReservedProviderId(providerId)) {
+        throw new HTTPException(400, {
+          message: `'${providerId}' is a provider Better Auth ships built-in — a custom provider cannot take its name`,
+        });
+      }
+      if (!GENERIC_ID_PATTERN.test(providerId)) {
+        throw new HTTPException(400, {
+          message: `'${providerId}' is not a usable provider id — lowercase letters, digits and hyphens, up to 40 characters (it becomes the callback path segment)`,
+        });
+      }
+      if (!input.issuer) {
+        throw new HTTPException(400, { message: `'${providerId}' is not in the catalogue — a custom provider needs an issuer URL` });
+      }
+      if (!input.label?.trim()) {
+        throw new HTTPException(400, { message: 'a custom provider needs a label for its sign-in button' });
+      }
+      assertIssuerUrl(input.issuer);
+      // The directory field is Entra's; a generic provider's issuer already names one.
+      input.tenantId = null;
+    }
     const existing = readProvider(deps.sql, providerId);
     if (!input.clientSecret && !existing) {
       throw new HTTPException(400, { message: 'a client secret is required to enable a provider' });
     }
-    upsertProvider(deps.sql, providerId, input, existing);
+    let endpoints: ProviderEndpoints | null = null;
+    if (input.issuer) {
+      // Discovery, resolved HERE and stored on the row — never at runtime (see
+      // `resolveIssuerEndpoints` for why that is load-bearing). Re-resolved when the issuer
+      // changes and kept otherwise, so flipping a toggle does not depend on the upstream
+      // being reachable at that moment.
+      const issuerChanged = input.issuer.trim() !== existing?.issuer;
+      if (issuerChanged || !existing?.endpoints) {
+        try {
+          endpoints = await resolveIssuerEndpoints(input.issuer.trim());
+        } catch (e) {
+          throw new HTTPException(400, {
+            message: `the issuer's discovery document could not be used: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        }
+      } else {
+        endpoints = JSON.parse(existing.endpoints) as ProviderEndpoints;
+      }
+    }
+    upsertProvider(deps.sql, providerId, { ...input, endpoints }, existing);
     return c.json(toWireProvider(readProvider(deps.sql, providerId)!), existing ? 200 : 201);
   });
 

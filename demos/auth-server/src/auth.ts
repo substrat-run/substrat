@@ -4,6 +4,7 @@ import { oauthProvider, type ClientMetadataResourceFetch } from '@better-auth/oa
 import { cimd } from '@better-auth/cimd';
 import { jwt } from 'better-auth/plugins/jwt';
 import { admin } from 'better-auth/plugins/admin';
+import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/generic-oauth';
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { resetPasswordEmail, verifyEmail } from './email.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
@@ -81,6 +82,15 @@ export interface AuthDeps {
    * says otherwise per provider — see `trustedProvidersFrom`.
    */
   trustedProviders?: string[];
+  /**
+   * The GENERIC OIDC upstreams — operator-named providers whose endpoints come from their
+   * issuer's discovery document, built from the same `identity_provider` rows by
+   * `genericProvidersFrom`. Mounted through Better Auth's `genericOAuth` plugin, which
+   * registers them as first-class social providers: same `/sign-in/social`, same
+   * `/callback/{id}`, and therefore the same `oauth_query` authorize-resume as the catalogue
+   * providers. Undefined when none is configured — the plugin is then not mounted at all.
+   */
+  genericProviders?: GenericOAuthConfig[];
   /**
    * BankID sign-in (`src/bankid.ts` / `src/bankid-plugin.ts`), mounted only when the caller
    * has both a stored configuration AND a runtime able to present the mTLS client
@@ -231,6 +241,10 @@ export function buildAuth(deps: AuthDeps) {
             }),
           ]
         : []),
+      // Generic OIDC upstreams — see the `genericProviders` dep above. Registered into the
+      // same social-provider list the catalogue providers live in, so nothing downstream
+      // knows the difference.
+      ...(deps.genericProviders?.length ? [genericOAuth({ config: deps.genericProviders })] : []),
       // BankID sign-in — see the `bankid` dep above for when this is (and is not) mounted.
       ...(deps.bankid ? [bankidPlugin(deps.bankid)] : []),
       admin(),

@@ -18,7 +18,7 @@ import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
 import { ALLOW_SIGNUP, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
-import { publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
+import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
   bankIdApiUrl,
   fetchBankIdTransport,
@@ -160,6 +160,7 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Federated sign-in, read from the registry on the same per-request basis — a provider
       // enabled in the dashboard answers the next request.
       socialProviders: socialProvidersFrom(providers),
+      genericProviders: genericProvidersFrom(providers),
       trustedProviders: trustedProvidersFrom(providers),
       bankid: this.bankid(readBankIdConfig(this.ctx.storage.sql)),
     });
