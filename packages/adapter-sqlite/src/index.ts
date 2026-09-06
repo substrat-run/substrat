@@ -2489,6 +2489,10 @@ export class SqliteScopeHost implements ScopeHost {
       // KERNEL_DDL is all IF NOT EXISTS, so it fills only the gaps and never disturbs a
       // table the dump carried.
       db.exec(KERNEL_DDL);
+      // …and the additive columns, for the same reason: a dump captured before a
+      // column existed replays DDL WITHOUT it, and IF NOT EXISTS cannot widen a
+      // table the dump did bring.
+      this.ensureSpineColumns(db);
       // Rebuild the derived search indexes over the rows just loaded (#827). The DDL
       // drops and recreates, so this also repairs an index the dump left stale, and
       // the triggers it recreates are what keep the restored scope in step from here.
@@ -7784,13 +7788,15 @@ export class SqliteScopeHost implements ScopeHost {
     return this.runtime(tenantId, scopeId).db;
   }
 
-  private runtime(tenantId: TenantId, scopeId: ScopeId): ScopeRuntime {
-    const key = `${tenantId}/${scopeId}`;
-    const existing = this.scopes.get(key);
-    if (existing) return existing;
-    const db = new Database(join(this.dir, `${tenantId}__${scopeId}.sqlite`));
-    db.pragma('journal_mode = WAL');
-    db.exec(KERNEL_DDL);
+  /**
+   * The additive spine-column migrations, shared by `runtime()` and the dump replay.
+   * KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before a column keeps the
+   * old shape — and so does a table a DUMP replay just recreated from legacy DDL,
+   * which is why `loadDump` re-runs this after its replay: `runtime()` already ran
+   * for that scope, and without the re-run the very next emit in this process fails
+   * with `no such column`.
+   */
+  private ensureSpineColumns(db: Database.Database): void {
     // KERNEL_DDL is all IF NOT EXISTS, so a scope DB created before K-21 keeps the
     // old shape — ALTER the tombstone in.
     this.ensureColumn(db, '_substrat_tuples', 'revoked_at', 'revoked_at TEXT');
@@ -7818,6 +7824,16 @@ export class SqliteScopeHost implements ScopeHost {
     // #1231: the emitting operation, on a scope DB created before the column. Nullable
     // so every legacy row reads as unrecorded rather than claiming a name nobody stamped.
     this.ensureColumn(db, '_substrat_outbox', 'operation', 'operation TEXT');
+  }
+
+  private runtime(tenantId: TenantId, scopeId: ScopeId): ScopeRuntime {
+    const key = `${tenantId}/${scopeId}`;
+    const existing = this.scopes.get(key);
+    if (existing) return existing;
+    const db = new Database(join(this.dir, `${tenantId}__${scopeId}.sqlite`));
+    db.pragma('journal_mode = WAL');
+    db.exec(KERNEL_DDL);
+    this.ensureSpineColumns(db);
     const appliedMigrations = new Set<string>(
       (
         db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {

@@ -6,8 +6,8 @@
 '@substrat-run/contract-tests': minor
 ---
 
-Every event now names the operation that emitted it (#1231). The outbox envelope
-gains an optional `operation` — the exact `invoke()` string (`ticket0/answer`,
+An operation's emitted events now name it (#1231). The outbox envelope gains an
+optional `operation` — the exact `invoke()` string (`ticket0/answer`,
 `attachments.upload`; a scheduled emit carries the schedule's own operation) —
 stamped kernel-side on the K-34/K-42 pattern, so module code can neither forge
 nor suppress it. Both adapters store it in a new nullable `_substrat_outbox`

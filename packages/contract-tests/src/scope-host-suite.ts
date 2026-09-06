@@ -1087,6 +1087,43 @@ export function scopeHostContractSuite(
         expect(page.rows.map((r) => r[vCol])).toContain('fork-me');
       });
 
+      it('replays a LEGACY dump and re-applies the additive spine columns — the next emit still lands (#1231)', async () => {
+        const stub = await host.getScope(alice, t1, s1);
+        await stub.invoke('test/emit-event');
+        const dump = await host.admin.exportScope(staff, t1, s1);
+        // Doctor the dump into one captured before the `operation` column existed:
+        // the DDL loses the column and every row loses that cell — exactly what a
+        // dump exported by an older platform carries. The replay's DDL is
+        // authoritative, and KERNEL_DDL's IF NOT EXISTS cannot widen a table the
+        // dump brought, so without the post-replay re-run of the additive
+        // migrations the emit below fails with `no such column: operation`.
+        const doctored = dump.tables.map((t) => {
+          if (t.name !== '_substrat_outbox') return t;
+          const idx = t.columns.indexOf('operation');
+          expect(idx).toBeGreaterThanOrEqual(0);
+          return {
+            ...t,
+            ddl: t.ddl.replace(/\s*operation TEXT,/, ''),
+            columns: t.columns.filter((c) => c !== 'operation'),
+            rows: t.rows.map((r) => (r as unknown[]).filter((_, i) => i !== idx)),
+          };
+        });
+        const copy = scopeId.parse(ulid());
+        await host.importScope(
+          staff,
+          { tenantId: t1, scopeId: copy, jurisdiction: 'eu', vertical: 'connector-vertical' },
+          { ...dump, tables: doctored },
+        );
+
+        const copyStub = await host.getScope(alice, t1, copy);
+        await copyStub.invoke('test/emit-event');
+        const rows = await copyStub.invoke<OutboxRow[]>('test/read-outbox');
+        const last = rows[rows.length - 1]!;
+        // Stamped, not merely tolerated — and the imported legacy rows read NULL.
+        expect(last.operation).toBe('test/emit-event');
+        expect(rows.filter((r) => r.operation === null).length).toBeGreaterThan(0);
+      });
+
       it('is an independent copy — a later write to the source does not reach it', async () => {
         const dump = await host.admin.exportScope(staff, t1, s1);
         const copy = scopeId.parse(ulid());
