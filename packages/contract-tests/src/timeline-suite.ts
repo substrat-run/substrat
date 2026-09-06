@@ -223,6 +223,9 @@ export function timelineContractSuite(
       // different fact from an empty list and must not be conflated with one.
       expect(entry!.authorization).not.toBeNull();
       expect(entry!.authorization!.map((a) => a.permission)).toContain(PERM_USE);
+      // #1231: the history view names the emitting operation; null here would mean
+      // a consumer emit or a pre-column row, and this event is neither.
+      expect(entry!.operation).toBe('test/emit-about-with-payload');
       // And the TIMELINE read of the same event carries none of it. That is the
       // whole reason the two are separate: one has a disclosure decision behind
       // it and the other cannot have.

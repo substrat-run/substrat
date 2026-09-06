@@ -174,6 +174,8 @@ interface OutboxRow {
   /** K-42: the staff actor + session, when the event was raised under one. NULL is
    *  the ordinary case, and a row written before impersonation existed. */
   impersonation: string | null;
+  /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
+  operation: string | null;
   payload: string | null;
 }
 
@@ -200,6 +202,10 @@ const KERNEL_DDL = `
     -- session/by). NULL is the ordinary case -- nobody was impersonating -- and the
     -- actor column above stays the principal the permission model answered about.
     impersonation TEXT,
+    -- #1231: the invoke() string this event was emitted from. NULL is two facts the
+    -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
+    -- row written before the column.
+    operation TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -647,39 +653,7 @@ export function defineScopeDO(
       for (const stmt of splitSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
-      // KERNEL_DDL is all IF NOT EXISTS, so a scope DO created before K-21 keeps
-      // the old shape. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
-      // is no column probe, and a duplicate is the steady state after the first
-      // cold start (same argument as ControlPlaneDO.addColumn).
-      for (const alter of [
-        'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
-        // Executor retry state (#100). The defaults read as "terminal", which is
-        // right for every row already there: each is a completed delivery or a
-        // consumer dead-letter.
-        'ALTER TABLE _substrat_deliveries ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
-        'ALTER TABLE _substrat_deliveries ADD COLUMN next_attempt_at TEXT',
-        // K-34: the authorization column on a scope DO created before it existed. Nullable,
-        // so legacy outbox rows read as "unrecorded". (_substrat_denials is a new table,
-        // covered by KERNEL_DDL's IF NOT EXISTS with no ALTER.)
-        'ALTER TABLE _substrat_outbox ADD COLUMN authorization TEXT',
-        // #841: refusal attribution on a scope DO that predates it. Nullable, so an
-        // intent settled before this column reads as "nobody classified this" rather
-        // than claiming an origin the drain never decided.
-        'ALTER TABLE _substrat_platform_requests ADD COLUMN last_failure TEXT',
-        // K-42: the two-actor stamp on the three spine tables that record who did
-        // what, for a scope DO created before impersonation existed. Nullable
-        // everywhere, and the null means "nobody was impersonating" rather than
-        // "unrecorded" — every one of those rows predates the possibility.
-        'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
-        'ALTER TABLE _substrat_platform_requests ADD COLUMN impersonation TEXT',
-        'ALTER TABLE _substrat_denials ADD COLUMN impersonation TEXT',
-      ]) {
-        try {
-          this.sql.exec(alter);
-        } catch (err) {
-          if (!/duplicate column name/i.test((err as Error).message)) throw err;
-        }
-      }
+      this.applySpineColumnAdditions();
 
       for (const registration of modules) this.registerModule(registration);
       for (const [name, handler] of Object.entries(bareOps)) this.defineOperation(name, handler);
@@ -1329,6 +1303,7 @@ export function defineScopeDO(
               systemModuleId,
               signals,
               impersonation,
+              operation,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -1527,7 +1502,10 @@ export function defineScopeDO(
       return this.queue.enqueue(async () => {
         try {
           await this.ctx.storage.transaction(async () => {
-            const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+            const ctx = this.operationContext(
+              principal, tenantId, scopeId, undefined, connectionId,
+              undefined, undefined, undefined, 'attachments.upload',
+            );
             assertAllowed(await ctx.check(gate.write, parsed.entity));
             this.sql.exec(
               `INSERT INTO _substrat_attachments
@@ -1575,7 +1553,10 @@ export function defineScopeDO(
       await this.ensureMigrations();
       const gate = this.attachmentGate(entity.entityType);
       try {
-        const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+        const ctx = this.operationContext(
+          principal, tenantId, scopeId, undefined, connectionId,
+          undefined, undefined, undefined, 'attachments.list',
+        );
         assertAllowed(await ctx.check(gate.read, entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
@@ -1634,7 +1615,10 @@ export function defineScopeDO(
       }
       const gate = this.attachmentGate(record.entity.entityType);
       try {
-        const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+        const ctx = this.operationContext(
+          principal, tenantId, scopeId, undefined, connectionId,
+          undefined, undefined, undefined, 'attachments.open',
+        );
         assertAllowed(await ctx.check(mode === 'read' ? gate.read : gate.write, record.entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
@@ -1660,7 +1644,10 @@ export function defineScopeDO(
         const gate = this.attachmentGate(record.entity.entityType);
         try {
           await this.ctx.storage.transaction(async () => {
-            const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+            const ctx = this.operationContext(
+              principal, tenantId, scopeId, undefined, connectionId,
+              undefined, undefined, undefined, 'attachments.remove',
+            );
             assertAllowed(await ctx.check(gate.write, record.entity));
             this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);
             ctx.emit({
@@ -2231,6 +2218,50 @@ export function defineScopeDO(
      * naming the scope it was captured from, so restoring one anywhere else needs them
      * re-pointed — see `rewriteScopeTuples`.
      */
+    /**
+     * The additive spine-column migrations. KERNEL_DDL is all IF NOT EXISTS, so a
+     * scope DO created before a column keeps the old shape — and so does a table a
+     * DUMP replay just recreated from legacy DDL, which is why `importDump` re-runs
+     * this after the replay: without it, the next INSERT naming the column fails in
+     * this very instance. Attempt-and-tolerate: DO SQLite restricts PRAGMA, so there
+     * is no column probe, and a duplicate is the steady state after the first cold
+     * start (same argument as ControlPlaneDO.addColumn).
+     */
+    private applySpineColumnAdditions(): void {
+      for (const alter of [
+        'ALTER TABLE _substrat_tuples ADD COLUMN revoked_at TEXT',
+        // Executor retry state (#100). The defaults read as "terminal", which is
+        // right for every row already there: each is a completed delivery or a
+        // consumer dead-letter.
+        'ALTER TABLE _substrat_deliveries ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0',
+        'ALTER TABLE _substrat_deliveries ADD COLUMN next_attempt_at TEXT',
+        // K-34: the authorization column on a scope DO created before it existed. Nullable,
+        // so legacy outbox rows read as "unrecorded". (_substrat_denials is a new table,
+        // covered by KERNEL_DDL's IF NOT EXISTS with no ALTER.)
+        'ALTER TABLE _substrat_outbox ADD COLUMN authorization TEXT',
+        // #841: refusal attribution on a scope DO that predates it. Nullable, so an
+        // intent settled before this column reads as "nobody classified this" rather
+        // than claiming an origin the drain never decided.
+        'ALTER TABLE _substrat_platform_requests ADD COLUMN last_failure TEXT',
+        // K-42: the two-actor stamp on the three spine tables that record who did
+        // what, for a scope DO created before impersonation existed. Nullable
+        // everywhere, and the null means "nobody was impersonating" rather than
+        // "unrecorded" — every one of those rows predates the possibility.
+        'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
+        'ALTER TABLE _substrat_platform_requests ADD COLUMN impersonation TEXT',
+        'ALTER TABLE _substrat_denials ADD COLUMN impersonation TEXT',
+        // #1231: the emitting operation, on a scope DO created before the column.
+        // Nullable so every legacy row reads as unrecorded rather than named.
+        'ALTER TABLE _substrat_outbox ADD COLUMN operation TEXT',
+      ]) {
+        try {
+          this.sql.exec(alter);
+        } catch (err) {
+          if (!/duplicate column name/i.test((err as Error).message)) throw err;
+        }
+      }
+    }
+
     async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {
       // The WHOLE drop-then-replay runs under deferred foreign keys, in one transaction.
       //
@@ -2292,6 +2323,12 @@ export function defineScopeDO(
       // by the restore's repair leg (host.projectRolesLocal) — the spine's job is only to
       // exist so the checker can read it.
       for (const stmt of splitSqlStatements(KERNEL_DDL)) this.sql.exec(stmt);
+      // …and the additive columns, for the same reason KERNEL_DDL is re-asserted: a
+      // dump captured before a column existed replays DDL WITHOUT it, and IF NOT
+      // EXISTS cannot widen a table the dump did bring. Without this, the next emit
+      // in this instance fails with `no such column` until a cold start re-runs the
+      // constructor's pass.
+      this.applySpineColumnAdditions();
       // Rebuild the derived search indexes over the rows just loaded (#827). Drop-then-
       // create, so it also repairs an index a dump left stale, and the triggers it
       // recreates are what keep the restored scope in step from here. Skipped for a plan
@@ -2505,6 +2542,8 @@ export function defineScopeDO(
         // was impersonating, because `DomainEvent.impersonation` is optional — the
         // shape module code never sees is also the shape it cannot branch on.
         ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
+        // #1231: absent rather than null, the same shape rule as the stamp above.
+        ...(row.operation ? { operation: row.operation } : {}),
         payload: row.payload === null ? undefined : JSON.parse(row.payload),
       });
     }
@@ -2528,6 +2567,12 @@ export function defineScopeDO(
        * impossible.
        */
       impersonation?: ImpersonationSession,
+      /**
+       * #1231: the exact `invoke()` string this context runs on behalf of — stamped
+       * onto every event it emits. Absent for consumer dispatch: a consumer runs on
+       * behalf of no operation, and the emitted row's NULL says so.
+       */
+      operation?: string,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -2643,13 +2688,16 @@ export function defineScopeDO(
             actor: systemActor ?? derivedActor,
             ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
             ...(stamp ? { impersonation: stamp } : {}),
+            // #1231: kernel-stamped like the two above — `domainEventInput.parse`
+            // already stripped anything module code tried to smuggle under this key.
+            ...(operation ? { operation } : {}),
           });
           sql.exec(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -2663,6 +2711,7 @@ export function defineScopeDO(
             full.subjectId ?? null,
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.impersonation ? JSON.stringify(full.impersonation) : null,
+            full.operation ?? null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },

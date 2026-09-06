@@ -112,6 +112,15 @@ export const domainEvent = z
     // `DomainEventInput`, so module code can neither claim a session nor drop one.
     // Absent (not empty) on every ordinary event, which is the honest reading.
     impersonation: impersonationStamp.optional(),
+    // The signals `operation` dimension (#1231): the operation this event was
+    // emitted from — the exact `invoke()` string (`ticket0/answer`,
+    // `attachments.upload`), which for a scheduled emit is the schedule's own
+    // operation. Stamped kernel-side on the same pattern as the two above, so
+    // module code can neither forge nor suppress it. Absent on a CONSUMER-emitted
+    // event — a consumer runs on behalf of no operation, and inventing a
+    // pseudo-name here would make "which operations emit this" answer with
+    // things that are not operations — and absent on rows that predate the field.
+    operation: z.string().min(1).optional(),
     payload: z.unknown(),
   })
   .superRefine(piiInvariant);
@@ -182,5 +191,14 @@ export const historyEntry = timelineEntry.extend({
   impersonation: impersonationStamp.nullable(),
   piiClass,
   subjectId: dataSubjectId.nullable(),
+  /**
+   * The operation this entry was emitted from (#1231), or null. This null
+   * honestly carries BOTH meanings the two fields above keep distinct: a
+   * consumer-emitted event ran on behalf of no operation (a fact, like
+   * `impersonation`'s null), and a row written before the column is unrecorded
+   * (like `authorization`'s null). The spine cannot tell them apart after the
+   * fact, and a renderer should say "—" rather than guess which it was.
+   */
+  operation: z.string().nullable(),
 });
 export type HistoryEntry = z.infer<typeof historyEntry>;
