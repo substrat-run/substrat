@@ -63,8 +63,8 @@ export const MOCK_DEPLOYMENTS: Deployment[] = [
     source: 'cli',
     owned: true,
     versions: [
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7V300', version: '0.3.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', origin: { source: 'git', gitRepo: 'acme/helpdesk', gitCommit: '9f2c1d4b8a7e6f5091827364aabbccdd00112233', gitRef: 'main' }, createdAt: '2026-07-22T12:00:00Z' },
-      { id: '01J2Q8Z3V9K4W7X2M5N6P7V200', version: '0.2.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', origin: { source: 'cli' }, createdAt: '2026-07-20T12:00:00Z' },
+      { id: '01J2Q8Z3V9K4W7X2M5N6P7V300', version: '0.3.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', origin: { source: 'git', gitRepo: 'acme/helpdesk', gitCommit: '9f2c1d4b8a7e6f5091827364aabbccdd00112233', gitRef: 'main', gate: 'passed' }, createdAt: '2026-07-22T12:00:00Z' },
+      { id: '01J2Q8Z3V9K4W7X2M5N6P7V200', version: '0.2.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', origin: { source: 'cli', gate: 'skipped' }, createdAt: '2026-07-20T12:00:00Z' },
       { id: '01J2Q8Z3V9K4W7X2M5N6P7V100', version: '0.1.0', admission: 'pending', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v100', createdAt: '2026-07-18T12:00:00Z' },
       // A 4th version so the dev preview exercises the collapsed list's "All N versions" link.
       { id: '01J2Q8Z3V9K4W7X2M5N6P7V050', version: '0.0.5', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v050', createdAt: '2026-07-16T12:00:00Z' },

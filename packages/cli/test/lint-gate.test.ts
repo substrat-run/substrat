@@ -156,13 +156,13 @@ describe('the receipt — a handoff, deliberately not a cache', () => {
 
     // Honoured: the push walks past the gate and dies on the NEXT thing a tree with no
     // runtimeNeeds and no wrangler.jsonc hits. (Nothing is built — that refusal is first.)
-    await expect(push({ ...opts, dir, linted: { root: resolve(dir), skipped: false } })).rejects.toThrow(
+    await expect(push({ ...opts, dir, linted: { root: resolve(dir), gate: 'passed' } })).rejects.toThrow(
       /nothing to build/,
     );
 
     // A receipt for another directory is not this directory's, so the rules run.
     await expect(
-      push({ ...opts, dir, linted: { root: join(resolve(dir), 'elsewhere'), skipped: false } }),
+      push({ ...opts, dir, linted: { root: join(resolve(dir), 'elsewhere'), gate: 'passed' } }),
     ).rejects.toThrow(/layer-rule violation/);
   });
 
@@ -176,13 +176,41 @@ describe('the receipt — a handoff, deliberately not a cache', () => {
     captureLog();
     const dir = vertical(DIRTY);
     const receipt = assertLayerRules(dir, true);
-    expect(receipt.skipped).toBe(true);
+    expect(receipt.gate).toBe('skipped');
     await expect(
       push({
         dir, slug: 'crm', version: '1.0.0', controlPlaneUrl: 'http://cp', authHeader: {},
         linted: receipt,
       }),
     ).rejects.toThrow(/layer-rule violation/);
+  });
+});
+
+/**
+ * The receipt's verdict is a wire fact, not only a local one (#955). The platform never
+ * receives the source this push was linted against — it gets a built bundle — so the only
+ * record that a version was gated, skipped, or had nothing to check is the receipt the CLI
+ * sends beside the manifest as `origin.gate`. Absent = ungated (a pre-receipt CLI, or a
+ * caller that skipped the CLI entirely), which is exactly how the platform should read it.
+ */
+describe('the receipt rides the push as origin.gate', () => {
+  it('says what the gate found: passed, none, or skipped', () => {
+    captureLog();
+    expect(assertLayerRules(vertical(CLEAN)).gate).toBe('passed');
+    expect(assertLayerRules(vertical(DIRTY), true).gate).toBe('skipped');
+    const empty = mkdtempSync(join(tmpdir(), 'substrat-lint-gate-'));
+    writeFileSync(join(empty, 'package.json'), JSON.stringify({ name: '@acme/empty' }));
+    expect(assertLayerRules(empty).gate).toBe('none');
+  });
+
+  /**
+   * The join, pinned in source the way cli.ts's flags are below: `push()` must send the
+   * verdict of the receipt IT honoured — the one variable — never a fresh constant, or the
+   * skip path would upload `passed` while the terminal said "ungated".
+   */
+  it('push() sends the honoured receipt, not a restatement', () => {
+    const src = readFileSync(new URL('../src/push.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/\.\.\.pushOrigin\(\), gate: linted\.gate/);
   });
 });
 

@@ -3332,14 +3332,16 @@ describe('control-plane API — deploy', () => {
 
   it('records the push origin the CLI reports, and tolerates a malformed one', async () => {
     // The CI push: the CLI detects the GitHub Actions runner and sends where it built from.
+    // The gate receipt rides with it (#955) — the platform never sees the linted source, so
+    // this stored field is the only record that the layer rules ran (or were skipped).
     const fd = form(manifest());
-    fd.set('origin', JSON.stringify({ source: 'git', gitRepo: 'acme/fsm2', gitCommit: 'deadbeef', gitRef: 'main' }));
+    fd.set('origin', JSON.stringify({ source: 'git', gitRepo: 'acme/fsm2', gitCommit: 'deadbeef', gitRef: 'main', gate: 'skipped' }));
     const res = await push('fsm2', fd);
     expect(res.status).toBe(201);
     const version = await res.json();
     const versions = (await (await app.request('/verticals/fsm2/versions', { headers: auth })).json()).entries;
     expect(versions.find((v: { id: string }) => v.id === version.id)?.origin).toEqual({
-      source: 'git', gitRepo: 'acme/fsm2', gitCommit: 'deadbeef', gitRef: 'main',
+      source: 'git', gitRepo: 'acme/fsm2', gitCommit: 'deadbeef', gitRef: 'main', gate: 'skipped',
     });
 
     // Provenance is a label, never authority — garbage in the field must not fail the push.

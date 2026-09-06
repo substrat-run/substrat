@@ -102,16 +102,48 @@ export function MonoTag({ children, color }: { children: ReactNode; color?: stri
 
 /**
  * Where a pushed version's code came from — `git` (the repo's deploy workflow, with
- * repo@commit linking to GitHub) vs `cli` (someone's terminal). Renders nothing for a
- * version pushed before origin tracking: absence of evidence stays visibly absent
- * rather than being guessed at.
+ * repo@commit linking to GitHub) vs `cli` (someone's terminal). For a version with no
+ * origin the source stays visibly absent rather than being guessed at — but the gate
+ * flag still renders, because there "ungated" is not a guess: no receipt means nothing
+ * checked the layer rules (contracts `versionOrigin.gate`, #955).
  */
 export function OriginTag({
   origin,
 }: {
-  origin?: { source: 'git' | 'cli'; gitRepo?: string; gitCommit?: string; gitRef?: string } | null;
+  origin?: {
+    source: 'git' | 'cli';
+    gitRepo?: string;
+    gitCommit?: string;
+    gitRef?: string;
+    gate?: 'passed' | 'skipped' | 'none';
+  } | null;
 }) {
-  if (!origin) return null;
+  // The push-time layer-rule receipt (#955). Everything but `passed` is flagged: `skipped`
+  // is a deliberate --skip-lint, `none` means the gate found nothing to check, and an
+  // absent receipt — a pre-receipt CLI, or a caller that skipped the CLI and hit the
+  // deploy API directly — means nothing ran the rules at all. Only `passed` stays quiet,
+  // because gated is the expected state, not an achievement.
+  const gate = origin?.gate;
+  const ungated =
+    gate === 'passed' ? null : (
+      <span
+        style={{
+          color: 'var(--status-warning-fg)',
+          background: 'var(--status-warning-bg)',
+          borderRadius: 4,
+          padding: '0 4px',
+        }}
+        title={
+          gate === 'skipped'
+            ? 'Pushed with --skip-lint — the layer rules were not checked'
+            : gate === 'none'
+              ? 'boundary-lint found no module code to check — the layer rules were not checked'
+              : 'No gate receipt rode this push (an older CLI, or a direct deploy API call) — the layer rules were not checked'
+        }
+      >
+        ungated
+      </span>
+    );
   const style: CSSProperties = {
     display: 'inline-flex',
     alignItems: 'center',
@@ -121,11 +153,17 @@ export function OriginTag({
     color: 'var(--text-tertiary)',
     whiteSpace: 'nowrap',
   };
+  // No origin at all — pushed before origin tracking, or the deploy API was called with
+  // none. The source stays absent (we will not guess), but the gate verdict still shows.
+  if (!origin) {
+    return <span style={style}>{ungated}</span>;
+  }
   if (origin.source === 'cli') {
     return (
       <span style={style} title="Pushed from a terminal (substrat push)">
         <Ic name="terminal" size={11} />
         cli
+        {ungated}
       </span>
     );
   }
@@ -146,6 +184,7 @@ export function OriginTag({
       ) : (
         label
       )}
+      {ungated}
     </span>
   );
 }
