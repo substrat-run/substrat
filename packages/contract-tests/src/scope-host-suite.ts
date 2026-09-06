@@ -1949,6 +1949,38 @@ export function scopeHostContractSuite(
         expect(page2[0]!.id).not.toBe(page1[0]!.id);
       });
 
+      it('stamps and filters by version — the signals dimension that joins a failure to its push (#1231)', async () => {
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'deploy.upload',
+          vertical: 'acme/versioned',
+          version: '01JVERSIONAAAAAAAAAAAAAAAA',
+          message: 'failed under the new version',
+        });
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'deploy.upload',
+          vertical: 'acme/versioned',
+          // No version — a writer that cannot say says nothing, and the row reads null.
+          message: 'failed with no version in play',
+        });
+
+        const stamped = await host.admin.listOpsFailures(staff, {
+          version: '01JVERSIONAAAAAAAAAAAAAAAA',
+        });
+        expect(stamped.length).toBe(1);
+        expect(stamped[0]!.version).toBe('01JVERSIONAAAAAAAAAAAAAAAA');
+
+        // The unstamped row round-trips as an explicit null, never undefined: the
+        // entry schema owns the distinction between "predates the stamp" and a typo.
+        const both = await host.admin.listOpsFailures(staff, { vertical: 'acme/versioned' });
+        expect(both.length).toBe(2);
+        expect(both.map((r) => r.version).sort()).toEqual([
+          '01JVERSIONAAAAAAAAAAAAAAAA',
+          null,
+        ].sort());
+      });
+
       it('bounds the recorded message — a runaway upstream body never becomes a runaway row', async () => {
         await host.admin.recordOpsFailure({
           actor: staff,

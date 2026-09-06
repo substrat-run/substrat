@@ -224,7 +224,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         trigger:
           str(metadata['trigger']) ??
           str((workers['event'] as Record<string, unknown> | undefined)?.['rpcMethod']),
-        eventType: str(workers['eventType']),
+        invocation: str(workers['eventType']),
         entrypoint: str(workers['entrypoint']),
         requestId: str(metadata['requestId']) ?? str(workers['requestId']),
         cpuTimeMs: num(workers['cpuTimeMs']),

@@ -7,7 +7,7 @@ const fmtMs = (ms: number) => (ms >= 100 ? `${Math.round(ms)} ms` : `${ms.toFixe
 /**
  * Shared renderer for observability log events — the per-app tab and the per-vertical
  * panel both use it. The neutral seam (observability.ts) now carries more than
- * message/level (trigger, eventType, entrypoint, requestId, timing) plus the backend's
+ * message/level (trigger, invocation, entrypoint, requestId, timing) plus the backend's
  * `raw` event: a row shows the salient fields inline and, when `raw` is present, expands
  * to the full JSON — the drill-down Cloudflare's own console gives, without pinning this
  * UI to any provider's field names.
@@ -39,7 +39,7 @@ export function LogList({
         const label = l.trigger ?? l.message ?? '(no message)';
         // Show the raw message alongside only when the trigger didn't already say it.
         const sub = l.trigger && l.message && l.message !== l.trigger ? l.message : null;
-        const kind = [l.eventType, l.entrypoint].filter(Boolean).join(' · ');
+        const kind = [l.invocation, l.entrypoint].filter(Boolean).join(' · ');
         const hasRaw = l.raw !== undefined && l.raw !== null;
         const isOpen = open.has(i);
         const last = i === events.length - 1;

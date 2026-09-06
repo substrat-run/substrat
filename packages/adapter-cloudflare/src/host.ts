@@ -4446,6 +4446,7 @@ export class CloudflareScopeHost implements ScopeHost {
           tenant_id: entry.tenantId ?? null,
           scope_id: entry.scopeId ?? null,
           vertical: entry.vertical ?? null,
+          version: entry.version ?? null,
           status: entry.status ?? null,
           // Bounded here, not trusted from the catch site: one runaway upstream body
           // must not become a runaway directory row (#559).
@@ -4459,6 +4460,7 @@ export class CloudflareScopeHost implements ScopeHost {
           tenantId: filter?.tenantId,
           scopeId: filter?.scopeId,
           vertical: filter?.vertical,
+          version: filter?.version,
           operation: filter?.operation,
           reference: filter?.reference,
           since: filter?.since,

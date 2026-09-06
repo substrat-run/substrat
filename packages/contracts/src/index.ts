@@ -47,3 +47,4 @@ export * from './lifecycle.js';
 export * from './client-context.js';
 export * from './model-usage.js';
 export * from './seam.js';
+export * from './signals.js';

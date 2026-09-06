@@ -2860,6 +2860,8 @@ export interface OpsFailureInput {
   tenantId?: TenantId | null;
   scopeId?: ScopeId | null;
   vertical?: string | null;
+  /** The version-registry id the failure happened under — the signals `version` dimension (#1231). */
+  version?: string | null;
   /** The HTTP status the failure was answered with (or carried from upstream). */
   status?: number | null;
   message: string;
@@ -2872,6 +2874,8 @@ export interface OpsFailureFilter {
   tenantId?: TenantId;
   scopeId?: ScopeId;
   vertical?: string;
+  /** The version-registry id — what the release-health read narrows by. */
+  version?: string;
   operation?: string;
   /** Exact match — the lookup a CI log's `reference = <id>` line lands on. */
   reference?: string;

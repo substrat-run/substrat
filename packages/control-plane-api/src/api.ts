@@ -643,6 +643,8 @@ const opsFailuresQuery = z.object({
   tenantId: tenantIdSchema.optional(),
   scopeId: scopeIdSchema.optional(),
   vertical: z.string().optional(),
+  // The version-registry id — the release-health narrowing (#1231).
+  version: z.string().optional(),
   operation: z.string().optional(),
   // Exact match — the lookup a CI log's `reference = <id>` line lands on.
   reference: z.string().optional(),
@@ -1833,6 +1835,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           tenantId,
           scopeId,
           vertical: scope.vertical,
+          version: scope.verticalVersionId ?? null,
           status: e instanceof ControlPlaneError ? e.status : null,
           message,
         });
@@ -4523,6 +4526,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             tenantId,
             scopeId: previewId,
             vertical: slug,
+            version: opts.versionId,
             status: e.status,
             message: e.message,
           });
@@ -4750,6 +4754,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       tenantId: p.kind === 'builder' ? p.tenantId : c.req.query('tenantId'),
       scopeId: c.req.query('scopeId'),
       vertical: c.req.query('vertical'),
+      version: c.req.query('version'),
       operation: c.req.query('operation'),
       reference: c.req.query('reference'),
       since: c.req.query('since'),

@@ -38,8 +38,10 @@ export interface RecentLogEvent {
   /** What set the invocation off — an operation/route/RPC name (e.g. `default.importDump`).
    *  Neutral vocabulary: each backend maps its own trigger concept onto this string. */
   trigger: string | null;
-  /** The shape of the invocation (`fetch`, `rpc`, `scheduled`, `alarm`, …), backend-worded. */
-  eventType: string | null;
+  /** The shape of the invocation (`fetch`, `rpc`, `scheduled`, `alarm`, …), backend-worded.
+   *  Named for what it is: the signals vocabulary (#1231) reserves `eventType` for a DOMAIN
+   *  event's type, and this field is the one thing in the system that must never be read as one. */
+  invocation: string | null;
   /** The handler that ran (a class/entrypoint name), when the backend distinguishes one. */
   entrypoint: string | null;
   /** Correlates events from the same invocation — the key to grouping a request's lines. */
