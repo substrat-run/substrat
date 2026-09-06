@@ -248,7 +248,7 @@ describe('GitHub App client', () => {
       // repo's devDependencies must be on disk before the push step — regression
       // guard: the first generated workflow had no install step at all.
       const install = yaml.indexOf('pnpm install --frozen-lockfile');
-      const push = yaml.indexOf('npx @substrat-run/cli push . --slug hr-portal --promote prod');
+      const push = yaml.indexOf('npx @substrat-run/cli push . --slug hr-portal | tee push.out');
       expect(install).toBeGreaterThan(-1);
       expect(push).toBeGreaterThan(install);
       // Every common lockfile has a branch; bare repos fall back to npm install.
@@ -290,7 +290,7 @@ describe('GitHub App client', () => {
       const [deployJob = '', previewJobs = ''] = yaml.split('\n  preview:\n');
       const [previewJob = '', cleanupJob = ''] = previewJobs.split('\n  preview_cleanup:\n');
       for (const [job, upload] of [
-        [deployJob, 'push demos/auth-server --slug auth-server --promote prod'],
+        [deployJob, 'push demos/auth-server --slug auth-server | tee push.out'],
         [previewJob, 'preview create demos/auth-server --slug auth-server --tag'],
       ] as const) {
         const gate = job.indexOf(GATE);
@@ -320,7 +320,7 @@ describe('GitHub App client', () => {
       // The single-package shape gates too, against its own package.json.
       const root = wf();
       expect(root).toContain(GATE);
-      expect(root.indexOf(GATE)).toBeLessThan(root.indexOf('cli push . --slug hr-portal --promote prod'));
+      expect(root.indexOf(GATE)).toBeLessThan(root.indexOf('cli push . --slug hr-portal | tee push.out'));
       expect(root).toContain(`'package.json' "$1"; }`);
       expect(root).toContain(`if declares "$s"; then ( cd . && $PM run "$s" )`);
     });
@@ -338,15 +338,44 @@ describe('GitHub App client', () => {
     });
 
     it('releases on every merge in trunk mode, and only on a version move in changesets mode', () => {
-      expect(wf('trunk')).toContain('push . --slug hr-portal --promote prod');
+      expect(wf('trunk')).toContain('push . --slug hr-portal | tee push.out');
       const cs = wf('changesets');
       // The repo owns the version, so the merge that lands a changeset must not release —
       // only the merge that moves package.json does.
-      expect(cs).toContain('push . --slug hr-portal --version "$CUR" --promote prod');
+      expect(cs).toContain('push . --slug hr-portal --version "$CUR" | tee push.out');
       expect(cs).toContain('if [ "$CUR" = "$PREV" ]; then');
       expect(cs).toContain('git show HEAD^:package.json');
       // …which needs more than a shallow clone of one commit to diff against.
       expect(cs).toContain('fetch-depth: 2');
+    });
+
+    it('promotes only while the run still owns the release coordinate (#1216)', () => {
+      // The concurrency group serializes the queue but does NOT order it — GitHub says so
+      // outright — so a run holding an older commit can resume after a newer one already
+      // promoted. `push` patch-bumps without reading the commit, so the inversion would put
+      // OLDER code behind a HIGHER version number, invisible everywhere but in behaviour.
+      // The push and the pointer move are therefore split, with the guard between them —
+      // right before the promote, where the race window is two commands, not a build.
+      const trunk = wf('trunk');
+      expect(trunk).toContain('gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha');
+      expect(trunk).toContain('if [ "$TIP" != "$GITHUB_SHA" ]; then');
+      expect(trunk).toContain('cli promote hr-portal --version "$VID"');
+      // The skip is loud, and the version stays uploaded — only the pointer move is skipped.
+      expect(trunk).toContain('::warning::main has moved past');
+      // The tip is read through the API with the default read-only token, not local git —
+      // the checkout dropped its credentials (persist-credentials: false).
+      expect(trunk).toContain('GH_TOKEN: ${{ github.token }}');
+      // In changesets mode the release coordinate is the VERSION, not the commit: a
+      // changeset-only merge moves the tip without releasing, and its own run skips prod
+      // entirely, so a commit-tip guard would leave a release pushed but never promoted.
+      const cs = wf('changesets');
+      expect(cs).toContain('"repos/$GITHUB_REPOSITORY/contents/package.json?ref=main"');
+      expect(cs).toContain('if [ "$TIPV" != "$CUR" ]; then');
+      expect(cs).toContain('cli promote hr-portal --version "$VID"');
+      expect(cs).not.toContain('git/ref/heads');
+      // Neither mode promotes on the push itself any more — that is the whole point.
+      expect(trunk).not.toContain('--promote');
+      expect(cs).not.toContain('--promote');
     });
 
     it('rebinds a long-lived test scope on every merge, when the repo declares one', () => {
@@ -425,7 +454,7 @@ describe('GitHub App client', () => {
       const base = { branch: 'main', slug: 'auth-server', cpUrl: 'https://console.example/api' };
       const yaml = deployWorkflowYaml({ ...base, path: 'demos/auth-server' });
       // Every push/preview builds the package directory, never the repo root…
-      expect(yaml).toContain('push demos/auth-server --slug auth-server --promote prod');
+      expect(yaml).toContain('push demos/auth-server --slug auth-server | tee push.out');
       expect(yaml).toContain('preview create demos/auth-server --slug auth-server --tag pr-${{ github.event.number }}');
       // …the version reads come from ITS package.json…
       expect(yaml).toContain("require('./demos/auth-server/package.json').version");
@@ -440,7 +469,7 @@ describe('GitHub App client', () => {
       const BUILD = '- name: Build workspace dependencies';
       const [deployJob = '', previewJobs = ''] = yaml.split('\n  preview:\n');
       for (const [job, cmd] of [
-        [deployJob, 'push demos/auth-server --slug auth-server --promote prod'],
+        [deployJob, 'push demos/auth-server --slug auth-server | tee push.out'],
         [previewJobs, 'preview create demos/auth-server --slug auth-server --tag'],
       ] as const) {
         expect(job.split(BUILD)).toHaveLength(2);
@@ -457,10 +486,12 @@ describe('GitHub App client', () => {
       expect(yaml).toContain('elif [ -f yarn.lock ]; then yarn workspaces run build');
       // A single-package repo depends on published packages — nothing to build.
       expect(deployWorkflowYaml(base)).not.toContain('Build workspace dependencies');
-      // The changesets gate diffs the PACKAGE's manifest against the previous commit.
+      // The changesets gate diffs the PACKAGE's manifest against the previous commit, and
+      // the tip guard reads the PACKAGE's manifest off the branch tip (#1216).
       const cs = deployWorkflowYaml({ ...base, release: 'changesets' as const, path: 'demos/auth-server' });
       expect(cs).toContain('git show HEAD^:demos/auth-server/package.json');
-      expect(cs).toContain('push demos/auth-server --slug auth-server --version "$CUR" --promote prod');
+      expect(cs).toContain('push demos/auth-server --slug auth-server --version "$CUR" | tee push.out');
+      expect(cs).toContain('"repos/$GITHUB_REPOSITORY/contents/demos/auth-server/package.json?ref=main"');
     });
 
     it('collapses root spellings of the package directory and refuses traversal', () => {

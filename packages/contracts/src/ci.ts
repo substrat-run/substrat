@@ -100,7 +100,8 @@ export const previewReapedBody = (): string =>
  * How a merge to the deploy branch turns into a prod release.
  *
  * - `trunk` — **every merge releases.** The push carries no `--version`, so the registry
- *   patch-bumps and `--promote prod` points prod at it in the same run. The simplest thing
+ *   patch-bumps, and the same run then promotes prod — behind the tip guard below, so a
+ *   queue that resumes out of order can never point prod at older code. The simplest thing
  *   that works, and the default the dashboard commits.
  * - `changesets` — **the repo owns the version** (`package.json`), so a merge that only
  *   lands a changeset must NOT release; only the merge that MOVES the version does. The job
@@ -290,27 +291,76 @@ export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
 
   // --- the release step, per mode ------------------------------------------------------
   //
-  // Both print the pushed version id on the `✓ pushed … version <id> …` line; the test-env
-  // bind below reads it back out of the captured stdout. `set -euo pipefail` means a failed
-  // push fails the step rather than letting a masked non-zero exit reach the bind.
+  // The push and the pointer move are SPLIT (`push`, then `promote`) with a guard between
+  // them, because the concurrency group below serializes the queue but does not order it:
+  // a run holding an older commit can resume after a newer one already promoted, and
+  // `push` patch-bumps the registry's highest version without ever reading the commit —
+  // so the inversion would put OLDER code behind a HIGHER version number, invisible
+  // everywhere but in deployed behaviour (#1216). The guard promotes only while this run
+  // still owns the release coordinate — the branch tip in trunk mode, the version the tip
+  // declares in changesets mode (a changeset-only merge moves the tip without releasing,
+  // and its own run skips prod entirely, so a commit guard there would orphan a release).
+  // The version is uploaded either way: findable, migrations rehearsed; only the promote
+  // is skipped, loudly. The trade is deliberate: if the newer run then fails, this merge
+  // landed with no promotion at all and prod holds until the next green merge — "prod
+  // never goes backwards" bought at "a merge may not promote".
+  //
+  // The guard reads the tip through the API (gh, with the default read-only token) rather
+  // than local git — the checkout dropped its credentials (`persist-credentials: false`)
+  // — and it sits right before the promote, so the race window is the gap between two
+  // commands rather than the length of a build.
+  //
+  // Both modes print the pushed version id on the `✓ pushed … version <id> …` line; the
+  // promote and the test-env bind below read it back out of the captured stdout.
+  // `set -euo pipefail` means a failed push fails the step rather than letting a masked
+  // non-zero exit reach them. ('|| true' on the grep so an unmatched pattern reaches the
+  // explicit message instead of tripping pipefail.)
+  const readVid = `VID=$(grep -F '✓ pushed' push.out | grep -oE 'version [A-Za-z0-9]+' | head -1 | cut -d' ' -f2 || true)
+          if [ -z "$VID" ]; then echo "could not read the pushed version id from:" >&2; cat push.out >&2; exit 1; fi`;
   const release_ = release === 'changesets'
     ? `      - name: Release (only when package.json version moved)
 ${cpEnv}
+          GH_TOKEN: \${{ github.token }}
         run: |
           set -euo pipefail
           CUR=$(node -p "require('${pkgRef}').version")
-          PREV=$(git show HEAD^:${path ? `${path}/package.json` : 'package.json'} 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo '')
+          PREV=$(git show HEAD^:${pkgRelRef} 2>/dev/null | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version" 2>/dev/null || echo '')
           if [ "$CUR" = "$PREV" ]; then
             echo "package.json version is still $CUR — this merge landed a changeset, not a release. Skipping prod."
             exit 0
           fi
           echo "releasing $CUR (was \${PREV:-none})"
-          ${cli} push ${dir} --slug ${slug} --version "$CUR" --promote prod`
+          ${cli} push ${dir} --slug ${slug} --version "$CUR" | tee push.out
+          ${readVid}
+          # Promote only while $CUR is still the version the branch tip declares. Queued
+          # runs resume in no guaranteed order, so the run releasing an older version can
+          # get here after a newer release already promoted. The coordinate is the VERSION,
+          # not the commit: a changeset-only merge moves the tip without releasing, and its
+          # own run skips prod entirely — a commit check here would orphan this release.
+          TIPV=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/$GITHUB_REPOSITORY/contents/${pkgRelRef}?ref=${branch}" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version")
+          if [ "$TIPV" != "$CUR" ]; then
+            echo "::warning::${branch} now declares version $TIPV — pushed $CUR as version $VID without promoting prod; the newer release's run owns the pointer."
+            exit 0
+          fi
+          ${cli} promote ${slug} --version "$VID"`
     : `      - name: Release to prod
 ${cpEnv}
+          GH_TOKEN: \${{ github.token }}
         run: |
           set -euo pipefail
-          ${cli} push ${dir} --slug ${slug} --promote prod`;
+          ${cli} push ${dir} --slug ${slug} | tee push.out
+          ${readVid}
+          # Promote only while this commit is still the branch tip. Queued runs resume in
+          # no guaranteed order, so a run holding an older commit can get here after a
+          # newer one already promoted — and would point prod back at old code under a
+          # higher version number. The version above is uploaded either way; only the
+          # pointer move is skipped, because the tip commit's own run owns it.
+          TIP=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/${branch}" --jq .object.sha)
+          if [ "$TIP" != "$GITHUB_SHA" ]; then
+            echo "::warning::${branch} has moved past $GITHUB_SHA (tip is $TIP) — pushed version $VID without promoting prod; the tip commit's run owns the pointer."
+            exit 0
+          fi
+          ${cli} promote ${slug} --version "$VID"`;
 
   // --- the "tracks main" test environment ---------------------------------------------
   //
@@ -474,8 +524,10 @@ ${releaseNote}
     # Serialized and bounded is all of it, though — NOT ordered. GitHub queues by the time a
     # run starts waiting, and states outright that ordering is not guaranteed, so two runs can
     # still invert and leave prod running the older commit under a HIGHER version number
-    # (\`push\` patch-bumps the registry's highest; it never reads the commit). Closing that
-    # needs a guard refusing to promote a commit the branch has moved past — its own change.
+    # (\`push\` patch-bumps the registry's highest; it never reads the commit). The release
+    # step below closes that: it promotes only while its commit still owns the release —
+    # checked against the branch tip right before the pointer move — so prod stays monotonic
+    # in commits whatever order the queue resumes in.
     concurrency:
       group: substrat-deploy-${slug}-prod
       queue: max

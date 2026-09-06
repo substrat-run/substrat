@@ -193,7 +193,7 @@ onto the primitives above:
 | **PR opened / pushed** | `<next>-pr-<n>.<k>` | `preview create --tag pr-<n>` | sticky `…--pr-<n>`, a fork of prod |
 | **Merge to `main`** (changeset lands; version does **not** move) | `<pkg>-test.<run>` | `push`, then `scope bind <testScope>` | `crm-test.ahero.se`, the long-lived test env |
 | **Version PR** ("chore(release): version packages") | `<next>-pr-<n>.<k>` | nothing special — it is a PR, so it gets a PR preview | that preview **is** the release candidate: the code that is about to become prod, on a fork of prod data, while rejecting it is still free |
-| **Version PR merges** (version moves) | `<pkg>` exactly | `push --version <pkg> --promote prod` | prod |
+| **Version PR merges** (version moves) | `<pkg>` exactly | `push --version <pkg>`, then a tip-guarded `promote` — skipped if `main` already declares a newer version, so a queue that resumes out of order can never point prod at older code | prod |
 
 Note what row 3 does *not* need: a release-candidate channel, an `rc` tag, or any new noun. A
 version PR is a pull request, so the ordinary PR preview already runs the release candidate against
