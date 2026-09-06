@@ -720,7 +720,7 @@ export class TenantNarrowedControlPlane {
       service: string | null;
       outcome: string | null;
       trigger: string | null;
-      eventType: string | null;
+      invocation: string | null;
       entrypoint: string | null;
       requestId: string | null;
       cpuTimeMs: number | null;
@@ -746,7 +746,7 @@ export class TenantNarrowedControlPlane {
           service?: unknown;
           outcome?: unknown;
           trigger?: unknown;
-          eventType?: unknown;
+          invocation?: unknown;
           entrypoint?: unknown;
           requestId?: unknown;
           cpuTimeMs?: unknown;
@@ -767,7 +767,7 @@ export class TenantNarrowedControlPlane {
       service: str(e.service),
       outcome: str(e.outcome),
       trigger: str(e.trigger),
-      eventType: str(e.eventType),
+      invocation: str(e.invocation),
       entrypoint: str(e.entrypoint),
       requestId: str(e.requestId),
       cpuTimeMs: num(e.cpuTimeMs),

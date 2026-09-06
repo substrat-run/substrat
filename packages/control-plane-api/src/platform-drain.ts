@@ -43,6 +43,13 @@ export interface PlatformRequestContext {
   tenantId: TenantId;
   scopeId: ScopeId;
   vertical: string;
+  /**
+   * The version-registry id bound to the scope at drain time (the signals `version`
+   * stamp, #1231) — an approximation of the version that enqueued the intent, which
+   * is why it is optional rather than required: a caller that cannot say should say
+   * nothing, not guess.
+   */
+  versionId?: string | null;
 }
 
 /** What a handler reports for one intent; `result` is persisted (COALESCE'd) for two-phase idempotency. */
@@ -147,6 +154,7 @@ export async function drainScopePlatformRequests(
         tenantId: ctx.tenantId,
         scopeId: ctx.scopeId,
         vertical: ctx.vertical,
+        version: ctx.versionId ?? null,
         message: `platform intent ${request.id} ${outcome.error}`,
       });
     } else if (outcome.status === 'failed') {
@@ -160,6 +168,7 @@ export async function drainScopePlatformRequests(
         tenantId: ctx.tenantId,
         scopeId: ctx.scopeId,
         vertical: ctx.vertical,
+        version: ctx.versionId ?? null,
         message: `platform intent ${request.id} failed: ${outcome.error ?? 'unknown'}`,
       });
     }

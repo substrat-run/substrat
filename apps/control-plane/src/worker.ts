@@ -799,7 +799,7 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
   };
   return drainScopePlatformRequests(
     client,
-    { tenantId: t, scopeId: s, vertical: rec.vertical },
+    { tenantId: t, scopeId: s, vertical: rec.vertical, versionId: rec.verticalVersionId ?? null },
     {
       [PROVISION_SIBLING_KIND]: provisionSiblingHandler({
         host,

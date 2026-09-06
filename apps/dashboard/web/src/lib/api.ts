@@ -850,7 +850,8 @@ export interface ObservabilityLogEvent {
   outcome: string | null;
   /** Neutral enrichments carried through the observability seam (observability.ts). */
   trigger: string | null;
-  eventType: string | null;
+  /** The invocation shape (`fetch`, `rpc`, `scheduled`, …) — never a domain event's type (#1231). */
+  invocation: string | null;
   entrypoint: string | null;
   requestId: string | null;
   cpuTimeMs: number | null;

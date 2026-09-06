@@ -407,6 +407,13 @@ export const opsFailureEntry = z.object({
   tenantId: tenantId.nullable(),
   scopeId: scopeId.nullable(),
   vertical: z.string().nullable(),
+  /**
+   * The version-registry id (ULID) the failure happened under, when the writer
+   * held one — the signals `version` dimension (#1231), what lets a failure be
+   * read against the push that produced it. Null where no version is in play
+   * (a tenant-wide action) or the writer predates the column.
+   */
+  version: z.string().nullable(),
   /** The HTTP status the failure was answered with (or carried from upstream). */
   status: z.number().int().nullable(),
   message: z.string(),

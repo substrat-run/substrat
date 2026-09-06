@@ -279,6 +279,7 @@ export interface OpsFailureRow {
   tenant_id: string | null;
   scope_id: string | null;
   vertical: string | null;
+  version: string | null;
   status: number | null;
   message: string;
   reference: string | null;
@@ -324,6 +325,7 @@ export interface OpsFailureQuery {
   tenantId?: string;
   scopeId?: string;
   vertical?: string;
+  version?: string;
   operation?: string;
   reference?: string;
   since?: string;
@@ -772,6 +774,7 @@ const DIRECTORY_DDL = `
     tenant_id TEXT,
     scope_id TEXT,
     vertical TEXT,
+    version TEXT,
     status INTEGER,
     message TEXT NOT NULL,
     reference TEXT,
@@ -951,6 +954,8 @@ export class ControlPlaneDO extends DurableObject {
     // K-21's tombstone on tenant-level tuples (membership lives here).
     this.addColumn('_substrat_tenant_tuples', 'revoked_at TEXT');
     this.addColumn('_substrat_admin_log', 'caused_by TEXT');
+    // The signals `version` stamp (#1231): a DO that predates the column ALTERs it in.
+    this.addColumn('_substrat_ops_failures', 'version TEXT');
     // builder-plane.md: which tenant owns a vertical (NULL = platform-owned).
     this.addColumn('verticals', 'owner_tenant TEXT');
     // The vertical's declared env-spec (moduleManifest.envSpec) as JSON, for config forms.
@@ -3195,8 +3200,8 @@ export class ControlPlaneDO extends DurableObject {
   recordOpsFailure(row: OpsFailureRow): void {
     this.sql.exec(
       `INSERT INTO _substrat_ops_failures
-         (id, actor, operation, stage, tenant_id, scope_id, vertical, status, message, reference, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.actor,
       row.operation,
@@ -3204,6 +3209,7 @@ export class ControlPlaneDO extends DurableObject {
       row.tenant_id,
       row.scope_id,
       row.vertical,
+      row.version,
       row.status,
       row.message,
       row.reference,
@@ -3230,6 +3236,10 @@ export class ControlPlaneDO extends DurableObject {
     if (query.vertical) {
       where.push('vertical = ?');
       params.push(query.vertical);
+    }
+    if (query.version) {
+      where.push('version = ?');
+      params.push(query.version);
     }
     if (query.operation) {
       where.push('operation = ?');
@@ -3271,6 +3281,7 @@ export class ControlPlaneDO extends DurableObject {
       tenantId: r.tenant_id,
       scopeId: r.scope_id,
       vertical: r.vertical,
+      version: r.version,
       status: r.status,
       message: r.message,
       reference: r.reference,

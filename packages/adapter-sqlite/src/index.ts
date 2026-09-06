@@ -756,6 +756,7 @@ interface OpsFailureRow {
   tenant_id: string | null;
   scope_id: string | null;
   vertical: string | null;
+  version: string | null;
   status: number | null;
   message: string;
   reference: string | null;
@@ -1460,6 +1461,7 @@ export class SqliteScopeHost implements ScopeHost {
         tenant_id TEXT,
         scope_id TEXT,
         vertical TEXT,
+        version TEXT,
         status INTEGER,
         message TEXT NOT NULL,
         reference TEXT,
@@ -6856,8 +6858,8 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory
           .prepare(
             `INSERT INTO _substrat_ops_failures
-               (id, actor, operation, stage, tenant_id, scope_id, vertical, status, message, reference, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             ulid(),
@@ -6867,6 +6869,7 @@ export class SqliteScopeHost implements ScopeHost {
             entry.tenantId ?? null,
             entry.scopeId ?? null,
             entry.vertical ?? null,
+            entry.version ?? null,
             entry.status ?? null,
             // Bounded here, not trusted from the catch site: one runaway upstream
             // body must not become a runaway directory row (#559).
@@ -6894,6 +6897,10 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.vertical) {
           where.push('vertical = ?');
           params.push(filter.vertical);
+        }
+        if (filter?.version) {
+          where.push('version = ?');
+          params.push(filter.version);
         }
         if (filter?.operation) {
           where.push('operation = ?');
@@ -6945,6 +6952,7 @@ export class SqliteScopeHost implements ScopeHost {
             tenantId: r.tenant_id,
             scopeId: r.scope_id,
             vertical: r.vertical,
+            version: r.version,
             status: r.status,
             message: r.message,
             reference: r.reference,
@@ -7153,6 +7161,9 @@ export class SqliteScopeHost implements ScopeHost {
     ] as const) {
       this.ensureColumn(this.directory, '_substrat_entitlements', col, ddl);
     }
+    // The signals `version` stamp (#1231): a directory created before the column
+    // must still open, and an old row's NULL reads as "predates the stamp".
+    this.ensureColumn(this.directory, '_substrat_ops_failures', 'version', 'version TEXT');
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,
