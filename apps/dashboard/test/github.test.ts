@@ -376,6 +376,15 @@ describe('GitHub App client', () => {
       // Neither mode promotes on the push itself any more — that is the whole point.
       expect(trunk).not.toContain('--promote');
       expect(cs).not.toContain('--promote');
+      // `#` and `&` are legal in a git ref name but would truncate the API URL's query or
+      // path, and the failure lands AFTER the push — a version uploaded, never promoted.
+      // Encoded per segment, so a nested branch name keeps the `/` the ref path needs.
+      const at = (branch: string, release?: 'trunk' | 'changesets') =>
+        deployWorkflowYaml({ branch, slug: 'hr-portal', cpUrl: 'https://console.example/api', ...(release ? { release } : {}) });
+      expect(at('release#a&b')).toContain('git/ref/heads/release%23a%26b');
+      expect(at('feat/x')).toContain('git/ref/heads/feat/x');
+      expect(at('release#a&b', 'changesets')).toContain('contents/package.json?ref=release%23a%26b');
+      expect(at('feat/x', 'changesets')).toContain('contents/package.json?ref=feat/x');
     });
 
     it('rebinds a long-lived test scope on every merge, when the repo declares one', () => {

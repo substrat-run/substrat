@@ -177,6 +177,11 @@ const printfFormat = (body: string): string => body.replace(/\n/g, '\\n');
 export function deployWorkflowYaml(opts: DeployWorkflowOptions): string {
   const { branch, slug, cpUrl } = opts;
   const release = opts.release ?? 'trunk';
+  // The branch reaches the GitHub API inside a URL (the tip guard), and `#` and `&` are
+  // legal in a git ref name but would truncate the query or the path there. Encoded per
+  // segment, so the `/` a nested branch name needs stays a path separator
+  // (`git/ref/heads/feat/x` addresses the ref; a literal `%2F` does not).
+  const branchUrl = branch.split('/').map(encodeURIComponent).join('/');
   const cli = 'npx @substrat-run/cli';
   // The package directory: what push/preview build, whose package.json owns the version.
   const path = normalizeWorkflowDir(opts.path);
@@ -337,9 +342,9 @@ ${cpEnv}
           # get here after a newer release already promoted. The coordinate is the VERSION,
           # not the commit: a changeset-only merge moves the tip without releasing, and its
           # own run skips prod entirely — a commit check here would orphan this release.
-          TIPV=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/$GITHUB_REPOSITORY/contents/${pkgRelRef}?ref=${branch}" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version")
+          TIPV=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/$GITHUB_REPOSITORY/contents/${pkgRelRef}?ref=${branchUrl}" | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).version")
           if [ "$TIPV" != "$CUR" ]; then
-            echo "::warning::${branch} now declares version $TIPV — pushed $CUR as version $VID without promoting prod; the newer release's run owns the pointer."
+            echo "::warning::${branch} now declares version $TIPV, not $CUR — pushed version $VID without promoting prod; the run releasing $TIPV owns the pointer."
             exit 0
           fi
           ${cli} promote ${slug} --version "$VID"`
@@ -355,7 +360,7 @@ ${cpEnv}
           # newer one already promoted — and would point prod back at old code under a
           # higher version number. The version above is uploaded either way; only the
           # pointer move is skipped, because the tip commit's own run owns it.
-          TIP=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/${branch}" --jq .object.sha)
+          TIP=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/${branchUrl}" --jq .object.sha)
           if [ "$TIP" != "$GITHUB_SHA" ]; then
             echo "::warning::${branch} has moved past $GITHUB_SHA (tip is $TIP) — pushed version $VID without promoting prod; the tip commit's run owns the pointer."
             exit 0
