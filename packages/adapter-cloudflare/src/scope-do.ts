@@ -174,6 +174,8 @@ interface OutboxRow {
   /** K-42: the staff actor + session, when the event was raised under one. NULL is
    *  the ordinary case, and a row written before impersonation existed. */
   impersonation: string | null;
+  /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
+  operation: string | null;
   payload: string | null;
 }
 
@@ -200,6 +202,10 @@ const KERNEL_DDL = `
     -- session/by). NULL is the ordinary case -- nobody was impersonating -- and the
     -- actor column above stays the principal the permission model answered about.
     impersonation TEXT,
+    -- #1231: the invoke() string this event was emitted from. NULL is two facts the
+    -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
+    -- row written before the column.
+    operation TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -673,6 +679,9 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
         'ALTER TABLE _substrat_platform_requests ADD COLUMN impersonation TEXT',
         'ALTER TABLE _substrat_denials ADD COLUMN impersonation TEXT',
+        // #1231: the emitting operation, on a scope DO created before the column.
+        // Nullable so every legacy row reads as unrecorded rather than named.
+        'ALTER TABLE _substrat_outbox ADD COLUMN operation TEXT',
       ]) {
         try {
           this.sql.exec(alter);
@@ -1329,6 +1338,7 @@ export function defineScopeDO(
               systemModuleId,
               signals,
               impersonation,
+              operation,
             );
             // #116: a retry is answered from the recording, and nothing else runs
             // — not the guards, not the handler, not the permission check inside
@@ -1527,7 +1537,10 @@ export function defineScopeDO(
       return this.queue.enqueue(async () => {
         try {
           await this.ctx.storage.transaction(async () => {
-            const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+            const ctx = this.operationContext(
+              principal, tenantId, scopeId, undefined, connectionId,
+              undefined, undefined, undefined, 'attachments.upload',
+            );
             assertAllowed(await ctx.check(gate.write, parsed.entity));
             this.sql.exec(
               `INSERT INTO _substrat_attachments
@@ -1575,7 +1588,10 @@ export function defineScopeDO(
       await this.ensureMigrations();
       const gate = this.attachmentGate(entity.entityType);
       try {
-        const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+        const ctx = this.operationContext(
+          principal, tenantId, scopeId, undefined, connectionId,
+          undefined, undefined, undefined, 'attachments.list',
+        );
         assertAllowed(await ctx.check(gate.read, entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
@@ -1634,7 +1650,10 @@ export function defineScopeDO(
       }
       const gate = this.attachmentGate(record.entity.entityType);
       try {
-        const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+        const ctx = this.operationContext(
+          principal, tenantId, scopeId, undefined, connectionId,
+          undefined, undefined, undefined, 'attachments.open',
+        );
         assertAllowed(await ctx.check(mode === 'read' ? gate.read : gate.write, record.entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
@@ -1660,7 +1679,10 @@ export function defineScopeDO(
         const gate = this.attachmentGate(record.entity.entityType);
         try {
           await this.ctx.storage.transaction(async () => {
-            const ctx = this.operationContext(principal, tenantId, scopeId, undefined, connectionId);
+            const ctx = this.operationContext(
+              principal, tenantId, scopeId, undefined, connectionId,
+              undefined, undefined, undefined, 'attachments.remove',
+            );
             assertAllowed(await ctx.check(gate.write, record.entity));
             this.sql.exec('DELETE FROM _substrat_attachments WHERE id = ?', attachmentId);
             ctx.emit({
@@ -2505,6 +2527,8 @@ export function defineScopeDO(
         // was impersonating, because `DomainEvent.impersonation` is optional — the
         // shape module code never sees is also the shape it cannot branch on.
         ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
+        // #1231: absent rather than null, the same shape rule as the stamp above.
+        ...(row.operation ? { operation: row.operation } : {}),
         payload: row.payload === null ? undefined : JSON.parse(row.payload),
       });
     }
@@ -2528,6 +2552,12 @@ export function defineScopeDO(
        * impossible.
        */
       impersonation?: ImpersonationSession,
+      /**
+       * #1231: the exact `invoke()` string this context runs on behalf of — stamped
+       * onto every event it emits. Absent for consumer dispatch: a consumer runs on
+       * behalf of no operation, and the emitted row's NULL says so.
+       */
+      operation?: string,
     ): OperationContext {
       const checker = this.checker;
       const relations = this.relations;
@@ -2643,13 +2673,16 @@ export function defineScopeDO(
             actor: systemActor ?? derivedActor,
             ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
             ...(stamp ? { impersonation: stamp } : {}),
+            // #1231: kernel-stamped like the two above — `domainEventInput.parse`
+            // already stripped anything module code tried to smuggle under this key.
+            ...(operation ? { operation } : {}),
           });
           sql.exec(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -2663,6 +2696,7 @@ export function defineScopeDO(
             full.subjectId ?? null,
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.impersonation ? JSON.stringify(full.impersonation) : null,
+            full.operation ?? null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },

@@ -377,6 +377,10 @@ const KERNEL_DDL = `
     -- session/by). NULL is the ordinary case — nobody was impersonating — and the
     -- actor column above stays the principal the permission model answered about.
     impersonation TEXT,
+    -- #1231: the invoke() string this event was emitted from. NULL is two facts the
+    -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
+    -- row written before the column.
+    operation TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -826,6 +830,8 @@ interface OutboxRow {
   /** K-42: the staff actor + session, when the event was raised under one. NULL is
    *  the ordinary case, and a row written before impersonation existed. */
   impersonation: string | null;
+  /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
+  operation: string | null;
   payload: string | null;
 }
 
@@ -2231,7 +2237,7 @@ export class SqliteScopeHost implements ScopeHost {
       fn: (ctx: OperationContext) => Promise<T>,
     ): Promise<T> =>
       rt.actor.enqueue(async () => {
-        const ctx = this.operationContext(rt, subject);
+        const ctx = this.operationContext(rt, subject, undefined, undefined, undefined, operation);
         rt.db.exec('BEGIN IMMEDIATE');
         let result: T;
         try {
@@ -2265,7 +2271,7 @@ export class SqliteScopeHost implements ScopeHost {
       fn: (ctx: OperationContext) => Promise<T>,
     ): Promise<T> => {
       try {
-        return await fn(this.operationContext(rt, subject));
+        return await fn(this.operationContext(rt, subject, undefined, undefined, undefined, operation));
       } catch (err) {
         if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err);
         throw err;
@@ -2988,7 +2994,7 @@ export class SqliteScopeHost implements ScopeHost {
         const invoked = await rt.actor.enqueue(async () => {
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
-          const ctx = this.operationContext(rt, subject, undefined, signals, session);
+          const ctx = this.operationContext(rt, subject, undefined, signals, session, operation);
           const clonedInput = structuredClone(input);
           // #893: parse, don't trust — at the scope door, from the operation's own
           // declaration. BEFORE `BEGIN`, so a malformed call never opens a
@@ -3653,6 +3659,8 @@ export class SqliteScopeHost implements ScopeHost {
       // was impersonating, because `DomainEvent.impersonation` is optional — the
       // shape module code never sees is also the shape it cannot branch on.
       ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
+      // #1231: absent rather than null, the same shape rule as the stamp above.
+      ...(row.operation ? { operation: row.operation } : {}),
       payload: row.payload === null ? undefined : JSON.parse(row.payload),
     });
   }
@@ -7248,6 +7256,12 @@ export class SqliteScopeHost implements ScopeHost {
      * this whole feature exists to make impossible.
      */
     impersonation?: ImpersonationSession,
+    /**
+     * #1231: the exact `invoke()` string this context runs on behalf of — stamped
+     * onto every event it emits. Absent for consumer dispatch: a consumer runs on
+     * behalf of no operation, and the emitted row's NULL says so.
+     */
+    operation?: string,
   ): OperationContext {
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
@@ -7381,14 +7395,17 @@ export class SqliteScopeHost implements ScopeHost {
                 : principal),
           ...(passed.length ? { authorization: passed.map((p) => ({ ...p })) } : {}),
           ...(stamp ? { impersonation: stamp } : {}),
+          // #1231: kernel-stamped like the two above — `domainEventInput.parse`
+          // already stripped anything module code tried to smuggle under this key.
+          ...(operation ? { operation } : {}),
         });
         rt.db
           .prepare(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             full.id,
@@ -7404,6 +7421,7 @@ export class SqliteScopeHost implements ScopeHost {
             full.subjectId ?? null,
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.impersonation ? JSON.stringify(full.impersonation) : null,
+            full.operation ?? null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
@@ -7797,6 +7815,9 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_outbox', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_platform_requests', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_denials', 'impersonation', 'impersonation TEXT');
+    // #1231: the emitting operation, on a scope DB created before the column. Nullable
+    // so every legacy row reads as unrecorded rather than claiming a name nobody stamped.
+    this.ensureColumn(db, '_substrat_outbox', 'operation', 'operation TEXT');
     const appliedMigrations = new Set<string>(
       (
         db.prepare('SELECT module_id, version FROM _substrat_migrations').all() as {

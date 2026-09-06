@@ -68,6 +68,9 @@ export function scheduleContractSuite(
       const tick = outbox.find((r) => r.type === 'sched.ticked');
       expect(tick).toBeDefined();
       expect(JSON.parse(tick!.actor)).toEqual({ system: '@test/sched' });
+      // #1231: a schedule fires THROUGH invoke, so its emit is stamped with the
+      // schedule's own operation — the honest answer to "what ran".
+      expect((tick as { operation?: string | null }).operation).toBe('sched/tick');
     });
 
     it('skips a schedule still inside its cadence window', async () => {
