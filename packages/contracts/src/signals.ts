@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { connectionId } from './connections.js';
 import { scopeId, tenantId } from './ids.js';
 
 /**
@@ -56,10 +57,14 @@ export const signalStamp = z
     tenant: tenantId,
     scope: scopeId,
     vertical: z.string().min(1),
+    // Deliberately as loose as the registry's own `versionId` (`z.string().min(1)`,
+    // registry.ts): the registry owns that id's shape, and a stamp stricter than its
+    // owner could refuse an id the registry itself handed out. If the registry ever
+    // brands it, this field adopts the brand from there.
     version: z.string().min(1),
     operation: z.string().min(1),
     eventType: z.string().min(1),
-    connection: z.string().min(1),
+    connection: connectionId,
   })
   .partial()
   .strict();
