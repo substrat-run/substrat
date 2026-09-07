@@ -121,6 +121,13 @@ export const domainEvent = z
     // pseudo-name here would make "which operations emit this" answer with
     // things that are not operations — and absent on rows that predate the field.
     operation: z.string().min(1).optional(),
+    // The signals `version` dimension (#1242): the version-registry id of the code
+    // that emitted this — read from the SUBSTRAT_VERSION_ID binding the deploy
+    // injects (a declared binding in that namespace is refused at push, which is
+    // this stamp's forgery guard). Absent where no version identity exists: a dev
+    // host with no configured id, a script deployed before the binding, a
+    // pre-column row. As loose as the registry's own `versionId`, per signalStamp.
+    version: z.string().min(1).optional(),
     payload: z.unknown(),
   })
   .superRefine(piiInvariant);
@@ -200,5 +207,12 @@ export const historyEntry = timelineEntry.extend({
    * fact, and a renderer should say "—" rather than guess which it was.
    */
   operation: z.string().nullable(),
+  /**
+   * The version-registry id the emitting code ran as (#1242), or null — which
+   * here spans an undeployed host (dev/sqlite with no configured id), a script
+   * deployed before the SUBSTRAT_VERSION_ID binding existed, and a pre-column
+   * row. All honestly "no version identity was present", never a guess.
+   */
+  version: z.string().nullable(),
 });
 export type HistoryEntry = z.infer<typeof historyEntry>;

@@ -624,7 +624,7 @@ const authorizedReadOp: OperationHandler<{ permission: PermissionKey }, number> 
 
 const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
-    'SELECT id, type, authorization, impersonation, operation FROM _substrat_outbox ORDER BY id',
+    'SELECT id, type, authorization, impersonation, operation, version FROM _substrat_outbox ORDER BY id',
   );
 
 const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
@@ -964,7 +964,7 @@ export const flowMod: ModuleRegistration = {
       )) as OperationHandler<never, unknown>,
     'flow/step2-actors': ((ctx) =>
       ctx.sql.query(
-        `SELECT actor, operation FROM _substrat_outbox WHERE type = 'flow.step2'`,
+        `SELECT actor, operation, version FROM _substrat_outbox WHERE type = 'flow.step2'`,
       )) as OperationHandler<never, unknown>,
   },
   consumers: {

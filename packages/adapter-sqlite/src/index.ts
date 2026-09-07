@@ -354,6 +354,15 @@ export interface SqliteScopeHostOptions {
    * admin-log entry) are untouched and stay on the real clock.
    */
   clock?: Clock;
+  /**
+   * The version-registry id the hosted code runs as (#1242) — the signals `version`
+   * stamp on every emitted event, the pure adapter's twin of the DO's
+   * SUBSTRAT_VERSION_ID binding. Per HOST, so it asserts one vertical version per
+   * host; every real dev caller is one-vertical-per-host, and a harness hosting
+   * several verticals should leave it unset rather than mislabel them all. Unset =
+   * NULL on every row, the honest dev/self-host reading.
+   */
+  versionId?: string;
 }
 
 const KERNEL_DDL = `
@@ -381,6 +390,9 @@ const KERNEL_DDL = `
     -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
     -- row written before the column.
     operation TEXT,
+    -- #1242: the version-registry id of the code that emitted. NULL where no version
+    -- identity was present (dev host, pre-binding script, pre-column row).
+    version TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -832,6 +844,8 @@ interface OutboxRow {
   impersonation: string | null;
   /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
   operation: string | null;
+  /** #1242: the emitting code's version-registry id. NULL = no version identity. */
+  version: string | null;
   payload: string | null;
 }
 
@@ -980,11 +994,14 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
   private readonly clock: Clock;
+  /** #1242: the configured version identity; stamped verbatim on every emit. */
+  private readonly versionId?: string;
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
+    this.versionId = options.versionId;
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
@@ -3665,6 +3682,7 @@ export class SqliteScopeHost implements ScopeHost {
       ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
       // #1231: absent rather than null, the same shape rule as the stamp above.
       ...(row.operation ? { operation: row.operation } : {}),
+      ...(row.version ? { version: row.version } : {}),
       payload: row.payload === null ? undefined : JSON.parse(row.payload),
     });
   }
@@ -7269,6 +7287,9 @@ export class SqliteScopeHost implements ScopeHost {
   ): OperationContext {
     const principal = subject.id as PrincipalId;
     const checker = this.checker;
+    // #1242: constant for the whole host — read off `this`, so unlike `operation`
+    // there is no per-call-site argument to forget.
+    const versionId = this.versionId;
     const relations = this.relations;
     const searchPlans = this.searchPlans;
     const listPlans = this.listPlans;
@@ -7402,14 +7423,15 @@ export class SqliteScopeHost implements ScopeHost {
           // #1231: kernel-stamped like the two above — `domainEventInput.parse`
           // already stripped anything module code tried to smuggle under this key.
           ...(operation ? { operation } : {}),
+          ...(versionId ? { version: versionId } : {}),
         });
         rt.db
           .prepare(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             full.id,
@@ -7426,6 +7448,7 @@ export class SqliteScopeHost implements ScopeHost {
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.operation ?? null,
+            full.version ?? null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
@@ -7824,6 +7847,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #1231: the emitting operation, on a scope DB created before the column. Nullable
     // so every legacy row reads as unrecorded rather than claiming a name nobody stamped.
     this.ensureColumn(db, '_substrat_outbox', 'operation', 'operation TEXT');
+    // #1242: the version stamp, same nullability argument.
+    this.ensureColumn(db, '_substrat_outbox', 'version', 'version TEXT');
   }
 
   private runtime(tenantId: TenantId, scopeId: ScopeId): ScopeRuntime {

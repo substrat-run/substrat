@@ -22,6 +22,9 @@ import { SqliteScopeHost } from '../src/index.js';
 
 scopeHostContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-contract-'));
+  // #1242: what a deployment configures, a test configures — the suite asserts
+  // every emit carries exactly this id.
+  const versionId = '01JTESTVERSIONAAAAAAAAAAAA';
   const host = new SqliteScopeHost({
     dir,
     checker: UNSAFE_allowAllChecker,
@@ -29,9 +32,11 @@ scopeHostContractSuite('adapter-sqlite', async () => {
     // never leaks, not that the ciphertext is unpredictable.
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     fetch: connectorTestFetch,
+    versionId,
   });
   return {
     host,
+    versionId,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });

@@ -55,7 +55,9 @@ scopeHostContractSuite(
       controlPlane: env.CONTROL_PLANE,
       checker: UNSAFE_allowAllChecker,
     });
-    return { host, cleanup: async () => host.close() };
+    // #1242: mirrors wrangler.jsonc's SUBSTRAT_VERSION_ID var, so the suite
+    // asserts the binding actually reached the emit path.
+    return { host, versionId: '01JTESTVERSIONAAAAAAAAAAAA', cleanup: async () => host.close() };
   },
   { supportsRuntimeRegistration: false },
 );

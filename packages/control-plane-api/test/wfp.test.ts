@@ -23,7 +23,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 async function metadataOf(
   injectSecrets: Record<string, string | undefined>,
-  extra: { traceSampling?: number } = {},
+  extra: { traceSampling?: number; bundle?: Partial<VerticalBundle> } = {},
 ): Promise<Record<string, unknown>> {
   let body: FormData | undefined;
   vi.stubGlobal(
@@ -40,7 +40,7 @@ async function metadataOf(
     injectSecrets,
     ...extra,
   });
-  await upload('callout-01k', bundle);
+  await upload('callout-01k', { ...bundle, ...(extra.bundle ?? {}) });
   const meta = await (body!.get('metadata') as File).text();
   return JSON.parse(meta) as Record<string, unknown>;
 }
@@ -90,6 +90,25 @@ describe('createWfpUploader — secret injection', () => {
   });
 });
 
+describe('createWfpUploader — version identity (#1242)', () => {
+  it('injects the version-registry id as a plain_text binding the whole script can read', async () => {
+    const meta = await metadataOf({}, { bundle: { versionId: '01JVERSIONAAAAAAAAAAAAAAAA' } });
+    expect(meta['bindings']).toContainEqual({
+      type: 'plain_text',
+      name: 'SUBSTRAT_VERSION_ID',
+      text: '01JVERSIONAAAAAAAAAAAAAAAA',
+    });
+  });
+
+  it('emits no binding when the bundle carries no version id — absent, never a placeholder', async () => {
+    const meta = await metadataOf({});
+    const named = (meta['bindings'] as { name: string }[]).filter(
+      (b) => b.name === 'SUBSTRAT_VERSION_ID',
+    );
+    expect(named).toEqual([]);
+  });
+});
+
 /**
  * The in-place update mode (#286): re-uploading the SERVING script must keep the
  * secrets already on it (keep_bindings) and may only declare DO classes the script
@@ -110,9 +129,24 @@ describe('createWfpUploader — in-place updates (#286)', () => {
       }),
     );
     const upload = createWfpUploader({ accountId: 'acct', namespace: 'ns', apiToken: 'tok' });
-    await upload('callout', { ...bundle, doClasses }, inPlace);
+    await upload('callout', { ...bundle, doClasses, versionId: '01JSERVINGVERSIONAAAAAAAAA' }, inPlace);
     return JSON.parse(await (body!.get('metadata') as File).text()) as Record<string, unknown>;
   }
+
+  it('carries the version binding on the SERVING upload too, without widening keep_bindings (#1242)', async () => {
+    const meta = await inPlaceMetadataOf(['ScopeDO'], {
+      priorDoClasses: ['ScopeDO'],
+      priorMigrationTag: 'v1',
+    });
+    expect(meta['bindings']).toContainEqual({
+      type: 'plain_text',
+      name: 'SUBSTRAT_VERSION_ID',
+      text: '01JSERVINGVERSIONAAAAAAAAA',
+    });
+    // plain_text must NOT ride keep_bindings — it is re-sent on every upload, and
+    // keeping it would freeze the serving script's version stamp at its first value.
+    expect(meta['keep_bindings']).toEqual(['secret_text', 'secret_key']);
+  });
 
   it('a fresh upload declares every class under v1 and inherits nothing', async () => {
     let body: FormData | undefined;

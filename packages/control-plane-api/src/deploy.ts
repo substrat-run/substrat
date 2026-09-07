@@ -61,6 +61,11 @@ export interface VerticalBundle {
    *  as `env.AI`. Travels with the version, so who holds the capability is a property of
    *  the code that shipped rather than of the fleet's config. */
   usesModels?: boolean;
+  /** The version-REGISTRY id (ULID) this upload deploys — injected as the
+   *  `SUBSTRAT_VERSION_ID` plain_text binding, the signals `version` stamp's source
+   *  (#1242). The registry id, never the deployment ref (`deploymentRefFor` lowercases
+   *  the ULID and the serving ref drops it entirely) and never the human version label. */
+  versionId?: string;
   /** Static files served from the edge, with the routing config that decides how paths
    *  resolve against them (#340). Absent ⇒ the script serves no static assets.
    *  `recoverContent` is the re-serve's escape hatch (#578): the runtime's asset store
@@ -201,6 +206,14 @@ export function assertSandboxContract(m: DeployManifest): void {
     // point of masquerading would be to slip the type check.
     if (b.name === 'CONTROL_PLANE') {
       refuse("'CONTROL_PLANE' is the platform's directory, not a vertical's");
+    }
+    // The platform's own injected names (#1242): a vertical that could declare
+    // `SUBSTRAT_VERSION_ID` itself would forge the signals version stamp — the one
+    // half of "module code can neither forge nor suppress it" a binding channel does
+    // not get for free the way a kernel-stamped envelope field does. Prefix-refused
+    // so the namespace stays the platform's as it grows.
+    if (b.name.startsWith('SUBSTRAT_')) {
+      refuse("the 'SUBSTRAT_' binding namespace is the platform's — these names are injected at deploy, never declared");
     }
     // Allowlist: a type not among the vertical's own admissible resources is refused — with a
     // teachable reason where we have one, the generic one otherwise.

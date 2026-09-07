@@ -3399,6 +3399,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         modules,
         doClasses: manifest.doClasses,
         bindings: [...manifest.bindings, ...storeBindings],
+        // #1242: the serving script now runs THIS version — the binding tracks it.
+        versionId,
         // #1054: the model runtime is bound only for a version that ASKED for it, so the
         // capability is visible in the manifest diff at admit rather than fleet-wide.
         ...(manifest.usesModels ? { usesModels: true } : {}),
@@ -3829,6 +3831,9 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         modules,
         doClasses: manifest.doClasses,
         bindings: manifest.bindings,
+        // #1242: the per-version script is not just an archive — previews SERVE it
+        // (assertServesBoundVersion routes them here), so it carries its own id.
+        versionId: id,
         // #340: the verified bytes go up with the bundle. The manifest's routing config
         // rides along untouched — it decides what the RUNTIME does with paths, and carries
         // no reach, so there is nothing in it for the sandbox contract to refuse.

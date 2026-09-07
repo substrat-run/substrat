@@ -2,6 +2,10 @@
   "name": "substrat-adapter-cloudflare",
   "main": "test/worker.ts",
   "compatibility_date": "2025-01-01",
+  // #1242: what production injects as a plain_text binding per deploy, the test
+  // harness sets as a var — every ScopeDO in these tests runs "as" this version,
+  // and the contract fixture declares the same constant so the suite asserts it.
+  "vars": { "SUBSTRAT_VERSION_ID": "01JTESTVERSIONAAAAAAAAAAAA" },
   "durable_objects": {
     "bindings": [
       { "name": "SCOPE", "class_name": "ScopeDO" },

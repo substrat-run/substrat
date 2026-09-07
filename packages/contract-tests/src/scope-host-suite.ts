@@ -40,6 +40,13 @@ import {
 
 export interface ScopeHostFixture {
   host: ScopeHost;
+  /**
+   * The version-registry id the fixture configured its host with (#1242) —
+   * `SqliteScopeHostOptions.versionId` / the SUBSTRAT_VERSION_ID binding. Set it
+   * and the suite asserts every emit is stamped with it; leave it unset and the
+   * suite asserts the honest NULL.
+   */
+  versionId?: string;
   cleanup(): Promise<void>;
 }
 
@@ -53,6 +60,7 @@ interface OutboxRow {
   pii_class: string;
   subject_id: string | null;
   operation?: string | null;
+  version?: string | null;
 }
 
 interface PlatformRequestRow {
@@ -262,6 +270,9 @@ export function scopeHostContractSuite(
       // #1231: the signals `operation` dimension — the exact invoke() string,
       // stamped kernel-side so module code can neither forge nor suppress it.
       expect(row.operation).toBe('test/emit-event');
+      // #1242: the version stamp — the id the fixture configured, or the honest
+      // NULL where the host has no version identity.
+      expect(row.version).toBe(fixture.versionId ?? null);
     });
 
     it('ctx.now() is one instant for the whole operation, and the envelope agrees (#812)', async () => {
@@ -3817,15 +3828,18 @@ export function scopeHostContractSuite(
 
     it('runs consumers under a system actor — consumer-emitted events carry it', async () => {
       const stub = await host.getScope(alice, t1, s1);
-      const actors = await stub.invoke<{ actor: string; operation: string | null }[]>(
-        'flow/step2-actors',
-      );
+      const actors = await stub.invoke<
+        { actor: string; operation: string | null; version: string | null }[]
+      >('flow/step2-actors');
       expect(actors.length).toBeGreaterThan(0);
       for (const row of actors) {
         expect(JSON.parse(row.actor)).toEqual({ system: '@test/flow' });
         // #1231: a consumer runs on behalf of NO operation, and the row says so —
         // NULL, never a synthesized pseudo-name that would pollute the dimension.
         expect(row.operation).toBeNull();
+        // #1242: but the VERSION still stamps — it is a fact about the deployed
+        // code, not about what triggered the emit.
+        expect(row.version).toBe(fixture.versionId ?? null);
       }
     });
 

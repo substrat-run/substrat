@@ -137,6 +137,14 @@ export interface ScopeDoEnv {
    * permissions.md) evaluates permissions locally and needs no binding.
    */
   CONTROL_PLANE?: DurableObjectNamespace;
+  /**
+   * The version-registry id this script deploys as (#1242) — a plain_text binding
+   * `createWfpUploader` injects on both the per-version and the serving upload.
+   * Absent on a script deployed before the binding existed; the emitted rows then
+   * read NULL, the honest value. A vertical cannot declare this itself: the
+   * SUBSTRAT_ namespace is refused by the sandbox contract at push.
+   */
+  SUBSTRAT_VERSION_ID?: string;
 }
 
 interface RegisteredModule {
@@ -176,6 +184,8 @@ interface OutboxRow {
   impersonation: string | null;
   /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
   operation: string | null;
+  /** #1242: the emitting code's version-registry id. NULL = no version identity. */
+  version: string | null;
   payload: string | null;
 }
 
@@ -206,6 +216,9 @@ const KERNEL_DDL = `
     -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
     -- row written before the column.
     operation TEXT,
+    -- #1242: the version-registry id of the code that emitted. NULL where no version
+    -- identity was present (pre-binding script, pre-column row).
+    version TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -638,6 +651,8 @@ export function defineScopeDO(
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     private readonly checker: PermissionChecker;
     private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
+    /** #1242: the script's version identity, read once from the injected binding. */
+    private readonly versionId?: string;
     private readonly applied = new Set<string>();
     private migrationPromise?: Promise<boolean>;
     /** Latch: the applied count is reported to the directory once per DO instance. */
@@ -650,6 +665,7 @@ export function defineScopeDO(
     constructor(ctx: DurableObjectState, env: ScopeDoEnv) {
       super(ctx, env);
       this.sql = ctx.storage.sql;
+      this.versionId = env.SUBSTRAT_VERSION_ID;
       for (const stmt of splitSqlStatements(KERNEL_DDL)) {
         this.sql.exec(stmt);
       }
@@ -2253,6 +2269,8 @@ export function defineScopeDO(
         // #1231: the emitting operation, on a scope DO created before the column.
         // Nullable so every legacy row reads as unrecorded rather than named.
         'ALTER TABLE _substrat_outbox ADD COLUMN operation TEXT',
+        // #1242: the version stamp, same nullability argument.
+        'ALTER TABLE _substrat_outbox ADD COLUMN version TEXT',
       ]) {
         try {
           this.sql.exec(alter);
@@ -2544,6 +2562,7 @@ export function defineScopeDO(
         ...(row.impersonation ? { impersonation: JSON.parse(row.impersonation) } : {}),
         // #1231: absent rather than null, the same shape rule as the stamp above.
         ...(row.operation ? { operation: row.operation } : {}),
+        ...(row.version ? { version: row.version } : {}),
         payload: row.payload === null ? undefined : JSON.parse(row.payload),
       });
     }
@@ -2579,6 +2598,9 @@ export function defineScopeDO(
       const searchPlans = this.searchPlans;
       const listPlans = this.listPlans;
       const sql = this.sql;
+      // #1242: constant for the DO instance — read off `this`, so unlike `operation`
+      // there is no per-call-site argument to forget.
+      const versionId = this.versionId;
       /**
        * The operation's instant (#812), read once. The DO reads the wall clock —
        * there is no options bag to inject through, since workerd constructs it —
@@ -2691,13 +2713,14 @@ export function defineScopeDO(
             // #1231: kernel-stamped like the two above — `domainEventInput.parse`
             // already stripped anything module code tried to smuggle under this key.
             ...(operation ? { operation } : {}),
+            ...(versionId ? { version: versionId } : {}),
           });
           sql.exec(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -2712,6 +2735,7 @@ export function defineScopeDO(
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.operation ?? null,
+            full.version ?? null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },
