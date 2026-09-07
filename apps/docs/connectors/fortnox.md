@@ -97,13 +97,81 @@ Client credentials are not consent-free. Each company's sysadmin authorizes once
 and the consent must be created with **`account_type=service`** — that is what makes it mintable
 by client credentials afterwards.
 
+**The dashboard runs that round for you.** The Fortnox card in the dashboard's Integrations view
+offers two ways through it, and both end in a sealed connection on the chosen app with nothing
+typed:
+
+- **Connect** — a dashboard admin clicks it, approves at Fortnox, and comes back. The link behind
+  that button lives ten minutes, because this browser is about to spend it.
+- **Copy connect link** — the same URL, handed to whoever actually administers Fortnox. It needs
+  **no dashboard login**: the person approving is usually finance or an external accounting firm,
+  and making them a dashboard member first would be the wrong door. Seven days by default,
+  single-use, and revocable from the same card right up until it is spent.
+
+Either way the closing page names **which company** was attached — name, organisation number,
+database number, and how many financial years the new credential can read. That naming is the
+point: a consent granted while signed into the wrong company-switcher entry looks identical to a
+correct one up to that moment.
+
+The client pair is a **platform** secret here, one integration for the whole fleet, so a customer
+has no client id or client secret to paste even if they wanted to — and the third value,
+`DatabaseNumber`, does not exist until a consent has happened. The dialog's *Enter credentials
+manually* toggle is the fallback for an already-assembled triple, not the way in.
+
+**Hosting your own callback?** Do not re-implement the round. `completeFortnoxConsent` is the
+exported sequence, and it is the same code the dashboard and the local `pnpm fortnox:connect`
+script both run:
+
+```ts
+import { completeFortnoxConsent } from '@substrat-run/connector-fortnox';
+
+// Judge `state` FIRST — see below. Only then:
+const { secret, company, financialYears } = await completeFortnoxConsent({
+  clientId, clientSecret, code, redirectUri, fetch,
+});
+// secret: the sealed-ready { clientId, clientSecret, tenantId } triple
+// company: whose consent this was — show CompanyName to the person who clicked approve
+```
+
+Two things stay **yours**, because the helper takes a bare `code` and cannot know them.
+
+**`state` is judged before anything else, including a reported error.** The helper validates the
+authorization code and nothing more, so a callback that calls it on whatever arrives will happily
+complete a round it never started — and attach *the attacker's* Fortnox company to the victim's
+scope. Bind the round when you build the consent URL and verify it on the way back before you read
+`code` at all. That is what the dashboard does (its `state` is a signed claim naming the connect
+link's row, which is also what makes the link single-use and revocable), and what
+`scripts/connect.mts` does locally.
+
+Then, still before the helper, two callbacks end the round rather than start an exchange: one
+carrying `?error=…` (Fortnox declined — a denial usually carries no `code` at all), and one
+carrying no `code` for any other reason. `completeFortnoxConsent` is for the remaining case, where
+a real authorization code came back.
+
+**`redirectUri` must be the registered one, character for character, and the same string twice** —
+once in the consent URL, once in the exchange. Fortnox validates it only *after* login, so an
+unregistered value gets you a login screen and then an `invalid_grant` at the exchange, which reads
+exactly like a spent code.
+
+#### What that button actually does
+
+`fortnoxConsentUrl` builds the URL the admin is sent to:
+
 ```ts
 fortnoxConsentUrl({ clientId, redirectUri, state, scopes: ['bookkeeping', 'companyinformation'] });
 // always sets account_type=service and access_type=offline
 ```
 
-Your callback exchanges the code once, reads `GET /3/companyinformation` for `DatabaseNumber`, and
-that number becomes the connection's `tenantId`. The code path is never used again.
+When the redirect comes back, three steps follow, and the third is the one that matters:
+
+1. **Exchange the code**, once. `grant_type=authorization_code` is used here and nowhere else in
+   this connector, and the tokens it yields are discarded after step 2.
+2. **Read `GET /3/companyinformation`** for `DatabaseNumber`. That number becomes the connection's
+   `tenantId`, and it is shown nowhere in the Developer Portal — which is why the credential
+   cannot be assembled by hand at all.
+3. **Mint again with `client_credentials`** from the assembled triple. This is the connector's
+   whole premise, so it is proven at connect time, in the operator's hands, instead of first
+   discovered by a background sweep nobody is watching.
 
 ::: danger Scopes cannot be widened without a new consent round
 Ask for what the integration will need, not what it needs today. Fixing this later means going
