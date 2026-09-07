@@ -844,12 +844,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // mask the failure it is recording, so every path through this swallows its own
   // errors. The upstream reference is extracted here — one place — so a caller
   // that only has the message still lands a searchable row.
-  const recordFailure = (entry: OpsFailureInput, cause?: unknown): void => {
+  // Not `cause?: unknown` with an undefined check: a caught value CAN be literally
+  // `undefined` (`throw undefined`, a bare rejection), and that throw deserves an
+  // `unknown` attribution, not a skipped one. Only true omission skips.
+  const NO_CAUSE = Symbol('no-cause');
+  const recordFailure = (entry: OpsFailureInput, cause: unknown = NO_CAUSE): void => {
     // The error SHAPE rides beside the prose (#1233): attributed here — one place,
     // from the throw itself — so a fingerprint groups on a column and never has to
     // regex a message. A caller with no throw in hand leaves the columns null,
     // which reads as "nobody classified this" rather than a guess nobody made.
-    const attributed = cause === undefined ? undefined : attributeFailure(cause);
+    const attributed = cause === NO_CAUSE ? undefined : attributeFailure(cause);
     void admin
       .recordOpsFailure({
         ...entry,
