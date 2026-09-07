@@ -19,10 +19,14 @@
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import {
+  listPageQuery,
+  nextPageLink,
+  PAGE_LINK_HEADER,
   platformActorId,
   principalId,
   scopeId,
   tenantId,
+  type Page,
 } from '@substrat-run/contracts';
 import {
   CloudflareScopeHost,
@@ -88,13 +92,18 @@ const app = new Hono<{ Bindings: Env }>();
 // frontend build). It drives the same routes below.
 app.get('/', (c) => c.html(PAGE));
 
-// Idempotent world provisioning: tenant → entitlements → scope → a role the user
-// holds. Safe to re-run (createTenant/provisionScope are idempotent).
+// Idempotent world provisioning: tenant → entitlements → scope → activate → a
+// role the user holds. Safe to re-run (createTenant/provisionScope are idempotent).
 app.post('/seed', async (c) => {
   const host = hostFor(c.env);
   await host.admin.createTenant(STAFF, { id: T, slug: 'acme', name: 'Acme Inc' });
   for (const key of ['notes', 'workorder']) await host.admin.grantEntitlement(STAFF, T, key);
   await host.provisionScope(STAFF, { tenantId: T, scopeId: S, jurisdiction: 'eu' });
+  // provisioning → active (K-31). `provisionScope` writes the directory row and
+  // stops; `getScope` fails closed on any non-active scope, so this second call
+  // is the vertical's confirmation that the scope really exists. Skipping it is
+  // why every route answers "scope not active (status: provisioning)".
+  await host.admin.activateScope(STAFF, T, S);
   await host.admin.defineRole(STAFF, T, {
     key: 'member',
     permissions: [NOTES_PERM.write, NOTES_PERM.read, WO.read],
@@ -108,13 +117,29 @@ app.post('/seed', async (c) => {
   return c.json({ ok: true, tenant: T, scope: S, user: USER });
 });
 
+/**
+ * Serve a paged operation the way the platform does on the wire (#829): the BODY
+ * is the entries, and the walk rides in a `Link: <…>; rel="next"` header. A
+ * client follows that URL — it never assembles a cursor — so the page size and
+ * every filter travel with it. No `rel="next"` means the walk is over.
+ */
+async function page<T>(c: Context<{ Bindings: Env }>, operation: string): Promise<Response> {
+  const params = listPageQuery.parse(Object.fromEntries(new URL(c.req.url).searchParams));
+  const result = await (await scopeFor(c)).invoke<Page<T>>(operation, params);
+  const link = nextPageLink(c.req.url, result.nextCursor);
+  if (link) c.header(PAGE_LINK_HEADER, link);
+  return c.json(result.entries);
+}
+
 // The data API — each route is a thin wrapper over an operation. Send the seeded
-// user with `x-principal: 01JZ0000000000000000000003`.
+// user with `x-principal: 01JZ0000000000000000000003`. The handler does NOT parse
+// the body: the module declares `operationInputs`, and the host parses before the
+// operation runs, on every path in.
 app.post('/api/notes', async (c) =>
   c.json(await (await scopeFor(c)).invoke('notes/create', await c.req.json())),
 );
-app.get('/api/notes', async (c) => c.json(await (await scopeFor(c)).invoke('notes/list')));
-app.get('/api/workorders', async (c) => c.json(await (await scopeFor(c)).invoke('workorder/list', {})));
+app.get('/api/notes', async (c) => page(c, 'notes/list'));
+app.get('/api/workorders', async (c) => page(c, 'workorder/list'));
 
 // One fail-closed error boundary: refusals reach the caller as a status, not a
 // stack trace.
