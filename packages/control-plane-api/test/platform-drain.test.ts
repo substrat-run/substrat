@@ -909,6 +909,28 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
     expect(outcome.error).toMatch(/never through a scope-drained batch/);
   });
 
+  it('refuses cross-kind fields — a freshness entry with an operation, a schedule entry with evidence', async () => {
+    const handler = sweepRunsHandler({ host });
+    const smuggledOp = await handler(
+      ctx,
+      request({
+        version: null,
+        entries: [{ kind: 'freshness', eventType: 'receipt.landed', operation: 'sneaky/op', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }],
+      }),
+    );
+    expect(smuggledOp.status).toBe('failed');
+    expect(smuggledOp.error).toMatch(/carries no operation/);
+    const smuggledEvidence = await handler(
+      ctx,
+      request({
+        version: null,
+        entries: [{ kind: 'schedule', operation: 'sched/tick', eventType: 'x.y', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }],
+      }),
+    );
+    expect(smuggledEvidence.status).toBe('failed');
+    expect(smuggledEvidence.error).toMatch(/no freshness fields/);
+  });
+
   it('refuses a payload whose entry names the wrong identity for its kind', async () => {
     const handler = sweepRunsHandler({ host });
     // A freshness entry with no eventType, and a schedule entry with none of its

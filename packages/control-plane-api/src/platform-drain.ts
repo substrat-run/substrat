@@ -759,9 +759,11 @@ export function sweepRunsHandler(deps: { host: ScopeHost }): PlatformRequestHand
         // The pass's own version identity when the sweeper knew it; the scope's
         // bound-at-drain version otherwise — the documented approximation.
         version: parsed.data.version ?? ctx.versionId ?? null,
-        operation: entry.operation ?? null,
-        eventType: entry.eventType ?? null,
-        observedAt: entry.observedAt ?? null,
+        // Normalized per kind as the belt under the payload's parse-time braces:
+        // the read contract documents these columns null outside their kind.
+        operation: entry.kind === 'schedule' ? (entry.operation ?? null) : null,
+        eventType: entry.kind === 'freshness' ? (entry.eventType ?? null) : null,
+        observedAt: entry.kind === 'freshness' ? (entry.observedAt ?? null) : null,
         error: entry.error ?? null,
         elapsedMs: entry.elapsedMs ?? null,
         at: entry.at,

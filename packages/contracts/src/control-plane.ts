@@ -551,11 +551,24 @@ export const sweepRunsPayload = z.object({
               message: 'connector rows are recorded directly by the platform sweep, never through a scope-drained batch',
             });
           }
-          if (e.kind === 'schedule' && !e.operation) {
-            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['operation'], message: 'a schedule entry names its operation' });
+          // …and each kind carries ONLY its own fields: sweepRunEntry documents the
+          // other kind's columns as null, so a smuggled cross-kind field would
+          // contradict the read contract the moment the drain persisted it.
+          if (e.kind === 'schedule') {
+            if (!e.operation) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['operation'], message: 'a schedule entry names its operation' });
+            }
+            if (e.eventType !== undefined || e.observedAt !== undefined) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['eventType'], message: 'a schedule entry carries no freshness fields' });
+            }
           }
-          if (e.kind === 'freshness' && !e.eventType) {
-            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['eventType'], message: 'a freshness entry names its event type' });
+          if (e.kind === 'freshness') {
+            if (!e.eventType) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['eventType'], message: 'a freshness entry names its event type' });
+            }
+            if (e.operation !== undefined) {
+              ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['operation'], message: 'a freshness entry carries no operation' });
+            }
           }
         }),
     )
