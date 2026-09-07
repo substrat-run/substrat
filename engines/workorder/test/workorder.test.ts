@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { moneyOf, type EntityRef, type Page } from '@substrat-run/contracts';
+import { errorCodeOf, moneyOf, type EntityRef, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   PERM,
@@ -321,15 +321,19 @@ describe('engine-workorder', () => {
   it('the billable lines win: a declared currency that contradicts them is refused', async () => {
     const order = await create();
     await staff.invoke('workorder/start', { orderId: order.id });
-    await expect(
-      h.run((ctx) =>
+    const err = await h
+      .run((ctx) =>
         completeWorkOrder(ctx, {
           orderId: order.id,
           billable: [billable('arbete', '500', 'SEK')],
           currency: 'EUR',
         }),
-      ),
-    ).rejects.toThrow(/currency mismatch/i);
+      )
+      .catch((e: unknown) => e);
+    // The CODE, not just the prose: a caller branches on `validation_failed`,
+    // and a generic Error carrying the same message is not the same refusal.
+    expect(errorCodeOf(err)).toBe('validation_failed');
+    expect((err as Error).message).toMatch(/currency mismatch/i);
   });
 
   it('the declared operation accepts the optional currency', async () => {

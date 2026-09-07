@@ -107,9 +107,13 @@ export const workorderOperations = defineOperations(workorderEntities, WORKORDER
       billable: z.array(billableLine),
       /**
        * The currency of a completion that has NO billable lines — the one total
-       * the lines cannot label themselves (#967). Optional and defaulted to
-       * `SEK`, so a caller that omits it gets the answer it got before; passing
-       * one that contradicts the lines is refused rather than silently ignored.
+       * the lines cannot label themselves (#967).
+       *
+       * Optional, and NOT defaulted by this schema: the billable lines decide
+       * whenever there are any, this field decides when there are none, and
+       * `SEK` is the engine's last-resort fallback when neither says anything —
+       * so a caller that omits it gets the answer it got before. Passing one
+       * that contradicts the lines is refused rather than silently ignored.
        */
       currency: currencyCode.optional(),
     }),
