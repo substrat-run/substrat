@@ -178,6 +178,19 @@ describe('deskOrigins', () => {
     expect(deskOrigins(pages('<div desk="https://evil.example">hi</div>'))).toEqual([]);
   });
 
+  /**
+   * The near-miss, which is the one a word boundary lets through: `\bdesk` matches the
+   * `desk` in `data-desk`, because the boundary sits between the hyphen and the `d`. An
+   * attribute nothing reads would then have decided what the site may load.
+   */
+  it('ignores an attribute that merely ends in "desk"', () => {
+    const dir = pages(
+      '<SignupForm data-desk="https://third-party.example" />',
+      '<Ticket0Widget my-desk="https://other.example" />',
+    );
+    expect(deskOrigins(dir)).toEqual([]);
+  });
+
   // The regression itself: the desk the checked-in pages name — the support widget, and
   // now the two signup forms — has to end up in the policy with the site-wide flag
   // unset, which is how production builds.

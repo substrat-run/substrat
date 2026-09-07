@@ -189,7 +189,11 @@ export function mountSignupSurface(
             title: 'You are on the list',
             body:
               row.kind === 'newsletter'
-                ? 'The weekly changelog will arrive on Mondays. Every one of them carries an unsubscribe link.'
+                // A place on the list, not a delivery date: the desk stores signups and
+                // nothing sends the changelog yet. Every issue that does go out will carry
+                // an unsubscribe link, which is a promise about the mail rather than about
+                // when it starts, so it is safe to make here.
+                ? 'You will get the changelog by email, and every issue carries an unsubscribe link.'
                 : 'Thanks — we will be in touch when there is an invite for you.',
           }
         : {

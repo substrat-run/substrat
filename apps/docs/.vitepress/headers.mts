@@ -112,8 +112,13 @@ export function inlineScriptHashes(outDir: string): string[] {
  * style, instead of by somebody remembering to add it to a regex in a security file.
  * The uppercase first letter is what keeps it to Vue components — no HTML element is
  * spelled that way, so `<div desk="…">` cannot widen the policy.
+ *
+ * `\s` before the name rather than `\b`, and that distinction is the whole guard. A word
+ * boundary sits between the `-` and the `d` of `data-desk`, so `\bdesk` matched it — and
+ * an attribute nobody reads would have put its origin into `script-src` and `connect-src`.
+ * An attribute is preceded by whitespace or it is a different attribute.
  */
-const DESK_MOUNT = /<[A-Z][A-Za-z0-9]*\b[^>]*\bdesk\s*=\s*("[^"]*"|'[^']*')/g;
+const DESK_MOUNT = /<[A-Z][A-Za-z0-9]*\b[^>]*\sdesk\s*=\s*("[^"]*"|'[^']*')/g;
 
 /**
  * Every desk a checked-in page names.

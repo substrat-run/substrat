@@ -21,7 +21,9 @@ export function alt(props: Record<string, string>): string {
     `list, an optional note about what you would build — to request ${what}. ` +
     `Signing up is double opt-in: submitting sends one confirmation email and nothing ` +
     `is added to any list until the link in it is clicked. Every message after that ` +
-    `carries an unsubscribe link. The form posts to Substrat's own ticket0 support ` +
+    `carries an unsubscribe link — though the first issue of the changelog email has ` +
+    `not been sent yet, so confirming puts you on the list rather than starting a ` +
+    `delivery. The form posts to Substrat's own ticket0 support ` +
     `desk at ${props.desk ?? 'https://ticket0.substrat.net'}, which only accepts ` +
     `signups from pages it lists as allowed origins.)*`
   );

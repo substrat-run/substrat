@@ -54,11 +54,18 @@ const problem = ref('');
 const label = computed(() => props.cta || (props.kind === 'waitlist' ? 'Request an invite' : 'Subscribe'));
 const wantsNote = computed(() => props.kind === 'waitlist' && props.notePrompt !== '');
 
-/** What the person is told when it worked. Both say the same thing: it is not done yet. */
+/**
+ * What the person is told when it worked. Both say the same thing: it is not done yet.
+ *
+ * The newsletter line promises a PLACE ON THE LIST and deliberately not a delivery date.
+ * Nothing sends the changelog yet — the list is collected first, which is the point of
+ * collecting it — and a confirmation that says "it will arrive on Mondays" is a promise
+ * to somebody who has just done the one thing we asked, and would be broken next Monday.
+ */
 const sentText = computed(() =>
   props.kind === 'waitlist'
     ? 'Check your inbox — confirm the link and you are on the list.'
-    : 'Check your inbox — confirm the link and the changelog will arrive on Mondays.',
+    : 'Check your inbox — confirm the link and you are on the list for the first issue.',
 );
 
 async function submit() {
