@@ -313,20 +313,25 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
   }
 
   const registry = {
-    // The CP's list routes answer the `{entries, nextCursor}` envelope now (#458).
-    '/verticals': {
+    // The join lives behind the plane now (#1231): one /service-refs answer, already
+    // forced-filtered to the pinned tenant — a rival's services simply are not in it.
+    '/service-refs': {
       entries: [
-        { slug: 'acme/helpdesk', name: 'Helpdesk', source: 'cli', ownerTenant: T },
-        { slug: 'rival/crm', name: 'CRM', source: 'cli', ownerTenant: OTHER },
+        {
+          service: 'acme-helpdesk-v1',
+          role: 'archive',
+          stamp: { vertical: 'acme/helpdesk', version: 'v1' },
+          versionLabel: '0.1.0',
+        },
+        // A serving ref whose version the registry could not label — the UI's '—' case.
+        {
+          service: 'acme-helpdesk',
+          role: 'serving',
+          stamp: { vertical: 'acme/helpdesk', version: 'v0' },
+          versionLabel: null,
+        },
       ],
-      nextCursor: null,
-    },
-    '/verticals/acme%2Fhelpdesk/versions': {
-      entries: [
-        { id: 'v1', version: '0.1.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-helpdesk-v1', createdAt: 'now' },
-        { id: 'v0', version: '0.0.9', admission: 'admitted', admissionNote: null, deploymentRef: null, createdAt: 'now' },
-      ],
-      nextCursor: null,
+      verticalsTruncated: false,
     },
   };
 
@@ -346,6 +351,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
         service: 'acme-helpdesk-v1',
         vertical: 'acme/helpdesk',
         version: '0.1.0',
+        versionId: 'v1',
         requests: 10,
         errors: 1,
         subrequests: 20,
@@ -353,8 +359,26 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
         cpuTimeP99: 4000,
       },
     ]);
-    // Only the OWN verticals' versions were enumerated — never the rival's.
+    // Nothing rival-shaped was ever requested, and the resolver was asked for
+    // exactly the pinned tenant's view — the forced filter, spelled out.
     expect(calls.some((u) => u.includes('rival'))).toBe(false);
+    expect(calls.some((u) => u.includes(`/service-refs?tenantId=${T}`))).toBe(true);
+  });
+
+  it('refuses LOUDLY when the resolver reports a truncated map — never a silently partial chart', async () => {
+    const truncated = {
+      '/service-refs': { entries: registry['/service-refs'].entries, verticalsTruncated: true },
+      '/observability/metrics': [
+        { service: 'acme-helpdesk-v1', requests: 10, errors: 1, subrequests: 20, cpuTimeP50: 900, cpuTimeP99: 4000 },
+      ],
+    };
+    // A partial ownership map would render the missing verticals as "no traffic" —
+    // the exact silent drop the resolver reports truncation to prevent.
+    await expect(routedHarness(truncated).cp.observabilityMetrics(24)).rejects.toThrow(/truncated/);
+    const logs = routedHarness(truncated);
+    await expect(logs.cp.observabilityLogs({ services: ['acme-helpdesk-v1'] })).rejects.toThrow(/truncated/);
+    // And the staff-wide telemetry routes were never asked on the way to the refusal.
+    expect(logs.calls.some((u) => u.includes('/observability/'))).toBe(false);
   });
 
   it('observabilityLogs answers [] for an unowned service WITHOUT asking the plane', async () => {
@@ -429,20 +453,17 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
 
   it('observabilityMetrics with a vertical filter keeps that vertical only; an unowned slug never reaches the plane', async () => {
     const twoOwned = {
-      '/verticals': {
+      '/service-refs': {
         entries: [
-          { slug: 'acme/helpdesk', name: 'Helpdesk', source: 'cli', ownerTenant: T },
-          { slug: 'acme/portal', name: 'Portal', source: 'cli', ownerTenant: T },
-          { slug: 'rival/crm', name: 'CRM', source: 'cli', ownerTenant: OTHER },
+          ...registry['/service-refs'].entries,
+          {
+            service: 'acme-portal-p1',
+            role: 'archive',
+            stamp: { vertical: 'acme/portal', version: 'p1' },
+            versionLabel: '1.2.0',
+          },
         ],
-        nextCursor: null,
-      },
-      '/verticals/acme%2Fhelpdesk/versions': registry['/verticals/acme%2Fhelpdesk/versions'],
-      '/verticals/acme%2Fportal/versions': {
-        entries: [
-          { id: 'p1', version: '1.2.0', admission: 'admitted', admissionNote: null, deploymentRef: 'acme-portal-p1', createdAt: 'now' },
-        ],
-        nextCursor: null,
+        verticalsTruncated: false,
       },
       '/observability/metrics': [
         { service: 'acme-helpdesk-v1', requests: 10, errors: 1, subrequests: 20, cpuTimeP50: 900, cpuTimeP99: 4000 },

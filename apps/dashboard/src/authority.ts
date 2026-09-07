@@ -637,29 +637,45 @@ export class TenantNarrowedControlPlane {
    *   the scope's Durable Objects live. The router dispatches on `scope.servingRef`, so
    *   Cloudflare records invocations under THIS name. Omitting it is why the per-version
    *   view read empty — every real-traffic row was filtered out (the archive refs it
-   *   knew about serve ~zero requests). We stamp the serving ref with the version the
-   *   scope is bound to; the stable script runs one code version, so for the common
-   *   single-scope app this is exact. A later-writing scope wins only if it carries a
-   *   real (non-placeholder) label, so a not-yet-rebound sibling can't blank it out.
+   *   knew about serve ~zero requests). The serving ref's version now comes from the
+   *   registry's own `servingVersionId` via `/service-refs`, not from a scope-derived
+   *   guess — the stable script runs one code version, and the registry names it.
    */
-  private async ownedServiceRefs(): Promise<Map<string, { vertical: string; version: string }>> {
-    const owned = new Map<string, { vertical: string; version: string }>();
-    for (const v of await this.listVerticals()) {
-      const versions = await this.listVersions(v.slug);
-      const labelOf = new Map(versions.map((ver) => [ver.id, ver.version]));
-      for (const ver of versions) {
-        if (ver.deploymentRef) owned.set(ver.deploymentRef, { vertical: v.slug, version: ver.version });
-      }
-      for (const s of await this.listScopes(v.slug)) {
-        if (!s.servingRef) continue;
-        const version = (s.verticalVersionId && labelOf.get(s.verticalVersionId)) || '—';
-        const existing = owned.get(s.servingRef);
-        if (!existing || (existing.version === '—' && version !== '—')) {
-          owned.set(s.servingRef, { vertical: v.slug, version });
-        }
-      }
+  private async ownedServiceRefs(): Promise<{
+    owned: Map<string, { vertical: string; version: string; versionId: string | null }>;
+    /** The resolver capped its vertical fan-out — the map below is INCOMPLETE. */
+    truncated: boolean;
+  }> {
+    // The JOIN moved behind the plane (#1231's last item): GET /service-refs is the
+    // one implementation of "what a service ref means", forced-filtered to this
+    // tenant, answering the registry's own servingVersionId for the serving script —
+    // authoritative where the scope-derived guess this method used to make was an
+    // approximation. What STAYS here is ownership narrowing: the map is still the
+    // universe, and the pre-flight gates below still keep unowned refs from ever
+    // reaching the plane's staff-wide observability routes.
+    const owned = new Map<string, { vertical: string; version: string; versionId: string | null }>();
+    const res = await this.call<{
+      entries: Array<{
+        service: string;
+        role: 'archive' | 'serving';
+        stamp: { vertical?: string; version?: string };
+        versionLabel: string | null;
+      }>;
+      verticalsTruncated?: boolean;
+    }>(`/service-refs?tenantId=${encodeURIComponent(this.tenantId)}`);
+    for (const e of res?.entries ?? []) {
+      if (!e.stamp.vertical) continue;
+      // The serving script wins over an archive ref of the same name (they never
+      // collide by construction, but the map must not depend on entry order).
+      if (owned.has(e.service) && e.role !== 'serving') continue;
+      owned.set(e.service, {
+        vertical: e.stamp.vertical,
+        // '—' keeps the UI's placeholder contract for an unlabellable version.
+        version: e.versionLabel ?? '—',
+        versionId: e.stamp.version ?? null,
+      });
     }
-    return owned;
+    return { owned, truncated: res?.verticalsTruncated === true };
   }
 
   /**
@@ -675,6 +691,8 @@ export class TenantNarrowedControlPlane {
     Array<{
       vertical: string;
       version: string;
+      /** The registry ULID — the signals `version` dimension; label above is display. */
+      versionId: string | null;
       service: string;
       requests: number;
       errors: number;
@@ -683,7 +701,15 @@ export class TenantNarrowedControlPlane {
       cpuTimeP99: number;
     }>
   > {
-    let owned = await this.ownedServiceRefs();
+    const refs = await this.ownedServiceRefs();
+    // The resolver said its answer is incomplete (a >cap vertical fan-out). A chart
+    // over a partial ownership map reads as "the missing verticals had no traffic" —
+    // the silent-drop the resolver reports truncation to prevent — so refuse loudly
+    // instead; the UI surfaces the message rather than a wrong zero.
+    if (refs.truncated) {
+      throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
+    }
+    let owned = refs.owned;
     // The per-app tab's filter: not a query param the plane ever sees — the ownership
     // map itself is narrowed to the one vertical, so a slug this tenant doesn't own
     // short-circuits to [] exactly like owning nothing at all.
@@ -695,7 +721,20 @@ export class TenantNarrowedControlPlane {
       (await this.call<
         Array<{ service: string; requests: number; errors: number; subrequests: number; cpuTimeP50: number; cpuTimeP99: number }>
       >(`/observability/metrics?hours=${hours}`)) ?? [];
-    return all.filter((r) => owned.has(r.service)).map((r) => ({ ...r, ...owned.get(r.service)! }));
+    // Field-by-field, not a spread: the seam's row also carries `namespace` (the
+    // Cloudflare dispatch namespace), which the declared type omitted while the
+    // spread leaked it to the tenant UI at runtime. Explicit is the fix.
+    return all
+      .filter((r) => owned.has(r.service))
+      .map((r) => ({
+        ...owned.get(r.service)!,
+        service: r.service,
+        requests: r.requests,
+        errors: r.errors,
+        subrequests: r.subrequests,
+        cpuTimeP50: r.cpuTimeP50,
+        cpuTimeP99: r.cpuTimeP99,
+      }));
   }
 
   /**
@@ -728,8 +767,13 @@ export class TenantNarrowedControlPlane {
       raw: unknown;
     }>
   > {
-    const owned = await this.ownedServiceRefs();
-    const services = input.services.filter((s) => owned.has(s));
+    const refs = await this.ownedServiceRefs();
+    // Same refusal as observabilityMetrics: a partial ownership map here would
+    // silently drop a legitimately owned service from the ask.
+    if (refs.truncated) {
+      throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
+    }
+    const services = input.services.filter((s) => refs.owned.has(s));
     if (services.length === 0) return [];
     const q = new URLSearchParams();
     for (const s of services) q.append('service', s);

@@ -32,6 +32,7 @@ import {
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
   registerVerticalInput,
+  serviceDimensions,
   scopeDump,
   dataSubjectId as dataSubjectIdSchema,
   scopeId as scopeIdSchema,
@@ -57,6 +58,7 @@ import type {
   Scope,
   ScopeDump,
   ScopeId,
+  ServiceDimensions,
   TenantExport,
   TenantId,
 } from '@substrat-run/contracts';
@@ -800,6 +802,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // preview / provision fail. Tenant-narrowed in the handler (the forced-filter
     // pattern, like GET /scopes); the allowlist alone is not authz.
     { method: 'GET', re: /\/ops-failures$/ },
+    // The service→(vertical, version) join (#1231): what MY deployed scripts mean in
+    // signal dimensions. Tenant-narrowed in the handler (the same forced-filter
+    // pattern); the allowlist alone is not authz.
+    { method: 'GET', re: /\/service-refs$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -3127,6 +3133,67 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // runs above the adapter, so the page is sliced here — over the narrowed list.
     const visible = p.kind === 'builder' ? all.filter((v) => v.ownerTenant === p.tenantId) : all;
     return c.json(pageSlice(visible, page, (v) => v.slug));
+  });
+
+  // -- the service→dimensions resolver (#1231's last item) -----------------------
+  // What a Cloudflare service ref MEANS: each owned vertical's serving script and
+  // per-version archive scripts, mapped to the signals stamp {vertical, version}
+  // plus the human label beside it. A DIRECTORY read — deliberately not behind the
+  // `options.observability` 501 guard, because the join must answer (for the
+  // release-health and issues views) whether or not a telemetry backend is
+  // configured. The dashboard's ownedServiceRefs() fetches this instead of
+  // re-deriving it, so every consumer means the same thing by `version`.
+  app.get('/service-refs', async (c) => {
+    const p = c.get('principal');
+    // The /ops-failures forced-filter pattern: a builder's tenant comes from the
+    // principal, never the query. A staff/service caller must SAY whose view it
+    // wants — answering fleet-wide on a forgotten param would leak, so refuse.
+    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
+    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
+    const query = z
+      .object({ tenantId: tenantIdSchema, vertical: z.string().optional() })
+      .parse({ tenantId, vertical: c.req.query('vertical') });
+
+    const actor = c.get('actor');
+    const all = (await admin.listVerticals(actor)).filter((v) => v.ownerTenant === query.tenantId);
+    let considered = all;
+    if (query.vertical !== undefined) {
+      const slug = await resolveVerticalId(c, query.vertical);
+      considered = all.filter((v) => v.slug === slug);
+      // Non-ownership reads as absence (K-3), exactly like the per-slug registry reads.
+      if (considered.length === 0) throw new ControlPlaneError(404, 'not found');
+    }
+    // Cap the per-vertical fan-out and REPORT the cut — truncating silently is the
+    // defect the egress route names (#859), and the same posture holds here.
+    const MAX_VERTICALS = 50;
+    const verticalsTruncated = considered.length > MAX_VERTICALS;
+    const entries: ServiceDimensions[] = [];
+    for (const v of considered.slice(0, MAX_VERTICALS)) {
+      const versions = await admin.listVersions(actor, v.slug);
+      const labelOf = new Map(versions.map((ver) => [ver.id, ver.version]));
+      // The stable serving script — where real traffic lands. Its version is the
+      // registry row's own servingVersionId: authoritative, not the scope-derived
+      // approximation the dashboard used to make.
+      if (v.servingRef && v.servingVersionId) {
+        entries.push(serviceDimensions.parse({
+          service: v.servingRef,
+          role: 'serving',
+          stamp: { vertical: v.slug, version: v.servingVersionId },
+          versionLabel: labelOf.get(v.servingVersionId) ?? null,
+        }));
+      }
+      // Each per-version archive script IS its version (previews serve these).
+      for (const ver of versions) {
+        if (!ver.deploymentRef) continue;
+        entries.push(serviceDimensions.parse({
+          service: ver.deploymentRef,
+          role: 'archive',
+          stamp: { vertical: v.slug, version: ver.id },
+          versionLabel: ver.version,
+        }));
+      }
+    }
+    return c.json({ entries, verticalsTruncated });
   });
 
   app.post('/verticals', async (c) => {

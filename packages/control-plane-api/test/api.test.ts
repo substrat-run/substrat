@@ -3744,6 +3744,111 @@ describe('control-plane API — deploy', () => {
  * Staff requests carry `x-platform-actor`; builder requests carry only `x-test-builder`,
  * so staff auth is tried and declines before the builder path runs.
  */
+describe('control-plane API — the service→dimensions resolver (#1231)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const asStaff = { [DEV_ACTOR_HEADER]: staff, 'content-type': 'application/json' };
+  const T = tenantId.parse(ulid());
+  const OTHER = tenantId.parse(ulid());
+  const BUILDER_HEADER = 'x-test-builder';
+
+  const appOf = () =>
+    createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      authenticateBuilder: (req: Request) =>
+        req.headers.get(BUILDER_HEADER)
+          ? { actor: platformActorId.parse(ulid()), tenantId: T, tenantSlug: 'acme' }
+          : null,
+      // Deliberately NO observability reader: the resolver is a directory read and
+      // must answer without a telemetry backend configured.
+    });
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-svc-refs-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: T, slug: 'acme', name: 'Acme' });
+    await host.admin.createTenant(staff, { id: OTHER, slug: 'rival', name: 'Rival' });
+    for (const [slug, owner] of [
+      ['acme/helpdesk', T],
+      ['rival/crm', OTHER],
+    ] as const) {
+      await host.admin.registerVertical(staff, { slug, name: slug, source: 'cli', ownerTenant: owner });
+    }
+    const pub = async (slug: string, version: string, ref: string | null): Promise<string> => {
+      const id = ulid();
+      await host.admin.publishVersion(staff, {
+        id, verticalSlug: slug, version,
+        manifestDigest: `m-${version}`, permissionDigest: 'p', migrationDigest: 'g',
+        deploymentRef: ref,
+      });
+      await host.admin.admitVersion(staff, id);
+      return id;
+    };
+    const v1 = await pub('acme/helpdesk', '0.1.0', 'acme-helpdesk-v1ref');
+    await pub('acme/helpdesk', '0.0.9', null); // never deployed — no service, no entry
+    await pub('rival/crm', '9.0.0', 'rival-crm-v9ref');
+    // The stable serving script, named by the registry row itself.
+    await host.admin.setVerticalServing(staff, 'acme/helpdesk', {
+      ref: 'acme-helpdesk',
+      versionId: v1,
+      doClasses: ['ScopeDO'],
+      migrationTag: 'v1',
+    });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('answers a staff read for one tenant: the serving ref from the registry row, plus each deployed archive ref', async () => {
+    const res = await appOf().request(`/service-refs?tenantId=${T}`, { headers: asStaff });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      entries: { service: string; role: string; stamp: { vertical: string; version: string }; versionLabel: string | null }[];
+      verticalsTruncated: boolean;
+    };
+    const services = body.entries.map((e) => `${e.role}:${e.service}`).sort();
+    expect(services).toEqual(['archive:acme-helpdesk-v1ref', 'serving:acme-helpdesk']);
+    const serving = body.entries.find((e) => e.role === 'serving')!;
+    expect(serving.stamp.vertical).toBe('acme/helpdesk');
+    expect(serving.versionLabel).toBe('0.1.0');
+    // The stamp's version is the registry ULID, never the label (#1231's vocabulary).
+    expect(serving.stamp.version).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+    // The rival's services are simply not in this tenant's answer.
+    expect(body.entries.some((e) => e.service.includes('rival'))).toBe(false);
+    expect(body.verticalsTruncated).toBe(false);
+  });
+
+  it('refuses a staff read with NO tenantId — answering fleet-wide on a forgotten param would leak', async () => {
+    expect((await appOf().request('/service-refs', { headers: asStaff })).status).toBe(400);
+  });
+
+  it("forces a builder's tenant from the principal — asking for another tenant's view returns your own", async () => {
+    const res = await appOf().request(`/service-refs?tenantId=${OTHER}`, {
+      headers: { [BUILDER_HEADER]: '1' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { entries: { stamp: { vertical: string } }[] };
+    expect(body.entries.length).toBeGreaterThan(0);
+    expect(body.entries.every((e) => e.stamp.vertical === 'acme/helpdesk')).toBe(true);
+  });
+
+  it("hides an unowned vertical as 404 (K-3), and narrows to an owned one", async () => {
+    const app = appOf();
+    expect(
+      (await app.request(`/service-refs?tenantId=${T}&vertical=rival%2Fcrm`, { headers: asStaff }))
+        .status,
+    ).toBe(404);
+    const res = await app.request(`/service-refs?tenantId=${T}&vertical=acme%2Fhelpdesk`, {
+      headers: asStaff,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { entries: unknown[] }).entries.length).toBe(2);
+  });
+});
+
 describe('control-plane API — builder authz', () => {
   let dir: string;
   let host: SqliteScopeHost;
