@@ -120,6 +120,12 @@ The property that makes "promote prod from a laptop" safe is that a vertical ser
   production data**, exactly as designed. This is the mechanism the whole migration model is
   built around; before in-place serving it never actually ran in production.
 - Secrets survive the deploy.
+- **A promote repairs its own installs.** Each scope records the version its provision hook last
+  ran against (`provisionedVersionId`), and once a scope is bound to a new version — by a
+  promote or a per-scope bind, never by an upload alone — the platform sweep re-runs
+  `/internal/reconcile` on every active install whose receipt is behind the version it now
+  serves. So whatever a new release's `onProvision` mints reaches existing installs too, which
+  is why that hook must be idempotent. The how-to is in [Deploying a vertical](/guide/deploying#ship-it-substrat-push).
 
 A version is badged **code-only** or **schema-change** at publish, so you know whether a promote
 touches the schema. A code-only update just re-points; a schema-change update runs migrations, so

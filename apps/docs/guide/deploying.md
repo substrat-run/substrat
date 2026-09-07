@@ -210,6 +210,21 @@ ends up missing one (granted later, or repaired), the control plane re-delivers 
 snapshot/export/restore family). A vertical without `/internal/reconcile` cannot be repaired
 in place.
 
+Repair is also what makes **a promoted version reach the installs you already have**. Every
+scope carries a receipt, `provisionedVersionId` — the version its provision hook last ran
+against. Once the pushed version is promoted (or a scope is bound to it), the platform sweep
+compares that receipt with the version the scope now serves, and re-runs `/internal/reconcile`
+on every active install that is behind — a push alone serves nothing, so it repairs nothing: a `null` receipt (a scope
+provisioned before the platform recorded one) counts as behind rather than up to date, forks and
+previews are skipped so a hook never mints a second copy of anything against somebody else's
+data, and a reconcile that fails is left unmarked and retried on the next pass. A reconcile runs
+*both* halves of a provision — the kernel's (roles projected, owner seated, entitlements
+re-delivered) and yours (`onProvision`) — so a service principal or site registration a new
+release adds in its hook reaches every existing install with no button and no call. The
+consequence for you: **`onProvision` is not once-per-scope.** It re-runs against scopes that were
+provisioned long ago, so everything it does must be idempotent — look before you mint, and treat
+"already there" as success.
+
 You do **not** hand-write those routes. The whole `/internal` surface — plus the
 `application/problem+json` error envelope the control plane relies on to read a failure
 (`code`, `detail`, and a module's own `reason`; see
@@ -224,7 +239,8 @@ mountPlatformSurface(app, {
   hostFor,                       // (env) => your CloudflareScopeHost
   roles: ROLES,
   ownerRoleKey: OWNER_ROLE_KEY,
-  onProvision,                   // your pending-owner / site-registry side effect
+  onProvision,                   // your pending-owner / site-registry side effect —
+                                 // idempotent: a reconcile re-runs it after every promote
   resolveOwner,                  // owner-of-record for a reconcile (omit ⇒ 501)
   onConfigure,                   // per-instance config store (omit ⇒ 501)
   // The owner seat as the platform may see it, and the claim link it may mint for one
