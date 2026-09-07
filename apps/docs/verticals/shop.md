@@ -43,8 +43,8 @@ closed`, no skips).
 | **Own tables** | `shop_products` · `shop_variants` · `shop_stock` · `shop_customers` · `shop_discounts` · `shop_carts` · `shop_cart_lines` · `shop_orders` · `shop_order_lines` |
 | **Roles** | `public` (browse) · `shopper` (browse + checkout) · `warehouse` (fulfil, read, stock) · `shop-admin` (all) — portal customers hold an entity-narrowed `order:read` grant |
 | **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/shop/PERMISSIONS.md) — 10 keys, 2 modules, 4 roles |
-| **Auth** | [Better Auth](/concepts/identity#in-the-demo) — email/password, its own tenant-bound store, plus an anonymous browse-only fallback |
-| **Apps** | **three** processes over one API: API (`:8873`), storefront (`:5273`), back-office (`:5274`, `ADMIN_PORT`) |
+| **Auth** | [OIDC-only](/concepts/identity#two-real-choices-made-differently) — login lives at the issuer (locally the [dev issuer](/concepts/identity#the-dev-issuer-local), whose `/authorize` lists [the cast](/concepts/identity#in-the-demo)), and the vertical only maps the authenticated `sub` → a principal; plus an anonymous browse-only principal, which is not a credential store |
+| **Apps** | **four** processes over one API: the dev issuer (`:8879`, `ISSUER_PORT`) first, then API (`:8873`), storefront (`:5273`), back-office (`:5274`, `ADMIN_PORT`) |
 | **Status** | Working — demo seed |
 
 ## Two audiences, one source of truth
@@ -67,13 +67,14 @@ one authority.
 | **Rurik** — admin of rival tenant *Bönfeber* | `shop-admin` in his own tenant | anything of Kallkälla's — the cross-tenant denial |
 
 Signing in as Gustav and watching *Invoice basis* disappear from the nav — and 403 if you ask for
-it directly — is the whole thesis in one click: **Better Auth authenticated you, the kernel
+it directly — is the whole thesis in one click: **the issuer authenticated you, the kernel
 authorized you.**
 
 ## Run it
 
 ```bash
 pnpm --filter @substrat-run/demo-shop dev
+# issuer      http://localhost:8879
 # API         http://localhost:8873
 # storefront  http://localhost:5273
 # back-office  http://localhost:5274

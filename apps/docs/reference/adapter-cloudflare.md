@@ -76,7 +76,7 @@ export { ControlPlaneDO };
 export default {
   async fetch(req, env) {
     const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
-    // authenticate → getScope → invoke (the Callout demo wires a full Hono API + Better Auth)
+    // authenticate → getScope → invoke (the Callout demo wires a full Hono API + an OIDC relying party)
     const stub = await host.getScope(principal, tenantId, scopeId);
     return Response.json(await stub.invoke('workorder/list', {}));
   },
