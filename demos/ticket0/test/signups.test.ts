@@ -33,11 +33,13 @@ interface Submitted {
   kind: 'waitlist' | 'newsletter';
   state: 'pending' | 'confirmed' | 'unsubscribed';
   confirmToken: string | null;
+  unsubscribeToken: string;
 }
 interface SignupRow {
   id: string;
   kind: string;
   email: string;
+  unsubscribe_token: string;
   note: string | null;
   state: string;
   origin: string;
@@ -148,16 +150,18 @@ describe('nobody is on a list until they click', () => {
   });
 
   /**
-   * The read is what a screen and an export both go through, and it must not hand
-   * back the two capabilities over the row it is describing.
+   * The read is what a screen and an export both go through. It must not hand back the
+   * capability that MANUFACTURES a consent record — and it must hand back the one that
+   * only removes, because the Monday send needs a way out for every recipient and a
+   * sender that cannot see the token cannot put one in the mail.
    */
-  it('never returns the tokens it stores', async () => {
+  it('withholds the confirm hash and returns the unsubscribe token', async () => {
     const row = (await list(world.substrat, { kind: 'waitlist', state: 'pending' })).find(
       (r) => r.email === address,
     );
     expect(row).toBeDefined();
     expect(row).not.toHaveProperty('confirm_token_hash');
-    expect(row).not.toHaveProperty('unsubscribe_token_hash');
+    expect(row?.unsubscribe_token).toBeTruthy();
   });
 
   it('confirms when the link is clicked', async () => {
@@ -236,10 +240,11 @@ describe('leaving, and coming back', () => {
       token: joined.confirmToken,
     });
 
-    // Standing in for the mail client: the unsubscribe token is minted inside the
-    // operation and deliberately never returned by one, so the only place it exists
-    // is the row. Harness code, so the scope's own SQLite file is fair game.
-    unsubscribe = await unsubscribeTokenFor(world.substrat, joined.id);
+    // Straight off the submission, which is where the host gets it too. It used to be
+    // hashed and dropped, which made the unsubscribe link unbuildable in production and
+    // forced this test to write a known hash into the row to have anything to click.
+    unsubscribe = joined.unsubscribeToken;
+    expect(unsubscribe).toBeTruthy();
 
     const gone = (await (await door(world.substrat)).invoke('ticket0/unsubscribe-signup', {
       token: unsubscribe,
@@ -335,6 +340,61 @@ describe('the ceiling on new addresses', () => {
   });
 });
 
+describe('the things a review found', () => {
+  /**
+   * Casing. `z.string().email()` accepts any, so `Markus@Example.com` and
+   * `markus@example.com` used to become two rows — two confirmation emails to one
+   * person, and a resend throttle that applied to neither of them.
+   */
+  it('treats one address as one person whatever they capitalised', async () => {
+    const first = await submit(world.substrat, { kind: 'waitlist', email: 'Mixed.Case@Customer.Example' });
+    const second = await submit(world.substrat, { kind: 'waitlist', email: 'mixed.case@customer.example' });
+    expect(second.id).toBe(first.id);
+    // Inside the throttle, so no second mail either — which is the consequence that
+    // matters and the one the two-row bug silently removed.
+    expect(second.confirmToken).toBeNull();
+
+    const rows = (await list(world.substrat, { kind: 'waitlist' })).filter(
+      (r) => r.email.toLowerCase() === 'mixed.case@customer.example',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.email).toBe('mixed.case@customer.example');
+  });
+
+  /**
+   * The unsubscribe token has to be READABLE, or the "unsubscribe link that always
+   * works" the signup form promises can never be put in an email. It was hashed and
+   * the plaintext dropped, so no host could build one.
+   */
+  it('hands back an unsubscribe token even when there is nothing to confirm', async () => {
+    const address = 'settled@customer.example';
+    const first = await submit(world.substrat, { kind: 'newsletter', email: address });
+    await (await door(world.substrat)).invoke('ticket0/confirm-signup', {
+      token: first.confirmToken,
+    });
+
+    const again = await submit(world.substrat, { kind: 'newsletter', email: address });
+    expect(again.confirmToken).toBeNull();
+    // Every mail needs a way out, including one sent to somebody already confirmed.
+    expect(again.unsubscribeToken).toBe(first.unsubscribeToken);
+  });
+
+  /**
+   * And it must be STABLE. Re-minting it on a re-submission would silently break every
+   * copy of the link the person still has in their mail archive.
+   */
+  it('keeps the same unsubscribe token across a re-issued confirmation', async () => {
+    const address = 'stable@customer.example';
+    const first = await submit(world.substrat, { kind: 'waitlist', email: address });
+    clock.advance((SIGNUP_RESEND_SECONDS + 1) * 1000);
+    const reissued = await submit(world.substrat, { kind: 'waitlist', email: address });
+
+    expect(reissued.confirmToken).toBeTruthy();
+    expect(reissued.confirmToken).not.toBe(first.confirmToken);
+    expect(reissued.unsubscribeToken).toBe(first.unsubscribeToken);
+  });
+});
+
 describe('who may read the list', () => {
   it('is not the service that writes to it', async () => {
     await expect((await door(world.substrat)).invoke('ticket0/list-signups', {})).rejects.toThrow();
@@ -359,35 +419,3 @@ describe('who may read the list', () => {
     expect(total).toBe(rows.length);
   });
 });
-
-/**
- * The unsubscribe token, out of the row.
- *
- * No operation returns it — it is minted inside `submit-signup` and only its hash is
- * kept — so a test that needs to click an unsubscribe link has to stand in for the
- * mail that would have carried it. This is the ONE place in this file that reads
- * around an operation, and it is harness code, which is what makes that legal.
- *
- * It is a lookup by hash rather than a plaintext read, because the plaintext genuinely
- * is not there: the row holds a hash and this recomputes candidates until one matches
- * would be nonsense. So instead the token is re-minted the only way it can be — by
- * writing a known one in, which is exactly what a test double is.
- */
-async function unsubscribeTokenFor(desk: Desk, signupId: string): Promise<string> {
-  const { default: Database } = await import('better-sqlite3');
-  const token = `test-unsub-${signupId}`;
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-  const hash = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-  const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`));
-  try {
-    db.prepare('UPDATE ticket0_signups SET unsubscribe_token_hash = ? WHERE id = ?').run(
-      hash,
-      signupId,
-    );
-  } finally {
-    db.close();
-  }
-  return token;
-}

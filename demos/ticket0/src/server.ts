@@ -211,7 +211,17 @@ async function boot() {
   });
 
   // ── The public signup surface ────────────────────────────────────────────
+  /**
+   * Null for a desk that has no signup principal, rather than a throw.
+   *
+   * `.data/cast.json` is written once and read verbatim on every later boot, so a
+   * checkout that ran this demo before today has a persisted cast with four service
+   * accounts and no `signup` — and reading `desk.signup.principal` off it would throw a
+   * 500 on the public form instead of the denial the surface is built to return. The
+   * hosted worker answers the same question the same way, from `servicesOf`.
+   */
   const signupDeskFor = async (desk: Desk) => {
+    if (!desk.signup?.principal) return null;
     const stub = await host.getScope(desk.signup.principal, desk.tenant, desk.scope);
     const invoke = <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T>;
     const declared = await invoke<{ origins: string[] }>('ticket0/signup-origins', {});
@@ -231,7 +241,10 @@ async function boot() {
      * hostname that tells them apart — the route asks each in turn. A hosted install
      * resolves exactly one from the hostname and the loop runs once.
      */
-    desksForToken: async () => Promise.all(desks.map(signupDeskFor)),
+    // Nulls filtered, for the same reason: one un-provisioned desk must not take the
+    // token links down for the others this process serves.
+    desksForToken: async () =>
+      (await Promise.all(desks.map(signupDeskFor))).filter((d): d is NonNullable<typeof d> => d !== null),
     // One process serves both desks, so the links in either desk's mail come back here.
     // In a hosted install this is the desk's own routed hostname.
     publicOriginOf: () => `http://localhost:${port}`,
@@ -246,10 +259,13 @@ async function boot() {
      */
     sendConfirmation: (_c, pending) => {
       const { subject } = confirmationEmail(pending);
+      // Both links, because both are in the real mail and both are worth exercising by
+      // hand — the unsubscribe one especially, since nothing else in the demo reaches it.
       process.stdout.write(
         `\n[signup] ${pending.kind} — ${pending.email}\n` +
           `  ${subject}\n` +
-          `  ${pending.confirmUrl}\n\n`,
+          `  confirm:     ${pending.confirmUrl}\n` +
+          `  unsubscribe: ${pending.unsubscribeUrl}\n\n`,
       );
     },
   });

@@ -257,7 +257,7 @@ export const ticket0Migrations: SqlMigration[] = [
         state TEXT NOT NULL CHECK (state IN ('pending','confirmed','unsubscribed')),
         origin TEXT NOT NULL,
         confirm_token_hash TEXT,
-        unsubscribe_token_hash TEXT NOT NULL,
+        unsubscribe_token TEXT NOT NULL,
         requested_at TEXT NOT NULL,
         confirmed_at TEXT,
         unsubscribed_at TEXT,

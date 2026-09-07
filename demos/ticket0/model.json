@@ -852,7 +852,7 @@
               }
             ]
           },
-          "unsubscribe_token_hash": {
+          "unsubscribe_token": {
             "type": "string"
           },
           "requested_at": {
@@ -890,7 +890,7 @@
           "state",
           "origin",
           "confirm_token_hash",
-          "unsubscribe_token_hash",
+          "unsubscribe_token",
           "requested_at",
           "confirmed_at",
           "unsubscribed_at",

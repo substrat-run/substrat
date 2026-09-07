@@ -264,7 +264,7 @@ export interface Signup {
   state: "pending" | "confirmed" | "unsubscribed";
   origin: string;
   confirm_token_hash: string | null;
-  unsubscribe_token_hash: string;
+  unsubscribe_token: string;
   requested_at: string;
   confirmed_at: string | null;
   unsubscribed_at: string | null;
@@ -327,7 +327,7 @@ export interface Ticket0Client {
    *
    * `POST /signup/confirm` — `ticket0/confirm-signup`
    */
-  confirmSignup(input: { token: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string }>;
+  confirmSignup(input: { token: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; unsubscribe_token: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string }>;
 
   /**
    * Save a canned answer
@@ -468,7 +468,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listSignups(input: { kind?: "waitlist" | "newsletter"; state?: "pending" | "confirmed" | "unsubscribed" }): Promise<Paged<({ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string })>>;
+  listSignups(input: { kind?: "waitlist" | "newsletter"; state?: "pending" | "confirmed" | "unsubscribed" }): Promise<Paged<({ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; unsubscribe_token: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string })>>;
 
   /**
    * Every tag the desk uses, most-used first
@@ -683,7 +683,7 @@ export interface Ticket0Client {
    *
    * `POST /signup` — `ticket0/submit-signup`
    */
-  submitSignup(input: { kind: "waitlist" | "newsletter"; email: string; note?: string | null; origin: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; state: "pending" | "confirmed" | "unsubscribed"; confirmToken: string | null }>;
+  submitSignup(input: { kind: "waitlist" | "newsletter"; email: string; note?: string | null; origin: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; state: "pending" | "confirmed" | "unsubscribed"; confirmToken: string | null; unsubscribeToken: string }>;
 
   /**
    * Tag a conversation
@@ -697,7 +697,7 @@ export interface Ticket0Client {
    *
    * `POST /signup/unsubscribe` — `ticket0/unsubscribe-signup`
    */
-  unsubscribeSignup(input: { token: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string }>;
+  unsubscribeSignup(input: { token: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; unsubscribe_token: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string }>;
 
   /**
    * Take a tag off a conversation

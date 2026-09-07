@@ -1323,6 +1323,9 @@
                     "origin": {
                       "type": "string"
                     },
+                    "unsubscribe_token": {
+                      "type": "string"
+                    },
                     "requested_at": {
                       "type": "string"
                     },
@@ -1357,6 +1360,7 @@
                     "note",
                     "state",
                     "origin",
+                    "unsubscribe_token",
                     "requested_at",
                     "confirmed_at",
                     "unsubscribed_at",
@@ -4141,6 +4145,9 @@
                       "origin": {
                         "type": "string"
                       },
+                      "unsubscribe_token": {
+                        "type": "string"
+                      },
                       "requested_at": {
                         "type": "string"
                       },
@@ -4175,6 +4182,7 @@
                       "note",
                       "state",
                       "origin",
+                      "unsubscribe_token",
                       "requested_at",
                       "confirmed_at",
                       "unsubscribed_at",
@@ -8744,13 +8752,17 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "unsubscribeToken": {
+                      "type": "string"
                     }
                   },
                   "required": [
                     "id",
                     "kind",
                     "state",
-                    "confirmToken"
+                    "confirmToken",
+                    "unsubscribeToken"
                   ],
                   "additionalProperties": false
                 }
@@ -8857,6 +8869,9 @@
                     "origin": {
                       "type": "string"
                     },
+                    "unsubscribe_token": {
+                      "type": "string"
+                    },
                     "requested_at": {
                       "type": "string"
                     },
@@ -8891,6 +8906,7 @@
                     "note",
                     "state",
                     "origin",
+                    "unsubscribe_token",
                     "requested_at",
                     "confirmed_at",
                     "unsubscribed_at",

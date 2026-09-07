@@ -22,6 +22,21 @@
  * one row. They answer with HTML rather than JSON for the same reason: a person is
  * looking at the result.
  *
+ * ## Why the GET does not change anything, and a POST does
+ *
+ * Both used to mutate on the `GET`, which is the mistake that quietly defeats the whole
+ * feature. Mail clients, corporate link scanners (Safe Links, Proofpoint, Mimecast) and
+ * prefetching proxies fetch URLs they find in a message body, without anybody clicking:
+ *
+ *   - a prefetched UNSUBSCRIBE link removes an address its owner still wants;
+ *   - a prefetched CONFIRM link records a confirmation nobody performed — destroying the
+ *     one thing double opt-in exists to produce, and doing it invisibly.
+ *
+ * So the `GET` is a read-only landing page with a button, and the button `POST`s. The
+ * token is still the entire authority and it rides in the form, so there is nothing for
+ * a cross-site post to forge that it does not already have. The cost is one extra click
+ * on a link somebody meant to click, which is the correct thing to spend here.
+ *
  * ## Why a token link may name several desks
  *
  * A hosted install is one desk per hostname and `desksForToken` hands back that one.
@@ -45,6 +60,15 @@ export interface PendingConfirmation {
   readonly kind: 'waitlist' | 'newsletter';
   readonly email: string;
   readonly confirmUrl: string;
+  /**
+   * The way out, in the very first message.
+   *
+   * Not an afterthought: the signup form promises "an unsubscribe link that always
+   * works", and a confirmation mail is a message like any other — somebody whose
+   * address was typed in by a stranger should not have to confirm first in order to
+   * get out.
+   */
+  readonly unsubscribeUrl: string;
 }
 
 export interface SignupSurfaceOptions {
@@ -153,6 +177,7 @@ export function mountSignupSurface(
           kind: 'waitlist' | 'newsletter';
           state: string;
           confirmToken: string | null;
+          unsubscribeToken: string;
         }>('ticket0/submit-signup', {
           kind: body.kind,
           email: body.email,
@@ -167,10 +192,12 @@ export function mountSignupSurface(
          * way, so the form cannot be used to find out which.
          */
         if (result.confirmToken) {
+          const origin = options.publicOriginOf(c);
           options.sendConfirmation?.(c, {
             kind: result.kind,
             email: String(body.email),
-            confirmUrl: confirmUrl(options.publicOriginOf(c), result.confirmToken),
+            confirmUrl: confirmUrl(origin, result.confirmToken),
+            unsubscribeUrl: unsubscribeUrl(origin, result.unsubscribeToken),
           });
         }
         // Never the token, and never whether this address was already known.
@@ -179,9 +206,20 @@ export function mountSignupSurface(
     },
   });
 
-  app.get('/confirm', async (c) => {
-    const token = c.req.query('t');
-    const row = token ? await spendToken(await options.desksForToken(c), 'ticket0/confirm-signup', token) : null;
+  /** The landing page for a confirm link — renders, changes nothing. */
+  app.get('/confirm', (c) =>
+    page(c, {
+      title: 'One more tap',
+      body: 'Confirm the address you signed up with and you are on the list.',
+      action: { path: '/confirm', token: c.req.query('t') ?? '', label: 'Confirm my address' },
+    }),
+  );
+
+  app.post('/confirm', async (c) => {
+    const token = await tokenFromForm(c);
+    const row = token
+      ? await spendToken(await options.desksForToken(c), 'ticket0/confirm-signup', token)
+      : null;
     return page(
       c,
       row
@@ -207,8 +245,17 @@ export function mountSignupSurface(
     );
   });
 
-  app.get('/unsubscribe', async (c) => {
-    const token = c.req.query('t');
+  /** And for an unsubscribe link. Also renders nothing but a button. */
+  app.get('/unsubscribe', (c) =>
+    page(c, {
+      title: 'Unsubscribe',
+      body: 'Confirm and this address comes off the list. Nothing further will be sent to it.',
+      action: { path: '/unsubscribe', token: c.req.query('t') ?? '', label: 'Unsubscribe me' },
+    }),
+  );
+
+  app.post('/unsubscribe', async (c) => {
+    const token = await tokenFromForm(c);
     const row = token
       ? await spendToken(await options.desksForToken(c), 'ticket0/unsubscribe-signup', token)
       : null;
@@ -223,11 +270,41 @@ export function mountSignupSurface(
 }
 
 /**
+ * The token out of the posted form, or out of the query string.
+ *
+ * The query string is accepted on the POST as well, and that is what makes RFC 8058
+ * one-click unsubscribe possible later: a mail client posting to the `List-Unsubscribe`
+ * URL sends its own body, not our form's.
+ */
+async function tokenFromForm(c: Context): Promise<string> {
+  const query = c.req.query('t');
+  if (query) return query;
+  const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
+  const token = (body as Record<string, unknown>)['t'];
+  return typeof token === 'string' ? token : '';
+}
+
+/**
  * The page a person lands on. Self-contained on purpose: it is reached from a mail
  * client, sometimes in an in-app browser, and a stylesheet that fails to load would
  * leave somebody staring at unstyled text wondering whether it worked.
  */
-function page(c: Context, content: { title: string; body: string }, status: 200 | 404) {
+function page(
+  c: Context,
+  content: {
+    title: string;
+    body: string;
+    /** When present, the page is a landing page with a button rather than a result. */
+    action?: { path: string; token: string; label: string };
+  },
+  status: 200 | 404 = 200,
+) {
+  const form = content.action
+    ? `<form method="post" action="${escapeHtml(content.action.path)}">
+<input type="hidden" name="t" value="${escapeHtml(content.action.token)}">
+<button type="submit">${escapeHtml(content.action.label)}</button>
+</form>`
+    : '';
   const html = `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -240,14 +317,19 @@ function page(c: Context, content: { title: string; body: string }, status: 200 
   main { max-width: 34rem; text-align: center; }
   h1 { font-size: 1.5rem; font-weight: 600; margin: 0 0 .6rem; }
   p { margin: 0; color: #5c5c57; }
+  form { margin-top: 1.4rem; }
+  button { font: inherit; font-weight: 500; padding: 10px 20px; border: 0; border-radius: 6px;
+           background: #4f46e5; color: #fff; cursor: pointer; }
   @media (prefers-color-scheme: dark) {
     body { background: #0f1115; color: #e9e9e6; }
     p { color: #a3a39d; }
+    button { background: #6366f1; }
   }
 </style>
 </head><body><main>
 <h1>${escapeHtml(content.title)}</h1>
 <p>${escapeHtml(content.body)}</p>
+${form}
 </main></body></html>`;
   return c.html(html, status);
 }
@@ -286,13 +368,17 @@ export function confirmationEmail(pending: PendingConfirmation): {
   const url = pending.confirmUrl;
   return {
     subject,
-    text: `${lead}\n\nIf that was you, confirm here:\n${url}\n\nIf it was not, ignore this — the address goes nowhere unless the link is clicked.\n`,
+    text:
+      `${lead}\n\nIf that was you, confirm here:\n${url}\n\n` +
+      `If it was not, ignore this — the address goes nowhere unless the link is clicked. ` +
+      `To make sure nothing ever reaches it:\n${pending.unsubscribeUrl}\n`,
     html: `<!doctype html><html><body style="margin:0;padding:24px;font:16px/1.55 ui-sans-serif,system-ui,-apple-system,'Segoe UI',sans-serif;color:#1c1c1a;background:#fbfbfa">
 <div style="max-width:34rem;margin:0 auto">
 <p style="margin:0 0 1rem">${escapeHtml(lead)}</p>
 <p style="margin:0 0 1.4rem">If that was you, confirm it:</p>
 <p style="margin:0 0 1.4rem"><a href="${escapeHtml(url)}" style="display:inline-block;padding:10px 18px;border-radius:6px;background:#1c1c1a;color:#fff;text-decoration:none">${escapeHtml(action)}</a></p>
-<p style="margin:0;color:#5c5c57;font-size:14px">If it was not you, ignore this — the address goes nowhere unless the link is clicked.</p>
+<p style="margin:0 0 .8rem;color:#5c5c57;font-size:14px">If it was not you, ignore this — the address goes nowhere unless the link is clicked.</p>
+<p style="margin:0;color:#5c5c57;font-size:13px"><a href="${escapeHtml(pending.unsubscribeUrl)}" style="color:#5c5c57">Make sure nothing ever reaches this address</a></p>
 </div></body></html>`,
   };
 }

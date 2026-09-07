@@ -322,9 +322,15 @@ function signupToken(): string {
   return `${ulid()}${ulid()}`;
 }
 
-/** Never hand back a capability over the row being read. Mirrors `publicDesk`. */
+/**
+ * Never hand back the capability that manufactures a consent record. Mirrors `publicDesk`.
+ *
+ * The unsubscribe token stays in, deliberately: it grants only removal, and the Monday
+ * send needs it to put a way out in every issue. See the field's own comment in the model
+ * for why one of the two is hashed and the other is not.
+ */
 function signupPublic(row: SignupRow) {
-  const { confirm_token_hash: _confirm, unsubscribe_token_hash: _unsub, ...rest } = row;
+  const { confirm_token_hash: _confirm, ...rest } = row;
   return rest;
 }
 
@@ -335,21 +341,42 @@ function signupOrThrow(ctx: OperationContext, id: string): SignupRow {
 }
 
 /**
- * The row a token opens, or nothing.
- *
- * The token is looked up BY ITS HASH, which is the only form the table holds — so a
- * reader of this database cannot replay a link, and a caller who has one gets exactly
- * the row it belongs to with no id to widen. `column` is a literal from the two call
- * sites and never anything a caller sent.
+ * The row a confirm token opens, by its HASH — the only form the table holds, so a
+ * reader of this database cannot replay a confirmation, and a caller holding one gets
+ * exactly the row it belongs to with no id to widen.
  */
-async function signupByToken(
+async function signupByConfirmToken(
   ctx: OperationContext,
-  column: 'confirm_token_hash' | 'unsubscribe_token_hash',
   token: string,
 ): Promise<SignupRow | undefined> {
-  return ctx.sql.query<SignupRow>(`SELECT * FROM ticket0_signups WHERE ${column} = ?`, [
-    await sha256(token),
+  return ctx.sql.query<SignupRow>(
+    'SELECT * FROM ticket0_signups WHERE confirm_token_hash = ?',
+    [await sha256(token)],
+  )[0];
+}
+
+/** The row an unsubscribe token opens. Stored in the clear — see the field's comment. */
+function signupByUnsubscribeToken(
+  ctx: OperationContext,
+  token: string,
+): SignupRow | undefined {
+  return ctx.sql.query<SignupRow>('SELECT * FROM ticket0_signups WHERE unsubscribe_token = ?', [
+    token,
   ])[0];
+}
+
+/**
+ * An address, as this table keys it.
+ *
+ * `z.string().email()` rejects surrounding whitespace and accepts any casing, so
+ * `Markus@Example.com` and `markus@example.com` reached the lookup as different
+ * addresses — two rows, two confirmation emails, and a resend throttle that applied to
+ * neither. Domains are case-insensitive by RFC and local parts are technically not; no
+ * mail provider anybody signs up from makes that distinction, and treating one person
+ * as two is the worse error by a wide margin.
+ */
+function addressKey(email: string): string {
+  return email.toLowerCase();
 }
 
 /** One place that writes `state` and `updated_at`, so they cannot disagree. */
@@ -2996,9 +3023,11 @@ const operations = {
 
     const now = ctx.now();
     const note = input.note ?? null;
+    // One person is one row per list, whatever they capitalised. See `addressKey`.
+    const email = addressKey(input.email);
     const existing = ctx.sql.query<SignupRow>(
       'SELECT * FROM ticket0_signups WHERE kind = ? AND email = ?',
-      [input.kind, input.email],
+      [input.kind, email],
     )[0];
 
     /**
@@ -3039,26 +3068,27 @@ const operations = {
 
       const id = ulid();
       const confirmToken = signupToken();
+      const unsubscribeToken = signupToken();
       ctx.sql.exec(
         `INSERT INTO ticket0_signups
-           (id, kind, email, note, state, origin, confirm_token_hash, unsubscribe_token_hash,
+           (id, kind, email, note, state, origin, confirm_token_hash, unsubscribe_token,
             requested_at, confirmed_at, unsubscribed_at, created_at)
          VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, NULL, NULL, ?)`,
         [
           id,
           input.kind,
-          input.email,
+          email,
           note,
           input.origin,
           await sha256(confirmToken),
-          await sha256(signupToken()),
+          unsubscribeToken,
           now,
           now,
         ],
       );
       const row = signupOrThrow(ctx, id);
       announce(row);
-      return { id: row.id, kind: row.kind, state: row.state, confirmToken };
+      return { id: row.id, kind: row.kind, state: row.state, confirmToken, unsubscribeToken };
     }
 
     // A row already exists. Where it had got to decides what a second submission means
@@ -3076,7 +3106,15 @@ const operations = {
        * sent because there is nothing to confirm.
        */
       announce(existing);
-      return { id: existing.id, kind: existing.kind, state: existing.state, confirmToken: null };
+      return {
+        id: existing.id,
+        kind: existing.kind,
+        state: existing.state,
+        confirmToken: null,
+        // Not null, and that is the point: the caller may be about to send this person
+        // something, and every mail needs a way out even when there is nothing to confirm.
+        unsubscribeToken: existing.unsubscribe_token,
+      };
     }
 
     /**
@@ -3093,7 +3131,13 @@ const operations = {
         new Date(now).getTime() - SIGNUP_RESEND_SECONDS * 1000;
     if (throttled) {
       announce(existing);
-      return { id: existing.id, kind: existing.kind, state: existing.state, confirmToken: null };
+      return {
+        id: existing.id,
+        kind: existing.kind,
+        state: existing.state,
+        confirmToken: null,
+        unsubscribeToken: existing.unsubscribe_token,
+      };
     }
 
     const confirmToken = signupToken();
@@ -3120,12 +3164,23 @@ const operations = {
      */
     const row = signupOrThrow(ctx, existing.id);
     announce(row);
-    return { id: row.id, kind: row.kind, state: row.state, confirmToken };
+    /**
+     * The unsubscribe token is the row's existing one, NOT a fresh one, and re-minting
+     * it here would be the bug: a link in a mail archive has to keep working, and
+     * replacing the token would silently break every copy of it this person still holds.
+     */
+    return {
+      id: row.id,
+      kind: row.kind,
+      state: row.state,
+      confirmToken,
+      unsubscribeToken: row.unsubscribe_token,
+    };
   },
 
   'ticket0/confirm-signup': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.signupSubmit));
-    const held = await signupByToken(ctx, 'confirm_token_hash', input.token);
+    const held = await signupByConfirmToken(ctx, input.token);
     // A spent link and a forged one are the same answer on purpose: the hash is nulled
     // when it is spent, so neither the caller nor this handler can tell them apart, and
     // there is nothing here for a guess to learn.
@@ -3150,7 +3205,7 @@ const operations = {
 
   'ticket0/unsubscribe-signup': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.signupSubmit));
-    const held = await signupByToken(ctx, 'unsubscribe_token_hash', input.token);
+    const held = signupByUnsubscribeToken(ctx, input.token);
     if (!held) throw substratError('not_found', 'this unsubscribe link is not valid');
 
     const to = stepSignup(held, 'ticket0/unsubscribe-signup');

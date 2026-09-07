@@ -96,7 +96,11 @@ async function probe(): Promise<Capabilities> {
     holds(() => api.usageSummary({})),
     holds(() => api.getDesk()),
     holds(() => api.listConversations({})),
-    holds(() => api.listSignups({})),
+    // `signupCounts()` rather than `listSignups({})`, and it is the same key: the probe
+    // runs on every sign-in for every account, and asking the list question would pull a
+    // page of real email addresses and free-text notes into the browser purely to throw
+    // them away. The aggregate answers "may I" with no PII in the response.
+    holds(() => api.signupCounts()),
   ]);
   return { money, configure, inbox, signups };
 }

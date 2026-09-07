@@ -587,18 +587,38 @@ export const ticket0Entities = defineEntities({
       /** The page it was typed on: a real origin, checked against the desk's allowlist. */
       origin: z.string(),
       /**
-       * Hashes, never the tokens themselves. Each token is a capability over exactly
-       * one row — confirm this address, or take it off the list — and a capability
-       * kept in plaintext at rest is one anybody holding a copy of the table can
-       * replay.
+       * The confirm token as a HASH, and it is nulled the moment it is spent — so a
+       * confirmation link works exactly once rather than becoming a permanent
+       * re-confirm door, and a spent link is indistinguishable from a forged one.
        *
-       * The confirm hash is nulled the moment it is spent, so a confirmation link
-       * works once rather than becoming a permanent re-confirm door. The unsubscribe
-       * hash is deliberately NOT: an unsubscribe link has to keep working from a mail
-       * archive years later, which is exactly why the only thing it may do is remove.
+       * This is the high-value capability in the row: it manufactures a record that
+       * somebody consented. A plaintext copy at rest would let anybody holding the
+       * table forge that consent for every pending address at once, which is the one
+       * thing double opt-in exists to make impossible.
        */
       confirm_token_hash: z.string().nullable(),
-      unsubscribe_token_hash: z.string(),
+      /**
+       * The unsubscribe token in PLAINTEXT, and the asymmetry with the line above is
+       * deliberate rather than an oversight.
+       *
+       * Two reasons, and the second is the one that decides it:
+       *
+       *  1. It is the lowest-value capability here. All it can do is take an address
+       *     off a mailing list. Anybody holding a copy of this table already holds
+       *     every address in it, which is strictly worse than being able to
+       *     unsubscribe them — so hashing buys close to nothing.
+       *  2. It has to be READ BACK, forever. Every issue sent to this person needs an
+       *     unsubscribe link for them, and a hash cannot produce one. Hashing it made
+       *     the link unbuildable: the token was minted, digested and dropped on the
+       *     floor, so the "unsubscribe link that always works" the signup form
+       *     promises could never have been put in an email.
+       *
+       * It is never nulled, for the reason the promise implies: the link is read out
+       * of a mail archive years later by somebody who is annoyed, and a link that has
+       * expired is a complaint. It is safe to leave live precisely because removal is
+       * the only thing it does.
+       */
+      unsubscribe_token: z.string(),
       /**
        * When they last asked, beside `created_at`'s when-this-row-first-appeared.
        * They differ after somebody unsubscribes and later signs up again, which is a
@@ -2509,6 +2529,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
        * it is minted here, returned once, and stored only as a hash.
        */
       confirmToken: z.string().nullable(),
+      /**
+       * The unsubscribe token, which is NOT null even when `confirmToken` is.
+       *
+       * Every mail this desk ever sends this person needs a way out, including the
+       * confirmation itself, and the row's token is stable — so this is a read of what
+       * is already stored rather than something minted per call. An address that was
+       * already confirmed still gets one back, because the caller may be about to send
+       * them something.
+       */
+      unsubscribeToken: z.string(),
     }),
     http: { method: 'POST', path: '/signup' },
     emits: {
@@ -2540,7 +2570,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     summary: 'Confirm an address from the link in its email',
     permission: 'signup:submit',
     input: z.object({ token: z.string() }),
-    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true, unsubscribe_token_hash: true }),
+    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true }),
     http: { method: 'POST', path: '/signup/confirm' },
     emits: {
       entity: 'signup',
@@ -2565,7 +2595,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     summary: 'Take an address off the list',
     permission: 'signup:submit',
     input: z.object({ token: z.string() }),
-    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true, unsubscribe_token_hash: true }),
+    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true }),
     http: { method: 'POST', path: '/signup/unsubscribe' },
     emits: {
       entity: 'signup',
@@ -2581,9 +2611,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * The list, for the person who writes to it.
    *
    * Staff-only and desk-admin-only: it is a table of real addresses, so it sits with
-   * the money rather than with the inbox. The hashes are omitted from the output the
-   * same way the desk's verification secret is — a read of a row must not hand back
-   * the capabilities over it.
+   * the money rather than with the inbox. The CONFIRM hash is omitted the same way the
+   * desk's verification secret is — a read must not hand back the capability that
+   * manufactures a consent record.
+   *
+   * The unsubscribe token is returned, and that is what makes this read the export the
+   * Monday send is written against: every issue needs a per-recipient way out, and a
+   * sender that cannot see the token cannot put one in the mail. It grants nothing but
+   * removal, and this door is already the narrowest one the desk has.
    */
   'ticket0/list-signups': {
     summary: 'Who is waiting, and who is subscribed',
@@ -2595,7 +2630,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       kind: z.enum(['waitlist', 'newsletter']).optional(),
       state: z.enum(['pending', 'confirmed', 'unsubscribed']).optional(),
     }),
-    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true, unsubscribe_token_hash: true }),
+    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true }),
     paged: {
       over: {
         entity: 'signup',

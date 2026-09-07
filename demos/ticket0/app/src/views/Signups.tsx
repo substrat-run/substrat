@@ -78,6 +78,9 @@ export function Signups({ caps }: { caps: Capabilities | null }) {
   const [state, setState] = useState<State | ''>('confirmed');
   const [rows, setRows] = useState<Signup[] | null>(null);
   const [total, setTotal] = useState<number | null>(null);
+  /** The cursor for the page after the ones on screen; null when there are none. */
+  const [next, setNext] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [counts, setCounts] = useState<Counts | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -92,6 +95,7 @@ export function Signups({ caps }: { caps: Capabilities | null }) {
         if (!live) return;
         setRows(page.entries);
         setTotal(page.total);
+        setNext(page.next);
       })
       .catch(() => live && setFailed(true));
     return () => {
@@ -111,11 +115,41 @@ export function Signups({ caps }: { caps: Capabilities | null }) {
     };
   }, [caps?.signups]);
 
-  /** One read gives every pair; the header wants the three for the list on screen. */
+  /**
+   * One read gives every pair; the header wants the three for the list on screen.
+   *
+   * `null` while the read is in flight or has failed, drawn as "—" below rather than as
+   * 0 — the same rule the Reports screen follows for a median it does not have. "0
+   * confirmed" and "we could not ask" are different facts, and only one of them is a
+   * reason to go looking for a bug.
+   */
   const forKind = useMemo(
-    () => (s: State) => counts?.find((c) => c.kind === kind && c.state === s)?.count ?? 0,
+    () => (s: State) =>
+      counts === null ? null : (counts.find((c) => c.kind === kind && c.state === s)?.count ?? 0),
     [counts, kind],
   );
+
+  /**
+   * The next page, appended.
+   *
+   * Appending rather than replacing, because the question this screen answers is "who is
+   * on the list" and an answer split across pages a reader has to hold in their head is
+   * a worse answer. `follow` walks the cursor the paged read handed back, which is the
+   * contract the generated client already carries — there is no second pagination to
+   * invent here.
+   */
+  const more = () => {
+    if (!next || loadingMore) return;
+    setLoadingMore(true);
+    void api
+      .follow<Signup>(next)
+      .then((page) => {
+        setRows((current) => [...(current ?? []), ...page.entries]);
+        setNext(page.next);
+      })
+      .catch(() => setFailed(true))
+      .finally(() => setLoadingMore(false));
+  };
 
   if (!caps?.signups)
     return (
@@ -158,7 +192,7 @@ export function Signups({ caps }: { caps: Capabilities | null }) {
       <div style={{ display: 'flex', gap: 22, marginBottom: 18, flexWrap: 'wrap' }}>
         {STATES.map((s) => (
           <div key={s.value} title={s.hint}>
-            <div style={{ fontSize: 22, fontWeight: 600 }}>{forKind(s.value)}</div>
+            <div style={{ fontSize: 22, fontWeight: 600 }}>{forKind(s.value) ?? '—'}</div>
             <div className="t-meta">{s.label}</div>
           </div>
         ))}
@@ -222,10 +256,20 @@ export function Signups({ caps }: { caps: Capabilities | null }) {
               ))}
             </tbody>
           </table>
-          {total !== null && total > rows.length ? (
-            <div className="t-meta" style={{ marginTop: 12 }}>
-              Showing {rows.length} of {total}. The rest are on the next page of the
-              declared read — narrow with the filters above, or walk it from the API.
+          {next ? (
+            <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <button className="btn btn-ghost" onClick={more} disabled={loadingMore}>
+                {loadingMore ? 'Loading…' : 'Load more'}
+              </button>
+              {total !== null ? (
+                <span className="t-meta">
+                  {rows.length} of {total}
+                </span>
+              ) : null}
+            </div>
+          ) : total !== null && rows.length > 0 ? (
+            <div className="t-meta" style={{ marginTop: 14 }}>
+              All {total} shown
             </div>
           ) : null}
         </>
