@@ -233,6 +233,38 @@ describe('invites engine', () => {
     expect(h.eventsOfType('invites.accepted')).toHaveLength(0);
   });
 
+  it('projects only invited rows — a settled invitation reads back as stored (#964)', async () => {
+    // The rendering is `state === 'invited' && expires_at <= now`, and the first half
+    // matters as much as the second: an invitation that was accepted or revoked long
+    // before its deadline came round must not start reporting `expired` afterwards,
+    // and its `settled_at` must survive the read that renders its neighbour.
+    const s = await sender();
+    const id = (
+      await s.invoke<{ id: string }>('invites/send', {
+        orgId: org,
+        identifier: 'early@example.com',
+        roleKey: 'member',
+        ttlMs: -1, // already past, so the deadline half of the condition is true
+      })
+    ).id;
+    // Settle it the way a real accept would, without depending on the clock moving.
+    const settledAt = '2020-01-01T00:00:00.000Z';
+    await h.run(
+      (ctx) =>
+        void ctx.sql.exec(
+          `UPDATE invites_invitation SET state = 'accepted', accepted_by = ?, settled_at = ? WHERE id = ?`,
+          ['01ARZ3NDEKTSV4RRFFQ69G5FAV', settledAt, id],
+        ),
+      [PERM.read],
+    );
+
+    const listed = (
+      await s.invoke<Page<Invitation>>('invites/list', { orgId: org })
+    ).entries.find((i) => i.id === id);
+    expect(listed?.state).toBe('accepted');
+    expect(listed?.settled_at).toBe(settledAt);
+  });
+
   it('rate-limits open invitations per sender', async () => {
     const s = await sender();
     for (let i = 0; i < 25; i++) {

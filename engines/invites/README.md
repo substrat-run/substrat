@@ -48,8 +48,10 @@ Invitations expire (14 days by default) and one sender may hold 25 open invitati
 organization. Expiry is applied on transition rather than by a sweep — an expired
 invitation must never be acceptable, and a background job would be a second source of
 truth for the same fact. A read *renders* it and writes nothing: `listInvites` reports
-`expired` for an invitation past `expires_at` without touching the row, because a
-`invites:read` that transitions rows is a mutation nobody asked for and nothing announces.
+`expired` for a still-`invited` invitation past `expires_at` without touching the row,
+because an `invites:read` that transitions rows is a mutation nobody asked for and nothing
+announces. Only `invited` rows are projected — an `accepted` or `revoked` invitation reads
+back as stored, deadline or no deadline.
 
 ## Documentation
 

@@ -50,11 +50,14 @@ invited ──accept──▶ accepted
 transitions, so "is this still live" is one predicate.
 
 Expiry is the one transition time makes rather than a person, so it is **rendered on read
-and recorded on write** (#964). `listInvites` reports `expired` for an invitation whose
-`expires_at` has passed without touching the row — a read under `invites:read` settles
-nothing — while `sendInvite` and the accept path call `expireOverdue` and stamp
-`settled_at` for real. So an overdue invitation reads `expired` with a null `settled_at`
-until a write path meets it, and that null is a fact: nobody recorded the transition yet.
+and recorded on write** (#964). The projection applies to `invited` rows and only those:
+`listInvites` reports `expired` for a still-`invited` invitation whose `expires_at` has
+passed, without touching the row — a read under `invites:read` settles nothing — while
+`sendInvite` and the accept path call `expireOverdue` and stamp `settled_at` for real. An
+`accepted` or `revoked` invitation reads back exactly as stored, `settled_at` and all, no
+matter how long ago its deadline went by. So the only row that reads `expired` with a null
+`settled_at` is one time lapsed and nobody has since met, and that null is a fact: the
+transition has not been recorded yet.
 
 ## 3. The acceptance path, and why it refuses to be an oracle
 
@@ -69,8 +72,11 @@ caller. The source says why: distinguishing them would turn the accept endpoint 
 oracle — a caller could enumerate which invitation ids exist, or confirm that a given email
 was invited to a given org. The uniform refusal costs a little debuggability and buys that.
 
-Expiry is also *enforced on read*, not only by the sweep: an overdue invitation is marked
-`expired` at the moment someone tries to use it, so a lagging sweep never widens the window.
+Expiry is enforced *here*, on the write, not left to a sweep: `acceptInvite` refuses an
+overdue invitation and records the transition through `expireOverdue` at the moment someone
+tries to use it, so a lagging sweep never widens the window. A read is where expiry is
+merely *shown* (§2) — `listInvites` renders `expired` and settles nothing — and the two
+never disagree about what is acceptable, because the accept path is the one that decides.
 
 ## 4. Permissions — and the one operation that has none
 
