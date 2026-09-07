@@ -1,5 +1,48 @@
 # @substrat-run/kernel
 
+## 0.99.0
+
+### Minor Changes
+
+- 8e29866: The signals dimension vocabulary lands (#1231): `@substrat-run/contracts` gains
+  `SIGNAL_DIMENSIONS` and `signalStamp` — the one set of names
+  (`tenant / scope / vertical / version / operation / eventType / connection`) every
+  observability-facing record is stamped with, defined once so a chart, a failure list and
+  a graph node all mean the same thing by `version` and an aggregate can click through to
+  its exemplars with filters intact.
+
+  Two facts move under it immediately. Ops-failure rows (#559) now carry the `version`
+  dimension — the version-registry id the failure happened under, stamped at the preview,
+  provision and intent-drain write sites, filterable via `listOpsFailures` and
+  `GET /ops-failures?version=…`, with an old row's NULL reading as "predates the stamp" —
+  which is what lets a failure be read against the push that produced it. And the
+  observability seam's `RecentLogEvent.eventType` (the Workers invocation shape:
+  `fetch`/`rpc`/`scheduled`) is renamed `invocation`, because the vocabulary reserves
+  `eventType` for a DOMAIN event's type and that field was the one place the two could be
+  confused in a filter.
+
+- 02793d9: An operation's emitted events now name it (#1231). The outbox envelope gains an
+  optional `operation` — the exact `invoke()` string (`ticket0/answer`,
+  `attachments.upload`; a scheduled emit carries the schedule's own operation) —
+  stamped kernel-side on the K-34/K-42 pattern, so module code can neither forge
+  nor suppress it. Both adapters store it in a new nullable `_substrat_outbox`
+  column, ALTERed into existing scopes; a legacy row reads as unrecorded.
+
+  A CONSUMER-emitted event deliberately stays unstamped: a consumer runs on behalf
+  of no operation, and NULL says so — no synthesized pseudo-name pollutes the
+  dimension. `readHistory` surfaces the field on `historyEntry` (`operation:
+string | null`, whose null honestly carries both "consumer emit" and "predates
+  the column"); the thin `timelineEntry` deliberately does not.
+
+### Patch Changes
+
+- Updated dependencies [e398034]
+- Updated dependencies [28a82c0]
+- Updated dependencies [d124e9a]
+- Updated dependencies [8e29866]
+- Updated dependencies [02793d9]
+  - @substrat-run/contracts@0.99.0
+
 ## 0.98.1
 
 ### Patch Changes
@@ -3698,7 +3741,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
