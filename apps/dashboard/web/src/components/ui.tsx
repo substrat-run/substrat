@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { Ic } from '../lib/icons';
+import { relativeTime } from '../lib/format';
 
 /** The card surface every screen composes with. */
 export const card: CSSProperties = {
@@ -256,5 +257,62 @@ export function RowActions() {
     >
       <Ic name="dots" size={16} />
     </button>
+  );
+}
+
+/** One tick of a recent-runs strip (#1232) — the shape both sweep surfaces share. */
+export interface SweepTick {
+  id: string;
+  outcome: 'ok' | 'failed' | 'skipped';
+  at: string;
+  error: string | null;
+}
+
+/**
+ * The recent-runs strip (#1232): one tick per recorded pass, newest last (reading
+ * order = time order), red carrying its error in the tick's label. Shared by the
+ * connection cards and the schedule panel — which is why the amber sentence is a
+ * PARAMETER: on a connection a skip means "bound but nothing polls it", on a
+ * schedule it means "not due yet", and one hardcoded sentence was wrong somewhere.
+ * Absent entirely when the plane predates the record.
+ */
+export function SweepStrip({
+  runs,
+  label = 'Last sweep',
+  skippedNote,
+}: {
+  runs: SweepTick[];
+  /** Leads the trailing sentence — "Last sweep 20m ago" / "Last run 4h ago". */
+  label?: string;
+  /** What a trailing `skipped` outcome means on THIS surface. */
+  skippedNote: string;
+}) {
+  if (runs.length === 0) return null;
+  const last = runs[0]!;
+  const COLOR: Record<SweepTick['outcome'], string> = {
+    ok: 'var(--status-success-fg)',
+    failed: 'var(--status-danger-fg)',
+    skipped: 'var(--status-warning-fg)',
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
+      <span style={{ display: 'flex', gap: 2 }}>
+        {[...runs].reverse().map((r) => (
+          <span
+            key={r.id}
+            // A colored tick alone is invisible to a screen reader and the title
+            // tooltip is mouse-only; the label carries the same fact for both.
+            role="img"
+            aria-label={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}`}
+            title={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}`}
+            style={{ width: 5, height: 12, borderRadius: 1, background: COLOR[r.outcome], display: 'inline-block' }}
+          />
+        ))}
+      </span>
+      <span>
+        {label} {relativeTime(last.at)}
+        {last.outcome === 'failed' ? ' — failed' : last.outcome === 'skipped' ? ` — ${skippedNote}` : ''}
+      </span>
+    </div>
   );
 }

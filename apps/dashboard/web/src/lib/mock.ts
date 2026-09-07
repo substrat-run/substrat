@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -142,6 +142,53 @@ export const MOCK_APP_PERMISSIONS: AppPermissionsView = {
  * the running 0.2.0 declares two entities and a ticket lifecycle; no update model, so the
  * tab's running view renders alone.
  */
+/** #1232: one healthy, one overdue, one never-run — the preview shows what the panel is FOR. */
+export const MOCK_APP_SCHEDULES: AppSchedulesView = {
+  running: { versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300', version: '0.3.0' },
+  lastSweepAt: new Date(Date.now() - 4 * 60e3).toISOString(),
+  schedules: [
+    {
+      operation: 'helpdesk/escalate-stale',
+      moduleId: '@substrat-run/demo-helpdesk',
+      everyMinutes: 60,
+      permissions: ['helpdesk:ticket-write'],
+      lastRun: { id: '01MOCKSCHEDA00000000000000', outcome: 'ok', at: new Date(Date.now() - 22 * 60e3).toISOString(), error: null, elapsedMs: 340 },
+      nextDueAt: new Date(Date.now() + 38 * 60e3).toISOString(),
+      health: 'healthy',
+      runs: Array.from({ length: 10 }, (_, i) => ({
+        id: `01MOCKSCHEDA${String(9 - i).padStart(14, '0')}`,
+        outcome: (i === 6 ? 'failed' : 'ok') as 'ok' | 'failed' | 'skipped',
+        at: new Date(Date.now() - (22 + i * 60) * 60e3).toISOString(),
+        error: i === 6 ? 'engine refused: period already closed' : null,
+        elapsedMs: 300 + i * 5,
+      })),
+    },
+    {
+      operation: 'helpdesk/daily-digest',
+      moduleId: '@substrat-run/demo-helpdesk',
+      everyMinutes: 1440,
+      permissions: ['helpdesk:digest-send'],
+      lastRun: { id: '01MOCKSCHEDB00000000000000', outcome: 'ok', at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: 1800 },
+      nextDueAt: new Date(Date.now() - 3 * 3600e3).toISOString(),
+      health: 'overdue',
+      runs: [
+        { id: '01MOCKSCHEDB00000000000001', outcome: 'ok', at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: 1800 },
+        { id: '01MOCKSCHEDB00000000000000', outcome: 'ok', at: new Date(Date.now() - 51 * 3600e3).toISOString(), error: null, elapsedMs: 1750 },
+      ],
+    },
+    {
+      operation: 'helpdesk/rebuild-index',
+      moduleId: '@substrat-run/demo-helpdesk',
+      everyMinutes: 10080,
+      permissions: [],
+      lastRun: null,
+      nextDueAt: null,
+      health: 'never-run',
+      runs: [],
+    },
+  ],
+};
+
 export const MOCK_APP_MODEL: AppModelView = {
   running: {
     versionId: '01J2Q8Z3V9K4W7X2M5N6P7V200',
