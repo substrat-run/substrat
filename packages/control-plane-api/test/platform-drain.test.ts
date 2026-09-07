@@ -862,6 +862,52 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
     expect(row!.version).toBe('01JBOUNDATDRAINAAAAAAAAAAA');
   });
 
+  it('lands a freshness entry under its own kind — eventType and evidence, unit derived (#1232)', async () => {
+    const handler = sweepRunsHandler({ host });
+    const outcome = await handler(
+      ctx,
+      request({
+        version: null,
+        entries: [
+          {
+            kind: 'freshness',
+            eventType: 'receipt.landed',
+            outcome: 'failed',
+            at: '2026-09-07T12:00:00.000Z',
+            observedAt: '2026-09-06T09:00:00.000Z',
+          },
+        ],
+      }),
+    );
+    expect(outcome.status).toBe('done');
+    const [row] = await host.admin.listSweepRuns(staff, { kind: 'freshness', scopeId: s });
+    expect(row).toMatchObject({
+      kind: 'freshness',
+      unit: `${s}:receipt.landed`,
+      outcome: 'failed',
+      // The event type rides its OWN dimension, never `operation` — and the
+      // evidence survives beside the pass-time `at`.
+      eventType: 'receipt.landed',
+      operation: null,
+      observedAt: '2026-09-06T09:00:00.000Z',
+      at: '2026-09-07T12:00:00.000Z',
+      tenantId: t,
+      scopeId: s,
+    });
+  });
+
+  it('refuses a payload whose entry names the wrong identity for its kind', async () => {
+    const handler = sweepRunsHandler({ host });
+    // A freshness entry with no eventType, and a schedule entry with none of its
+    // operation: both malformed, both terminal.
+    const bad = await handler(
+      ctx,
+      request({ version: null, entries: [{ kind: 'freshness', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }] }),
+    );
+    expect(bad.status).toBe('failed');
+    expect(bad.error).toMatch(/event type/);
+  });
+
   it('refuses a malformed payload terminally — never retried into a poison loop', async () => {
     const handler = sweepRunsHandler({ host });
     const outcome = await handler(ctx, request({ entries: 'nope' }));

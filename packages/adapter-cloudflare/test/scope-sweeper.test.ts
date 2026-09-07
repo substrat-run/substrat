@@ -131,10 +131,20 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     expect(sweeps).toHaveLength(2);
     const first = sweepRunsPayload.parse(sweeps[0]!.payload);
     const second = sweepRunsPayload.parse(sweeps[1]!.payload);
-    expect(first.entries.map((e) => e.outcome)).toEqual(['ok']);
-    // The skip is REPORTED — an absence of even skips is the missed-run signal.
-    expect(second.entries.map((e) => e.outcome)).toEqual(['skipped']);
-    expect(first.entries[0]!.operation).toBe('sched/tick');
+    // First pass: the schedule fired, and the freshness evaluator (#1232) saw the
+    // event it just emitted — both join ONE batch, each under its own kind.
+    expect(first.entries.map((e) => `${e.kind}:${e.outcome}`).sort()).toEqual([
+      'freshness:ok',
+      'schedule:ok',
+    ]);
+    const fresh = first.entries.find((e) => e.kind === 'freshness')!;
+    expect(fresh.eventType).toBe('sched.ticked');
+    expect(fresh.observedAt).not.toBeNull();
+    // Second pass: the schedule's skip is REPORTED (absence of even skips is the
+    // missed-run signal); the freshness verdict is UNCHANGED inside its heartbeat,
+    // so it deliberately reports nothing — that is the change-gating, observed.
+    expect(second.entries.map((e) => `${e.kind}:${e.outcome}`)).toEqual(['schedule:skipped']);
+    expect(first.entries.find((e) => e.kind === 'schedule')!.operation).toBe('sched/tick');
     // The version the worker's accessor read from env — the code that actually ran.
     expect(first.version).toBe(env.SUBSTRAT_VERSION_ID);
     expect(sweeps.every((r) => JSON.stringify(r.requestedBy) === JSON.stringify({ system: 'scope-sweeper' }))).toBe(

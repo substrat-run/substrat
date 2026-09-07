@@ -49,6 +49,21 @@ export const scheduleSpec = z.object({
 });
 export type ScheduleSpec = z.infer<typeof scheduleSpec>;
 
+// A FRESHNESS expectation (#1232): "this scope should see a `receipt.landed` at
+// least every 24 hours." The declared half of the one alert no error can raise —
+// a sync whose failure mode is silence. Evaluated during the scope-side sweep
+// pass (the outbox is local there), recorded as a `freshness` sweep-run row, and
+// rendered beside schedule health on the app page.
+//
+// `within.hours`, not minutes, deliberately: a freshness window under an hour is
+// a schedule wearing a disguise, and the declaration should read the way the
+// alert will ("no receipt.landed in 26h").
+export const freshnessSpec = z.object({
+  eventType, // 'receipt.landed' — must be in this module's emits ∪ consumes (refined below)
+  within: z.object({ hours: z.number().int().positive() }),
+});
+export type FreshnessSpec = z.infer<typeof freshnessSpec>;
+
 // A single declared environment variable — the config a deployment must provide,
 // self-describing so a host/console can render a settings form (placeholder +
 // description) and validate the required keys before deploy. `secret: true` marks a
@@ -203,6 +218,12 @@ export const moduleManifest = z.object({
   //
   // Optional: additive-only surface (D-28) — every pre-#383 manifest still parses.
   schedules: z.array(scheduleSpec).optional(),
+  // FRESHNESS EXPECTATIONS (#1232): event types this module expects to keep
+  // arriving, and how stale is too stale. See freshnessSpec; evaluated scope-side
+  // by the sweep, no permission needed — it is a read of the scope's own outbox.
+  //
+  // Optional: additive-only surface (D-28) — every earlier manifest still parses.
+  freshness: z.array(freshnessSpec).optional(),
   // OPERATION WITHDRAWAL (K-17, the complement that makes guards enforceable).
   // Operation names whose DEFAULT BINDING this module suppresses in the host it
   // registers into: the name stops resolving — an invoke fails 'unknown
@@ -307,5 +328,25 @@ export const moduleManifest = z.object({
         .optional(),
     })
     .optional(),
+}).superRefine((m, ctx) => {
+  // #1232: a freshness expectation naming a type this module neither emits nor
+  // consumes would read as permanently stale forever — a typo becoming a permanent
+  // red pill. Refused at parse (push/registration), where the error is readable.
+  // Additive under D-28: only a NEW declaration can fail this. A vertical watching
+  // an engine's events lists the type in `consumes`, which star topology already
+  // requires of it.
+  if (!m.freshness?.length) return;
+  const known = new Set([...m.events.emits, ...m.events.consumes].map((e) => e.type));
+  for (const [i, f] of m.freshness.entries()) {
+    if (!known.has(f.eventType)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['freshness', i, 'eventType'],
+        message:
+          `freshness names '${f.eventType}', which module '${m.id}' neither emits nor consumes — ` +
+          `an expectation on a type that can never arrive would read as permanently stale`,
+      });
+    }
+  }
 });
 export type ModuleManifest = z.infer<typeof moduleManifest>;

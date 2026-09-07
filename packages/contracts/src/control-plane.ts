@@ -424,7 +424,7 @@ export const opsFailureEntry = z.object({
 export type OpsFailureEntry = z.infer<typeof opsFailureEntry>;
 
 /** What a sweep pass touched (#1232). More kinds arrive with the views that read them. */
-export const sweepRunKind = z.enum(['connector', 'schedule']);
+export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness']);
 export type SweepRunKind = z.infer<typeof sweepRunKind>;
 /** `skipped` is a first-class outcome: "swept, nothing to do" and "bound but no
  *  sweeper registered" are the facts a freshness view needs most, and the ones
@@ -461,6 +461,20 @@ export const sweepRunEntry = z.object({
   version: z.string().nullable(),
   /** `sweep.connector:<provider>`, or the schedule's own declared operation. */
   operation: z.string().nullable(),
+  /**
+   * The signals `eventType` dimension (#1232), on a freshness row — the domain
+   * event type whose staleness was judged. Its OWN column, never smuggled into
+   * `operation`: the vocabulary keeps them distinct, and the drain is exactly
+   * where a conflation would become durable. Null on every other kind.
+   */
+  eventType: z.string().nullable(),
+  /**
+   * The newest matching evidence at evaluation time (#1232) — "last receipt
+   * 3h ago" on a HEALTHY row, which `error` could never carry by construction.
+   * Null = no event of this type has ever landed (the `skipped` outcome), or
+   * any non-freshness row.
+   */
+  observedAt: instant.nullable(),
   connectionId: z.string().nullable(),
   error: z.string().nullable(),
   elapsedMs: z.number().int().nonnegative().nullable(),
@@ -486,6 +500,16 @@ export const SWEEP_RUNS_KIND = 'sweep-runs';
 export const MAX_PENDING_SWEEP_RUNS = 8;
 
 /**
+ * How long a freshness verdict may go unrecorded before the evaluator writes a
+ * heartbeat row even though nothing changed (#1232). Freshness writes on CHANGE,
+ * not per pass — its steady state is `ok`, so per-pass rows would flood the strip
+ * with green (the inverse of the schedule flood, and inside the strip's filter).
+ * The heartbeat is what keeps "no rows" unambiguous: a missing hourly row is a
+ * stopped evaluator, at exactly the resolution a 24-hour expectation needs.
+ */
+export const FRESHNESS_HEARTBEAT_MINUTES = 60;
+
+/**
  * One scope's schedule outcomes for ONE pass, batched — a pass every couple of
  * minutes times N schedules against the 32-pending journal cap cannot be one
  * intent each. Deliberately carries NO tenant/scope/vertical: the drain proves
@@ -500,13 +524,29 @@ export const sweepRunsPayload = z.object({
   version: z.string().min(1).nullable(),
   entries: z
     .array(
-      z.object({
-        operation: z.string().min(1),
-        outcome: sweepRunOutcome,
-        at: instant,
-        error: z.string().nullable().optional(),
-        elapsedMs: z.number().int().nonnegative().nullable().optional(),
-      }),
+      z
+        .object({
+          /** Defaulted so every pre-#1232-freshness payload keeps meaning what it meant. */
+          kind: sweepRunKind.default('schedule'),
+          operation: z.string().min(1).optional(),
+          eventType: z.string().min(1).optional(),
+          outcome: sweepRunOutcome,
+          at: instant,
+          observedAt: instant.nullable().optional(),
+          error: z.string().nullable().optional(),
+          elapsedMs: z.number().int().nonnegative().nullable().optional(),
+        })
+        .superRefine((e, ctx) => {
+          // The identity field follows the kind: a schedule entry names its
+          // operation, a freshness entry names its event type — never the other
+          // way around, per the signals vocabulary.
+          if (e.kind === 'schedule' && !e.operation) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['operation'], message: 'a schedule entry names its operation' });
+          }
+          if (e.kind === 'freshness' && !e.eventType) {
+            ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['eventType'], message: 'a freshness entry names its event type' });
+          }
+        }),
     )
     .min(1)
     .max(64),

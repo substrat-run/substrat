@@ -6,6 +6,8 @@ import type {
   ScheduleRegistration,
   ScheduleRunReport,
   ScheduleSweepReport,
+  FreshnessRegistration,
+  FreshnessReport,
 } from '@substrat-run/kernel';
 
 /**
@@ -60,6 +62,13 @@ export interface ScopeSweepHost {
    * without it simply reports nothing, exactly as every pass did before.
    */
   enqueueSweepRuns?(scopeId: ScopeId, payload: SweepRunsPayload): Promise<unknown>;
+  /** #1232: declared freshness expectations + their evaluator — optional, like the two above. */
+  registeredFreshness?(): FreshnessRegistration[];
+  checkFreshness?(
+    moduleId: FreshnessRegistration['moduleId'],
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<FreshnessReport>;
 }
 
 export interface ScopeSweeperDoConfig<Env> {
@@ -287,6 +296,7 @@ export function defineScopeSweeperDO<Env>(
               }
               for (const run of r.runs ?? []) {
                 passRuns.push({
+                  kind: 'schedule',
                   operation: run.operation,
                   outcome: run.outcome,
                   at: passAt as SweepRunsPayload['entries'][number]['at'],
@@ -304,6 +314,26 @@ export function defineScopeSweeperDO<Env>(
             }
           }
           if (touched) report.schedules.scopes += 1;
+          // #1232: freshness verdicts join the same batch — the evaluator already
+          // gated on change + heartbeat, so most passes contribute nothing here.
+          if (host.registeredFreshness && host.checkFreshness) {
+            for (const reg of host.registeredFreshness().filter((r) => r.freshness.length > 0)) {
+              try {
+                const r = await host.checkFreshness(reg.moduleId, tenantId, scopeId);
+                for (const check of r.checks) {
+                  passRuns.push({
+                    kind: 'freshness',
+                    eventType: check.eventType,
+                    outcome: check.outcome,
+                    at: passAt as SweepRunsPayload['entries'][number]['at'],
+                    observedAt: check.observedAt as SweepRunsPayload['entries'][number]['observedAt'],
+                  });
+                }
+              } catch (err) {
+                report.errors.push({ kind: 'schedule', id: `${scopeId}:${reg.moduleId}`, error: message(err) });
+              }
+            }
+          }
           if (passRuns.length > 0 && host.enqueueSweepRuns) {
             try {
               await host.enqueueSweepRuns(scopeId, {

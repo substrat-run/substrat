@@ -661,6 +661,49 @@ export async function runPlatformSweep(
     }
   }
 
+  // -- freshness expectations (#1232) -----------------------------------------
+  // For each module that declares `freshness`, judge each expectation against the
+  // scope's own outbox and record what the evaluator decided to report (it gates
+  // on verdict change + the hourly heartbeat, so this phase only forwards).
+  // Feature-detected like schedules; NOT gated on the system grant — a read of
+  // the scope's own outbox needs none, and the grant tuple only exists for
+  // modules with permissioned schedules anyway.
+  if (
+    options.runSchedules !== false &&
+    typeof host.registeredFreshness === 'function' &&
+    typeof host.checkFreshness === 'function'
+  ) {
+    const freshRegs = host.registeredFreshness().filter((r) => r.freshness.length > 0);
+    if (freshRegs.length > 0) {
+      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+        (s) => s.forkedFrom === null,
+      );
+      await mapBounded(scopes, concurrency, async (s) => {
+        if (failedThisPass.has(s.id)) return;
+        for (const reg of freshRegs) {
+          try {
+            const r = await host.checkFreshness!(reg.moduleId, s.tenantId, s.id);
+            for (const check of r.checks) {
+              options.recordSweepRun?.({
+                kind: 'freshness',
+                unit: `${s.id}:${check.eventType}`,
+                outcome: check.outcome,
+                tenantId: s.tenantId,
+                scopeId: s.id,
+                vertical: s.vertical,
+                version: s.verticalVersionId,
+                eventType: check.eventType,
+                observedAt: check.observedAt,
+              });
+            }
+          } catch (err) {
+            report.errors.push({ kind: 'schedule', id: `${s.id}:${reg.moduleId}`, error: message(err) });
+          }
+        }
+      });
+    }
+  }
+
   if (options.gcSnapshots !== false) {
     // Reap expired previews (§3/§9). Two shapes qualify, both throwaway-by-construction:
     // a FORK (`forkedFrom` set — a snapshot of another scope) and a clean-room PREVIEW

@@ -742,9 +742,16 @@ export function sweepRunsHandler(deps: { host: ScopeHost }): PlatformRequestHand
       return { status: 'failed', error: `sweep-runs payload is malformed: ${parsed.error.message}` };
     }
     for (const entry of parsed.data.entries) {
+      // The identity field follows the kind (payload superRefine guarantees it):
+      // a schedule entry names its operation, a freshness entry its event type —
+      // and unit derives here, never trusted from the wire.
+      const unit =
+        entry.kind === 'freshness'
+          ? `${ctx.scopeId}:${entry.eventType}`
+          : `${ctx.scopeId}:${entry.operation}`;
       await deps.host.admin.recordSweepRun({
-        kind: 'schedule',
-        unit: `${ctx.scopeId}:${entry.operation}`,
+        kind: entry.kind,
+        unit,
         outcome: entry.outcome,
         tenantId: ctx.tenantId,
         scopeId: ctx.scopeId,
@@ -752,7 +759,9 @@ export function sweepRunsHandler(deps: { host: ScopeHost }): PlatformRequestHand
         // The pass's own version identity when the sweeper knew it; the scope's
         // bound-at-drain version otherwise — the documented approximation.
         version: parsed.data.version ?? ctx.versionId ?? null,
-        operation: entry.operation,
+        operation: entry.operation ?? null,
+        eventType: entry.eventType ?? null,
+        observedAt: entry.observedAt ?? null,
         error: entry.error ?? null,
         elapsedMs: entry.elapsedMs ?? null,
         at: entry.at,

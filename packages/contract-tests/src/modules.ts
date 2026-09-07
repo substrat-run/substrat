@@ -63,6 +63,13 @@ export const scheduleModManifest = moduleManifest.parse({
   attachmentTargets: [],
   entitlementKey: 'sched',
   schedules: [{ operation: 'sched/tick', cadence: { everyMinutes: 60 }, permissions: ['sched:tick'] }],
+  // #1232: a freshness expectation on the module's own emitted type — declared TWICE
+  // with different windows, deliberately: the evaluator must collapse duplicates to
+  // the tightest window (one row per (scope, eventType), or the drain dedupe eats one).
+  freshness: [
+    { eventType: 'sched.ticked', within: { hours: 24 } },
+    { eventType: 'sched.ticked', within: { hours: 1 } },
+  ],
 });
 
 export const flowModManifest = moduleManifest.parse({

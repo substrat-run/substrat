@@ -3300,8 +3300,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
-    const schedules = json ? (storedDeployManifest.parse(JSON.parse(json)).schedules ?? null) : null;
-    return c.json({ schedules });
+    const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
+    // #1232: freshness rides the same read — the manifest is already in hand, and a
+    // sibling route would cost a second full parse for a field sitting beside this one.
+    return c.json({ schedules: parsed?.schedules ?? null, freshness: parsed?.freshness ?? null });
   });
 
   app.get('/verticals/:slug/versions/:id/model', async (c) => {
