@@ -14,6 +14,7 @@ export type ViewKey =
   | 'permissions'
   | 'members'
   | 'failures'
+  | 'sweeps'
   | 'settings';
 
 /*
@@ -140,7 +141,12 @@ export function ConsoleShell({
             // What the platform could NOT do (#559) — a separate stratum from Fleet's
             // state-of-the-world, so a red day is one click, not a filter recipe.
             title: 'Operations',
-            items: [{ value: 'failures', label: 'Failures', icon: <SubIcon d={SubIcons.alert} /> }],
+            items: [
+              { value: 'failures', label: 'Failures', icon: <SubIcon d={SubIcons.alert} /> },
+              // The fleet's sweep record (#1232) — the staff twin of the
+              // dashboard's per-app strips, one page instead of a tenant tour.
+              { value: 'sweeps', label: 'Sweeps', icon: <SubIcon d={SubIcons.bell} /> },
+            ],
           },
           {
             title: 'Console',
