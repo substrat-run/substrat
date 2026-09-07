@@ -143,6 +143,11 @@ scope. Bind the round when you build the consent URL and verify it on the way ba
 link's row, which is also what makes the link single-use and revocable), and what
 `scripts/connect.mts` does locally.
 
+Then, still before the helper, two callbacks end the round rather than start an exchange: one
+carrying `?error=…` (Fortnox declined — a denial usually carries no `code` at all), and one
+carrying no `code` for any other reason. `completeFortnoxConsent` is for the remaining case, where
+a real authorization code came back.
+
 **`redirectUri` must be the registered one, character for character, and the same string twice** —
 once in the consent URL, once in the exchange. Fortnox validates it only *after* login, so an
 unregistered value gets you a login screen and then an `invalid_grant` at the exchange, which reads
