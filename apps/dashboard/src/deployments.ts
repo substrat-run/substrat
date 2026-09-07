@@ -1,5 +1,5 @@
 import type { DeployAssets, PermissionRegistry, PlatformActorId, TenantId, VersionOrigin } from '@substrat-run/contracts';
-import { LIST_PAGE_MAX, deployManifest, storedDeployManifest } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, deployManifest, storedDeployManifest, type DeployManifest } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
 import type { TenantNarrowedControlPlane } from './authority.js';
 
@@ -262,6 +262,18 @@ export async function versionRegistryFromHost(
  * schema so a version pushed before the permission registry was required stays readable.
  * `null` for a version that retained no manifest or shipped no static files.
  */
+/** #1232: the embedded-mode twin of `versionSchedules` — null without a manifest or field. */
+export async function versionSchedulesFromHost(
+  host: ScopeHost,
+  actor: PlatformActorId,
+  slug: string,
+  versionId: string,
+): Promise<DeployManifest['schedules'] | null> {
+  const json = await host.admin.versionManifest(actor, slug, versionId);
+  if (!json) return null;
+  return storedDeployManifest.parse(JSON.parse(json)).schedules ?? null;
+}
+
 export async function versionAssetsFromHost(
   host: ScopeHost,
   actor: PlatformActorId,

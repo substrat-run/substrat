@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, verticalSlug } from './ids.js';
-import { envVarSpec, capability, type ModuleManifest } from './manifest.js';
+import { envVarSpec, capability, scheduleSpec, type ModuleManifest } from './manifest.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
@@ -631,6 +631,12 @@ export const deployManifest = z.object({
    *  with no `model.json` beside its package.json pushes without one, and versions pushed
    *  by a pre-#1214 CLI stay readable. */
   model: emittedModel.optional(),
+  /** The vertical's declared schedules (#1232), flattened across modules with each
+   *  spec's owning module beside it — carried so the dashboard can render the DEPLOYED
+   *  version's schedule health (next due needs `everyMinutes`, and the manifest is the
+   *  only place it exists off the runtime). Metadata, not code, and not in any digest,
+   *  exactly as `model` above; optional twice over for the same two reasons. */
+  schedules: z.array(scheduleSpec.extend({ moduleId })).optional(),
   /** The vertical's declared permission surface (D-39/D-41): keys+descriptions, role templates,
    *  entity-grant shapes — the machine-readable twin of PERMISSIONS.md, derived at push from the
    *  vertical's `definePermissions(...)` entry. REQUIRED: a deployable vertical must declare its

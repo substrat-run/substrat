@@ -7,6 +7,7 @@ import type {
   ConnectionGrantRecord,
   ConnectionProbe,
   DeployAssets,
+  DeployManifest,
   EmittedModel,
   ListPage,
   OpsFailureEntry,
@@ -584,6 +585,21 @@ export class TenantNarrowedControlPlane {
    * `null` for a version pushed by a pre-#1214 CLI or a vertical with no model.json;
    * `null` on any non-200, so the caller treats "unknown" and "none" the same.
    */
+  /** The declared schedules of one version (#1232) — null on skew or a pre-field push. */
+  async versionSchedules(
+    verticalSlug: string,
+    versionId: string,
+  ): Promise<DeployManifest['schedules'] | null> {
+    try {
+      const res = await this.call<{ schedules: DeployManifest['schedules'] | null }>(
+        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/schedules`,
+      );
+      return res?.schedules ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async versionModel(verticalSlug: string, versionId: string): Promise<EmittedModel | null> {
     try {
       const res = await this.call<{ model: EmittedModel | null }>(

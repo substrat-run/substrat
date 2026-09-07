@@ -774,6 +774,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // The emitted entity model of one version (#1214) — owner-narrowed the same way;
     // the dashboard's Model tab reads it.
     { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/model$/ },
+    { method: 'GET', re: /\/verticals\/[^/]+\/versions\/[^/]+\/schedules$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels$/ },
     { method: 'GET', re: /\/verticals\/[^/]+\/channels\/[^/]+\/history$/ },
     { method: 'POST', re: /\/verticals\/[^/]+\/channels\/[^/]+\/promote$/ },
@@ -3290,6 +3291,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // above, and owner-narrowed the same way. `model` is null for a version pushed by a
   // pre-#1214 CLI or by a vertical with no model.json — the dashboard's Model tab renders
   // an empty state for both, and distinguishing them buys the tenant nothing.
+  // #1232: the declared schedules of ONE version — what the dashboard's schedule-health
+  // view joins the sweep record against. Null for a version pushed before the field.
+  app.get('/verticals/:slug/versions/:id/schedules', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
+    const schedules = json ? (storedDeployManifest.parse(JSON.parse(json)).schedules ?? null) : null;
+    return c.json({ schedules });
+  });
+
   app.get('/verticals/:slug/versions/:id/model', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));

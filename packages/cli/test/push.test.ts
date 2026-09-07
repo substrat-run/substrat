@@ -14,7 +14,7 @@ import {
   matchesOutboundHost,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -810,6 +810,36 @@ export const permissions = {
     await expect(
       checkPermissionSurface(scratch({ substrat: { permissions: 'src/moved.ts' } })),
     ).rejects.toThrow(/points at "src\/moved.ts", which does not exist/);
+  });
+
+  it('flattens each module\'s declared schedules into the surface, tagged with the owner (#1232)', () => {
+    const withSchedules = {
+      modules: [
+        {
+          manifest: {
+            id: '@substrat-run/engine-workorder',
+            permissions: [{ key: 'workorder:create', description: 'Create a work order' }],
+            schedules: [
+              { operation: 'wo/advance', cadence: { everyMinutes: 60 }, permissions: ['workorder:create'] },
+            ],
+          },
+        },
+        { manifest: { id: '@substrat-run/demo-x', permissions: [] } },
+      ],
+      roles: [],
+    } as never;
+    expect(flattenDeclaredSchedules(withSchedules)).toEqual([
+      {
+        operation: 'wo/advance',
+        cadence: { everyMinutes: 60 },
+        permissions: ['workorder:create'],
+        moduleId: '@substrat-run/engine-workorder',
+      },
+    ]);
+    // …and a surface with none stays undefined, so the manifest field stays absent.
+    expect(
+      flattenDeclaredSchedules({ modules: [{ manifest: { id: '@x/y', permissions: [] } }], roles: [] } as never),
+    ).toBeUndefined();
   });
 
   it('names the directory when there is no package.json at all, not an ENOENT trace', async () => {
