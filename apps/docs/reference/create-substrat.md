@@ -48,11 +48,11 @@ pnpm dev
 ```
 
 starts **two processes**: [`@substrat-run/dev-issuer`](/reference/dev-issuer) on `:8879`
-and the Node dev server (`src/server.ts`) on `:8873`. The issuer is a real OpenID Connect
+and the Node dev server (`src/server.ts`) on `:8891`. The issuer is a real OpenID Connect
 provider whose only shortcut is that `/authorize` lists the people in `src/personas.ts`
 instead of asking for a password; the dev server is an ordinary relying party against
 whatever `OIDC_ISSUER` names (`http://localhost:8879` by default). Open
-`http://localhost:8873/api/auth/login`, pick a name, and you are signed in through the same
+`http://localhost:8891/api/auth/login`, pick a name, and you are signed in through the same
 round-trip a deployment runs — the seed links each persona's `sub` to a principal in the
 identity directory, so the vertical never learns who you are from anything but a verified
 token. There is no dev header and no dev auth branch: pointing the project at Auth0,

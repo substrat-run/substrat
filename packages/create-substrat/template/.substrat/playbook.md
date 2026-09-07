@@ -472,7 +472,7 @@ Build confidence in this order, and **show the user the output of each**:
 pnpm install
 pnpm test                        # the scenario, including the denials
 npx @substrat-run/boundary-lint  # the layer rules
-pnpm dev                         # API on :8871 (PORT=… WEB_PORT=… to move it)
+pnpm dev                         # API on :8891 (PORT=… WEB_PORT=… to move it)
 ```
 
 Then **actually exercise it** — don't just report that the server started. A green scenario
@@ -519,7 +519,7 @@ Two more that each fail silently:
   `notFoundHandling: "single-page-application"`, a missing `/api/*` entry answers every API
   call with `index.html` — the app then reports parse errors instead of denials.
 - **The app calls its own origin** (`fetch('/api' + path)`), never a baked base URL. The Vite
-  `proxy` block is a dev-only convenience; `VITE_API_URL` or `localhost:8871` works on the
+  `proxy` block is a dev-only convenience; `VITE_API_URL` or `localhost:8891` works on the
   author's machine and reaches nothing from a phone.
 
 `substrat push` refuses an `app/` that nothing would serve, so this cannot reach a hostname
