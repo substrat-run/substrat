@@ -35,8 +35,9 @@
  * substrat.net blocked its own support widget while every build stayed green.
  *
  * So the desks are read out of the pages the site is built from — every component with
- * a `desk` attribute, whichever component it is — and every one of them is in the
- * policy whether or not the site-wide flag is set.
+ * a `desk` attribute, whichever component it is, its attributes PARSED rather than
+ * pattern-matched — and every one of them is in the policy whether or not the
+ * site-wide flag is set.
  *
  * Both directives get every desk, rather than the widget's in `script-src` and the
  * form's in `connect-src`. That is a true statement rather than a shortcut: one desk
@@ -103,22 +104,29 @@ export function inlineScriptHashes(outDir: string): string[] {
 }
 
 /**
- * A page naming a desk: `<Ticket0Widget desk="https://ticket0.substrat.net" />`, and
- * equally `<SignupForm kind="newsletter" desk="…" />` or `<Marketing desk="…" />`.
+ * A component tag, and its attribute blob: `<SignupForm kind="…" desk="…" />`.
  *
- * Keyed on the ATTRIBUTE rather than on a list of component names, and that is the
- * part worth keeping: the tag list is the thing that goes stale silently. A new
- * component that talks to a desk gets into the policy by being written in the house
- * style, instead of by somebody remembering to add it to a regex in a security file.
- * The uppercase first letter is what keeps it to Vue components — no HTML element is
+ * The uppercase first letter is what keeps this to Vue components — no HTML element is
  * spelled that way, so `<div desk="…">` cannot widen the policy.
  *
- * `\s` before the name rather than `\b`, and that distinction is the whole guard. A word
- * boundary sits between the `-` and the `d` of `data-desk`, so `\bdesk` matched it — and
- * an attribute nobody reads would have put its origin into `script-src` and `connect-src`.
- * An attribute is preceded by whitespace or it is a different attribute.
+ * Deliberately does NOT try to find `desk` itself. Two attempts did, and both were
+ * wrong in the same direction — widening the policy from text that is not an attribute:
+ *
+ *  - `\bdesk` matched the `desk` in `data-desk`, because a word boundary sits between
+ *    the hyphen and the `d`;
+ *  - `\sdesk` fixed that and still matched inside a quoted VALUE, so
+ *    `<SignupForm title='demo desk="https://third-party.example"' />` named an origin.
+ *
+ * A regex over a tag cannot know where a value ends, so this one stops at the tag and
+ * hands the rest to `attributes()` — the parser this file already has, written for the
+ * same class of bug on `<link rel href>`. It tracks quote state, so text inside a value
+ * is a value.
+ *
+ * The one limitation left is shared with `RESOURCE_TAG` and stated rather than hidden:
+ * `[^>]*` ends at the first `>`, so an attribute value containing one truncates the
+ * tag. That direction is safe — it drops attributes rather than inventing them.
  */
-const DESK_MOUNT = /<[A-Z][A-Za-z0-9]*\b[^>]*\sdesk\s*=\s*("[^"]*"|'[^']*')/g;
+const COMPONENT_TAG = /<([A-Z][A-Za-z0-9]*)\b([^>]*)>/g;
 
 /**
  * Every desk a checked-in page names.
@@ -127,12 +135,18 @@ const DESK_MOUNT = /<[A-Z][A-Za-z0-9]*\b[^>]*\sdesk\s*=\s*("[^"]*"|'[^']*')/g;
  * widget appends its `<script>` after mount and a form `fetch`es from script, so the
  * built HTML says nothing about the origin the browser is about to be asked to reach.
  * See the header.
+ *
+ * Keyed on the ATTRIBUTE rather than on a list of component names, which is the part
+ * worth keeping: a new component that talks to a desk reaches the policy by being
+ * written in the house style, instead of by somebody remembering to add it to a regex
+ * in a security file.
  */
 export function deskOrigins(srcDir: string): string[] {
   const origins = new Set<string>();
   for (const file of filesWith(srcDir, '.md')) {
-    for (const [, quoted] of readFileSync(file, 'utf8').matchAll(DESK_MOUNT)) {
-      origins.add(new URL((quoted ?? '').slice(1, -1)).origin);
+    for (const match of readFileSync(file, 'utf8').matchAll(COMPONENT_TAG)) {
+      const desk = attributes(match[2] ?? '').get('desk');
+      if (desk) origins.add(new URL(desk).origin);
     }
   }
   return [...origins].sort();

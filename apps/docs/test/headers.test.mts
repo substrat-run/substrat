@@ -191,6 +191,27 @@ describe('deskOrigins', () => {
     expect(deskOrigins(dir)).toEqual([]);
   });
 
+  /**
+   * And the one a whitespace requirement still lets through: text that reads like an
+   * attribute but sits inside another attribute's VALUE. A regex over a tag cannot know
+   * where a value ends, which is why the scan parses the attributes instead.
+   */
+  it('ignores a desk that is text inside another attribute’s value', () => {
+    const dir = pages(
+      `<SignupForm title='demo desk="https://third-party.example"' />`,
+      `<Ticket0Widget alt="a desk='https://other.example' in prose" />`,
+    );
+    expect(deskOrigins(dir)).toEqual([]);
+  });
+
+  // The parser must not lose the real one when a decoy attribute sits beside it.
+  it('finds the real desk beside an attribute that mentions one', () => {
+    const dir = pages(
+      `<SignupForm title='demo desk="https://third-party.example"' desk="https://ticket0.example" />`,
+    );
+    expect(deskOrigins(dir)).toEqual(['https://ticket0.example']);
+  });
+
   // The regression itself: the desk the checked-in pages name — the support widget, and
   // now the two signup forms — has to end up in the policy with the site-wide flag
   // unset, which is how production builds.
