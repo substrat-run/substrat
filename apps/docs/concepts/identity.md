@@ -183,7 +183,15 @@ for my users to log in" has a stock answer; it stops being special the moment yo
 - **Federated sign-in, enabled from the dashboard.** Microsoft (optionally pinned to one
   Entra directory), Google and GitHub, as a closed catalogue: enabling one is a credential
   plus two decisions — may it create accounts, and is its email trusted for linking to
-  existing ones — rather than a form of URLs to get subtly wrong.
+  existing ones — rather than a form of URLs to get subtly wrong. One open door sits beside
+  that catalogue: **Custom (OIDC)**, for the directory it does not name — Keycloak, Okta,
+  Auth0, another auth server like this one. The ask keeps its shape. A custom provider is a
+  slug (which *is* its callback path segment), a button label, the upstream's **issuer URL**
+  and a credential, then the same two decisions — never five endpoints typed by hand,
+  because an issuer URL is the one address OIDC lets everything else be derived from.
+  Discovery is resolved once, when the provider is saved rather than on every sign-in, so
+  an issuer URL that serves no discovery document is refused while the operator is still in
+  the form.
 - **Swedish BankID.** Not an OAuth redirect but the real relying-party flow: an animated
   QR code or same-device start, approval in the BankID app, and the verified personal
   number as the account key. The mTLS client certificate is pasted in the dashboard;
