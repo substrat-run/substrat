@@ -90,9 +90,15 @@ describe('assertSandboxContract', () => {
   });
 
   it("refuses the SUBSTRAT_ binding namespace by name — an injected stamp cannot be forged (#1242)", () => {
-    expect(refused([{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID' }])).toThrow(/SUBSTRAT_/);
+    // Matched on the guard's own reason, not the name: every refusal echoes the
+    // binding's name, so /SUBSTRAT_/ would pass even if this rule did not exist.
+    expect(refused([{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID' }])).toThrow(
+      /binding namespace is the platform's/,
+    );
     // The whole prefix, not one name: the namespace stays the platform's as it grows.
-    expect(refused([{ type: 'secret_text', name: 'SUBSTRAT_FUTURE_THING' }])).toThrow(/SUBSTRAT_/);
+    expect(refused([{ type: 'secret_text', name: 'SUBSTRAT_FUTURE_THING' }])).toThrow(
+      /binding namespace is the platform's/,
+    );
   });
 
   it('refuses a service binding — a vertical reaches the platform via the router (K-27)', () => {
