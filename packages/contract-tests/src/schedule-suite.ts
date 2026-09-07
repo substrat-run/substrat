@@ -84,7 +84,12 @@ export function scheduleContractSuite(
         schedule_op: string;
         last_status: string;
       }[];
-      expect(state).toEqual([{ schedule_op: 'sched/tick', last_status: 'ok' }]);
+      // Two rows now (#1232): the schedule's own state, and the freshness evaluator's
+      // — which rides the same table under a prefix that cannot collide.
+      expect(state).toEqual([
+        { schedule_op: 'freshness:sched.ticked', last_status: 'ok' },
+        { schedule_op: 'sched/tick', last_status: 'ok' },
+      ]);
     });
 
     it('lets ctx.check gate what the schedule may do — an ungranted op is denied', async () => {

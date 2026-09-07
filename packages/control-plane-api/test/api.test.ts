@@ -3267,10 +3267,11 @@ describe('control-plane API — vertical registry', () => {
     );
     const withField = await get(`/verticals/fsm/versions/${v5}/schedules`);
     expect(withField.status).toBe(200);
-    expect(await withField.json()).toEqual({ schedules });
+    // freshness rides the same read (#1232) — null here, since v5 declared none.
+    expect(await withField.json()).toEqual({ schedules, freshness: null });
     // v1 retained no manifest at all — null, never an invented empty list.
     const without = await get(`/verticals/fsm/versions/${v1}/schedules`);
-    expect(await without.json()).toEqual({ schedules: null });
+    expect(await without.json()).toEqual({ schedules: null, freshness: null });
   });
 
   it('returns a null registry for a version that retained no manifest (pre-#286)', async () => {

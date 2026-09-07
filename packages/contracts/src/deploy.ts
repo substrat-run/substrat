@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, verticalSlug } from './ids.js';
-import { envVarSpec, capability, scheduleSpec, type ModuleManifest } from './manifest.js';
+import { envVarSpec, capability, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
@@ -637,6 +637,11 @@ export const deployManifest = z.object({
    *  only place it exists off the runtime). Metadata, not code, and not in any digest,
    *  exactly as `model` above; optional twice over for the same two reasons. */
   schedules: z.array(scheduleSpec.extend({ moduleId })).optional(),
+  /** The vertical's declared freshness expectations (#1232), flattened like `schedules`
+   *  and for the same reason: `within.hours` exists nowhere off the manifest, and the
+   *  dashboard's declared-vs-observed read needs it. Metadata, in no digest, optional
+   *  twice over. */
+  freshness: z.array(freshnessSpec.extend({ moduleId })).optional(),
   /** The vertical's declared permission surface (D-39/D-41): keys+descriptions, role templates,
    *  entity-grant shapes — the machine-readable twin of PERMISSIONS.md, derived at push from the
    *  vertical's `definePermissions(...)` entry. REQUIRED: a deployable vertical must declare its

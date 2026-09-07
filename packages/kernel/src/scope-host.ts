@@ -98,6 +98,7 @@ import type {
   TenantStatus,
   Page,
   CountedPage,
+  FreshnessSpec,
 } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
@@ -693,6 +694,30 @@ export interface ExecutorDrainReport {
 export interface ScheduleRegistration {
   moduleId: ModuleId;
   schedules: ScheduleSpec[];
+}
+
+/** A module's declared freshness expectations (#1232), as the host registered them. */
+export interface FreshnessRegistration {
+  moduleId: ModuleId;
+  freshness: FreshnessSpec[];
+}
+
+/**
+ * What `checkFreshness` decided to RECORD for one scope in one pass (#1232).
+ * Already gated: the evaluator writes on verdict CHANGE or on the
+ * `FRESHNESS_HEARTBEAT_MINUTES` heartbeat, so every entry here is a row —
+ * a pass with nothing newly true reports an empty list, and that emptiness
+ * stays unambiguous because the heartbeat clock bounds it.
+ */
+export interface FreshnessReport {
+  checks: {
+    eventType: string;
+    /** ok = evidence within the window; failed = stale; skipped = never observed. */
+    outcome: 'ok' | 'failed' | 'skipped';
+    /** The newest matching event at evaluation time; null = never observed. */
+    observedAt: string | null;
+    withinHours: number;
+  }[];
 }
 
 /**
@@ -2886,6 +2911,10 @@ export interface SweepRunInput {
   vertical?: string | null;
   version?: string | null;
   operation?: string | null;
+  /** The freshness row's event type (#1232) — its own dimension, never `operation`. */
+  eventType?: string | null;
+  /** The newest matching evidence at evaluation time (#1232); null = never observed. */
+  observedAt?: string | null;
   connectionId?: string | null;
   error?: string | null;
   elapsedMs?: number | null;
@@ -3334,6 +3363,32 @@ export interface ScopeHost {
    * operation cannot stop the others on the scope.
    */
   runDueSchedules(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<ScheduleRunReport>;
+
+  /**
+   * The declared freshness expectations, per module (#1232). OPTIONAL and
+   * feature-detected like `registeredSchedules` is by the sweep: a pre-#1232
+   * host degrades to "no expectations", never a crash. Its OWN registry rather
+   * than a widening of `ScheduleRegistration`, deliberately: every sweep driver
+   * filters registrations by `schedules.length > 0`, so a freshness-only module
+   * hung off the schedule registry would be dropped before it was ever asked.
+   */
+  registeredFreshness?(): FreshnessRegistration[];
+
+  /**
+   * Evaluate one module's freshness expectations on one scope (#1232): read the
+   * scope's own outbox (`MAX(occurred_at)` per declared type — local, and indexed
+   * for exactly this read), judge each against its window, and return what should
+   * be RECORDED this pass — verdict changes plus the hourly heartbeat
+   * (`FRESHNESS_HEARTBEAT_MINUTES`); see `FreshnessReport`.
+   *
+   * Deliberately NOT gated on the module's system grant: freshness is a read of
+   * the scope's own outbox and needs no authority beyond "this module is
+   * registered here and the scope is active". A grant gate would silently disable
+   * it for exactly the module shape that needs it most — freshness with no
+   * schedules, hence no projected `system:<moduleId>` tuple — reinventing the
+   * unfalsifiable zero (#49) this record exists to end.
+   */
+  checkFreshness?(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<FreshnessReport>;
 
   /**
    * Register a connector — an executor that also gets a per-tenant credential

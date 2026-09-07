@@ -338,6 +338,8 @@ export interface SweepRunRow {
   error: string | null;
   elapsed_ms: number | null;
   request_id: string | null;
+  event_type: string | null;
+  observed_at: string | null;
   at: string;
 }
 
@@ -842,6 +844,10 @@ const DIRECTORY_DDL = `
     -- direct sweep path). The unique index below is what makes a replayed drain
     -- write nothing twice; NULLs are distinct, so direct writes never collide.
     request_id TEXT,
+    -- #1232 freshness rows: the judged event type (its own dimension, never the
+    -- operation column) and the newest matching evidence. NULL on other kinds.
+    event_type TEXT,
+    observed_at TEXT,
     at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
@@ -1023,6 +1029,8 @@ export class ControlPlaneDO extends DurableObject {
     // #1232: the drained batch's dedupe key + its unique index, on a DO that predates
     // them. The index rides here so it is created only after the column exists.
     this.addColumn('_substrat_sweep_runs', 'request_id TEXT');
+    this.addColumn('_substrat_sweep_runs', 'event_type TEXT');
+    this.addColumn('_substrat_sweep_runs', 'observed_at TEXT');
     this.sql.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit)',
     );
@@ -3363,8 +3371,8 @@ export class ControlPlaneDO extends DurableObject {
     this.sql.exec(
       `INSERT OR IGNORE INTO _substrat_sweep_runs
          (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-          connection_id, error, elapsed_ms, request_id, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          connection_id, error, elapsed_ms, request_id, event_type, observed_at, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.kind,
       row.unit,
@@ -3378,6 +3386,8 @@ export class ControlPlaneDO extends DurableObject {
       row.error,
       row.elapsed_ms,
       row.request_id,
+      row.event_type,
+      row.observed_at,
       row.at,
     );
     // Prune-on-write, like ops failures and for the same reason: bounded even on a
@@ -3438,6 +3448,8 @@ export class ControlPlaneDO extends DurableObject {
       connectionId: r.connection_id,
       error: r.error,
       elapsedMs: r.elapsed_ms,
+      eventType: r.event_type,
+      observedAt: r.observed_at,
       at: r.at,
     })) as SweepRunEntry[];
   }

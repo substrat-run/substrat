@@ -5,6 +5,7 @@ import {
   adminLogEntry,
   opsFailureEntry,
   sweepRunEntry,
+  FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunsPayload,
   modelUsageEntry,
   attachmentRecord,
@@ -67,6 +68,7 @@ import {
   type OpsFailureEntry,
   type SweepRunEntry,
   type SweepRunsPayload,
+  type FreshnessSpec,
   type ModelUsageEntry,
   type ModelUsageSummary,
   type CapabilityGrant,
@@ -196,6 +198,8 @@ import {
   type TenantRelationalStore,
   type TenantStoreProvisionInput,
   type TenantStoreRecord,
+  type FreshnessRegistration,
+  type FreshnessReport,
 } from '@substrat-run/kernel';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
 import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
@@ -809,8 +813,12 @@ interface ScopeStubRpc {
   hasSystemGrant(moduleId: string): Promise<boolean>;
   /** The last time a schedule's operation ran on this scope (#383), or null if never. */
   scheduleLastRun(operation: string): Promise<string | null>;
+  /** #1232: the freshness evaluator's one-round-trip read — evidence + evaluator state per type. */
+  freshnessProbe(
+    types: string[],
+  ): Promise<Record<string, { observedAt: string | null; stateAt: string | null; stateOutcome: string | null }>>;
   /** Record a schedule run's timestamp + outcome (#383). */
-  recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed'): Promise<void>;
+  recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void>;
   /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
    *  Unions the scope's own tuples with the projected tenant-level ones, because a
    *  scope check consults both (rule 2 inheritance). */
@@ -1096,6 +1104,10 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly moduleIds = new Set<string>();
   /** Module id → its declared recurring schedules (#383), for `registeredSchedules`/`runDueSchedules`. */
   private readonly moduleSchedules = new Map<string, ScheduleSpec[]>();
+  /** #1232: declared freshness per module. Registered UNCONDITIONALLY — the schedule
+   *  map is only populated for modules WITH schedules, and hanging freshness off it
+   *  would drop a freshness-only module at registration. */
+  private readonly moduleFreshness = new Map<string, FreshnessSpec[]>();
   /** Registered (module, version) pairs — the frontier `schemaVersion` counts toward (§5.3, #49). */
   private migrationTotal = 0;
   private readonly operations = new Set<string>();
@@ -1661,6 +1673,9 @@ export class CloudflareScopeHost implements ScopeHost {
     this.moduleIds.add(manifest.id);
     if (manifest.schedules && manifest.schedules.length > 0) {
       this.moduleSchedules.set(manifest.id, manifest.schedules);
+    }
+    if (manifest.freshness && manifest.freshness.length > 0) {
+      this.moduleFreshness.set(manifest.id, manifest.freshness);
     }
     this.migrationTotal += migrations.length;
     const ownOperations = new Set(Object.keys(registration.operations ?? {}));
@@ -2368,6 +2383,60 @@ export class CloudflareScopeHost implements ScopeHost {
       if (schedules.length > 0) out.push({ moduleId: moduleId as ModuleId, schedules });
     }
     return out;
+  }
+
+  registeredFreshness(): FreshnessRegistration[] {
+    const out: FreshnessRegistration[] = [];
+    for (const [moduleId, freshness] of this.moduleFreshness) {
+      if (freshness.length > 0) out.push({ moduleId: moduleId as ModuleId, freshness });
+    }
+    return out;
+  }
+
+  /**
+   * The freshness evaluator (#1232), CF half — same verdicts and gating as the pure
+   * adapter's, over one `freshnessProbe` round trip to the scope DO. Aggregates
+   * across EVERY registered module (two modules declaring one type share one
+   * gating-state key and one dedupe unit — per-module evaluation would corrupt
+   * both), collapsing duplicates to the tightest window; called once per scope,
+   * any registered module's id as the entry ticket. NOT gated on the system
+   * grant — see the kernel interface doc.
+   */
+  async checkFreshness(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<FreshnessReport> {
+    const report: FreshnessReport = { checks: [] };
+    if (!this.moduleIds.has(moduleId)) return report;
+    if (!this.cpLess) {
+      const rec = await this.cp.getScopeRecord(tenantId, scopeId);
+      if (!rec || rec.status !== 'active') return report;
+    }
+    const stub = this.scopeStub(scopeId);
+    const windows = new Map<string, number>();
+    for (const specs of this.moduleFreshness.values()) {
+      for (const f of specs) {
+        const prev = windows.get(f.eventType);
+        if (prev === undefined || f.within.hours < prev) windows.set(f.eventType, f.within.hours);
+      }
+    }
+    if (windows.size === 0) return report;
+    const probe = await stub.freshnessProbe([...windows.keys()]);
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+    for (const [eventType, withinHours] of windows) {
+      const p = probe[eventType] ?? { observedAt: null, stateAt: null, stateOutcome: null };
+      const outcome: FreshnessReport['checks'][number]['outcome'] =
+        p.observedAt === null
+          ? 'skipped' // never observed — the never-run analogue, not a failure
+          : now - Date.parse(p.observedAt) <= withinHours * 3_600_000
+            ? 'ok'
+            : 'failed';
+      const changed = p.stateOutcome !== outcome;
+      const heartbeatDue =
+        p.stateAt === null || now - Date.parse(p.stateAt) > FRESHNESS_HEARTBEAT_MINUTES * 60_000;
+      if (!changed && !heartbeatDue) continue;
+      await stub.recordScheduleRun(`freshness:${eventType}`, nowIso, outcome);
+      report.checks.push({ eventType, outcome, observedAt: p.observedAt, withinHours });
+    }
+    return report;
   }
 
   async runDueSchedules(
@@ -4522,6 +4591,8 @@ export class CloudflareScopeHost implements ScopeHost {
           error: entry.error == null ? null : entry.error.slice(0, 2000),
           elapsed_ms: entry.elapsedMs ?? null,
           request_id: entry.requestId ?? null,
+          event_type: entry.eventType ?? null,
+          observed_at: entry.observedAt ?? null,
           at: entry.at ?? new Date().toISOString(),
         });
       },

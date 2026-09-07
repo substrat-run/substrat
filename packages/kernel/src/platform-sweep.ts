@@ -318,6 +318,7 @@ export interface PlatformSweepReport {
       | 'platform-request'
       | 'provision-reconcile'
       | 'schedule'
+      | 'freshness'
       | 'access-log';
     id: string;
     error: string;
@@ -658,6 +659,51 @@ export async function runPlatformSweep(
         if (touched) schedules.scopes += 1;
       });
       report.schedules = schedules;
+    }
+  }
+
+  // -- freshness expectations (#1232) -----------------------------------------
+  // For each module that declares `freshness`, judge each expectation against the
+  // scope's own outbox and record what the evaluator decided to report (it gates
+  // on verdict change + the hourly heartbeat, so this phase only forwards).
+  // Feature-detected like schedules; NOT gated on the system grant — a read of
+  // the scope's own outbox needs none, and the grant tuple only exists for
+  // modules with permissioned schedules anyway.
+  if (
+    options.runSchedules !== false &&
+    typeof host.registeredFreshness === 'function' &&
+    typeof host.checkFreshness === 'function'
+  ) {
+    const freshRegs = host.registeredFreshness().filter((r) => r.freshness.length > 0);
+    if (freshRegs.length > 0) {
+      const scopes = (await host.admin.listScopes(options.actor, { status: 'active' })).filter(
+        (s) => s.forkedFrom === null,
+      );
+      await mapBounded(scopes, concurrency, async (s) => {
+        if (failedThisPass.has(s.id)) return;
+        // ONCE per scope, not once per module: the evaluator aggregates every
+        // registered module's expectations (two modules declaring one type share
+        // one gating-state key and one dedupe unit — per-module evaluation would
+        // have them fighting over both). The moduleId is the entry ticket.
+        try {
+          const r = await host.checkFreshness!(freshRegs[0]!.moduleId, s.tenantId, s.id);
+          for (const check of r.checks) {
+            options.recordSweepRun?.({
+              kind: 'freshness',
+              unit: `${s.id}:${check.eventType}`,
+              outcome: check.outcome,
+              tenantId: s.tenantId,
+              scopeId: s.id,
+              vertical: s.vertical,
+              version: s.verticalVersionId,
+              eventType: check.eventType,
+              observedAt: check.observedAt,
+            });
+          }
+        } catch (err) {
+          report.errors.push({ kind: 'freshness', id: s.id, error: message(err) });
+        }
+      });
     }
   }
 
