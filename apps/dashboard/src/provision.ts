@@ -1536,11 +1536,11 @@ export async function addAppHostname(
     }
     // Platform names are minted from the app's own label, never typed in — a free-text
     // path onto a platform zone would be a squatting vector for other tenants' labels.
-    // Three sources, UNIONED (#973): the deployment's configured `PLATFORM_BASE_DOMAINS`
-    // when the caller passed it, the app's own zone, and the platform default for a
-    // deployment that has neither to derive from. The union is the point — a deployment
-    // that configures its own zones must not thereby stop refusing the two this always
-    // refused, so adding the var can only widen the guard, never narrow it.
+    // Three sources, UNIONED (#973): the platform default, the app's own zone, and the
+    // deployment's configured `PLATFORM_BASE_DOMAINS` when the caller passed it. The
+    // union is the point — the first two are refused unconditionally, so a deployment
+    // that names its own zones does not thereby release them, and adding the var can
+    // only widen the guard, never narrow it.
     const platformBase = parseHostname(input.appHostname ?? '')?.rest;
     const bases = [
       DEFAULT_PLATFORM_BASE_DOMAIN,
