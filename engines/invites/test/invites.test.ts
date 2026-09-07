@@ -180,6 +180,91 @@ describe('invites engine', () => {
     ).rejects.toThrow(/not acceptable/);
   });
 
+  it('renders an overdue invitation as expired without writing to it (#964)', async () => {
+    // `invites/list` used to call `expireOverdue`, so an `invites:read` transitioned
+    // rows and emitted nothing for it. The state a reader sees is unchanged; what
+    // changed is that looking no longer settles anything.
+    const s = await sender();
+    const id = (
+      await s.invoke<{ id: string }>('invites/send', {
+        orgId: org,
+        identifier: 'lapsed@example.com',
+        roleKey: 'member',
+        ttlMs: -1, // already past
+      })
+    ).id;
+
+    const stored = () =>
+      h.run(
+        (ctx) =>
+          ctx.sql.query<{ state: string; settled_at: string | null }>(
+            'SELECT state, settled_at FROM invites_invitation WHERE id = ?',
+            [id],
+          )[0]!,
+        [PERM.read],
+      );
+    const listedState = async () =>
+      (await s.invoke<Page<Invitation>>('invites/list', { orgId: org })).entries.find(
+        (i) => i.id === id,
+      );
+
+    // What `sendInvite` wrote, before anyone looks.
+    expect(await stored()).toEqual({ state: 'invited', settled_at: null });
+
+    const first = await listedState();
+    expect(first?.state).toBe('expired');
+    // …and `settled_at` is still null on the way out: it stamps a transition somebody
+    // recorded, and time passing records nothing.
+    expect(first?.settled_at).toBeNull();
+
+    // The read wrote nothing — the whole point. Row untouched, and the same call
+    // twice answers the same thing, which is what makes it safe to retry or cache.
+    expect(await stored()).toEqual({ state: 'invited', settled_at: null });
+    expect((await listedState())?.state).toBe('expired');
+    expect(await stored()).toEqual({ state: 'invited', settled_at: null });
+
+    // Rendering is not softening: an overdue invitation is still unacceptable, and
+    // the accept path is where the transition is recorded for real.
+    const late = await h.as([]);
+    await expect(
+      late.invoke('invites/accept', { invitationId: id, identifier: 'lapsed@example.com' }),
+    ).rejects.toThrow(/not acceptable/);
+    expect(h.eventsOfType('member.add-requested')).toHaveLength(0);
+    expect(h.eventsOfType('invites.accepted')).toHaveLength(0);
+  });
+
+  it('projects only invited rows — a settled invitation reads back as stored (#964)', async () => {
+    // The rendering is `state === 'invited' && expires_at <= now`, and the first half
+    // matters as much as the second: an invitation that was accepted or revoked long
+    // before its deadline came round must not start reporting `expired` afterwards,
+    // and its `settled_at` must survive the read that renders its neighbour.
+    const s = await sender();
+    const id = (
+      await s.invoke<{ id: string }>('invites/send', {
+        orgId: org,
+        identifier: 'early@example.com',
+        roleKey: 'member',
+        ttlMs: -1, // already past, so the deadline half of the condition is true
+      })
+    ).id;
+    // Settle it the way a real accept would, without depending on the clock moving.
+    const settledAt = '2020-01-01T00:00:00.000Z';
+    await h.run(
+      (ctx) =>
+        void ctx.sql.exec(
+          `UPDATE invites_invitation SET state = 'accepted', accepted_by = ?, settled_at = ? WHERE id = ?`,
+          ['01ARZ3NDEKTSV4RRFFQ69G5FAV', settledAt, id],
+        ),
+      [PERM.read],
+    );
+
+    const listed = (
+      await s.invoke<Page<Invitation>>('invites/list', { orgId: org })
+    ).entries.find((i) => i.id === id);
+    expect(listed?.state).toBe('accepted');
+    expect(listed?.settled_at).toBe(settledAt);
+  });
+
   it('rate-limits open invitations per sender', async () => {
     const s = await sender();
     for (let i = 0; i < 25; i++) {

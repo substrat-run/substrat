@@ -30,6 +30,8 @@ sendInvite(ctx, { orgId, identifier, roleKey, ttlMs? })  // → { id }
 acceptInvite(ctx, { invitationId, identifier })          // → Invitation
 revokeInvite(ctx, invitationId)
 listInvites(ctx, orgId)                                  // → Invitation[] (never the hash)
+expireOverdue(ctx, orgId)                                // records overdue expiry
+effectiveStateOf(state, expiresAt, now)                  // renders it, writes nothing
 ```
 
 Operations are the thin bindings: `invites/send`, `invites/accept`, `invites/list`,
@@ -43,9 +45,13 @@ transaction, having checked their own permission first.
 ## Bounded by design
 
 Invitations expire (14 days by default) and one sender may hold 25 open invitations per
-organization. Expiry is applied on read and on transition rather than by a sweep — an
-expired invitation must never be acceptable, and a background job would be a second
-source of truth for the same fact.
+organization. Expiry is applied on transition rather than by a sweep — an expired
+invitation must never be acceptable, and a background job would be a second source of
+truth for the same fact. A read *renders* it and writes nothing: `listInvites` reports
+`expired` for a still-`invited` invitation past `expires_at` without touching the row,
+because an `invites:read` that transitions rows is a mutation nobody asked for and nothing
+announces. Only `invited` rows are projected — an `accepted` or `revoked` invitation reads
+back as stored, deadline or no deadline.
 
 ## Documentation
 

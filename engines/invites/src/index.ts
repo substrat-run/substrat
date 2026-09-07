@@ -216,12 +216,30 @@ export async function hashIdentifier(scopeSalt: string, identifier: string): Pro
 }
 
 /**
+ * The one definition of "an unaccepted invitation past its deadline is expired"
+ * (the `effectiveStateOf` shape engine-booking uses for a lapsed hold).
+ *
+ * `expires_at` already carries this fact; a read reports it rather than recording
+ * it (#964). Exported so a vertical folding `listInvites` in its own operation
+ * asks the same question the engine does instead of re-deriving the comparison.
+ */
+export function effectiveStateOf(state: InviteState, expiresAt: string, now: string): InviteState {
+  return state === 'invited' && expiresAt <= now ? 'expired' : state;
+}
+
+/**
  * Settle this org's overdue invitations.
  *
- * Expiry is applied on read and on transition rather than by a timer: an expired
- * invitation must never be acceptable, and the only moments that matters are when
- * someone looks or someone acts. A sweep would be a second source of truth for the
- * same fact.
+ * Expiry is applied on TRANSITION rather than by a timer: an expired invitation
+ * must never be acceptable, and the moment that matters is when someone acts. A
+ * sweep would be a second source of truth for the same fact.
+ *
+ * It used to be applied on read as well, and that was the bug (#964): `listInvites`
+ * runs under `invites:read`, so an invitation changed state because somebody looked
+ * at a screen — a mutation inside a read, emitting nothing, and not idempotent under
+ * a retry or a cache. A read now renders the state through `effectiveStateOf`; the
+ * write paths still call this, which is what keeps `sendInvite`'s open-invitation
+ * count and dedupe honest and keeps an overdue invitation unacceptable.
  */
 export function expireOverdue(ctx: OperationContext, orgId: OrgId): void {
   ctx.sql.exec(
@@ -395,9 +413,16 @@ export function revokeInvite(ctx: OperationContext, invitationId: string): void 
  * Invitations for an org, with state. The identifier hash is never returned — a
  * leaked hash lets its holder confirm an address offline, which is the enumeration
  * this design exists to prevent.
+ *
+ * A pure read (#964). An invitation whose `expires_at` has passed reports `expired`
+ * without the row being touched, so the same call twice answers the same thing and
+ * writes nothing either time. `settled_at` stays `null` for one of those, and that
+ * is the fact: it stamps a transition somebody *recorded*, and time passing records
+ * nothing. The row settles the next time a write path runs — `sendInvite`, or the
+ * accept this state already refuses.
  */
 export function listInvites(ctx: OperationContext, orgId: OrgId): Invitation[] {
-  expireOverdue(ctx, orgId);
+  const now = ctx.now();
   // Newest first, ordered by `id` rather than `created_at` (#959). Same intent —
   // the id is a ULID, so it carries the same instant — but TOTAL: `created_at`
   // comes from `ctx.now()`, which is stable for a whole invocation, so a seed or
@@ -410,7 +435,10 @@ export function listInvites(ctx: OperationContext, orgId: OrgId): Invitation[] {
       `SELECT ${PUBLIC_COLUMNS} FROM invites_invitation WHERE org_id = ? ORDER BY id DESC`,
       [orgId],
     )
-    .map(publishedInvitation);
+    // Rendered BEFORE the seam parse, not after: a `state` this engine does not
+    // know is not `invited`, so it passes through untouched and `publishedInvitation`
+    // still throws on it rather than the projection quietly normalising drift away.
+    .map((r) => publishedInvitation({ ...r, state: effectiveStateOf(r.state, r.expires_at, now) }));
 }
 
 // -- operations: the permission check plus one exported function (D-28) -------
