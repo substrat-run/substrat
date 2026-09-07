@@ -2,7 +2,7 @@
 '@substrat-run/console': patch
 ---
 
-The versions table on a vertical's console page reads newest-first, and pages.
+The versions table on a vertical's console page reads newest-first and is paginated.
 The list is walked from the control plane in the route's default order (ascending
 by id — publish order), and the table rendered it verbatim, so the oldest push
 sat at the top and the version an operator opened the page to look at was the
