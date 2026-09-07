@@ -48,6 +48,13 @@ export const ROLES: RoleDefinition[] = [
       T0_PERM.deskConfigure,
       // The money. Held here and in no other role.
       T0_PERM.usageRead,
+      /**
+       * The lists, and they are here for the same reason `usage:read` is: a table of
+       * real email addresses is not inbox work. An agent answering a conversation has
+       * no occasion to read who is on a waiting list, and the narrower the set of
+       * people who can export it, the smaller the thing that can leak.
+       */
+      T0_PERM.signupRead,
       METERING_PERM.read,
       METERING_PERM.close,
       METERING_PERM.configure,
@@ -106,6 +113,22 @@ export const ROLES: RoleDefinition[] = [
    */
   { key: 'widget', permissions: [T0_PERM.conversationWidget], source: 'vertical' },
   /**
+   * The desk's signup service — the principal a public signup form runs as.
+   *
+   * A SECOND service account rather than a second key on `widget`, and that is a
+   * deliberate cost: it is one more principal to mint, and the row above gets to keep
+   * the property it claims — one key, opening conversations and nothing else. A widget
+   * that also held the authority to write to a table of email addresses would be a
+   * skeleton key by degrees, and the chat bubble is the most exposed surface the desk
+   * has.
+   *
+   * The key it does hold is the whole public signup door: take a submission, spend a
+   * confirm token, spend an unsubscribe token. It cannot READ the list — `signup:read`
+   * is desk-admin's — so this principal being on an open surface costs exactly what
+   * the manifest says it does.
+   */
+  { key: 'signup', permissions: [T0_PERM.signupSubmit], source: 'vertical' },
+  /**
    * The email relay. Held by no human — a connection acts as itself, the same way
    * the Scrive connector records a signature back into a scope.
    */
@@ -155,7 +178,25 @@ export const OWNER_ROLE_KEY = 'desk-admin';
  * whether an answer may reach a customer — `assistant` holds no `conversation:reply-public`
  * and `assistant-autonomous` does. A desk that has never decided is supervised.
  */
-export const SERVICE_ROLES = ['widget', 'assistant', 'assistant-autonomous', 'relay'] as const;
+export const SERVICE_ROLES = [
+  'widget',
+  'assistant',
+  'assistant-autonomous',
+  'relay',
+  /**
+   * Added after this vertical had live installs, which used to be a one-way trap: a
+   * vertical's `onProvision` runs once per scope ever, so a service principal shipped
+   * later never reached a desk that predated it — #1164 added the fourth role, the desk
+   * was re-pushed, and every customer message failed on a principal that had never been
+   * minted (#1172). Two things make it safe now, and both are load-bearing: `mintServices`
+   * fills what is MISSING rather than minting all-or-nothing, and the platform reconciles
+   * a scope when its serving version changes, so a push is what delivers this. The other
+   * half of the same lesson is in `servicePrincipals` in `worker.ts` — the key must parse
+   * as OPTIONAL, or every desk provisioned before today reads as unprovisioned and its
+   * live widget goes dark until somebody notices.
+   */
+  'signup',
+] as const;
 export type ServiceRole = (typeof SERVICE_ROLES)[number];
 
 /**

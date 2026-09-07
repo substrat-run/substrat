@@ -27,14 +27,22 @@
  * ## Why the mounted desks are read out of the markdown
  *
  * The site-wide embed is a `<script>` in `<head>`, so it is in the built HTML and the
- * origin guard below sees it. The per-page form is not: `guide/support.md` mounts a
- * `<Ticket0Widget desk="…">` component, and the component appends the `<script>` from
- * JavaScript after the page has mounted. Nothing about that origin reaches the HTML,
+ * origin guard below sees it. The per-page mounts are not: `guide/support.md` mounts a
+ * `<Ticket0Widget desk="…">` component, which appends the `<script>` from JavaScript
+ * after the page has mounted, and `index.md` and `changelog/index.md` mount forms that
+ * `fetch` a desk they name the same way. Nothing about those origins reaches the HTML,
  * so a policy derived only from the build named `'self'` and the three hashes — and
  * substrat.net blocked its own support widget while every build stayed green.
  *
- * So the desks are read out of the pages the site is built from, and every one of them
- * is in the policy whether or not the site-wide flag is set.
+ * So the desks are read out of the pages the site is built from — every component with
+ * a `desk` attribute, whichever component it is — and every one of them is in the
+ * policy whether or not the site-wide flag is set.
+ *
+ * Both directives get every desk, rather than the widget's in `script-src` and the
+ * form's in `connect-src`. That is a true statement rather than a shortcut: one desk
+ * serves both, the widget genuinely loads a script from it, and the form genuinely
+ * fetches it. Splitting the list would mean two attribute conventions to remember and
+ * would narrow nothing, because the origins are the same.
  *
  * ## What is deliberately loose
  *
@@ -94,20 +102,31 @@ export function inlineScriptHashes(outDir: string): string[] {
   return [...hashes].sort();
 }
 
-/** A page mounting the widget itself: `<Ticket0Widget desk="https://ticket0.substrat.net" />`. */
-const WIDGET_MOUNT = /<Ticket0Widget\b[^>]*\bdesk\s*=\s*("[^"]*"|'[^']*')/g;
+/**
+ * A page naming a desk: `<Ticket0Widget desk="https://ticket0.substrat.net" />`, and
+ * equally `<SignupForm kind="newsletter" desk="…" />` or `<Marketing desk="…" />`.
+ *
+ * Keyed on the ATTRIBUTE rather than on a list of component names, and that is the
+ * part worth keeping: the tag list is the thing that goes stale silently. A new
+ * component that talks to a desk gets into the policy by being written in the house
+ * style, instead of by somebody remembering to add it to a regex in a security file.
+ * The uppercase first letter is what keeps it to Vue components — no HTML element is
+ * spelled that way, so `<div desk="…">` cannot widen the policy.
+ */
+const DESK_MOUNT = /<[A-Z][A-Za-z0-9]*\b[^>]*\bdesk\s*=\s*("[^"]*"|'[^']*')/g;
 
 /**
- * Every desk a checked-in page mounts the support widget on.
+ * Every desk a checked-in page names.
  *
- * Read from the markdown rather than from the build because the tag compiles away: the
- * component appends the `<script>` after mount, so the built HTML says nothing about the
- * origin the browser is about to be asked to fetch from. See the header.
+ * Read from the markdown rather than from the build because the tags compile away: the
+ * widget appends its `<script>` after mount and a form `fetch`es from script, so the
+ * built HTML says nothing about the origin the browser is about to be asked to reach.
+ * See the header.
  */
-export function widgetDeskOrigins(srcDir: string): string[] {
+export function deskOrigins(srcDir: string): string[] {
   const origins = new Set<string>();
   for (const file of filesWith(srcDir, '.md')) {
-    for (const [, quoted] of readFileSync(file, 'utf8').matchAll(WIDGET_MOUNT)) {
+    for (const [, quoted] of readFileSync(file, 'utf8').matchAll(DESK_MOUNT)) {
       origins.add(new URL((quoted ?? '').slice(1, -1)).origin);
     }
   }
@@ -117,11 +136,12 @@ export function widgetDeskOrigins(srcDir: string): string[] {
 /**
  * The policy, as the directive list.
  *
- * `widgetOrigins` are the ticket0 support widget's APIs: the desk every page that mounts
- * the widget names, plus the site-wide one when the opt-in build flag is set (config.mts).
- * Each is a real third-party script on the docs origin, so it has to be named in both
- * `script-src` and `connect-src` — and the fact that it has to be named is most of why
- * this file is worth having.
+ * `widgetOrigins` are the ticket0 desks this site talks to: every desk a page names
+ * with a `desk` attribute, plus the site-wide widget when the opt-in build flag is set
+ * (config.mts). Each is a real third-party origin on the docs origin — a script for the
+ * widget, a `fetch` for a signup form — so each has to be named in both `script-src`
+ * and `connect-src`, and the fact that it has to be named is most of why this file is
+ * worth having.
  */
 export function csp(scriptHashes: string[], widgetOrigins: readonly string[] = []): string {
   const script = ["'self'", ...scriptHashes, ...widgetOrigins];
@@ -243,7 +263,7 @@ export function assertNoUnallowedOrigins(outDir: string, allowed: readonly strin
 /**
  * Write `_headers` into the built site.
  *
- * `srcDir` is the markdown the site was built from — the only place a per-page widget
+ * `srcDir` is the markdown the site was built from — the only place a page's own desk
  * mount is still visible. `siteWideWidget` is the opt-in site-wide embed, which is in
  * the HTML as well but is named here so a dev build and a production build derive the
  * policy the same way.
@@ -252,7 +272,7 @@ export function emitHeaders(outDir: string, srcDir: string, siteWideWidget?: str
   const widgets = [
     ...new Set([
       ...(siteWideWidget ? [new URL(siteWideWidget).origin] : []),
-      ...widgetDeskOrigins(srcDir),
+      ...deskOrigins(srcDir),
     ]),
   ].sort();
   assertNoUnallowedOrigins(outDir, widgets);

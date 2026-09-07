@@ -11,6 +11,14 @@ written out in full, and a complete accounting of everything else that landed.
 
 Weeks are listed in the sidebar, newest first.
 
+## Get it on Mondays
+
+The same entry, by email, the morning it is written — no separate edition and no
+marketing wrapped around it. One confirmation email first; nothing else until you
+click it.
+
+<SignupForm kind="newsletter" desk="https://ticket0.substrat.net" cta="Subscribe" />
+
 ## What this is not
 
 **It is not the package changelogs.** Every published package carries its own

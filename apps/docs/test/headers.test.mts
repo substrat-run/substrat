@@ -15,7 +15,7 @@ import {
   assertNoUnallowedOrigins,
   csp,
   externalResourceUrls,
-  widgetDeskOrigins,
+  deskOrigins,
 } from '../.vitepress/headers.mts';
 
 const FONT = 'https://fonts.example/style.css';
@@ -126,13 +126,14 @@ describe('csp', () => {
 });
 
 /**
- * The widget a page mounts itself.
+ * The desk a page names itself.
  *
- * This is the case the built site cannot show: the component appends the `<script>` from
- * JavaScript, so the origin guard sees nothing, the build is green, and the browser is
- * the first thing to notice — on production, where the header is real.
+ * This is the case the built site cannot show: the widget appends its `<script>` from
+ * JavaScript and a signup form `fetch`es from script, so the origin guard sees nothing,
+ * the build is green, and the browser is the first thing to notice — on production,
+ * where the header is real.
  */
-describe('widgetDeskOrigins', () => {
+describe('deskOrigins', () => {
   function pages(...markdown: string[]): string {
     const dir = mkdtempSync(join(tmpdir(), 'docs-widget-'));
     mkdirSync(join(dir, 'guide'), { recursive: true });
@@ -142,7 +143,7 @@ describe('widgetDeskOrigins', () => {
 
   it('reads the desk out of a mounted component', () => {
     const dir = pages('# Support\n\n<Ticket0Widget desk="https://ticket0.example" />\n');
-    expect(widgetDeskOrigins(dir)).toEqual(['https://ticket0.example']);
+    expect(deskOrigins(dir)).toEqual(['https://ticket0.example']);
   });
 
   it('reduces a desk to its origin and reports each one once', () => {
@@ -151,18 +152,38 @@ describe('widgetDeskOrigins', () => {
       `<Ticket0Widget class="x" desk='https://ticket0.example' />`,
       `<Ticket0Widget desk="https://other.example" />`,
     );
-    expect(widgetDeskOrigins(dir)).toEqual(['https://other.example', 'https://ticket0.example']);
+    expect(deskOrigins(dir)).toEqual(['https://other.example', 'https://ticket0.example']);
   });
 
   it('finds nothing in pages that mount nothing', () => {
-    expect(widgetDeskOrigins(pages('# Just prose'))).toEqual([]);
+    expect(deskOrigins(pages('# Just prose'))).toEqual([]);
   });
 
-  // The regression itself: the desk the checked-in support page mounts has to end up in
-  // the policy with the site-wide flag unset, which is how production builds.
+  /**
+   * The generalization, and the reason it is keyed on the attribute rather than on a
+   * list of component names: a signup form talks to the same desk over `fetch`, and it
+   * has to reach the policy without anybody editing a regex in a security file.
+   */
+  it('reads the desk off any component that names one', () => {
+    const dir = pages(
+      `<SignupForm kind="newsletter" desk="https://ticket0.example" />`,
+      `<Marketing desk="https://ticket0.example" />`,
+    );
+    expect(deskOrigins(dir)).toEqual(['https://ticket0.example']);
+  });
+
+  // A plain HTML element must not be able to widen the policy — only a Vue component,
+  // which is what the leading capital is doing in the pattern.
+  it('ignores a desk attribute on an ordinary element', () => {
+    expect(deskOrigins(pages('<div desk="https://evil.example">hi</div>'))).toEqual([]);
+  });
+
+  // The regression itself: the desk the checked-in pages name — the support widget, and
+  // now the two signup forms — has to end up in the policy with the site-wide flag
+  // unset, which is how production builds.
   it('puts every desk the docs mount into the policy', () => {
     const docs = fileURLToPath(new URL('..', import.meta.url));
-    const desks = widgetDeskOrigins(docs);
+    const desks = deskOrigins(docs);
     expect(desks).toContain('https://ticket0.substrat.net');
     const policy = csp([], desks);
     expect(policy).toContain(`script-src 'self' ${desks.join(' ')}`);

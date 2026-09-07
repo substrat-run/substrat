@@ -49,6 +49,8 @@ import {
   SAVED_REPLY_VARIABLES,
   savedReplyToken,
   SEARCH_OVERFETCH,
+  SIGNUP_HOURLY_MAX,
+  SIGNUP_RESEND_SECONDS,
   ticket0Entities,
   ticket0Lifecycles,
   ticket0Operations,
@@ -71,6 +73,7 @@ type KbArticleRow = EntityRow<typeof ticket0Entities, 'kbArticle'>;
 type AiTurnRow = EntityRow<typeof ticket0Entities, 'aiTurn'>;
 type UsageRateRow = EntityRow<typeof ticket0Entities, 'usageRate'>;
 type NotificationRow = EntityRow<typeof ticket0Entities, 'notification'>;
+type SignupRow = EntityRow<typeof ticket0Entities, 'signup'>;
 
 const conversationRef = (id: string) => ({ entityType: 'conversation', entityId: id });
 const contactRef = (id: string) => ({ entityType: 'contact', entityId: id });
@@ -82,6 +85,15 @@ const DESK = 'desk';
 /** How many lapsed snoozes one run of `ticket0/wake-snoozed` takes. The rest wait
  *  for the next tick — a batch bounds the transaction, it does not cap the feature. */
 const WAKE_BATCH = 200;
+
+/**
+ * The hour `SIGNUP_HOURLY_MAX` counts over.
+ *
+ * Here rather than in the model beside the ceiling itself, because the model declares
+ * what a caller may send and this is how the handler measures — the same split that
+ * keeps `HEALTH_WINDOW_MS` down here.
+ */
+const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
 
 /**
  * Every state an unfiltered inbox shows — which is every state the machine has, less
@@ -280,6 +292,64 @@ function step(row: ConversationRow, operation: string): string {
   // `allowed` is not a degenerate transition: writing `state` after one would move
   // an entity the declaration says stays put.
   return outcome.kind === 'transition' ? outcome.to : row.state;
+}
+
+/**
+ * The signup machine's answer for one row — `step`, for the other entity that has one.
+ *
+ * Same shape and same reason: the declaration in `spec/model.ts` decides, and an
+ * `allowed` outcome is not a degenerate transition, so a re-submission of an address
+ * already pending writes no state at all.
+ */
+function stepSignup(row: SignupRow, operation: string): string {
+  const outcome = assertTransition(
+    ticket0Lifecycles.signup,
+    `signup ${row.id}`,
+    row.state,
+    operation,
+  );
+  return outcome.kind === 'transition' ? outcome.to : row.state;
+}
+
+/**
+ * An unguessable token — the same two-ULID shape the widget session uses.
+ *
+ * 160 bits of the platform's own id source rather than a hand-rolled random string,
+ * for the reason the module rules give: module code has one clock and one source of
+ * ids, and inventing a second of either is how they start disagreeing.
+ */
+function signupToken(): string {
+  return `${ulid()}${ulid()}`;
+}
+
+/** Never hand back a capability over the row being read. Mirrors `publicDesk`. */
+function signupPublic(row: SignupRow) {
+  const { confirm_token_hash: _confirm, unsubscribe_token_hash: _unsub, ...rest } = row;
+  return rest;
+}
+
+function signupOrThrow(ctx: OperationContext, id: string): SignupRow {
+  const row = ctx.sql.query<SignupRow>('SELECT * FROM ticket0_signups WHERE id = ?', [id])[0];
+  if (!row) throw substratError('not_found', `signup not found: ${id}`);
+  return row;
+}
+
+/**
+ * The row a token opens, or nothing.
+ *
+ * The token is looked up BY ITS HASH, which is the only form the table holds — so a
+ * reader of this database cannot replay a link, and a caller who has one gets exactly
+ * the row it belongs to with no id to widen. `column` is a literal from the two call
+ * sites and never anything a caller sent.
+ */
+async function signupByToken(
+  ctx: OperationContext,
+  column: 'confirm_token_hash' | 'unsubscribe_token_hash',
+  token: string,
+): Promise<SignupRow | undefined> {
+  return ctx.sql.query<SignupRow>(`SELECT * FROM ticket0_signups WHERE ${column} = ?`, [
+    await sha256(token),
+  ])[0];
 }
 
 /** One place that writes `state` and `updated_at`, so they cannot disagree. */
@@ -2906,6 +2976,244 @@ const operations = {
       },
     });
     return read;
+  },
+
+  // --- The waiting list ----------------------------------------------------
+
+  'ticket0/signup-origins': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.signupSubmit));
+    return { origins: allowedOrigins(ctx) };
+  },
+
+  'ticket0/submit-signup': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.signupSubmit));
+    // Refused at the door, out of the same array the browser's preflight was answered
+    // from. The widget does this identically and for the identical reason: two lists
+    // of allowed origins is how the browser's answer and the operation's answer start
+    // disagreeing about where a form may live.
+    if (!allowedOrigins(ctx).includes(input.origin))
+      throw substratError('permission_denied', `this desk takes no signups from ${input.origin}`);
+
+    const now = ctx.now();
+    const note = input.note ?? null;
+    const existing = ctx.sql.query<SignupRow>(
+      'SELECT * FROM ticket0_signups WHERE kind = ? AND email = ?',
+      [input.kind, input.email],
+    )[0];
+
+    /**
+     * Announce it, whatever happened — one place, so the three paths below cannot
+     * drift on what an event about a signup says. Never the address: it is `erasable`,
+     * which makes it uncarryable by an immutable event.
+     */
+    const announce = (row: SignupRow) =>
+      ctx.emit({
+        type: 'ticket0.signup-requested',
+        schemaVersion: 1,
+        entity: { entityType: 'signup', entityId: row.id },
+        piiClass: 'none',
+        payload: { id: row.id, kind: row.kind, state: row.state },
+      });
+
+    if (!existing) {
+      /**
+       * The ceiling, and it is checked for a NEW address only.
+       *
+       * This is the guard against the flood that matters: a script POSTing ten
+       * thousand different addresses would otherwise have the platform send ten
+       * thousand confirmation emails to ten thousand people who never asked, from a
+       * domain whose reputation is the platform's. A re-submission of an address
+       * already here sends at most one mail and is governed by the throttle below.
+       */
+      const since = new Date(new Date(now).getTime() - SIGNUP_WINDOW_MS).toISOString();
+      const recent = ctx.sql.query<{ n: number }>(
+        'SELECT COUNT(*) AS n FROM ticket0_signups WHERE created_at > ?',
+        [since],
+      )[0];
+      if (Number(recent?.n ?? 0) >= SIGNUP_HOURLY_MAX)
+        throw substratError(
+          'rate_limited',
+          'this desk has taken as many new signups this hour as it will',
+          { retryAfter: SIGNUP_WINDOW_MS / 1000 },
+        );
+
+      const id = ulid();
+      const confirmToken = signupToken();
+      ctx.sql.exec(
+        `INSERT INTO ticket0_signups
+           (id, kind, email, note, state, origin, confirm_token_hash, unsubscribe_token_hash,
+            requested_at, confirmed_at, unsubscribed_at, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, NULL, NULL, ?)`,
+        [
+          id,
+          input.kind,
+          input.email,
+          note,
+          input.origin,
+          await sha256(confirmToken),
+          await sha256(signupToken()),
+          now,
+          now,
+        ],
+      );
+      const row = signupOrThrow(ctx, id);
+      announce(row);
+      return { id: row.id, kind: row.kind, state: row.state, confirmToken };
+    }
+
+    // A row already exists. Where it had got to decides what a second submission means
+    // — and the machine, not this handler, is what says which of those are legal.
+    const to = stepSignup(existing, 'ticket0/submit-signup');
+
+    if (existing.state === 'confirmed') {
+      /**
+       * Nothing to do, and deliberately NOT an error.
+       *
+       * "That address is already subscribed" turns a public signup form into a
+       * membership oracle: anybody could ask it, one address at a time, who is on the
+       * list. So this path is indistinguishable from a first submission to everything
+       * outside the desk — the form says check your email either way, and no mail is
+       * sent because there is nothing to confirm.
+       */
+      announce(existing);
+      return { id: existing.id, kind: existing.kind, state: existing.state, confirmToken: null };
+    }
+
+    /**
+     * The mail never arrived — so re-issue, but not on every keypress.
+     *
+     * The previous confirmation is still valid while this holds: the throttle declines
+     * to mint a SECOND token, it does not invalidate the first. Somebody who clicks
+     * submit twice in ten seconds has one working link in their inbox, which is the
+     * outcome they wanted.
+     */
+    const throttled =
+      existing.state === 'pending' &&
+      new Date(existing.requested_at).getTime() >
+        new Date(now).getTime() - SIGNUP_RESEND_SECONDS * 1000;
+    if (throttled) {
+      announce(existing);
+      return { id: existing.id, kind: existing.kind, state: existing.state, confirmToken: null };
+    }
+
+    const confirmToken = signupToken();
+    ctx.sql.exec(
+      `UPDATE ticket0_signups
+          SET state = ?, note = ?, origin = ?, confirm_token_hash = ?, requested_at = ?,
+              unsubscribed_at = NULL
+        WHERE id = ?`,
+      [
+        to,
+        // A new note replaces the old one; an empty box leaves what they said before.
+        note ?? existing.note,
+        input.origin,
+        await sha256(confirmToken),
+        now,
+        existing.id,
+      ],
+    );
+    /**
+     * `unsubscribed_at` is cleared on the way back in, and the history is not lost by
+     * clearing it: the unsubscribe emitted an event, and the event log is the immutable
+     * record. What a column must not do is contradict the state beside it — a row
+     * reading `pending` with a date on it saying it left is a fact two ways.
+     */
+    const row = signupOrThrow(ctx, existing.id);
+    announce(row);
+    return { id: row.id, kind: row.kind, state: row.state, confirmToken };
+  },
+
+  'ticket0/confirm-signup': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.signupSubmit));
+    const held = await signupByToken(ctx, 'confirm_token_hash', input.token);
+    // A spent link and a forged one are the same answer on purpose: the hash is nulled
+    // when it is spent, so neither the caller nor this handler can tell them apart, and
+    // there is nothing here for a guess to learn.
+    if (!held)
+      throw substratError('not_found', 'this confirmation link is not valid — it may already have been used');
+
+    const to = stepSignup(held, 'ticket0/confirm-signup');
+    ctx.sql.exec(
+      'UPDATE ticket0_signups SET state = ?, confirmed_at = ?, confirm_token_hash = NULL WHERE id = ?',
+      [to, ctx.now(), held.id],
+    );
+    const row = signupOrThrow(ctx, held.id);
+    ctx.emit({
+      type: 'ticket0.signup-confirmed',
+      schemaVersion: 1,
+      entity: { entityType: 'signup', entityId: row.id },
+      piiClass: 'none',
+      payload: { id: row.id, kind: row.kind, state: row.state, confirmed_at: row.confirmed_at },
+    });
+    return signupPublic(row);
+  },
+
+  'ticket0/unsubscribe-signup': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.signupSubmit));
+    const held = await signupByToken(ctx, 'unsubscribe_token_hash', input.token);
+    if (!held) throw substratError('not_found', 'this unsubscribe link is not valid');
+
+    const to = stepSignup(held, 'ticket0/unsubscribe-signup');
+    // A second click from a mail archive: the machine allows it, it changes nothing,
+    // and it must not become a second event. The person is telling us something we
+    // already agree with.
+    if (held.state === 'unsubscribed') return signupPublic(held);
+
+    ctx.sql.exec(
+      `UPDATE ticket0_signups
+          SET state = ?, unsubscribed_at = ?, confirm_token_hash = NULL
+        WHERE id = ?`,
+      // The confirm hash goes too. Leaving a live confirmation link on a row somebody
+      // has just left is a door back in that they did not open — the machine would
+      // refuse the transition, but the tidier answer is for the door not to be there.
+      [to, ctx.now(), held.id],
+    );
+    const row = signupOrThrow(ctx, held.id);
+    ctx.emit({
+      type: 'ticket0.signup-unsubscribed',
+      schemaVersion: 1,
+      entity: { entityType: 'signup', entityId: row.id },
+      piiClass: 'none',
+      payload: {
+        id: row.id,
+        kind: row.kind,
+        state: row.state,
+        unsubscribed_at: row.unsubscribed_at,
+      },
+    });
+    return signupPublic(row);
+  },
+
+  'ticket0/list-signups': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.signupRead));
+    // Only the narrowings actually asked for: an undefined column must not become a
+    // `WHERE kind IS NULL` that quietly returns nothing.
+    const filters: Record<string, unknown> = {};
+    for (const key of ['kind', 'state'] as const) {
+      if (input[key] !== undefined) filters[key] = input[key];
+    }
+    const page = (await ctx.page<SignupRow>('signup', {
+      ...input,
+      filters,
+      total: true,
+    })) as CountedPage<SignupRow>;
+    // The walk reads whole rows; this is the one place they are handed out, and the
+    // two hashes are what must not leave with them.
+    return { ...page, entries: page.entries.map(signupPublic) };
+  },
+
+  'ticket0/signup-counts': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.signupRead));
+    const rows = ctx.sql.query<{ kind: string; state: string; n: number }>(
+      'SELECT kind, state, COUNT(*) AS n FROM ticket0_signups GROUP BY kind, state',
+    );
+    return {
+      counts: rows.map((row) => ({
+        kind: row.kind as 'waitlist' | 'newsletter',
+        state: row.state as 'pending' | 'confirmed' | 'unsubscribed',
+        count: Number(row.n),
+      })),
+    };
   },
 } satisfies {
   // Derived by the platform, not restated here - `HandlerOutput` is what knows that

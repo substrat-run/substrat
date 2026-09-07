@@ -803,6 +803,110 @@
         "title"
       ]
     },
+    "signup": {
+      "table": "ticket0_signups",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "waitlist",
+              "newsletter"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "confirmed",
+              "unsubscribed"
+            ]
+          },
+          "origin": {
+            "type": "string"
+          },
+          "confirm_token_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unsubscribe_token_hash": {
+            "type": "string"
+          },
+          "requested_at": {
+            "type": "string"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unsubscribed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "email",
+          "note",
+          "state",
+          "origin",
+          "confirm_token_hash",
+          "unsubscribe_token_hash",
+          "requested_at",
+          "confirmed_at",
+          "unsubscribed_at",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "key": [
+        "email",
+        "kind"
+      ],
+      "erasable": [
+        "email",
+        "note"
+      ]
+    },
     "usageRate": {
       "table": "ticket0_usage_rates",
       "fields": {
@@ -1258,6 +1362,37 @@
             "ticket0/set-priority",
             "ticket0/tag-conversation",
             "ticket0/untag-conversation"
+          ]
+        }
+      }
+    },
+    "signup": {
+      "field": "state",
+      "initial": "pending",
+      "states": {
+        "confirmed": {
+          "on": {
+            "ticket0/unsubscribe-signup": "unsubscribed"
+          },
+          "allow": [
+            "ticket0/submit-signup"
+          ]
+        },
+        "pending": {
+          "on": {
+            "ticket0/confirm-signup": "confirmed",
+            "ticket0/unsubscribe-signup": "unsubscribed"
+          },
+          "allow": [
+            "ticket0/submit-signup"
+          ]
+        },
+        "unsubscribed": {
+          "on": {
+            "ticket0/submit-signup": "pending"
+          },
+          "allow": [
+            "ticket0/unsubscribe-signup"
           ]
         }
       }

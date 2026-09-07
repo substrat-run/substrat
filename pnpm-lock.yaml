@@ -1175,6 +1175,9 @@ importers:
       '@substrat-run/adapter-cloudflare':
         specifier: workspace:^
         version: link:../../packages/adapter-cloudflare
+      '@substrat-run/adapter-email':
+        specifier: workspace:^
+        version: link:../../packages/adapter-email
       '@substrat-run/adapter-sqlite':
         specifier: workspace:^
         version: link:../../packages/adapter-sqlite

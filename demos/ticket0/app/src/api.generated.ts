@@ -255,6 +255,22 @@ export interface Notification {
   created_at: string;
 }
 
+/** `ticket0_signups` — declared in spec/model.ts. */
+export interface Signup {
+  id: string;
+  kind: "waitlist" | "newsletter";
+  email: string;
+  note: string | null;
+  state: "pending" | "confirmed" | "unsubscribed";
+  origin: string;
+  confirm_token_hash: string | null;
+  unsubscribe_token_hash: string;
+  requested_at: string;
+  confirmed_at: string | null;
+  unsubscribed_at: string | null;
+  created_at: string;
+}
+
 /** Every operation this vertical binds to HTTP, one method each. */
 export interface Ticket0Client {
   /**
@@ -305,6 +321,13 @@ export interface Ticket0Client {
    * `PATCH /desk` — `ticket0/configure-desk`
    */
   configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; created_at: string; updated_at: string }>;
+
+  /**
+   * Confirm an address from the link in its email
+   *
+   * `POST /signup/confirm` — `ticket0/confirm-signup`
+   */
+  confirmSignup(input: { token: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string }>;
 
   /**
    * Save a canned answer
@@ -437,6 +460,15 @@ export interface Ticket0Client {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listSavedReplies(): Promise<Paged<SavedReply>>;
+
+  /**
+   * Who is waiting, and who is subscribed
+   *
+   * `GET /signups` — `ticket0/list-signups`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listSignups(input: { kind?: "waitlist" | "newsletter"; state?: "pending" | "confirmed" | "unsubscribed" }): Promise<Paged<({ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string })>>;
 
   /**
    * Every tag the desk uses, most-used first
@@ -619,6 +651,20 @@ export interface Ticket0Client {
   setUsageRate(input: { meterKey: string; unitPrice: string; currency: string; effectiveFrom: string }): Promise<UsageRate>;
 
   /**
+   * How many are waiting, confirmed and gone, per list
+   *
+   * `GET /signups/counts` — `ticket0/signup-counts`
+   */
+  signupCounts(): Promise<{ counts: ({ kind: "waitlist" | "newsletter"; state: "pending" | "confirmed" | "unsubscribed"; count: number })[] }>;
+
+  /**
+   * The origins this desk takes signups from
+   *
+   * `GET /signup/origins` — `ticket0/signup-origins`
+   */
+  signupOrigins(): Promise<{ origins: string[] }>;
+
+  /**
    * Park a conversation until a time
    *
    * `POST /conversations/{conversationId}/snooze` — `ticket0/snooze`
@@ -633,11 +679,25 @@ export interface Ticket0Client {
   submitCsat(input: { conversationId: string; score: number; comment?: string | null }): Promise<Csat>;
 
   /**
+   * Ask for a place on the waiting list, or for the changelog by email
+   *
+   * `POST /signup` — `ticket0/submit-signup`
+   */
+  submitSignup(input: { kind: "waitlist" | "newsletter"; email: string; note?: string | null; origin: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; state: "pending" | "confirmed" | "unsubscribed"; confirmToken: string | null }>;
+
+  /**
    * Tag a conversation
    *
    * `POST /conversations/{conversationId}/tags` — `ticket0/tag-conversation`
    */
   tagConversation(input: { conversationId: string; tag: string }): Promise<ConversationTag>;
+
+  /**
+   * Take an address off the list
+   *
+   * `POST /signup/unsubscribe` — `ticket0/unsubscribe-signup`
+   */
+  unsubscribeSignup(input: { token: string }): Promise<{ id: string; kind: "waitlist" | "newsletter"; email: string; note: string | null; state: "pending" | "confirmed" | "unsubscribed"; origin: string; requested_at: string; confirmed_at: string | null; unsubscribed_at: string | null; created_at: string }>;
 
   /**
    * Take a tag off a conversation
@@ -881,6 +941,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/usage/periods", "POST", input, undefined),
     configureDesk: (input: Args) =>
       send("/desk", "PATCH", input, undefined),
+    confirmSignup: (input: Args) =>
+      send("/signup/confirm", "POST", input, undefined),
     createSavedReply: (input: Args) =>
       send("/saved-replies", "POST", input, undefined),
     deleteSavedReply: (input: Args) =>
@@ -913,6 +975,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/messages`, "GET", undefined, omit(input, ["conversationId"])),
     listSavedReplies: () =>
       page("/saved-replies", "GET", undefined, undefined),
+    listSignups: (input: Args) =>
+      page("/signups", "GET", undefined, input),
     listTags: () =>
       send("/tags", "GET", undefined, undefined),
     listTurns: (input: Args) =>
@@ -961,12 +1025,20 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/priority`, "POST", omit(input, ["conversationId"]), undefined),
     setUsageRate: (input: Args) =>
       send("/usage/rates", "POST", input, undefined),
+    signupCounts: () =>
+      send("/signups/counts", "GET", undefined, undefined),
+    signupOrigins: () =>
+      send("/signup/origins", "GET", undefined, undefined),
     snooze: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/snooze`, "POST", omit(input, ["conversationId"]), undefined),
     submitCsat: (input: Args) =>
       send(`/me/conversations/${encodeURIComponent(String(input.conversationId))}/csat`, "POST", omit(input, ["conversationId"]), undefined),
+    submitSignup: (input: Args) =>
+      send("/signup", "POST", input, undefined),
     tagConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "POST", omit(input, ["conversationId"]), undefined),
+    unsubscribeSignup: (input: Args) =>
+      send("/signup/unsubscribe", "POST", input, undefined),
     untagConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags/${encodeURIComponent(String(input.tag))}`, "DELETE", undefined, omit(input, ["conversationId","tag"])),
     updateSavedReply: (input: Args) =>

@@ -51,6 +51,12 @@ export interface Desk {
   readonly relay: Person;
   /** The principal the embedded widget runs as. Holds one key and nothing else. */
   readonly widget: Person;
+  /**
+   * The principal a public signup form runs as — a SECOND public service rather than a
+   * second key on the widget, so the chat bubble's account keeps the property its row
+   * in `provision.ts` claims: one key, opening conversations and nothing else.
+   */
+  readonly signup: Person;
   /** The identity-verification secret, so the harness can sign like a host page. */
   readonly verificationSecret: string;
   /** The customer's contact row, once they have appeared. */
@@ -135,6 +141,7 @@ interface DeskSpec {
   readonly customer: Person;
   readonly relay: Person;
   readonly widget: Person;
+  readonly signup: Person;
   readonly articles: { url: string; title: string; headingPath: string; body: string }[];
   readonly inbox: InboxSeed[];
   readonly savedReplies?: { title: string; body: string }[];
@@ -276,6 +283,7 @@ async function seedDesk(
   await assign(spec.customer, 'customer');
   await assign(spec.relay, 'relay');
   await assign(spec.widget, 'widget');
+  await assign(spec.signup, 'signup');
 
   // --- The desk, set up through its own operations ---------------------------
   const adminStub = await host.getScope(spec.admin.principal, tenant, scope);
@@ -426,6 +434,7 @@ async function seedDesk(
     customer: spec.customer,
     relay: spec.relay,
     widget: spec.widget,
+    signup: spec.signup,
     verificationSecret: rotated.secret,
     customerContactId: contact.id,
     origin: spec.origin,
@@ -654,6 +663,7 @@ export async function seed(host: ScopeHost): Promise<World> {
     customer: person('Priya', 'priya@customer.example'),
     relay: person('Email relay', 'relay@substrat.example'),
     widget: person('Widget service', 'widget@substrat.example'),
+    signup: person('Signup service', 'signup@substrat.example'),
     articles: SUBSTRAT_ARTICLES,
     inbox: SUBSTRAT_INBOX,
     savedReplies: SUBSTRAT_SAVED_REPLIES,
@@ -679,6 +689,7 @@ export async function seed(host: ScopeHost): Promise<World> {
     customer: person('Tomas', 'tomas@othercustomer.example'),
     relay: person('Email relay', 'relay@kestrel.example'),
     widget: person('Widget service', 'widget@kestrel.example'),
+    signup: person('Signup service', 'signup@kestrel.example'),
     articles: KESTREL_ARTICLES,
     inbox: KESTREL_INBOX,
   });

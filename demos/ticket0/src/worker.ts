@@ -87,6 +87,16 @@ import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh } from '../harness/kb-refresh.js';
 import { mountInvites, recordStaffProfile } from '../harness/invites.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
+import {
+  confirmationEmail,
+  mountSignupSurface,
+  type PendingConfirmation,
+} from '../harness/signups.js';
+import {
+  MockEmailTransport,
+  PlatformRelayEmailTransport,
+  type EmailTransport,
+} from '@substrat-run/adapter-email';
 
 /** The scope-DO class = the app binary: kernel + metering + ticket0, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {});
@@ -141,8 +151,20 @@ interface Env {
   ALLOW_DEV_NODE?: string;
   /** Shared secret the router presents (K-26): how the desk knows the asserted node came from the router. */
   ROUTER_SECRET?: string;
-  /** Shared secret the CONTROL PLANE presents to provision/configure here (K-31). Unset ⇒ refused. */
+  /** Shared secret the CONTROL PLANE presents to provision/configure here (K-31). Unset ⇒ refused.
+   *  Also what this desk presents BACK to the email relay below — the same shared credential,
+   *  which is why the relay does not trust it to say which vertical is calling and re-derives
+   *  that from the `(tenant, scope)` named in the body. */
   PLATFORM_SECRET?: string;
+  /**
+   * The control plane's origin, injected into every dispatch script by the WfP uploader
+   * (#303). A hosted desk cannot bind `send_email` — a dispatch script has no such binding
+   * and the §4 sandbox refuses one — so mail goes through the relay there, gated on the
+   * staff-granted `emailSender` capability. Absent (a standalone `wrangler dev`) ⇒ the
+   * drop-mock, so a signup never crashes and the confirm link is still readable in
+   * `wrangler tail`.
+   */
+  CONTROL_PLANE_URL?: string;
 }
 
 /**
@@ -207,6 +229,18 @@ const servicePrincipals = z.object({
    */
   'assistant-autonomous': principalId.optional(),
   relay: principalId,
+  /**
+   * OPTIONAL, for exactly the reason the key above is, and this is the second time the
+   * lesson has been paid for.
+   *
+   * Every desk provisioned before the signup surface existed has four keys. Requiring a
+   * fifth would make `servicesOf`'s `safeParse` fail on all of them, which reads as "not
+   * provisioned" — and `resolveDesk` turns that into a dead widget on a live desk, at the
+   * moment of the push, until somebody notices and re-provisions by hand (#1164, #1172).
+   * Absent means what it means everywhere here: not minted yet. `mintServices` fills it on
+   * the next reconcile, which a version change now triggers.
+   */
+  signup: principalId.optional(),
 });
 type ServicePrincipals = z.infer<typeof servicePrincipals>;
 
@@ -591,6 +625,128 @@ mountWidgetSurface(app, {
     c.executionCtx.waitUntil(answerFor(c.env as Env, c.req.raw, m));
   },
 });
+
+// ── The public signup surface ────────────────────────────────────────────────
+
+mountSignupSurface(app, {
+  /**
+   * One desk per hostname, as with the widget — the router decides, and the embedding
+   * origin is only checked against the desk the hostname already resolved to.
+   *
+   * The allowlist is read through the SIGNUP service's own key rather than the
+   * widget's. Both read the same desk column; each door holds exactly one key, and
+   * borrowing the widget's to answer a signup preflight would have undone the reason
+   * there are two principals.
+   */
+  resolveDesk: async (c) => {
+    const env = c.env as Env;
+    const node = nodeFor(c.req.raw, env);
+    const signup = await serviceStub(env, node, 'signup');
+    // Null before this desk has been reconciled onto a version that mints the signup
+    // principal (#1172) — the same "not provisioned yet" a fresh install shows, and
+    // the surface turns it into a denial rather than a crash.
+    if (!signup) return null;
+    const invoke = <T,>(op: string, input: unknown) => signup.invoke(op, input) as Promise<T>;
+    const declared = await invoke<{ origins: string[] }>('ticket0/signup-origins', {});
+    return { invoke, allowedOrigins: declared.origins };
+  },
+  /**
+   * A token link out of an email. Exactly one candidate here — the hostname resolved a
+   * desk before this ran — which is what the dev server's several are the exception to.
+   */
+  desksForToken: async (c) => {
+    const env = c.env as Env;
+    const signup = await serviceStub(env, nodeFor(c.req.raw, env), 'signup');
+    if (!signup) return [];
+    return [
+      {
+        invoke: <T,>(op: string, input: unknown) => signup.invoke(op, input) as Promise<T>,
+        allowedOrigins: [],
+      },
+    ];
+  },
+  /**
+   * The URL the browser just reached successfully, rather than a `Host` header taken on
+   * trust. Behind the router a request only arrives here for a hostname the platform
+   * routes to this dispatch namespace, and the scope it belongs to came from a SIGNED
+   * assertion rather than from this URL — so this origin is the desk's own, and a
+   * confirmation mail cannot be made to carry somebody else's link.
+   */
+  publicOriginOf: (c) => new URL(c.req.url).origin,
+  sendConfirmation: (c, pending) => {
+    // `waitUntil`, not a floating promise: a Workers isolate stops the moment the
+    // response returns, so an un-tracked send would be cancelled in flight and the
+    // person would wait for a mail that was never finished.
+    c.executionCtx.waitUntil(sendConfirmationMail(c.env as Env, c.req.raw, pending));
+  },
+});
+
+/**
+ * How this desk sends mail, chosen by what it was given.
+ *
+ * HOSTED — the platform secret and the control plane's origin are both injected — goes
+ * through the relay, which sends on this vertical's behalf only while staff hold the
+ * `emailSender` grant for it. Anything else gets the drop-mock: a `wrangler dev` with no
+ * platform around it must not crash a signup, and the confirm link is still readable in
+ * the tail.
+ */
+function emailTransport(env: Env, node: DeskNode): EmailTransport {
+  if (env.PLATFORM_SECRET && env.CONTROL_PLANE_URL) {
+    return new PlatformRelayEmailTransport({
+      controlPlaneUrl: env.CONTROL_PLANE_URL,
+      platformSecret: env.PLATFORM_SECRET,
+      tenantId: node.tenantId,
+      scopeId: node.scopeId,
+    });
+  }
+  return new MockEmailTransport();
+}
+
+/**
+ * Send one confirmation, out of band.
+ *
+ * Nothing that goes wrong here is allowed to be silent, for the reason `answerFor`
+ * gives below: a signup whose mail never went is indistinguishable from a mail provider
+ * that is merely slow, and the reason would live nowhere. The row is already committed
+ * — the person can ask again once the throttle lapses, and the same token is re-issued
+ * — so a failed send is a logged failure rather than a lost signup.
+ */
+async function sendConfirmationMail(
+  env: Env,
+  req: Request,
+  pending: PendingConfirmation,
+): Promise<void> {
+  const { subject, html, text } = confirmationEmail(pending);
+  try {
+    await emailTransport(env, nodeFor(req, env)).send({
+      to: pending.email,
+      // The address is the PLATFORM's onboarded sender whatever is written here — the
+      // relay overwrites it and only forwards the display name, which is the point: a
+      // vertical must not be able to send as an arbitrary address on the platform's
+      // domain.
+      from: { email: 'no-reply@substrat.net', name: 'Substrat' },
+      subject,
+      html,
+      text,
+      /**
+       * No `List-Unsubscribe`, and that is a decision rather than an omission.
+       *
+       * RFC 8058 is for bulk mail, and this is the opposite: one message, sent because
+       * somebody typed their address, and the last one that address receives unless the
+       * link inside is clicked. There is nothing here to unsubscribe FROM — a pending
+       * row is sent nothing — so the header would advertise a token this path does not
+       * hold and could only get by asking for one it has no use for. It belongs on the
+       * newsletter itself, where an unsubscribe is a real thing to want.
+       */
+    });
+  } catch (error) {
+    console.error('ticket0: confirmation email failed', {
+      kind: pending.kind,
+      // Never the address: this is a log, and a log is a copy an erasure cannot reach.
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
 
 /**
  * Answer one customer message as this desk's assistant, out of band.
