@@ -698,10 +698,10 @@ it today even if it wanted to: neither adapter's hostname read joins `scopes.jur
 so the resolved route target carries a region and no jurisdiction to compare it against.
 `dispatch` in `apps/router/src/worker.ts` then declines the comparison by name, on
 grounds that contradict the paragraph above — that re-checking a region already pinned by
-two configuration halves would be *a third enforcement point that can disagree*. Until
-#958 settles which of the two readings wins, an EU-residency claim rests on the wildcard
-Regional Hostnames config and the DO jurisdiction alone, with nothing detecting a drift
-between them. Do not read anything below as describing a refusal that exists.
+two configuration halves would be *a third enforcement point that can disagree*.
+Until #958 settles which of the two readings wins, an EU-residency claim rests on the
+wildcard Regional Hostnames config and the DO jurisdiction alone, with nothing detecting
+a drift between them. Do not read anything below as describing a refusal that exists.
 
 Two things this forecloses:
 
