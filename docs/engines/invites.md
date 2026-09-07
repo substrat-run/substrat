@@ -43,11 +43,21 @@ construction rather than by omission.
 invited ──accept──▶ accepted
    │
    ├──revoke────▶ revoked
-   └──expire────▶ expired      (expires_at passes; swept by expireOverdue)
+   └──expire────▶ expired      (expires_at passes; recorded by expireOverdue)
 ```
 
 `invited` is the only unsettled state. `settled_at` is stamped on all three terminal
 transitions, so "is this still live" is one predicate.
+
+Expiry is the one transition time makes rather than a person, so it is **rendered on read
+and recorded on write** (#964). The projection applies to `invited` rows and only those:
+`listInvites` reports `expired` for a still-`invited` invitation whose `expires_at` has
+passed, without touching the row — a read under `invites:read` settles nothing — while
+`sendInvite` and the accept path call `expireOverdue` and stamp `settled_at` for real. An
+`accepted` or `revoked` invitation reads back exactly as stored, `settled_at` and all, no
+matter how long ago its deadline went by. So the only row that reads `expired` with a null
+`settled_at` is one time lapsed and nobody has since met, and that null is a fact: the
+transition has not been recorded yet.
 
 ## 3. The acceptance path, and why it refuses to be an oracle
 
@@ -62,8 +72,11 @@ caller. The source says why: distinguishing them would turn the accept endpoint 
 oracle — a caller could enumerate which invitation ids exist, or confirm that a given email
 was invited to a given org. The uniform refusal costs a little debuggability and buys that.
 
-Expiry is also *enforced on read*, not only by the sweep: an overdue invitation is marked
-`expired` at the moment someone tries to use it, so a lagging sweep never widens the window.
+Expiry is enforced *here*, on the write, not left to a sweep: `acceptInvite` refuses an
+overdue invitation and records the transition through `expireOverdue` at the moment someone
+tries to use it, so a lagging sweep never widens the window. A read is where expiry is
+merely *shown* (§2) — `listInvites` renders `expired` and settles nothing — and the two
+never disagree about what is acceptable, because the accept path is the one that decides.
 
 ## 4. Permissions — and the one operation that has none
 
@@ -136,4 +149,10 @@ true *because* of the hashing decision in §1.
    alone by design; removing the resulting membership is `unassignRole`, a different surface
    (dashboard-teams §7). Nothing links the two, so "undo this invitation" is two acts.
 3. **`expireOverdue` has no automatic caller inside the engine.** It is exported for a host
-   to schedule, and the read-path enforcement in §3 is what makes that safe to forget.
+   to schedule; `sendInvite` and the accept path in §3 call it, and that is what makes it
+   safe to forget. Since #964 the read path does *not*: a row can therefore sit `invited`
+   in storage while every reader is told `expired`, which is the divergence the original
+   read-path write avoided. The two never disagree about what is *acceptable* — accept
+   settles the row it refuses — so what is open is whether anything should record the
+   transition (an `invites.expired` event, and a sweep to emit it) or whether "expired" is
+   correctly a fact about the clock that nothing needs to announce.

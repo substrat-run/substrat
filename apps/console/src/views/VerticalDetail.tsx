@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   ChannelName,
   OpsFailureEntry,
@@ -56,8 +56,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // this control plane), which is deliberately NOT the same as an empty report: one
   // means "we cannot see", the other "it reached nothing".
   const [egress, setEgress] = useState<EgressReport | null>(null);
-  // How much of the walked version list the TABLE shows (the Load-more window).
-  const [versionsShown, setVersionsShown] = useState(PAGE);
+  // Which page of the walked version list the TABLE shows. Clamped on read, so a
+  // reload that shortens the list never strands the view past the last page.
+  const [versionsPage, setVersionsPage] = useState(0);
 
   // The promote dialog: a target (channel, version) plus the acknowledgements the
   // digest diff requires. Null when closed.
@@ -135,7 +136,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     setChannels([]);
     setBoundScopes([]);
     setFailures([]);
-    setVersionsShown(PAGE);
+    setVersionsPage(0);
     setSelectedIds(new Set());
     void loadDetail(vertical.slug);
   }, [vertical.slug, loadDetail]);
@@ -307,6 +308,20 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const versionById = (id: string) => versions.find((v) => v.id === id);
   const channelVersion = (ch: ChannelName) =>
     versionById(channels.find((c) => c.channel === ch)?.versionId ?? '');
+
+  // The walk keeps the route's default (asc by id, a ULID — so publish order). Everything
+  // a HUMAN reads is newest-first instead: the last push is what a reader came for, and
+  // burying it under a year of history is the wrong end of the list. Reversing the walked
+  // array rather than re-sorting keeps the server's own ordering as the single authority.
+  const newestFirst = useMemo(() => [...versions].reverse(), [versions]);
+
+  // The versions table pages Prev/Next over that reversed set — a fixed window with a
+  // position, not a list that only ever grows. `versionsPage` is clamped here so a
+  // reload that shortens the list lands on the last page instead of an empty one.
+  const versionPageCount = Math.max(1, Math.ceil(newestFirst.length / PAGE));
+  const versionPage = Math.min(versionsPage, versionPageCount - 1);
+  const versionStart = versionPage * PAGE;
+  const versionRows = newestFirst.slice(versionStart, versionStart + PAGE);
 
   // What the promote dialog must surface: which digests differ between the version being
   // promoted and the one the channel points at now. A first promotion has nothing to
@@ -691,7 +706,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                   disabled={versions.every((x) => x.admission !== 'admitted')}
                   onClick={() => {
                     setAck({});
-                    setPromote({ channel: ch, versionId: versions.find((x) => x.admission === 'admitted')?.id ?? '' });
+                    // The NEWEST admitted version, matching the order the picker lists
+                    // them in — an oldest-first default sat at the bottom of the list.
+                    setPromote({ channel: ch, versionId: newestFirst.find((x) => x.admission === 'admitted')?.id ?? '' });
                   }}
                 >
                   Promote…
@@ -718,17 +735,42 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           </div>
         )}
 
-        {/* Publish order preserved (asc — the walk keeps the route's default); the window
-            grows a page at a time over the already-walked set. */}
-        <Table
-          columns={versionColumns}
-          rows={versions.slice(0, versionsShown)}
-          emptyText="No versions published yet."
-        />
-        {versions.length > versionsShown && (
-          <div style={{ padding: '12px 0 0', display: 'flex', justifyContent: 'center' }}>
-            <Button variant="ghost" size="sm" onClick={() => setVersionsShown((n) => n + PAGE)}>
-              Load more
+        {/* Newest first — the most recent push is the row a reader opened this page for.
+            Paged Prev/Next over the already-walked set (the Scopes-view footer), so the
+            position is stated rather than implied by how many times Load-more was hit. */}
+        <Table columns={versionColumns} rows={versionRows} emptyText="No versions published yet." />
+        {newestFirst.length > PAGE && (
+          <div
+            style={{
+              padding: '12px 0 0',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              flexWrap: 'wrap',
+            }}
+          >
+            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              Showing {versionStart + 1}–{Math.min(versionStart + PAGE, newestFirst.length)} of {newestFirst.length}
+            </span>
+            <span style={{ flex: 1 }} />
+            <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              Page {versionPage + 1} of {versionPageCount}
+            </span>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={versionPage === 0}
+              onClick={() => setVersionsPage(versionPage - 1)}
+            >
+              Prev
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={versionPage >= versionPageCount - 1}
+              onClick={() => setVersionsPage(versionPage + 1)}
+            >
+              Next
             </Button>
           </div>
         )}
@@ -973,7 +1015,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
               label="Version"
               value={promote.versionId}
               onChange={(e) => setPromote({ ...promote, versionId: e.target.value })}
-              options={versions
+              options={newestFirst
                 .filter((v) => v.admission === 'admitted')
                 .map((v) => ({ value: v.id, label: `${v.version} — ${v.createdAt.slice(0, 16).replace('T', ' ')}` }))}
             />

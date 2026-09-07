@@ -105,8 +105,11 @@ export const invitesOperations = defineOperations(invitesEntities, INVITES_PERMI
     output: invitation,
     /**
      * Handler-composed, not `paged.over` (#959). The read answers the PROJECTION
-     * — the row minus the identifier hash — and it expires overdue invitations on
-     * the way past, which the kernel's walk has no place for.
+     * — the row minus the identifier hash, with an overdue invitation rendered
+     * `expired` — which the kernel's walk over the table has no place for.
+     *
+     * Rendered, not written (#964): this is an `invites:read`, so it settles
+     * nothing. The write paths still do.
      *
      * Newest first, so the page descends. `id` is the cursor rather than
      * `created_at`: it is a ULID, so it is unique AND ordered the same way

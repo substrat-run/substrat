@@ -106,6 +106,17 @@ export function flattenDeclaredSchedules(
   return schedules.length > 0 ? schedules : undefined;
 }
 
+/** The freshness twin of `flattenDeclaredSchedules` (#1232) — `within.hours` exists
+ *  nowhere off the manifest, and the dashboard's declared-vs-observed read needs it. */
+export function flattenDeclaredFreshness(
+  permissions: PermissionsInput,
+): DeployManifest['freshness'] | undefined {
+  const freshness = permissions.modules.flatMap((m) =>
+    (m.manifest.freshness ?? []).map((f) => ({ ...f, moduleId: m.manifest.id })),
+  );
+  return freshness.length > 0 ? freshness : undefined;
+}
+
 export interface DeclaredSurface {
   readonly registry: PermissionRegistry;
   /** The entry's `envSpec` export, validated — undefined when the entry exports none. */
@@ -113,6 +124,8 @@ export interface DeclaredSurface {
   /** Every module's declared schedules, flattened with the owning module id (#1232) —
    *  undefined when no module declares any, so the manifest field stays absent. */
   readonly schedules: DeployManifest['schedules'] | undefined;
+  /** Every module's freshness expectations, flattened the same way (#1232). */
+  readonly freshness: DeployManifest['freshness'] | undefined;
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -200,6 +213,7 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       // #1232: the same import that yields the permission surface already holds every
       // module manifest — the schedules ride out of it with zero extra reads.
       schedules: flattenDeclaredSchedules(mod.permissions),
+      freshness: flattenDeclaredFreshness(mod.permissions),
     };
   } finally {
     rmSync(out, { force: true });
@@ -1084,7 +1098,7 @@ export async function push(
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
   // The same import reads the entry's `envSpec` export (#1206); when it exists it is the copy
   // that ships, and a drifted package.json duplicate refuses the push.
-  const { registry, envSpec: derivedEnvSpec, schedules } = await deriveDeclaredSurface(opts.dir);
+  const { registry, envSpec: derivedEnvSpec, schedules, freshness } = await deriveDeclaredSurface(opts.dir);
   const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);
 
   // The emitted entity model (#1214), read from the checked-in `model.json` beside
@@ -1163,6 +1177,7 @@ export async function push(
     // #1232: the declared schedules travel with the version — the dashboard's
     // schedule-health view needs `everyMinutes`, which exists nowhere off the manifest.
     ...(schedules ? { schedules } : {}),
+    ...(freshness ? { freshness } : {}),
     // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
     // because absence means "pre-#303 push" to the egress worker (unenforced, metered
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is

@@ -57,6 +57,11 @@ const staffActor = platformActorId.parse(ulid());
 // Both ports are bound in THIS file so they move together: `substrat.devServers` names
 // it for the API and for the issuer alike, and `ISSUER_PORT=… PORT=… pnpm dev` shifts the
 // pair without either end losing track of the other.
+//
+// The issuer default is 8879 because that is `@substrat-run/dev-issuer`'s OWN default —
+// the `issuer` script passes no `--port`, so this number and the one the issuer actually
+// binds have to be the same or the login round-trip points at nothing. Change one and you
+// must change the other; `ISSUER_PORT=…` moves both at once, which is the supported way.
 const ISSUER_PORT = Number(process.env.ISSUER_PORT ?? 8879);
 const login = devLogin({
   directory: host.admin,
@@ -87,7 +92,11 @@ async function stub(c: Context): Promise<ScopeStub> {
 // Everything else — including `/api/invoke` and the shared error envelope.
 mountApi(app, stub);
 
-const PORT = Number(process.env.PORT ?? 8873);
+// 8891, not 8873. The `887x`/`527x` block is reserved for this monorepo's own demos
+// (CLAUDE.md, "Commands"), and 8873 is the shop demo's API — so a scaffolded project used
+// to refuse to boot beside the demo it was read from. A scaffold has no claim on that
+// block; `PORT=…` moves this one.
+const PORT = Number(process.env.PORT ?? 8891);
 serve({ fetch: app.fetch, port: PORT });
 console.log(`Bike-shop API on http://localhost:${PORT} — data in ${dataDir}`);
 console.log(`Sign in at http://localhost:${PORT}/api/auth/login — issuer: ${login.issuer}`);

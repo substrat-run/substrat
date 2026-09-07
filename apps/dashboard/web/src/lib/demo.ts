@@ -193,6 +193,7 @@ export const MOCK_ACCOUNT_INTEGRATIONS: AccountIntegrationsView = {
             at: new Date(Date.now() - (i + 1) * 3 * 3600_000).toISOString(),
             error: null,
             elapsedMs: 210,
+            observedAt: null,
           })),
         },
       ],
@@ -250,6 +251,7 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
     at: new Date(Date.now() - (i + 1) * 2 * 3600_000).toISOString(),
     error: i === 4 ? 'Scrive answered 502 — retried next pass' : null,
     elapsedMs: 240 + i * 10,
+    observedAt: null,
   })),
   intents: [
     {

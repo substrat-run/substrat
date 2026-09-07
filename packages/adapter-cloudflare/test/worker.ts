@@ -7,7 +7,7 @@
  */
 import { platformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
-import { brokenMod, contractTestModules, contractTestBareOps, scheduleMod } from '@substrat-run/contract-tests';
+import { brokenMod, contractTestModules, contractTestBareOps, freshnessMod, scheduleMod } from '@substrat-run/contract-tests';
 import { defineScopeDO } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
@@ -112,6 +112,9 @@ export const ScopeSweeperDO = defineScopeSweeperDO<ScopeSweeperEnv>({
       secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
     });
     host.registerModule(scheduleMod);
+    // #1232: a second module expecting scheduleMod's event with a wider window —
+    // the batch test asserting ONE freshness entry is the cross-module regression.
+    host.registerModule(freshnessMod);
     return host;
   },
 });

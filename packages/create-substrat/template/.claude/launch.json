@@ -18,7 +18,7 @@
         "run",
         "server"
       ],
-      "port": 8873,
+      "port": 8891,
       "autoPort": false
     }
   ]

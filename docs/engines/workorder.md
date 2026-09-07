@@ -99,6 +99,14 @@ manager's ROT split, a shop's article prices — so the engine sums what it is g
 the read the vertical prices *from*. Callout's completion operation is the reference: read
 the lines, price them in vertical code, pass them back, all in one transaction.
 
+The one total the lines cannot label is an **empty** completion's, and the engine used to
+answer that with `SEK` — a Swedish answer handed to a vertical that may never have priced
+in it ([#967](https://github.com/substrat-run/substrat/issues/967)). The optional
+`currency` on the input is where a caller says otherwise. It is additive: omit it and the
+fallback is still `SEK`, so every existing caller keeps its total. When there ARE billable
+lines they decide, and a `currency` that contradicts them is refused — the alternative is a
+total labelled with a currency the caller did not mean.
+
 **Everything returned here is parsed, not asserted** ([#771](https://github.com/substrat-run/substrat/issues/771)),
 and this engine is where that was worked out. D-28's additive-only rule is enforced by
 review; the failure it exists to prevent — a vertical compiled against 0.3 running against

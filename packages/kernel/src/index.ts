@@ -39,6 +39,8 @@ export type {
   SweepRunInput,
   ProvisionScopeInput,
   RoleFilter,
+  FreshnessRegistration,
+  FreshnessReport,
   ScheduleRegistration,
   ScheduleRunReport,
   ScopeAttachments,

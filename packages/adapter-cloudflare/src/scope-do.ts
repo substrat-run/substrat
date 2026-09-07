@@ -226,6 +226,9 @@ const KERNEL_DDL = `
     version TEXT,
     drained_at TEXT
   );
+  -- #1232: the freshness evaluator's read - MAX(occurred_at) per type, every pass,
+  -- over a table that is never pruned. Unindexed, that is a full history scan.
+  CREATE INDEX IF NOT EXISTS _substrat_outbox_type_at ON _substrat_outbox (type, occurred_at);
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
   -- to drain and execute with HostAdmin authority -- the sandbox-clean way a vertical asks for a
   -- privileged action. Written by the kernel (spine), settled by the platform drain.
@@ -1717,8 +1720,47 @@ export function defineScopeDO(
       return row?.last_run_at ?? null;
     }
 
+    /**
+     * #1232: everything the freshness evaluator needs about this scope, one round
+     * trip regardless of how many types are declared — the newest matching event
+     * per type, plus each type's recorded evaluator state (last recorded at +
+     * outcome, kept in `_substrat_schedule_state` under a `freshness:` prefix that
+     * cannot collide with operation names).
+     */
+    async freshnessProbe(types: string[]): Promise<
+      Record<string, { observedAt: string | null; stateAt: string | null; stateOutcome: string | null }>
+    > {
+      const out: Record<string, { observedAt: string | null; stateAt: string | null; stateOutcome: string | null }> =
+        {};
+      for (const t of types) out[t] = { observedAt: null, stateAt: null, stateOutcome: null };
+      if (types.length === 0) return out;
+      const marks = types.map(() => '?').join(', ');
+      for (const row of this.sql
+        .exec(
+          `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox WHERE type IN (${marks}) GROUP BY type`,
+          ...types,
+        )
+        .toArray() as unknown as { type: string; at: string | null }[]) {
+        if (row.at !== null) out[row.type]!.observedAt = row.at;
+      }
+      const keys = types.map((t) => `freshness:${t}`);
+      for (const row of this.sql
+        .exec(
+          `SELECT schedule_op, last_run_at, last_status FROM _substrat_schedule_state WHERE schedule_op IN (${marks})`,
+          ...keys,
+        )
+        .toArray() as unknown as { schedule_op: string; last_run_at: string | null; last_status: string | null }[]) {
+        const t = row.schedule_op.slice('freshness:'.length);
+        if (out[t]) {
+          out[t]!.stateAt = row.last_run_at;
+          out[t]!.stateOutcome = row.last_status;
+        }
+      }
+      return out;
+    }
+
     /** Record a schedule run's timestamp + outcome (#383). Spine, kernel-written. */
-    async recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed'): Promise<void> {
+    async recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void> {
       this.sql.exec(
         `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
            VALUES (?, ?, ?)

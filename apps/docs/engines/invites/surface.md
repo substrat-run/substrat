@@ -40,6 +40,7 @@ listInvites(ctx, orgId)                                  → Invitation[]
 revokeInvite(ctx, invitationId)                          → void
 expireOverdue(ctx, orgId)                                → void
 hashIdentifier(scopeSalt, identifier)                    → Promise<string>
+effectiveStateOf(state, expiresAt, now)                  → InviteState
 ```
 
 Notes worth knowing:
@@ -51,15 +52,27 @@ Notes worth knowing:
   before — that uniformity is what keeps the surface non-enumerable.
 - `acceptInvite` checks no permission (below) and re-hashes the presented identifier to
   compare. It emits `member.add-requested`; it does **not** write the membership.
-- `expireOverdue` is called on the read and write paths inside the engine, so an overdue
-  invitation is never acceptable even if no sweep has run. It is exported for a host that
-  wants to run it on a schedule as well.
+- `expireOverdue` is called on the **write** paths inside the engine — `sendInvite`, and
+  the accept that refuses an overdue invitation — so an overdue invitation is never
+  acceptable even if no sweep has run. It is exported for a host that wants to run it on a
+  schedule as well.
+- `listInvites` does **not** call it: a read settles nothing (#964). It renders the state
+  instead, through `effectiveStateOf`, so a still-`invited` invitation past `expires_at`
+  reports `expired` while its row is untouched and its `settled_at` is still `null`. Call
+  the same list twice and you get the same answer, having written nothing either time.
+- `effectiveStateOf(state, expiresAt, now)` is that one comparison, exported so a vertical
+  folding `listInvites` into its own read asks the engine's question rather than
+  re-deriving it. It touches `invited` rows only: an `accepted`, `revoked` or already-swept
+  `expired` invitation comes back exactly as stored, `settled_at` included, however long
+  ago its deadline passed.
 - `hashIdentifier` is exported because a *host* building an accept link needs the same
   comparison input. It is Web Crypto (`globalThis.crypto`), never a hand-rolled digest,
   and it is salted with the scope id — one address hashes differently in every tenant.
 
-None of these check permissions themselves — for five of the six that is the caller's job,
-by design; for `acceptInvite` there is no check to make.
+None of these check permissions themselves. For every one that takes a `ctx` except
+`acceptInvite` that is the caller's job, by design; for `acceptInvite` there is no check to
+make. `hashIdentifier` and `effectiveStateOf` take no `ctx` at all — they are pure, and
+there is nothing there to check.
 
 ## `invites/accept` checks no permission
 

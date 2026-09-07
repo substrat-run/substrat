@@ -122,6 +122,11 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. The Vite
   proxy must NOT set `changeOrigin`: the API derives its OIDC `redirect_uri` from the
   forwarded Host header, and rewriting it sends the login callback to the wrong port.
+  **That block is for demos only.** A project `npm create substrat` hands out is not a demo
+  and gets no claim on it: the template's API default is `8891` (#983 — it used to be
+  `8873`, shop's, so a scaffold would not boot beside the demo it was read from). Its
+  issuer default stays `8879` because that is `@substrat-run/dev-issuer`'s own default and
+  the scaffold's `issuer` script passes no `--port` — the two numbers must agree.
 - **Every demo vertical has no dev auth branch.** Their `… dev` scripts
   start `packages/dev-issuer` — a real OIDC provider whose only shortcut is that
   `/authorize` lists names instead of asking for a password — so the local login IS the

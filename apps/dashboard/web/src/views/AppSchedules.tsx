@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type AppSchedulesView, type AppScheduleRow } from '../lib/api';
+import { api, type AppSchedulesView, type AppScheduleRow, type AppFreshnessRow } from '../lib/api';
 import { DEV_MOCK, MOCK_APP_SCHEDULES } from '../lib/mock';
 import { Pill, SweepStrip, card, type PillKind } from '../components/ui';
 import { relativeTime, untilTime } from '../lib/format';
@@ -18,6 +18,25 @@ const HEALTH: Record<AppScheduleRow['health'], { kind: PillKind; label: string }
   'never-run': { kind: 'neutral', label: 'Never run' },
   'sweeper-silent': { kind: 'warning', label: 'No sweep data' },
 };
+
+const FRESHNESS: Record<AppFreshnessRow['health'], { kind: PillKind; label: string }> = {
+  fresh: { kind: 'success', label: 'Fresh' },
+  stale: { kind: 'danger', label: 'Stale' },
+  'never-seen': { kind: 'neutral', label: 'Never seen' },
+  'sweeper-silent': { kind: 'warning', label: 'No sweep data' },
+};
+
+function freshnessLine(row: AppFreshnessRow): string {
+  if (row.health === 'never-seen') {
+    return `No ${row.eventType} has ever landed here. Expected within ${row.withinHours}h once the flow is live.`;
+  }
+  if (row.observedAt === null) return '';
+  if (row.health === 'stale') {
+    // The sentence this whole feature exists to produce.
+    return `No ${row.eventType} ${relativeTime(row.observedAt).replace(' ago', '')} and counting — expected within ${row.withinHours}h.`;
+  }
+  return `Last ${row.eventType} ${relativeTime(row.observedAt)} · expected within ${row.withinHours}h`;
+}
 
 const cadenceLabel = (min: number): string =>
   min % 1440 === 0 && min >= 1440
@@ -64,8 +83,10 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
     };
   }, [scopeId]);
 
-  if (!view || !view.schedules || view.schedules.length === 0) return null;
-  const silent = view.schedules.every((s) => s.health === 'sweeper-silent');
+  const schedules = view?.schedules ?? [];
+  const freshness = view?.freshness ?? [];
+  if (!view || (schedules.length === 0 && freshness.length === 0)) return null;
+  const silent = [...schedules, ...freshness].every((s) => s.health === 'sweeper-silent');
 
   return (
     <div style={{ ...card, padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -81,7 +102,7 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
           No sweep has reached this app yet — schedule health appears after the first pass.
         </div>
       )}
-      {view.schedules.map((row) => (
+      {schedules.map((row) => (
         <div key={`${row.moduleId}:${row.operation}`} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             {/* Silent suppresses the per-row verdicts entirely — the banner already
@@ -106,6 +127,33 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
             </div>
           )}
           <SweepStrip runs={row.runs} label="Last run" skippedNote="not due yet" />
+        </div>
+      ))}
+      {freshness.length > 0 && (
+        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)', marginTop: 4 }}>Freshness</div>
+      )}
+      {freshness.map((row) => (
+        <div key={`fresh:${row.eventType}`} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            {!silent && <Pill kind={FRESHNESS[row.health].kind}>{FRESHNESS[row.health].label}</Pill>}
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)' }}>
+              {row.eventType}
+            </span>
+            <span style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>within {row.withinHours}h</span>
+          </div>
+          {!silent && (
+            <div
+              style={{
+                fontSize: 11.5,
+                color: row.health === 'stale' ? 'var(--status-danger-fg)' : 'var(--text-tertiary)',
+              }}
+            >
+              {freshnessLine(row)}
+            </div>
+          )}
+          {/* Sparse by design: freshness writes on verdict change + an hourly
+              heartbeat, so each tick is a state transition or a pulse, never noise. */}
+          <SweepStrip runs={row.runs} label="Last check" skippedNote="no event of this type yet" />
         </div>
       ))}
     </div>

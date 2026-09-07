@@ -5,7 +5,9 @@ import {
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
+  FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunEntry,
+  type FreshnessSpec,
   modelUsageEntry,
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
@@ -162,6 +164,8 @@ import {
   ulid,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
+  type FreshnessReport,
+  type FreshnessRegistration,
   type AccessLogFilter,
   type AttachmentUploadInput,
   type AuditLogFilter,
@@ -314,6 +318,8 @@ interface RegisteredModule {
   consumers: { eventType: string; handler: ConsumerHandler }[];
   /** The module's declared recurring schedules (#383), empty if it declares none. */
   schedules: ScheduleSpec[];
+  /** The module's declared freshness expectations (#1232), empty if none. */
+  freshness: FreshnessSpec[];
 }
 
 /** A manifest guard, bound to the module whose manifest declared it (K-17). */
@@ -402,6 +408,9 @@ const KERNEL_DDL = `
     version TEXT,
     drained_at TEXT
   );
+  -- #1232: the freshness evaluator's read — MAX(occurred_at) per type, every pass,
+  -- over a table that is never pruned. Unindexed, that is a full history scan.
+  CREATE INDEX IF NOT EXISTS _substrat_outbox_type_at ON _substrat_outbox (type, occurred_at);
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
   -- to drain and execute with HostAdmin authority — the sandbox-clean way a vertical asks for a
   -- privileged action. Written by the kernel (spine), settled by the platform drain.
@@ -800,6 +809,8 @@ interface SweepRunRow {
   error: string | null;
   elapsed_ms: number | null;
   request_id: string | null;
+  event_type: string | null;
+  observed_at: string | null;
   at: string;
 }
 
@@ -1541,6 +1552,10 @@ export class SqliteScopeHost implements ScopeHost {
         -- direct sweep path). The unique index below is what makes a replayed drain
         -- write nothing twice; NULLs are distinct, so direct writes never collide.
         request_id TEXT,
+        -- #1232 freshness rows: the judged event type (its own dimension, never
+        -- the operation column) and the newest matching evidence. NULL on other kinds.
+        event_type TEXT,
+        observed_at TEXT,
         at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
@@ -1817,6 +1832,7 @@ export class SqliteScopeHost implements ScopeHost {
       migrations: [...migrations, ...searchMigrations, ...listMigrations],
       consumers,
       schedules: manifest.schedules ?? [],
+      freshness: manifest.freshness ?? [],
     });
     for (const rel of manifest.entityRelations ?? []) {
       const parents = this.relations.get(rel.entityType) ?? new Set<string>();
@@ -2889,6 +2905,109 @@ export class SqliteScopeHost implements ScopeHost {
     }
     return out;
   }
+
+  registeredFreshness(): FreshnessRegistration[] {
+    const out: FreshnessRegistration[] = [];
+    for (const mod of this.modules.values()) {
+      if (mod.freshness.length > 0) {
+        out.push({ moduleId: mod.id as ModuleId, freshness: mod.freshness });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The freshness evaluator (#1232): judge each declared expectation against this
+   * scope's own outbox, and return only what should be RECORDED — a verdict that
+   * changed since the last recorded one, or one whose hourly heartbeat lapsed.
+   * State rides `_substrat_schedule_state` under a `freshness:<eventType>` key
+   * (operation names are `module/verb`, event types `ns.verb` — the prefix cannot
+   * collide), reusing its columns as (last recorded at, last recorded outcome).
+   * Aggregates across EVERY registered module, not just the asking one: two
+   * modules declaring one type share a single gating-state key and a single
+   * dedupe unit, so per-module evaluation would have them fighting over both —
+   * flip-flopping state, and colliding rows the dedupe index silently eats.
+   * Duplicates collapse to the TIGHTEST window; the caller invokes this once
+   * per scope, with any registered module's id as the entry ticket.
+   *
+   * Deliberately NOT gated on the system grant — see the interface doc.
+   */
+  async checkFreshness(
+    moduleId: ModuleId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<FreshnessReport> {
+    const report: FreshnessReport = { checks: [] };
+    if (!this.modules.has(moduleId)) return report;
+    const scope = this.directory
+      .prepare('SELECT status FROM scopes WHERE scope_id = ? AND tenant_id = ?')
+      .get(scopeId, tenantId) as { status: string } | undefined;
+    if (!scope || scope.status !== 'active') return report;
+
+    const rt = this.runtime(tenantId, scopeId);
+    await this.applyPendingMigrations(rt);
+    // Same lazy create as runDueSchedules — a freshness-only module must not hit
+    // `no such table` on a scope no schedule ever swept.
+    rt.db.exec(
+      `CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
+         schedule_op TEXT PRIMARY KEY,
+         last_run_at TEXT,
+         last_status TEXT
+       )`,
+    );
+
+    // Collapse duplicate event types to the tightest window, ACROSS modules.
+    const windows = new Map<string, number>();
+    for (const m of this.modules.values()) {
+      for (const f of m.freshness) {
+        const prev = windows.get(f.eventType);
+        if (prev === undefined || f.within.hours < prev) windows.set(f.eventType, f.within.hours);
+      }
+    }
+    if (windows.size === 0) return report;
+    const types = [...windows.keys()];
+    const observed = new Map<string, string>();
+    for (const row of rt.db
+      .prepare(
+        `SELECT type, MAX(occurred_at) AS at FROM _substrat_outbox
+          WHERE type IN (${types.map(() => '?').join(', ')}) GROUP BY type`,
+      )
+      .all(...types) as { type: string; at: string | null }[]) {
+      if (row.at !== null) observed.set(row.type, row.at);
+    }
+
+    const nowIso = this.clock();
+    const now = Date.parse(nowIso);
+    for (const [eventType, withinHours] of windows) {
+      const observedAt = observed.get(eventType) ?? null;
+      const outcome: FreshnessReport['checks'][number]['outcome'] =
+        observedAt === null
+          ? 'skipped' // never observed — the never-run analogue, not a failure
+          : now - Date.parse(observedAt) <= withinHours * 3_600_000
+            ? 'ok'
+            : 'failed';
+      const stateKey = `freshness:${eventType}`;
+      const state = rt.db
+        .prepare('SELECT last_run_at, last_status FROM _substrat_schedule_state WHERE schedule_op = ?')
+        .get(stateKey) as { last_run_at: string | null; last_status: string | null } | undefined;
+      const changed = state?.last_status !== outcome;
+      const heartbeatDue =
+        !state?.last_run_at ||
+        now - Date.parse(state.last_run_at) > FRESHNESS_HEARTBEAT_MINUTES * 60_000;
+      if (!changed && !heartbeatDue) continue;
+      rt.db
+        .prepare(
+          `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
+             VALUES (?, ?, ?)
+           ON CONFLICT(schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                  last_status = excluded.last_status`,
+        )
+        .run(stateKey, nowIso, outcome);
+      report.checks.push({ eventType, outcome, observedAt, withinHours });
+    }
+    return report;
+  }
+
 
   async runDueSchedules(
     moduleId: ModuleId,
@@ -7049,8 +7168,8 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare(
             `INSERT OR IGNORE INTO _substrat_sweep_runs
                (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-                connection_id, error, elapsed_ms, request_id, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                connection_id, error, elapsed_ms, request_id, event_type, observed_at, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             ulid(),
@@ -7068,6 +7187,8 @@ export class SqliteScopeHost implements ScopeHost {
             entry.error == null ? null : entry.error.slice(0, 2000),
             entry.elapsedMs ?? null,
             entry.requestId ?? null,
+            entry.eventType ?? null,
+            entry.observedAt ?? null,
             entry.at ?? new Date().toISOString(),
           );
         // Prune-on-write, like ops failures and for the same reason: the table stays
@@ -7136,6 +7257,8 @@ export class SqliteScopeHost implements ScopeHost {
             connectionId: r.connection_id,
             error: r.error,
             elapsedMs: r.elapsed_ms,
+            eventType: r.event_type,
+            observedAt: r.observed_at,
             at: r.at,
           }),
         );
@@ -7347,6 +7470,8 @@ export class SqliteScopeHost implements ScopeHost {
     // #1232: the drained batch's dedupe key, on a directory created before it. The
     // unique index rides here too — created after the column exists on every path.
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'request_id', 'request_id TEXT');
+    this.ensureColumn(this.directory, '_substrat_sweep_runs', 'event_type', 'event_type TEXT');
+    this.ensureColumn(this.directory, '_substrat_sweep_runs', 'observed_at', 'observed_at TEXT');
     this.directory.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit)',
     );

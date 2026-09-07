@@ -14,7 +14,8 @@ import {
   matchesOutboundHost,
   type PermissionRegistry,
 } from '@substrat-run/contracts';
-import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
+import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules,
+  flattenDeclaredFreshness, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -839,6 +840,27 @@ export const permissions = {
     // …and a surface with none stays undefined, so the manifest field stays absent.
     expect(
       flattenDeclaredSchedules({ modules: [{ manifest: { id: '@x/y', permissions: [] } }], roles: [] } as never),
+    ).toBeUndefined();
+  });
+
+  it("flattens each module's freshness expectations, tagged with the owner (#1232)", () => {
+    const withFreshness = {
+      modules: [
+        {
+          manifest: {
+            id: '@substrat-run/demo-bridge',
+            permissions: [],
+            freshness: [{ eventType: 'receipt.landed', within: { hours: 24 } }],
+          },
+        },
+      ],
+      roles: [],
+    } as never;
+    expect(flattenDeclaredFreshness(withFreshness)).toEqual([
+      { eventType: 'receipt.landed', within: { hours: 24 }, moduleId: '@substrat-run/demo-bridge' },
+    ]);
+    expect(
+      flattenDeclaredFreshness({ modules: [{ manifest: { id: '@x/y', permissions: [] } }], roles: [] } as never),
     ).toBeUndefined();
   });
 

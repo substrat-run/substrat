@@ -1,5 +1,18 @@
 # @substrat-run/engine-workorder
 
+## 0.11.0
+
+### Minor Changes
+
+- 8406843: `completeWorkOrder` takes an optional `currency`, so a completion with no billable lines no longer invents `SEK`. Omitting it keeps today's answer; declaring one that contradicts the billable lines is refused instead of ignored.
+
+### Patch Changes
+
+- Updated dependencies [b61c4d5]
+- Updated dependencies [306b893]
+  - @substrat-run/contracts@0.101.0
+  - @substrat-run/kernel@0.101.0
+
 ## 0.10.8
 
 ### Patch Changes
@@ -1375,7 +1388,7 @@ active`, `unknown tenant/scope/table`). Those are next, and they are the ones th
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
