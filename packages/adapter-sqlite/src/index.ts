@@ -5,6 +5,7 @@ import {
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
+  sweepRunEntry,
   modelUsageEntry,
   ATTACHMENT_ADDED,
   ATTACHMENT_REMOVED,
@@ -73,6 +74,7 @@ import {
   type SystemGrant,
   type AdminLogEntry,
   type OpsFailureEntry,
+  type SweepRunEntry,
   type ModelUsageEntry,
   type ModelUsageSummary,
   type CapabilityGrant,
@@ -159,11 +161,14 @@ import {
   resolveScopeRecord,
   ulid,
   OPS_FAILURE_RETENTION_DAYS,
+  SWEEP_RUN_RETENTION_DAYS,
   type AccessLogFilter,
   type AttachmentUploadInput,
   type AuditLogFilter,
   type OpsFailureFilter,
   type OpsFailureInput,
+  type SweepRunFilter,
+  type SweepRunInput,
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
@@ -778,6 +783,22 @@ interface OpsFailureRow {
   status: number | null;
   message: string;
   reference: string | null;
+  at: string;
+}
+
+interface SweepRunRow {
+  id: string;
+  kind: string;
+  unit: string;
+  outcome: string;
+  tenant_id: string | null;
+  scope_id: string | null;
+  vertical: string | null;
+  version: string | null;
+  operation: string | null;
+  connection_id: string | null;
+  error: string | null;
+  elapsed_ms: number | null;
   at: string;
 }
 
@@ -1497,6 +1518,29 @@ export class SqliteScopeHost implements ScopeHost {
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
+      -- The durable sweep record (#1232): one row per unit outcome per pass —
+      -- a connection swept/skipped/failed, a schedule fired/skipped/failed. What
+      -- makes "when was this last swept" answerable after the log line rolls off.
+      -- Retention-bounded harder than ops failures (SWEEP_RUN_RETENTION_DAYS):
+      -- high-frequency telemetry whose job is the recent-runs strip.
+      CREATE TABLE IF NOT EXISTS _substrat_sweep_runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        unit TEXT NOT NULL,
+        outcome TEXT NOT NULL,
+        tenant_id TEXT,
+        scope_id TEXT,
+        vertical TEXT,
+        version TEXT,
+        operation TEXT,
+        connection_id TEXT,
+        error TEXT,
+        elapsed_ms INTEGER,
+        at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
+      CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_tenant ON _substrat_sweep_runs (tenant_id, id);
+      CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_at ON _substrat_sweep_runs (at);
       -- Model usage (#1054, meter 3): one line per model call a vertical made through
       -- the platform's model host, drained here as a model-usage intent. request_id is
       -- the intent id and UNIQUE, which is what makes a retried drain write nothing twice.
@@ -2845,7 +2889,7 @@ export class SqliteScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScheduleRunReport> {
-    const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [] };
+    const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [], runs: [] };
     const mod = this.modules.get(moduleId);
     if (!mod || mod.schedules.length === 0) return report;
 
@@ -2892,6 +2936,7 @@ export class SqliteScopeHost implements ScopeHost {
       const dueAt = lastRun === null ? -Infinity : lastRun + schedule.cadence.everyMinutes * 60_000;
       if (now < dueAt) {
         report.skipped += 1;
+        report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
         continue;
       }
       // Due — invoke through the system door (a fresh stub per schedule keeps the
@@ -2917,6 +2962,7 @@ export class SqliteScopeHost implements ScopeHost {
                                                   last_status = excluded.last_status`,
         )
         .run(schedule.operation, new Date(now).toISOString(), status);
+      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     return report;
   }
@@ -6988,6 +7034,101 @@ export class SqliteScopeHost implements ScopeHost {
             status: r.status,
             message: r.message,
             reference: r.reference,
+            at: r.at,
+          }),
+        );
+      },
+      recordSweepRun: async (entry: SweepRunInput): Promise<void> => {
+        this.directory
+          .prepare(
+            `INSERT INTO _substrat_sweep_runs
+               (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
+                connection_id, error, elapsed_ms, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            ulid(),
+            entry.kind,
+            entry.unit,
+            entry.outcome,
+            entry.tenantId ?? null,
+            entry.scopeId ?? null,
+            entry.vertical ?? null,
+            entry.version ?? null,
+            entry.operation ?? null,
+            entry.connectionId ?? null,
+            // Bounded here, not trusted from the sweep: one runaway provider body
+            // must not become a runaway directory row (the #559 rule).
+            entry.error == null ? null : entry.error.slice(0, 2000),
+            entry.elapsedMs ?? null,
+            new Date().toISOString(),
+          );
+        // Prune-on-write, like ops failures and for the same reason: the table stays
+        // bounded even on a deployment whose scheduled pass is broken.
+        const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
+        this.directory.prepare('DELETE FROM _substrat_sweep_runs WHERE at < ?').run(horizon);
+      },
+      listSweepRuns: async (actor, filter?: SweepRunFilter): Promise<SweepRunEntry[]> => {
+        const where: string[] = [];
+        const params: (string | number)[] = [];
+        const eq = (col: string, v: string | undefined) => {
+          if (v !== undefined) {
+            where.push(`${col} = ?`);
+            params.push(v);
+          }
+        };
+        eq('kind', filter?.kind);
+        eq('unit', filter?.unit);
+        eq('outcome', filter?.outcome);
+        eq('tenant_id', filter?.tenantId);
+        eq('scope_id', filter?.scopeId);
+        eq('vertical', filter?.vertical);
+        eq('connection_id', filter?.connectionId);
+        if (filter?.since) {
+          where.push('at >= ?');
+          params.push(filter.since);
+        }
+        if (filter?.until) {
+          where.push('at < ?');
+          params.push(filter.until);
+        }
+        // Default DESC: "last run" and the recent-runs strip both read newest-first.
+        const order = (filter?.order ?? 'desc') === 'desc' ? 'DESC' : 'ASC';
+        if (filter?.cursor) {
+          where.push(order === 'DESC' ? 'id < ?' : 'id > ?');
+          params.push(filter.cursor);
+        }
+        let sql =
+          'SELECT * FROM _substrat_sweep_runs' +
+          (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+          ` ORDER BY id ${order}`;
+        if (filter?.limit !== undefined) {
+          sql += ' LIMIT ?';
+          params.push(filter.limit);
+        }
+        const rows = this.directory.prepare(sql).all(...params) as SweepRunRow[];
+        // Rows can name tenants and scopes, so reading them is recorded (K-24).
+        this.recordAccess(
+          actor,
+          'listSweepRuns',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows.map((r) =>
+          sweepRunEntry.parse({
+            id: r.id,
+            kind: r.kind,
+            unit: r.unit,
+            outcome: r.outcome,
+            tenantId: r.tenant_id,
+            scopeId: r.scope_id,
+            vertical: r.vertical,
+            version: r.version,
+            operation: r.operation,
+            connectionId: r.connection_id,
+            error: r.error,
+            elapsedMs: r.elapsed_ms,
             at: r.at,
           }),
         );

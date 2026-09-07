@@ -6,6 +6,7 @@ import {
   impersonationListQuery,
   impersonationRowValues,
   OPS_FAILURE_RETENTION_DAYS,
+  SWEEP_RUN_RETENTION_DAYS,
   MODEL_USAGE_RETENTION_DAYS,
   type ImpersonationRow,
 } from '@substrat-run/kernel';
@@ -14,6 +15,7 @@ import type {
   AdminLogEntry,
   ListPage,
   OpsFailureEntry,
+  SweepRunEntry,
   RoleDefinition,
   ScopeDumpTable,
   ScopeStatus,
@@ -314,6 +316,39 @@ export interface ModelUsageQuery {
   scopeId?: string;
   vertical?: string;
   model?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  order?: 'asc' | 'desc';
+}
+
+/** One sweep-run row, fully stamped by the coordinator (#1232). */
+export interface SweepRunRow {
+  id: string;
+  kind: string;
+  unit: string;
+  outcome: string;
+  tenant_id: string | null;
+  scope_id: string | null;
+  vertical: string | null;
+  version: string | null;
+  operation: string | null;
+  connection_id: string | null;
+  error: string | null;
+  elapsed_ms: number | null;
+  at: string;
+}
+
+/** The sweep-run filter, flattened for the RPC hop (#1232). */
+export interface SweepRunQuery {
+  kind?: string;
+  unit?: string;
+  outcome?: string;
+  tenantId?: string;
+  scopeId?: string;
+  vertical?: string;
+  connectionId?: string;
   since?: string;
   until?: string;
   limit?: number;
@@ -784,6 +819,29 @@ const DIRECTORY_DDL = `
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
+  -- The durable sweep record (#1232): one row per unit outcome per pass - a
+  -- connection swept/skipped/failed, a schedule fired/skipped/failed. What makes
+  -- "when was this last swept" answerable after the log line rolls off. Pruned on
+  -- write after SWEEP_RUN_RETENTION_DAYS - high-frequency telemetry whose job is
+  -- the recent-runs strip.
+  CREATE TABLE IF NOT EXISTS _substrat_sweep_runs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    unit TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    tenant_id TEXT,
+    scope_id TEXT,
+    vertical TEXT,
+    version TEXT,
+    operation TEXT,
+    connection_id TEXT,
+    error TEXT,
+    elapsed_ms INTEGER,
+    at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
+  CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_tenant ON _substrat_sweep_runs (tenant_id, id);
+  CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_at ON _substrat_sweep_runs (at);
   -- Model usage (#1054, meter 3): one line per model call a vertical made through the
   -- platform's model host, drained here as a model-usage intent. request_id is the intent
   -- id and UNIQUE, which is what makes a retried drain write nothing twice. Retention-
@@ -3287,6 +3345,88 @@ export class ControlPlaneDO extends DurableObject {
       reference: r.reference,
       at: r.at,
     })) as OpsFailureEntry[];
+  }
+
+  recordSweepRun(row: SweepRunRow): void {
+    this.sql.exec(
+      `INSERT INTO _substrat_sweep_runs
+         (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
+          connection_id, error, elapsed_ms, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      row.id,
+      row.kind,
+      row.unit,
+      row.outcome,
+      row.tenant_id,
+      row.scope_id,
+      row.vertical,
+      row.version,
+      row.operation,
+      row.connection_id,
+      row.error,
+      row.elapsed_ms,
+      row.at,
+    );
+    // Prune-on-write, like ops failures and for the same reason: bounded even on a
+    // deployment whose scheduled pass is broken.
+    const horizon = new Date(Date.now() - SWEEP_RUN_RETENTION_DAYS * 86_400_000).toISOString();
+    this.sql.exec('DELETE FROM _substrat_sweep_runs WHERE at < ?', horizon);
+  }
+
+  listSweepRuns(query: SweepRunQuery): SweepRunEntry[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    const eq = (col: string, v: string | undefined) => {
+      if (v !== undefined) {
+        where.push(`${col} = ?`);
+        params.push(v);
+      }
+    };
+    eq('kind', query.kind);
+    eq('unit', query.unit);
+    eq('outcome', query.outcome);
+    eq('tenant_id', query.tenantId);
+    eq('scope_id', query.scopeId);
+    eq('vertical', query.vertical);
+    eq('connection_id', query.connectionId);
+    if (query.since) {
+      where.push('at >= ?');
+      params.push(query.since);
+    }
+    if (query.until) {
+      where.push('at < ?');
+      params.push(query.until);
+    }
+    // Default DESC: "last run" and the recent-runs strip both read newest-first.
+    const order = (query.order ?? 'desc') === 'desc' ? 'DESC' : 'ASC';
+    if (query.cursor) {
+      where.push(order === 'DESC' ? 'id < ?' : 'id > ?');
+      params.push(query.cursor);
+    }
+    let sql =
+      'SELECT * FROM _substrat_sweep_runs' +
+      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+      ` ORDER BY id ${order}`;
+    if (query.limit !== undefined) {
+      sql += ' LIMIT ?';
+      params.push(query.limit);
+    }
+    const rows = this.sql.exec(sql, ...params).toArray() as unknown as SweepRunRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      unit: r.unit,
+      outcome: r.outcome,
+      tenantId: r.tenant_id,
+      scopeId: r.scope_id,
+      vertical: r.vertical,
+      version: r.version,
+      operation: r.operation,
+      connectionId: r.connection_id,
+      error: r.error,
+      elapsedMs: r.elapsed_ms,
+      at: r.at,
+    })) as SweepRunEntry[];
   }
 
   /** #1054: idempotent on request_id — a replayed intent writes nothing. */

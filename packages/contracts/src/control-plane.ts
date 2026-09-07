@@ -423,6 +423,51 @@ export const opsFailureEntry = z.object({
 });
 export type OpsFailureEntry = z.infer<typeof opsFailureEntry>;
 
+/** What a sweep pass touched (#1232). More kinds arrive with the views that read them. */
+export const sweepRunKind = z.enum(['connector', 'schedule']);
+export type SweepRunKind = z.infer<typeof sweepRunKind>;
+/** `skipped` is a first-class outcome: "swept, nothing to do" and "bound but no
+ *  sweeper registered" are the facts a freshness view needs most, and the ones
+ *  nothing recorded before this table existed. */
+export const sweepRunOutcome = z.enum(['ok', 'failed', 'skipped']);
+export type SweepRunOutcome = z.infer<typeof sweepRunOutcome>;
+
+/**
+ * One unit outcome of one platform sweep pass (#1232) — the durable answer to
+ * "when was this connection last swept, and how did it go", which the in-memory
+ * `PlatformSweepReport` could never give once its log line rolled off. Per UNIT,
+ * never a JSON report per pass: the view's questions ("last run per schedule",
+ * "recent-runs strip per connection") are one indexed walk over these rows.
+ *
+ * Retention-bounded like ops failures, but shorter (`SWEEP_RUN_RETENTION_DAYS`):
+ * this is high-frequency telemetry, and the strip plus an incident window is the
+ * whole point of keeping it.
+ *
+ * Every dimension is nullable, and each null is structural, not lazy: a
+ * CONNECTION row carries no scope (a connection spans scopes by construction,
+ * connections.ts) and no version; a schedule row carries both. `unit` is the
+ * identity swept — a connection id, or `<scopeId>:<operation>` for a schedule,
+ * matching the id convention the sweep's error entries already use.
+ */
+export const sweepRunEntry = z.object({
+  id: z.string().min(1), // ULID, stamped platform-side; sortable = chronological
+  kind: sweepRunKind,
+  unit: z.string().min(1),
+  outcome: sweepRunOutcome,
+  tenantId: tenantId.nullable(),
+  scopeId: scopeId.nullable(),
+  vertical: z.string().nullable(),
+  /** The version-registry id bound at sweep time — the signals dimension (#1231). */
+  version: z.string().nullable(),
+  /** `sweep.connector:<provider>`, or the schedule's own declared operation. */
+  operation: z.string().nullable(),
+  connectionId: z.string().nullable(),
+  error: z.string().nullable(),
+  elapsedMs: z.number().int().nonnegative().nullable(),
+  at: instant,
+});
+export type SweepRunEntry = z.infer<typeof sweepRunEntry>;
+
 /**
  * An append-only admin audit row (control-plane.md §4.4). Every field except
  * `before`/`after` is stamped platform-side — never supplied by the caller —

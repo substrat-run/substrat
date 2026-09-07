@@ -922,6 +922,9 @@ export default {
       // surface (the host's connectorDelegation). A connection whose secret cannot be
       // opened (no CONNECTION_SEAL_KEY) fails its sweep loudly into report.errors.
       sweepers: connectorSweepersFor(env),
+      // #1232: the durable sweep record. Fire-and-forget — a recorder failure must
+      // never sink the pass it is recording (the ops-failure recorder's shape).
+      recordSweepRun: (e) => void host.admin.recordSweepRun(e).catch(() => undefined),
       drainRetries: false,
       deleteSnapshotFn: async (tenantId, scopeId) => {
         const rec = await host.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
