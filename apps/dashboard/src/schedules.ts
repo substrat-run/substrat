@@ -30,6 +30,8 @@ export interface ScheduleRunView {
   at: string;
   error: string | null;
   elapsedMs: number | null;
+  /** The freshness rows' evidence timestamp (#1272); null on schedule rows. */
+  observedAt: string | null;
 }
 
 export interface AppScheduleRow {
@@ -65,6 +67,7 @@ const viewOf = (r: SweepRunEntry): ScheduleRunView => ({
   at: r.at,
   error: r.error,
   elapsedMs: r.elapsedMs,
+  observedAt: r.observedAt,
 });
 
 /**
@@ -73,6 +76,69 @@ const viewOf = (r: SweepRunEntry): ScheduleRunView => ({
  * newest row of ANY outcome for the scope — the liveness read, and the only place
  * the flood of `skipped` rows earns its storage.
  */
+/** One declared freshness expectation's verdict on an app (#1232). */
+export interface AppFreshnessRow {
+  eventType: string;
+  moduleId: string;
+  withinHours: number;
+  /** The newest matching evidence the evaluator recorded; null = never observed. */
+  observedAt: string | null;
+  /**
+   * - `sweeper-silent` — as for schedules: nothing below is the expectation's fault.
+   * - `never-seen` — no event of this type has ever landed (the never-run analogue;
+   *   a brand-new install must not open red).
+   * - `stale` — the last recorded verdict says the window lapsed.
+   * - `fresh` — evidence within the window.
+   */
+  health: 'fresh' | 'stale' | 'never-seen' | 'sweeper-silent';
+  /** Recent verdict changes + heartbeats, newest first — sparse by design. */
+  runs: ScheduleRunView[];
+}
+
+/**
+ * Derive each declared freshness expectation's verdict from its recorded rows.
+ * Unlike schedules there is no next-due arithmetic to re-run: the evaluator
+ * already judged, change-gated and heartbeat-bounded — the newest row IS the
+ * verdict, and this only translates outcomes into the panel's vocabulary.
+ * Rows arrive unfiltered by outcome (change-gating means no flood to dodge).
+ */
+export function deriveFreshnessHealth(
+  declared: NonNullable<DeployManifest['freshness']>,
+  runsByEventType: Map<string, SweepRunEntry[]>,
+  lastSweepAt: string | null,
+  now: number,
+): AppFreshnessRow[] {
+  const silent = lastSweepAt === null || now - Date.parse(lastSweepAt) > SWEEPER_SILENT_AFTER_MS;
+  // Collapse duplicate declarations exactly as the evaluator does — tightest
+  // window, first declarer named — so the panel shows what is actually judged.
+  const seen = new Map<string, { moduleId: string; withinHours: number }>();
+  for (const spec of declared) {
+    const prev = seen.get(spec.eventType);
+    if (prev === undefined || spec.within.hours < prev.withinHours) {
+      seen.set(spec.eventType, { moduleId: spec.moduleId, withinHours: spec.within.hours });
+    }
+  }
+  return [...seen].map(([eventType, { moduleId, withinHours }]) => {
+    const runs = (runsByEventType.get(eventType) ?? []).map(viewOf);
+    const last = runs[0] ?? null;
+    const health: AppFreshnessRow['health'] = silent
+      ? 'sweeper-silent'
+      : last === null || last.outcome === 'skipped'
+        ? 'never-seen'
+        : last.outcome === 'failed'
+          ? 'stale'
+          : 'fresh';
+    return {
+      eventType,
+      moduleId,
+      withinHours,
+      observedAt: last?.observedAt ?? null,
+      health,
+      runs,
+    };
+  });
+}
+
 export function deriveScheduleHealth(
   declared: NonNullable<DeployManifest['schedules']>,
   runsByOperation: Map<string, SweepRunEntry[]>,

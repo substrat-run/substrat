@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SweepRunEntry } from '@substrat-run/contracts';
-import { SWEEP_WINDOW_MINUTES, deriveScheduleHealth } from '../src/schedules.js';
+import { SWEEP_WINDOW_MINUTES, deriveFreshnessHealth, deriveScheduleHealth } from '../src/schedules.js';
 
 /**
  * The verdict table (#1232). Pure over its inputs, so every boundary the panel
@@ -8,6 +8,64 @@ import { SWEEP_WINDOW_MINUTES, deriveScheduleHealth } from '../src/schedules.js'
  * confused: a schedule that genuinely did not fire, and a sweeper that stopped
  * reaching the scope (whose silence must never blame the schedule).
  */
+describe('deriveFreshnessHealth — the verdicts (#1272)', () => {
+  const NOW = Date.parse('2026-09-07T12:00:00.000Z');
+  const min = (n: number) => n * 60_000;
+  const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+  const spec = (eventType: string, hours: number, moduleId = '@test/a') => ({
+    eventType,
+    within: { hours },
+    moduleId,
+  });
+  const row = (msAgo: number, outcome: 'ok' | 'failed' | 'skipped', observedMsAgo: number | null): SweepRunEntry =>
+    ({
+      id: String(1e15 - msAgo),
+      kind: 'freshness',
+      unit: 'scope:receipt.landed',
+      outcome,
+      tenantId: null,
+      scopeId: null,
+      vertical: null,
+      version: null,
+      operation: null,
+      connectionId: null,
+      error: null,
+      elapsedMs: null,
+      eventType: 'receipt.landed',
+      observedAt: observedMsAgo === null ? null : iso(observedMsAgo),
+      at: iso(msAgo),
+    }) as SweepRunEntry;
+  const one = (rows: SweepRunEntry[], lastSweepAt: string | null, declared = [spec('receipt.landed', 24)]) =>
+    deriveFreshnessHealth(declared as never, new Map([['receipt.landed', rows]]), lastSweepAt, NOW);
+
+  it('the newest recorded verdict IS the verdict — fresh, stale, never-seen', () => {
+    expect(one([row(min(40), 'ok', min(180))], iso(min(5)))[0]).toMatchObject({
+      health: 'fresh',
+      observedAt: iso(min(180)),
+    });
+    expect(one([row(min(40), 'failed', min(26 * 60))], iso(min(5)))[0]!.health).toBe('stale');
+    expect(one([row(min(40), 'skipped', null)], iso(min(5)))[0]!.health).toBe('never-seen');
+    expect(one([], iso(min(5)))[0]!.health).toBe('never-seen');
+  });
+
+  it("sweeper-silent replaces the verdict — a stopped evaluator is never the expectation's fault", () => {
+    expect(one([row(min(40), 'failed', min(26 * 60))], null)[0]!.health).toBe('sweeper-silent');
+    expect(one([row(min(40), 'ok', min(60))], iso(min(2 * SWEEP_WINDOW_MINUTES + 1)))[0]!.health).toBe(
+      'sweeper-silent',
+    );
+  });
+
+  it('duplicate declarations collapse to the tightest window — the panel shows what is judged', () => {
+    const rows = one(
+      [row(min(40), 'ok', min(60))],
+      iso(min(5)),
+      [spec('receipt.landed', 48, '@test/b'), spec('receipt.landed', 24, '@test/a')],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ withinHours: 24, moduleId: '@test/a' });
+  });
+});
+
 describe('deriveScheduleHealth — the verdicts', () => {
   const NOW = Date.parse('2026-09-07T12:00:00.000Z');
   const min = (n: number) => n * 60_000;

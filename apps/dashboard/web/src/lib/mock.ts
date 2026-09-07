@@ -146,6 +146,32 @@ export const MOCK_APP_PERMISSIONS: AppPermissionsView = {
 export const MOCK_APP_SCHEDULES: AppSchedulesView = {
   running: { versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300', version: '0.3.0' },
   lastSweepAt: new Date(Date.now() - 4 * 60e3).toISOString(),
+  // #1272: one fresh, one stale — the stale one is the receipt-bridge alert this
+  // whole view exists for, so the preview must show it.
+  freshness: [
+    {
+      eventType: 'ticket.opened',
+      moduleId: '@substrat-run/demo-helpdesk',
+      withinHours: 24,
+      observedAt: new Date(Date.now() - 3 * 3600e3).toISOString(),
+      health: 'fresh',
+      runs: [
+        { id: '01MOCKFRESHA00000000000001', outcome: 'ok', at: new Date(Date.now() - 40 * 60e3).toISOString(), error: null, elapsedMs: null, observedAt: new Date(Date.now() - 3 * 3600e3).toISOString() },
+        { id: '01MOCKFRESHA00000000000000', outcome: 'ok', at: new Date(Date.now() - 100 * 60e3).toISOString(), error: null, elapsedMs: null, observedAt: new Date(Date.now() - 4 * 3600e3).toISOString() },
+      ],
+    },
+    {
+      eventType: 'receipt.landed',
+      moduleId: '@substrat-run/demo-helpdesk',
+      withinHours: 24,
+      observedAt: new Date(Date.now() - 26 * 3600e3).toISOString(),
+      health: 'stale',
+      runs: [
+        { id: '01MOCKFRESHB00000000000001', outcome: 'failed', at: new Date(Date.now() - 90 * 60e3).toISOString(), error: null, elapsedMs: null, observedAt: new Date(Date.now() - 26 * 3600e3).toISOString() },
+        { id: '01MOCKFRESHB00000000000000', outcome: 'ok', at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: null, observedAt: new Date(Date.now() - 27 * 3600e3).toISOString() },
+      ],
+    },
+  ],
   schedules: [
     {
       operation: 'helpdesk/escalate-stale',
@@ -161,6 +187,7 @@ export const MOCK_APP_SCHEDULES: AppSchedulesView = {
           at: new Date(Date.now() - (22 + i * 60) * 60e3).toISOString(),
           error: i === 6 ? 'engine refused: period already closed' : null,
           elapsedMs: 300 + i * 5,
+        observedAt: null,
         }));
         return { lastRun: runs[0]!, runs };
       })(),
@@ -174,8 +201,8 @@ export const MOCK_APP_SCHEDULES: AppSchedulesView = {
       permissions: ['helpdesk:digest-send'],
       ...(() => {
         const runs = [
-          { id: '01MOCKSCHEDB00000000000001', outcome: 'ok' as const, at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: 1800 },
-          { id: '01MOCKSCHEDB00000000000000', outcome: 'ok' as const, at: new Date(Date.now() - 51 * 3600e3).toISOString(), error: null, elapsedMs: 1750 },
+          { id: '01MOCKSCHEDB00000000000001', outcome: 'ok' as const, at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: 1800, observedAt: null },
+          { id: '01MOCKSCHEDB00000000000000', outcome: 'ok' as const, at: new Date(Date.now() - 51 * 3600e3).toISOString(), error: null, elapsedMs: 1750, observedAt: null },
         ];
         return { lastRun: runs[0]!, runs };
       })(),
