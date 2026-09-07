@@ -229,15 +229,38 @@ so every event one operation emits carries the *identical* instant — a cursor 
 
 `readHistory` is the same walk with `payload`, `authorization` (which permission and
 which grant allowed the change), `impersonation` (the staff actor behind the change, when
-there was one — see [Impersonation](#impersonation)) and `piiClass`/`subjectId`. Three
-nullables there are facts rather than gaps, and they are three *different* facts: `payload`
-is **null after an erasure** — the envelope survives a shred, so a history correctly
-degrades to "someone changed this, then"; `authorization` is null when the row predates it
-being recorded, which is not the same as having checked nothing; and `impersonation` is
-null when **nobody was impersonating** — the ordinary case, not an absence of recording,
-because the kernel stamps it on every event raised under a session and on no other. A
-history strip that cannot show this shows a customer's own name against a change their
-support engineer made.
+there was one — see [Impersonation](#impersonation)), `piiClass`/`subjectId`, `operation`
+(the exact `invoke()` string the event was emitted from) and `version` (the version the
+emitting code was deployed as). The last two are stamped kernel-side on the same pattern as
+the authorization chain and the impersonation stamp: module code can neither forge nor
+suppress them. Five nullables there are facts rather than gaps, and they are five
+*different* facts:
+
+- `payload` is **null after an erasure** — the envelope survives a shred, so a history
+  correctly degrades to "someone changed this, then".
+- `authorization` is null when the row **predates it being recorded**, which is not the
+  same as having checked nothing.
+- `impersonation` is null when **nobody was impersonating** — the ordinary case, not an
+  absence of recording, because the kernel stamps it on every event raised under a session
+  and on no other. A history strip that cannot show this shows a customer's own name
+  against a change their support engineer made.
+- `operation` is null for a **consumer's emit** — a consumer runs on behalf of no
+  operation, so the null is a fact, like `impersonation`'s — *and* for a row written before
+  the column, where it is unrecorded, like `authorization`'s. This is the one null that
+  honestly carries both neighbouring meanings, and the spine cannot tell them apart after
+  the fact; render it as "—" rather than guess. A schedule's emit is not a consumer's: the
+  schedule invokes an operation, so its events carry that operation's name.
+- `version` is null when **no version identity was present** — an undeployed host (dev or
+  self-host SQLite with no configured id), a script deployed before the `SUBSTRAT_VERSION_ID`
+  binding existed, or a pre-column row. It is surfaced from the outbox column only: the
+  envelope `ctx.emit` builds deliberately never carries it, because which push wrote an
+  event is script configuration rather than event data, so `readHistory` is the one
+  sanctioned way to join an event to the deploy that produced it. A reader who expects it
+  on the envelope, or hand-rolls a `SELECT` without the column, gets a null that looks like
+  missing data.
+
+`readTimeline`'s entry deliberately gains neither `operation` nor `version`: the timeline is
+the envelope and nothing more, so there is still no disclosure decision to make there.
 
 Field-level "X → Y" comes from diffing consecutive payloads; nothing stores a
 before-state. For the few fields a history strip actually shows — status, owner, value —
