@@ -70,15 +70,29 @@ export const PAGE = /* html */ `<!doctype html>
   }
   const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
+  // Every list read is a keyset PAGE: the body is the entries and the walk is a
+  // 'Link: <…>; rel="next"' header (RFC 8288). Follow the URL — never assemble a
+  // cursor — and stop when there is no next link. This walks the whole list; a
+  // real screen would keep the link and render a "load more".
+  async function walk(url) {
+    const all = [];
+    while (url) {
+      const r = await fetch(url, { headers: H });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
+      all.push(...(await r.json()));
+      const link = r.headers.get('Link');
+      const next = link && link.match(/<([^>]+)>;\\s*rel="next"/);
+      url = next ? next[1] : null;
+    }
+    return all;
+  }
+
   async function refresh() {
     try {
-      const [notes, wos] = await Promise.all([
-        fetch('/api/notes', { headers: H }).then((r) => r.json()),
-        fetch('/api/workorders', { headers: H }).then((r) => r.json()),
-      ]);
-      render('notes', (notes || []).map((n) => esc(n.text) + ' <span class="mono">' + n.created_at.slice(0, 19) + '</span>'),
+      const [notes, wos] = await Promise.all([walk('/api/notes'), walk('/api/workorders')]);
+      render('notes', notes.map((n) => esc(n.text) + ' <span class="mono">' + n.created_at.slice(0, 19) + '</span>'),
         'No notes yet.');
-      render('workorders', (wos || []).map((w) => esc(w.title || w.id)),
+      render('workorders', wos.map((w) => esc(w.title || w.id)),
         'Empty — engine registered, no create wired in this example.');
     } catch (e) { say('load failed: ' + e.message, 'err'); }
   }
