@@ -288,20 +288,125 @@ export async function signInSocial(providerId: string, oauthQuery?: string | nul
 }
 
 /**
+ * Better Auth's refusal codes, as prose. The codes are the library's (`error=` on the
+ * callback's error redirect), the words are ours, and both entry points below share them —
+ * a sign-in refused at the door and a link refused from inside the account fail for the same
+ * reasons and should say the same things.
+ *
+ * `account not linked` is the one anyone actually meets, and it has THREE fixes, in the order
+ * they should be tried: the person connects the provider from their own account (no policy
+ * change, and the account keeps its id), an administrator trusts the provider so the join
+ * happens at sign-in, or the local address gets verified — Better Auth requires that of the
+ * LOCAL row before an implicit join, whatever the provider is trusted with.
+ */
+const REFUSALS: Record<string, string> = {
+  'account not linked':
+    'That account already exists here, and this provider is not one of its sign-in methods yet. ' +
+    'Sign in the way you did before and connect it under “Sign-in methods” — the account keeps ' +
+    'its identity, so everything signed in through this issuer still knows you. An administrator ' +
+    'can also make the join happen at sign-in by trusting the provider, which additionally ' +
+    'requires the local account to have a verified email address.',
+  email_does_not_match:
+    'That provider account has a different email address from the one you are signed in as, so it ' +
+    'was not connected. Sign in with the matching address, or connect an account that uses this one.',
+  account_already_linked_to_different_user:
+    'That provider account is already a sign-in method for someone else here. It can only belong ' +
+    'to one account, so disconnect it there first.',
+  unable_to_link_account:
+    'The provider would not be accepted as a sign-in method for this account. It reported no ' +
+    'verified email address, and it is not trusted here — an administrator can trust it in the ' +
+    'Sign-in providers panel.',
+};
+
+/** One refusal code, translated; unknown codes keep the library's own words. */
+function refusalText(url: URL, fallback: string): string {
+  const code = url.searchParams.get('error') ?? '';
+  // Codes arrive underscored (`account_not_linked`); the sign-in path spells that one with
+  // spaces before it is url-ified, so both shapes are normalized to the keys above.
+  const translated = REFUSALS[code] ?? REFUSALS[code.replace(/[_-]/g, ' ')];
+  if (translated) return translated;
+  // `||`, not `??`: an absent `error` is read as `''` above, and a nullish fallback would
+  // return that empty string — which renders as no message at all, leaving exactly the blank
+  // screen these functions exist to prevent.
+  return url.searchParams.get('error_description') || code || fallback;
+}
+
+/**
  * The reason a social sign-in came back refused, as Better Auth puts it on the error redirect.
- * `account not linked` is the one an operator will actually meet, so it is translated rather
- * than shown raw — the fix is a toggle in the providers panel, and the message says so.
+ * Read on the SIGNED-OUT screen: `signInSocial` sends refusals to `/?social_error=1`.
  */
 export function socialErrorFrom(url: URL): string | null {
   if (!url.searchParams.has('social_error') && !url.searchParams.has('error')) return null;
-  const code = url.searchParams.get('error') ?? '';
-  if (code.replace(/[_-]/g, ' ') === 'account not linked') {
-    return 'That account exists here but is not linked to this provider. An administrator can allow linking by trusting the provider, and the local account must have a verified email address.';
-  }
-  // `||`, not `??`: an absent `error` is read as `''` above, and a nullish fallback would
-  // return that empty string — which renders as no message at all, leaving exactly the blank
-  // sign-in screen this function exists to prevent.
-  return url.searchParams.get('error_description') || code || 'sign-in was refused';
+  return refusalText(url, 'sign-in was refused');
+}
+
+/**
+ * The same, for a refused LINK — `connectProvider` sends those to `/?link_error=1`, a
+ * different marker on purpose: a signed-in person is bounced back to the dashboard, where
+ * nothing reads the sign-in screen's error and the failure would otherwise be silent.
+ */
+export function linkErrorFrom(url: URL): string | null {
+  if (!url.searchParams.has('link_error')) return null;
+  return refusalText(url, 'the provider was not connected');
+}
+
+/* ---- the sign-in methods on your own account ---- */
+
+/**
+ * One way this account can be signed into: `credential` is a password, `bankid` a BankID,
+ * anything else is an upstream provider's id. The `id` is the ACCOUNT row's rather than the
+ * provider's — one person may hold two accounts with the same provider, and that id is what
+ * disconnecting addresses.
+ */
+export interface SignInMethod {
+  id: string;
+  provider: string;
+  createdAt: string | null;
+}
+
+/** Every sign-in method on the CURRENT session's account. */
+export async function signInMethods(): Promise<SignInMethod[]> {
+  const { data, error } = await authClient.listAccounts();
+  if (error) throw new Error(error.message ?? 'could not read your sign-in methods');
+  return (data ?? []).map((account) => ({
+    id: account.id,
+    provider: account.providerId,
+    createdAt: account.createdAt ? new Date(account.createdAt).toISOString() : null,
+  }));
+}
+
+/**
+ * Add an upstream provider to the account that is ALREADY signed in — the answer to "that
+ * account exists here but is not linked to this provider", and the one that needs no policy
+ * change from an administrator.
+ *
+ * The difference from `signInSocial` is the whole feature. That one asks the issuer to decide
+ * whether a stranger holding a verified address may become an existing account; this one
+ * rides a session, so the OAuth state carries `link: { userId }` and the callback attaches the
+ * upstream account to THAT user id. Nothing is created and nothing is merged: the account
+ * keeps its id, so every relying party's `sub` keeps meaning the same person.
+ *
+ * Navigates away — the browser client's redirect plugin follows the `url` this answers — so
+ * nothing after it runs on success. Refusals come back through `errorCallbackURL`, which is
+ * why it is set: without it a refused link lands on a dashboard that says nothing happened.
+ */
+export async function connectProvider(providerId: string): Promise<void> {
+  const { error } = await authClient.linkSocial({
+    provider: providerId,
+    callbackURL: '/',
+    errorCallbackURL: '/?link_error=1',
+  } as Parameters<typeof authClient.linkSocial>[0]);
+  if (error) throw new Error(error.message ?? `could not start connecting ${providerId}`);
+}
+
+/**
+ * Remove one sign-in method. Better Auth refuses the LAST one (an account nobody can sign
+ * into is not a state to offer), and requires a recent session — an old one is asked to sign
+ * in again rather than quietly failing.
+ */
+export async function disconnectProvider(accountId: string): Promise<void> {
+  const { error } = await authClient.unlinkAccount({ accountId });
+  if (error) throw new Error(error.message ?? 'could not disconnect that sign-in method');
 }
 
 /* ---- per-client theming ---- */
