@@ -262,14 +262,27 @@ export async function versionRegistryFromHost(
  * schema so a version pushed before the permission registry was required stays readable.
  * `null` for a version that retained no manifest or shipped no static files.
  */
-/** #1232: the embedded-mode twin of `versionSchedules` — null without a manifest or field. */
+/**
+ * #1232: the embedded-mode twin of `versionSchedules` — null without a manifest or the
+ * field, and null for a MISSING or cross-lineage version id too, matching the HTTP twin:
+ * the adapters' one rejection here is `unknown version …`, and a caller holding a stale
+ * id (a version deleted between list and read) deserves the same empty panel the
+ * CP-backed path gives, not a 500. Anything else still propagates — a parse failure is
+ * a real defect, never an absence.
+ */
 export async function versionSchedulesFromHost(
   host: ScopeHost,
   actor: PlatformActorId,
   slug: string,
   versionId: string,
 ): Promise<DeployManifest['schedules'] | null> {
-  const json = await host.admin.versionManifest(actor, slug, versionId);
+  let json: string | null;
+  try {
+    json = await host.admin.versionManifest(actor, slug, versionId);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('unknown version')) return null;
+    throw e;
+  }
   if (!json) return null;
   return storedDeployManifest.parse(JSON.parse(json)).schedules ?? null;
 }

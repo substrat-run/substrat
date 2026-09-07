@@ -1390,6 +1390,10 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
       }),
     });
     expect(await versionSchedulesFromHost(host, staff, 'meridian-sched', withSched)).toEqual(schedules);
+    // A missing id and a cross-lineage read both answer null — the HTTP twin's shape,
+    // never a propagated 'unknown version' throw behind an empty panel.
+    expect(await versionSchedulesFromHost(host, staff, 'meridian-sched', ulid())).toBeNull();
+    expect(await versionSchedulesFromHost(host, staff, 'meridian', withSched)).toBeNull();
   });
 
   it('refuses to treat a slug the tenant does not own as promotable', async () => {
