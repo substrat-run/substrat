@@ -33,6 +33,8 @@ import {
   DENIAL_LIMIT_MAX,
   registerVerticalInput,
   serviceDimensions,
+  sweepRunKind,
+  sweepRunOutcome,
   scopeDump,
   dataSubjectId as dataSubjectIdSchema,
   scopeId as scopeIdSchema,
@@ -656,6 +658,20 @@ const opsFailuresQuery = z.object({
   ...listPageQuery.shape,
 });
 
+const sweepRunsQuery = z.object({
+  kind: sweepRunKind.optional(),
+  unit: z.string().optional(),
+  outcome: sweepRunOutcome.optional(),
+  tenantId: tenantIdSchema.optional(),
+  scopeId: scopeIdSchema.optional(),
+  vertical: z.string().optional(),
+  connectionId: z.string().optional(),
+  since: z.string().optional(),
+  until: z.string().optional(),
+  // Bounded by default exactly as /ops-failures, and for the same reason.
+  ...listPageQuery.shape,
+});
+
 const modelUsageQuery = z.object({
   tenantId: tenantIdSchema.optional(),
   scopeId: scopeIdSchema.optional(),
@@ -806,6 +822,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // signal dimensions. Tenant-narrowed in the handler (the same forced-filter
     // pattern); the allowlist alone is not authz.
     { method: 'GET', re: /\/service-refs$/ },
+    // The sweep record (#1232): when were MY connections last swept, and how did it
+    // go. Tenant-narrowed in the handler (the forced-filter pattern); the allowlist
+    // alone is not authz.
+    { method: 'GET', re: /\/sweep-runs$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -4841,6 +4861,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const entries = await admin.listOpsFailures(
       c.get('actor'),
       filter as Parameters<typeof admin.listOpsFailures>[1],
+    );
+    return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // -- sweep runs (#1232): the durable record of what a sweep pass touched -------
+  // Staff read fleet-wide (the console's later view); a builder's tenant is forced
+  // from the principal, the /ops-failures posture exactly.
+  app.get('/sweep-runs', async (c) => {
+    const p = c.get('principal');
+    const filter = sweepRunsQuery.parse({
+      kind: c.req.query('kind'),
+      unit: c.req.query('unit'),
+      outcome: c.req.query('outcome'),
+      tenantId: p.kind === 'builder' ? p.tenantId : c.req.query('tenantId'),
+      scopeId: c.req.query('scopeId'),
+      vertical: c.req.query('vertical'),
+      connectionId: c.req.query('connectionId'),
+      since: c.req.query('since'),
+      until: c.req.query('until'),
+      limit: c.req.query('limit'),
+      cursor: c.req.query('cursor'),
+      order: c.req.query('order'),
+    });
+    const entries = await admin.listSweepRuns(
+      c.get('actor'),
+      filter as Parameters<typeof admin.listSweepRuns>[1],
     );
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
   });

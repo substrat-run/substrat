@@ -588,7 +588,14 @@ export interface AccountIntegration {
   fields: ProviderField[];
   /** See {@link AppIntegration.connectFlow}. */
   connectFlow: 'redirect' | null;
-  connections: Array<ConnectionView & { vertical: string; apps: Array<{ scopeId: string; name: string }> }>;
+  connections: Array<
+    ConnectionView & {
+      vertical: string;
+      apps: Array<{ scopeId: string; name: string }>;
+      /** #1232: the last day's sweep outcomes, newest first — the recent-runs strip. */
+      sweepRuns: SweepRunView[];
+    }
+  >;
   connectTargets: Array<{ scopeId: string; name: string; vertical: string; connected: boolean }>;
 }
 
@@ -710,6 +717,22 @@ export interface ConnectionActivityView {
    * too old to serve it (the read is best-effort so a missing journal never costs the activity).
    */
   intents: ConnectionIntentView[];
+  /**
+   * The platform's sweep record for this connection (#1232) — newest first, empty on a
+   * plane too old to serve it. "When was this last swept, and how did it go", which no
+   * amount of provider-side activity can answer: a sweep that found nothing to do
+   * appears here and nowhere else.
+   */
+  sweepRuns: SweepRunView[];
+}
+
+/** One sweep outcome for a connection (#1232) — what the recent-runs strip renders. */
+export interface SweepRunView {
+  id: string;
+  outcome: 'ok' | 'failed' | 'skipped';
+  at: string;
+  error: string | null;
+  elapsedMs: number | null;
 }
 
 /** One hostname bound to the app's scope (the Domains tab). */

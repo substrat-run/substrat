@@ -10,6 +10,7 @@ import type {
   EmittedModel,
   ListPage,
   OpsFailureEntry,
+  SweepRunEntry,
   Page,
   PermissionRegistry,
   PlatformRequest,
@@ -867,6 +868,45 @@ export class TenantNarrowedControlPlane {
       return page?.entries ?? [];
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * The sweep record for this tenant (#1232), newest first — when each connection was
+   * last swept and how it went, the recent-runs strip's data. Tenant-pinned and
+   * deploy-skew-tolerant exactly as `listOpsFailures` above.
+   */
+  async listSweepRuns(
+    filter: { kind?: 'connector' | 'schedule'; connectionId?: string; since?: string; limit?: number } = {},
+  ): Promise<SweepRunEntry[]> {
+    // The route caps a page at LIST_PAGE_MAX, and a limit past the cap is a 400 the
+    // skew guard below would swallow into [] — the account page's strips silently
+    // blank, the exact failure class this record exists to surface. So a larger ask
+    // is a CURSOR WALK of capped pages, never one oversized request.
+    const wanted = filter.limit ?? LIST_PAGE_MAX;
+    const out: SweepRunEntry[] = [];
+    let cursor: string | undefined;
+    try {
+      while (out.length < wanted) {
+        const q = new URLSearchParams({ tenantId: this.tenantId });
+        if (filter.kind !== undefined) q.set('kind', filter.kind);
+        if (filter.connectionId !== undefined) q.set('connectionId', filter.connectionId);
+        if (filter.since !== undefined) q.set('since', filter.since);
+        q.set('limit', String(Math.min(wanted - out.length, LIST_PAGE_MAX)));
+        if (cursor !== undefined) q.set('cursor', cursor);
+        const page = await this.call<Page<SweepRunEntry> | SweepRunEntry[] | undefined>(
+          `/sweep-runs?${q.toString()}`,
+        );
+        // A bare array is a pre-envelope plane (deploy skew): one exhausted page.
+        if (Array.isArray(page)) return [...out, ...page];
+        out.push(...(page?.entries ?? []));
+        if (!page?.nextCursor) return out;
+        cursor = page.nextCursor;
+      }
+      return out;
+    } catch {
+      // Deploy skew (a plane predating the route): no strip, never an error.
+      return out.length > 0 ? out : [];
     }
   }
 
