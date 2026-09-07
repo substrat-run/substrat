@@ -1,5 +1,30 @@
 # @substrat-run/cli
 
+## 0.29.0
+
+### Minor Changes
+
+- 4b159da: Declared schedules travel with a push (#1232). The deploy manifest gains an
+  optional `schedules` field — every module's `scheduleSpec` flattened with its
+  owning module id, derived at push from the same `definePermissions(...)` import
+  that already yields the permission surface, so it costs zero extra reads.
+  Metadata, not code, and in no digest, exactly as the entity model rides;
+  versions pushed by an older CLI stay readable and answer null. The control
+  plane serves it back per version (`GET /verticals/:slug/versions/:id/schedules`,
+  owner-narrowed like the registry and model reads beside it), which is what the
+  dashboard's schedule-health view needs: `everyMinutes` exists nowhere off the
+  manifest, and next-due and missed-run detection are both derived from it.
+
+### Patch Changes
+
+- Updated dependencies [0cd3055]
+- Updated dependencies [4b159da]
+- Updated dependencies [d1a5a58]
+- Updated dependencies [8912fb8]
+- Updated dependencies [6b3e466]
+  - @substrat-run/contracts@0.100.0
+  - @substrat-run/model-view@0.2.1
+
 ## 0.28.0
 
 ### Minor Changes

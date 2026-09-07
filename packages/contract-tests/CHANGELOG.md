@@ -1,5 +1,67 @@
 # @substrat-run/contract-tests
 
+## 0.100.0
+
+### Minor Changes
+
+- 0cd3055: A hosted vertical's schedule outcomes reach the platform's sweep record (#1232,
+  closing the CP-less gap the last release named). The scope sweeper batches each
+  pass's per-schedule outcomes — skips included, stamped with PASS time and the
+  version whose code actually ran (`env.SUBSTRAT_VERSION_ID`) — into one
+  `sweep-runs` platform intent per scope, which the control plane's drain lands in
+  `_substrat_sweep_runs` with identity proven by the scope the intent lives in,
+  never read from the payload. Telemetry gets its own low sub-cap on the journal
+  and DROPS rather than throws when full: a pass must never fail, or starve a
+  provision-sibling's slot, because its record could not be queued.
+
+  The write is now idempotent on (intent id, unit) — a new nullable `request_id`
+  column with a unique index and an ignore-on-conflict insert — so a replayed
+  drain writes nothing twice, while the direct sweep path (no request id) dedupes
+  nothing, as two real passes are two facts. `SweepRunInput` gains optional `at`
+  (a drained batch keeps pass time; drain time would skew every freshness read)
+  and `requestId`. The template's sweeper wires the version accessor; existing
+  workers compile untouched — the accessor and the host method are optional, and
+  a pass on a pre-widening deployment reports nothing, exactly as before.
+
+- 8912fb8: Sweep passes leave a durable record (#1232, tier 1 of the signals plan). A new
+  directory table, `_substrat_sweep_runs`, holds one row per unit outcome per
+  pass — each connection swept, failed, or skipped ("bound but no sweeper" is now
+  a stored fact, not an absence), and each schedule fired, failed, or skipped —
+  dimension-stamped per #1231 and retention-bounded at 14 days, pruned on write.
+  `ScheduleRunReport` gains an additive `runs` list (both adapters' drivers fill
+  it) because the counters alone cannot say WHICH schedule fired.
+  `HostAdmin.recordSweepRun`/`listSweepRuns` follow the ops-failures shape:
+  fire-and-forget writes, access-logged reads, ULID cursor, newest-first.
+  `runPlatformSweep` takes an optional `recordSweepRun` seam; unset, a pass
+  records nothing, exactly as before.
+
+  Stated plainly rather than left as a silent hole: schedule rows cover
+  directory-backed sweeps (self-host, dev). A HOSTED vertical's schedules run in
+  its own scope sweeper with no control plane in reach, so its schedule facts are
+  not in this table yet — that is the deferred CP-less half of #1232, and until it
+  lands the dashboard view reads connector health fleet-wide but schedule health
+  only where the platform sweep itself runs the schedules.
+
+- 6b3e466: Two follow-ups on the version stamp (#1242). The `SUBSTRAT_` binding namespace
+  is now refused at push by name, whatever type it claims — a vertical that could
+  declare `SUBSTRAT_VERSION_ID` itself would collide with the injected binding or
+  forge the stamp; the unforgeability the kernel-stamped envelope fields get for
+  free, a binding channel has to be given at the sandbox contract. And
+  `readHistory` surfaces the outbox `version` column on `historyEntry`
+  (`version: string | null`) — from the column only, never the envelope, which
+  stays deliberately version-free — so joining an event to the push that produced
+  it goes through the sanctioned read helper instead of a hand-rolled SELECT.
+
+### Patch Changes
+
+- Updated dependencies [0cd3055]
+- Updated dependencies [4b159da]
+- Updated dependencies [d1a5a58]
+- Updated dependencies [8912fb8]
+- Updated dependencies [6b3e466]
+  - @substrat-run/contracts@0.100.0
+  - @substrat-run/kernel@0.100.0
+
 ## 0.99.0
 
 ### Minor Changes
@@ -3565,7 +3627,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
