@@ -12,6 +12,7 @@ import {
   reportTime,
   startWorkOrder,
   workorderModule,
+  workorderOperations,
   type WorkOrder,
 } from '../src/index.js';
 
@@ -344,6 +345,23 @@ describe('engine-workorder', () => {
       { orderId: order.id, billable: [], currency: 'NOK' },
     );
     expect(total).toEqual({ amount: '0', currency: 'NOK' });
+  });
+
+  it('the declared output schema parses what the handler actually returns (#1277)', async () => {
+    const order = await create();
+    await staff.invoke('workorder/start', { orderId: order.id });
+    const result = await staff.invoke('workorder/complete', {
+      orderId: order.id,
+      billable: [billable('arbete', '500', 'SEK')],
+    });
+
+    // The declaration is what a vertical binds a URL to and what `model.json`
+    // and `openapi.json` are emitted from, so it has to agree with the handler.
+    // It said `total: z.string()` while the handler returned a `Money`, and
+    // nothing in the repo compared the two (#1277).
+    const declared = workorderOperations['workorder/complete'].output;
+    expect(() => declared.parse(result)).not.toThrow();
+    expect(declared.parse(result)).toMatchObject({ total: { amount: '500', currency: 'SEK' } });
   });
 
   // -- append-only reporting ------------------------------------------------
