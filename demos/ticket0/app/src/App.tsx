@@ -8,7 +8,7 @@
  * for the UI exactly as it is for the data, which is the only arrangement where the
  * two cannot disagree.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, auth, claimOwner, invites, me, type Identity, type Session } from './api.js';
 import { Avatar } from './ui.js';
 import { Notifications } from './Notifications.js';
@@ -386,13 +386,94 @@ function TopBar({
       </nav>
       <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
         <Notifications go={go} />
-        <span className="t-meta">{session.display}</span>
-        <Avatar name={session.display} size={26} />
-        <button className="btn btn-ghost" onClick={() => auth.switchUser()}>
-          Switch
-        </button>
+        <AccountMenu session={session} />
       </div>
     </header>
+  );
+}
+
+/**
+ * The account menu: the avatar is the control, and who you are plus what you can do
+ * about it live behind it. The bar used to spell all three out — name, avatar, a
+ * "Switch" button — which reads as three unrelated things rather than one identity.
+ */
+function AccountMenu({ session }: { session: Session }) {
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    addEventListener('mousedown', away);
+    addEventListener('keydown', key);
+    return () => {
+      removeEventListener('mousedown', away);
+      removeEventListener('keydown', key);
+    };
+  }, [open]);
+
+  const item = (label: string, onClick: () => void, danger = false) => (
+    <button
+      onClick={onClick}
+      className="btn btn-ghost"
+      style={{
+        display: 'block',
+        width: '100%',
+        textAlign: 'left',
+        borderRadius: 0,
+        padding: '8px 12px',
+        color: danger ? 'var(--danger)' : 'var(--text)',
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div ref={box} style={{ position: 'relative' }}>
+      <button
+        className="btn btn-ghost"
+        onClick={() => setOpen((v) => !v)}
+        title={session.display}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        style={{ padding: 3, borderRadius: 999 }}
+      >
+        <Avatar name={session.display} size={26} />
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          style={{
+            position: 'absolute',
+            right: 0,
+            top: 'calc(100% + 8px)',
+            minWidth: 200,
+            background: 'var(--surface)',
+            border: '1px solid var(--frame)',
+            borderRadius: 8,
+            boxShadow: 'var(--shadow-popover)',
+            overflow: 'hidden',
+            zIndex: 20,
+          }}
+        >
+          <div style={{ padding: '10px 12px', borderBottom: '1px solid var(--hairline)' }}>
+            <div className="t-strong">{session.display}</div>
+            <div className="micro">Signed in</div>
+          </div>
+          <div style={{ padding: '4px 0' }}>
+            {item('Switch user', () => auth.switchUser())}
+            {item('Sign out', () => auth.logout(), true)}
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
