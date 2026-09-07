@@ -792,6 +792,8 @@ interface OpsFailureRow {
   status: number | null;
   message: string;
   reference: string | null;
+  origin: string | null;
+  code: string | null;
   at: string;
 }
 
@@ -1524,6 +1526,8 @@ export class SqliteScopeHost implements ScopeHost {
         status INTEGER,
         message TEXT NOT NULL,
         reference TEXT,
+        origin TEXT,
+        code TEXT,
         at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_vertical ON _substrat_ops_failures (vertical, id);
@@ -7061,8 +7065,8 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory
           .prepare(
             `INSERT INTO _substrat_ops_failures
-               (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             ulid(),
@@ -7078,6 +7082,8 @@ export class SqliteScopeHost implements ScopeHost {
             // body must not become a runaway directory row (#559).
             entry.message.slice(0, 2000),
             entry.reference ?? null,
+            entry.origin ?? null,
+            entry.code ?? null,
             new Date().toISOString(),
           );
         // Prune-on-write (#559): retention lives here, not in a cron — every insert
@@ -7108,6 +7114,10 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.operation) {
           where.push('operation = ?');
           params.push(filter.operation);
+        }
+        if (filter?.code) {
+          where.push('code = ?');
+          params.push(filter.code);
         }
         if (filter?.reference) {
           where.push('reference = ?');
@@ -7159,6 +7169,8 @@ export class SqliteScopeHost implements ScopeHost {
             status: r.status,
             message: r.message,
             reference: r.reference,
+            origin: r.origin,
+            code: r.code,
             at: r.at,
           }),
         );
@@ -7467,6 +7479,9 @@ export class SqliteScopeHost implements ScopeHost {
     // The signals `version` stamp (#1231): a directory created before the column
     // must still open, and an old row's NULL reads as "predates the stamp".
     this.ensureColumn(this.directory, '_substrat_ops_failures', 'version', 'version TEXT');
+    // The error shape (#1233): who refused + the taxonomy code, on a directory that predates them.
+    this.ensureColumn(this.directory, '_substrat_ops_failures', 'origin', 'origin TEXT');
+    this.ensureColumn(this.directory, '_substrat_ops_failures', 'code', 'code TEXT');
     // #1232: the drained batch's dedupe key, on a directory created before it. The
     // unique index rides here too — created after the column exists on every path.
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'request_id', 'request_id TEXT');

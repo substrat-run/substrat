@@ -24,6 +24,8 @@ import {
   connectionSecret,
 } from './connections.js';
 import { scopeDump } from './introspection.js';
+import { errorCode } from './errors.js';
+import { platformRequestFailureOrigin } from './platform-request.js';
 
 // The control plane — the shared layer across N per-vertical deployments (D-30,
 // control-plane.md). This file carries the audit contract that every effecting
@@ -416,6 +418,15 @@ export const opsFailureEntry = z.object({
   version: z.string().nullable(),
   /** The HTTP status the failure was answered with (or carried from upstream). */
   status: z.number().int().nullable(),
+  /**
+   * WHO refused (#1233): `platform` (a taxonomy code or a ControlPlaneError — ours),
+   * `provider` (a real upstream answer), `unknown` (a socket, a bug, a thrown
+   * string). Null = the writer predates the columns or did not classify — never
+   * a guess nobody made.
+   */
+  origin: platformRequestFailureOrigin.nullable(),
+  /** The taxonomy code when the refusal was one of ours — the error SHAPE a fingerprint groups by, so a reader never regexes `message`. */
+  code: errorCode.nullable(),
   message: z.string(),
   /** The upstream provider's trace reference, when the message carried one. */
   reference: z.string().nullable(),

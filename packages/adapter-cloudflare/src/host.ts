@@ -4547,6 +4547,8 @@ export class CloudflareScopeHost implements ScopeHost {
           // must not become a runaway directory row (#559).
           message: entry.message.slice(0, 2000),
           reference: entry.reference ?? null,
+          origin: entry.origin ?? null,
+          code: entry.code ?? null,
           at: new Date().toISOString(),
         });
       },
@@ -4557,6 +4559,7 @@ export class CloudflareScopeHost implements ScopeHost {
           vertical: filter?.vertical,
           version: filter?.version,
           operation: filter?.operation,
+          code: filter?.code,
           reference: filter?.reference,
           since: filter?.since,
           until: filter?.until,

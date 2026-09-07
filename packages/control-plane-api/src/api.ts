@@ -19,6 +19,7 @@ import {
   hostnameRegion,
   hostnameStatus,
   identityLink,
+  errorCode,
   listPageQuery,
   matchesOutboundHost,
   pageOf,
@@ -65,6 +66,7 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 import type { OpsFailureInput, ScopeHost } from '@substrat-run/kernel';
+import { attributeFailure } from './failure-attribution.js';
 import { migrationProgress, ulid } from '@substrat-run/kernel';
 import { TENANT_HEADER } from './auth.js';
 import type { PlatformActorAuth, BuilderAuth, Principal } from './auth.js';
@@ -652,6 +654,8 @@ const opsFailuresQuery = z.object({
   operation: z.string().optional(),
   // Exact match — the lookup a CI log's `reference = <id>` line lands on.
   reference: z.string().optional(),
+  // The taxonomy code — the error-shape narrowing an issues view groups by (#1233).
+  code: errorCode.optional(),
   since: z.string().optional(),
   until: z.string().optional(),
   // Bounded by default exactly as /admin-log, and for the same reason.
@@ -840,10 +844,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // mask the failure it is recording, so every path through this swallows its own
   // errors. The upstream reference is extracted here — one place — so a caller
   // that only has the message still lands a searchable row.
-  const recordFailure = (entry: OpsFailureInput): void => {
+  // Not `cause?: unknown` with an undefined check: a caught value CAN be literally
+  // `undefined` (`throw undefined`, a bare rejection), and that throw deserves an
+  // `unknown` attribution, not a skipped one. Only true omission skips.
+  const NO_CAUSE = Symbol('no-cause');
+  const recordFailure = (entry: OpsFailureInput, cause: unknown = NO_CAUSE): void => {
+    // The error SHAPE rides beside the prose (#1233): attributed here — one place,
+    // from the throw itself — so a fingerprint groups on a column and never has to
+    // regex a message. A caller with no throw in hand leaves the columns null,
+    // which reads as "nobody classified this" rather than a guess nobody made.
+    const attributed = cause === NO_CAUSE ? undefined : attributeFailure(cause);
     void admin
       .recordOpsFailure({
         ...entry,
+        origin: entry.origin ?? attributed?.origin ?? null,
+        code: entry.code ?? attributed?.code ?? null,
         reference: entry.reference ?? UPSTREAM_REFERENCE.exec(entry.message)?.[1] ?? null,
       })
       .catch(() => undefined);
@@ -903,7 +918,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         scopeId: (c.req.param('scopeId') as OpsFailureInput['scopeId']) ?? null,
         status,
         message: err instanceof Error ? err.message : String(err),
-      });
+      }, err);
     }
     // A 500 is, by definition, a throw whose message `mapError` did not recognise — so the
     // client gets a GENERIC body that discloses nothing, and until now nothing recorded WHAT
@@ -1865,7 +1880,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           version: scope.verticalVersionId ?? null,
           status: e instanceof ControlPlaneError ? e.status : null,
           message,
-        });
+        }, e);
         storeErrors.push(message);
         return undefined;
       }
@@ -3077,7 +3092,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             tenantId: input.tenantId,
             status: e.status,
             message: e.message,
-          });
+          }, e);
         }
         return c.json({ error: e.message }, e.status as ContentfulStatusCode);
       }
@@ -3603,7 +3618,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       console.error('stores.backfill.failed', { slug, detail: message });
-      recordFailure({ actor, operation: 'promote.store-backfill', vertical: slug, message });
+      recordFailure({ actor, operation: 'promote.store-backfill', vertical: slug, message }, e);
       return { minted: [], error: message };
     }
   };
@@ -3971,7 +3986,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         tenantId: ownerTenant ?? null,
         status: rejected ? 422 : 502,
         message: detail,
-      });
+      }, e);
       return rejected
         ? c.json({ error: 'deploy rejected', detail }, 422)
         : c.json({ error: 'deploy upload failed', detail }, 502);
@@ -4640,7 +4655,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
             version: opts.versionId,
             status: e.status,
             message: e.message,
-          });
+          }, e);
         }
         throw e;
       }
@@ -4867,6 +4882,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       vertical: c.req.query('vertical'),
       version: c.req.query('version'),
       operation: c.req.query('operation'),
+      code: c.req.query('code'),
       reference: c.req.query('reference'),
       since: c.req.query('since'),
       until: c.req.query('until'),

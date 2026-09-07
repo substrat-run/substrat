@@ -156,6 +156,10 @@ export async function drainScopePlatformRequests(
         scopeId: ctx.scopeId,
         vertical: ctx.vertical,
         version: ctx.versionId ?? null,
+        // The attribution the settle journals (#841) rides onto the fleet row too —
+        // until now the drain had {origin, code} in hand and dropped it here (#1233).
+        origin: outcome.failure?.origin ?? null,
+        code: outcome.failure?.code ?? null,
         message: `platform intent ${request.id} ${outcome.error}`,
       });
     } else if (outcome.status === 'failed') {
@@ -170,6 +174,8 @@ export async function drainScopePlatformRequests(
         scopeId: ctx.scopeId,
         vertical: ctx.vertical,
         version: ctx.versionId ?? null,
+        origin: outcome.failure?.origin ?? null,
+        code: outcome.failure?.code ?? null,
         message: `platform intent ${request.id} failed: ${outcome.error ?? 'unknown'}`,
       });
     }

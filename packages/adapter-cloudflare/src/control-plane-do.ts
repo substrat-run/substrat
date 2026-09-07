@@ -285,6 +285,8 @@ export interface OpsFailureRow {
   status: number | null;
   message: string;
   reference: string | null;
+  origin: string | null;
+  code: string | null;
   at: string;
 }
 
@@ -365,6 +367,7 @@ export interface OpsFailureQuery {
   vertical?: string;
   version?: string;
   operation?: string;
+  code?: string;
   reference?: string;
   since?: string;
   until?: string;
@@ -816,6 +819,8 @@ const DIRECTORY_DDL = `
     status INTEGER,
     message TEXT NOT NULL,
     reference TEXT,
+    origin TEXT,
+    code TEXT,
     at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_vertical ON _substrat_ops_failures (vertical, id);
@@ -1026,6 +1031,9 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_admin_log', 'caused_by TEXT');
     // The signals `version` stamp (#1231): a DO that predates the column ALTERs it in.
     this.addColumn('_substrat_ops_failures', 'version TEXT');
+    // The error shape (#1233): who refused + the taxonomy code, on a DO that predates them.
+    this.addColumn('_substrat_ops_failures', 'origin TEXT');
+    this.addColumn('_substrat_ops_failures', 'code TEXT');
     // #1232: the drained batch's dedupe key + its unique index, on a DO that predates
     // them. The index rides here so it is created only after the column exists.
     this.addColumn('_substrat_sweep_runs', 'request_id TEXT');
@@ -3278,8 +3286,8 @@ export class ControlPlaneDO extends DurableObject {
   recordOpsFailure(row: OpsFailureRow): void {
     this.sql.exec(
       `INSERT INTO _substrat_ops_failures
-         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.actor,
       row.operation,
@@ -3291,6 +3299,8 @@ export class ControlPlaneDO extends DurableObject {
       row.status,
       row.message,
       row.reference,
+      row.origin,
+      row.code,
       row.at,
     );
     // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
@@ -3322,6 +3332,10 @@ export class ControlPlaneDO extends DurableObject {
     if (query.operation) {
       where.push('operation = ?');
       params.push(query.operation);
+    }
+    if (query.code) {
+      where.push('code = ?');
+      params.push(query.code);
     }
     if (query.reference) {
       where.push('reference = ?');
@@ -3363,6 +3377,8 @@ export class ControlPlaneDO extends DurableObject {
       status: r.status,
       message: r.message,
       reference: r.reference,
+      origin: r.origin,
+      code: r.code,
       at: r.at,
     })) as OpsFailureEntry[];
   }
