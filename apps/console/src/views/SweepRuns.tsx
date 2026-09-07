@@ -1,6 +1,7 @@
-import { Fragment, useEffect, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import type { SweepRunEntry, Tenant, TenantId } from '@substrat-run/contracts';
 import { Badge, Button, Card, Input, Select, Tag } from '../components';
+import type { Api } from '../lib/api';
 
 const PAGE = 20;
 
@@ -15,17 +16,7 @@ function useDebounced(value: string, ms = 400): string {
 }
 
 export interface SweepRunsProps {
-  api: {
-    listSweepRuns: (q: {
-      kind?: 'connector' | 'schedule' | 'freshness';
-      unit?: string;
-      outcome?: 'ok' | 'failed' | 'skipped';
-      tenantId?: TenantId;
-      vertical?: string;
-      limit?: number;
-      cursor?: string;
-    }) => Promise<{ entries: SweepRunEntry[]; nextCursor: string | null }>;
-  };
+  api: Api;
   tenants: Map<TenantId, Tenant>;
 }
 
@@ -65,7 +56,12 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
     unit: unit || undefined,
   };
 
+  // A filter change makes any in-flight older-page fetch stale — its rows belong
+  // to the previous filter and must not be appended to the new result set.
+  const filterGeneration = useRef(0);
+
   useEffect(() => {
+    filterGeneration.current += 1;
     let live = true;
     void (async () => {
       try {
@@ -89,7 +85,9 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
 
   async function loadOlder() {
     if (!cursor) return;
+    const generation = filterGeneration.current;
     const page = await api.listSweepRuns({ limit: PAGE, cursor, ...serverFilter });
+    if (generation !== filterGeneration.current) return;
     setEntries((prev) => [...prev, ...page.entries]);
     setCursor(page.nextCursor);
   }
@@ -203,7 +201,20 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
                     <Tag mono>{e.kind}</Tag>
                   </td>
                   <td style={{ ...td, fontFamily: 'var(--font-mono)', color: 'var(--text-primary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {e.kind === 'schedule' ? (e.operation ?? e.unit) : e.kind === 'freshness' ? (e.eventType ?? e.unit) : e.unit}
+                    {/* The keyboard path into the detail row — the tr's onClick is pointer-only. */}
+                    <button
+                      type="button"
+                      aria-expanded={expanded === e.id}
+                      aria-controls={expanded === e.id ? `sweep-detail-${e.id}` : undefined}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        setExpanded(expanded === e.id ? undefined : e.id);
+                      }}
+                      // Not `all: unset` — that would also erase the focus ring this exists for.
+                      style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'inherit', cursor: 'pointer', textAlign: 'left' }}
+                    >
+                      {e.kind === 'schedule' ? (e.operation ?? e.unit) : e.kind === 'freshness' ? (e.eventType ?? e.unit) : e.unit}
+                    </button>
                   </td>
                   <td style={td}>
                     <Badge status={OUTCOME_BADGE[e.outcome]}>{e.outcome}</Badge>
@@ -220,7 +231,7 @@ export function SweepRuns({ api, tenants }: SweepRunsProps) {
                   </td>
                 </tr>
                 {expanded === e.id && (
-                  <tr>
+                  <tr id={`sweep-detail-${e.id}`}>
                     <td colSpan={6} style={{ padding: 12, background: 'var(--surface-hover)', borderBottom: '1px solid var(--border-subtle)' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12.5 }}>
                         {e.error && (
