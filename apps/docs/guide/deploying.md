@@ -210,10 +210,11 @@ ends up missing one (granted later, or repaired), the control plane re-delivers 
 snapshot/export/restore family). A vertical without `/internal/reconcile` cannot be repaired
 in place.
 
-Repair is also what makes **a push reach the installs you already have**. Every scope carries a
-receipt, `provisionedVersionId` — the version its provision hook last ran against. After a push
-the platform sweep compares that receipt with the version the scope is bound to, and re-runs
-`/internal/reconcile` on every active install that is behind: a `null` receipt (a scope
+Repair is also what makes **a promoted version reach the installs you already have**. Every
+scope carries a receipt, `provisionedVersionId` — the version its provision hook last ran
+against. Once the pushed version is promoted (or a scope is bound to it), the platform sweep
+compares that receipt with the version the scope now serves, and re-runs `/internal/reconcile`
+on every active install that is behind — a push alone serves nothing, so it repairs nothing: a `null` receipt (a scope
 provisioned before the platform recorded one) counts as behind rather than up to date, forks and
 previews are skipped so a hook never mints a second copy of anything against somebody else's
 data, and a reconcile that fails is left unmarked and retried on the next pass. A reconcile runs
@@ -239,7 +240,7 @@ mountPlatformSurface(app, {
   roles: ROLES,
   ownerRoleKey: OWNER_ROLE_KEY,
   onProvision,                   // your pending-owner / site-registry side effect —
-                                 // idempotent: a reconcile re-runs it after every push
+                                 // idempotent: a reconcile re-runs it after every promote
   resolveOwner,                  // owner-of-record for a reconcile (omit ⇒ 501)
   onConfigure,                   // per-instance config store (omit ⇒ 501)
   // The owner seat as the platform may see it, and the claim link it may mint for one
