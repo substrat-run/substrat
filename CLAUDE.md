@@ -196,10 +196,14 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   _substrat_outbox` still works. The allowed read has a **helper, and it is the one to
   use**: `readTimeline` / `readHistory` from `@substrat-run/kernel` take an `EntityRef`,
   page like an HTTP list read, and decode the envelope. `readHistory` adds the payload,
-  the K-34 authorization chain, the K-42 impersonation stamp and the PII class — and on
-  the first three a `null` is a *fact* (the payload was erased, the row predates
-  authorization recording, nobody was impersonating), which a hand-rolled `SELECT` reads
-  as missing data instead. Neither checks a permission; the caller does, first, as always.
+  the K-34 authorization chain, the K-42 impersonation stamp, the PII class, the emitting
+  `operation` (the `invoke()` string, #1243) and the `version` the emitting code was
+  deployed as (#1253) — and on all but the PII class a `null` is a *fact* (the payload was
+  erased, the row predates authorization recording, nobody was impersonating, a consumer
+  emitted it or the row predates the column, no version identity was present), which a
+  hand-rolled `SELECT` reads as missing data instead. `version` lives on the outbox column
+  only, never the envelope, so `readHistory` is the one sanctioned join from an event to
+  its push. Neither checks a permission; the caller does, first, as always.
 - Every operation's first line: `assertAllowed(await ctx.check(PERM))`; per-entity
   checks (`ctx.check(perm, entityRef)`) for portal-style walks.
 - Every mutation emits a **fat** event (consumer must never need a cross-module read);
