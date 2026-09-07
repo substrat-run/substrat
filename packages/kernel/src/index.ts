@@ -35,6 +35,8 @@ export type {
   OperationHandler,
   OpsFailureFilter,
   OpsFailureInput,
+  SweepRunFilter,
+  SweepRunInput,
   ProvisionScopeInput,
   RoleFilter,
   ScheduleRegistration,
@@ -61,6 +63,7 @@ export {
   parseValidationRecords,
   resolveRetryPolicy,
   OPS_FAILURE_RETENTION_DAYS,
+  SWEEP_RUN_RETENTION_DAYS,
 } from './scope-host.js';
 export {
   isSecretBoxConfigured,

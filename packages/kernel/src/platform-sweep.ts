@@ -9,7 +9,7 @@ import type {
   ScopeId,
   TenantId,
 } from '@substrat-run/contracts';
-import type { ExecutorDrainReport, FetchLike, ScopeHost } from './scope-host.js';
+import type { ExecutorDrainReport, FetchLike, ScopeHost, SweepRunInput } from './scope-host.js';
 import { backoffAt } from './scope-host.js';
 import { MIGRATION_FLAG_THRESHOLD, migrationFleet, migrationProgress, scopeMigrationState } from './migration-progress.js';
 
@@ -59,6 +59,15 @@ export interface AccessLogSink {
 const ACCESS_LOG_BATCH = 500;
 
 export interface PlatformSweepOptions {
+  /**
+   * The durable sweep record (#1232): called once per unit outcome — each
+   * connection swept/skipped/failed, each schedule run — with the signals stamp
+   * the frame can honestly carry. UNSET ⇒ the pass records nothing, exactly as
+   * before the seam existed. Sync fire-and-forget: a recorder that throws must
+   * never sink the pass, so callers hand in a closure that swallows its own
+   * errors (the ops-failure recorder's shape, worker.ts).
+   */
+  recordSweepRun?: (entry: SweepRunInput) => void;
   /** The platform actor the enumeration reads run as (`listScopes`/`listConnections`). */
   actor: PlatformActorId;
   /** Sanctioned egress handed to each connector sweeper. */
@@ -622,6 +631,24 @@ export async function runPlatformSweep(
             for (const e of r.errors) {
               report.errors.push({ kind: 'schedule', id: `${s.id}:${e.operation}`, error: e.error });
             }
+            // #1232: the durable per-schedule record — including `skipped`, which is
+            // what makes missed-run detection derivable (an absence of even skips
+            // means the sweep itself stopped reaching this scope).
+            for (const run of r.runs ?? []) {
+              options.recordSweepRun?.({
+                kind: 'schedule',
+                unit: `${s.id}:${run.operation}`,
+                outcome: run.outcome,
+                tenantId: s.tenantId,
+                scopeId: s.id,
+                vertical: s.vertical,
+                version: s.verticalVersionId,
+                operation: run.operation,
+                ...(run.outcome === 'failed'
+                  ? { error: r.errors.find((e) => e.operation === run.operation)?.error ?? null }
+                  : {}),
+              });
+            }
           } catch (err) {
             // A throw here is transport/gating trouble (DO unreachable, K-3
             // mismatch), not a schedule verdict — recorded and stepped over.
@@ -740,20 +767,43 @@ export async function runPlatformSweep(
 
   const connections = await host.admin.listConnections(options.actor, {});
   await mapBounded(connections, concurrency, async (c) => {
+    // #1232: the connection's durable sweep record. A connection row carries no
+    // scope (a connection spans scopes by construction) and no version.
+    const record = (outcome: 'ok' | 'failed' | 'skipped', extra?: Partial<SweepRunInput>) =>
+      options.recordSweepRun?.({
+        kind: 'connector',
+        unit: c.id,
+        outcome,
+        tenantId: c.tenantId,
+        vertical: c.vertical,
+        operation: `sweep.connector:${c.provider}`,
+        connectionId: c.id,
+        ...extra,
+      });
     if (c.revokedAt !== null) {
-      report.connectionsSkipped += 1; // terminal — nothing to reconcile through it
+      // Terminal — nothing to reconcile through it, and deliberately unrecorded:
+      // a revoked connection is not "waiting to be swept", and a skipped row per
+      // pass forever would be noise every strip has to filter back out.
+      report.connectionsSkipped += 1;
       return;
     }
     const sweeper = options.sweepers[c.provider];
     if (!sweeper) {
       report.connectionsSkipped += 1;
+      // Recorded, unlike the revoked case: "bound but no sweeper registered" is a
+      // live connection nothing will ever poll — exactly the declared-vs-observed
+      // finding the signals views exist to surface.
+      record('skipped');
       return;
     }
+    const started = Date.now();
     try {
       await sweeper(host, c.id, { fetch: options.fetch });
       report.connectionsSwept += 1;
+      record('ok', { elapsedMs: Date.now() - started });
     } catch (err) {
       report.errors.push({ kind: 'sweep', id: c.id, error: message(err) });
+      record('failed', { error: message(err), elapsedMs: Date.now() - started });
     }
   });
 

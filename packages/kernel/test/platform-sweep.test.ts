@@ -334,6 +334,52 @@ describe('runPlatformSweep', () => {
     expect(report.connectionsSkipped).toBe(2);
   });
 
+  it('records each unit outcome through the sweep-run seam - and an unset seam changes nothing (#1232)', async () => {
+    const live = cid();
+    const broken = cid();
+    const orphan = cid();
+    const conns = [
+      { id: live, provider: 'scrive', revokedAt: null, tenantId: T, vertical: 'acme/crm' },
+      { id: broken, provider: 'scrive', revokedAt: null, tenantId: T, vertical: 'acme/crm' },
+      // No sweeper registered: recorded as 'skipped' - "bound but never swept" is
+      // the declared-vs-observed finding, not noise.
+      { id: orphan, provider: 'fortnox', revokedAt: null, tenantId: T, vertical: 'acme/books' },
+      // Revoked: deliberately NOT recorded - not waiting to be swept.
+      { id: cid(), provider: 'scrive', revokedAt: '2026-01-01T00:00:00.000Z', tenantId: T, vertical: 'acme/crm' },
+    ];
+    const recorded: import('../src/scope-host.js').SweepRunInput[] = [];
+    const sweeper: ConnectorSweeper = async (_h, id) => {
+      if (id === broken) throw new Error('provider 500');
+    };
+    await runPlatformSweep(fakeHost({ connections: conns }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { scrive: sweeper },
+      recordSweepRun: (e) => void recorded.push(e),
+    });
+    const byUnit = new Map(recorded.map((e) => [e.unit, e]));
+    expect(byUnit.get(live)).toMatchObject({
+      kind: 'connector',
+      outcome: 'ok',
+      tenantId: T,
+      vertical: 'acme/crm',
+      operation: 'sweep.connector:scrive',
+      connectionId: live,
+    });
+    expect(byUnit.get(live)!.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(byUnit.get(broken)).toMatchObject({ outcome: 'failed', error: 'provider 500' });
+    expect(byUnit.get(orphan)).toMatchObject({ outcome: 'skipped', operation: 'sweep.connector:fortnox' });
+    expect(recorded.length).toBe(3); // the revoked connection wrote no row
+
+    // The null-vs-zero discipline: an unset seam records nothing and changes nothing.
+    const bare = await runPlatformSweep(fakeHost({ connections: conns }), {
+      actor: ACTOR,
+      fetch: FETCH,
+      sweepers: { scrive: sweeper },
+    });
+    expect(bare.connectionsSwept).toBe(1);
+  });
+
   it('records a failure on one unit and steps over it — the batch is not sunk', async () => {
     const bad = cid();
     const good = cid();
@@ -686,6 +732,43 @@ describe('runPlatformSweep — recurring schedules (#383)', () => {
     const report = await runPlatformSweep(host, opts());
     expect(report.schedules).toEqual({ scopes: 2, fired: 2, skipped: 0, failed: 0 });
     expect(report.errors).toEqual([]);
+  });
+
+  it('records one row per schedule outcome - skipped included, since an absence of even skips is the missed-run signal (#1232)', async () => {
+    const scope = sid();
+    const recorded: import('../src/scope-host.js').SweepRunInput[] = [];
+    const host = schedHost({
+      scopes: [{ id: scope, forkedFrom: null }],
+      run: async () => ({
+        fired: 1,
+        skipped: 1,
+        failed: 1,
+        errors: [{ operation: 'sched/broken', error: 'operation threw' }],
+        runs: [
+          { operation: 'sched/tick', outcome: 'ok' },
+          { operation: 'sched/rest', outcome: 'skipped' },
+          { operation: 'sched/broken', outcome: 'failed' },
+        ],
+      }),
+    });
+    await runPlatformSweep(host, opts({ recordSweepRun: (e) => void recorded.push(e) }));
+    const byOp = new Map(recorded.map((e) => [e.operation, e]));
+    expect(byOp.get('sched/tick')).toMatchObject({
+      kind: 'schedule',
+      unit: `${scope}:sched/tick`,
+      outcome: 'ok',
+      tenantId: T,
+      scopeId: scope,
+    });
+    expect(byOp.get('sched/rest')).toMatchObject({ outcome: 'skipped' });
+    expect(byOp.get('sched/broken')).toMatchObject({ outcome: 'failed', error: 'operation threw' });
+    // A report from a pre-widening host (no `runs`) records nothing - additive, never a crash.
+    recorded.length = 0;
+    await runPlatformSweep(
+      schedHost({ scopes: [{ id: sid(), forkedFrom: null }], run: async () => ({ fired: 1, skipped: 0, failed: 0, errors: [] }) }),
+      opts({ recordSweepRun: (e) => void recorded.push(e) }),
+    );
+    expect(recorded).toEqual([]);
   });
 
   it('never fires a schedule on a fork/snapshot (forkedFrom set)', async () => {

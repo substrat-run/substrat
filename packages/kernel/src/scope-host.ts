@@ -15,6 +15,9 @@ import type {
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
+  SweepRunEntry,
+  SweepRunKind,
+  SweepRunOutcome,
   ModelUsageEntry,
   ModelUsageSummary,
   CapabilityGrant,
@@ -703,6 +706,13 @@ export interface ScheduleRunReport {
   failed: number;
   /** Per-schedule failures on this scope: the operation name and the error. */
   errors: { operation: string; error: string }[];
+  /**
+   * Per-schedule outcomes, in declaration order (#1232) — what the durable sweep
+   * record is written from, since the counters above cannot say WHICH schedule
+   * fired. Optional so a pre-widening fake or a stored report stays valid; both
+   * adapters' drivers always fill it.
+   */
+  runs?: { operation: string; outcome: 'ok' | 'failed' | 'skipped' }[];
 }
 
 /**
@@ -2488,6 +2498,12 @@ export interface HostAdmin {
    * that fails must never mask the failure it was recording (callers still guard).
    */
   recordOpsFailure(entry: OpsFailureInput): Promise<void>;
+  /**
+   * One sweep unit's outcome (#1232). Telemetry about a machine pass — not
+   * audited, on `recordConnectionUse`'s precedent — and callers fire-and-forget:
+   * a recorder that throws must never sink the pass it is recording.
+   */
+  recordSweepRun(entry: SweepRunInput): Promise<void>;
 
   /**
    * The recorded operational failures, newest first by default — the console's
@@ -2496,6 +2512,8 @@ export interface HostAdmin {
    * "nothing recent", never "nothing ever".
    */
   listOpsFailures(actor: PlatformActorId, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]>;
+  /** The sweep record, newest-first by default. Reads are access-logged (K-24). */
+  listSweepRuns(actor: PlatformActorId, filter?: SweepRunFilter): Promise<SweepRunEntry[]>;
 
   /**
    * Meter 3's ledger (#1054): one line per model call a vertical made through the
@@ -2847,6 +2865,49 @@ export interface AccessLogFilter extends ListPage {
  * Cloudflare ticket round-trip) while keeping directory storage flat.
  */
 export const OPS_FAILURE_RETENTION_DAYS = 90;
+
+/**
+ * How long a sweep-run row is kept (#1232). Much shorter than ops failures: this
+ * is high-frequency telemetry (a pass every few minutes times every connection
+ * and schedule), and its job is the recent-runs strip plus an incident window —
+ * 14 days covers both. Pruned on write in every adapter, like ops failures and
+ * for the same reason: the table stays bounded even where no scheduled pass runs.
+ */
+export const SWEEP_RUN_RETENTION_DAYS = 14;
+
+/** What the sweep hands `recordSweepRun`. `id`/`at` are stamped by the adapter. */
+export interface SweepRunInput {
+  kind: SweepRunKind;
+  /** The identity swept: a connection id, or `<scopeId>:<operation>` for a schedule. */
+  unit: string;
+  outcome: SweepRunOutcome;
+  tenantId?: TenantId | null;
+  scopeId?: ScopeId | null;
+  vertical?: string | null;
+  version?: string | null;
+  operation?: string | null;
+  connectionId?: string | null;
+  error?: string | null;
+  elapsedMs?: number | null;
+}
+
+/** Filter for `listSweepRuns` — cursor/order/limit exactly as `OpsFailureFilter`. */
+export interface SweepRunFilter {
+  kind?: SweepRunKind;
+  /** The per-unit walk: last run and the recent-runs strip both start here. */
+  unit?: string;
+  outcome?: SweepRunOutcome;
+  tenantId?: TenantId;
+  scopeId?: ScopeId;
+  vertical?: string;
+  connectionId?: string;
+  since?: string;
+  until?: string;
+  limit?: number;
+  cursor?: string;
+  /** Default 'desc' — the strip and "last run" both read newest-first. */
+  order?: 'asc' | 'desc';
+}
 
 /**
  * What a failure path hands `recordOpsFailure`. `id`/`at` are stamped by the

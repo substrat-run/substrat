@@ -4,6 +4,7 @@ import {
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
+  sweepRunEntry,
   modelUsageEntry,
   attachmentRecord,
   type AttachmentRecord,
@@ -63,6 +64,7 @@ import {
   type AccessLogEntry,
   type AdminLogEntry,
   type OpsFailureEntry,
+  type SweepRunEntry,
   type ModelUsageEntry,
   type ModelUsageSummary,
   type CapabilityGrant,
@@ -138,6 +140,8 @@ import {
   type AuditLogFilter,
   type OpsFailureFilter,
   type OpsFailureInput,
+  type SweepRunFilter,
+  type SweepRunInput,
   type ModelUsageFilter,
   type ModelUsageInput,
   type ModelUsageWindow,
@@ -197,6 +201,8 @@ import type {
   AccessLogRow,
   AuditLogQuery,
   OpsFailureQuery,
+  SweepRunQuery,
+  SweepRunRow,
   OpsFailureRow,
   ModelUsageQuery,
   ModelUsageRow,
@@ -622,6 +628,8 @@ interface ControlPlaneStub {
   auditLog(query: AuditLogQuery): Promise<AdminLogEntry[]>;
   recordOpsFailure(row: OpsFailureRow): Promise<void>;
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
+  recordSweepRun(row: SweepRunRow): Promise<void>;
+  listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
   recordModelUsage(row: ModelUsageRow): Promise<{ recorded: boolean }>;
   listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
   // #40 — the directory's own backup/restore pair.
@@ -2351,7 +2359,7 @@ export class CloudflareScopeHost implements ScopeHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScheduleRunReport> {
-    const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [] };
+    const report: ScheduleRunReport = { fired: 0, skipped: 0, failed: 0, errors: [], runs: [] };
     const schedules = this.moduleSchedules.get(moduleId);
     if (!schedules || schedules.length === 0) return report;
     // Only run on a live scope of this tenant; a scope archived between the sweep's
@@ -2376,6 +2384,7 @@ export class CloudflareScopeHost implements ScopeHost {
       const dueAt = lastRun === null ? -Infinity : lastRun + schedule.cadence.everyMinutes * 60_000;
       if (now < dueAt) {
         report.skipped += 1;
+        report.runs!.push({ operation: schedule.operation, outcome: 'skipped' });
         continue;
       }
       let status: 'ok' | 'failed' = 'ok';
@@ -2392,6 +2401,7 @@ export class CloudflareScopeHost implements ScopeHost {
         });
       }
       await stub.recordScheduleRun(schedule.operation, new Date(now).toISOString(), status);
+      report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     return report;
   }
@@ -4479,6 +4489,49 @@ export class CloudflareScopeHost implements ScopeHost {
           rows.length,
         );
         return rows.map((r) => opsFailureEntry.parse(r));
+      },
+      recordSweepRun: async (entry: SweepRunInput): Promise<void> => {
+        await this.cp.recordSweepRun({
+          id: ulid(),
+          kind: entry.kind,
+          unit: entry.unit,
+          outcome: entry.outcome,
+          tenant_id: entry.tenantId ?? null,
+          scope_id: entry.scopeId ?? null,
+          vertical: entry.vertical ?? null,
+          version: entry.version ?? null,
+          operation: entry.operation ?? null,
+          connection_id: entry.connectionId ?? null,
+          // Bounded here, not trusted from the sweep (the #559 rule).
+          error: entry.error == null ? null : entry.error.slice(0, 2000),
+          elapsed_ms: entry.elapsedMs ?? null,
+          at: new Date().toISOString(),
+        });
+      },
+      listSweepRuns: async (actor, filter?: SweepRunFilter): Promise<SweepRunEntry[]> => {
+        const rows = await this.cp.listSweepRuns({
+          kind: filter?.kind,
+          unit: filter?.unit,
+          outcome: filter?.outcome,
+          tenantId: filter?.tenantId,
+          scopeId: filter?.scopeId,
+          vertical: filter?.vertical,
+          connectionId: filter?.connectionId,
+          since: filter?.since,
+          until: filter?.until,
+          limit: filter?.limit,
+          cursor: filter?.cursor,
+          order: filter?.order,
+        });
+        // Rows can name tenants and scopes, so reading them is recorded (K-24).
+        await this.recordAccess(
+          actor,
+          'listSweepRuns',
+          { tenantId: filter?.tenantId ?? null, scopeId: filter?.scopeId ?? null },
+          filter,
+          rows.length,
+        );
+        return rows.map((r) => sweepRunEntry.parse(r));
       },
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;

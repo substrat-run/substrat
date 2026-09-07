@@ -2041,6 +2041,76 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- the durable sweep record (#1232): what a pass touched, and how it went --
+
+    describe('sweep runs (#1232)', () => {
+      it('records unit outcomes and walks them newest-first per unit, with a cursor', async () => {
+        const conn = ulid();
+        for (const outcome of ['ok', 'ok', 'failed'] as const) {
+          await host.admin.recordSweepRun({
+            kind: 'connector',
+            unit: conn,
+            outcome,
+            tenantId: t1,
+            vertical: 'acme/crm',
+            operation: 'sweep.connector:testprov',
+            connectionId: conn,
+            ...(outcome === 'failed' ? { error: 'provider said no' } : { elapsedMs: 12 }),
+          });
+        }
+
+        // Newest-first by default: "how did the LAST sweep go" is the first row.
+        const strip = await host.admin.listSweepRuns(staff, { kind: 'connector', unit: conn });
+        expect(strip.length).toBe(3);
+        expect(strip[0]!.outcome).toBe('failed');
+        expect(strip[0]!.error).toBe('provider said no');
+        expect(strip[2]!.outcome).toBe('ok');
+        expect(strip[2]!.elapsedMs).toBe(12);
+
+        // The cursor pages exactly like ops failures: the row id IS the cursor.
+        const page1 = await host.admin.listSweepRuns(staff, { unit: conn, limit: 2 });
+        const page2 = await host.admin.listSweepRuns(staff, { unit: conn, limit: 2, cursor: page1[1]!.id });
+        expect(page1.length).toBe(2);
+        expect(page2.length).toBe(1);
+        expect(page2[0]!.id).not.toBe(page1[0]!.id);
+      });
+
+      it('round-trips the dimensions, and a structurally absent one reads an explicit null', async () => {
+        const sched = `${s1}:acme/tick`;
+        await host.admin.recordSweepRun({
+          kind: 'schedule',
+          unit: sched,
+          outcome: 'skipped',
+          tenantId: t1,
+          scopeId: s1,
+          vertical: 'acme/crm',
+          version: '01JSWEEPVERSIONAAAAAAAAAAA',
+          operation: 'acme/tick',
+        });
+        const [row] = await host.admin.listSweepRuns(staff, { kind: 'schedule', unit: sched });
+        expect(row!.scopeId).toBe(s1);
+        expect(row!.version).toBe('01JSWEEPVERSIONAAAAAAAAAAA');
+        expect(row!.operation).toBe('acme/tick');
+        // A schedule row names no connection, and the null is a fact, not a gap —
+        // exactly as a connector row's scope/version nulls are.
+        expect(row!.connectionId).toBeNull();
+        expect(row!.error).toBeNull();
+        expect(row!.elapsedMs).toBeNull();
+      });
+
+      it('bounds the recorded error — one runaway provider body never becomes a runaway row', async () => {
+        const unit = ulid();
+        await host.admin.recordSweepRun({
+          kind: 'connector',
+          unit,
+          outcome: 'failed',
+          error: 'x'.repeat(10_000),
+        });
+        const [row] = await host.admin.listSweepRuns(staff, { unit });
+        expect(row!.error!.length).toBeLessThanOrEqual(2000);
+      });
+    });
+
     //
     // The store exists so a vertical's connector can reach a tenant's provider
     // without any module ever holding a credential. So the properties that
