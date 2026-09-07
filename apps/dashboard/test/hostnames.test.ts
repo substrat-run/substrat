@@ -107,6 +107,41 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     ).rejects.toThrow(/platform name/);
   });
 
+  /**
+   * The squatting half of #973: a deployment whose platform zone is neither the
+   * platform default nor the app's own zone used to accept a custom domain under it,
+   * and the control plane then classified the result as a platform hostname. The
+   * worker now reads its `PLATFORM_BASE_DOMAINS` and hands the list down, and the
+   * three bases are UNIONED — configuring the var can only widen the refusal.
+   */
+  it('refuses a custom domain under a configured platform base — and configuring one never narrows the guard', async () => {
+    const { node, appScope, appHostname } = await makeTeamWithApp();
+    const squat = 'someone-elses-app.eu.egeryds-platform.test';
+    const bases = ['egeryds-platform.test'];
+
+    // Configured ⇒ refused.
+    await expect(
+      addAppHostname(host, { node, appScopeId: appScope, surface: 'x', customDomain: squat, appHostname, platformBases: bases }),
+    ).rejects.toThrow(/platform name/);
+
+    // Unset ⇒ the same hostname is an ordinary custom domain, exactly as before.
+    const bound = await addAppHostname(host, {
+      node, appScopeId: appScope, surface: 'x', customDomain: squat, appHostname,
+    });
+    expect(bound).toMatchObject({ hostname: squat, status: 'pending' });
+
+    // The default zone and the app's own zone stay refused whether or not the var is
+    // set — a deployment that names its own zones does not thereby release these two.
+    for (const platformBases of [undefined, bases]) {
+      await expect(
+        addAppHostname(host, { node, appScopeId: appScope, surface: 'y', customDomain: 'other-tenant.substrat.run', appHostname, ...(platformBases ? { platformBases } : {}) }),
+      ).rejects.toThrow(/platform name/);
+      await expect(
+        addAppHostname(host, { node, appScopeId: appScope, surface: 'y', customDomain: 'other-tenant.global.substrat.run', appHostname, ...(platformBases ? { platformBases } : {}) }),
+      ).rejects.toThrow(/platform name/);
+    }
+  });
+
   it('lists, unbinds (trail recorded) — but never the default hostname', async () => {
     const { node, appScope, appHostname } = await makeTeamWithApp();
     await addAppHostname(host, { node, appScopeId: appScope, surface: 'eka', appHostname });

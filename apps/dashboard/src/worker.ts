@@ -21,7 +21,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { SweepRunEntry } from '@substrat-run/contracts';
-import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
+import { parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -82,6 +82,13 @@ const STAFF = platformActorId.parse('01JZ000000000000000000DAS1');
 interface Env extends OidcEnv {
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
+  /**
+   * This deployment's own platform zones, comma-separated — the same var the control
+   * plane and the router read. Only consumer here is the custom-domain bind, which
+   * refuses a hostname landing on one of them (#973). Unset is safe: the refusal falls
+   * back to the platform default plus the app's own zone, which is what it always did.
+   */
+  PLATFORM_BASE_DOMAINS?: string;
   /**
    * REQUIRED: a service binding to `substrat-control-plane` — the shared directory
    * the router reads. Apps are provisioned there through the tenant-narrowed seam
@@ -2872,6 +2879,7 @@ app.post('/api/apps/:scopeId/hostnames', async (c) => {
       surface: body.surface,
       ...(body.domain ? { customDomain: body.domain } : {}),
       appHostname: appRow.hostname,
+      platformBases: parsePlatformBaseDomains(c.env.PLATFORM_BASE_DOMAINS),
       controlPlane: controlPlaneFor(c.env, node.tenantId),
     });
     return c.json(bound, 201);

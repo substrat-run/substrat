@@ -52,9 +52,15 @@
 	// SUPPORT_WIDGET_SECRET secret (that desk's verification secret); either unset ⇒ no
 	// bubble. The desk must also list `https://app.substrat.net` under Settings → Widget
 	// origins, or its preflight refuses this origin before any handler runs.
+	// PLATFORM_BASE_DOMAINS: this deployment's own zones, the same var (and the same
+	// value) the control plane carries. The custom-domain bind refuses a hostname that
+	// lands on one of them, so a tenant cannot claim another tenant's platform name
+	// through the Domains tab (#973). Unset falls back to the platform default plus the
+	// app's own zone, so a self-hosted deployment on its own zone must set this.
 	"vars": {
 		"CP_PUBLIC_URL": "https://console.substrat.net/api",
-		"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net"
+		"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net",
+		"PLATFORM_BASE_DOMAINS": "substrat.run"
 	},
 	// Cloudflare Email Service — transactional mail (team invites). The `send_email`
 	// binding needs no API key; onboard a dedicated SENDING SUBDOMAIN once with
@@ -112,7 +118,8 @@
 			],
 			"vars": {
 				"CP_PUBLIC_URL": "https://console-test.substrat.net/api", // differs
-				"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net" // same desk; app-test.substrat.net must be on its origin list
+				"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net", // same desk; app-test.substrat.net must be on its origin list
+				"PLATFORM_BASE_DOMAINS": "substrat.run" // same zones as prod
 			},
 			"send_email": [{ "name": "EMAIL" }],
 			"observability": { "enabled": true }
