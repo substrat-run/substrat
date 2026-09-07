@@ -81,7 +81,7 @@ export interface TimelineReader {
 /** The envelope columns, in the order `mapTimelineRow` expects. */
 const TIMELINE_COLUMNS = 'id, type, occurred_at, actor';
 /** …plus what a history VIEW needs. See `historyEntry` for why two are nullable. */
-const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id, operation`;
+const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id, operation, version`;
 
 interface TimelineRow {
   id: string;
@@ -97,6 +97,7 @@ interface HistoryRow extends TimelineRow {
   pii_class: string;
   subject_id: string | null;
   operation: string | null;
+  version: string | null;
 }
 
 /**
@@ -175,6 +176,8 @@ function mapHistoryRow(row: HistoryRow): HistoryEntry {
     // emit ran on behalf of no operation, and a pre-column row is unrecorded.
     // historyEntry's doc owns that ambiguity; this mapper just carries it.
     operation: row.operation,
+    // #1242: from the column, never the envelope — historyEntry's doc owns why.
+    version: row.version,
   };
 }
 

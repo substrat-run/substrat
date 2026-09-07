@@ -226,6 +226,9 @@ export function timelineContractSuite(
       // #1231: the history view names the emitting operation; null here would mean
       // a consumer emit or a pre-column row, and this event is neither.
       expect(entry!.operation).toBe('test/emit-about-with-payload');
+      // #1242: the history read is the sanctioned join to the push — the column,
+      // surfaced; the envelope deliberately never carries it.
+      expect(entry!.version).toBe(fixture.versionId ?? null);
       // And the TIMELINE read of the same event carries none of it. That is the
       // whole reason the two are separate: one has a disclosure decision behind
       // it and the other cannot have.

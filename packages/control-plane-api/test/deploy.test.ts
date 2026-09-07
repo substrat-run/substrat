@@ -89,6 +89,12 @@ describe('assertSandboxContract', () => {
     expect(refused([{ type: 'plain_text', name: 'CONTROL_PLANE' }])).toThrow(/CONTROL_PLANE/);
   });
 
+  it("refuses the SUBSTRAT_ binding namespace by name — an injected stamp cannot be forged (#1242)", () => {
+    expect(refused([{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID' }])).toThrow(/SUBSTRAT_/);
+    // The whole prefix, not one name: the namespace stays the platform's as it grows.
+    expect(refused([{ type: 'secret_text', name: 'SUBSTRAT_FUTURE_THING' }])).toThrow(/SUBSTRAT_/);
+  });
+
   it('refuses a service binding — a vertical reaches the platform via the router (K-27)', () => {
     expect(refused([{ type: 'service', name: 'CP' }])).toThrow(/router \(K-27\)/);
   });

@@ -1061,7 +1061,9 @@ timelineContractSuite('adapter-cloudflare', async () => {
     controlPlane: env.CONTROL_PLANE,
     secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
       });
-  return { host, cleanup: async () => host.close() };
+  // #1242: env is script-wide, so every ScopeDO in this harness runs "as" the
+  // wrangler var — declared here so the suite asserts history surfaces it.
+  return { host, versionId: env.SUBSTRAT_VERSION_ID, cleanup: async () => host.close() };
 });
 
 // #811: `ctx.page` on the DO host — same suite, and the only place the derived

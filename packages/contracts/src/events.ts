@@ -200,5 +200,14 @@ export const historyEntry = timelineEntry.extend({
    * fact, and a renderer should say "—" rather than guess which it was.
    */
   operation: z.string().nullable(),
+  /**
+   * The version-registry id the emitting code ran as (#1242), or null — an
+   * undeployed host (dev/sqlite with no configured id), a script deployed before
+   * the SUBSTRAT_VERSION_ID binding, or a pre-column row; all honestly "no
+   * version identity was present". Surfaced from the COLUMN only: the envelope
+   * deliberately never carries it (#1250 — script configuration, not event data),
+   * so this read is the one sanctioned way to join an event to its push.
+   */
+  version: z.string().nullable(),
 });
 export type HistoryEntry = z.infer<typeof historyEntry>;
