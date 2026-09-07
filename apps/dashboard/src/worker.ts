@@ -2556,8 +2556,10 @@ app.get('/api/integrations/:provider/connect', async (c) => {
       provider: spec.provider,
     })) as ConnectLinkRow[];
     live = rows.some((r) => r.id === claim.linkId);
-  } catch {
+  } catch (e) {
     // The minting admin lost access (or the scope is gone) — their links die with it.
+    // Logged because a platform fault lands here too, wearing the same refusal.
+    console.error('connect-link liveness check failed', e);
     live = false;
   }
   if (!live) return connectLinkRefusal('unknown');
@@ -2624,7 +2626,12 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       ...(cfg.apiBase ? { apiBase: cfg.apiBase } : {}),
     });
   } catch (e) {
-    const detail = e instanceof FortnoxApiError ? e.message : 'the exchange with Fortnox failed';
+    // The page below deliberately shows only Fortnox's own words; everything else —
+    // a thrown fetch, a schema refusal — is invisible without this line.
+    console.error('fortnox consent completion failed', e);
+    const detail = e instanceof FortnoxApiError
+      ? e.message
+      : `the exchange with Fortnox failed (${e instanceof Error ? e.name : typeof e})`;
     return connectPage('The connection could not be completed', [
       escapeHtml(detail),
       'Nothing was connected. A reloaded tab spends its code — open the connect link again to retry.',
@@ -2645,7 +2652,8 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       accountRef: completion.secret.tenantId,
       accountLabel: completion.company.CompanyName || undefined,
     })) as ConnectLinkConsume;
-  } catch {
+  } catch (e) {
+    console.error('fortnox connect-link consume failed', e);
     return connectLinkRefusal('unknown');
   }
   if (!consume.ok) return connectLinkRefusal(consume.reason);
@@ -2670,9 +2678,11 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
     let restored = false;
     try {
       restored = ((await dash.invoke('dashboard/restore-connect-link', { linkId: claim.linkId })) as { restored: boolean }).restored;
-    } catch {
+    } catch (restoreErr) {
       // The refusal copy below falls back to asking for a new link.
+      console.error('fortnox connect-link restore failed', restoreErr);
     }
+    console.error('fortnox connection store failed', e);
     const detail = e instanceof ControlPlaneError ? e.message : 'storing the credential failed';
     return connectPage('The credential could not be stored', [
       escapeHtml(detail),
