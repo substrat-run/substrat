@@ -28,6 +28,7 @@ import {
   PROVISION_TENANT_KIND,
   SET_ENTITLEMENTS_KIND,
   MODEL_USAGE_KIND,
+  SWEEP_RUNS_KIND,
   connectorDispatchKind,
 } from '@substrat-run/contracts';
 import type { PlatformActorId, TenantId, ScopeId } from '@substrat-run/contracts';
@@ -78,6 +79,7 @@ import {
   provisionTenantHandler,
   setEntitlementsHandler,
   modelUsageHandler,
+  sweepRunsHandler,
   connectorDispatchHandler,
   type ManagedTenantDeps,
   type PlatformDrainReport,
@@ -812,6 +814,8 @@ async function drainOneScope(env: Env, t: TenantId, s: ScopeId): Promise<Platfor
       [SET_ENTITLEMENTS_KIND]: setEntitlementsHandler(managedTenantDeps),
       // #1054: a vertical's model host produced a usage line; the platform's ledger (meter 3).
       [MODEL_USAGE_KIND]: modelUsageHandler({ host }),
+      // #1232: a CP-less pass's schedule outcomes, landed in _substrat_sweep_runs.
+      [SWEEP_RUNS_KIND]: sweepRunsHandler({ host }),
       // #574 phase 3: the outbound half of the platform-run connector pass. A CP-less
       // vertical routed a connector delivery here as an intent; this host holds the
       // directory, the sealed credential, and (via its connectorDelegation) the scope

@@ -2889,6 +2889,20 @@ export interface SweepRunInput {
   connectionId?: string | null;
   error?: string | null;
   elapsedMs?: number | null;
+  /**
+   * When the unit was actually swept. A DRAINED batch passes the pass time it
+   * carried — the drain runs up to a cron window later, and stamping drain time
+   * would skew every freshness read. Unset = now, the direct-write case.
+   */
+  at?: string | null;
+  /**
+   * The platform-intent id a drained batch arrived under — the dedupe key. The
+   * adapters enforce UNIQUE (requestId, unit) with an ignore-on-conflict write,
+   * so a replayed drain (a settle that failed in transport, a partial batch
+   * re-run) writes nothing twice. Unset (the direct sweep path) dedupes nothing:
+   * NULLs are distinct under the unique index, exactly as intended.
+   */
+  requestId?: string | null;
 }
 
 /** Filter for `listSweepRuns` — cursor/order/limit exactly as `OpsFailureFilter`. */

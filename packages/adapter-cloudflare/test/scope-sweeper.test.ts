@@ -8,6 +8,8 @@ import {
   tenantId,
   type ScopeId,
   type TenantId,
+  SWEEP_RUNS_KIND,
+  sweepRunsPayload,
 } from '@substrat-run/contracts';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
 import { scheduleMod } from '@substrat-run/contract-tests';
@@ -119,6 +121,25 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     const report = asReport(await sweeperStub().sweepNow());
     expect(report.schedules).toEqual({ scopes: 0, fired: 0, skipped: 2, failed: 0 });
     expect(await ticksOn(sA)).toBe(1);
+  });
+
+  it('each pass leaves ONE batched sweep-runs intent per scope — skips included, version from env (#1232)', async () => {
+    // The two passes above (fired, then skipped) each enqueued a batch on each scope:
+    // a CP-less pass's only road to _substrat_sweep_runs is its own intent journal.
+    const pending = await host().listPlatformRequests(t, sA);
+    const sweeps = pending.filter((r) => r.kind === SWEEP_RUNS_KIND);
+    expect(sweeps).toHaveLength(2);
+    const first = sweepRunsPayload.parse(sweeps[0]!.payload);
+    const second = sweepRunsPayload.parse(sweeps[1]!.payload);
+    expect(first.entries.map((e) => e.outcome)).toEqual(['ok']);
+    // The skip is REPORTED — an absence of even skips is the missed-run signal.
+    expect(second.entries.map((e) => e.outcome)).toEqual(['skipped']);
+    expect(first.entries[0]!.operation).toBe('sched/tick');
+    // The version the worker's accessor read from env — the code that actually ran.
+    expect(first.version).toBe(env.SUBSTRAT_VERSION_ID);
+    expect(sweeps.every((r) => JSON.stringify(r.requestedBy) === JSON.stringify({ system: 'scope-sweeper' }))).toBe(
+      true,
+    );
   });
 
   it('the alarm runs a pass and re-arms itself while scopes remain', async () => {

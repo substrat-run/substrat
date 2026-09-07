@@ -337,6 +337,7 @@ export interface SweepRunRow {
   connection_id: string | null;
   error: string | null;
   elapsed_ms: number | null;
+  request_id: string | null;
   at: string;
 }
 
@@ -837,9 +838,14 @@ const DIRECTORY_DDL = `
     connection_id TEXT,
     error TEXT,
     elapsed_ms INTEGER,
+    -- #1232: the platform-intent id a drained batch arrived under (NULL for the
+    -- direct sweep path). The unique index below is what makes a replayed drain
+    -- write nothing twice; NULLs are distinct, so direct writes never collide.
+    request_id TEXT,
     at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
+  CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit);
   CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_tenant ON _substrat_sweep_runs (tenant_id, id);
   CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_at ON _substrat_sweep_runs (at);
   -- Model usage (#1054, meter 3): one line per model call a vertical made through the
@@ -1014,6 +1020,12 @@ export class ControlPlaneDO extends DurableObject {
     this.addColumn('_substrat_admin_log', 'caused_by TEXT');
     // The signals `version` stamp (#1231): a DO that predates the column ALTERs it in.
     this.addColumn('_substrat_ops_failures', 'version TEXT');
+    // #1232: the drained batch's dedupe key + its unique index, on a DO that predates
+    // them. The index rides here so it is created only after the column exists.
+    this.addColumn('_substrat_sweep_runs', 'request_id TEXT');
+    this.sql.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit)',
+    );
     // builder-plane.md: which tenant owns a vertical (NULL = platform-owned).
     this.addColumn('verticals', 'owner_tenant TEXT');
     // The vertical's declared env-spec (moduleManifest.envSpec) as JSON, for config forms.
@@ -3349,10 +3361,10 @@ export class ControlPlaneDO extends DurableObject {
 
   recordSweepRun(row: SweepRunRow): void {
     this.sql.exec(
-      `INSERT INTO _substrat_sweep_runs
+      `INSERT OR IGNORE INTO _substrat_sweep_runs
          (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-          connection_id, error, elapsed_ms, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          connection_id, error, elapsed_ms, request_id, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.kind,
       row.unit,
@@ -3365,6 +3377,7 @@ export class ControlPlaneDO extends DurableObject {
       row.connection_id,
       row.error,
       row.elapsed_ms,
+      row.request_id,
       row.at,
     );
     // Prune-on-write, like ops failures and for the same reason: bounded even on a

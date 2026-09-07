@@ -22,6 +22,7 @@ import {
   type Scope,
   type ScopeId,
   type TenantId,
+  sweepRunsPayload,
 } from '@substrat-run/contracts';
 import { ControlPlaneError } from './client.js';
 import { attributeFailure, terminalFailureNote } from './failure-attribution.js';
@@ -726,6 +727,42 @@ export function setEntitlementsHandler(deps: ManagedTenantDeps): PlatformRequest
  * get to bill another. Idempotent on the intent id, so a replay settles `done` with
  * `recorded: false` instead of writing twice.
  */
+/**
+ * #1232: land a CP-less pass's batched schedule outcomes in `_substrat_sweep_runs`.
+ * The payload carries NO tenant/scope/vertical — identity is proven by the scope the
+ * intent physically lives in (the model-usage rule), so nothing in it can mislabel
+ * its origin. `kind`/`unit` are derived here, never trusted. The write is idempotent
+ * on (request.id, unit), so a replayed drain — a settle lost in transport, a partial
+ * batch re-run — writes nothing twice.
+ */
+export function sweepRunsHandler(deps: { host: ScopeHost }): PlatformRequestHandler {
+  return async (ctx, request) => {
+    const parsed = sweepRunsPayload.safeParse(request.payload);
+    if (!parsed.success) {
+      return { status: 'failed', error: `sweep-runs payload is malformed: ${parsed.error.message}` };
+    }
+    for (const entry of parsed.data.entries) {
+      await deps.host.admin.recordSweepRun({
+        kind: 'schedule',
+        unit: `${ctx.scopeId}:${entry.operation}`,
+        outcome: entry.outcome,
+        tenantId: ctx.tenantId,
+        scopeId: ctx.scopeId,
+        vertical: ctx.vertical,
+        // The pass's own version identity when the sweeper knew it; the scope's
+        // bound-at-drain version otherwise — the documented approximation.
+        version: parsed.data.version ?? ctx.versionId ?? null,
+        operation: entry.operation,
+        error: entry.error ?? null,
+        elapsedMs: entry.elapsedMs ?? null,
+        at: entry.at,
+        requestId: request.id,
+      });
+    }
+    return { status: 'done', result: { recorded: parsed.data.entries.length } };
+  };
+}
+
 export function modelUsageHandler(deps: { host: ScopeHost }): PlatformRequestHandler {
   return async (ctx, request) => {
     const parsed = modelUsageLine.safeParse(request.payload);

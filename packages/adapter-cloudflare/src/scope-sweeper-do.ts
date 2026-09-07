@@ -1,6 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { scopeId as scopeIdSchema, tenantId as tenantIdSchema } from '@substrat-run/contracts';
-import type { ScopeId, TenantId } from '@substrat-run/contracts';
+import type { ScopeId, TenantId, SweepRunsPayload } from '@substrat-run/contracts';
 import type {
   ExecutorDrainReport,
   ScheduleRegistration,
@@ -53,6 +53,13 @@ export interface ScopeSweepHost {
     tenantId: TenantId,
     scopeId: ScopeId,
   ): Promise<ScheduleRunReport>;
+  /**
+   * #1232: hand one pass's schedule outcomes to the scope's intent journal, for
+   * the platform drain to land in `_substrat_sweep_runs`. Optional so a fake
+   * host (and a pre-widening deployment) keeps compiling; a pass on a host
+   * without it simply reports nothing, exactly as every pass did before.
+   */
+  enqueueSweepRuns?(scopeId: ScopeId, payload: SweepRunsPayload): Promise<unknown>;
 }
 
 export interface ScopeSweeperDoConfig<Env> {
@@ -82,6 +89,13 @@ export interface ScopeSweeperDoConfig<Env> {
   concurrency?: number;
   /** Observe each pass — logging or a health metric. Never throws into the loop. */
   onPass?(outcome: ScopeSweepOutcome, env: Env): void;
+  /**
+   * #1232: the version identity the pass reports — read `env.SUBSTRAT_VERSION_ID`
+   * here (an accessor rather than a widened Env constraint, so existing workers
+   * compile untouched). Unset or null ⇒ the drain falls back to the scope's
+   * bound version, its documented approximation.
+   */
+  versionId?(env: Env): string | null | undefined;
 }
 
 /** The RPC surface a `defineScopeSweeperDO` class exposes over its stub. */
@@ -252,6 +266,11 @@ export function defineScopeSweeperDO<Env>(
             }
           }
           let touched = false;
+          // #1232: the pass's outcomes, batched for ONE intent per scope — a pass every
+          // couple of minutes times N schedules cannot be one intent each against the
+          // journal cap. Stamped with pass time here; the drain runs a window later.
+          const passAt = new Date().toISOString();
+          const passRuns: SweepRunsPayload['entries'] = [];
           for (const reg of registrations) {
             try {
               const r = await host.runDueSchedules(reg.moduleId, tenantId, scopeId);
@@ -266,6 +285,16 @@ export function defineScopeSweeperDO<Env>(
                   error: e.error,
                 });
               }
+              for (const run of r.runs ?? []) {
+                passRuns.push({
+                  operation: run.operation,
+                  outcome: run.outcome,
+                  at: passAt as SweepRunsPayload['entries'][number]['at'],
+                  ...(run.outcome === 'failed'
+                    ? { error: r.errors.find((e) => e.operation === run.operation)?.error ?? null }
+                    : {}),
+                });
+              }
             } catch (err) {
               report.errors.push({
                 kind: 'schedule',
@@ -275,6 +304,18 @@ export function defineScopeSweeperDO<Env>(
             }
           }
           if (touched) report.schedules.scopes += 1;
+          if (passRuns.length > 0 && host.enqueueSweepRuns) {
+            try {
+              await host.enqueueSweepRuns(scopeId, {
+                version: config.versionId?.(this.env) ?? null,
+                // The payload caps its batch; a pathological schedule count truncates
+                // rather than refusing the whole report.
+                entries: passRuns.slice(0, 64),
+              });
+            } catch {
+              // Telemetry never sinks a pass — a failed report is the next pass's to retry.
+            }
+          }
         }
       };
       await Promise.all(

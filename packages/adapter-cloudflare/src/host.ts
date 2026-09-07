@@ -5,6 +5,7 @@ import {
   adminLogEntry,
   opsFailureEntry,
   sweepRunEntry,
+  sweepRunsPayload,
   modelUsageEntry,
   attachmentRecord,
   type AttachmentRecord,
@@ -65,6 +66,7 @@ import {
   type AdminLogEntry,
   type OpsFailureEntry,
   type SweepRunEntry,
+  type SweepRunsPayload,
   type ModelUsageEntry,
   type ModelUsageSummary,
   type CapabilityGrant,
@@ -723,6 +725,8 @@ interface ScopeStubRpc {
     payload: string,
     requestedBy: string,
   ): Promise<PlatformRequestId>;
+  /** #1232: a CP-less pass's schedule outcomes as one batched intent. Null = dropped (backpressure). */
+  enqueueSweepRuns(payload: string, requestedBy: string): Promise<PlatformRequestId | null>;
   /** The migration that failed on this instance, read on `migrate()`'s reject path. */
   migrationFailure(): Promise<{ version: string; error: string; applied: number } | null>;
   invoke(
@@ -1386,6 +1390,18 @@ export class CloudflareScopeHost implements ScopeHost {
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
     return this.scopeStub(scopeId).executorDeadLetters();
+  }
+
+  /**
+   * #1232: hand one pass's schedule outcomes to the scope's own intent journal —
+   * the CP-less deployment's only road to `_substrat_sweep_runs`. Null = the
+   * journal is full and the report was deliberately dropped, never queued late.
+   */
+  async enqueueSweepRuns(scopeId: ScopeId, payload: SweepRunsPayload): Promise<PlatformRequestId | null> {
+    return this.scopeStub(scopeId).enqueueSweepRuns(
+      JSON.stringify(sweepRunsPayload.parse(payload)),
+      JSON.stringify({ system: 'scope-sweeper' }),
+    );
   }
 
   async listPlatformRequests(tenantId: TenantId, scopeId: ScopeId): Promise<PlatformRequest[]> {
@@ -4505,7 +4521,8 @@ export class CloudflareScopeHost implements ScopeHost {
           // Bounded here, not trusted from the sweep (the #559 rule).
           error: entry.error == null ? null : entry.error.slice(0, 2000),
           elapsed_ms: entry.elapsedMs ?? null,
-          at: new Date().toISOString(),
+          request_id: entry.requestId ?? null,
+          at: entry.at ?? new Date().toISOString(),
         });
       },
       listSweepRuns: async (actor, filter?: SweepRunFilter): Promise<SweepRunEntry[]> => {

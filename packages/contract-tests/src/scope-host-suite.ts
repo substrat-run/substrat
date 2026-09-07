@@ -2098,6 +2098,32 @@ export function scopeHostContractSuite(
         expect(row!.elapsedMs).toBeNull();
       });
 
+      it('dedupes on (requestId, unit) — a replayed drained batch writes nothing twice (#1232)', async () => {
+        const unit = `${ulid()}:sched/tick`;
+        const write = () =>
+          host.admin.recordSweepRun({
+            kind: 'schedule',
+            unit,
+            outcome: 'ok',
+            tenantId: t1,
+            at: '2026-09-07T10:00:00.000Z',
+            requestId: '01JDEDUPEINTENTAAAAAAAAAAA',
+          });
+        await write();
+        await write(); // the replay — a settle lost in transport re-runs the batch
+        const rows = await host.admin.listSweepRuns(staff, { unit });
+        expect(rows).toHaveLength(1);
+        // The carried pass time survives, never overwritten by write time.
+        expect(rows[0]!.at).toBe('2026-09-07T10:00:00.000Z');
+
+        // The DIRECT path (no requestId) never dedupes: NULLs are distinct, and two
+        // real passes over one unit are two facts.
+        const direct = `${ulid()}:direct`;
+        await host.admin.recordSweepRun({ kind: 'schedule', unit: direct, outcome: 'ok' });
+        await host.admin.recordSweepRun({ kind: 'schedule', unit: direct, outcome: 'ok' });
+        expect(await host.admin.listSweepRuns(staff, { unit: direct })).toHaveLength(2);
+      });
+
       it('bounds the recorded error — one runaway provider body never becomes a runaway row', async () => {
         const unit = ulid();
         await host.admin.recordSweepRun({

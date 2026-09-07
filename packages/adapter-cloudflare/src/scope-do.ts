@@ -16,6 +16,8 @@ import {
   platformRequestInput,
   platformRequestId,
   MAX_PENDING_PLATFORM_REQUESTS,
+  MAX_PENDING_SWEEP_RUNS,
+  SWEEP_RUNS_KIND,
   type DomainEvent,
   type DomainEventInput,
   type PlatformRequestInput,
@@ -2038,6 +2040,38 @@ export function defineScopeDO(
         instant.parse(new Date().toISOString()),
       );
       this.recordExecutorAttempt(eventId, deliveryId, null, null);
+      return id;
+    }
+
+    /**
+     * #1232: a CP-less pass's ONLY exit for its schedule outcomes — `admin.recordSweepRun`
+     * is a control-plane write the null-CP proxy refuses. One batched intent per pass,
+     * under its own low sub-cap, and a full journal DROPS the report (null) instead of
+     * throwing: telemetry must never sink a pass, and must never starve the shared
+     * 32-slot budget a provision-sibling needs. The next drained pass reports again.
+     */
+    enqueueSweepRuns(payload: string, requestedBy: string): PlatformRequestId | null {
+      const counts = this.sql
+        .exec(
+          `SELECT COUNT(*) AS c, SUM(CASE WHEN kind = ? THEN 1 ELSE 0 END) AS k
+             FROM _substrat_platform_requests WHERE status = 'pending'`,
+          SWEEP_RUNS_KIND,
+        )
+        .toArray()[0] as { c: number; k: number | null };
+      if (counts.c >= MAX_PENDING_PLATFORM_REQUESTS || (counts.k ?? 0) >= MAX_PENDING_SWEEP_RUNS) {
+        return null;
+      }
+      const id = platformRequestId.parse(ulid());
+      this.sql.exec(
+        `INSERT INTO _substrat_platform_requests
+           (id, kind, payload, requested_by, impersonation, status, attempts, requested_at)
+         VALUES (?, ?, ?, ?, NULL, 'pending', 0, ?)`,
+        id,
+        SWEEP_RUNS_KIND,
+        payload,
+        requestedBy,
+        instant.parse(new Date().toISOString()),
+      );
       return id;
     }
 
