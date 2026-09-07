@@ -3278,6 +3278,7 @@ describe('control-plane API — deploy', () => {
       modules: unknown[];
       bindings: { type: string; name: string; id?: string }[];
       compatibilityFlags: string[];
+      versionId?: string;
     };
   }[] = [];
 
@@ -3326,6 +3327,9 @@ describe('control-plane API — deploy', () => {
     expect(deployed.at(-1)!.ref).toBe(version.deploymentRef);
     expect(deployed.at(-1)!.bundle.doClasses).toEqual(['ScopeDO']);
     expect(deployed.at(-1)!.bundle.modules).toHaveLength(1);
+    // #1242: the bundle names the version it deploys, so the uploader can inject it
+    // as the SUBSTRAT_VERSION_ID binding the scope host stamps signals rows with.
+    expect(deployed.at(-1)!.bundle.versionId).toBe(version.id);
     const verticals = (await (await app.request('/verticals', { headers: auth })).json()).entries;
     expect(verticals).toContainEqual(expect.objectContaining({ slug: 'fsm', source: 'cli' }));
   });

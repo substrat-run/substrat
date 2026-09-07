@@ -251,7 +251,18 @@ export function createWfpUploader(opts: WfpUploaderOptions): DeployVerticalFn {
     // (`bindAi`, a fleet kill-switch) and THIS version having declared it
     // (`substrat.usesModels`). A vertical that never asked never holds the capability,
     // and asking is a manifest diff a human reads at admit.
-    const bindings = [...injected, ...(opts.bindAi && bundle.usesModels ? [{ type: 'ai', name: 'AI' }] : [])];
+    const bindings = [
+      ...injected,
+      // #1242: the version identity, handed to the running script as configuration —
+      // `env.SUBSTRAT_VERSION_ID` is what lets a scope host stamp the signals `version`
+      // dimension (#1231) on the rows it writes. `plain_text` is deliberately NOT in
+      // keep_bindings below, so an in-place serve refreshes it to the version now being
+      // served instead of inheriting the outgoing one.
+      ...(bundle.versionId
+        ? [{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID', text: bundle.versionId }]
+        : []),
+      ...(opts.bindAi && bundle.usesModels ? [{ type: 'ai', name: 'AI' }] : []),
+    ];
     // A fresh script declares every DO class under the first tag. An in-place update
     // of the serving script (#286) may only declare classes the script does not
     // already have — re-declaring a live class errors — so send the delta under a

@@ -2,6 +2,11 @@
   "name": "substrat-adapter-cloudflare",
   "main": "test/worker.ts",
   "compatibility_date": "2025-01-01",
+  // #1242: in production this arrives as a plain_text binding the deploy injects
+  // (control-plane-api/src/wfp.ts); here it is a var so version-stamp.test.ts can
+  // assert every emitted outbox row carries it. Env is script-wide, so the
+  // NULL-when-unconfigured half lives in adapter-sqlite's twin test instead.
+  "vars": { "SUBSTRAT_VERSION_ID": "01JTESTVRSN0000000000000AA" },
   "durable_objects": {
     "bindings": [
       { "name": "SCOPE", "class_name": "ScopeDO" },

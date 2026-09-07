@@ -61,6 +61,11 @@ export interface VerticalBundle {
    *  as `env.AI`. Travels with the version, so who holds the capability is a property of
    *  the code that shipped rather than of the fleet's config. */
   usesModels?: boolean;
+  /** The version REGISTRY id this bundle deploys (#1242) — injected as the
+   *  `SUBSTRAT_VERSION_ID` plain-text binding so the running scope host can stamp the
+   *  signals `version` dimension (#1231) on the records it writes. Optional: a caller
+   *  that knows no version (a test fake) still deploys, and the script stamps NULL. */
+  versionId?: string;
   /** Static files served from the edge, with the routing config that decides how paths
    *  resolve against them (#340). Absent ⇒ the script serves no static assets.
    *  `recoverContent` is the re-serve's escape hatch (#578): the runtime's asset store
