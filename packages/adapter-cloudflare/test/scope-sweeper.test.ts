@@ -132,7 +132,10 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     const first = sweepRunsPayload.parse(sweeps[0]!.payload);
     const second = sweepRunsPayload.parse(sweeps[1]!.payload);
     // First pass: the schedule fired, and the freshness evaluator (#1232) saw the
-    // event it just emitted — both join ONE batch, each under its own kind.
+    // event it just emitted — both join ONE batch, each under its own kind. TWO
+    // modules declare this event type (scheduleMod 1h/24h, freshnessMod 48h), and
+    // exactly ONE freshness entry proves the cross-module aggregation: per-module
+    // evaluation would have produced two entries colliding on the dedupe unit.
     expect(first.entries.map((e) => `${e.kind}:${e.outcome}`).sort()).toEqual([
       'freshness:ok',
       'schedule:ok',

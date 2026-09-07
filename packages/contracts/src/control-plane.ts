@@ -539,7 +539,18 @@ export const sweepRunsPayload = z.object({
         .superRefine((e, ctx) => {
           // The identity field follows the kind: a schedule entry names its
           // operation, a freshness entry names its event type — never the other
-          // way around, per the signals vocabulary.
+          // way around, per the signals vocabulary. And a CONNECTOR entry is
+          // refused outright: this payload is drained from one scope and stamped
+          // with that scope's identity, while a connector row is scope-less by
+          // contract — a scope-batched intent claiming connector kind is not
+          // under-specified, it is structurally wrong.
+          if (e.kind === 'connector') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['kind'],
+              message: 'connector rows are recorded directly by the platform sweep, never through a scope-drained batch',
+            });
+          }
           if (e.kind === 'schedule' && !e.operation) {
             ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['operation'], message: 'a schedule entry names its operation' });
           }

@@ -2923,9 +2923,12 @@ export class SqliteScopeHost implements ScopeHost {
    * State rides `_substrat_schedule_state` under a `freshness:<eventType>` key
    * (operation names are `module/verb`, event types `ns.verb` — the prefix cannot
    * collide), reusing its columns as (last recorded at, last recorded outcome).
-   * Duplicate declarations of one type across modules collapse to the TIGHTEST
-   * window here — the row's unit is `(scope, eventType)`, and two rows for one
-   * unit in one pass would collide on the drain's dedupe index.
+   * Aggregates across EVERY registered module, not just the asking one: two
+   * modules declaring one type share a single gating-state key and a single
+   * dedupe unit, so per-module evaluation would have them fighting over both —
+   * flip-flopping state, and colliding rows the dedupe index silently eats.
+   * Duplicates collapse to the TIGHTEST window; the caller invokes this once
+   * per scope, with any registered module's id as the entry ticket.
    *
    * Deliberately NOT gated on the system grant — see the interface doc.
    */
@@ -2935,8 +2938,7 @@ export class SqliteScopeHost implements ScopeHost {
     scopeId: ScopeId,
   ): Promise<FreshnessReport> {
     const report: FreshnessReport = { checks: [] };
-    const mod = this.modules.get(moduleId);
-    if (!mod || mod.freshness.length === 0) return report;
+    if (!this.modules.has(moduleId)) return report;
     const scope = this.directory
       .prepare('SELECT status FROM scopes WHERE scope_id = ? AND tenant_id = ?')
       .get(scopeId, tenantId) as { status: string } | undefined;
@@ -2954,12 +2956,15 @@ export class SqliteScopeHost implements ScopeHost {
        )`,
     );
 
-    // Collapse duplicate event types to the tightest window (see doc above).
+    // Collapse duplicate event types to the tightest window, ACROSS modules.
     const windows = new Map<string, number>();
-    for (const f of mod.freshness) {
-      const prev = windows.get(f.eventType);
-      if (prev === undefined || f.within.hours < prev) windows.set(f.eventType, f.within.hours);
+    for (const m of this.modules.values()) {
+      for (const f of m.freshness) {
+        const prev = windows.get(f.eventType);
+        if (prev === undefined || f.within.hours < prev) windows.set(f.eventType, f.within.hours);
+      }
     }
+    if (windows.size === 0) return report;
     const types = [...windows.keys()];
     const observed = new Map<string, string>();
     for (const row of rt.db

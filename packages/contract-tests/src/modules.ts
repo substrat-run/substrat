@@ -72,6 +72,30 @@ export const scheduleModManifest = moduleManifest.parse({
   ],
 });
 
+/**
+ * #1232 regression fixture: a SECOND module expecting the same event type as
+ * scheduleMod, with a WIDER window. The evaluator must aggregate across modules
+ * to the tightest window and evaluate once per scope — per-module evaluation
+ * would fight over the shared gating-state key and dedupe unit.
+ */
+export const freshnessModManifest = moduleManifest.parse({
+  id: '@test/freshwatch',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [],
+  events: { emits: [], consumes: [{ type: 'sched.ticked', schemaVersion: 1 }] },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  entitlementKey: 'freshwatch',
+  freshness: [{ eventType: 'sched.ticked', within: { hours: 48 } }],
+});
+
+export const freshnessMod: ModuleRegistration = {
+  manifest: freshnessModManifest,
+  migrations: [],
+  operations: {},
+};
+
 export const flowModManifest = moduleManifest.parse({
   id: '@test/flow',
   version: '1.0.0',

@@ -318,6 +318,7 @@ export interface PlatformSweepReport {
       | 'platform-request'
       | 'provision-reconcile'
       | 'schedule'
+      | 'freshness'
       | 'access-log';
     id: string;
     error: string;
@@ -680,25 +681,27 @@ export async function runPlatformSweep(
       );
       await mapBounded(scopes, concurrency, async (s) => {
         if (failedThisPass.has(s.id)) return;
-        for (const reg of freshRegs) {
-          try {
-            const r = await host.checkFreshness!(reg.moduleId, s.tenantId, s.id);
-            for (const check of r.checks) {
-              options.recordSweepRun?.({
-                kind: 'freshness',
-                unit: `${s.id}:${check.eventType}`,
-                outcome: check.outcome,
-                tenantId: s.tenantId,
-                scopeId: s.id,
-                vertical: s.vertical,
-                version: s.verticalVersionId,
-                eventType: check.eventType,
-                observedAt: check.observedAt,
-              });
-            }
-          } catch (err) {
-            report.errors.push({ kind: 'schedule', id: `${s.id}:${reg.moduleId}`, error: message(err) });
+        // ONCE per scope, not once per module: the evaluator aggregates every
+        // registered module's expectations (two modules declaring one type share
+        // one gating-state key and one dedupe unit — per-module evaluation would
+        // have them fighting over both). The moduleId is the entry ticket.
+        try {
+          const r = await host.checkFreshness!(freshRegs[0]!.moduleId, s.tenantId, s.id);
+          for (const check of r.checks) {
+            options.recordSweepRun?.({
+              kind: 'freshness',
+              unit: `${s.id}:${check.eventType}`,
+              outcome: check.outcome,
+              tenantId: s.tenantId,
+              scopeId: s.id,
+              vertical: s.vertical,
+              version: s.verticalVersionId,
+              eventType: check.eventType,
+              observedAt: check.observedAt,
+            });
           }
+        } catch (err) {
+          report.errors.push({ kind: 'freshness', id: s.id, error: message(err) });
         }
       });
     }

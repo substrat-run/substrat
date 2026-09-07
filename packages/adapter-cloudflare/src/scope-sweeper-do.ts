@@ -34,7 +34,7 @@ export interface ScopeSweepReport {
   /** The recurring-schedule outcomes summed across the roster (#383/#461). */
   schedules: ScheduleSweepReport;
   /** Per-unit failures; the pass records and steps over each, never aborts. */
-  errors: { kind: 'drain' | 'schedule'; id: string; error: string }[];
+  errors: { kind: 'drain' | 'schedule' | 'freshness'; id: string; error: string }[];
 }
 
 /** One settled pass: the report, or the error that sank the whole pass. */
@@ -314,12 +314,15 @@ export function defineScopeSweeperDO<Env>(
             }
           }
           if (touched) report.schedules.scopes += 1;
-          // #1232: freshness verdicts join the same batch — the evaluator already
-          // gated on change + heartbeat, so most passes contribute nothing here.
+          // #1232: freshness verdicts join the same batch — ONCE per scope, since
+          // the evaluator aggregates every module's expectations (per-module calls
+          // would fight over shared gating state and dedupe units). Change-gated +
+          // heartbeat, so most passes contribute nothing here.
           if (host.registeredFreshness && host.checkFreshness) {
-            for (const reg of host.registeredFreshness().filter((r) => r.freshness.length > 0)) {
+            const freshRegs = host.registeredFreshness().filter((r) => r.freshness.length > 0);
+            if (freshRegs.length > 0) {
               try {
-                const r = await host.checkFreshness(reg.moduleId, tenantId, scopeId);
+                const r = await host.checkFreshness(freshRegs[0]!.moduleId, tenantId, scopeId);
                 for (const check of r.checks) {
                   passRuns.push({
                     kind: 'freshness',
@@ -330,7 +333,7 @@ export function defineScopeSweeperDO<Env>(
                   });
                 }
               } catch (err) {
-                report.errors.push({ kind: 'schedule', id: `${scopeId}:${reg.moduleId}`, error: message(err) });
+                report.errors.push({ kind: 'freshness', id: scopeId, error: message(err) });
               }
             }
           }

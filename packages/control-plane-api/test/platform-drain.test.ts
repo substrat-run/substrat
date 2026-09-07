@@ -896,6 +896,19 @@ describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idemp
     });
   });
 
+  it('refuses a connector-kind entry outright — a scope-drained batch cannot carry scope-less rows', async () => {
+    const handler = sweepRunsHandler({ host });
+    const outcome = await handler(
+      ctx,
+      request({
+        version: null,
+        entries: [{ kind: 'connector', operation: 'sweep.connector:scrive', outcome: 'ok', at: '2026-09-07T12:00:00.000Z' }],
+      }),
+    );
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/never through a scope-drained batch/);
+  });
+
   it('refuses a payload whose entry names the wrong identity for its kind', async () => {
     const handler = sweepRunsHandler({ host });
     // A freshness entry with no eventType, and a schedule entry with none of its

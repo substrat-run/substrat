@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { instant, moduleId, platformActorId, scopeId, tenantId } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
-import { contractTestBareOps, scheduleMod } from '@substrat-run/contract-tests';
+import { contractTestBareOps, freshnessMod, scheduleMod } from '@substrat-run/contract-tests';
 import { SqliteScopeHost } from '../src/index.js';
 
 /**
@@ -30,6 +30,8 @@ describe('checkFreshness — the stale verdict, the heartbeat, and the collapse'
       host.defineOperation(name, handler);
     }
     host.registerModule(scheduleMod);
+    // A second module expecting the same type, wider window — the aggregation case.
+    host.registerModule(freshnessMod);
     await host.admin.createTenant(staff, { id: t, slug: 'fresh-tenant', name: 'Fresh' });
     await host.admin.grantEntitlement(staff, t, 'sched');
     await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'fresh-vertical' });
@@ -73,6 +75,17 @@ describe('checkFreshness — the stale verdict, the heartbeat, and the collapse'
     // change coincide here, and the verdict is the honest one.
     expect(beat.checks[0]!.outcome).toBe('failed');
     expect(beat.checks[0]!.observedAt).toBe('2026-09-07T10:00:00.000Z');
+  });
+
+  it("aggregates across modules — the second declarer's call answers the SAME single tightest-window check", async () => {
+    // @test/freshwatch declares sched.ticked within 48h; @test/sched within 1h
+    // (twice). One gating-state key, one dedupe unit — so any module's call must
+    // evaluate the one aggregate, at the tightest window, never its own copy.
+    nowIso = '2026-09-07T11:06:00.000Z'; // one minute after the heartbeat row above
+    const viaOther = await host.checkFreshness(moduleId.parse('@test/freshwatch'), t, s);
+    // Nothing to report: the aggregate verdict (failed, on the 1h window) was
+    // recorded a minute ago by the previous call — change-gated as ONE unit.
+    expect(viaOther.checks).toEqual([]);
   });
 
   it('a fresh event flips the verdict back — the strip shows the recovery, not just the outage', async () => {

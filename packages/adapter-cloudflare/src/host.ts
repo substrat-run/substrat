@@ -2395,25 +2395,29 @@ export class CloudflareScopeHost implements ScopeHost {
 
   /**
    * The freshness evaluator (#1232), CF half — same verdicts and gating as the pure
-   * adapter's, over one `freshnessProbe` round trip to the scope DO. Duplicate
-   * declarations of one type collapse to the tightest window (the row's unit is
-   * `(scope, eventType)`; two rows in one drained batch would collide on the dedupe
-   * index). NOT gated on the system grant — see the kernel interface doc.
+   * adapter's, over one `freshnessProbe` round trip to the scope DO. Aggregates
+   * across EVERY registered module (two modules declaring one type share one
+   * gating-state key and one dedupe unit — per-module evaluation would corrupt
+   * both), collapsing duplicates to the tightest window; called once per scope,
+   * any registered module's id as the entry ticket. NOT gated on the system
+   * grant — see the kernel interface doc.
    */
   async checkFreshness(moduleId: ModuleId, tenantId: TenantId, scopeId: ScopeId): Promise<FreshnessReport> {
     const report: FreshnessReport = { checks: [] };
-    const freshness = this.moduleFreshness.get(moduleId);
-    if (!freshness || freshness.length === 0) return report;
+    if (!this.moduleIds.has(moduleId)) return report;
     if (!this.cpLess) {
       const rec = await this.cp.getScopeRecord(tenantId, scopeId);
       if (!rec || rec.status !== 'active') return report;
     }
     const stub = this.scopeStub(scopeId);
     const windows = new Map<string, number>();
-    for (const f of freshness) {
-      const prev = windows.get(f.eventType);
-      if (prev === undefined || f.within.hours < prev) windows.set(f.eventType, f.within.hours);
+    for (const specs of this.moduleFreshness.values()) {
+      for (const f of specs) {
+        const prev = windows.get(f.eventType);
+        if (prev === undefined || f.within.hours < prev) windows.set(f.eventType, f.within.hours);
+      }
     }
+    if (windows.size === 0) return report;
     const probe = await stub.freshnessProbe([...windows.keys()]);
     const now = Date.now();
     const nowIso = new Date(now).toISOString();
