@@ -49,6 +49,16 @@ export interface ProviderSpec {
    * whole authority a leaked provider token would carry, readable in the permission diff.
    */
   grants: string[];
+  /**
+   * The secret field that names WHICH provider account the credential reads, for a
+   * provider where one app legitimately holds many (a bureau's Fortnox fleet — one
+   * connection per client company). Passed to the plane as `externalAccountRef`, the
+   * fourth leg of the upsert key: with it, a second account is a second connection;
+   * without it, every consent lands on the same null-keyed row and "rotates" the
+   * previous company's credential away. Leave unset for one-account providers, where
+   * rotation-in-place is exactly what a re-paste should do.
+   */
+  accountRefField?: string;
 }
 
 export const PROVIDERS: Record<string, ProviderSpec> = {
@@ -104,6 +114,9 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // verifies the grant at bind time instead, and refuses without it — so the hole this
     // list exists to prevent is closed by a mechanism rather than by a declaration.
     grants: [],
+    // A bureau connects one client company per consent, all under one app: the
+    // DatabaseNumber is what tells 200 connections apart on the upsert key.
+    accountRefField: 'tenantId',
   },
 };
 
@@ -124,8 +137,23 @@ export function parseProviderSecret(spec: ProviderSpec, raw: unknown): Record<st
 }
 
 /** The live (non-revoked) row for one provider, if any — expired/error rows are still THE row; rotation revives them. */
+/** Every live row for a provider, newest first (ids are ulids, so id order is creation order). */
+export function liveConnectionsFor(rows: Connection[], provider: string): Connection[] {
+  return rows
+    .filter((r) => r.provider === provider && r.status !== 'revoked')
+    .sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
+/**
+ * THE connection for the single-connection screens. The null-ref row wins (the
+ * one-account shape every provider had before `accountRefField`); an account-keyed
+ * fleet falls back to its newest row, so "connected" is answered truthfully — but a
+ * caller about to ACT on the row (revoke) must use `liveConnectionsFor` and refuse to
+ * pick among many, because "the newest client company" is nobody's intent.
+ */
 export function liveConnectionFor(rows: Connection[], provider: string): Connection | undefined {
-  return rows.find((r) => r.provider === provider && r.status !== 'revoked' && r.externalAccountRef === null);
+  const live = liveConnectionsFor(rows, provider);
+  return live.find((r) => r.externalAccountRef === null) ?? live[0];
 }
 
 /**
@@ -154,7 +182,10 @@ export async function upsertLocalConnection(
     vertical: input.vertical,
     provider: input.spec.provider,
   });
-  const live = rows.filter((r) => r.externalAccountRef === null);
+  // The same account leg the plane's upsert keys on: a spec with `accountRefField`
+  // rotates per account, everything else keeps the one null-ref row.
+  const ref = (input.spec.accountRefField && input.secret[input.spec.accountRefField]) || null;
+  const live = rows.filter((r) => r.externalAccountRef === ref);
   let id;
   let created;
   if (live.length === 0) {
@@ -165,6 +196,7 @@ export async function upsertLocalConnection(
       vertical: input.vertical,
       provider: input.spec.provider,
       label: input.label ?? input.spec.name,
+      ...(ref ? { externalAccountRef: ref } : {}),
       secret: input.secret,
       createdBy: input.createdBy,
     });
