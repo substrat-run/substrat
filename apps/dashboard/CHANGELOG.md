@@ -1,5 +1,53 @@
 # @substrat-run/dashboard
 
+## 0.29.0
+
+### Minor Changes
+
+- 1f222df: The schedule-health view model (#1232). `GET /api/apps/:scopeId/schedules`
+  joins the RUNNING version's declared schedules against the sweep record and
+  answers a render-ready verdict per schedule — last firing, next due, and one of
+  `healthy / overdue / never-run / sweeper-silent`. The derivation is a pure,
+  table-tested function: the grace is ADDITIVE (cadence + one 15-minute sweep
+  window, derived from the same numbers the scheduler uses — a 2× multiplier
+  would tell a daily schedule's owner a full day late and false-alarm a
+  five-minute one), and a scope no sweep has reached in two windows reads
+  `sweeper-silent` on every row rather than blaming schedules for a stopped loop.
+  The strip reads filter to ok+failed (a CP-less pass writes a `skipped` row per
+  schedule every couple of minutes — an unfiltered walk cannot reach last week's
+  real run), while one unfiltered read answers what the skips exist for: whether
+  the sweep still reaches the scope at all. The panel itself mounts next; a
+  version predating the manifest field answers null and the UI will hide rather
+  than nag.
+- 795384a: Schedule health is on the app page (#1232). The Observability tab opens with a
+  Schedules panel: every schedule the running version declares, with its verdict
+  pill (on schedule / overdue / never run / no sweep data), last run with a
+  failure's error verbatim, next due, and the recent-runs strip. Rendered above
+  the telemetry guards deliberately — schedule health is the tenant's own fact,
+  so it shows even for an app running another team's vertical and even where
+  Workers Logs is absent. A sweeper-silent app says so in one line and stops
+  blaming schedules; an app whose version declares no schedules (or predates the
+  manifest field) shows no panel at all. The recent-runs strip is now a shared
+  component with its amber sentence parameterized: on a connection a skip means
+  "nothing polls this", on a schedule it means "not due yet", and one hardcoded
+  sentence was wrong somewhere.
+
+### Patch Changes
+
+- Updated dependencies [06f65bf]
+- Updated dependencies [b61c4d5]
+- Updated dependencies [306b893]
+- Updated dependencies [8406843]
+  - @substrat-run/engine-invites@0.7.0
+  - @substrat-run/contracts@0.101.0
+  - @substrat-run/kernel@0.101.0
+  - @substrat-run/adapter-cloudflare@0.101.0
+  - @substrat-run/engine-workorder@0.11.0
+  - @substrat-run/connector-fortnox@0.4.3
+  - @substrat-run/demo-callout@0.3.19
+  - @substrat-run/engine-invoicing@0.9.17
+  - @substrat-run/engine-protocol@0.12.6
+
 ## 0.28.18
 
 ### Patch Changes

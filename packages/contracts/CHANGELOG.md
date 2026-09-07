@@ -1,5 +1,46 @@
 # @substrat-run/contracts
 
+## 0.101.0
+
+### Minor Changes
+
+- 306b893: Declared freshness expectations (#1232): a module may declare that a scope
+  should keep seeing an event — `freshness: [{ eventType: 'receipt.landed',
+within: { hours: 24 } }]` — and the platform judges it where the evidence lives.
+  The expectation is refused at parse when it names a type the module neither
+  emits nor consumes (a typo would read as permanently stale forever), flattens
+  into the deploy manifest like `schedules`, and is evaluated during the
+  scope-side sweep pass — one indexed `MAX(occurred_at)` read of the scope's own
+  outbox, never a control-plane read of event history. Verdicts land as a third
+  sweep-run kind, `freshness`, with the judged event type as its own dimension
+  (never smuggled into `operation`) and the newest evidence in a new `observedAt`
+  column — so a HEALTHY row can still say "last receipt 3h ago".
+
+  Freshness writes on verdict CHANGE plus an hourly heartbeat, deliberately unlike
+  schedules: its steady state is `ok`, so per-pass rows would flood the strip with
+  green while the heartbeat keeps "no rows" unambiguous (a missing hourly row is a
+  stopped evaluator, at exactly the resolution a 24-hour expectation needs). The
+  `skipped` outcome means never-observed — a brand-new install must not open red.
+  The evaluator is deliberately NOT gated on the module's system grant (freshness
+  is a read of the scope's own outbox; the grant tuple only exists for modules
+  with permissioned schedules, and gating would silently disable the module shape
+  that needs this most), and a freshness-only module registers through its own
+  registry rather than the schedule map that would have dropped it. Duplicate
+  declarations of one type collapse to the tightest window — one row per
+  (scope, eventType), or the drain's dedupe index would eat one. CP-less verticals
+  report through the same batched sweep-runs intent, now kind-discriminated with
+  old payloads defaulting to `schedule` and meaning exactly what they meant.
+
+### Patch Changes
+
+- b61c4d5: Comment-only. `hostnameRegion`'s docblock claimed the router detects a contradiction
+  between a hostname's region and its scope's jurisdiction and refuses the request.
+  Nothing does that (#958): the resolved route target carries no jurisdiction to compare
+  against — neither adapter's hostname read joins `scopes.jurisdiction` — and the router
+  declines the comparison in its own comment. The docblock now says the column records a
+  region for a check that is specified and not built, so a reader does not take an
+  unimplemented refusal for a shipped one. No schema or runtime change.
+
 ## 0.100.0
 
 ### Minor Changes
@@ -4774,7 +4815,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
