@@ -82,6 +82,10 @@ function SweepStrip({ runs }: { runs: SweepRunView[] }) {
         {[...runs].reverse().map((r) => (
           <span
             key={r.id}
+            // A colored tick alone is invisible to a screen reader and the title
+            // tooltip is mouse-only; the label carries the same fact for both.
+            role="img"
+            aria-label={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}`}
             title={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}`}
             style={{ width: 5, height: 12, borderRadius: 1, background: COLOR[r.outcome], display: 'inline-block' }}
           />

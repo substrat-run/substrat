@@ -134,13 +134,44 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     // The other question: the provider's own archive, not what we sent.
     expect(calls[3]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/activity?source=provider`);
     expect(calls[4]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/credential`);
+    expect(calls[5]!.url).toBe(`https://cp/api/tenants/${T}/connection-grants`);
     // #1232: the sweep record is tenant-pinned like every read on this seam.
     await cp.listSweepRuns({ kind: 'connector', connectionId: CN, limit: 20 });
     expect(calls[calls.length - 1]!.url).toBe(
       `https://cp/api/sweep-runs?tenantId=${T}&kind=connector&connectionId=${CN}&limit=20`,
     );
-    expect(calls[5]!.url).toBe(`https://cp/api/tenants/${T}/connection-grants`);
     expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
+  });
+
+  it('listSweepRuns walks capped pages — an ask past LIST_PAGE_MAX is a cursor walk, never one oversized request', async () => {
+    // The route refuses limit > LIST_PAGE_MAX with a 400 the skew guard would
+    // swallow into [] — so the regression this pins is: page-sized requests,
+    // cursor threaded, all rows kept, including the one beyond the first page.
+    const pageA = Array.from({ length: 200 }, (_, i) => ({ id: `A${String(i).padStart(4, '0')}` }));
+    const pageB = [{ id: 'BEYOND-THE-FIRST-PAGE' }];
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      urls.push(u);
+      const body = urls.length === 1 ? { entries: pageA, nextCursor: pageA[199]!.id } : { entries: pageB, nextCursor: null };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof globalThis.fetch;
+    const cp = new TenantNarrowedControlPlane({
+      baseUrl: 'https://cp/api',
+      actor: '01JZ000000000000000000TEST',
+      serviceToken: 'secret-token',
+      tenantId: T,
+      fetch,
+    });
+
+    const rows = await cp.listSweepRuns({ kind: 'connector', since: '2026-09-06T00:00:00.000Z', limit: 500 });
+    expect(rows).toHaveLength(201);
+    expect(rows[200]!.id).toBe('BEYOND-THE-FIRST-PAGE');
+    // Every request stayed inside the cap, and the second carried the cursor.
+    expect(urls[0]).toContain('limit=200');
+    expect(urls[0]).not.toContain('cursor=');
+    expect(urls[1]).toContain('limit=200');
+    expect(urls[1]).toContain(`cursor=${pageA[199]!.id}`);
   });
 
   // #618: the platform runs a hosted vertical's connectors, so the record of what it sent
