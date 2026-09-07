@@ -768,6 +768,10 @@ function SignInMethods() {
   const [methods, setMethods] = useState<SignInMethod[] | null>(null);
   const [providers, setProviders] = useState<PublicProvider[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
+  // Whether a read has *finished*, which is not the same question as what it returned. The
+  // loading line hangs off this rather than off `methods`, so a failed read can stop the
+  // loading line without having to claim the account has no sign-in methods.
+  const [loaded, setLoaded] = useState(false);
   // A refused link comes back as a redirect, so the reason is in the URL rather than in a
   // response this code could catch — read once, then cleared below so a reload stops repeating
   // a failure that has already been read.
@@ -782,6 +786,13 @@ function SignInMethods() {
       setProviders(state.providers);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      // What was on screen stays on screen. `reload` also runs after a disconnect, and a
+      // refresh that fails there says nothing about the account — blanking the list would
+      // announce an account with no way into it and offer “Connect” for providers that are
+      // still linked. The error says what happened; the stale rows are the last thing the
+      // server actually reported.
+    } finally {
+      setLoaded(true);
     }
   }, []);
 
@@ -813,9 +824,9 @@ function SignInMethods() {
         account you are already signed in as — the account keeps its identity, so nothing you
         have signed into through this issuer sees a new person.
       </p>
-      {!methods ? (
+      {!loaded ? (
         <p className="muted">Loading sign-in methods…</p>
-      ) : (
+      ) : !methods ? null : (
         <table className="grid">
           <thead>
             <tr><th>Method</th><th>Connected</th><th></th></tr>
