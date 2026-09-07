@@ -45,6 +45,9 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
   const [view, setView] = useState<AppSchedulesView | null>(null);
 
   useEffect(() => {
+    // Cleared first: keeping the previous app's rows visible while the next app's
+    // request is in flight would caption one app with another's schedules.
+    setView(null);
     if (DEV_MOCK) {
       setView(MOCK_APP_SCHEDULES);
       return;
@@ -81,7 +84,9 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
       {view.schedules.map((row) => (
         <div key={`${row.moduleId}:${row.operation}`} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <Pill kind={HEALTH[row.health].kind}>{HEALTH[row.health].label}</Pill>
+            {/* Silent suppresses the per-row verdicts entirely — the banner already
+                said why, and ten identical "No sweep data" pills would restate it as noise. */}
+            {!silent && <Pill kind={HEALTH[row.health].kind}>{HEALTH[row.health].label}</Pill>}
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: 'var(--text-primary)' }}>
               {row.operation}
             </span>

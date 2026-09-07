@@ -152,29 +152,35 @@ export const MOCK_APP_SCHEDULES: AppSchedulesView = {
       moduleId: '@substrat-run/demo-helpdesk',
       everyMinutes: 60,
       permissions: ['helpdesk:ticket-write'],
-      lastRun: { id: '01MOCKSCHEDA00000000000000', outcome: 'ok', at: new Date(Date.now() - 22 * 60e3).toISOString(), error: null, elapsedMs: 340 },
+      // lastRun IS runs[0] — the panel renders both, and two different "latest"
+      // states in the preview would demo a bug, not the feature.
+      ...(() => {
+        const runs = Array.from({ length: 10 }, (_, i) => ({
+          id: `01MOCKSCHEDA${String(9 - i).padStart(14, '0')}`,
+          outcome: (i === 6 ? 'failed' : 'ok') as 'ok' | 'failed' | 'skipped',
+          at: new Date(Date.now() - (22 + i * 60) * 60e3).toISOString(),
+          error: i === 6 ? 'engine refused: period already closed' : null,
+          elapsedMs: 300 + i * 5,
+        }));
+        return { lastRun: runs[0]!, runs };
+      })(),
       nextDueAt: new Date(Date.now() + 38 * 60e3).toISOString(),
       health: 'healthy',
-      runs: Array.from({ length: 10 }, (_, i) => ({
-        id: `01MOCKSCHEDA${String(9 - i).padStart(14, '0')}`,
-        outcome: (i === 6 ? 'failed' : 'ok') as 'ok' | 'failed' | 'skipped',
-        at: new Date(Date.now() - (22 + i * 60) * 60e3).toISOString(),
-        error: i === 6 ? 'engine refused: period already closed' : null,
-        elapsedMs: 300 + i * 5,
-      })),
     },
     {
       operation: 'helpdesk/daily-digest',
       moduleId: '@substrat-run/demo-helpdesk',
       everyMinutes: 1440,
       permissions: ['helpdesk:digest-send'],
-      lastRun: { id: '01MOCKSCHEDB00000000000000', outcome: 'ok', at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: 1800 },
+      ...(() => {
+        const runs = [
+          { id: '01MOCKSCHEDB00000000000001', outcome: 'ok' as const, at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: 1800 },
+          { id: '01MOCKSCHEDB00000000000000', outcome: 'ok' as const, at: new Date(Date.now() - 51 * 3600e3).toISOString(), error: null, elapsedMs: 1750 },
+        ];
+        return { lastRun: runs[0]!, runs };
+      })(),
       nextDueAt: new Date(Date.now() - 3 * 3600e3).toISOString(),
       health: 'overdue',
-      runs: [
-        { id: '01MOCKSCHEDB00000000000001', outcome: 'ok', at: new Date(Date.now() - 27 * 3600e3).toISOString(), error: null, elapsedMs: 1800 },
-        { id: '01MOCKSCHEDB00000000000000', outcome: 'ok', at: new Date(Date.now() - 51 * 3600e3).toISOString(), error: null, elapsedMs: 1750 },
-      ],
     },
     {
       operation: 'helpdesk/rebuild-index',
