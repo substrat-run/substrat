@@ -125,12 +125,28 @@ script both run:
 ```ts
 import { completeFortnoxConsent } from '@substrat-run/connector-fortnox';
 
+// Judge `state` FIRST — see below. Only then:
 const { secret, company, financialYears } = await completeFortnoxConsent({
   clientId, clientSecret, code, redirectUri, fetch,
 });
 // secret: the sealed-ready { clientId, clientSecret, tenantId } triple
 // company: whose consent this was — show CompanyName to the person who clicked approve
 ```
+
+Two things stay **yours**, because the helper takes a bare `code` and cannot know them.
+
+**`state` is judged before anything else, including a reported error.** The helper validates the
+authorization code and nothing more, so a callback that calls it on whatever arrives will happily
+complete a round it never started — and attach *the attacker's* Fortnox company to the victim's
+scope. Bind the round when you build the consent URL and verify it on the way back before you read
+`code` at all. That is what the dashboard does (its `state` is a signed claim naming the connect
+link's row, which is also what makes the link single-use and revocable), and what
+`scripts/connect.mts` does locally.
+
+**`redirectUri` must be the registered one, character for character, and the same string twice** —
+once in the consent URL, once in the exchange. Fortnox validates it only *after* login, so an
+unregistered value gets you a login screen and then an `invalid_grant` at the exchange, which reads
+exactly like a spent code.
 
 #### What that button actually does
 
