@@ -12,6 +12,7 @@ import { Badge, Button, Card, Dialog, Input, Select, Stat, Table, Tag } from '..
 import type { TableColumn } from '../components';
 import { effectiveStatus, statusLabel, statusTone, tenantTone } from '../lib/fleet';
 import { portalUrl } from '../lib/portal';
+import { KNOWN_SKUS } from '../lib/skus';
 import { d1DatabaseUrl, r2BucketUrl, type PlatformRuntime, type TenantStores } from '../lib/cf-links';
 import type { Api } from '../lib/api';
 
@@ -47,15 +48,6 @@ function storeRows(stores: TenantStores | null, runtime: PlatformRuntime | null)
     })),
   ];
 }
-
-/**
- * The console-maintained SKU list. The platform has NO entitlement-key catalogue
- * — `operationEntitlement` is a private in-memory map on the host, built from
- * manifests at registration. So this list is the console's own guess, and the UI
- * says so rather than implying the platform validated it. Granting an unknown key
- * silently does nothing useful; that is worth not hiding.
- */
-const KNOWN_SKUS = ['workorder', 'invoicing', 'protocol', 'shop', 'builder'];
 
 /** The ref is the row's whole point, so it carries the link — and stays readable as a
  *  plain id when there is no runtime to link into (self-host, or an unconfigured CP). */
