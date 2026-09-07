@@ -140,6 +140,11 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls[calls.length - 1]!.url).toBe(
       `https://cp/api/sweep-runs?tenantId=${T}&kind=connector&connectionId=${CN}&limit=20`,
     );
+    // …and the schedule-health reads carry their narrowing the same way.
+    await cp.listSweepRuns({ kind: 'schedule', unit: 'sc1:op/tick', outcome: 'ok', limit: 20 });
+    expect(calls[calls.length - 1]!.url).toBe(
+      `https://cp/api/sweep-runs?tenantId=${T}&kind=schedule&unit=${encodeURIComponent('sc1:op/tick')}&outcome=ok&limit=20`,
+    );
     expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
   });
 
