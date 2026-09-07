@@ -36,7 +36,7 @@ import {
   type DashboardAppRow,
   type DashboardNode,
 } from '../src/index.js';
-import { listDeploymentsFromHost, verticalDeploymentFromHost, verticalDeploymentPageFromHost, versionRegistryFromHost, assertOwned } from '../src/deployments.js';
+import { listDeploymentsFromHost, verticalDeploymentFromHost, verticalDeploymentPageFromHost, versionRegistryFromHost, versionSchedulesFromHost, assertOwned } from '../src/deployments.js';
 import { ControlPlaneError } from '../src/authority.js';
 
 /**
@@ -1360,6 +1360,40 @@ describe('Dashboard Phase 4 — a tenant sees only its own deployments', () => {
 
     expect(await versionRegistryFromHost(host, staff, 'meridian', withReg)).toEqual(registry);
     expect(await versionRegistryFromHost(host, staff, 'meridian', withoutReg)).toBeNull();
+  });
+
+  it('per-app: reads a version\'s declared schedules from its manifest (#1232), null without them', async () => {
+    await host.admin.registerVertical(staff, { slug: 'meridian-sched', name: 'Meridian', source: 'builtin' });
+    const withSched = ulid();
+    const schedules = [
+      { operation: 'hr/remind', cadence: { everyMinutes: 1440 }, permissions: [], moduleId: '@substrat-run/demo-meridian' },
+    ];
+    await host.admin.publishVersion(staff, {
+      id: withSched,
+      verticalSlug: 'meridian-sched',
+      version: '0.3.0',
+      manifestDigest: 'm',
+      permissionDigest: 'p',
+      migrationDigest: 'g',
+      deploymentRef: `meridian-sched-${withSched.toLowerCase()}`,
+      manifestJson: JSON.stringify({
+        version: '0.3.0',
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        registry: {
+          permissions: [{ key: 'hr:person-read', description: 'View a person', declaredBy: ['meridian'] }],
+          roles: [{ key: 'admin', permissions: ['hr:person-read'], source: 'vertical' }],
+          entityGrants: [],
+        },
+        schedules,
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+      }),
+    });
+    expect(await versionSchedulesFromHost(host, staff, 'meridian-sched', withSched)).toEqual(schedules);
+    // A missing id and a cross-lineage read both answer null — the HTTP twin's shape,
+    // never a propagated 'unknown version' throw behind an empty panel.
+    expect(await versionSchedulesFromHost(host, staff, 'meridian-sched', ulid())).toBeNull();
+    expect(await versionSchedulesFromHost(host, staff, 'meridian', withSched)).toBeNull();
   });
 
   it('refuses to treat a slug the tenant does not own as promotable', async () => {

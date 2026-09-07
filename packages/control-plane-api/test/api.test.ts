@@ -3236,6 +3236,43 @@ describe('control-plane API — vertical registry', () => {
     expect(await res.json()).toEqual({ registry });
   });
 
+  it('reads a version\'s declared schedules from its manifest, null without the field (#1232)', async () => {
+    const v5 = ulid();
+    const registry = {
+      permissions: [{ key: 'fsm:job-create', description: 'Open a job', declaredBy: ['fsm'] }],
+      roles: [{ key: 'agent', permissions: ['fsm:job-create'], source: 'vertical' }],
+      entityGrants: [],
+    };
+    const schedules = [
+      {
+        operation: 'wo/advance',
+        cadence: { everyMinutes: 60 },
+        permissions: [],
+        moduleId: '@substrat-run/engine-workorder',
+      },
+    ];
+    await json(
+      '/verticals/fsm/versions',
+      'POST',
+      version(v5, {
+        manifestJson: JSON.stringify({
+          version: v5.slice(-6),
+          entry: 'index.js',
+          compatibilityDate: '2026-07-01',
+          registry,
+          schedules,
+          digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        }),
+      }),
+    );
+    const withField = await get(`/verticals/fsm/versions/${v5}/schedules`);
+    expect(withField.status).toBe(200);
+    expect(await withField.json()).toEqual({ schedules });
+    // v1 retained no manifest at all — null, never an invented empty list.
+    const without = await get(`/verticals/fsm/versions/${v1}/schedules`);
+    expect(await without.json()).toEqual({ schedules: null });
+  });
+
   it('returns a null registry for a version that retained no manifest (pre-#286)', async () => {
     // v1 was published from the bare `version()` fixture — no manifestJson.
     const res = await get(`/verticals/fsm/versions/${v1}/registry`);

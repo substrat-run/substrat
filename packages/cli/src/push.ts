@@ -24,6 +24,7 @@ import {
   type PermissionsInput,
   type RuntimeNeeds,
   type VersionOrigin,
+  type DeployManifest,
 } from '@substrat-run/contracts';
 import {
   lint,
@@ -91,10 +92,27 @@ function stableStringify(v: unknown): string {
  * Optional because pre-#1206 verticals declare it in package.json `substrat.envSpec` instead —
  * see `resolveDeclaredEnvSpec` for how the two are reconciled.
  */
+/**
+ * Every module's declared schedules, flattened with the owning module id (#1232) —
+ * what the deploy manifest carries so the dashboard can compute next-due off
+ * `everyMinutes`. Undefined when no module declares any, so the field stays absent.
+ */
+export function flattenDeclaredSchedules(
+  permissions: PermissionsInput,
+): DeployManifest['schedules'] | undefined {
+  const schedules = permissions.modules.flatMap((m) =>
+    (m.manifest.schedules ?? []).map((s) => ({ ...s, moduleId: m.manifest.id })),
+  );
+  return schedules.length > 0 ? schedules : undefined;
+}
+
 export interface DeclaredSurface {
   readonly registry: PermissionRegistry;
   /** The entry's `envSpec` export, validated — undefined when the entry exports none. */
   readonly envSpec: EnvVarSpec[] | undefined;
+  /** Every module's declared schedules, flattened with the owning module id (#1232) —
+   *  undefined when no module declares any, so the manifest field stays absent. */
+  readonly schedules: DeployManifest['schedules'] | undefined;
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -176,7 +194,13 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         );
       }
     }
-    return { registry: buildPermissionRegistry(mod.permissions), envSpec: spec };
+    return {
+      registry: buildPermissionRegistry(mod.permissions),
+      envSpec: spec,
+      // #1232: the same import that yields the permission surface already holds every
+      // module manifest — the schedules ride out of it with zero extra reads.
+      schedules: flattenDeclaredSchedules(mod.permissions),
+    };
   } finally {
     rmSync(out, { force: true });
   }
@@ -1060,7 +1084,7 @@ export async function push(
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
   // The same import reads the entry's `envSpec` export (#1206); when it exists it is the copy
   // that ships, and a drifted package.json duplicate refuses the push.
-  const { registry, envSpec: derivedEnvSpec } = await deriveDeclaredSurface(opts.dir);
+  const { registry, envSpec: derivedEnvSpec, schedules } = await deriveDeclaredSurface(opts.dir);
   const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);
 
   // The emitted entity model (#1214), read from the checked-in `model.json` beside
@@ -1136,6 +1160,9 @@ export async function push(
     // The emitted entity model (#1214) — metadata like envSpec/surfaces, not in any digest:
     // it describes what the migrations built, it does not build anything.
     ...(model ? { model } : {}),
+    // #1232: the declared schedules travel with the version — the dashboard's
+    // schedule-health view needs `everyMinutes`, which exists nowhere off the manifest.
+    ...(schedules ? { schedules } : {}),
     // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
     // because absence means "pre-#303 push" to the egress worker (unenforced, metered
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is
