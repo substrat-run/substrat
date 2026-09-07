@@ -18,7 +18,7 @@
  * it can price, label and link in one go; exposing it as an invocable operation
  * would offer a second way in that skips all of that.
  */
-import { currencyCode, defineOperations, z } from '@substrat-run/contracts';
+import { currencyCode, defineOperations, money, z } from '@substrat-run/contracts';
 import { workorderEntities } from './entities.js';
 import { billableLine, materialLine, timeEntry, workOrder } from './schemas.js';
 
@@ -117,7 +117,11 @@ export const workorderOperations = defineOperations(workorderEntities, WORKORDER
        */
       currency: currencyCode.optional(),
     }),
-    output: z.object({ order: workOrder, total: z.string() }),
+    // `total` is a `Money` — `{ amount, currency }` — not a bare decimal string.
+    // The declaration said `z.string()` from the day it was written and the
+    // handler never once produced one (#1277), so nothing downstream could have
+    // read the string honestly; correcting it breaks no caller.
+    output: z.object({ order: workOrder, total: money }),
   },
 
   'workorder/close': {
