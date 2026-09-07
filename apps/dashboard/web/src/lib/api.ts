@@ -738,10 +738,12 @@ export interface AppScheduleRow {
   runs: SweepRunView[];
 }
 
-/** The schedules panel's data. `schedules: null` = none declared or a pre-field version — hide. */
+/** The schedules panel's data. Both null = nothing declared or a pre-field version — hide. */
 export interface AppSchedulesView {
   running: { versionId: string | null; version: string | null };
   schedules: AppScheduleRow[] | null;
+  /** Declared freshness expectations' verdicts (#1272); null = none declared. */
+  freshness: AppFreshnessRow[] | null;
   lastSweepAt: string | null;
 }
 
@@ -752,6 +754,18 @@ export interface SweepRunView {
   at: string;
   error: string | null;
   elapsedMs: number | null;
+  /** The freshness rows' evidence timestamp (#1272); null on schedule rows. */
+  observedAt: string | null;
+}
+
+/** One declared freshness expectation's verdict on an app (#1272) — rendered verbatim. */
+export interface AppFreshnessRow {
+  eventType: string;
+  moduleId: string;
+  withinHours: number;
+  observedAt: string | null;
+  health: 'fresh' | 'stale' | 'never-seen' | 'sweeper-silent';
+  runs: SweepRunView[];
 }
 
 /** One hostname bound to the app's scope (the Domains tab). */

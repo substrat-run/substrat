@@ -589,14 +589,18 @@ export class TenantNarrowedControlPlane {
   async versionSchedules(
     verticalSlug: string,
     versionId: string,
-  ): Promise<DeployManifest['schedules'] | null> {
+  ): Promise<{
+    schedules: DeployManifest['schedules'] | null;
+    freshness: DeployManifest['freshness'] | null;
+  }> {
     try {
-      const res = await this.call<{ schedules: DeployManifest['schedules'] | null }>(
-        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/schedules`,
-      );
-      return res?.schedules ?? null;
+      const res = await this.call<{
+        schedules: DeployManifest['schedules'] | null;
+        freshness?: DeployManifest['freshness'] | null;
+      }>(`/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/schedules`);
+      return { schedules: res?.schedules ?? null, freshness: res?.freshness ?? null };
     } catch {
-      return null;
+      return { schedules: null, freshness: null };
     }
   }
 
@@ -894,7 +898,7 @@ export class TenantNarrowedControlPlane {
    */
   async listSweepRuns(
     filter: {
-      kind?: 'connector' | 'schedule';
+      kind?: 'connector' | 'schedule' | 'freshness';
       connectionId?: string;
       scopeId?: string;
       unit?: string;

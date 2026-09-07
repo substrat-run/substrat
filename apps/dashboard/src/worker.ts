@@ -30,7 +30,7 @@ import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type Connec
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
-import { deriveScheduleHealth } from './schedules.js';
+import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -1595,40 +1595,68 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
   const runningId = boundVersionId ?? prod?.versionId ?? null;
   const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
 
-  const declared = runningId ? await cp.versionSchedules(slug, runningId) : null;
-  if (!declared || declared.length === 0) {
-    // Null schedules = a version pushed before the manifest field, or none declared —
-    // the UI hides the panel for both rather than nagging every app.
+  const declared = runningId
+    ? await cp.versionSchedules(slug, runningId)
+    : { schedules: null, freshness: null };
+  const schedules = declared.schedules ?? [];
+  const freshness = declared.freshness ?? [];
+  if (schedules.length === 0 && freshness.length === 0) {
+    // A version pushed before the manifest fields, or one declaring neither —
+    // the UI hides the panel rather than nagging every app.
     return c.json({
       running: { versionId: runningId, version: runningVersion?.version ?? null },
       schedules: null,
+      freshness: null,
       lastSweepAt: null,
     });
   }
 
-  const [liveness, ...perSchedule] = await Promise.all([
-    cp.listSweepRuns({ kind: 'schedule', scopeId: scope, limit: 1 }),
-    ...declared.flatMap((spec) => {
+  // Dedupe freshness types the way the evaluator does, so the reads match rows.
+  const freshTypes = [...new Set(freshness.map((f) => f.eventType))];
+  const [liveness, ...perUnit] = await Promise.all([
+    // Liveness deliberately spans EVERY kind: a freshness-only app writes no
+    // schedule rows, and a kind-filtered probe would read it as permanently
+    // sweeper-silent. Any row of any kind proves the sweep reached the scope
+    // (connector rows cannot pollute this — they carry no scopeId by contract).
+    cp.listSweepRuns({ scopeId: scope, limit: 1 }),
+    ...schedules.flatMap((spec) => {
       const unit = `${scope}:${spec.operation}`;
       return [
         cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'ok', limit: 20 }),
         cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'failed', limit: 20 }),
       ];
     }),
+    // Freshness rows are change-gated — no flood, so no outcome filter: the
+    // skipped (never-seen) ticks are meaningful here.
+    ...freshTypes.map((t) =>
+      cp.listSweepRuns({ kind: 'freshness', unit: `${scope}:${t}`, limit: 20 }),
+    ),
   ]);
   const runsByOperation = new Map<string, SweepRunEntry[]>();
-  declared.forEach((spec, i) => {
+  schedules.forEach((spec, i) => {
     // Merge the two outcome reads newest-first on the ULID id, capped like one read.
-    const merged = [...perSchedule[i * 2]!, ...perSchedule[i * 2 + 1]!]
+    const merged = [...perUnit[i * 2]!, ...perUnit[i * 2 + 1]!]
       .sort((a, b) => (a.id < b.id ? 1 : -1))
       .slice(0, 20);
     runsByOperation.set(spec.operation, merged);
   });
+  const runsByEventType = new Map<string, SweepRunEntry[]>();
+  freshTypes.forEach((t, i) => {
+    runsByEventType.set(t, perUnit[schedules.length * 2 + i]!);
+  });
 
+  const lastSweepAt = liveness[0]?.at ?? null;
   return c.json({
     running: { versionId: runningId, version: runningVersion?.version ?? null },
-    schedules: deriveScheduleHealth(declared, runsByOperation, liveness[0]?.at ?? null, Date.now()),
-    lastSweepAt: liveness[0]?.at ?? null,
+    schedules:
+      schedules.length > 0
+        ? deriveScheduleHealth(schedules, runsByOperation, lastSweepAt, Date.now())
+        : null,
+    freshness:
+      freshness.length > 0
+        ? deriveFreshnessHealth(freshness, runsByEventType, lastSweepAt, Date.now())
+        : null,
+    lastSweepAt,
   });
 });
 
