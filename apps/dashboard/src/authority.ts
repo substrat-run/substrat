@@ -641,9 +641,11 @@ export class TenantNarrowedControlPlane {
    *   registry's own `servingVersionId` via `/service-refs`, not from a scope-derived
    *   guess — the stable script runs one code version, and the registry names it.
    */
-  private async ownedServiceRefs(): Promise<
-    Map<string, { vertical: string; version: string; versionId: string | null }>
-  > {
+  private async ownedServiceRefs(): Promise<{
+    owned: Map<string, { vertical: string; version: string; versionId: string | null }>;
+    /** The resolver capped its vertical fan-out — the map below is INCOMPLETE. */
+    truncated: boolean;
+  }> {
     // The JOIN moved behind the plane (#1231's last item): GET /service-refs is the
     // one implementation of "what a service ref means", forced-filtered to this
     // tenant, answering the registry's own servingVersionId for the serving script —
@@ -659,6 +661,7 @@ export class TenantNarrowedControlPlane {
         stamp: { vertical?: string; version?: string };
         versionLabel: string | null;
       }>;
+      verticalsTruncated?: boolean;
     }>(`/service-refs?tenantId=${encodeURIComponent(this.tenantId)}`);
     for (const e of res?.entries ?? []) {
       if (!e.stamp.vertical) continue;
@@ -672,7 +675,7 @@ export class TenantNarrowedControlPlane {
         versionId: e.stamp.version ?? null,
       });
     }
-    return owned;
+    return { owned, truncated: res?.verticalsTruncated === true };
   }
 
   /**
@@ -698,7 +701,15 @@ export class TenantNarrowedControlPlane {
       cpuTimeP99: number;
     }>
   > {
-    let owned = await this.ownedServiceRefs();
+    const refs = await this.ownedServiceRefs();
+    // The resolver said its answer is incomplete (a >cap vertical fan-out). A chart
+    // over a partial ownership map reads as "the missing verticals had no traffic" —
+    // the silent-drop the resolver reports truncation to prevent — so refuse loudly
+    // instead; the UI surfaces the message rather than a wrong zero.
+    if (refs.truncated) {
+      throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
+    }
+    let owned = refs.owned;
     // The per-app tab's filter: not a query param the plane ever sees — the ownership
     // map itself is narrowed to the one vertical, so a slug this tenant doesn't own
     // short-circuits to [] exactly like owning nothing at all.
@@ -756,8 +767,13 @@ export class TenantNarrowedControlPlane {
       raw: unknown;
     }>
   > {
-    const owned = await this.ownedServiceRefs();
-    const services = input.services.filter((s) => owned.has(s));
+    const refs = await this.ownedServiceRefs();
+    // Same refusal as observabilityMetrics: a partial ownership map here would
+    // silently drop a legitimately owned service from the ask.
+    if (refs.truncated) {
+      throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
+    }
+    const services = input.services.filter((s) => refs.owned.has(s));
     if (services.length === 0) return [];
     const q = new URLSearchParams();
     for (const s of services) q.append('service', s);

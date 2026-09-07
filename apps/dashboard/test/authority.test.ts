@@ -365,6 +365,22 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(calls.some((u) => u.includes(`/service-refs?tenantId=${T}`))).toBe(true);
   });
 
+  it('refuses LOUDLY when the resolver reports a truncated map — never a silently partial chart', async () => {
+    const truncated = {
+      '/service-refs': { entries: registry['/service-refs'].entries, verticalsTruncated: true },
+      '/observability/metrics': [
+        { service: 'acme-helpdesk-v1', requests: 10, errors: 1, subrequests: 20, cpuTimeP50: 900, cpuTimeP99: 4000 },
+      ],
+    };
+    // A partial ownership map would render the missing verticals as "no traffic" —
+    // the exact silent drop the resolver reports truncation to prevent.
+    await expect(routedHarness(truncated).cp.observabilityMetrics(24)).rejects.toThrow(/truncated/);
+    const logs = routedHarness(truncated);
+    await expect(logs.cp.observabilityLogs({ services: ['acme-helpdesk-v1'] })).rejects.toThrow(/truncated/);
+    // And the staff-wide telemetry routes were never asked on the way to the refusal.
+    expect(logs.calls.some((u) => u.includes('/observability/'))).toBe(false);
+  });
+
   it('observabilityLogs answers [] for an unowned service WITHOUT asking the plane', async () => {
     const { cp, calls } = routedHarness(registry);
     expect(await cp.observabilityLogs({ services: ['rival-crm-v9'] })).toEqual([]);
