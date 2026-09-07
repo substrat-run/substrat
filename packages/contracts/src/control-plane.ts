@@ -130,6 +130,8 @@ export const adminAction = z.enum([
   // it becomes unreadable. The `after` carries the receipt (how many events, whether a key
   // existed) — an erasure that records no proof it happened is not a fulfilled DSAR.
   'shredSubject',
+  // #1233 — the issues lifecycle: a staff verdict on a fingerprint-grouped failure class.
+  'setIssueStatus',
   // K-42 (#868) — opening a session that acts as a principal, and closing one.
   // The BEGIN is a mutation in its own right even though it writes no scope data:
   // it is the moment a staff member acquired the ability to act as somebody else,
@@ -430,9 +432,62 @@ export const opsFailureEntry = z.object({
   message: z.string(),
   /** The upstream provider's trace reference, when the message carried one. */
   reference: z.string().nullable(),
+  /** The grouping key (#1233) — `opsFailureFingerprint` of (operation, stage, code). Null = the row predates the column. */
+  fingerprint: z.string().nullable(),
   at: instant,
 });
 export type OpsFailureEntry = z.infer<typeof opsFailureEntry>;
+
+/**
+ * The grouping key for the Issues view (#1233): operation + stage + taxonomy code —
+ * deliberately NEVER the message, which is free text full of ULIDs, provider prose
+ * and `reference = <id>` handles, and would make every occurrence its own group.
+ * U+001F (unit separator) joins the parts: unambiguous with no escaping dance, and
+ * the key stays readable in a log line.
+ */
+export function opsFailureFingerprint(f: {
+  operation: string;
+  stage?: string | null;
+  code?: string | null;
+}): string {
+  return [f.operation, f.stage ?? '', f.code ?? ''].join('\u001f');
+}
+
+/**
+ * An issue's lifecycle (#1233, Sentry's shape): `new` on first sight; `resolved`
+ * and `ignored` are staff verdicts; `regressed` is ingest's word only — a fresh
+ * arrival on a resolved issue flips it back into attention, which is the
+ * lifecycle's whole retention trick. A fresh arrival on an ignored issue changes
+ * nothing: ignoring is a verdict about the future.
+ */
+export const issueStatus = z.enum(['new', 'regressed', 'resolved', 'ignored']);
+export type IssueStatus = z.infer<typeof issueStatus>;
+/** What a staff verdict may SET — `regressed` is never an input. */
+export const issueStatusInput = z.enum(['new', 'resolved', 'ignored']);
+export type IssueStatusInput = z.infer<typeof issueStatusInput>;
+
+/**
+ * One fingerprint-grouped failure class (#1233). The row OWNS its counters:
+ * `count`/`firstSeen` must survive the evidence beneath them, which self-prunes
+ * at 90 days — so they are materialized at ingest, never derived by query.
+ */
+export const issueEntry = z.object({
+  fingerprint: z.string().min(1),
+  operation: z.string().min(1),
+  stage: z.string().nullable(),
+  origin: platformRequestFailureOrigin.nullable(),
+  code: errorCode.nullable(),
+  status: issueStatus,
+  count: z.number().int().positive(),
+  firstSeen: instant,
+  lastSeen: instant,
+  /** The newest exemplar's message — a sample for the reader, never the group's identity. */
+  lastMessage: z.string(),
+  lastVertical: z.string().nullable(),
+  /** Set by a `resolved` verdict; kept through a regression as "when somebody last thought this was over". */
+  resolvedAt: instant.nullable(),
+});
+export type IssueEntry = z.infer<typeof issueEntry>;
 
 /** What a sweep pass touched (#1232). More kinds arrive with the views that read them. */
 export const sweepRunKind = z.enum(['connector', 'schedule', 'freshness']);

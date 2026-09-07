@@ -2073,6 +2073,88 @@ export function scopeHostContractSuite(
       });
     });
 
+    // -- issues (#1233): failures grouped by fingerprint, with a lifecycle --
+
+    describe('issues (#1233)', () => {
+      it('groups recurring failures into one counted issue, and links the exemplars', async () => {
+        for (let i = 0; i < 3; i++) {
+          await host.admin.recordOpsFailure({
+            actor: staff,
+            operation: 'intent.connector:groupprov',
+            stage: 'terminal',
+            vertical: 'acme/grouped',
+            origin: 'provider',
+            message: `platform intent 01JATTEMPT${i} failed: provider said no`,
+          });
+        }
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'intent.connector:groupprov',
+          stage: 'terminal',
+          vertical: 'acme/grouped',
+          origin: 'platform',
+          code: 'permission_denied',
+          message: 'platform intent 01JDENIED failed: permission denied',
+        });
+
+        // Same operation+stage, different code -> a different defect, a different issue.
+        const issues = await host.admin.listIssues(staff, { operation: 'intent.connector:groupprov' });
+        expect(issues.length).toBe(2);
+        const recurring = issues.find((i) => i.code === null)!;
+        expect(recurring.count).toBe(3);
+        expect(recurring.status).toBe('new');
+        expect(recurring.origin).toBe('provider');
+        expect(recurring.lastVertical).toBe('acme/grouped');
+        expect(recurring.firstSeen <= recurring.lastSeen).toBe(true);
+
+        // The exemplar walk: the issue's fingerprint narrows the failure list to its rows.
+        const exemplars = await host.admin.listOpsFailures(staff, { fingerprint: recurring.fingerprint });
+        expect(exemplars.length).toBe(3);
+        expect(new Set(exemplars.map((r) => r.fingerprint)).size).toBe(1);
+      });
+
+      it('walks the lifecycle: resolved regresses on a fresh arrival, ignored stays ignored', async () => {
+        const record = () =>
+          host.admin.recordOpsFailure({
+            actor: staff,
+            operation: 'deploy.upload',
+            stage: 'lifecycle-check',
+            origin: 'platform',
+            code: 'unavailable',
+            message: 'upstream unavailable',
+          });
+        await record();
+        const [issue] = await host.admin.listIssues(staff, { operation: 'deploy.upload', code: 'unavailable' });
+
+        const resolved = await host.admin.setIssueStatus(staff, issue!.fingerprint, 'resolved');
+        expect(resolved?.status).toBe('resolved');
+        expect(resolved?.resolvedAt).not.toBeNull();
+
+        // Sentry's best retention trick, minus the release half: seen again after
+        // resolved = regressed, back into attention without anyone re-filing it.
+        await record();
+        const [regressed] = await host.admin.listIssues(staff, { operation: 'deploy.upload', code: 'unavailable' });
+        expect(regressed!.status).toBe('regressed');
+        expect(regressed!.count).toBe(2);
+        // The resolution timestamp survives the regression: "when somebody last
+        // thought this was over" is part of the regression's story.
+        expect(regressed!.resolvedAt).not.toBeNull();
+
+        // Ignored is a verdict about the future, and a fresh arrival does not overturn it.
+        await host.admin.setIssueStatus(staff, issue!.fingerprint, 'ignored');
+        await record();
+        const [ignored] = await host.admin.listIssues(staff, { operation: 'deploy.upload', code: 'unavailable' });
+        expect(ignored!.status).toBe('ignored');
+        expect(ignored!.count).toBe(3);
+
+        // Reopening clears the resolution; an unknown fingerprint is undefined, never an invented row.
+        const reopened = await host.admin.setIssueStatus(staff, issue!.fingerprint, 'new');
+        expect(reopened?.status).toBe('new');
+        expect(reopened?.resolvedAt).toBeNull();
+        expect(await host.admin.setIssueStatus(staff, 'no-such-fingerprint', 'resolved')).toBeUndefined();
+      });
+    });
+
     // -- the durable sweep record (#1232): what a pass touched, and how it went --
 
     describe('sweep runs (#1232)', () => {

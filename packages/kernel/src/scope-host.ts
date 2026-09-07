@@ -101,6 +101,9 @@ import type {
   FreshnessSpec,
   ErrorCode,
   PlatformRequestFailureOrigin,
+  IssueEntry,
+  IssueStatus,
+  IssueStatusInput,
 } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
@@ -2543,6 +2546,24 @@ export interface HostAdmin {
   listSweepRuns(actor: PlatformActorId, filter?: SweepRunFilter): Promise<SweepRunEntry[]>;
 
   /**
+   * The fingerprint-grouped failure classes (#1233), most recently seen first.
+   * Reads are access-logged (K-24). No cursor by design: grouping IS the
+   * compression — cardinality is the number of distinct failure shapes, not the
+   * number of failures — and `limit` bounds the read.
+   */
+  listIssues(actor: PlatformActorId, filter?: IssueFilter): Promise<IssueEntry[]>;
+  /**
+   * A staff verdict on one issue (#1233): resolve, ignore, or reopen. `regressed`
+   * is ingest's word and not accepted here. Returns the updated row, or undefined
+   * for an unknown fingerprint. Audited with the before/after status diff (K-33).
+   */
+  setIssueStatus(
+    actor: PlatformActorId,
+    fingerprint: string,
+    status: IssueStatusInput,
+  ): Promise<IssueEntry | undefined>;
+
+  /**
    * Meter 3's ledger (#1054): one line per model call a vertical made through the
    * platform's model host, drained here as a `model-usage` intent. Idempotent on the
    * intent id — a retried drain records nothing twice — and retention-bounded
@@ -2902,6 +2923,22 @@ export const OPS_FAILURE_RETENTION_DAYS = 90;
  */
 export const SWEEP_RUN_RETENTION_DAYS = 14;
 
+/**
+ * How long an issue row outlives its last occurrence (#1233). Deliberately longer
+ * than the 90-day evidence beneath it: an issue is the compressed memory of a
+ * failure class, and "we saw this five months ago" is exactly what a regression
+ * needs to be recognizable. Pruned on write like everything else here.
+ */
+export const ISSUE_RETENTION_DAYS = 180;
+
+/** Filter for `listIssues` (#1233). Bounded by `limit` only — see the verb's doc. */
+export interface IssueFilter {
+  status?: IssueStatus;
+  operation?: string;
+  code?: string;
+  limit?: number;
+}
+
 /** What the sweep hands `recordSweepRun`. `id`/`at` are stamped by the adapter. */
 export interface SweepRunInput {
   kind: SweepRunKind;
@@ -2989,6 +3026,8 @@ export interface OpsFailureFilter {
   operation?: string;
   /** The taxonomy code — what an issues-style grouping narrows by (#1233). */
   code?: string;
+  /** The exemplar walk (#1233): every recorded row in one issue's group. */
+  fingerprint?: string;
   /** Exact match — the lookup a CI log's `reference = <id>` line lands on. */
   reference?: string;
   since?: string;

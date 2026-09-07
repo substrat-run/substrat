@@ -4,6 +4,8 @@ import {
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
+  opsFailureFingerprint,
+  issueEntry,
   sweepRunEntry,
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunsPayload,
@@ -66,6 +68,7 @@ import {
   type AccessLogEntry,
   type AdminLogEntry,
   type OpsFailureEntry,
+  type IssueEntry,
   type SweepRunEntry,
   type SweepRunsPayload,
   type FreshnessSpec,
@@ -144,6 +147,7 @@ import {
   type AuditLogFilter,
   type OpsFailureFilter,
   type OpsFailureInput,
+  type IssueFilter,
   type SweepRunFilter,
   type SweepRunInput,
   type ModelUsageFilter,
@@ -206,6 +210,7 @@ import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.
 import type {
   AccessLogRow,
   AuditLogQuery,
+  IssueQuery,
   OpsFailureQuery,
   SweepRunQuery,
   SweepRunRow,
@@ -636,6 +641,12 @@ interface ControlPlaneStub {
   listOpsFailures(query: OpsFailureQuery): Promise<OpsFailureEntry[]>;
   recordSweepRun(row: SweepRunRow): Promise<void>;
   listSweepRuns(query: SweepRunQuery): Promise<SweepRunEntry[]>;
+  listIssues(query: IssueQuery): Promise<unknown[]>;
+  setIssueStatus(
+    fingerprint: string,
+    status: 'new' | 'resolved' | 'ignored',
+    at: string,
+  ): Promise<{ before: unknown; after: unknown } | undefined>;
   recordModelUsage(row: ModelUsageRow): Promise<{ recorded: boolean }>;
   listModelUsage(query: ModelUsageQuery): Promise<ModelUsageRow[]>;
   // #40 — the directory's own backup/restore pair.
@@ -4549,6 +4560,7 @@ export class CloudflareScopeHost implements ScopeHost {
           reference: entry.reference ?? null,
           origin: entry.origin ?? null,
           code: entry.code ?? null,
+          fingerprint: opsFailureFingerprint(entry),
           at: new Date().toISOString(),
         });
       },
@@ -4560,6 +4572,7 @@ export class CloudflareScopeHost implements ScopeHost {
           version: filter?.version,
           operation: filter?.operation,
           code: filter?.code,
+          fingerprint: filter?.fingerprint,
           reference: filter?.reference,
           since: filter?.since,
           until: filter?.until,
@@ -4623,6 +4636,32 @@ export class CloudflareScopeHost implements ScopeHost {
           rows.length,
         );
         return rows.map((r) => sweepRunEntry.parse(r));
+      },
+      listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
+        const rows = await this.cp.listIssues({
+          status: filter?.status,
+          operation: filter?.operation,
+          code: filter?.code,
+          limit: filter?.limit,
+        });
+        // Issues aggregate fleet-wide failures; the read is recorded like the rows' own (K-24).
+        await this.recordAccess(actor, 'listIssues', {}, filter, rows.length);
+        return rows.map((r) => issueEntry.parse(r));
+      },
+      setIssueStatus: async (actor, fingerprint, status): Promise<IssueEntry | undefined> => {
+        const change = await this.cp.setIssueStatus(fingerprint, status, new Date().toISOString());
+        if (!change) return undefined;
+        const before = issueEntry.parse(change.before);
+        const after = issueEntry.parse(change.after);
+        // A lifecycle flip is a staff mutation — audited with the diff (K-33).
+        await this.recordAdmin(
+          actor,
+          'setIssueStatus',
+          { tenantId: null, vertical: after.lastVertical },
+          { fingerprint, status: before.status },
+          { fingerprint, status: after.status },
+        );
+        return after;
       },
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;
