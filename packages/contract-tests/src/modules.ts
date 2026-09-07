@@ -623,7 +623,9 @@ const authorizedReadOp: OperationHandler<{ permission: PermissionKey }, number> 
 };
 
 const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
-  ctx.sql.query('SELECT id, type, authorization, impersonation FROM _substrat_outbox ORDER BY id');
+  ctx.sql.query(
+    'SELECT id, type, authorization, impersonation, operation FROM _substrat_outbox ORDER BY id',
+  );
 
 const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
@@ -922,8 +924,8 @@ export const scheduleMod: ModuleRegistration = {
       unknown
     >,
     'sched/read-outbox': ((ctx) =>
-      ctx.sql.query<{ type: string; actor: string }>(
-        'SELECT type, actor FROM _substrat_outbox ORDER BY id',
+      ctx.sql.query<{ type: string; actor: string; operation: string | null }>(
+        'SELECT type, actor, operation FROM _substrat_outbox ORDER BY id',
       )) as OperationHandler<never, unknown>,
     'sched/schedule-state': ((ctx) =>
       ctx.sql.query<{ schedule_op: string; last_status: string }>(
@@ -962,7 +964,7 @@ export const flowMod: ModuleRegistration = {
       )) as OperationHandler<never, unknown>,
     'flow/step2-actors': ((ctx) =>
       ctx.sql.query(
-        `SELECT actor FROM _substrat_outbox WHERE type = 'flow.step2'`,
+        `SELECT actor, operation FROM _substrat_outbox WHERE type = 'flow.step2'`,
       )) as OperationHandler<never, unknown>,
   },
   consumers: {
