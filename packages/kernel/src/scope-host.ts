@@ -99,6 +99,8 @@ import type {
   Page,
   CountedPage,
   FreshnessSpec,
+  ErrorCode,
+  PlatformRequestFailureOrigin,
 } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
@@ -2968,6 +2970,10 @@ export interface OpsFailureInput {
   version?: string | null;
   /** The HTTP status the failure was answered with (or carried from upstream). */
   status?: number | null;
+  /** WHO refused (#1233) — from `attributeFailure` at the catch site, never re-derived from the message. */
+  origin?: PlatformRequestFailureOrigin | null;
+  /** The taxonomy code when the refusal was one of ours — the fingerprint's error shape. */
+  code?: ErrorCode | null;
   message: string;
   /** The upstream provider's trace reference, when the message carried one. */
   reference?: string | null;
@@ -2981,6 +2987,8 @@ export interface OpsFailureFilter {
   /** The version-registry id — what the release-health read narrows by. */
   version?: string;
   operation?: string;
+  /** The taxonomy code — what an issues-style grouping narrows by (#1233). */
+  code?: string;
   /** Exact match — the lookup a CI log's `reference = <id>` line lands on. */
   reference?: string;
   since?: string;

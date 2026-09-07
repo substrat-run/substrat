@@ -2029,6 +2029,38 @@ export function scopeHostContractSuite(
         ].sort());
       });
 
+      it('carries the error shape — origin and code round-trip and narrow (#1233)', async () => {
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'intent.connector:testprov',
+          stage: 'terminal',
+          vertical: 'acme/shaped',
+          origin: 'platform',
+          code: 'permission_denied',
+          message: 'platform intent 01JTESTINTENT failed: permission denied',
+        });
+        await host.admin.recordOpsFailure({
+          actor: staff,
+          operation: 'intent.connector:testprov',
+          stage: 'terminal',
+          vertical: 'acme/shaped',
+          // Unclassified — a writer that cannot say says nothing, like the version stamp.
+          message: 'platform intent 01JOTHERINTENT failed: socket hang up',
+        });
+
+        // The fingerprint's narrowing: code is a COLUMN, never a message regex.
+        const denied = await host.admin.listOpsFailures(staff, { code: 'permission_denied' });
+        expect(denied.length).toBe(1);
+        expect(denied[0]!.origin).toBe('platform');
+        expect(denied[0]!.code).toBe('permission_denied');
+
+        // The unclassified row round-trips as explicit nulls, never undefined.
+        const both = await host.admin.listOpsFailures(staff, { vertical: 'acme/shaped' });
+        expect(both.length).toBe(2);
+        expect(both.map((r) => r.code).sort()).toEqual(['permission_denied', null].sort());
+        expect(both.map((r) => r.origin).sort()).toEqual(['platform', null].sort());
+      });
+
       it('bounds the recorded message — a runaway upstream body never becomes a runaway row', async () => {
         await host.admin.recordOpsFailure({
           actor: staff,
