@@ -28,7 +28,7 @@ import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, ty
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
-import { PROVIDERS, parseProviderSecret, liveConnectionFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
+import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -2123,6 +2123,11 @@ app.post('/api/apps/:scopeId/integrations/:provider', async (c) => {
       scopeId: appScope,
       provider: spec.provider,
       ...(label ? { label } : {}),
+      // The account leg of the upsert key, where the spec declares one: a second
+      // account becomes a second connection instead of rotating the first away.
+      ...(spec.accountRefField && secret[spec.accountRefField]
+        ? { externalAccountRef: secret[spec.accountRefField] }
+        : {}),
       secret,
       grants: spec.grants,
       createdBy: authz.principal,
@@ -2158,10 +2163,17 @@ app.delete('/api/apps/:scopeId/integrations/:provider', async (c) => {
   if (!spec) throw new HTTPException(404, { message: 'unknown provider' });
   await dash.invoke('dashboard/begin-connection', { provider: spec.provider });
   const rows = await connectionsFor(c.env, node.tenantId, appRow.vertical_slug);
-  const live = liveConnectionFor(rows, spec.provider);
-  if (!live) throw new HTTPException(404, { message: 'not connected' });
+  // Revoking picks a row to DESTROY, so with an account-keyed fleet (Fortnox: one
+  // connection per client company) this door refuses rather than guess which company.
+  const live = liveConnectionsFor(rows, spec.provider);
+  if (live.length > 1) {
+    throw new HTTPException(409, {
+      message: `${live.length} ${spec.name} accounts are connected — disconnecting one of many is not supported here yet`,
+    });
+  }
+  if (!live[0]) throw new HTTPException(404, { message: 'not connected' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  await cp.revokeConnection(live.id);
+  await cp.revokeConnection(live[0].id);
   return c.body(null, 204);
 });
 
@@ -2666,6 +2678,10 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       scopeId: scopeId.parse(claim.appScopeId),
       provider: 'fortnox',
       label,
+      // The DatabaseNumber keys the connection (the plane's fourth upsert leg): a
+      // bureau consenting 200 client companies gets 200 connections, and re-consenting
+      // the SAME company still rotates its one row in place.
+      externalAccountRef: completion.secret.tenantId,
       secret: completion.secret as unknown as Record<string, string>,
       grants: [],
       createdBy: claim.principal,
