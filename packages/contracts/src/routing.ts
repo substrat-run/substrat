@@ -53,13 +53,18 @@ export type DeclaredSurface = z.infer<typeof declaredSurface>;
  * before any of our code runs, so nothing read from here can move it — the region is
  * enforced by a wildcard Regional Hostnames config per jurisdiction
  * (`*.eu.substrat.run`), and default hostnames carry the jurisdiction in the name.
- * What this column is for is letting the router detect a CONTRADICTION between the
- * edge configuration and the directory, and refuse the request.
+ * What this column is *for* — per K-30 — is letting the router detect a CONTRADICTION
+ * between the edge configuration and the directory, and refuse the request. **Nothing
+ * does that today** (#958), and this docblock used to say otherwise. The resolved route
+ * target carries no jurisdiction to compare a region against — neither adapter's
+ * hostname read joins `scopes.jurisdiction` — and `apps/router/src/worker.ts` declines
+ * the comparison by name, calling it a third enforcement point that can disagree. So
+ * read this as a region RECORDED: a value to compare, not a comparison anyone makes.
  *
- * Which is also why it should be derived from the scope's jurisdiction rather than
+ * The same reasoning says it should be derived from the scope's jurisdiction rather than
  * accepted as an independent input: two values that must agree, supplied separately,
  * eventually disagree — and this is the one an EU claim rests on. `bindHostname` does
- * not enforce that yet.
+ * not enforce that yet either.
  *
  * Null means unconstrained. Widening beyond `eu` is additive; Cloudflare also offers
  * `us` and `fedramp`, and `us` is needed as soon as a second jurisdiction ships.

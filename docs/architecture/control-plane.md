@@ -686,10 +686,22 @@ so `substrat-fsm-eu` holds an EU D1 and opens EU-jurisdiction DOs — a worker t
 router having no `SCOPE` binding. The router stays single because it is stateless and
 holds nothing regional; `verticalFor` keys on `(slug, region)`.
 
-The router **rejects a request whose hostname region contradicts its scope's
-jurisdiction**. That is an integrity check between the edge configuration and the
-directory — two systems that can drift — not a second enforcement point re-deciding
+K-30 specifies that the router **rejects a request whose hostname region contradicts
+its scope's jurisdiction** — an integrity check between the edge configuration and the
+directory, two systems that can drift, rather than a second enforcement point re-deciding
 something `getScope` owns.
+
+**That check is specified and NOT built** ([#958](https://github.com/substrat-run/substrat/issues/958)),
+and this paragraph used to claim otherwise in the present tense. The router cannot make
+it today even if it wanted to: neither adapter's hostname read joins `scopes.jurisdiction`
+(`packages/adapter-cloudflare/src/control-plane-do.ts`, `packages/adapter-sqlite/src/index.ts`),
+so the resolved route target carries a region and no jurisdiction to compare it against.
+`dispatch` in `apps/router/src/worker.ts` then declines the comparison by name, on
+grounds that contradict the paragraph above — that re-checking a region already pinned by
+two configuration halves would be *a third enforcement point that can disagree*. Until
+#958 settles which of the two readings wins, an EU-residency claim rests on the wildcard
+Regional Hostnames config and the DO jurisdiction alone, with nothing detecting a drift
+between them. Do not read anything below as describing a refusal that exists.
 
 Two things this forecloses:
 
@@ -725,7 +737,9 @@ The contract currently allows `jurisdiction: 'eu' | null`. Cloudflare offers `us
 
 **Consequences for the code, not yet built** (K-30): `hostnameRegion` widens beyond
 `'eu'`; `bindHostname` derives the region from the scope's jurisdiction rather than
-accepting it as an independent input, so the two cannot disagree; `verticalFor` keys on
+accepting it as an independent input, so the two cannot disagree; the router refuses a
+region that contradicts the jurisdiction (#958 — see above; it needs the jurisdiction
+carried on the resolved route target first); `verticalFor` keys on
 `(slug, region)`; and `demos/callout`'s single `AUTH_DB` becomes per-jurisdiction —
 today one database holds Better Auth identities for every tenant regardless of their
 scope's jurisdiction.
