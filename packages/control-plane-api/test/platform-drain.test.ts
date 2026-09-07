@@ -23,6 +23,7 @@ import {
   setEntitlementsHandler,
   connectorDispatchHandler,
   modelUsageHandler,
+  sweepRunsHandler,
   type PlatformRequestHandler,
   ControlPlaneError,
   VerticalClient,
@@ -792,6 +793,80 @@ describe('setEntitlementsHandler — reconcile a managed tenant to a plan\'s tar
     );
     expect(outcome.status).toBe('failed');
     expect(outcome.error).toMatch(/unknown scope for tenant/);
+  });
+});
+
+describe('sweepRunsHandler — a CP-less pass lands its schedule outcomes, idempotently (#1232)', () => {
+  let dir: string;
+  let host: SqliteScopeHost;
+  const staff = platformActorId.parse(ulid());
+  const t = tenantId.parse(ulid());
+  const s = scopeId.parse(ulid());
+  const ctx = { tenantId: t, scopeId: s, vertical: 'demo-vert', versionId: '01JBOUNDATDRAINAAAAAAAAAAA' };
+  const request = (payload: unknown, id = ulid()) =>
+    ({ id, kind: 'sweep-runs', payload, attempts: 0 }) as never;
+  const payload = {
+    version: '01JPASSVERSIONAAAAAAAAAAAA',
+    entries: [
+      { operation: 'sched/tick', outcome: 'ok', at: '2026-09-07T10:00:00.000Z' },
+      { operation: 'sched/rest', outcome: 'skipped', at: '2026-09-07T10:00:00.000Z' },
+      { operation: 'sched/broken', outcome: 'failed', at: '2026-09-07T10:00:00.000Z', error: 'operation threw' },
+    ],
+  };
+
+  beforeAll(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'cp-sweep-runs-'));
+    host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme-sweeps', name: 'Acme' });
+  });
+  afterAll(async () => {
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('lands one row per entry — identity from the drained scope, pass time kept, version from the payload', async () => {
+    const handler = sweepRunsHandler({ host });
+    const outcome = await handler(ctx, request(payload, '01JSWEEPINTENTAAAAAAAAAAAA'));
+    expect(outcome).toMatchObject({ status: 'done', result: { recorded: 3 } });
+
+    const rows = await host.admin.listSweepRuns(staff, { kind: 'schedule', scopeId: s });
+    expect(rows).toHaveLength(3);
+    const byOp = new Map(rows.map((r) => [r.operation, r]));
+    expect(byOp.get('sched/tick')).toMatchObject({
+      unit: `${s}:sched/tick`,
+      outcome: 'ok',
+      tenantId: t,
+      vertical: 'demo-vert',
+      // The pass's own version wins over the drain's bound-version approximation.
+      version: '01JPASSVERSIONAAAAAAAAAAAA',
+      // Pass time, not drain time — the freshness read depends on it.
+      at: '2026-09-07T10:00:00.000Z',
+    });
+    expect(byOp.get('sched/broken')).toMatchObject({ outcome: 'failed', error: 'operation threw' });
+  });
+
+  it('a replayed drain writes nothing twice — idempotent on (intent id, unit)', async () => {
+    const handler = sweepRunsHandler({ host });
+    const outcome = await handler(ctx, request(payload, '01JSWEEPINTENTAAAAAAAAAAAA'));
+    expect(outcome.status).toBe('done');
+    expect(await host.admin.listSweepRuns(staff, { kind: 'schedule', scopeId: s })).toHaveLength(3);
+  });
+
+  it('falls back to the drain-time version when the pass carried none', async () => {
+    const handler = sweepRunsHandler({ host });
+    await handler(
+      ctx,
+      request({ version: null, entries: [{ operation: 'sched/late', outcome: 'ok', at: '2026-09-07T11:00:00.000Z' }] }),
+    );
+    const [row] = await host.admin.listSweepRuns(staff, { unit: `${s}:sched/late` });
+    expect(row!.version).toBe('01JBOUNDATDRAINAAAAAAAAAAA');
+  });
+
+  it('refuses a malformed payload terminally — never retried into a poison loop', async () => {
+    const handler = sweepRunsHandler({ host });
+    const outcome = await handler(ctx, request({ entries: 'nope' }));
+    expect(outcome.status).toBe('failed');
+    expect(outcome.error).toMatch(/malformed/);
   });
 });
 

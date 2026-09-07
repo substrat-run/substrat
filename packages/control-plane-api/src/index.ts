@@ -39,6 +39,7 @@ export {
   provisionTenantHandler,
   setEntitlementsHandler,
   modelUsageHandler,
+  sweepRunsHandler,
   connectorDispatchHandler,
   type ConnectorDispatchDeps,
   type ManagedTenantDeps,

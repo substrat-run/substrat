@@ -469,6 +469,51 @@ export const sweepRunEntry = z.object({
 export type SweepRunEntry = z.infer<typeof sweepRunEntry>;
 
 /**
+ * The CP-less pass's exit (#1232): a hosted vertical's scope sweeper runs its
+ * schedules with no control plane in reach, so its outcomes travel as a platform
+ * intent the drain lands into `_substrat_sweep_runs` — the model-usage road.
+ */
+export const SWEEP_RUNS_KIND = 'sweep-runs';
+
+/**
+ * How many `sweep-runs` intents may sit pending in one scope before the sweeper
+ * DROPS the next report instead of enqueuing it. Telemetry gets its own low
+ * sub-cap so it can never starve the shared 32-slot journal a
+ * `provision-sibling` needs — and a drop is silent by design: a pass must never
+ * fail, or even slow, because its record could not be queued. The next drained
+ * pass reports again, and the gap reads as exactly what it was.
+ */
+export const MAX_PENDING_SWEEP_RUNS = 8;
+
+/**
+ * One scope's schedule outcomes for ONE pass, batched — a pass every couple of
+ * minutes times N schedules against the 32-pending journal cap cannot be one
+ * intent each. Deliberately carries NO tenant/scope/vertical: the drain proves
+ * those from the scope the intent physically lives in (the model-usage rule),
+ * so a payload cannot mislabel its origin. `at` is PASS time — the drain runs
+ * up to a cron window later, and a freshness view must not be told drain time.
+ */
+export const sweepRunsPayload = z.object({
+  /** The version whose code actually ran — `env.SUBSTRAT_VERSION_ID`, or null;
+   *  the drain falls back to the scope's bound version (its documented
+   *  approximation) when null. */
+  version: z.string().min(1).nullable(),
+  entries: z
+    .array(
+      z.object({
+        operation: z.string().min(1),
+        outcome: sweepRunOutcome,
+        at: instant,
+        error: z.string().nullable().optional(),
+        elapsedMs: z.number().int().nonnegative().nullable().optional(),
+      }),
+    )
+    .min(1)
+    .max(64),
+});
+export type SweepRunsPayload = z.infer<typeof sweepRunsPayload>;
+
+/**
  * An append-only admin audit row (control-plane.md §4.4). Every field except
  * `before`/`after` is stamped platform-side — never supplied by the caller —
  * for the same reason the kernel is trusted at all (K-4): a surface that can act

@@ -73,6 +73,8 @@ export { ConfigDO };
  * `/internal/delete-scope` removes them. Costs nothing while the roster is empty.
  */
 export const SweeperDO = defineScopeSweeperDO<Env>({
+  // #1232: the pass reports the version whose code actually ran (the deploy-injected binding).
+  versionId: (env) => env.SUBSTRAT_VERSION_ID ?? null,
   intervalMs: 120_000,
   host: hostFor,
 });
@@ -102,6 +104,8 @@ const DEV_NODE: Node = {
 };
 
 interface Env {
+  /** Injected at deploy (#1242); absent locally — the sweep record then reads NULL. */
+  SUBSTRAT_VERSION_ID?: string;
   /** One DO per scope — the vertical's only durable store (sandbox-clean). */
   SCOPE: DurableObjectNamespace;
   /** The roster-keeping sweep singleton — the deployment's own timer (#461). */

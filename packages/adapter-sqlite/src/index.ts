@@ -799,6 +799,7 @@ interface SweepRunRow {
   connection_id: string | null;
   error: string | null;
   elapsed_ms: number | null;
+  request_id: string | null;
   at: string;
 }
 
@@ -1536,9 +1537,14 @@ export class SqliteScopeHost implements ScopeHost {
         connection_id TEXT,
         error TEXT,
         elapsed_ms INTEGER,
+        -- #1232: the platform-intent id a drained batch arrived under (NULL for the
+        -- direct sweep path). The unique index below is what makes a replayed drain
+        -- write nothing twice; NULLs are distinct, so direct writes never collide.
+        request_id TEXT,
         at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_unit ON _substrat_sweep_runs (kind, unit, id);
+      CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit);
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_tenant ON _substrat_sweep_runs (tenant_id, id);
       CREATE INDEX IF NOT EXISTS _substrat_sweep_runs_at ON _substrat_sweep_runs (at);
       -- Model usage (#1054, meter 3): one line per model call a vertical made through
@@ -7041,10 +7047,10 @@ export class SqliteScopeHost implements ScopeHost {
       recordSweepRun: async (entry: SweepRunInput): Promise<void> => {
         this.directory
           .prepare(
-            `INSERT INTO _substrat_sweep_runs
+            `INSERT OR IGNORE INTO _substrat_sweep_runs
                (id, kind, unit, outcome, tenant_id, scope_id, vertical, version, operation,
-                connection_id, error, elapsed_ms, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                connection_id, error, elapsed_ms, request_id, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             ulid(),
@@ -7061,7 +7067,8 @@ export class SqliteScopeHost implements ScopeHost {
             // must not become a runaway directory row (the #559 rule).
             entry.error == null ? null : entry.error.slice(0, 2000),
             entry.elapsedMs ?? null,
-            new Date().toISOString(),
+            entry.requestId ?? null,
+            entry.at ?? new Date().toISOString(),
           );
         // Prune-on-write, like ops failures and for the same reason: the table stays
         // bounded even on a deployment whose scheduled pass is broken.
@@ -7337,6 +7344,12 @@ export class SqliteScopeHost implements ScopeHost {
     // The signals `version` stamp (#1231): a directory created before the column
     // must still open, and an old row's NULL reads as "predates the stamp".
     this.ensureColumn(this.directory, '_substrat_ops_failures', 'version', 'version TEXT');
+    // #1232: the drained batch's dedupe key, on a directory created before it. The
+    // unique index rides here too — created after the column exists on every path.
+    this.ensureColumn(this.directory, '_substrat_sweep_runs', 'request_id', 'request_id TEXT');
+    this.directory.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS _substrat_sweep_runs_intent ON _substrat_sweep_runs (request_id, unit)',
+    );
     const existing = new Set(
       (this.directory.prepare('PRAGMA table_info(scopes)').all() as { name: string }[]).map(
         (c) => c.name,

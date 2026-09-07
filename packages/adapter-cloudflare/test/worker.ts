@@ -103,6 +103,9 @@ interface ScopeSweeperEnv {
  */
 export const ScopeSweeperDO = defineScopeSweeperDO<ScopeSweeperEnv>({
   intervalMs: 60_000,
+  // #1232: what production reads off the injected binding, the harness reads off
+  // its wrangler var — the pass reports the version whose code actually ran.
+  versionId: (env) => (env as unknown as { SUBSTRAT_VERSION_ID?: string }).SUBSTRAT_VERSION_ID ?? null,
   host: (env) => {
     const host = new CloudflareScopeHost({
       scope: env.LOCAL_SWEEP_SCOPE,
