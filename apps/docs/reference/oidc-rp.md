@@ -8,8 +8,11 @@ nothing more — [authorization stays in the kernel](/concepts/permissions): rol
 tenancy are never this package's concern.
 
 It is the concrete form of the [identity seam](/concepts/identity#two-real-choices-made-differently)
-for the platform's own surfaces. Demos keep their own Better Auth stores; the platform apps
-share this one relying party against AuthHero.
+for the platform's own surfaces. The demo verticals are OIDC-only relying parties too, through
+[`@substrat-run/vertical-auth`](/reference/vertical-auth), against whatever issuer they are
+pointed at; none keeps a credential store, and `demos/auth-server` is the only workspace
+member that runs Better Auth — as an issuer. The platform apps share this one relying party
+against AuthHero.
 
 ## What it is
 
