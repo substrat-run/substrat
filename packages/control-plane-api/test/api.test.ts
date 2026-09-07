@@ -3988,6 +3988,43 @@ describe('control-plane API — builder authz', () => {
     expect(all.length).toBeGreaterThanOrEqual(2);
   });
 
+  it("narrows the sweep-run read to the builder's own tenant, staff fleet-wide (#1232)", async () => {
+    const mineConn = ulid();
+    const theirConn = ulid();
+    await host.admin.recordSweepRun({
+      kind: 'connector', unit: mineConn, outcome: 'ok',
+      tenantId: acme, vertical: `${acmeSlug}/helpdesk`,
+      operation: 'sweep.connector:scrive', connectionId: mineConn, elapsedMs: 12,
+    });
+    await host.admin.recordSweepRun({
+      kind: 'connector', unit: theirConn, outcome: 'failed',
+      tenantId: other, vertical: `${otherSlug}/helpdesk`,
+      operation: 'sweep.connector:scrive', connectionId: theirConn, error: 'provider 500',
+    });
+
+    // The forced filter: asking for the other tenant's rows still answers only yours.
+    const mine = ((await (await acmeReq(`/sweep-runs?tenantId=${other}`)).json()) as {
+      entries: Array<{ tenantId: string; connectionId: string; outcome: string }>;
+    }).entries;
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ tenantId: acme, connectionId: mineConn, outcome: 'ok' });
+
+    // Staff read fleet-wide, and the filters + cursor envelope hold.
+    const all = ((await (await staffReq('/sweep-runs?kind=connector')).json()) as { entries: unknown[] }).entries;
+    expect(all.length).toBeGreaterThanOrEqual(2);
+    const paged = (await (await staffReq('/sweep-runs?limit=1')).json()) as {
+      entries: Array<{ id: string }>;
+      nextCursor: string | null;
+    };
+    expect(paged.entries).toHaveLength(1);
+    expect(paged.nextCursor).toBe(paged.entries[0]!.id);
+    const byConn = ((await (await staffReq(`/sweep-runs?connectionId=${theirConn}`)).json()) as {
+      entries: Array<{ outcome: string; error: string | null }>;
+    }).entries;
+    expect(byConn).toHaveLength(1);
+    expect(byConn[0]).toMatchObject({ outcome: 'failed', error: 'provider 500' });
+  });
+
   it('claims a bare slug under the tenant prefix, stamping the owner', async () => {
     // The builder pushes a BARE `helpdesk`; the id becomes `<tenantSlug>/helpdesk` (§5),
     // and the owner is stamped from the principal — a forged ownerTenant in the body loses.

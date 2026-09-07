@@ -11,6 +11,7 @@ import {
   type ConnectionIntentView,
   type ConnectionProbeView,
   type ConnectionView,
+  type SweepRunView,
   type ConnectLinkView,
   type ProviderField,
 } from '../lib/api';
@@ -59,6 +60,39 @@ function HealthLine({ conn }: { conn: ConnectionView }) {
     return <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Last used {relativeTime(conn.lastOkAt)}</div>;
   }
   return <div style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>Connected {relativeTime(conn.createdAt)} — not used yet</div>;
+}
+
+/**
+ * The recent-runs strip (#1232): the platform's own sweep record, one tick per pass,
+ * newest last (reading order = time order). A green tick is "swept, fine — nothing
+ * to do included"; amber is "bound but nothing polled it"; red carries the error in
+ * its title. Absent entirely when the plane predates the record.
+ */
+function SweepStrip({ runs }: { runs: SweepRunView[] }) {
+  if (runs.length === 0) return null;
+  const last = runs[0]!;
+  const COLOR: Record<SweepRunView['outcome'], string> = {
+    ok: 'var(--status-success-fg)',
+    failed: 'var(--status-danger-fg)',
+    skipped: 'var(--status-warning-fg)',
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-tertiary)' }}>
+      <span style={{ display: 'flex', gap: 2 }}>
+        {[...runs].reverse().map((r) => (
+          <span
+            key={r.id}
+            title={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}`}
+            style={{ width: 5, height: 12, borderRadius: 1, background: COLOR[r.outcome], display: 'inline-block' }}
+          />
+        ))}
+      </span>
+      <span>
+        Last sweep {relativeTime(last.at)}
+        {last.outcome === 'failed' ? ' — failed' : last.outcome === 'skipped' ? ' — nothing polls this connection' : ''}
+      </span>
+    </div>
+  );
 }
 
 /** A label/value line — the shape both a probe's account detail and an activity row use. */
@@ -323,6 +357,7 @@ function IntegrationDetail({
               <span style={{ fontSize: 12.5, color: 'var(--text-primary)' }}>{health.label}</span>
             </div>
             <HealthLine conn={health} />
+            <SweepStrip runs={activity?.sweepRuns ?? []} />
           </div>
           <Button variant="secondary" size="sm" onClick={onRotate}>
             Rotate
@@ -948,6 +983,7 @@ export function Integrations() {
                         )}
                       </div>
                       <HealthLine conn={c} />
+                      <SweepStrip runs={c.sweepRuns ?? []} />
                     </div>
                   ))}
                   {p.connectTargets.length === 0 && !connected && (

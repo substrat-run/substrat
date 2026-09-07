@@ -134,6 +134,11 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     // The other question: the provider's own archive, not what we sent.
     expect(calls[3]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/activity?source=provider`);
     expect(calls[4]!.url).toBe(`https://cp/api/tenants/${T}/connections/${CN}/credential`);
+    // #1232: the sweep record is tenant-pinned like every read on this seam.
+    await cp.listSweepRuns({ kind: 'connector', connectionId: CN, limit: 20 });
+    expect(calls[calls.length - 1]!.url).toBe(
+      `https://cp/api/sweep-runs?tenantId=${T}&kind=connector&connectionId=${CN}&limit=20`,
+    );
     expect(calls[5]!.url).toBe(`https://cp/api/tenants/${T}/connection-grants`);
     expect(calls.every((c) => c.token === 'secret-token')).toBe(true);
   });

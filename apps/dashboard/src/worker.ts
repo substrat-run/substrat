@@ -2237,7 +2237,7 @@ app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
   const { connectionId, cp, connection, spec } = await inspectableConnection(c);
   const scopeId = c.req.param('scopeId')!;
   const source = c.req.query('source') === 'provider' ? ('provider' as const) : ('ledger' as const);
-  const [activity, grants, credential, intents] = await Promise.all([
+  const [activity, grants, credential, intents, sweepRuns] = await Promise.all([
     cp.connectionActivity(connectionId, { live: c.req.query('live') === '1', source }),
     // Best-effort, all of them: a plane too old to serve grants, the credential view or the
     // intent journal must not cost the activity itself.
@@ -2247,6 +2247,10 @@ app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
     // `lastError` is the provider's FULL refusal. The ledger above says a dispatch happened;
     // this says what became of it, which is the half a builder could not read at all.
     cp.scopeIntents(scopeId, { kind: `connector:${spec.provider}`, limit: 20 }).catch(() => []),
+    // #1232: the recent-runs strip — the platform's own answer to "when was this
+    // connection last swept, and how did it go". listSweepRuns already tolerates a
+    // plane predating the route.
+    cp.listSweepRuns({ kind: 'connector', connectionId, limit: 20 }),
   ]);
   return c.json({
     ...activity,
@@ -2255,6 +2259,14 @@ app.get('/api/apps/:scopeId/integrations/:provider/activity', async (c) => {
     credential: credential.fields,
     // Current health, read in this request. The list page's copy can be minutes old.
     connection: connectionView(connection),
+    // #1232: newest first — the strip renders it verbatim.
+    sweepRuns: sweepRuns.map((r) => ({
+      id: r.id,
+      outcome: r.outcome,
+      at: r.at,
+      error: r.error,
+      elapsedMs: r.elapsedMs,
+    })),
     intents: intents.map((r) => ({
       id: r.id,
       status: r.status,
@@ -2291,6 +2303,18 @@ app.get('/api/integrations', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const requiredBy = await requiredProvidersBySlug(host, c.env, node.tenantId, apps.map((a) => a.vertical_slug));
   const rows = await connectionsFor(c.env, node.tenantId);
+  // #1232: one bulk tenant-wide read for every row's strip — per-connection calls
+  // would be N round trips. `since` a day back rather than a row cap, so with many
+  // connections the truncation is semantic (a window) instead of arbitrary.
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const daysAgo = new Date(Date.now() - 24 * 3_600_000).toISOString();
+  const sweepByConnection = new Map<string, { id: string; outcome: string; at: string; error: string | null; elapsedMs: number | null }[]>();
+  for (const r of await cp.listSweepRuns({ kind: 'connector', since: daysAgo, limit: 500 })) {
+    if (!r.connectionId) continue;
+    const list = sweepByConnection.get(r.connectionId) ?? [];
+    if (list.length < 20) list.push({ id: r.id, outcome: r.outcome, at: r.at, error: r.error, elapsedMs: r.elapsedMs });
+    sweepByConnection.set(r.connectionId, list);
+  }
   return c.json({
     providers: Object.values(PROVIDERS).map((spec) => {
       const targets = apps
@@ -2309,6 +2333,7 @@ app.get('/api/integrations', async (c) => {
             ...connectionView(r),
             vertical: r.vertical,
             apps: apps.filter((a) => a.vertical_slug === r.vertical).map((a) => ({ scopeId: a.app_scope_id, name: a.name })),
+            sweepRuns: sweepByConnection.get(r.id) ?? [],
           })),
         connectTargets: targets,
       };

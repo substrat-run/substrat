@@ -10,6 +10,7 @@ import type {
   EmittedModel,
   ListPage,
   OpsFailureEntry,
+  SweepRunEntry,
   Page,
   PermissionRegistry,
   PlatformRequest,
@@ -863,6 +864,28 @@ export class TenantNarrowedControlPlane {
     if (filter.limit !== undefined) q.set('limit', String(filter.limit));
     try {
       const page = await this.call<Page<OpsFailureEntry> | OpsFailureEntry[] | undefined>(`/ops-failures?${q.toString()}`);
+      if (Array.isArray(page)) return page;
+      return page?.entries ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * The sweep record for this tenant (#1232), newest first — when each connection was
+   * last swept and how it went, the recent-runs strip's data. Tenant-pinned and
+   * deploy-skew-tolerant exactly as `listOpsFailures` above.
+   */
+  async listSweepRuns(
+    filter: { kind?: 'connector' | 'schedule'; connectionId?: string; since?: string; limit?: number } = {},
+  ): Promise<SweepRunEntry[]> {
+    const q = new URLSearchParams({ tenantId: this.tenantId });
+    if (filter.kind !== undefined) q.set('kind', filter.kind);
+    if (filter.connectionId !== undefined) q.set('connectionId', filter.connectionId);
+    if (filter.since !== undefined) q.set('since', filter.since);
+    if (filter.limit !== undefined) q.set('limit', String(filter.limit));
+    try {
+      const page = await this.call<Page<SweepRunEntry> | SweepRunEntry[] | undefined>(`/sweep-runs?${q.toString()}`);
       if (Array.isArray(page)) return page;
       return page?.entries ?? [];
     } catch {

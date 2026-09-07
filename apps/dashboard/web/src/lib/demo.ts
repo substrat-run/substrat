@@ -187,6 +187,13 @@ export const MOCK_ACCOUNT_INTEGRATIONS: AccountIntegrationsView = {
           createdAt: new Date(Date.now() - 86400_000).toISOString(),
           vertical: 'callout',
           apps: [{ scopeId: 'mock-scope-1', name: 'Acme HR' }],
+          sweepRuns: Array.from({ length: 8 }, (_, i) => ({
+            id: `01MOCKSWEEPB${String(i).padStart(13, '0')}`,
+            outcome: 'ok' as const,
+            at: new Date(Date.now() - (i + 1) * 3 * 3600_000).toISOString(),
+            error: null,
+            elapsedMs: 210,
+          })),
         },
       ],
       connectTargets: [
@@ -235,6 +242,15 @@ export const MOCK_CONNECTION_ACTIVITY: ConnectionActivityView = {
   // #618: the failure the preview must be able to show. A 4xx settles `failed` on the first
   // attempt now, so this is one attempt with the provider's whole sentence — not attempt 78
   // of a two-day retry loop whose error nobody could read.
+  // #1232: the recent-runs strip — a day of passes, newest first, one mid-day failure
+  // so the preview shows what a red tick looks like.
+  sweepRuns: Array.from({ length: 12 }, (_, i) => ({
+    id: `01MOCKSWEEP${String(i).padStart(14, '0')}`,
+    outcome: (i === 4 ? 'failed' : 'ok') as 'ok' | 'failed' | 'skipped',
+    at: new Date(Date.now() - (i + 1) * 2 * 3600_000).toISOString(),
+    error: i === 4 ? 'Scrive answered 502 — retried next pass' : null,
+    elapsedMs: 240 + i * 10,
+  })),
   intents: [
     {
       id: '01MOCKINTENT00000000000001',
@@ -318,6 +334,7 @@ export const MOCK_PROVIDER_DOCUMENTS: ConnectionActivityView = {
   grants: MOCK_CONNECTION_ACTIVITY.grants,
   credential: MOCK_CONNECTION_ACTIVITY.credential,
   intents: MOCK_CONNECTION_ACTIVITY.intents,
+  sweepRuns: MOCK_CONNECTION_ACTIVITY.sweepRuns,
   entries: [
     {
       key: 'scrive:document:8222115557388321607',
