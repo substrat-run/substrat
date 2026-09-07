@@ -782,6 +782,9 @@ function SignInMethods() {
       setProviders(state.providers);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+      // An empty list, not a null one: `null` is what the loading line renders on, so leaving
+      // it there would print “Loading sign-in methods…” under the error for good.
+      setMethods([]);
     }
   }, []);
 

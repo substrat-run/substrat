@@ -323,7 +323,12 @@ function refusalText(url: URL, fallback: string): string {
   const code = url.searchParams.get('error') ?? '';
   // Codes arrive underscored (`account_not_linked`); the sign-in path spells that one with
   // spaces before it is url-ified, so both shapes are normalized to the keys above.
-  const translated = REFUSALS[code] ?? REFUSALS[code.replace(/[_-]/g, ' ')];
+  // `Object.hasOwn` rather than a bare lookup: `code` is whatever the query string carried, so
+  // `constructor` or `toString` would otherwise resolve up the prototype chain and hand back a
+  // *function* as the refusal — which React renders by throwing, on the very screen that exists
+  // to explain a refusal.
+  const key = Object.hasOwn(REFUSALS, code) ? code : code.replace(/[_-]/g, ' ');
+  const translated = Object.hasOwn(REFUSALS, key) ? REFUSALS[key] : undefined;
   if (translated) return translated;
   // `||`, not `??`: an absent `error` is read as `''` above, and a nullish fallback would
   // return that empty string — which renders as no message at all, leaving exactly the blank
