@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { moneyOf, type EntityRef, type Page } from '@substrat-run/contracts';
+import { errorCodeOf, moneyOf, type EntityRef, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import {
   PERM,
@@ -292,6 +292,58 @@ describe('engine-workorder', () => {
         }),
       ),
     ).rejects.toThrow(/currency/i);
+  });
+
+  // -- the currency of an EMPTY completion (#967) ---------------------------
+
+  it('an empty completion totals in the caller-declared currency, not SEK', async () => {
+    const order = await create();
+    await staff.invoke('workorder/start', { orderId: order.id });
+    const { total } = await h.run((ctx) =>
+      completeWorkOrder(ctx, { orderId: order.id, billable: [], currency: 'EUR' }),
+    );
+    expect(total).toEqual({ amount: '0', currency: 'EUR' });
+    // The fat event carries the same total — a EUR vertical's consumer must not
+    // read a Swedish zero.
+    const [evt] = h.eventsOfType('workorder.completed');
+    expect(evt!.payload).toMatchObject({ total: { amount: '0', currency: 'EUR' } });
+  });
+
+  it('an empty completion still falls back to SEK when nobody declares one', async () => {
+    const order = await create();
+    await staff.invoke('workorder/start', { orderId: order.id });
+    const { total } = await h.run((ctx) =>
+      completeWorkOrder(ctx, { orderId: order.id, billable: [] }),
+    );
+    expect(total).toEqual({ amount: '0', currency: 'SEK' });
+  });
+
+  it('the billable lines win: a declared currency that contradicts them is refused', async () => {
+    const order = await create();
+    await staff.invoke('workorder/start', { orderId: order.id });
+    const err = await h
+      .run((ctx) =>
+        completeWorkOrder(ctx, {
+          orderId: order.id,
+          billable: [billable('arbete', '500', 'SEK')],
+          currency: 'EUR',
+        }),
+      )
+      .catch((e: unknown) => e);
+    // The CODE, not just the prose: a caller branches on `validation_failed`,
+    // and a generic Error carrying the same message is not the same refusal.
+    expect(errorCodeOf(err)).toBe('validation_failed');
+    expect((err as Error).message).toMatch(/currency mismatch/i);
+  });
+
+  it('the declared operation accepts the optional currency', async () => {
+    const order = await create();
+    await staff.invoke('workorder/start', { orderId: order.id });
+    const { total } = await staff.invoke<{ total: { amount: string; currency: string } }>(
+      'workorder/complete',
+      { orderId: order.id, billable: [], currency: 'NOK' },
+    );
+    expect(total).toEqual({ amount: '0', currency: 'NOK' });
   });
 
   // -- append-only reporting ------------------------------------------------
