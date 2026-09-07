@@ -22,14 +22,38 @@ import { KNOWN_SKUS } from '../src/lib/skus';
 
 const enginesDir = fileURLToPath(new URL('../../../engines/', import.meta.url));
 
-/** `entitlementKey: 'x'` as an engine's manifest states it — one per engine. */
+/**
+ * The `entitlementKey` values one engine's manifest states, read out of its source.
+ *
+ * This is a text scan rather than a parse, so it FAILS CLOSED: a declaration it can see
+ * but cannot read throws instead of being skipped. Skipping would be the worst outcome
+ * available here — an engine spelling its key `"x"` rather than `'x'` would simply drop
+ * out of the scan, the other six would still clear the minimum-count guard below, and
+ * the suite would go green on exactly the staleness it exists to catch.
+ */
+export function entitlementKeysIn(where: string, source: string): string[] {
+  // Every spelling of the value a manifest could plausibly use: '…', "…", `…`.
+  const reads = [...source.matchAll(/entitlementKey:\s*(?:'([^']*)'|"([^"]*)"|`([^`$]*)`)/g)];
+  // …counted against every declaration present, so a spelling not listed above — or a
+  // computed one, which no text scan can resolve — is a throw, not a silent absence.
+  const declarations = [...source.matchAll(/\bentitlementKey\s*:/g)].length;
+  if (reads.length !== declarations) {
+    throw new Error(
+      `${where}: ${declarations} entitlementKey declaration(s), ${reads.length} readable — ` +
+        'teach apps/console/test/skus.test.ts the spelling it uses',
+    );
+  }
+  return reads.map((m) => m.slice(1).find((v) => v !== undefined)!);
+}
+
+/** Every engine's declared key, by engine directory name. */
 function declaredEntitlementKeys(): Record<string, string> {
   const found: Record<string, string> = {};
   for (const name of readdirSync(enginesDir)) {
     const index = `${enginesDir}${name}/src/index.ts`;
     if (!existsSync(index)) continue;
-    const match = /entitlementKey:\s*'([^']+)'/.exec(readFileSync(index, 'utf8'));
-    if (match) found[name] = match[1]!;
+    const keys = entitlementKeysIn(`engines/${name}`, readFileSync(index, 'utf8'));
+    if (keys[0]) found[name] = keys[0];
   }
   return found;
 }
@@ -50,5 +74,22 @@ describe('KNOWN_SKUS', () => {
     expect(new Set(KNOWN_SKUS).size).toBe(KNOWN_SKUS.length);
     // KNOWN_SKUS[0] is what the grant dialog pre-selects, so the order is behaviour.
     expect(KNOWN_SKUS[0]).toBe('workorder');
+  });
+});
+
+describe('entitlementKeysIn', () => {
+  it('reads a key however the manifest quotes it', () => {
+    expect(entitlementKeysIn('t', "entitlementKey: 'a',")).toEqual(['a']);
+    expect(entitlementKeysIn('t', 'entitlementKey: "b",')).toEqual(['b']);
+    expect(entitlementKeysIn('t', 'entitlementKey: `c`,')).toEqual(['c']);
+    expect(entitlementKeysIn('t', 'entitlementKey:\n  "d",')).toEqual(['d']);
+    expect(entitlementKeysIn('t', 'name: 1,')).toEqual([]);
+  });
+
+  it('throws on a declaration it cannot read rather than skipping it', () => {
+    // The failure this guards: an unreadable key silently narrows the scan, and the
+    // coverage test above then passes while an engine is genuinely un-grantable.
+    expect(() => entitlementKeysIn('engines/x', 'entitlementKey: KEY,')).toThrow(/engines\/x/);
+    expect(() => entitlementKeysIn('engines/x', 'entitlementKey: `p-${n}`,')).toThrow(/1 .*0 readable/);
   });
 });
