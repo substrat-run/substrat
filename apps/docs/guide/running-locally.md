@@ -180,9 +180,9 @@ still be mandatory on your machine, where no such delivery exists.
 - **Open the session in `demos/<name>`, not the monorepo root.** Preview servers use the
   selected folder as the working directory and do not scan subfolders, so a session opened
   at the root finds no configuration.
-- **`autoPort: false` everywhere, deliberately.** Every demo is OIDC-only and redirects to a
-  fixed callback, so a silently reassigned port would break the *login*, not the boot — a
-  much worse failure to debug. The cost is
+- **`autoPort: false` everywhere, deliberately.** Every demo vertical is OIDC-only and
+  redirects to a fixed callback, so a silently reassigned port would break the *login*, not
+  the boot — a much worse failure to debug. The cost is
   that a genuine clash is fatal: `demos/rally` and `demos/auth-server` both sit on `:8877`
   and `:5277`, so they cannot run at the same time without `PORT=… WEB_PORT=…`.
 - **A process can bind more than the port it declares.** Callout's `api` entry starts the
