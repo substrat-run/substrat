@@ -1476,6 +1476,12 @@ export async function addAppHostname(
     customDomain?: string;
     /** The app's default hostname — the label source for a platform mint. */
     appHostname?: string | null;
+    /**
+     * The deployment's own platform zones, read from `PLATFORM_BASE_DOMAINS` by the
+     * caller (`parsePlatformBaseDomains`). Widens the custom-domain refusal below;
+     * absent (a caller that has no env to read) leaves it exactly as it was.
+     */
+    platformBases?: readonly string[];
     controlPlane?: TenantNarrowedControlPlane;
   },
 ): Promise<AppHostnameRow> {
@@ -1529,13 +1535,18 @@ export async function addAppHostname(
       throw new Error(`'${input.customDomain}' is not a valid domain name`);
     }
     // Platform names are minted from the app's own label, never typed in — a free-text
-    // path onto *.substrat.run would be a squatting vector for other tenants' labels.
-    // The app's own zone, plus the platform default for a deployment that has none to
-    // derive from. The default is a NAMED constant rather than a literal brand string;
-    // threading the deployment's real `PLATFORM_BASE_DOMAINS` down here is the remaining
-    // half of #973 and needs a signature this call chain does not have yet.
+    // path onto a platform zone would be a squatting vector for other tenants' labels.
+    // Three sources, UNIONED (#973): the platform default, the app's own zone, and the
+    // deployment's configured `PLATFORM_BASE_DOMAINS` when the caller passed it. The
+    // union is the point — the first two are refused unconditionally, so a deployment
+    // that names its own zones does not thereby release them, and adding the var can
+    // only widen the guard, never narrow it.
     const platformBase = parseHostname(input.appHostname ?? '')?.rest;
-    const bases = [DEFAULT_PLATFORM_BASE_DOMAIN, ...(platformBase ? [platformBase] : [])];
+    const bases = [
+      DEFAULT_PLATFORM_BASE_DOMAIN,
+      ...(platformBase ? [platformBase] : []),
+      ...(input.platformBases ?? []),
+    ];
     if (isPlatformHost(hostname, bases)) {
       throw new Error(`'${hostname}' is a platform name — add it as a platform hostname for the surface instead`);
     }
