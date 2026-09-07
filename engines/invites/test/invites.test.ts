@@ -180,6 +180,59 @@ describe('invites engine', () => {
     ).rejects.toThrow(/not acceptable/);
   });
 
+  it('renders an overdue invitation as expired without writing to it (#964)', async () => {
+    // `invites/list` used to call `expireOverdue`, so an `invites:read` transitioned
+    // rows and emitted nothing for it. The state a reader sees is unchanged; what
+    // changed is that looking no longer settles anything.
+    const s = await sender();
+    const id = (
+      await s.invoke<{ id: string }>('invites/send', {
+        orgId: org,
+        identifier: 'lapsed@example.com',
+        roleKey: 'member',
+        ttlMs: -1, // already past
+      })
+    ).id;
+
+    const stored = () =>
+      h.run(
+        (ctx) =>
+          ctx.sql.query<{ state: string; settled_at: string | null }>(
+            'SELECT state, settled_at FROM invites_invitation WHERE id = ?',
+            [id],
+          )[0]!,
+        [PERM.read],
+      );
+    const listedState = async () =>
+      (await s.invoke<Page<Invitation>>('invites/list', { orgId: org })).entries.find(
+        (i) => i.id === id,
+      );
+
+    // What `sendInvite` wrote, before anyone looks.
+    expect(await stored()).toEqual({ state: 'invited', settled_at: null });
+
+    const first = await listedState();
+    expect(first?.state).toBe('expired');
+    // …and `settled_at` is still null on the way out: it stamps a transition somebody
+    // recorded, and time passing records nothing.
+    expect(first?.settled_at).toBeNull();
+
+    // The read wrote nothing — the whole point. Row untouched, and the same call
+    // twice answers the same thing, which is what makes it safe to retry or cache.
+    expect(await stored()).toEqual({ state: 'invited', settled_at: null });
+    expect((await listedState())?.state).toBe('expired');
+    expect(await stored()).toEqual({ state: 'invited', settled_at: null });
+
+    // Rendering is not softening: an overdue invitation is still unacceptable, and
+    // the accept path is where the transition is recorded for real.
+    const late = await h.as([]);
+    await expect(
+      late.invoke('invites/accept', { invitationId: id, identifier: 'lapsed@example.com' }),
+    ).rejects.toThrow(/not acceptable/);
+    expect(h.eventsOfType('member.add-requested')).toHaveLength(0);
+    expect(h.eventsOfType('invites.accepted')).toHaveLength(0);
+  });
+
   it('rate-limits open invitations per sender', async () => {
     const s = await sender();
     for (let i = 0; i < 25; i++) {

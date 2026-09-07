@@ -43,11 +43,18 @@ construction rather than by omission.
 invited ──accept──▶ accepted
    │
    ├──revoke────▶ revoked
-   └──expire────▶ expired      (expires_at passes; swept by expireOverdue)
+   └──expire────▶ expired      (expires_at passes; recorded by expireOverdue)
 ```
 
 `invited` is the only unsettled state. `settled_at` is stamped on all three terminal
 transitions, so "is this still live" is one predicate.
+
+Expiry is the one transition time makes rather than a person, so it is **rendered on read
+and recorded on write** (#964). `listInvites` reports `expired` for an invitation whose
+`expires_at` has passed without touching the row — a read under `invites:read` settles
+nothing — while `sendInvite` and the accept path call `expireOverdue` and stamp
+`settled_at` for real. So an overdue invitation reads `expired` with a null `settled_at`
+until a write path meets it, and that null is a fact: nobody recorded the transition yet.
 
 ## 3. The acceptance path, and why it refuses to be an oracle
 
@@ -136,4 +143,10 @@ true *because* of the hashing decision in §1.
    alone by design; removing the resulting membership is `unassignRole`, a different surface
    (dashboard-teams §7). Nothing links the two, so "undo this invitation" is two acts.
 3. **`expireOverdue` has no automatic caller inside the engine.** It is exported for a host
-   to schedule, and the read-path enforcement in §3 is what makes that safe to forget.
+   to schedule; `sendInvite` and the accept path in §3 call it, and that is what makes it
+   safe to forget. Since #964 the read path does *not*: a row can therefore sit `invited`
+   in storage while every reader is told `expired`, which is the divergence the original
+   read-path write avoided. The two never disagree about what is *acceptable* — accept
+   settles the row it refuses — so what is open is whether anything should record the
+   transition (an `invites.expired` event, and a sweep to emit it) or whether "expired" is
+   correctly a fact about the clock that nothing needs to announce.
