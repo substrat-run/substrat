@@ -43,6 +43,7 @@ import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 import { startDemoSites } from '../harness/demo-site.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
+import { confirmationEmail, mountSignupSurface } from '../harness/signups.js';
 import { mountInvites } from '../harness/invites.js';
 import { devInviteDesk } from '../harness/dev-invites.js';
 
@@ -206,6 +207,66 @@ async function boot() {
       // to float HERE and nowhere else — node keeps the process alive; the worker has
       // to hand the same promise to `executionCtx.waitUntil`.
       void answerFor(host, modelHost, desk, { conversationId, messageId, body });
+    },
+  });
+
+  // ── The public signup surface ────────────────────────────────────────────
+  /**
+   * Null for a desk that has no signup principal, rather than a throw.
+   *
+   * `.data/cast.json` is written once and read verbatim on every later boot, so a
+   * checkout that ran this demo before today has a persisted cast with four service
+   * accounts and no `signup` — and reading `desk.signup.principal` off it would throw a
+   * 500 on the public form instead of the denial the surface is built to return. The
+   * hosted worker answers the same question the same way, from `servicesOf`.
+   */
+  const signupDeskFor = async (desk: Desk) => {
+    if (!desk.signup?.principal) return null;
+    const stub = await host.getScope(desk.signup.principal, desk.tenant, desk.scope);
+    const invoke = <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T>;
+    const declared = await invoke<{ origins: string[] }>('ticket0/signup-origins', {});
+    return {
+      invoke,
+      allowedOrigins: [...new Set([desk.origin, ...desk.devOrigins, ...declared.origins])],
+    };
+  };
+
+  mountSignupSurface(app, {
+    resolveDesk: async (_c, origin) => {
+      const desk = deskByOrigin(origin);
+      return desk ? await signupDeskFor(desk) : null;
+    },
+    /**
+     * Every desk this process serves, because a token link out of an email carries no
+     * hostname that tells them apart — the route asks each in turn. A hosted install
+     * resolves exactly one from the hostname and the loop runs once.
+     */
+    // Nulls filtered, for the same reason: one un-provisioned desk must not take the
+    // token links down for the others this process serves.
+    desksForToken: async () =>
+      (await Promise.all(desks.map(signupDeskFor))).filter((d): d is NonNullable<typeof d> => d !== null),
+    // One process serves both desks, so the links in either desk's mail come back here.
+    // In a hosted install this is the desk's own routed hostname.
+    publicOriginOf: () => `http://localhost:${port}`,
+    /**
+     * No mail in development, and no mock transport either — the terminal IS the inbox.
+     *
+     * A `MockEmailTransport` would record the message somewhere nobody looks, and the
+     * one thing a developer needs from a double opt-in flow is the link. So it is
+     * printed, in full, next to the address it would have gone to. The hosted path is
+     * `sendConfirmationMail` in `src/worker.ts`, which sends this same body through the
+     * platform relay.
+     */
+    sendConfirmation: (_c, pending) => {
+      const { subject } = confirmationEmail(pending);
+      // Both links, because both are in the real mail and both are worth exercising by
+      // hand — the unsubscribe one especially, since nothing else in the demo reaches it.
+      process.stdout.write(
+        `\n[signup] ${pending.kind} — ${pending.email}\n` +
+          `  ${subject}\n` +
+          `  confirm:     ${pending.confirmUrl}\n` +
+          `  unsubscribe: ${pending.unsubscribeUrl}\n\n`,
+      );
     },
   });
 

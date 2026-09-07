@@ -24,6 +24,11 @@
       "version": "0005",
       "slug": "add-ticket0_desk_settings-assistant_autonomous",
       "sql": "ALTER TABLE ticket0_desk_settings ADD COLUMN assistant_autonomous INTEGER;"
+    },
+    {
+      "version": "0006",
+      "slug": "add-ticket0_signups",
+      "sql": "CREATE TABLE ticket0_signups (\n  id TEXT PRIMARY KEY NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('waitlist','newsletter')),\n  email TEXT NOT NULL,\n  note TEXT,\n  state TEXT NOT NULL CHECK (state IN ('pending','confirmed','unsubscribed')),\n  origin TEXT NOT NULL,\n  confirm_token_hash TEXT,\n  unsubscribe_token TEXT NOT NULL,\n  requested_at TEXT NOT NULL,\n  confirmed_at TEXT,\n  unsubscribed_at TEXT,\n  created_at TEXT NOT NULL,\n  UNIQUE (kind, email)\n);"
     }
   ]
 }

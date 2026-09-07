@@ -14,6 +14,17 @@
 // below was checked against the repo — the demo table in verticals/index.md, the
 // engine list in engines/index.md, and the packages themselves.
 
+/**
+ * The desk the beta form posts to, passed in from `index.md` rather than written here.
+ *
+ * A component is invisible to `headers.mts`, which derives the CSP by reading the
+ * `desk` attribute out of the pages the site is built from — so an origin hard-coded in
+ * this file would be one the policy never learns about, and the form would fail in the
+ * browser on production only, with every build green. Naming it in the markdown is what
+ * keeps the policy and the page unable to disagree.
+ */
+defineProps<{ desk: string }>();
+
 // The eight demo verticals, in the order they make the argument. `kernel` marks the
 // three whose CORE domain no engine matched: Manyfold and Todo compose nothing at all,
 // and Meridian composes `protocol` only for onboarding, at the edge of a domain — leave,
@@ -222,7 +233,7 @@ const repo = 'https://github.com/substrat-run/substrat';
     <section class="bleed hero">
       <div class="wrap hero-inner">
         <span class="badge badge-info">
-          <span class="dot" />Pre-release 0.x — working end to end on two adapters
+          <span class="dot" />Private beta — the hosted platform is invite-only
         </span>
         <h1>Build almost any business app.</h1>
         <p class="lede">
@@ -232,11 +243,11 @@ const repo = 'https://github.com/substrat-run/substrat';
           with the foundation instead of with your discipline.
         </p>
         <div class="cta-row">
-          <a class="btn btn-primary" href="/guide/getting-started">Get started</a>
-          <a class="btn btn-secondary" href="/verticals/">See what people build</a>
+          <a class="btn btn-primary" href="#beta">Request an invite</a>
+          <a class="btn btn-secondary" href="/guide/getting-started">Build locally</a>
         </div>
         <div class="cmdline">
-          <span class="mono-xs">or</span>
+          <span class="mono-xs">no invite needed to start</span>
           <code class="cmd">npm create substrat my-app</code>
         </div>
       </div>
@@ -428,6 +439,37 @@ const repo = 'https://github.com/substrat-run/substrat';
       </div>
     </section>
 
+    <!--
+      The private beta.
+
+      Late on the page and not in place of the evidence above it: somebody who has read
+      this far knows what they would be joining, and an invite form at the top would be
+      asking before there was anything to say yes to. The two halves of what is actually
+      gated are separated on purpose — the hosted platform is invite-only, the code is
+      not — because a reader who believes the whole thing is closed will not try it, and
+      the thing they can try today is the part that convinces.
+    -->
+    <section id="beta" class="bleed band">
+      <div class="wrap section">
+        <div class="kicker">Private beta</div>
+        <h2>Open, a few teams at a time.</h2>
+        <p class="muted lede-narrow">
+          The hosted platform — pushes, domains, per-scope databases, the dashboard,
+          the deploy previews — is invite-only while it is onboarded by hand, so that
+          the people running on it are people we can answer. There is no queue number
+          and no launch date attached to this: tell us what you would build and we will
+          tell you honestly whether Substrat is ready for it yet.
+        </p>
+        <p class="muted lede-narrow">
+          <strong>The code is not gated.</strong>
+          <code class="cmd-inline">npm create substrat my-app</code> works right now,
+          against SQLite on your laptop, with the same kernel and the same engines the
+          hosted platform runs. An invite is what moves that from your machine to ours.
+        </p>
+        <SignupForm kind="waitlist" :desk="desk" />
+      </div>
+    </section>
+
     <!-- CTA -->
     <section class="bleed cta">
       <div class="wrap cta-inner">
@@ -470,6 +512,14 @@ const repo = 'https://github.com/substrat-run/substrat';
 .sm {
   font-size: var(--text-sm);
   line-height: var(--lh-sm);
+}
+.cmd-inline {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
 }
 .mono-xs {
   font-family: var(--font-mono);

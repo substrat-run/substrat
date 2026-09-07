@@ -69,6 +69,35 @@ export const ASSISTANT_ERROR_MAX = 2000;
  * per-agent breakdown is a leaderboard rather than a directory — an uncapped group-by
  * inside an aggregate is a page nobody declared, discovered in production.
  */
+/**
+ * How long the free-text box on a signup form may be.
+ *
+ * Generous for a sentence about what somebody is building, and short of the point
+ * where the field becomes a place to paste a document into a table whose contents a
+ * human reads one row at a time.
+ */
+export const SIGNUP_NOTE_MAX = 2000;
+
+/**
+ * How long one address must wait before a second submission re-sends its confirmation.
+ *
+ * A public form that sends mail is a mail cannon aimed at whoever the caller names, so
+ * this is the part that stops it being one for a single victim. `SIGNUP_HOURLY_MAX`
+ * below is the other half — the one that stops it being one for a list of them.
+ */
+export const SIGNUP_RESEND_SECONDS = 120;
+
+/**
+ * How many NEW addresses one desk will take in an hour.
+ *
+ * A ceiling rather than a rate limiter: it bounds how much mail a scripted flood can
+ * make the platform send before a human notices, and it is set far above what a real
+ * launch week produces. Re-submissions of an address already on the list do not count
+ * against it — those are governed by `SIGNUP_RESEND_SECONDS` and send at most one mail
+ * each.
+ */
+export const SIGNUP_HOURLY_MAX = 200;
+
 export const DESK_METRICS_AGENTS = 25;
 
 /** The window `ticket0/desk-metrics` reports when the caller names neither end. */
@@ -521,6 +550,88 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
     }),
   },
+
+  /**
+   * Somebody who asked to be told something — a place on a waiting list, or the
+   * weekly changelog by email.
+   *
+   * The two are ONE table because they differ in a single word — what was asked for —
+   * and agree on everything that is hard: an address, where it was typed, and what its
+   * owner has consented to. Two tables would be two copies of the consent rules, and
+   * consent is the part that must not be got wrong twice.
+   *
+   * `state` is a real column with a declared machine, which is the opposite of what
+   * `contact` above does with its rungs of trust, and the difference is the point. A
+   * contact's rung is a fact about what was PROVEN, and nothing moves through it. A
+   * signup genuinely moves — asked, confirmed, gone — each move is something a person
+   * did, and each is a thing the record has to be able to show afterwards.
+   *
+   * `key: ['kind', 'email']` — one address may be on both lists, and is on neither
+   * twice. So a second submission finds the row that already exists rather than
+   * sending a second confirmation to somebody who is already holding one.
+   *
+   * `email` and `note` are `erasable`, and that is most of why this table belongs in a
+   * vertical rather than in whatever form service was the alternative: it makes the
+   * address uncarryable by any event, and reachable by the erasure the desk already
+   * has. What the events carry is the id, the kind and the state — never the person.
+   */
+  signup: {
+    table: 'ticket0_signups',
+    fields: z.object({
+      id: z.string(),
+      kind: z.enum(['waitlist', 'newsletter']),
+      email: z.string(),
+      /** Whatever they typed in the free-text box — theirs, so erasable with the address. */
+      note: z.string().nullable(),
+      state: z.enum(['pending', 'confirmed', 'unsubscribed']),
+      /** The page it was typed on: a real origin, checked against the desk's allowlist. */
+      origin: z.string(),
+      /**
+       * The confirm token as a HASH, and it is nulled the moment it is spent — so a
+       * confirmation link works exactly once rather than becoming a permanent
+       * re-confirm door, and a spent link is indistinguishable from a forged one.
+       *
+       * This is the high-value capability in the row: it manufactures a record that
+       * somebody consented. A plaintext copy at rest would let anybody holding the
+       * table forge that consent for every pending address at once, which is the one
+       * thing double opt-in exists to make impossible.
+       */
+      confirm_token_hash: z.string().nullable(),
+      /**
+       * The unsubscribe token in PLAINTEXT, and the asymmetry with the line above is
+       * deliberate rather than an oversight.
+       *
+       * Two reasons, and the second is the one that decides it:
+       *
+       *  1. It is the lowest-value capability here. All it can do is take an address
+       *     off a mailing list. Anybody holding a copy of this table already holds
+       *     every address in it, which is strictly worse than being able to
+       *     unsubscribe them — so hashing buys close to nothing.
+       *  2. It has to be READ BACK, forever. Every issue sent to this person needs an
+       *     unsubscribe link for them, and a hash cannot produce one. Hashing it made
+       *     the link unbuildable: the token was minted, digested and dropped on the
+       *     floor, so the "unsubscribe link that always works" the signup form
+       *     promises could never have been put in an email.
+       *
+       * It is never nulled, for the reason the promise implies: the link is read out
+       * of a mail archive years later by somebody who is annoyed, and a link that has
+       * expired is a complaint. It is safe to leave live precisely because removal is
+       * the only thing it does.
+       */
+      unsubscribe_token: z.string(),
+      /**
+       * When they last asked, beside `created_at`'s when-this-row-first-appeared.
+       * They differ after somebody unsubscribes and later signs up again, which is a
+       * thing people do and a thing this table should be able to say happened.
+       */
+      requested_at: z.string(),
+      confirmed_at: z.string().nullable(),
+      unsubscribed_at: z.string().nullable(),
+      created_at: z.string(),
+    }),
+    key: ['kind', 'email'],
+    erasable: ['email', 'note'],
+  },
 });
 
 /**
@@ -581,6 +692,8 @@ export const TICKET0_PERMISSIONS = [
   'desk:configure',
   'usage:read',
   'notification:read-own',
+  'signup:submit',
+  'signup:read',
 ] as const;
 
 export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMISSIONS)({
@@ -2335,6 +2448,222 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       payload: ['id', 'principal', 'kind', 'conversation_id', 'read_at', 'created_at'],
     },
   },
+
+  // ─── The waiting list ────────────────────────────────────────────────────────
+
+  /**
+   * The origins this desk takes signups from — the signup service's pre-flight read.
+   *
+   * The same array `ticket0/widget-origins` returns, under a different key, and the
+   * duplication is the point rather than an oversight. The list belongs to the DESK;
+   * what differs is which service is asking, and each of the two public services holds
+   * exactly one key. Reading it through the widget's key would have made the signup
+   * surface need the widget's authority to answer a preflight, which is the whole thing
+   * a second service principal exists to avoid.
+   *
+   * Both doors refuse out of `allowedOrigins(ctx)`, so the browser's answer and the
+   * operation's answer cannot disagree about where a form may live.
+   */
+  'ticket0/signup-origins': {
+    // Not a tool: the signup service's surface — held by one principal, driven by a browser.
+    mcp: false,
+    summary: 'The origins this desk takes signups from',
+    permission: 'signup:submit',
+    output: z.object({ origins: z.array(z.string()) }),
+    http: { method: 'GET', path: '/signup/origins' },
+  },
+
+  /**
+   * Ask to be told — the one write the open internet may make to this table.
+   *
+   * ## What confines the caller
+   *
+   * The same answer the widget gives, and for the same reason: `signup:submit` admits
+   * the desk's SIGNUP SERVICE and nobody else, and what the caller may do with it is
+   * decided by the token they hold afterwards, not by this key. A visitor has no
+   * principal and needs none. The origin is checked here against the desk's own
+   * allowlist, out of the same array the browser's preflight was answered from, so the
+   * two cannot disagree about where this form is allowed to live.
+   *
+   * ## Why it is idempotent, and what "idempotent" means for each state
+   *
+   * A form gets submitted twice — a double click, a back button, an impatient reload —
+   * and none of those should produce a second confirmation email or a second row.
+   * `key: ['kind', 'email']` makes the second submission find the first, and what
+   * happens then depends on where that row had got to:
+   *
+   *  - **pending** — re-issue the confirmation, at most once per `SIGNUP_RESEND_SECONDS`.
+   *    This is the "the mail never arrived" path, and it has to work.
+   *  - **confirmed** — nothing to do, and `confirmToken` comes back null. Deliberately
+   *    NOT an error: telling a stranger which addresses are already on the list turns
+   *    a signup form into a membership oracle.
+   *  - **unsubscribed** — back to pending with a fresh confirmation. Somebody who left
+   *    and returned is asking again, and the way to honour that without ever guessing
+   *    is to make them confirm again.
+   *
+   * ## What comes back
+   *
+   * `confirmToken` is the one field here that is a secret, and it is handed to the HOST
+   * — which sends the mail — rather than to the browser. Nothing in the response the
+   * form reads carries it, and nothing on this path is told whether the address was
+   * already known.
+   */
+  'ticket0/submit-signup': {
+    // Not a tool: the signup service's surface — held by one principal, driven by a browser.
+    mcp: false,
+    summary: 'Ask for a place on the waiting list, or for the changelog by email',
+    permission: 'signup:submit',
+    input: z.object({
+      kind: z.enum(['waitlist', 'newsletter']),
+      email: z.string().email(),
+      note: z.string().max(SIGNUP_NOTE_MAX).nullable().optional(),
+      origin: z.string().url(),
+    }),
+    output: z.object({
+      id: z.string(),
+      kind: z.enum(['waitlist', 'newsletter']),
+      state: z.enum(['pending', 'confirmed', 'unsubscribed']),
+      /**
+       * The confirmation token, for the host that is about to put it in an email —
+       * null when there is nothing to confirm. It is a capability over this row, so
+       * it is minted here, returned once, and stored only as a hash.
+       */
+      confirmToken: z.string().nullable(),
+      /**
+       * The unsubscribe token, which is NOT null even when `confirmToken` is.
+       *
+       * Every mail this desk ever sends this person needs a way out, including the
+       * confirmation itself, and the row's token is stable — so this is a read of what
+       * is already stored rather than something minted per call. An address that was
+       * already confirmed still gets one back, because the caller may be about to send
+       * them something.
+       */
+      unsubscribeToken: z.string(),
+    }),
+    http: { method: 'POST', path: '/signup' },
+    emits: {
+      entity: 'signup',
+      entityIdFrom: 'id',
+      type: 'ticket0.signup-requested',
+      schemaVersion: 1,
+      // Never the address. It is `erasable`, which makes it uncarryable by an
+      // immutable event — the same rule that keeps message bodies out of the
+      // outbound-email event and sends the relay back for them at send time.
+      piiClass: 'none',
+      payload: ['id', 'kind', 'state'],
+    },
+  },
+
+  /**
+   * Spend a confirmation token.
+   *
+   * The token is the whole authority and the input carries nothing else — no id, no
+   * address — so there is no wider request to make. Spending it nulls the hash, which
+   * is what makes a confirmation link once-only.
+   *
+   * Reached by a NAVIGATION out of an email, not by script on an embedded page, so the
+   * host mounts this outside the origin-guarded surface: a mail client sends no
+   * `Origin`, and a door that demanded one would refuse every real click.
+   */
+  'ticket0/confirm-signup': {
+    mcp: false,
+    summary: 'Confirm an address from the link in its email',
+    permission: 'signup:submit',
+    input: z.object({ token: z.string() }),
+    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true }),
+    http: { method: 'POST', path: '/signup/confirm' },
+    emits: {
+      entity: 'signup',
+      entityIdFrom: 'id',
+      type: 'ticket0.signup-confirmed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'kind', 'state', 'confirmed_at'],
+    },
+  },
+
+  /**
+   * Leave the list.
+   *
+   * Works from every state and stays working forever, which is the one property an
+   * unsubscribe link must have: it is read out of a mail archive by somebody who is
+   * annoyed, and a link that has expired is a complaint. It is safe to leave live
+   * precisely because removal is the only thing it can do.
+   */
+  'ticket0/unsubscribe-signup': {
+    mcp: false,
+    summary: 'Take an address off the list',
+    permission: 'signup:submit',
+    input: z.object({ token: z.string() }),
+    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true }),
+    http: { method: 'POST', path: '/signup/unsubscribe' },
+    emits: {
+      entity: 'signup',
+      entityIdFrom: 'id',
+      type: 'ticket0.signup-unsubscribed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'kind', 'state', 'unsubscribed_at'],
+    },
+  },
+
+  /**
+   * The list, for the person who writes to it.
+   *
+   * Staff-only and desk-admin-only: it is a table of real addresses, so it sits with
+   * the money rather than with the inbox. The CONFIRM hash is omitted the same way the
+   * desk's verification secret is — a read must not hand back the capability that
+   * manufactures a consent record.
+   *
+   * The unsubscribe token is returned, and that is what makes this read the export the
+   * Monday send is written against: every issue needs a per-recipient way out, and a
+   * sender that cannot see the token cannot put one in the mail. It grants nothing but
+   * removal, and this door is already the narrowest one the desk has.
+   */
+  'ticket0/list-signups': {
+    summary: 'Who is waiting, and who is subscribed',
+    permission: 'signup:read',
+    // Declared as input as well as `filterable`, because the two say different things:
+    // this tells the transport what to accept, `filterable` tells the kernel what a
+    // walk may narrow on. See `ticket0/list-conversations` for the long version.
+    input: z.object({
+      kind: z.enum(['waitlist', 'newsletter']).optional(),
+      state: z.enum(['pending', 'confirmed', 'unsubscribed']).optional(),
+    }),
+    output: ticket0Entities.signup.fields.omit({ confirm_token_hash: true }),
+    paged: {
+      over: {
+        entity: 'signup',
+        sortable: ['created_at', 'confirmed_at'],
+        filterable: ['kind', 'state'],
+      },
+      order: 'desc',
+      total: true,
+    },
+    http: { method: 'GET', path: '/signups' },
+  },
+
+  /**
+   * The counts, as one read.
+   *
+   * The screen wants six numbers above a table and would otherwise get them by walking
+   * six filtered pages for their totals — six round trips to render a header. Every
+   * (kind, state) pair the table holds, and pairs with no rows are simply absent.
+   */
+  'ticket0/signup-counts': {
+    summary: 'How many are waiting, confirmed and gone, per list',
+    permission: 'signup:read',
+    output: z.object({
+      counts: z.array(
+        z.object({
+          kind: z.enum(['waitlist', 'newsletter']),
+          state: z.enum(['pending', 'confirmed', 'unsubscribed']),
+          count: z.number(),
+        }),
+      ),
+    }),
+    http: { method: 'GET', path: '/signups/counts' },
+  },
 });
 
 /**
@@ -2444,6 +2773,45 @@ export const ticket0Lifecycles = defineLifecycles(
         ],
       },
       closed: { terminal: true },
+    },
+  },
+
+  /**
+   * A signup's machine — three states, and the one worth reading is the way back in.
+   *
+   * `unsubscribed` is NOT terminal: `ticket0/submit-signup` is an edge out of it, back
+   * to `pending`. Somebody who left the list and later typed their address in again is
+   * asking a second time, and the only honest way to honour that is to make them
+   * confirm a second time — which is what the edge does. A terminal `unsubscribed`
+   * would instead have produced the worst available outcome: a form that accepts the
+   * address, reports success, and silently never adds it.
+   *
+   * `ticket0/submit-signup` also appears under `allow` in both other states, because a
+   * re-submission of an address already on the list moves nothing. Confirming again is
+   * not possible at all — the token's hash is nulled when it is spent, so there is no
+   * second confirmation to present, and the machine never has to say so.
+   */
+  signup: {
+    field: 'state',
+    initial: 'pending',
+    states: {
+      pending: {
+        on: {
+          'ticket0/confirm-signup': 'confirmed',
+          'ticket0/unsubscribe-signup': 'unsubscribed',
+        },
+        allow: ['ticket0/submit-signup'],
+      },
+      confirmed: {
+        on: { 'ticket0/unsubscribe-signup': 'unsubscribed' },
+        allow: ['ticket0/submit-signup'],
+      },
+      unsubscribed: {
+        on: { 'ticket0/submit-signup': 'pending' },
+        // A second click on an unsubscribe link in a mail archive. It changes nothing
+        // and must not be an error — the person is telling us something we agree with.
+        allow: ['ticket0/unsubscribe-signup'],
+      },
     },
   },
 });

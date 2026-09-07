@@ -21,6 +21,7 @@
     "@ai-sdk/anthropic": "^3.0.0",
     "@hono/node-server": "^1.13.0",
     "@substrat-run/adapter-cloudflare": "workspace:^",
+    "@substrat-run/adapter-email": "workspace:^",
     "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/dev-issuer": "workspace:^",
@@ -83,6 +84,7 @@
     "entitlements": [
       "ticket0"
     ],
+    "sendsEmail": true,
     "requires": [
       "oidc-issuer"
     ],
@@ -127,7 +129,11 @@
           "/api/*",
           "/internal/*",
           "/openapi.json",
-          "/widget/*"
+          "/widget/*",
+          "/signup",
+          "/signup/*",
+          "/confirm",
+          "/unsubscribe"
         ]
       }
     },

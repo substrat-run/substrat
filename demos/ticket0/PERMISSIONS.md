@@ -5,7 +5,7 @@
 
 # Permission snapshot — @substrat-run/demo-ticket0
 
-19 keys · 2 modules · 7 roles
+21 keys · 2 modules · 8 roles
 
 ## 1. Registry — every key a registered manifest declares
 
@@ -29,6 +29,8 @@
 | `metering:read` | Read meters, usage entries, totals and closed periods | `@substrat-run/engine-metering` |
 | `metering:record` | Record usage entries against a meter | `@substrat-run/engine-metering` |
 | `notification:read-own` | See and dismiss your own notifications | `@substrat-run/demo-ticket0` |
+| `signup:read` | See the waiting list and the newsletter list — real addresses, so it sits with the money rather than with the inbox | `@substrat-run/demo-ticket0` |
+| `signup:submit` | Take a signup from a public form, and spend a confirm or unsubscribe token — held by the desk’s signup service alone; which row is decided by the token, not by this key | `@substrat-run/demo-ticket0` |
 | `usage:read` | See token usage, prices and what the desk has spent | `@substrat-run/demo-ticket0` |
 
 ## 2. Roles — as defined by this vertical's provisioning code
@@ -41,8 +43,9 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `assistant` | `conversation:draft`, `conversation:read`, `kb:read`, `metering:configure`, `metering:record` |
 | `assistant-autonomous` | `conversation:draft`, `conversation:read`, `conversation:reply-public`, `kb:read`, `metering:configure`, `metering:record` |
 | `customer` | `notification:read-own` |
-| `desk-admin` | `contact:read`, `conversation:assign`, `conversation:draft`, `conversation:merge`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `desk:configure`, `kb:manage`, `kb:read`, `metering:close`, `metering:configure`, `metering:read`, `metering:record`, `notification:read-own`, `usage:read` |
+| `desk-admin` | `contact:read`, `conversation:assign`, `conversation:draft`, `conversation:merge`, `conversation:read`, `conversation:reply-public`, `conversation:resolve`, `desk:configure`, `kb:manage`, `kb:read`, `metering:close`, `metering:configure`, `metering:read`, `metering:record`, `notification:read-own`, `signup:read`, `usage:read` |
 | `relay` | `conversation:relay` |
+| `signup` | `signup:submit` |
 | `widget` | `conversation:widget` |
 
 ## 3. Coverage — which roles hold each key
@@ -67,6 +70,8 @@ Identical in every tenant. Per-tenant customisation is a runtime concern.
 | `metering:read` | `desk-admin` |
 | `metering:record` | `assistant`, `assistant-autonomous`, `desk-admin` |
 | `notification:read-own` | `agent`, `customer`, `desk-admin` |
+| `signup:read` | `desk-admin` |
+| `signup:submit` | `signup` |
 | `usage:read` | `desk-admin` |
 
 ## 4. Entity-narrowed grant shapes

@@ -36,6 +36,8 @@ export const T0_PERM = {
   deskConfigure: permissionKey.parse('desk:configure'),
   usageRead: permissionKey.parse('usage:read'),
   notificationReadOwn: permissionKey.parse('notification:read-own'),
+  signupSubmit: permissionKey.parse('signup:submit'),
+  signupRead: permissionKey.parse('signup:read'),
 } as const;
 
 /**
@@ -128,6 +130,8 @@ export const ticket0Manifest = moduleManifest.parse({
       'desk:configure': 'Change the desk’s settings and rotate its verification secret',
       'usage:read': 'See token usage, prices and what the desk has spent',
       'notification:read-own': 'See and dismiss your own notifications',
+      'signup:submit': 'Take a signup from a public form, and spend a confirm or unsubscribe token — held by the desk’s signup service alone; which row is decided by the token, not by this key',
+      'signup:read': 'See the waiting list and the newsletter list — real addresses, so it sits with the money rather than with the inbox',
     },
   }),
   /**

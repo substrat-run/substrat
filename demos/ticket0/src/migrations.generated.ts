@@ -245,4 +245,25 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_desk_settings ADD COLUMN assistant_autonomous INTEGER;
     `,
   },
+  {
+    // add-ticket0_signups
+    version: '0006',
+    sql: `
+      CREATE TABLE ticket0_signups (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('waitlist','newsletter')),
+        email TEXT NOT NULL,
+        note TEXT,
+        state TEXT NOT NULL CHECK (state IN ('pending','confirmed','unsubscribed')),
+        origin TEXT NOT NULL,
+        confirm_token_hash TEXT,
+        unsubscribe_token TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        confirmed_at TEXT,
+        unsubscribed_at TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (kind, email)
+      );
+    `,
+  },
 ];

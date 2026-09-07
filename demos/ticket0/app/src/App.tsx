@@ -17,12 +17,14 @@ import { ConversationView } from './views/Conversation.js';
 import { Settings, type SettingsTab } from './views/Settings.js';
 import { Portal } from './views/Portal.js';
 import { Reports } from './views/Reports.js';
+import { Signups } from './views/Signups.js';
 
 export type View =
   | { name: 'inbox' }
   | { name: 'conversation'; id: string }
   | { name: 'settings'; tab: SettingsTab }
   | { name: 'reports' }
+  | { name: 'signups' }
   | { name: 'portal' }
   | { name: 'portal-conversation'; id: string };
 
@@ -33,6 +35,7 @@ function parseHash(): View {
   if (a === 'c' && b) return { name: 'conversation', id: b };
   if (a === 'settings') return { name: 'settings', tab: (b as SettingsTab) || 'desk' };
   if (a === 'reports') return { name: 'reports' };
+  if (a === 'signups') return { name: 'signups' };
   if (a === 'portal') return b ? { name: 'portal-conversation', id: b } : { name: 'portal' };
   return { name: 'inbox' };
 }
@@ -45,6 +48,8 @@ export function viewToHash(v: View): string {
       return `#/settings/${v.tab}`;
     case 'reports':
       return '#/reports';
+    case 'signups':
+      return '#/signups';
     case 'portal':
       return '#/portal';
     case 'portal-conversation':
@@ -72,6 +77,8 @@ export interface Capabilities {
   configure: boolean;
   /** Holds `conversation:read` — the desk-wide inbox, as opposed to only their own. */
   inbox: boolean;
+  /** Holds `signup:read` — the waiting list and the newsletter list. */
+  signups: boolean;
 }
 
 async function probe(): Promise<Capabilities> {
@@ -85,12 +92,17 @@ async function probe(): Promise<Capabilities> {
       throw err;
     }
   };
-  const [money, configure, inbox] = await Promise.all([
+  const [money, configure, inbox, signups] = await Promise.all([
     holds(() => api.usageSummary({})),
     holds(() => api.getDesk()),
     holds(() => api.listConversations({})),
+    // `signupCounts()` rather than `listSignups({})`, and it is the same key: the probe
+    // runs on every sign-in for every account, and asking the list question would pull a
+    // page of real email addresses and free-text notes into the browser purely to throw
+    // them away. The aggregate answers "may I" with no PII in the response.
+    holds(() => api.signupCounts()),
   ]);
-  return { money, configure, inbox };
+  return { money, configure, inbox, signups };
 }
 
 const PARAMS = new URLSearchParams(location.search);
@@ -242,7 +254,14 @@ export function App() {
       .then(async (s) => {
         setSession(s);
         if (s && 'principal' in s) {
-          setCaps(await probe().catch(() => ({ money: false, configure: false, inbox: false })));
+          setCaps(
+            await probe().catch(() => ({
+              money: false,
+              configure: false,
+              inbox: false,
+              signups: false,
+            })),
+          );
         }
       });
   }, []);
@@ -289,6 +308,8 @@ export function App() {
           <Settings tab={view.tab} caps={caps} session={session} go={go} />
         ) : view.name === 'reports' ? (
           <Reports caps={caps} />
+        ) : view.name === 'signups' ? (
+          <Signups caps={caps} />
         ) : view.name === 'conversation' ? (
           <ConversationView id={view.id} caps={caps} session={session} go={go} />
         ) : (
@@ -350,6 +371,11 @@ function TopBar({
         {/* The report is the money with a denominator, so it appears for the same
             capability the money does — learned by asking, exactly as above. */}
         {caps?.money ? tab('Reports', view.name === 'reports', () => go({ name: 'reports' })) : null}
+        {/* The lists, behind their own key — learned by asking, exactly as above. An
+            agent never sees this tab, and typing the hash would get them a 403. */}
+        {caps?.signups
+          ? tab('Signups', view.name === 'signups', () => go({ name: 'signups' }))
+          : null}
         {/* Not gated on `configure` any more: the Settings shell shows an agent the one
             tab they have business on — their own profile, which is what puts them in
             the desk's directory and therefore in the assignee picker (#1149). */}
