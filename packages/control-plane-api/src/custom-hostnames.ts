@@ -185,7 +185,7 @@ export function extractRecords(ch: CfCustomHostname, routingTarget: string): Dns
 export function createCustomHostnameProvisioner(
   opts: CustomHostnameProvisionerOptions,
 ): CustomHostnameProvisioner {
-  const fetchFn: FetchFn = opts.fetch ?? (globalThis.fetch as FetchFn);
+  const fetchFn: FetchFn = opts.fetch ?? (globalThis.fetch.bind(globalThis) as FetchFn);
   const base = `https://api.cloudflare.com/client/v4/zones/${opts.zoneId}/custom_hostnames`;
   const auth = { authorization: `Bearer ${opts.apiToken}` };
 

@@ -917,8 +917,9 @@ export default {
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below (kernel's FetchLike vs the
-      // workers RequestInit — a type bridge, same fetch).
-      fetch: globalThis.fetch as unknown as FetchLike,
+      // workers RequestInit — a type bridge, same fetch). Bound, so a sweeper may
+      // call it as a method without workerd's "Illegal invocation".
+      fetch: globalThis.fetch.bind(globalThis) as unknown as FetchLike,
       // #574: the platform runs the connector pass FOR dispatch verticals — they are
       // CP-less and cannot reach the connection directory. The sweep enumerates THIS
       // directory's connections, opens each with the coordinator-held secret box, polls

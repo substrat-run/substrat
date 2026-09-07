@@ -87,7 +87,8 @@ export interface PlatformSweeperDo {
  *   sweep: (env) =>
  *     runPlatformSweep(hostFor(env), {
  *       actor: SWEEP_ACTOR,
- *       fetch: globalThis.fetch as unknown as FetchLike,
+ *       // bound: workerd refuses the bare global called as `opts.fetch(…)`
+ *       fetch: globalThis.fetch.bind(globalThis) as unknown as FetchLike,
  *       sweepers: { scrive: sweepScriveReconciliations },
  *     }),
  * });

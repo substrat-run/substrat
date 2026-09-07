@@ -2734,14 +2734,24 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       clientSecret: cfg.clientSecret,
       code,
       redirectUri: `${origin}/api/integrations/fortnox/callback`,
-      fetch: globalThis.fetch as unknown as Parameters<typeof completeFortnoxConsent>[0]['fetch'],
+      // BOUND, not bare: the connector calls this as `input.fetch(…)`, and workerd
+      // refuses the global `fetch` invoked with any other receiver ("Illegal
+      // invocation") — before a byte leaves the runtime. Node's fetch does not care,
+      // which is why every local round passed and every hosted round failed (#1263).
+      fetch: globalThis.fetch.bind(globalThis) as unknown as Parameters<typeof completeFortnoxConsent>[0]['fetch'],
       ...(cfg.oauthBase ? { oauthBase: cfg.oauthBase } : {}),
       ...(cfg.apiBase ? { apiBase: cfg.apiBase } : {}),
     });
   } catch (e) {
     // The page below deliberately shows only Fortnox's own words; everything else —
-    // a thrown fetch, a schema refusal — is invisible without this line.
-    console.error('fortnox consent completion failed', e);
+    // a thrown fetch, a schema refusal — is invisible without this line. Name and
+    // message spelled out: Workers Logs kept only the stack frames of an Error
+    // argument, which is how the first hosted failure logged WHERE but not WHAT.
+    console.error(
+      'fortnox consent completion failed',
+      e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+      e,
+    );
     const detail = e instanceof FortnoxApiError
       ? e.message
       : `the exchange with Fortnox failed (${e instanceof Error ? e.name : typeof e})`;

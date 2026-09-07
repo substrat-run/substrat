@@ -332,7 +332,7 @@ if (scrive) {
   const pollMs = Number(process.env.SCRIVE_POLL_MS ?? 15_000);
   startPlatformSweeper(host, {
     actor: platformActorId.parse(ulid()),
-    fetch: scrive?.egress ?? (globalThis.fetch as unknown as FetchLike),
+    fetch: scrive?.egress ?? (globalThis.fetch.bind(globalThis) as unknown as FetchLike),
     // The deployment binds its own provider base into the sweeper (#990): the
     // connector defaults nowhere, so the poll cannot silently hit the testbed.
     sweepers: scrive

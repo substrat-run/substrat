@@ -132,7 +132,11 @@ function required(value: string | undefined, name: string): string {
   return value;
 }
 
-const fetchImpl = () => globalThis.fetch as unknown as FetchLike;
+// Bound to the global: a connector is free to call this as `options.fetch(…)` (the
+// Scrive candidate probe does), and workerd throws "Illegal invocation" for the bare
+// global invoked with any other receiver — Node's does not, so only the hosted path
+// would see it. (The dashboard's Fortnox callback was that exact failure.)
+const fetchImpl = () => globalThis.fetch.bind(globalThis) as unknown as FetchLike;
 
 const SCRIVE: ConnectorRegistration = {
   provider: 'scrive',
