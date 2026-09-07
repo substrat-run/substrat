@@ -207,6 +207,15 @@ export function assertSandboxContract(m: DeployManifest): void {
     if (b.name === 'CONTROL_PLANE') {
       refuse("'CONTROL_PLANE' is the platform's directory, not a vertical's");
     }
+    // The platform's own injected names (#1242): a vertical that could declare
+    // `SUBSTRAT_VERSION_ID` itself would collide with the injected binding — a
+    // duplicate name on the upload at best, a forged version stamp at worst. The
+    // unforgeability `domainEventInput` gives the kernel-stamped envelope fields
+    // for free, a binding channel has to be given here. Prefix-refused so the
+    // namespace stays the platform's as it grows.
+    if (b.name.startsWith('SUBSTRAT_')) {
+      refuse("the 'SUBSTRAT_' binding namespace is the platform's — these names are injected at deploy, never declared");
+    }
     // Allowlist: a type not among the vertical's own admissible resources is refused — with a
     // teachable reason where we have one, the generic one otherwise.
     if (!admissible.has(b.type)) {

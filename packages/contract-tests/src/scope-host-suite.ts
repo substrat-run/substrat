@@ -40,6 +40,13 @@ import {
 
 export interface ScopeHostFixture {
   host: ScopeHost;
+  /**
+   * The version identity the fixture configured (#1242) — the sqlite `versionId`
+   * option / the CF harness's SUBSTRAT_VERSION_ID var. Declare it and the shared
+   * suites assert stamped reads carry exactly it; leave it unset and they assert
+   * the honest NULL.
+   */
+  versionId?: string;
   cleanup(): Promise<void>;
 }
 
