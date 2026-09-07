@@ -69,3 +69,28 @@ export const signalStamp = z
   .partial()
   .strict();
 export type SignalStamp = z.infer<typeof signalStamp>;
+
+/**
+ * What one deployed SERVICE (a Cloudflare script ref) means in signal dimensions —
+ * the service→(vertical, version) join, answered by the control plane's
+ * `GET /service-refs` so every consumer (dashboard, console, CLI, the signals
+ * views) gets the same answer instead of each re-deriving it (#1231's last item).
+ *
+ * `stamp.version` is the registry ULID, per this file's rule; the HUMAN label
+ * rides beside the stamp rather than inside it — `signalStamp` is `.strict()`
+ * precisely so a display concern cannot drift into the dimension vocabulary.
+ * `versionLabel` is null where the directory cannot name one (a serving ref
+ * bound to a scope whose version the registry no longer lists).
+ *
+ * `role` names which ref scheme this service is — the per-version archive
+ * script or the stable serving script — because conflating the two is the
+ * mistake that made the dashboard's per-version view read empty once already.
+ */
+export const serviceDimensions = z.object({
+  /** The deployed unit: a `deploymentRef` (archive) or a `servingRef` (serving). */
+  service: z.string().min(1),
+  role: z.enum(['archive', 'serving']),
+  stamp: signalStamp,
+  versionLabel: z.string().min(1).nullable(),
+});
+export type ServiceDimensions = z.infer<typeof serviceDimensions>;

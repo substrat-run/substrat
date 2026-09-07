@@ -292,8 +292,8 @@ export const MOCK_APPS: AppRow[] = [
 
 /** Traffic for the mock deployments' deployed versions (matches MOCK_DEPLOYMENTS refs). */
 export const MOCK_OBSERVABILITY: ObservabilityRow[] = [
-  { vertical: 'acme/helpdesk', version: '0.3.0', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', requests: 12840, errors: 23, subrequests: 31200, cpuTimeP50: 2400, cpuTimeP99: 18200 },
-  { vertical: 'acme/helpdesk', version: '0.2.0', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', requests: 3120, errors: 1, subrequests: 7400, cpuTimeP50: 2100, cpuTimeP99: 15400 },
+  { vertical: 'acme/helpdesk', version: '0.3.0', versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', requests: 12840, errors: 23, subrequests: 31200, cpuTimeP50: 2400, cpuTimeP99: 18200 },
+  { vertical: 'acme/helpdesk', version: '0.2.0', versionId: '01J2Q8Z3V9K4W7X2M5N6P7V200', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', requests: 3120, errors: 1, subrequests: 7400, cpuTimeP50: 2100, cpuTimeP99: 15400 },
 ];
 
 /**

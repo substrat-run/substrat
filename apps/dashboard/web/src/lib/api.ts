@@ -833,7 +833,10 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 /** Invocation aggregates for one deployed version of a team vertical (last N hours). */
 export interface ObservabilityRow {
   vertical: string;
+  /** The human version label (display); `versionId` is the signals dimension. */
   version: string;
+  /** The version-registry ULID (#1231), or null where the registry cannot name one. */
+  versionId: string | null;
   service: string;
   requests: number;
   errors: number;
