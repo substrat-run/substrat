@@ -20,6 +20,7 @@ import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
+import type { SweepRunEntry } from '@substrat-run/contracts';
 import { principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
@@ -29,6 +30,7 @@ import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type Connec
 import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
+import { deriveScheduleHealth } from './schedules.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -1563,6 +1565,70 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   return c.json({
     running: { versionId: runningId, version: runningVersion?.version ?? null, model: runningModel },
     update: updateId ? { versionId: updateId, version: updateVersion?.version ?? null, model: updateModel } : null,
+  });
+});
+
+/**
+ * Schedule health for one app (#1232): every schedule the RUNNING version declares,
+ * joined against the sweep record — last firing, next due, and the verdict. The
+ * derivation is pure (`schedules.ts`); this route only composes the reads. The strip
+ * reads filter to ok+failed deliberately: a CP-less pass writes a `skipped` row every
+ * couple of minutes per schedule, and an unfiltered walk cannot reach last week's real
+ * run — while ONE unfiltered `limit: 1` read answers the different question the skips
+ * exist for: is the sweep still reaching this scope at all.
+ */
+app.get('/api/apps/:scopeId/schedules', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const slug = appRow.vertical_slug;
+  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
+  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
+  // The RUNNING version's declarations, exactly as the Model tab resolves it — an
+  // unpinned scope runs the prod head.
+  const runningId = boundVersionId ?? prod?.versionId ?? null;
+  const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
+
+  const declared = runningId ? await cp.versionSchedules(slug, runningId) : null;
+  if (!declared || declared.length === 0) {
+    // Null schedules = a version pushed before the manifest field, or none declared —
+    // the UI hides the panel for both rather than nagging every app.
+    return c.json({
+      running: { versionId: runningId, version: runningVersion?.version ?? null },
+      schedules: null,
+      lastSweepAt: null,
+    });
+  }
+
+  const [liveness, ...perSchedule] = await Promise.all([
+    cp.listSweepRuns({ kind: 'schedule', scopeId: scope, limit: 1 }),
+    ...declared.flatMap((spec) => {
+      const unit = `${scope}:${spec.operation}`;
+      return [
+        cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'ok', limit: 20 }),
+        cp.listSweepRuns({ kind: 'schedule', unit, outcome: 'failed', limit: 20 }),
+      ];
+    }),
+  ]);
+  const runsByOperation = new Map<string, SweepRunEntry[]>();
+  declared.forEach((spec, i) => {
+    // Merge the two outcome reads newest-first on the ULID id, capped like one read.
+    const merged = [...perSchedule[i * 2]!, ...perSchedule[i * 2 + 1]!]
+      .sort((a, b) => (a.id < b.id ? 1 : -1))
+      .slice(0, 20);
+    runsByOperation.set(spec.operation, merged);
+  });
+
+  return c.json({
+    running: { versionId: runningId, version: runningVersion?.version ?? null },
+    schedules: deriveScheduleHealth(declared, runsByOperation, liveness[0]?.at ?? null, Date.now()),
+    lastSweepAt: liveness[0]?.at ?? null,
   });
 });
 

@@ -893,7 +893,15 @@ export class TenantNarrowedControlPlane {
    * deploy-skew-tolerant exactly as `listOpsFailures` above.
    */
   async listSweepRuns(
-    filter: { kind?: 'connector' | 'schedule'; connectionId?: string; since?: string; limit?: number } = {},
+    filter: {
+      kind?: 'connector' | 'schedule';
+      connectionId?: string;
+      scopeId?: string;
+      unit?: string;
+      outcome?: 'ok' | 'failed' | 'skipped';
+      since?: string;
+      limit?: number;
+    } = {},
   ): Promise<SweepRunEntry[]> {
     // The route caps a page at LIST_PAGE_MAX, and a limit past the cap is a 400 the
     // skew guard below would swallow into [] — the account page's strips silently
@@ -907,6 +915,9 @@ export class TenantNarrowedControlPlane {
         const q = new URLSearchParams({ tenantId: this.tenantId });
         if (filter.kind !== undefined) q.set('kind', filter.kind);
         if (filter.connectionId !== undefined) q.set('connectionId', filter.connectionId);
+        if (filter.scopeId !== undefined) q.set('scopeId', filter.scopeId);
+        if (filter.unit !== undefined) q.set('unit', filter.unit);
+        if (filter.outcome !== undefined) q.set('outcome', filter.outcome);
         if (filter.since !== undefined) q.set('since', filter.since);
         q.set('limit', String(Math.min(wanted - out.length, LIST_PAGE_MAX)));
         if (cursor !== undefined) q.set('cursor', cursor);
