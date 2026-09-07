@@ -354,6 +354,16 @@ export interface SqliteScopeHostOptions {
    * admin-log entry) are untouched and stay on the real clock.
    */
   clock?: Clock;
+  /**
+   * The version REGISTRY id of the vertical version this host runs (#1242) — stamped
+   * into the outbox `version` column at emit, the signals dimension (#1231) that joins
+   * every event to the push that produced it. Handed in by the harness (dev server,
+   * test), NEVER read from the co-located directory's `scopes` table: a value one
+   * adapter could reach and the other cannot is exactly the dev-vs-production
+   * divergence `lint:spine-ddl` exists to prevent, in the one form (values, not
+   * schema) that gate cannot see. Omitted, every row reads NULL — unstamped.
+   */
+  versionId?: string;
 }
 
 const KERNEL_DDL = `
@@ -381,6 +391,10 @@ const KERNEL_DDL = `
     -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
     -- row written before the column.
     operation TEXT,
+    -- #1242: the version REGISTRY id of the vertical version the host ran when this
+    -- event was emitted (the signals version dimension, #1231). NULL = the host was
+    -- handed no version id, or the row predates the column.
+    version TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -832,6 +846,10 @@ interface OutboxRow {
   impersonation: string | null;
   /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
   operation: string | null;
+  /** #1242: the version REGISTRY id the host ran at emit. NULL = host was handed no
+   *  version id, or the row predates the column. Never decoded into the envelope —
+   *  a fact about the process, not event data for module code. */
+  version: string | null;
   payload: string | null;
 }
 
@@ -980,11 +998,13 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly secretBox: SecretBox;
   private readonly fetchImpl: FetchLike;
   private readonly clock: Clock;
+  private readonly versionId: string | null;
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
     this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
+    this.versionId = options.versionId ?? null;
     this.dir = options.dir;
     mkdirSync(this.dir, { recursive: true });
     this.directory = new Database(join(this.dir, '_directory.sqlite'));
@@ -7408,8 +7428,8 @@ export class SqliteScopeHost implements ScopeHost {
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             full.id,
@@ -7426,6 +7446,10 @@ export class SqliteScopeHost implements ScopeHost {
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.operation ?? null,
+            // #1242: host configuration, not envelope data — the version is a fact
+            // about the process, so it never rides `DomainEvent` for module code to
+            // branch on; it exists for the observability joins the column serves.
+            this.versionId,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
@@ -7824,6 +7848,9 @@ export class SqliteScopeHost implements ScopeHost {
     // #1231: the emitting operation, on a scope DB created before the column. Nullable
     // so every legacy row reads as unrecorded rather than claiming a name nobody stamped.
     this.ensureColumn(db, '_substrat_outbox', 'operation', 'operation TEXT');
+    // #1242: the signals `version` dimension on the outbox, for a scope DB created
+    // before the column. NULL stays honest — unstamped, not a version nobody named.
+    this.ensureColumn(db, '_substrat_outbox', 'version', 'version TEXT');
   }
 
   private runtime(tenantId: TenantId, scopeId: ScopeId): ScopeRuntime {

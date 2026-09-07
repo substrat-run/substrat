@@ -137,6 +137,14 @@ export interface ScopeDoEnv {
    * permissions.md) evaluates permissions locally and needs no binding.
    */
   CONTROL_PLANE?: DurableObjectNamespace;
+  /**
+   * The version REGISTRY id of the vertical version this script serves (#1242) —
+   * injected at deploy as a `plain_text` binding, refreshed by every in-place serve,
+   * and stamped into the outbox `version` column at emit (the signals dimension,
+   * #1231). Optional: a script deployed before the binding existed, or a test
+   * worker, stamps NULL.
+   */
+  SUBSTRAT_VERSION_ID?: string;
 }
 
 interface RegisteredModule {
@@ -176,6 +184,10 @@ interface OutboxRow {
   impersonation: string | null;
   /** #1231: the emitting operation. NULL = consumer emit, or predates the column. */
   operation: string | null;
+  /** #1242: the version REGISTRY id the script ran at emit. NULL = deployed without
+   *  the binding, or the row predates the column. Never decoded into the envelope —
+   *  a fact about the process, not event data for module code. */
+  version: string | null;
   payload: string | null;
 }
 
@@ -206,6 +218,10 @@ const KERNEL_DDL = `
     -- spine cannot tell apart afterwards: a consumer emit (no operation ran), and a
     -- row written before the column.
     operation TEXT,
+    -- #1242: the version REGISTRY id of the vertical version the script served when
+    -- this event was emitted (the signals version dimension, #1231). NULL = the
+    -- script was deployed without the binding, or the row predates the column.
+    version TEXT,
     drained_at TEXT
   );
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
@@ -2253,6 +2269,9 @@ export function defineScopeDO(
         // #1231: the emitting operation, on a scope DO created before the column.
         // Nullable so every legacy row reads as unrecorded rather than named.
         'ALTER TABLE _substrat_outbox ADD COLUMN operation TEXT',
+        // #1242: the signals `version` dimension on the outbox, for a scope DO
+        // created before the column. NULL stays honest — unstamped.
+        'ALTER TABLE _substrat_outbox ADD COLUMN version TEXT',
       ]) {
         try {
           this.sql.exec(alter);
@@ -2696,8 +2715,8 @@ export function defineScopeDO(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -2712,6 +2731,10 @@ export function defineScopeDO(
             full.authorization ? JSON.stringify(full.authorization) : null,
             full.impersonation ? JSON.stringify(full.impersonation) : null,
             full.operation ?? null,
+            // #1242: script configuration, not envelope data — the version is a fact
+            // about the deploy, so it never rides `DomainEvent` for module code to
+            // branch on; it exists for the observability joins the column serves.
+            this.env.SUBSTRAT_VERSION_ID ?? null,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },

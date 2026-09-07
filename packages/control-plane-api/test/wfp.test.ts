@@ -23,7 +23,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 async function metadataOf(
   injectSecrets: Record<string, string | undefined>,
-  extra: { traceSampling?: number } = {},
+  extra: { traceSampling?: number; bundle?: VerticalBundle } = {},
 ): Promise<Record<string, unknown>> {
   let body: FormData | undefined;
   vi.stubGlobal(
@@ -38,9 +38,9 @@ async function metadataOf(
     namespace: 'ns',
     apiToken: 'tok',
     injectSecrets,
-    ...extra,
+    ...(extra.traceSampling !== undefined ? { traceSampling: extra.traceSampling } : {}),
   });
-  await upload('callout-01k', bundle);
+  await upload('callout-01k', extra.bundle ?? bundle);
   const meta = await (body!.get('metadata') as File).text();
   return JSON.parse(meta) as Record<string, unknown>;
 }
@@ -87,6 +87,26 @@ describe('createWfpUploader — secret injection', () => {
     const meta = await metadataOf({ PLATFORM_SECRET: 'p-val', ROUTER_SECRET: undefined });
     const secrets = (meta['bindings'] as { type: string; name: string }[]).filter((b) => b.type === 'secret_text');
     expect(secrets.map((s) => s.name)).toEqual(['PLATFORM_SECRET']);
+  });
+});
+
+describe('createWfpUploader — version identity (#1242)', () => {
+  it('injects the bundle’s version id as the SUBSTRAT_VERSION_ID plain_text binding', async () => {
+    const meta = await metadataOf({}, { bundle: { ...bundle, versionId: '01JVERSIONID0000000000TEST' } });
+    expect(meta['bindings']).toContainEqual({
+      type: 'plain_text',
+      name: 'SUBSTRAT_VERSION_ID',
+      text: '01JVERSIONID0000000000TEST',
+    });
+    // plain_text must stay OUT of keep_bindings-style inheritance: it is resent per
+    // upload, which is what keeps it naming the version actually being served — so a
+    // fresh upload's set simply carries it, no keep semantics involved here.
+  });
+
+  it('a bundle that names no version declares no plain_text binding at all', async () => {
+    const meta = await metadataOf({});
+    const plain = (meta['bindings'] as { type: string; name: string }[]).filter((b) => b.type === 'plain_text');
+    expect(plain).toEqual([]);
   });
 });
 
