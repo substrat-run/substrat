@@ -22,6 +22,7 @@ import {
   addMoney,
   assertTransition,
   INVALID_TRANSITION,
+  currencyCode,
   dataSubjectId,
   entityRef,
   money,
@@ -549,14 +550,31 @@ export function reportMaterial(ctx: OperationContext, rawInput: ReportMaterialIn
 
 export function completeWorkOrder(
   ctx: OperationContext,
-  input: { orderId: string; billable: BillableLine[] },
+  input: { orderId: string; billable: BillableLine[]; currency?: string },
 ): { order: WorkOrder; total: Money } {
   const row = getRow(ctx, input.orderId);
   requireTransition(row, 'workorder/complete');
   const billable = z.array(billableLine).parse(input.billable);
+  // A completion with no billable lines still has a total, and its currency is
+  // not derivable from the lines — so the engine used to invent `SEK`, which is
+  // a Swedish answer given to a vertical that may never have priced in it
+  // (#967). `currency` lets the caller say; it is optional and falls back to
+  // `SEK`, so every existing caller keeps the total it has today.
+  const declared = input.currency === undefined ? undefined : currencyCode.parse(input.currency);
+  const lineCurrency = billable[0]?.lineTotal.currency;
+  if (declared !== undefined && lineCurrency !== undefined && declared !== lineCurrency) {
+    // The lines win on their own arithmetic (`addMoney` refuses a mixed sum),
+    // so a declared currency that contradicts them can only produce a total
+    // labelled with a currency the caller did not mean. Refuse instead.
+    throw substratError(
+      'validation_failed',
+      `currency mismatch: declared ${declared}, billable lines are in ${lineCurrency}`,
+      { errors: [{ path: 'currency', message: `billable lines are in ${lineCurrency}` }] },
+    );
+  }
   const total = billable.reduce(
     (sum, line) => addMoney(sum, line.lineTotal),
-    moneyOf('0', billable[0]?.lineTotal.currency ?? 'SEK'),
+    moneyOf('0', lineCurrency ?? declared ?? 'SEK'),
   );
   const completedAt = ctx.now();
   ctx.sql.exec(`UPDATE workorder_orders SET status = 'completed', completed_at = ? WHERE id = ?`, [
@@ -646,7 +664,7 @@ const reportMaterialOp: OperationHandler<ReportMaterialInput, MaterialLine> = as
 };
 
 const completeOp: OperationHandler<
-  { orderId: string; billable: BillableLine[] },
+  { orderId: string; billable: BillableLine[]; currency?: string },
   { order: WorkOrder; total: Money }
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(PERM.complete));

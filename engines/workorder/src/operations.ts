@@ -18,7 +18,7 @@
  * it can price, label and link in one go; exposing it as an invocable operation
  * would offer a second way in that skips all of that.
  */
-import { defineOperations, z } from '@substrat-run/contracts';
+import { currencyCode, defineOperations, z } from '@substrat-run/contracts';
 import { workorderEntities } from './entities.js';
 import { billableLine, materialLine, timeEntry, workOrder } from './schemas.js';
 
@@ -103,7 +103,16 @@ export const workorderOperations = defineOperations(workorderEntities, WORKORDER
   'workorder/complete': {
     summary: 'Complete the order with its billable lines',
     permission: 'workorder:complete',
-    input: orderId.extend({ billable: z.array(billableLine) }),
+    input: orderId.extend({
+      billable: z.array(billableLine),
+      /**
+       * The currency of a completion that has NO billable lines — the one total
+       * the lines cannot label themselves (#967). Optional and defaulted to
+       * `SEK`, so a caller that omits it gets the answer it got before; passing
+       * one that contradicts the lines is refused rather than silently ignored.
+       */
+      currency: currencyCode.optional(),
+    }),
     output: z.object({ order: workOrder, total: z.string() }),
   },
 
