@@ -15,6 +15,7 @@ import type {
   ModelUsageSummary,
   MigrationProgress,
   OpsFailureEntry,
+  SweepRunEntry,
   Page,
   PromotionAcknowledgement,
   Scope,
@@ -184,6 +185,19 @@ export interface AuditLogQuery extends PageQuery {
 
 /** The ops-failure list's server-side narrowing (#559) — `reference` is an exact
  *  match, the `reference = <id>` a CI log hands the operator. */
+/** The sweep-record filter (#1232) — mirrors SweepRunFilter, minus the cursor triple PageQuery carries. */
+export interface SweepRunsQuery extends PageQuery {
+  kind?: 'connector' | 'schedule' | 'freshness';
+  unit?: string;
+  outcome?: 'ok' | 'failed' | 'skipped';
+  tenantId?: TenantId;
+  scopeId?: ScopeId;
+  vertical?: string;
+  connectionId?: string;
+  since?: string;
+  until?: string;
+}
+
 export interface OpsFailuresQuery extends PageQuery {
   tenantId?: TenantId;
   scopeId?: ScopeId;
@@ -467,6 +481,11 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // by default; `reference` finds the row a `reference = <id>` CI error names.
     listOpsFailures: (q: OpsFailuresQuery = {}) =>
       call<Page<OpsFailureEntry>>(`/ops-failures${query({ ...q })}`),
+
+    // The fleet's sweep record (#1232) — connections polled, schedules fired or
+    // skipped, freshness verdicts. Newest first; 14-day retention.
+    listSweepRuns: (q: SweepRunsQuery = {}) =>
+      call<Page<SweepRunEntry>>(`/sweep-runs${query({ ...q })}`),
 
     // -- vertical + version registry (orchestration.md §5.6) ----------------
     // The staff surface for the two human checkpoints: admit/reject a version,
