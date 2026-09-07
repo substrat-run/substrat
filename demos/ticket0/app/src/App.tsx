@@ -400,6 +400,17 @@ function TopBar({
 function AccountMenu({ session }: { session: Session }) {
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  // The items, in the order they are rendered — arrow keys walk this, so it is the
+  // menu's focus order rather than the DOM's guess at one.
+  const items = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const close = useCallback((toTrigger: boolean) => {
+    setOpen(false);
+    // Closing with the keyboard must put focus somewhere deliberate; the element it
+    // was on is about to be unmounted, and focus would otherwise fall to <body>.
+    if (toTrigger) trigger.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -407,7 +418,20 @@ function AccountMenu({ session }: { session: Session }) {
       if (box.current && !box.current.contains(e.target as Node)) setOpen(false);
     };
     const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        close(true);
+        return;
+      }
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      e.preventDefault();
+      const list = items.current.filter((el): el is HTMLButtonElement => el !== null);
+      if (list.length === 0) return;
+      const at = list.indexOf(document.activeElement as HTMLButtonElement);
+      const step = e.key === 'ArrowDown' ? 1 : -1;
+      // Wraps in both directions, and an unfocused menu enters at the end the arrow
+      // points from — Up from nowhere lands on the last item, not the first.
+      const next = at === -1 ? (step === 1 ? 0 : list.length - 1) : (at + step + list.length) % list.length;
+      list[next]?.focus();
     };
     addEventListener('mousedown', away);
     addEventListener('keydown', key);
@@ -415,10 +439,21 @@ function AccountMenu({ session }: { session: Session }) {
       removeEventListener('mousedown', away);
       removeEventListener('keydown', key);
     };
+  }, [open, close]);
+
+  // Opening moves focus into the menu, which is what makes the arrow keys above
+  // reachable at all for someone who opened it with the keyboard.
+  useEffect(() => {
+    if (open) items.current[0]?.focus();
+    else items.current = [];
   }, [open]);
 
-  const item = (label: string, onClick: () => void, danger = false) => (
+  const item = (index: number, label: string, onClick: () => void, danger = false) => (
     <button
+      role="menuitem"
+      ref={(el) => {
+        items.current[index] = el;
+      }}
       onClick={onClick}
       className="btn btn-ghost"
       style={{
@@ -437,9 +472,13 @@ function AccountMenu({ session }: { session: Session }) {
   return (
     <div ref={box} style={{ position: 'relative' }}>
       <button
+        ref={trigger}
         className="btn btn-ghost"
         onClick={() => setOpen((v) => !v)}
         title={session.display}
+        // The button's only content is the avatar, and the avatar's only content is
+        // one initial — so without this a screen reader announces "Y, button".
+        aria-label={`Account menu for ${session.display}`}
         aria-haspopup="menu"
         aria-expanded={open}
         style={{ padding: 3, borderRadius: 999 }}
@@ -450,6 +489,7 @@ function AccountMenu({ session }: { session: Session }) {
       {open ? (
         <div
           role="menu"
+          aria-label={`Account menu for ${session.display}`}
           style={{
             position: 'absolute',
             right: 0,
@@ -468,8 +508,8 @@ function AccountMenu({ session }: { session: Session }) {
             <div className="micro">Signed in</div>
           </div>
           <div style={{ padding: '4px 0' }}>
-            {item('Switch user', () => auth.switchUser())}
-            {item('Sign out', () => auth.logout(), true)}
+            {item(0, 'Switch user', () => auth.switchUser())}
+            {item(1, 'Sign out', () => auth.logout(), true)}
           </div>
         </div>
       ) : null}
