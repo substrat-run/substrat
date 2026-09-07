@@ -726,6 +726,25 @@ export interface ConnectionActivityView {
   sweepRuns: SweepRunView[];
 }
 
+/** One declared schedule's health on an app (#1232) — the worker's derived verdict, rendered verbatim. */
+export interface AppScheduleRow {
+  operation: string;
+  moduleId: string;
+  everyMinutes: number;
+  permissions: string[];
+  lastRun: SweepRunView | null;
+  nextDueAt: string | null;
+  health: 'healthy' | 'overdue' | 'never-run' | 'sweeper-silent';
+  runs: SweepRunView[];
+}
+
+/** The schedules panel's data. `schedules: null` = none declared or a pre-field version — hide. */
+export interface AppSchedulesView {
+  running: { versionId: string | null; version: string | null };
+  schedules: AppScheduleRow[] | null;
+  lastSweepAt: string | null;
+}
+
 /** One sweep outcome for a connection (#1232) — what the recent-runs strip renders. */
 export interface SweepRunView {
   id: string;
@@ -980,6 +999,8 @@ export const api = {
    *  update target's, for the Permissions tab's table + update diff. */
   appPermissions: (scopeId: string) => call<AppPermissionsView>(`/apps/${encodeURIComponent(scopeId)}/permissions`),
   appModel: (scopeId: string) => call<AppModelView>(`/apps/${encodeURIComponent(scopeId)}/model`),
+  /** Schedule health for the app's running version (#1232) — null schedules hides the panel. */
+  appSchedules: (scopeId: string) => call<AppSchedulesView>(`/apps/${encodeURIComponent(scopeId)}/schedules`),
   /** The scopes an app spans (Data tab switcher) — several for a multi-scope vertical, one otherwise. */
   appScopes: (scopeId: string) => call<AppScope[]>(`/apps/${encodeURIComponent(scopeId)}/scopes`),
   /** The tables of the app's own database (Data tab). */

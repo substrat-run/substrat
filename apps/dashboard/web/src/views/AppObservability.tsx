@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
+import { AppSchedules } from './AppSchedules';
 import { api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
 import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
@@ -28,7 +29,7 @@ const MAX_LOG_SERVICES = 20;
  * unowned vertical reads exactly like one with no traffic. Tier-3 numbers: sampled,
  * approximate, never money.
  */
-export function AppObservability({ app }: { app: AppRow }) {
+function AppTelemetry({ app }: { app: AppRow }) {
   const [hours, setHours] = useState<(typeof RANGES)[number]['hours']>(24);
   const [rows, setRows] = useState<ObservabilityRow[] | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
@@ -287,6 +288,22 @@ export function AppObservability({ app }: { app: AppRow }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The Observability tab: schedule health first, then telemetry. Composed so the
+ * schedules panel renders ABOVE the telemetry guards — schedule health is the
+ * TENANT'S fact (the sweep record is tenant-stamped), so it renders even for an
+ * app running another team's vertical and even where Workers Logs is absent;
+ * the guards below only fence the metrics/logs half they were written for.
+ */
+export function AppObservability({ app }: { app: AppRow }) {
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <AppSchedules scopeId={app.app_scope_id} />
+      <AppTelemetry app={app} />
     </div>
   );
 }
