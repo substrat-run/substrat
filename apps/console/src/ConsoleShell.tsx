@@ -14,6 +14,7 @@ export type ViewKey =
   | 'permissions'
   | 'members'
   | 'failures'
+  | 'issues'
   | 'sweeps'
   | 'settings';
 
@@ -143,6 +144,8 @@ export function ConsoleShell({
             title: 'Operations',
             items: [
               { value: 'failures', label: 'Failures', icon: <SubIcon d={SubIcons.alert} /> },
+              // Failures grouped by fingerprint into counted defects (#1233).
+              { value: 'issues', label: 'Issues', icon: <SubIcon d={SubIcons.layers} /> },
               // The fleet's sweep record (#1232) — the staff twin of the
               // dashboard's per-app strips, one page instead of a tenant tour.
               { value: 'sweeps', label: 'Sweeps', icon: <SubIcon d={SubIcons.bell} /> },
