@@ -532,7 +532,7 @@ export function smallTalk(text: string): SmallTalk {
 const PERSON = '(human|humans|person|people|agent|agents|someone|somebody|anyone|anybody|staff|operator|representative|support)';
 
 /**
- * The four shapes an ask for a person takes. Patterns rather than a bag of words,
+ * The five shapes an ask for a person takes. Patterns rather than a bag of words,
  * because the bag matches the documentation's own subject matter: this product's
  * pages are full of people being assigned things and approving things, and "do I need
  * a person to approve a migration?" is a question for the assistant, not a request

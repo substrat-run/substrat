@@ -474,9 +474,13 @@ function lastCustomerMessage(ctx: OperationContext, conversationId: string): Mes
  * True when the newest thing the DESK said in public is the acknowledgement — nobody
  * has replied since, so the ask is still outstanding and everyone who could pick it up
  * has already been told. A second click is the same request, and telling the desk twice
- * is how a support tool teaches its staff to ignore it. Any agent or assistant word
- * after the acknowledgement clears it: the conversation moved, and the next ask is a
- * new one.
+ * is how a support tool teaches its staff to ignore it.
+ *
+ * A **public** agent or assistant word clears it, and only a public one: the
+ * conversation moved, and the next ask is a new one. An internal note is a colleague
+ * thinking out loud — the visitor has been told nothing, so their request is still the
+ * one the desk was told about, and treating a note as a reply would ping everybody a
+ * second time over an answer nobody has sent.
  */
 function handoffStands(ctx: OperationContext, conversationId: string): boolean {
   const last = ctx.sql.query<MessageRow>(

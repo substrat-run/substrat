@@ -1172,6 +1172,17 @@ describe('asking for a person', () => {
     expect(thread.entries.filter((m) => m.body_text === HANDED_TO_A_PERSON)).toHaveLength(1);
     expect((await notificationsOf(world.substrat, 'agent', first.conversation_id))).toHaveLength(1);
 
+    // An internal note is not an answer: the visitor has been told nothing, so their
+    // request is still the one the desk was already told about.
+    await (await at(world.substrat, 'agent')).invoke('ticket0/post-note', {
+      conversationId: first.conversation_id,
+      body: 'Looks like the export bug from last week — checking.',
+    });
+    const afterNote = (await widget.invoke('ticket0/request-human', { sessionId, token })) as {
+      notified: number;
+    };
+    expect(afterNote.notified).toBe(0);
+
     // And once somebody answers, the next ask is a new one.
     await (await at(world.substrat, 'agent')).invoke('ticket0/post-public-reply', {
       conversationId: first.conversation_id,
