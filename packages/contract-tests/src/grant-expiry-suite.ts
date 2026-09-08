@@ -166,9 +166,14 @@ export function grantExpiryContractSuite(
      * Expiry is judged on every check, not cached at grant time — so the same
      * grant reads as live again if the clock is moved back before it. This is
      * what distinguishes "the checker consults the clock" from "the grant was
-     * tombstoned when the clock passed it".
+     * tombstoned when the clock passed it". The case sets up its own expiry first
+     * rather than inheriting the clock an earlier case left behind, so it proves
+     * the rollback when run alone too.
      */
     it('is judged at check time — the same grant is live again with the clock before expiresAt', async () => {
+      clock.set(at(HOUR + 60_000));
+      expect(await probe(nora, PERM_READ)).toBe(false);
+      expect(await probe(eve, PERM_READ, box)).toBe(false);
       clock.set(at(HOUR - 60_000));
       expect(await probe(nora, PERM_READ)).toBe(true);
       expect(await probe(eve, PERM_READ, box)).toBe(true);
