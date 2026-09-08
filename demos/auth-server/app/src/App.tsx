@@ -1100,7 +1100,7 @@ function ProvidersPanel({ issuer }: { issuer: string | null }) {
                       <td>
                         <div>
                           {entry?.label ?? provider.label ?? provider.id}
-                          {provider.issuer && <span className="tag">custom OIDC</span>}
+                          {provider.issuer && !entry && <span className="tag">custom OIDC</span>}
                           {provider.allowSignup && <span className="tag">creates accounts</span>}
                           {provider.trustEmail && <span className="tag">trusted email</span>}
                         </div>
@@ -1231,7 +1231,14 @@ function ProviderEditor({
       // not require re-pasting a credential the operator may no longer have.
       ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
       tenantId: tenantId.trim() || null,
-      ...(entry ? {} : { issuer: issuerUrl.trim(), label: label.trim() }),
+      // A NAMED generic entry (Supabase) sends the issuer but not the label — that one is the
+      // catalogue's, and the server fills it in from there. An UNNAMED custom provider sends
+      // both. A built-in sends neither.
+      ...(entry?.issuerField
+        ? { issuer: issuerUrl.trim() }
+        : entry
+          ? {}
+          : { issuer: issuerUrl.trim(), label: label.trim() }),
       allowSignup,
       trustEmail,
       disabled,
@@ -1269,6 +1276,18 @@ function ProviderEditor({
           />
         </>
       )}
+      {/* A NAMED generic entry asks the same question, in the provider's own words: it is a
+          generic row underneath, so the issuer URL is still the whole configuration — but the
+          catalogue knows what that provider's issuer looks like, and an operator does not. */}
+      {entry?.issuerField && (
+        <Field
+          label={entry.issuerField.label}
+          value={issuerUrl}
+          onChange={setIssuerUrl}
+          placeholder={entry.issuerField.placeholder}
+          hint={entry.issuerField.hint}
+        />
+      )}
       <label className="field">
         <span>Redirect URI</span>
         <code>
@@ -1292,6 +1311,7 @@ function ProviderEditor({
           label={entry.tenantField.label}
           value={tenantId}
           onChange={setTenantId}
+          placeholder={entry.tenantField.placeholder}
           hint={entry.tenantField.hint}
         />
       )}
@@ -1924,12 +1944,26 @@ function Card({ title, logo, children }: { title: string; logo?: string; childre
 }
 
 function Field({
-  label, value, onChange, type = 'text', hint, disabled,
-}: { label: string; value: string; onChange: (v: string) => void; type?: string; hint?: string; disabled?: boolean }) {
+  label, value, onChange, type = 'text', hint, disabled, placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  hint?: string;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
   return (
     <label className="field">
       <span>{label}</span>
-      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled} />
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={placeholder}
+      />
       {hint && <em className="hint">{hint}</em>}
     </label>
   );

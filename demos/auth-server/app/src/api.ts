@@ -636,6 +636,12 @@ export interface ProviderCatalogueEntry {
   id: string;
   label: string;
   tenantField?: { label: string; placeholder: string; hint: string };
+  /**
+   * Set ⇔ this entry is a NAMED GENERIC provider (Supabase): the catalogue names it and its
+   * button, and the operator supplies the issuer URL this field describes. Absent, the entry
+   * is one Better Auth ships built-in and takes no issuer at all.
+   */
+  issuerField?: { label: string; placeholder: string; hint: string };
   console: string;
 }
 

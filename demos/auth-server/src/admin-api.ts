@@ -320,10 +320,12 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    * catalogue, or a slug they named a GENERIC OIDC provider themselves — rather than something
    * minted here: enabling Microsoft twice is enabling it once.
    *
-   * The id decides which kind of row this is. A catalogue id takes no issuer (the library owns
-   * those endpoints); any other id IS a generic provider and must bring one, plus a label for
-   * its button. The id is refused where it would collide with a provider Better Auth ships
-   * built-in — a generic row named `gitlab` would silently shadow the real GitLab.
+   * The id decides which kind of row this is, and there are three. A BUILT-IN catalogue id
+   * takes no issuer — the library owns those endpoints. A NAMED generic catalogue id
+   * (`issuerField`, i.e. Supabase) requires one and gets its label from the catalogue. Any
+   * other id is an UNNAMED generic provider and must bring both. The id is refused where it
+   * would collide with a provider Better Auth ships built-in — a generic row named `gitlab`
+   * would silently shadow the real GitLab.
    *
    * `clientSecret` is optional on an edit and absent means "keep the stored one", so changing a
    * tenant id or a toggle does not require re-pasting a credential the operator may not have
@@ -332,9 +334,23 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.put('/providers/:providerId', async (c) => {
     const providerId = c.req.param('providerId');
     const input = parsedBody(providerPut, await c.req.json().catch(() => null));
-    if (descriptorOf(providerId)) {
-      // Loudly, not silently dropped: an issuer arriving with a catalogue id means the caller
-      // thinks it is configuring endpoints that the library will never read.
+    const descriptor = descriptorOf(providerId);
+    if (descriptor?.issuerField) {
+      // A NAMED generic entry (Supabase): the catalogue owns the id, the button label and the
+      // console string, and the operator owns the one thing this file cannot know — which
+      // project. So it is a generic row in every other respect, and takes the same issuer
+      // rule, the same save-time discovery and the same `genericOAuth` mounting.
+      if (!input.issuer) {
+        throw new HTTPException(400, { message: `'${providerId}' needs an issuer URL — ${descriptor.issuerField.label}` });
+      }
+      assertIssuerUrl(input.issuer);
+      // Neither is the operator's to give: the label is the catalogue's, and the directory
+      // field is Entra's — an issuer URL already names one directory.
+      input.label = descriptor.label;
+      input.tenantId = null;
+    } else if (descriptor) {
+      // Loudly, not silently dropped: an issuer arriving with a built-in catalogue id means
+      // the caller thinks it is configuring endpoints that the library will never read.
       if (input.issuer) {
         throw new HTTPException(400, { message: `'${providerId}' is a built-in provider and does not take an issuer URL` });
       }
