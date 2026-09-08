@@ -197,6 +197,12 @@ export function Issues({ api, onExemplars, onToast }: IssuesProps) {
                           {e.origin && <span>origin {e.origin}</span>}
                           <span>first seen {e.firstSeen.slice(0, 19).replace('T', ' ')}</span>
                           {e.resolvedAt && <span>resolved {e.resolvedAt.slice(0, 19).replace('T', ' ')}</span>}
+                          {e.lastVersion && <span>seen under {e.lastVersion}</span>}
+                          {e.status === 'regressed' && e.resolvedVersion && (
+                            <span style={{ color: 'var(--status-warning-fg)' }}>
+                              resolved under {e.resolvedVersion} — came back
+                            </span>
+                          )}
                         </div>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                           {e.status !== 'resolved' && (

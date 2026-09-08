@@ -20,10 +20,30 @@
  *    to be told a customer reply causes it;
  *  - the empty state, which for this product is a *good* outcome ("Zero open
  *    conversations") rather than an apology.
+ *
+ * All three reads are PAGED, and the list walks them (#1305). Two things follow from
+ * that and neither is optional:
+ *
+ *  - a page is not a result set, so the footer never reads the page size as the total.
+ *    `list-conversations` declares `total` and the other two do not, and "Showing 50 of
+ *    312" versus "Showing 50, more available" is the difference said out loud rather
+ *    than papered over with a `?? entries.length` that invents a number;
+ *  - a refresh RE-WALKS to the depth the agent asked for instead of snapping back to
+ *    one page. The tick is every 10s (`live.ts`), so a list that collapsed on it would
+ *    make "Load more" a control you cannot keep the result of — and `reassign` reloads
+ *    through the same path, so a triage pass on page 3 would be thrown to the top by
+ *    its own click.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
-import { api, type AgentProfile, type Contact, type Conversation, type Session } from '../api.js';
+import {
+  api,
+  type AgentProfile,
+  type Contact,
+  type Conversation,
+  type Paged,
+  type Session,
+} from '../api.js';
 import { agentName, agents } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
@@ -162,7 +182,28 @@ export function Inbox({
     term: '',
     entries: [],
   });
-  const [page, setPage] = useState<{ entries: Conversation[]; total: number | null } | null>(null);
+  /**
+   * The list, as the read actually hands it over: entries, the walk's continuation, and
+   * a total ONLY where the read declares one.
+   *
+   * `next` and `total` are both nullable and they mean different things — `next: null`
+   * is "this is the end", `total: null` is "this read does not count". Collapsing
+   * either into the entry count is how the footer came to claim "Showing 50 of 50" over
+   * a match set of 300.
+   */
+  const [page, setPage] = useState<Paged<Conversation> | null>(null);
+  /**
+   * How many pages deep the list is walked, kept in a ref rather than in state.
+   *
+   * A refresh re-walks to it, so it has to be readable inside `load` — and it must not
+   * be a dependency of `load`, or appending a page would re-run the filter effect and
+   * blank the very list it just grew.
+   */
+  const depth = useRef(1);
+  /** A "Load more" in flight. Also what holds the background tick off (see below). */
+  const [loadingMore, setLoadingMore] = useState(false);
+  /** A page that did not arrive, said beside the button rather than over the list. */
+  const [moreError, setMoreError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
   const [people, setPeople] = useState<Map<string, Contact>>(new Map());
@@ -192,20 +233,45 @@ export function Inbox({
 
   const load = useCallback(
     (fromFilters = false) => {
-      if (fromFilters) setPage(null);
+      if (fromFilters) {
+        setPage(null);
+        setMoreError(null);
+        // A different question is a different list, so the walk starts over. Without
+        // this a filter change would re-walk pages of the read it just left.
+        depth.current = 1;
+      }
       const seq = ++latest.current;
       const searching = term.length >= SEARCH_MIN;
+      const want = depth.current;
       // A tag is its own read, and the exclusive one: picking it put the filters and
       // the box down (see `choose`), so there is nothing else to send with it.
-      (tag !== ''
-        ? api.listConversationsByTag({ tag })
-        : searching
-          ? api.searchConversations(askedForSearch(filters, term))
-          : api.listConversations(asked(filters))
-      )
+      const first = () =>
+        tag !== ''
+          ? api.listConversationsByTag({ tag })
+          : searching
+            ? api.searchConversations(askedForSearch(filters, term))
+            : api.listConversations(asked(filters));
+
+      // Re-walk to `want`, one `follow` per page the agent had already asked for. The
+      // total belongs to the read, not to the page, so the head's is the one kept —
+      // and it stays `null` for the two reads that do not declare one.
+      const walked = async (): Promise<Paged<Conversation>> => {
+        let p = await first();
+        for (let i = 1; i < want && p.next !== null; i++) {
+          // Stop the moment this read is superseded. The guard below would drop the
+          // result anyway; without this, a filter change mid-walk still pays for every
+          // remaining page of a list nobody is going to see.
+          if (seq !== latest.current) break;
+          const more = await api.follow<Conversation>(p.next);
+          p = { entries: [...p.entries, ...more.entries], next: more.next, total: p.total };
+        }
+        return p;
+      };
+
+      walked()
         .then((p) => {
           if (seq !== latest.current) return;
-          setPage({ entries: p.entries, total: p.total });
+          setPage(p);
           // Only a deliberate filter change moves the cursor. A background refresh
           // that reset it would drag the selection back to the top mid-keystroke.
           if (fromFilters) setCursor(0);
@@ -220,6 +286,53 @@ export function Inbox({
     },
     [filters, term, tag],
   );
+
+  /**
+   * The page after the ones on screen, appended.
+   *
+   * Appended rather than swapped: an inbox is read top to bottom, and a second page
+   * that replaced the first would make the walk a thing you navigate instead of a list
+   * you scroll. `follow` takes the cursor the read handed back — filters, term and page
+   * size all travel inside it, so there is nothing to restate and no second pagination
+   * to invent.
+   */
+  const more = useCallback(() => {
+    const cursorUrl = page?.next;
+    if (cursorUrl == null || loadingMore) return;
+    /*
+     * An append is a read like any other, so it takes the next sequence number rather
+     * than borrowing the current one.
+     *
+     * Two things fall out, and the second is the reason. It is still dropped if a
+     * filter moves under it — those rows would belong to a list nobody is looking at.
+     * And it SUPERSEDES a background tick that was already in flight when the click
+     * happened: `loadingMore` holds the next tick off, but not one that had already
+     * gone out, and that one would have landed a moment later carrying `depth - 1`
+     * pages and quietly taken the appended page back off the screen.
+     */
+    const seq = ++latest.current;
+    setLoadingMore(true);
+    api
+      .follow<Conversation>(cursorUrl)
+      .then((p) => {
+        if (seq !== latest.current) return;
+        depth.current += 1;
+        setPage((current) =>
+          current === null
+            ? current
+            : { entries: [...current.entries, ...p.entries], next: p.next, total: current.total },
+        );
+        setMoreError(null);
+      })
+      // Its own message, not `error`: that one draws the "Could not load the inbox"
+      // wall INSTEAD of the list, and a page that failed to arrive is no reason to
+      // take away the pages that did.
+      .catch((e: Error) => {
+        if (seq !== latest.current) return;
+        setMoreError(e.message);
+      })
+      .finally(() => setLoadingMore(false));
+  }, [page, loadingMore]);
 
   /**
    * The vocabulary behind the tag chip. The same key as the inbox
@@ -238,6 +351,9 @@ export function Inbox({
   // The vocabulary rides the same tick as the list: a tag added in the rail is
   // pickable here on the next one, without a reload.
   useLiveReload(() => {
+    // Held off mid-append: a tick bumps the sequence number, and the page in flight
+    // was asked for against the read before it — so the click would be swallowed.
+    if (loadingMore) return;
     load();
     loadTags();
   });
@@ -303,6 +419,18 @@ export function Inbox({
     [load],
   );
 
+  /**
+   * The cursor, kept inside the list it points into.
+   *
+   * A refresh can hand back fewer rows than were on screen — a conversation closed out
+   * of the filter, or a walked-out list whose later pages went away. Left alone, the
+   * selection would point past the end: nothing highlighted, and O opening nothing.
+   */
+  useEffect(() => {
+    const n = page?.entries.length ?? 0;
+    setCursor((c) => (n === 0 ? 0 : Math.min(c, n - 1)));
+  }, [page]);
+
   // J/K/O, exactly as the footer advertises. A hint that does not work is worse than
   // no hint, so the keys are wired rather than drawn.
   useEffect(() => {
@@ -332,6 +460,21 @@ export function Inbox({
   const active = Object.values(filters).some(Boolean) || term.length >= SEARCH_MIN || tagged;
   const searching = term.length >= SEARCH_MIN;
   const person = filters.contact_id ? people.get(filters.contact_id) : undefined;
+
+  /**
+   * What the screen may honestly say about size.
+   *
+   * `list-conversations` declares `total` and comes back counted; `search-conversations`
+   * and `list-conversations-by-tag` are built on `pageOf` and do not. So there are three
+   * answers, not one: a number, "at least this many, and there is more", and "this many,
+   * and that is all". Defaulting the first to the entry count would collapse all three
+   * into a lie that only shows up when the desk gets busy.
+   */
+  const shown = page?.entries.length ?? 0;
+  const counted = page?.total ?? null;
+  const hasMore = page?.next != null;
+  const countChip =
+    page === null ? '—' : counted !== null ? String(counted) : hasMore ? `${shown}+` : String(shown);
 
   /**
    * Narrow the walk. Every chip but the tag goes through here, because the by-tag
@@ -434,7 +577,7 @@ export function Inbox({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
             <div className="t-strong">Inbox</div>
-            <div className="chip">{page?.total ?? page?.entries.length ?? '—'}</div>
+            <div className="chip">{countChip}</div>
           </div>
 
           {/*
@@ -630,10 +773,26 @@ export function Inbox({
           }}
         >
           <span className="t-small">
-            Showing {page?.entries.length ?? 0} of {page?.total ?? page?.entries.length ?? 0}
-            {active ? ' matching' : ''} · sorted by{' '}
+            Showing {shown}
+            {counted !== null ? ` of ${counted}` : ''}
+            {active ? ' matching' : ''}
+            {counted === null && hasMore ? ', more available' : ''} · sorted by{' '}
             {searching || tagged ? 'newest first' : 'last activity'}
           </span>
+          {/* The walk, and only where there is one — a "Load more" over the last page
+              is a control that does nothing. */}
+          {hasMore ? (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+              <button className="btn btn-ghost" onClick={more} disabled={loadingMore}>
+                {loadingMore ? 'Loading…' : 'Load more'}
+              </button>
+              {moreError ? (
+                <span className="t-small" style={{ color: 'var(--danger-2)' }}>
+                  {moreError}
+                </span>
+              ) : null}
+            </span>
+          ) : null}
           <span className="t-small mono" style={{ letterSpacing: '.02em' }}>
             J / K to move · O to open
           </span>

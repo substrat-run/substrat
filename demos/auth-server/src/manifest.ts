@@ -51,6 +51,16 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
     group: 'Accounts',
   },
   {
+    key: 'ACCOUNT_LINKING',
+    label: 'Account linking',
+    description:
+      'What happens when a federated sign-in\u2019s email address already belongs to an account here: `link` (join them \u2014 the upstream must vouch for the address or be trusted, and the local account must have a verified one) or `block` (never join implicitly; the person signs in the way they already can and connects the provider from inside that session). Defaults to `link`, which is what this issuer did before the key existed. Togglable from the dashboard, which writes this same value. Keeping two separate accounts at one address is deliberately not an option \u2014 Better Auth resolves an email to exactly one user.',
+    placeholder: 'link',
+    required: false,
+    secret: false,
+    group: 'Accounts',
+  },
+  {
     key: 'EMAIL_FROM',
     label: 'Sender address',
     description: 'The From address for password-reset and verification mail. Its domain must be onboarded for sending. Absent ⇒ a safe default; without an EMAIL binding, mail is dropped.',

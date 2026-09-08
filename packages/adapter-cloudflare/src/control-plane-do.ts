@@ -305,6 +305,8 @@ export interface IssueRow {
   last_seen: string;
   last_message: string;
   last_vertical: string | null;
+  last_version: string | null;
+  resolved_version: string | null;
   resolved_at: string | null;
 }
 
@@ -330,6 +332,8 @@ function issueOf(r: IssueRow): unknown {
     lastSeen: r.last_seen,
     lastMessage: r.last_message,
     lastVertical: r.last_vertical,
+    lastVersion: r.last_version,
+    resolvedVersion: r.resolved_version,
     resolvedAt: r.resolved_at,
   };
 }
@@ -889,6 +893,8 @@ const DIRECTORY_DDL = `
     last_seen TEXT NOT NULL,
     last_message TEXT NOT NULL,
     last_vertical TEXT,
+    last_version TEXT,
+    resolved_version TEXT,
     resolved_at TEXT
   );
   CREATE INDEX IF NOT EXISTS _substrat_issues_seen ON _substrat_issues (last_seen);
@@ -1103,6 +1109,9 @@ export class ControlPlaneDO extends DurableObject {
     // in the DDL above: the DDL runs BEFORE this ledger, and an index on a column
     // an old DO has not ALTERed in yet would fail the constructor.
     this.addColumn('_substrat_ops_failures', 'fingerprint TEXT');
+    // #1236: the regression's version pair, on a DO whose issues table predates it.
+    this.addColumn('_substrat_issues', 'last_version TEXT');
+    this.addColumn('_substrat_issues', 'resolved_version TEXT');
     this.sql.exec(
       'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
     );
@@ -3388,13 +3397,14 @@ export class ControlPlaneDO extends DurableObject {
     if (row.fingerprint !== null) {
       this.sql.exec(
         `INSERT INTO _substrat_issues
-           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, resolved_at)
-         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, NULL)
+           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, last_version, resolved_version, resolved_at)
+         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, NULL, NULL)
          ON CONFLICT (fingerprint) DO UPDATE SET
            seen_count = seen_count + 1,
            last_seen = excluded.last_seen,
            last_message = excluded.last_message,
            last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+           last_version = COALESCE(excluded.last_version, last_version),
            origin = COALESCE(excluded.origin, origin),
            status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
         row.fingerprint,
@@ -3406,6 +3416,7 @@ export class ControlPlaneDO extends DurableObject {
         row.at,
         row.message,
         row.vertical,
+        row.version,
       );
       const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
       this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
@@ -3616,15 +3627,19 @@ export class ControlPlaneDO extends DurableObject {
     const existing = rows[0];
     if (!existing) return undefined;
     const resolvedAt = status === 'resolved' ? at : null;
+    // "Resolved under X": freeze the newest version at the verdict, so a later
+    // regression can name the pair. A reopen or ignore clears it with the timestamp.
+    const resolvedVersion = status === 'resolved' ? existing.last_version : null;
     this.sql.exec(
-      'UPDATE _substrat_issues SET status = ?, resolved_at = ? WHERE fingerprint = ?',
+      'UPDATE _substrat_issues SET status = ?, resolved_at = ?, resolved_version = ? WHERE fingerprint = ?',
       status,
       resolvedAt,
+      resolvedVersion,
       fingerprint,
     );
     return {
       before: issueOf(existing),
-      after: issueOf({ ...existing, status, resolved_at: resolvedAt }),
+      after: issueOf({ ...existing, status, resolved_at: resolvedAt, resolved_version: resolvedVersion }),
     };
   }
 

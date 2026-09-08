@@ -817,6 +817,8 @@ interface IssueRow {
   last_seen: string;
   last_message: string;
   last_vertical: string | null;
+  last_version: string | null;
+  resolved_version: string | null;
   resolved_at: string | null;
 }
 
@@ -834,6 +836,8 @@ function issueOf(r: IssueRow): unknown {
     lastSeen: r.last_seen,
     lastMessage: r.last_message,
     lastVertical: r.last_vertical,
+    lastVersion: r.last_version,
+    resolvedVersion: r.resolved_version,
     resolvedAt: r.resolved_at,
   };
 }
@@ -1591,6 +1595,8 @@ export class SqliteScopeHost implements ScopeHost {
         last_seen TEXT NOT NULL,
         last_message TEXT NOT NULL,
         last_vertical TEXT,
+        last_version TEXT,
+        resolved_version TEXT,
         resolved_at TEXT
       );
       CREATE INDEX IF NOT EXISTS _substrat_issues_seen ON _substrat_issues (last_seen);
@@ -7176,13 +7182,14 @@ export class SqliteScopeHost implements ScopeHost {
         this.directory
           .prepare(
             `INSERT INTO _substrat_issues
-               (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, resolved_at)
-             VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, NULL)
+               (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, last_version, resolved_version, resolved_at)
+             VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, ?, NULL, NULL)
              ON CONFLICT (fingerprint) DO UPDATE SET
                seen_count = seen_count + 1,
                last_seen = excluded.last_seen,
                last_message = excluded.last_message,
                last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+               last_version = COALESCE(excluded.last_version, last_version),
                origin = COALESCE(excluded.origin, origin),
                status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
           )
@@ -7196,6 +7203,7 @@ export class SqliteScopeHost implements ScopeHost {
             at,
             entry.message.slice(0, 2000),
             entry.vertical ?? null,
+            entry.version ?? null,
           );
         const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
         this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
@@ -7421,10 +7429,15 @@ export class SqliteScopeHost implements ScopeHost {
           .get(fingerprint) as IssueRow | undefined;
         if (!existing) return undefined;
         const resolvedAt = status === 'resolved' ? new Date().toISOString() : null;
+        // "Resolved under X": freeze the newest version at the verdict, so a later
+        // regression can name the pair. A reopen or ignore clears it with the timestamp.
+        const resolvedVersion = status === 'resolved' ? existing.last_version : null;
         this.directory
-          .prepare('UPDATE _substrat_issues SET status = ?, resolved_at = ? WHERE fingerprint = ?')
-          .run(status, resolvedAt, fingerprint);
-        const after = issueEntry.parse(issueOf({ ...existing, status, resolved_at: resolvedAt }));
+          .prepare('UPDATE _substrat_issues SET status = ?, resolved_at = ?, resolved_version = ? WHERE fingerprint = ?')
+          .run(status, resolvedAt, resolvedVersion, fingerprint);
+        const after = issueEntry.parse(
+          issueOf({ ...existing, status, resolved_at: resolvedAt, resolved_version: resolvedVersion }),
+        );
         // A lifecycle flip is a staff mutation — audited with the diff (K-33).
         this.recordAdmin(
           actor,
@@ -7645,6 +7658,9 @@ export class SqliteScopeHost implements ScopeHost {
     // #1233: the grouping key + its exemplar-walk index — created only after the
     // column exists on every path, the sweep-runs pattern.
     this.ensureColumn(this.directory, '_substrat_ops_failures', 'fingerprint', 'fingerprint TEXT');
+    // #1236: the regression's version pair, on a directory whose issues table predates it.
+    this.ensureColumn(this.directory, '_substrat_issues', 'last_version', 'last_version TEXT');
+    this.ensureColumn(this.directory, '_substrat_issues', 'resolved_version', 'resolved_version TEXT');
     this.directory.exec(
       'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
     );

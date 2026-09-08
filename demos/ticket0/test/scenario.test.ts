@@ -1584,6 +1584,49 @@ describe('what the desk wrote down and could not read back', () => {
     expect(next.entries[0]!.id).toBe(ids[1]);
   });
 
+  /**
+   * A page is not a result set, and the reads differ about whether they will say so.
+   *
+   * The inbox has three sentences to choose between (#1305) — "Showing 50 of 312" for a
+   * read that counts, "Showing 50, more available" for one that pages without counting,
+   * and "Showing 50" once the walk is out. Nothing in the entries tells them apart, so
+   * the fact the screen reads is `total`, and its ABSENCE on the two searches is a fact
+   * rather than an omission: both compose their own SQL and would need a second query to
+   * count. The footer defaulted `total` to the page length until now, which is how a
+   * match set of 300 came to describe itself as "Showing 50 of 50".
+   *
+   * Asserted here because a screen cannot: it believes whatever the read hands it.
+   */
+  it('the walk counts and the two searches do not — and a count is not a page size', async () => {
+    const anna = await at(desk(), 'agent');
+
+    // One row per page, so `total` and the page length are forced apart. Equal, they
+    // would agree with the bug as happily as with the fix.
+    const counted = (await anna.invoke('ticket0/list-conversations', {
+      limit: 1,
+    })) as CountedPage<Conversation>;
+    expect(counted.entries).toHaveLength(1);
+    expect(counted.total).toBeGreaterThan(1);
+    // ...and it is walkable, which is the other half: a count nobody can reach past is
+    // a number over a list that stops.
+    expect(counted.nextCursor).not.toBeNull();
+
+    const searched = (await anna.invoke('ticket0/search-conversations', {
+      q: 'seat',
+      limit: 1,
+    })) as Page<Conversation> & { total?: unknown };
+    expect(searched.entries).toHaveLength(1);
+    expect(searched.total).toBeUndefined();
+
+    const tagged = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'billing',
+      limit: 1,
+    })) as Page<Conversation> & { total?: unknown };
+    expect(tagged.entries).toHaveLength(1);
+    expect(tagged.total).toBeUndefined();
+    expect(tagged.nextCursor).not.toBeNull();
+  });
+
   it('another desk’s tag finds nothing here — not filtered out, not present', async () => {
     const omar = await at(world.kestrel, 'agent');
     const found = (await omar.invoke('ticket0/list-conversations-by-tag', {
