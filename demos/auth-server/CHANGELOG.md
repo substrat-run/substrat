@@ -1,5 +1,69 @@
 # @substrat-run/demo-auth-server
 
+## 0.7.0
+
+### Minor Changes
+
+- 2108df6: Decide what an upstream sign-in may do with an address that already has an account here.
+  A new issuer-wide setting, `ACCOUNT_LINKING`, beside the sign-up toggle and settable the
+  same three ways: `link` lets the sign-in join that account — on Better Auth's own two
+  conditions, the upstream vouching for the address (or the provider being trusted here) and
+  the local account having a verified one — and `block` never joins implicitly, leaving the
+  person to sign in the way they already can and connect the provider from inside that
+  session. It defaults to `link`, which is what the issuer did before the key existed:
+  unlike the sign-up toggle this one defaults permissive on purpose, because a setting that
+  silently changes how people sign in on upgrade is worse than one you have to turn on.
+  `block` is careful about two things it does not do, each held by a test: it leaves the
+  deliberate connect alone, since a session proves the account in a way a matching address
+  does not, and it leaves alone an upstream identity that matches no account here, since a
+  newcomer is not a join. There is no third mode, and the missing one is the one most
+  identity providers offer: keeping two separate accounts on one address. Better Auth
+  resolves an email to exactly one user — in password sign-in, password reset, recovery and
+  account creation alike — so a second account at that address would make each of those pick
+  one arbitrarily. Both the setting's description and the dashboard say so, rather than
+  leaving the absence to look like an oversight.
+- 144fa0f: Sign in with a Supabase project that is still on the legacy shared JWT secret. Such a
+  project cannot be added as an ordinary sign-in provider, and not by our choice: Supabase
+  will not mint the OIDC id_token that the redirect flow needs while signing with HS256, so
+  the catalogue entry simply cannot serve it. Instead the issuer can now accept an access
+  token that project already issued to its own app, at one endpoint that exists only when an
+  operator has configured both the secret and the project URL. The person lands in the same
+  account they would have reached through the redirect flow — the account is keyed on the
+  project and Supabase's own user id — so migrating the project to asymmetric signing keys
+  later moves nobody and changes no relying party's view of who they are. What the issuer
+  refuses is the part worth knowing about: on a legacy project the JWT secret signs more than
+  people, and the project's public `anon` key — the one printed in its own browser bundle —
+  is itself a valid signature. That key, the `service_role` admin key, any unfamiliar role,
+  an anonymous session, another project's token and anything not signed with HS256 are all
+  turned away, and every one of those says the same thing to the caller, so the endpoint cannot
+  be used to probe which check a token failed. A token that verifies but is turned away by
+  policy — sign-up closed, or an address that already has an account — says which, because the
+  person reading it has proved the token and can act on the answer. Whether someone arriving at an address that already has an
+  account here is joined to it or refused is the issuer's existing account-linking setting,
+  applied to this door too.
+- 62187da: Sign in with Supabase. A Supabase project now runs a standards-compliant OAuth 2.1 /
+  OIDC server, so the issuer's Custom (OIDC) door already admitted one — but only for an
+  operator who knew the one thing nobody can guess: a project's issuer is the project URL
+  with `/auth/v1` on the end, and the project URL alone serves no discovery document.
+  Paste the URL you have and discovery returns a 404 that names nothing. Supabase is
+  therefore a named entry in the sign-in providers catalogue rather than one more thing to
+  type into the open door: the catalogue supplies the name, the button, the redirect URI to
+  register and a field hint that says where the suffix comes from, and the operator supplies
+  a project and a credential. Underneath it is the same generic row as any custom provider —
+  discovery resolved once at save time, endpoints stored, the same callback path — so
+  nothing about a Supabase sign-in is special at runtime. The precondition on the Supabase
+  side is stated rather than hidden: the project needs its OAuth 2.1 server turned on,
+  authorization UI included, which no setting here can stand in for. Catalogue entries are
+  now of two kinds — providers the library ships built-in, and named generic ones like this —
+  and a test holds that distinction against the library's own list, so a provider Better
+  Auth adds later cannot be silently shadowed by ours.
+
+### Patch Changes
+
+- Updated dependencies [dd999a9]
+  - @substrat-run/contracts@0.104.0
+  - @substrat-run/kernel@0.104.0
+
 ## 0.6.1
 
 ### Patch Changes
