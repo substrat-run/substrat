@@ -74,8 +74,9 @@ pnpm --filter @substrat-run/demo-ticket0 dev
 ```
 
 Embedding is the one tag the README documents — `<script src="https://desk.example/widget.js"
-data-user="…" data-signature="…">` — and `TICKET0_WIDGET=1 pnpm --filter @substrat-run/docs dev`
-puts the widget on every page of this site locally. Tests: `test/scenario.test.ts` (the
+data-user="…" data-signature="…">` — and this site carries it on every page, aimed at the
+hosted desk (`TICKET0_API=http://localhost:8874 pnpm --filter @substrat-run/docs dev` aims a
+local build at the local one). Tests: `test/scenario.test.ts` (the
 lifecycle, the public/internal split, merges, and every denial above) and
 `test/assistant.test.ts` (drafting, autonomous replies, the metered turn and the recorded
 failure).

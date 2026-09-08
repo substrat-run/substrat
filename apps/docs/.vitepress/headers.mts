@@ -26,18 +26,17 @@
  *
  * ## Why the mounted desks are read out of the markdown
  *
- * The site-wide embed is a `<script>` in `<head>`, so it is in the built HTML and the
- * origin guard below sees it. The per-page mounts are not: `guide/support.md` mounts a
- * `<Ticket0Widget desk="…">` component, which appends the `<script>` from JavaScript
- * after the page has mounted, and `index.md` and `changelog/index.md` mount forms that
- * `fetch` a desk they name the same way. Nothing about those origins reaches the HTML,
- * so a policy derived only from the build named `'self'` and the three hashes — and
- * substrat.net blocked its own support widget while every build stayed green.
+ * The site-wide widget is a `<script>` in `<head>`, so it is in the built HTML and the
+ * origin guard below sees it. The per-page mounts are not: `index.md` and
+ * `changelog/index.md` mount forms that `fetch` a desk they name as a `desk` attribute,
+ * and the support widget itself was mounted that way on `guide/support.md` before it
+ * went site-wide. Nothing about those origins reaches the HTML, so a policy derived
+ * only from the build named `'self'` and the three hashes — and substrat.net blocked
+ * its own support widget while every build stayed green.
  *
  * So the desks are read out of the pages the site is built from — every component with
  * a `desk` attribute, whichever component it is, its attributes PARSED rather than
- * pattern-matched — and every one of them is in the policy whether or not the
- * site-wide flag is set.
+ * pattern-matched — and every one of them is in the policy beside the site-wide desk.
  *
  * Both directives get every desk, rather than the widget's in `script-src` and the
  * form's in `connect-src`. That is a true statement rather than a shortcut: one desk
@@ -156,8 +155,7 @@ export function deskOrigins(srcDir: string): string[] {
  * The policy, as the directive list.
  *
  * `widgetOrigins` are the ticket0 desks this site talks to: every desk a page names
- * with a `desk` attribute, plus the site-wide widget when the opt-in build flag is set
- * (config.mts). Each is a real third-party origin on the docs origin — a script for the
+ * with a `desk` attribute, plus the site-wide widget's (config.mts). Each is a real third-party origin on the docs origin — a script for the
  * widget, a `fetch` for a signup form — so each has to be named in both `script-src`
  * and `connect-src`, and the fact that it has to be named is most of why this file is
  * worth having.
@@ -283,9 +281,9 @@ export function assertNoUnallowedOrigins(outDir: string, allowed: readonly strin
  * Write `_headers` into the built site.
  *
  * `srcDir` is the markdown the site was built from — the only place a page's own desk
- * mount is still visible. `siteWideWidget` is the opt-in site-wide embed, which is in
- * the HTML as well but is named here so a dev build and a production build derive the
- * policy the same way.
+ * mount is still visible. `siteWideWidget` is the desk every page's `<head>` loads the
+ * widget from (absent only under `TICKET0_WIDGET=0`), which is in the HTML as well but
+ * is named here so a dev build and a production build derive the policy the same way.
  */
 export function emitHeaders(outDir: string, srcDir: string, siteWideWidget?: string): string {
   const widgets = [
