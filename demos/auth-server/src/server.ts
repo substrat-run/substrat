@@ -24,7 +24,7 @@ import { AUTH_SERVER_ENV } from './manifest.js';
 import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
-import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
@@ -140,6 +140,7 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     socialProviders: socialProvidersFrom(providers),
     genericProviders: genericProvidersFrom(providers),
     trustedProviders: trustedProvidersFrom(providers),
+    autoLinkAccounts: accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link',
     bankid: bankidFor(readBankIdConfig(sql)),
   });
 };

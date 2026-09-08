@@ -92,6 +92,16 @@ export interface AuthDeps {
    */
   genericProviders?: GenericOAuthConfig[];
   /**
+   * Whether an upstream sign-in may JOIN a local account that already holds the same email
+   * address, without anyone being asked. True unless an operator says otherwise — see
+   * `accountLinkingMode` in `src/settings.ts` for the two values and why there is no third.
+   *
+   * False does not disable linking, only the IMPLICIT kind: connecting a provider from inside
+   * a session still works, and is the path the refusal names. A session proves the account; a
+   * matching address does not.
+   */
+  autoLinkAccounts?: boolean;
+  /**
    * BankID sign-in (`src/bankid.ts` / `src/bankid-plugin.ts`), mounted only when the caller
    * has both a stored configuration AND a runtime able to present the mTLS client
    * certificate — the Node dev server always, the worker only with an mTLS binding. Absent,
@@ -276,6 +286,14 @@ export function buildAuth(deps: AuthDeps) {
          * address must not inherit the victim's identity. Left alone deliberately.
          */
         trustedProviders: deps.trustedProviders ?? [],
+        /**
+         * The operator's answer to "may an upstream claim an existing account by address?".
+         * Set only when it is `false`: Better Auth reads the key's presence in a `=== true`
+         * test, and an explicit `false` is the same as absent — but writing it unconditionally
+         * would put a key in the options that says nothing, which is how a reader concludes
+         * the toggle does not work.
+         */
+        ...(deps.autoLinkAccounts === false ? { disableImplicitLinking: true } : {}),
       },
     },
     disabledPaths: ['/token'],

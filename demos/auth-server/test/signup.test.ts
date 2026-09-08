@@ -9,7 +9,7 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { AUTH_SERVER_ENV } from '../src/manifest.js';
 import { createAdminApi } from '../src/admin-api.js';
-import { ALLOW_SIGNUP, deliveredConfig, isTruthy } from '../src/settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, deliveredConfig, isTruthy } from '../src/settings.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
 
@@ -166,7 +166,7 @@ describe('the dashboard toggle', () => {
     const cookie = await adminCookie();
 
     const before = await api.request('http://localhost/settings', { headers: { cookie } });
-    expect(await before.json()).toEqual({ allowSignup: false });
+    expect(await before.json()).toEqual({ allowSignup: false, accountLinking: 'link' });
 
     const patched = await api.request('http://localhost/settings', {
       method: 'PATCH',
@@ -174,7 +174,7 @@ describe('the dashboard toggle', () => {
       body: JSON.stringify({ allowSignup: true }),
     });
     expect(patched.status).toBe(200);
-    expect(await patched.json()).toEqual({ allowSignup: true });
+    expect(await patched.json()).toEqual({ allowSignup: true, accountLinking: 'link' });
 
     // It landed on the SAME declared key the platform's Env tab and a wrangler var write to,
     // so there is only ever one answer to "is sign-up open".
@@ -205,6 +205,50 @@ describe('the dashboard toggle', () => {
       body: JSON.stringify({ allowSignup: 'yes please' }),
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('the account-linking mode', () => {
+  it('writes the declared key and leaves the sign-up decision alone', async () => {
+    const api = adminApi();
+    const cookie = await adminCookie();
+    // Open sign-up first, so the linking patch has something it could clobber.
+    await api.request('http://localhost/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ allowSignup: true }),
+    });
+
+    // A PARTIAL patch: the panel names only what changed. A whole-object PUT would make every
+    // control a chance to revert another one from a copy it read before the change.
+    const res = await api.request('http://localhost/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ accountLinking: 'block' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ allowSignup: true, accountLinking: 'block' });
+    // Same declared key the platform's Env tab and a wrangler var write to — one answer.
+    expect(config()[ACCOUNT_LINKING]).toBe('block');
+  });
+
+  it('refuses a value that is neither mode, and a patch that names nothing', async () => {
+    const cookie = await adminCookie();
+    // Not a boolean toggle: an issuer's third answer to this question ("keep both accounts")
+    // is one the library cannot give, so an unknown value is a typo and never a new policy.
+    const bogus = await adminApi().request('http://localhost/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ accountLinking: 'separate' }),
+    });
+    expect(bogus.status).toBe(400);
+    // An empty patch answered 200 would report success for a request that set nothing.
+    const empty = await adminApi().request('http://localhost/settings', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({}),
+    });
+    expect(empty.status).toBe(400);
   });
 });
 

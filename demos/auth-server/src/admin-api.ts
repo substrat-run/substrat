@@ -3,7 +3,7 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
-import { ALLOW_SIGNUP, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
 import {
   GENERIC_ID_PATTERN,
   LOOPBACK_HOSTS,
@@ -25,7 +25,8 @@ import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } f
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
  * endpoint for. Two things:
  *
- *  1. **Whether people may create their own account** (`ALLOW_SIGNUP`).
+ *  1. **Whether people may create their own account** (`ALLOW_SIGNUP`), and what a federated
+ *     sign-in does when its address is already taken (`ACCOUNT_LINKING`).
  *  2. **The UPSTREAM identity providers** an operator has enabled (`src/providers.ts`) —
  *     "sign in with Microsoft". Better Auth takes those as CONFIG, so an issuer that is
  *     configured at runtime has to hold them itself; there is no library endpoint to proxy.
@@ -283,20 +284,42 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     await next();
   });
 
-  const settingsView = () => ({ allowSignup: isTruthy(deps.effectiveCfg()[ALLOW_SIGNUP]) });
+  const settingsView = () => {
+    const cfg = deps.effectiveCfg();
+    return {
+      allowSignup: isTruthy(cfg[ALLOW_SIGNUP]),
+      accountLinking: accountLinkingMode(cfg[ACCOUNT_LINKING]),
+    };
+  };
 
   app.get('/settings', (c) => c.json(settingsView()));
 
+  /**
+   * A real PATCH: every field is optional and only what arrives is written, so a panel that
+   * changes the linking mode does not have to restate the sign-up decision it did not touch —
+   * and cannot revert it by echoing a stale copy. An empty body is refused rather than
+   * answered 200, which would report success for a request that set nothing.
+   */
   app.patch('/settings', async (c) => {
     const parsed = z
-      .object({ allowSignup: z.boolean() })
+      .object({ allowSignup: z.boolean().optional(), accountLinking: z.enum(['link', 'block']).optional() })
+      .refine((v) => v.allowSignup !== undefined || v.accountLinking !== undefined, {
+        message: 'name at least one setting to change',
+      })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) {
       throw new HTTPException(400, {
-        message: parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '),
+        message: parsed.error.issues.map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message)).join('; '),
       });
     }
-    putDeliveredConfig(deps.sql, [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]);
+    putDeliveredConfig(deps.sql, [
+      ...(parsed.data.allowSignup !== undefined
+        ? [{ key: ALLOW_SIGNUP, value: boolValue(parsed.data.allowSignup) }]
+        : []),
+      ...(parsed.data.accountLinking !== undefined
+        ? [{ key: ACCOUNT_LINKING, value: parsed.data.accountLinking }]
+        : []),
+    ]);
     return c.json(settingsView());
   });
 
