@@ -5189,6 +5189,28 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Take a scope-level role back — the counterpart `assignScopeRole` went without (#1161).
+   * A tombstone, exactly as `HostAdmin.unassignRole` writes for a scope-level assignment:
+   * the row stays with `revoked_at` set and the local checker's walk skips it, so the
+   * principal loses the role's permissions on the next check. `assignScopeRole` is
+   * `INSERT OR REPLACE`, so a later re-assign clears the tombstone and grants again.
+   *
+   * Returns whether anything changed: a repeat revoke, or a revoke of a role that was never
+   * assigned, is a silent `false` rather than an error, which lets a harness route stay
+   * idempotent. Emits nothing on the scope outbox — the vertical whose flow revoked the
+   * seat is the one that knows what to announce, and it emits from its own operation.
+   * Guarded like `assignScopeRole`: at the harness route, not at this seam.
+   */
+  async revokeScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean> {
+    return this.scopeStub(scopeId).revokeTuple(
+      `principal:${principal}`,
+      `role:${roleKey}`,
+      `scope:${scopeId}`,
+      new Date().toISOString(),
+    );
+  }
+
+  /**
    * Grant a principal an ENTITY-NARROWED permission in a CP-less vertical — the self-service
    * half of membership, the local equivalent of `HostAdmin.grant` with an `entity`. Where a
    * role reaches every entity in the scope, this reaches exactly one: an employee logging time
