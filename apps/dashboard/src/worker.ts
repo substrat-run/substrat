@@ -32,6 +32,7 @@ import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
+import { deriveReleases } from './releases.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -3316,6 +3317,35 @@ app.get('/api/deployments/:slug/failures', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   assertOwned(await listDeploymentsFromCp(cp), slug);
   return c.json(await cp.listOpsFailures({ vertical: slug, limit: 50 }));
+});
+
+/**
+ * The release ledger (#1236): the version as the axis every other fact is read
+ * against. Nothing here is newly recorded — push instants, go-live moments,
+ * version pins, and the version-stamped health facts all exist; this route is
+ * the join that did not. Metrics are tolerated to "unavailable" (an
+ * unconfigured plane, a truncated service map) and rendered as unknown — never
+ * as zero traffic, which would read as "the broken version went quiet". The
+ * scope read is NOT tolerated: a failed one would render as "0 pinned / 0
+ * following prod" — the same misreading, on the adoption column — so the route
+ * fails and the panel hides instead.
+ */
+app.get('/api/deployments/:slug/releases', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const deployments = await listDeploymentsFromCp(cp);
+  assertOwned(deployments, slug);
+  const deployment = deployments.find((d) => d.slug === slug)!;
+  const [prodHistory, scopes, failures, metrics] = await Promise.all([
+    cp.channelHistory(slug, 'prod'),
+    cp.listScopes(slug),
+    cp.listOpsFailures({ vertical: slug, limit: 400 }),
+    cp.observabilityMetrics(24, slug).catch(() => null),
+  ]);
+  return c.json(deriveReleases({ deployment, prodHistory, scopes, failures, metrics }));
 });
 
 /**

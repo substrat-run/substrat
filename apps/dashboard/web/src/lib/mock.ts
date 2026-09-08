@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -316,6 +316,56 @@ export const MOCK_PREVIEWS: VerticalPreview[] = [
     url: 'https://acme-hr--pr-42.global.substrat.run',
   },
 ];
+
+/** The release ledger (#1236): prod trails the newest push; one scope still pinned back. */
+export const MOCK_RELEASES: ReleasesView = {
+  releases: [
+    {
+      versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR03',
+      version: '0.0.12',
+      pushedAt: ago(2 * 3600e3),
+      origin: 'git',
+      schemaChange: true,
+      wentLiveAt: null,
+      isProd: false,
+      isServing: false,
+      scopesPinned: 0,
+      failures: 1,
+      requests: 40,
+      errors: 3,
+    },
+    {
+      versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR02',
+      version: '0.0.11',
+      pushedAt: ago(3 * 86400e3),
+      origin: 'git',
+      schemaChange: false,
+      wentLiveAt: ago(2 * 86400e3),
+      isProd: true,
+      isServing: true,
+      scopesPinned: 2,
+      failures: 0,
+      requests: 1810,
+      errors: 2,
+    },
+    {
+      versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR01',
+      version: '0.0.10',
+      pushedAt: ago(9 * 86400e3),
+      origin: 'cli',
+      schemaChange: false,
+      wentLiveAt: ago(8 * 86400e3),
+      isProd: false,
+      isServing: false,
+      scopesPinned: 1,
+      failures: 4,
+      requests: 122,
+      errors: 61,
+    },
+  ],
+  scopesTrackingProd: 3,
+  metricsAvailable: true,
+};
 
 /** Failure groups (#1233): the same shapes counted — the preview restore recurs. */
 export const MOCK_FAILURE_GROUPS: FailureGroupRow[] = [
