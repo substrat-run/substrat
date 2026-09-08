@@ -97,6 +97,7 @@ export interface Conversation {
   first_public_reply_at: string | null;
   resolved_at: string | null;
   merged_into: string | null;
+  follows: string | null;
   created_at: string;
   updated_at: string;
 }

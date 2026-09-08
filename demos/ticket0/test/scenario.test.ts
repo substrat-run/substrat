@@ -50,6 +50,8 @@ interface Conversation {
   assignee: string | null;
   priority: string;
   merged_into: string | null;
+  follows: string | null;
+  channel: string;
 }
 interface Message {
   id: string;
@@ -651,6 +653,113 @@ describe('the lifecycle, what it will not do, and the way out', () => {
     expect(await ids({ limit: 100, state: 'closed' })).toContain(doomed.conversation_id);
   });
 
+  /**
+   * The other half of a terminal state, and the one it took a visitor of substrat.net
+   * to find: closing a thread must not silence the person on the other end of it.
+   *
+   * Before this, a customer replying to a closed conversation got
+   * `invalid transition: conversation … is 'closed'` — a 409 built out of an internal
+   * id and an operation name, shown in a chat bubble that was still inviting them to
+   * type. The state stays terminal, because that is what makes it an escape hatch;
+   * what changes is that the message lands somewhere instead of being refused.
+   */
+  it('a customer writing into a closed thread gets a follow-up, not a refusal', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const relay = await at(world.substrat, 'relay');
+
+    const first = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'returning@customer.example',
+      contactName: 'Returning',
+      subject: 'The invoice export',
+      bodyText: 'Never mind, I worked it out.',
+      emailMessageId: '<returning-1@mail.example>',
+    })) as Message;
+    const closed = (await anna.invoke('ticket0/close', {
+      conversationId: first.conversation_id,
+    })) as Conversation;
+    expect(closed.state).toBe('closed');
+
+    // The same thread, by the same person, after the desk closed it.
+    const again = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: first.conversation_id,
+      contactEmail: 'returning@customer.example',
+      subject: 'Re: The invoice export',
+      bodyText: 'Actually it has come back.',
+      emailMessageId: '<returning-2@mail.example>',
+    })) as Message;
+
+    // Not the closed one — and the relay is told which conversation it landed in.
+    expect(again.conversation_id).not.toBe(first.conversation_id);
+
+    const followUp = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: again.conversation_id,
+    })) as Conversation;
+    expect(followUp.state).toBe('new');
+    // Which thread it continues, and whose it is: the lineage is a column, not a guess
+    // an agent makes from two rows sharing a contact.
+    expect(followUp.follows).toBe(first.conversation_id);
+    expect(followUp.contact_id).toBe(closed.contact_id);
+
+    // The closed one is untouched. This is the property the terminal state exists for:
+    // an escape hatch anyone could climb back through by writing one more line is not
+    // an escape hatch, and a reopened thread would also un-count itself.
+    const before = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: first.conversation_id,
+    })) as Conversation;
+    expect(before.state).toBe('closed');
+    const messages = (await anna.invoke('ticket0/list-messages', {
+      conversationId: first.conversation_id,
+    })) as CountedPage<Message>;
+    expect(messages.entries.map((m) => m.id)).not.toContain(again.id);
+  });
+
+  /**
+   * Whose follow-up it is, when the relay's two facts disagree.
+   *
+   * `ticket0/ingest-message` is told a conversation AND a sending address, and they can
+   * name different contacts — `contactByEmail` matches exactly, so one capital letter is
+   * a second contact row. A message threading into a live conversation already lands in
+   * it whatever address it arrived from, because a message carries no contact of its
+   * own; the follow-up inherits the same answer, so `follows` never points across two
+   * people's conversations.
+   */
+  it('a follow-up belongs to the closed thread’s contact, not to the sending address', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const relay = await at(world.substrat, 'relay');
+
+    const first = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'mixed.case@customer.example',
+      contactName: 'Mixed Case',
+      subject: 'A question',
+      bodyText: 'How do I export?',
+      emailMessageId: '<mixed-1@mail.example>',
+    })) as Message;
+    const closed = (await anna.invoke('ticket0/close', {
+      conversationId: first.conversation_id,
+    })) as Conversation;
+
+    // The same person's mail client, capitalising the address this time. Nothing but
+    // the case differs, and the exact match makes it a different contact.
+    const again = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: first.conversation_id,
+      contactEmail: 'Mixed.Case@customer.example',
+      subject: 'Re: A question',
+      bodyText: 'Still stuck.',
+      emailMessageId: '<mixed-2@mail.example>',
+    })) as Message;
+
+    const followUp = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: again.conversation_id,
+    })) as Conversation;
+    expect(followUp.follows).toBe(first.conversation_id);
+    // The thread's owner, not the envelope's — so no row carries another contact's
+    // conversation id, and a customer reading their own follow-up learns nothing about
+    // anyone else's.
+    expect(followUp.contact_id).toBe(closed.contact_id);
+  });
+
   it('a resolved conversation reopens when the customer writes again', async () => {
     const anna = await at(world.substrat, 'agent');
     const resolved = (await anna.invoke('ticket0/resolve', {
@@ -806,6 +915,59 @@ describe('the lifecycle, what it will not do, and the way out', () => {
         priority: 'urgent',
       }),
     ).rejects.toThrow(/invalid transition.*'closed'/i);
+  });
+
+  /**
+   * The same rule from the visitor's side, and the case that actually happened: a
+   * browser holding a live session whose thread an agent has since closed.
+   *
+   * The session is the visitor's whole authority and it is not thrown away — it is
+   * pointed at the follow-up. Nothing about their browser changes: same session id,
+   * same token, same bubble, and the next thing they type arrives somewhere a person
+   * will read it rather than coming back as a lifecycle error.
+   */
+  it('a widget session whose thread was closed moves to a follow-up, keeping its token', async () => {
+    const widget = await at(world.substrat, 'widget');
+    const anna = await at(world.substrat, 'agent');
+
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+    })) as { sessionId: string; token: string };
+    const first = (await widget.invoke('ticket0/widget-post', {
+      sessionId: started.sessionId,
+      token: started.token,
+      body: 'My export is empty.',
+    })) as Message;
+
+    await anna.invoke('ticket0/close', { conversationId: first.conversation_id });
+
+    // The visitor types again into the bubble that is still sitting on the page.
+    const again = (await widget.invoke('ticket0/widget-post', {
+      sessionId: started.sessionId,
+      token: started.token,
+      body: 'Hello? Still broken.',
+    })) as Message;
+    expect(again.conversation_id).not.toBe(first.conversation_id);
+
+    const followUp = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: again.conversation_id,
+    })) as Conversation;
+    expect(followUp.follows).toBe(first.conversation_id);
+    expect(followUp.channel).toBe('widget');
+
+    // The session now reads the thread it is actually in — the visitor's view is the
+    // new conversation, which is the honest one: the closed thread is over.
+    const thread = (await widget.invoke('ticket0/widget-thread', {
+      sessionId: started.sessionId,
+      token: started.token,
+    })) as Page<Message>;
+    expect(thread.entries.map((m) => m.id)).toEqual([again.id]);
+
+    // And the closed thread stays closed, with its own history intact.
+    const before = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: first.conversation_id,
+    })) as Conversation;
+    expect(before.state).toBe('closed');
   });
 });
 

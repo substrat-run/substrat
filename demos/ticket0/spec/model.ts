@@ -243,6 +243,11 @@ export const ticket0Entities = defineEntities({
    * `merged_into` is nullable and self-referential: a merged conversation keeps its
    * history and forwards to its survivor. It is never deleted, because the customer
    * who wrote it is entitled to find it.
+   *
+   * `follows` is the other self-reference and points the other way: this conversation
+   * was started by a customer writing into one that had already been CLOSED. The two
+   * are not the same fact and must not share a column — a merge says these were always
+   * one conversation, a follow-up says the first one is over and this is the next one.
    */
   conversation: {
     table: 'ticket0_conversations',
@@ -258,6 +263,7 @@ export const ticket0Entities = defineEntities({
       first_public_reply_at: z.string().nullable(),
       resolved_at: z.string().nullable(),
       merged_into: z.string().nullable(),
+      follows: z.string().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
     }),
@@ -2764,7 +2770,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
  * appear under `allow`, because tagging, noting and assigning change no state, and a
  * format with only edges would draw a self-loop for every one of them.
  *
- * The four things worth reading twice:
+ * The five things worth reading twice:
  *
  *  1. **`resolved` is not terminal.** `ticket0/ingest-message` is an edge out of it,
  *     back to `open` — a customer replying to a resolved conversation reopens it, in
@@ -2782,6 +2788,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
  *     WRITE rather than by where they sit — only `ticket0/resolve` stamps
  *     `resolved_at`, and the reports count that stamp — so an escape hatch out of
  *     the inbox cannot be mistaken for work done.
+ *  5. **`closed` is terminal, and that is not the same as a customer being silenced.**
+ *     The absence of an inbound edge here is the whole point of the state — a thread
+ *     anyone could climb back into by writing one more line is not an escape hatch —
+ *     but read alone it says a visitor who types into their chat bubble after an agent
+ *     closed the thread gets a 409, which is what happened on substrat.net. Where that
+ *     message goes is not a question a state machine can answer, so it is not asked
+ *     here: `widget-post` and `ingest-message` start a FOLLOW-UP conversation for the
+ *     same contact (`conversation.follows` names the closed one) and land the message
+ *     in that. See `followUp` in `src/module.ts`. The closed row is untouched and goes
+ *     on counting as closed, which is the property this terminal state exists to hold.
  */
 export const ticket0Lifecycles = defineLifecycles(
   ticket0Entities,
