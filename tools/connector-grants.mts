@@ -31,6 +31,7 @@
  */
 import { SCRIVE_CONNECTION_GRANTS } from '../connectors/scrive/src/index.js';
 import { FORTNOX_CONNECTION_GRANTS } from '../connectors/fortnox/src/index.js';
+import { PLANIMA_CONNECTION_GRANTS } from '../connectors/planima/src/index.js';
 import { PROVIDERS } from '../apps/dashboard/src/integrations.js';
 
 /** Each connector's declared standing grants, keyed by the provider its catalog entry uses. */
@@ -43,6 +44,11 @@ const DECLARED: Record<string, readonly string[]> = {
   // provider is COVERED by this gate rather than silently outside it — if the connector
   // ever grows a standing grant of its own, this row is where it becomes load-bearing.
   fortnox: FORTNOX_CONNECTION_GRANTS,
+  // Empty for the same reason Fortnox's is, and listed for the same reason too: the
+  // permission this connector needs belongs to the consuming vertical's landing
+  // operation, so `bindPlanimaScope` verifies it at bind time. The row exists so the
+  // provider is COVERED by this gate rather than silently outside it.
+  planima: PLANIMA_CONNECTION_GRANTS,
 };
 
 const fail = (message: string, code: 1 | 2): never => {

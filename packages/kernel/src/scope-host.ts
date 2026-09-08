@@ -821,6 +821,25 @@ export interface ConnectorResponse {
    * only widens the structural surface the adapter passes straight through.
    */
   arrayBuffer(): Promise<ArrayBuffer>;
+  /**
+   * The response headers, when the runtime behind this seam has them.
+   *
+   * OPTIONAL, and the optionality is the whole design. Every adapter's `fetch`
+   * returns a real web `Response`, which always carries headers — so a connector
+   * reading one gets a value in production, always. What is not guaranteed is a
+   * hand-built stand-in: a mock or an in-memory provider is a plain object
+   * literal, and requiring `headers` would break every one of them for a field
+   * most connectors never read.
+   *
+   * So a caller must handle absence, and the callers that need it do. It exists
+   * because some provider instructions live ONLY in a header and a connector that
+   * cannot read them has to invent a substitute: Planima answers a rate limit with
+   * `Retry-After`, and a client that cannot see it backs off on a schedule of its
+   * own guessing — either too soon (spending another request to be told the same
+   * thing) or too late. Declaring it here is what keeps that read inside the
+   * sanctioned seam instead of a structural cast in a connector.
+   */
+  readonly headers?: { get(name: string): string | null };
 }
 
 /**
