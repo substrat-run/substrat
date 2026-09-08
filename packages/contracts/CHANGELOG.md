@@ -1,5 +1,14 @@
 # @substrat-run/contracts
 
+## 0.103.0
+
+### Minor Changes
+
+- dc9995c: `emitModel` accepts an optional `version`, rendered as the top-level `version` of `model.json` when supplied and omitted otherwise, so a vertical's artifact is unchanged. Each engine passes its `manifest.version`, which gives the field its first reader: the checked-in `model.json`, gated by `lint:model --check`. The field versions the manifest shape, not the package, and is bumped only when that shape changes.
+- adf6bfb: A vertical can start a provider consent round for its own user (connections.md §3.5.3). The credential relay only serves a provider whose credential the tenant admin already holds; one that mints a credential at the end of a browser consent round could be connected from the dashboard alone, which is no use to a bookkeeping bureau whose staff work in the vertical, connect a client company most weeks, and have no dashboard account.
+
+  `requestConnectUrl` (vertical-host) POSTs the new `/internal/connections/connect-url` relay behind the vertical's own `ctx.check`, and gets back a URL to redirect its user to. Consent, exchange, sealing and the upsert all stay on the platform origin that owns the provider's one registered `redirect_uri` — the vertical never sees the client credentials, the code, or the token. The connection is stamped `createdBy` the authorizing tenant principal, the vertical is re-derived from the directory rather than taken from the caller, and a `returnUrl` must be a hostname the calling scope is bound to. `signConnectState` / `verifyConnectState` (kernel) are the signed state the minting and verifying workers share.
+
 ## 0.102.0
 
 ### Minor Changes
@@ -4847,7 +4856,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

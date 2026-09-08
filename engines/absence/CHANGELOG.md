@@ -1,5 +1,16 @@
 # @substrat-run/engine-absence
 
+## 0.5.15
+
+### Patch Changes
+
+- dc9995c: `emitModel` accepts an optional `version`, rendered as the top-level `version` of `model.json` when supplied and omitted otherwise, so a vertical's artifact is unchanged. Each engine passes its `manifest.version`, which gives the field its first reader: the checked-in `model.json`, gated by `lint:model --check`. The field versions the manifest shape, not the package, and is bumped only when that shape changes.
+- Updated dependencies [dc9995c]
+- Updated dependencies [dcde11e]
+- Updated dependencies [adf6bfb]
+  - @substrat-run/contracts@0.103.0
+  - @substrat-run/kernel@0.103.0
+
 ## 0.5.14
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @substrat-run/engine-protocol
 
+## 0.12.8
+
+### Patch Changes
+
+- dc9995c: `emitModel` accepts an optional `version`, rendered as the top-level `version` of `model.json` when supplied and omitted otherwise, so a vertical's artifact is unchanged. Each engine passes its `manifest.version`, which gives the field its first reader: the checked-in `model.json`, gated by `lint:model --check`. The field versions the manifest shape, not the package, and is bumped only when that shape changes.
+- Updated dependencies [dc9995c]
+- Updated dependencies [dcde11e]
+- Updated dependencies [adf6bfb]
+  - @substrat-run/contracts@0.103.0
+  - @substrat-run/kernel@0.103.0
+
 ## 0.12.7
 
 ### Patch Changes
@@ -1713,7 +1724,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
