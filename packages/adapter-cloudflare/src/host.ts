@@ -1065,6 +1065,33 @@ export interface CloudflareScopeHostOptions {
    * locally.
    */
   connectorDelegation?: ConnectorDelegation;
+  /**
+   * **There is deliberately no `clock` here** (#956), and the absence is the fact.
+   *
+   * The pure adapter takes one (`SqliteScopeHostOptions.clock`): it is what
+   * `ctx.now()` reads AND what the host judges elapsed time against — tuple
+   * expiry, session expiry, entitlement expiry, schedule cadence. This host
+   * cannot offer the same option, because every one of those reads happens
+   * inside the ScopeDO, which **workerd** constructs — `CloudflareScopeHost`
+   * only ever holds a stub. The reads are `scope-do.ts` (the `at` that becomes
+   * `ctx.now()`, the entitlement gate, `hasSystemGrant`) and `checker.ts`'s
+   * `now: () => new Date().toISOString()`, none of which this options bag is on
+   * the path to. An accepted-and-ignored `clock` would be worse than none: it
+   * would read as a seam and silently do nothing.
+   *
+   * What this costs, stated rather than hidden: expiry-dependent behaviour is
+   * held to the contract on the SQLite host only. `grantExpiryContractSuite`
+   * (`packages/contract-tests/src/grant-expiry-suite.ts`) advances a
+   * `manualClock` past a grant's `expiresAt` and asserts the denial; it mounts
+   * on `adapter-sqlite` and NOT here, and its header carries the same reasoning
+   * plus the two alternatives that were rejected. Both hosts run the same
+   * predicate (`expires_at IS NULL OR expires_at > ?`); what differs is that
+   * only one of them can be shown obeying it without waiting.
+   *
+   * The day the DO can take a clock, this comment and that suite's mount are
+   * the whole change.
+   */
+  clock?: never;
 }
 
 /**
