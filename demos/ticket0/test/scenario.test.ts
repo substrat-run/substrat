@@ -714,6 +714,52 @@ describe('the lifecycle, what it will not do, and the way out', () => {
     expect(messages.entries.map((m) => m.id)).not.toContain(again.id);
   });
 
+  /**
+   * Whose follow-up it is, when the relay's two facts disagree.
+   *
+   * `ticket0/ingest-message` is told a conversation AND a sending address, and they can
+   * name different contacts — `contactByEmail` matches exactly, so one capital letter is
+   * a second contact row. A message threading into a live conversation already lands in
+   * it whatever address it arrived from, because a message carries no contact of its
+   * own; the follow-up inherits the same answer, so `follows` never points across two
+   * people's conversations.
+   */
+  it('a follow-up belongs to the closed thread’s contact, not to the sending address', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const relay = await at(world.substrat, 'relay');
+
+    const first = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: 'mixed.case@customer.example',
+      contactName: 'Mixed Case',
+      subject: 'A question',
+      bodyText: 'How do I export?',
+      emailMessageId: '<mixed-1@mail.example>',
+    })) as Message;
+    const closed = (await anna.invoke('ticket0/close', {
+      conversationId: first.conversation_id,
+    })) as Conversation;
+
+    // The same person's mail client, capitalising the address this time. Nothing but
+    // the case differs, and the exact match makes it a different contact.
+    const again = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: first.conversation_id,
+      contactEmail: 'Mixed.Case@customer.example',
+      subject: 'Re: A question',
+      bodyText: 'Still stuck.',
+      emailMessageId: '<mixed-2@mail.example>',
+    })) as Message;
+
+    const followUp = (await anna.invoke('ticket0/get-conversation', {
+      conversationId: again.conversation_id,
+    })) as Conversation;
+    expect(followUp.follows).toBe(first.conversation_id);
+    // The thread's owner, not the envelope's — so no row carries another contact's
+    // conversation id, and a customer reading their own follow-up learns nothing about
+    // anyone else's.
+    expect(followUp.contact_id).toBe(closed.contact_id);
+  });
+
   it('a resolved conversation reopens when the customer writes again', async () => {
     const anna = await at(world.substrat, 'agent');
     const resolved = (await anna.invoke('ticket0/resolve', {

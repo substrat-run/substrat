@@ -347,7 +347,10 @@
     start()
       .then(retry)
       .catch(function (err) {
-        error = String(err.message || err);
+        // The fourth error sink, and the one that is hardest to see: a recovery that
+        // fails is still a visitor looking at a chat bubble, so it says what the other
+        // three say rather than whatever the desk put in the body.
+        error = visitorError(err, 'start');
         draw();
       })
       .then(function () {

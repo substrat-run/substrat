@@ -2772,8 +2772,18 @@ const operations = {
     // `followUp` gives. The relay is told which conversation the message landed in by
     // the row it gets back, so a threading header pointing at the closed one does not
     // have to be right for the mail to arrive somewhere a person will read it.
+    //
+    // The follow-up belongs to the CLOSED thread's contact, not to whoever the sending
+    // address resolves to. Those can differ — `contactByEmail` matches exactly, so one
+    // capital letter is a second contact — and a follow-up that crossed contacts would
+    // put another person's conversation id in `follows` on a row its owner can read.
+    // It is also what already happens one line up: a message threading into a live
+    // conversation lands in it whatever address it came from, because a message
+    // carries no contact of its own. The two paths agree rather than differ.
     const conversation =
-      bound.state === 'closed' ? followUp(ctx, bound, contact, input.subject) : bound;
+      bound.state === 'closed'
+        ? followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject)
+        : bound;
 
     const next = step(conversation, 'ticket0/ingest-message');
     const row = writeMessage(ctx, {
