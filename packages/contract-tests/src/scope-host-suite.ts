@@ -2114,28 +2114,34 @@ export function scopeHostContractSuite(
       });
 
       it('walks the lifecycle: resolved regresses on a fresh arrival, ignored stays ignored', async () => {
-        const record = () =>
+        const record = (version?: string) =>
           host.admin.recordOpsFailure({
             actor: staff,
             operation: 'deploy.upload',
             stage: 'lifecycle-check',
             origin: 'platform',
             code: 'unavailable',
+            version: version ?? null,
             message: 'upstream unavailable',
           });
-        await record();
+        await record('01JVERSIONAAAAAAAAAAAAAAA1');
         const [issue] = await host.admin.listIssues(staff, { operation: 'deploy.upload', code: 'unavailable' });
 
         const resolved = await host.admin.setIssueStatus(staff, issue!.fingerprint, 'resolved');
         expect(resolved?.status).toBe('resolved');
         expect(resolved?.resolvedAt).not.toBeNull();
+        // The verdict freezes what it resolved (#1236): the newest version at that moment.
+        expect(resolved?.resolvedVersion).toBe('01JVERSIONAAAAAAAAAAAAAAA1');
 
         // Sentry's best retention trick, minus the release half: seen again after
         // resolved = regressed, back into attention without anyone re-filing it.
-        await record();
+        await record('01JVERSIONAAAAAAAAAAAAAAA2');
         const [regressed] = await host.admin.listIssues(staff, { operation: 'deploy.upload', code: 'unavailable' });
         expect(regressed!.status).toBe('regressed');
         expect(regressed!.count).toBe(2);
+        // The regression names its pair: resolved under A1, seen again under A2.
+        expect(regressed!.resolvedVersion).toBe('01JVERSIONAAAAAAAAAAAAAAA1');
+        expect(regressed!.lastVersion).toBe('01JVERSIONAAAAAAAAAAAAAAA2');
         // The resolution timestamp survives the regression: "when somebody last
         // thought this was over" is part of the regression's story.
         expect(regressed!.resolvedAt).not.toBeNull();
@@ -2146,11 +2152,14 @@ export function scopeHostContractSuite(
         const [ignored] = await host.admin.listIssues(staff, { operation: 'deploy.upload', code: 'unavailable' });
         expect(ignored!.status).toBe('ignored');
         expect(ignored!.count).toBe(3);
+        // The unstamped third arrival did not erase what the stamped one said.
+        expect(ignored!.lastVersion).toBe('01JVERSIONAAAAAAAAAAAAAAA2');
 
         // Reopening clears the resolution; an unknown fingerprint is undefined, never an invented row.
         const reopened = await host.admin.setIssueStatus(staff, issue!.fingerprint, 'new');
         expect(reopened?.status).toBe('new');
         expect(reopened?.resolvedAt).toBeNull();
+        expect(reopened?.resolvedVersion).toBeNull();
         expect(await host.admin.setIssueStatus(staff, 'no-such-fingerprint', 'resolved')).toBeUndefined();
       });
     });
