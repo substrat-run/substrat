@@ -235,6 +235,43 @@
     return Boolean(session) && (e.status === 404 || e.status === 403);
   }
 
+  /**
+   * What a visitor is told, which is never what the server said.
+   *
+   * A support widget sits on someone else's marketing page, in front of someone who
+   * came to ask a question. `invalid transition: conversation 01M149JP239P98YQN9Y4ZY6NCF
+   * is 'closed', but 'ticket0/widget-post' requires new | open | resolved | snoozed`
+   * is what this used to print at them — accurate, addressed to nobody in the building,
+   * and carrying an internal id and an operation name out to the public web.
+   *
+   * So the status decides the sentence and the server's own words are never rendered.
+   * They are not thrown away either: the real error goes to the console, where the
+   * person debugging the embed is, and the person typing a question is not.
+   */
+  function visitorError(e, where) {
+    try {
+      console.warn('[ticket0 widget] ' + where + ' failed:', e);
+    } catch (ignored) {
+      /* a console is not a guarantee */
+    }
+    // No status at all is the network, not the desk: the request never arrived.
+    var status = e && e.status;
+    if (where === 'start') return 'Chat is not available on this page right now.';
+    if (where === 'refresh')
+      return status
+        ? 'Can’t load the latest replies right now — this will try again shortly.'
+        : 'Can’t reach support right now — this will catch up when you are back online.';
+    if (!status)
+      return 'Can’t reach support right now — your message was not sent. Check your ' +
+        'connection and try again.';
+    if (status === 429)
+      return 'That is a lot of messages at once — give it a moment and try again.';
+    if (status >= 500)
+      return 'Support is having trouble at our end. Your message was not sent — ' +
+        'please try again.';
+    return 'Something went wrong sending that. Please try again.';
+  }
+
   function resetSession() {
     session = null;
     try {
@@ -603,7 +640,7 @@
       })
       .catch(function (e) {
         if (recover(e, refresh)) return;
-        error = String(e.message || e);
+        error = visitorError(e, 'refresh');
         draw();
       });
   }
@@ -646,7 +683,7 @@
           })
         )
           return;
-        error = String(e.message || e);
+        error = visitorError(e, 'post');
         draw();
       });
   }
@@ -664,9 +701,11 @@
       .then(refresh)
       .then(schedule)
       .catch(function (e) {
-        // A desk that does not embed here, or a rotated secret. Say which — and
-        // disable the composer, because there is nothing behind it.
-        error = String(e.message || e);
+        // A desk that does not embed here, or a rotated secret. Neither is a thing the
+        // visitor can act on and the wording of both is internal, so they get one plain
+        // sentence and the console gets the reason — and the composer is disabled,
+        // because there is nothing behind it.
+        error = visitorError(e, 'start');
         draw();
         var ta = root.getElementById('t');
         var send = root.querySelector('.send');

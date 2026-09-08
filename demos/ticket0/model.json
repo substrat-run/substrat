@@ -319,6 +319,16 @@
               }
             ]
           },
+          "follows": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -338,6 +348,7 @@
           "first_public_reply_at",
           "resolved_at",
           "merged_into",
+          "follows",
           "created_at",
           "updated_at"
         ],

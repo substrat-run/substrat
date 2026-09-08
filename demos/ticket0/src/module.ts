@@ -599,20 +599,45 @@ function openConversation(
   contact: ContactRow,
   channel: ConversationRow['channel'],
   subject: string,
+  follows: string | null = null,
 ): ConversationRow {
   const id = ulid();
   const now = ctx.now();
   ctx.sql.exec(
     `INSERT INTO ticket0_conversations
        (id, contact_id, channel, subject, state, assignee, priority, snoozed_until,
-        first_public_reply_at, resolved_at, merged_into, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'new', NULL, 'normal', NULL, NULL, NULL, NULL, ?, ?)`,
-    [id, contact.id, channel, subject, now, now],
+        first_public_reply_at, resolved_at, merged_into, follows, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'new', NULL, 'normal', NULL, NULL, NULL, NULL, ?, ?, ?)`,
+    [id, contact.id, channel, subject, follows, now, now],
   );
   // The edge the permission walk follows: a contact's grant on their own entity
   // reaches their conversations through this, and reaches nobody else's.
   ctx.link(conversationRef(id), contactRef(contact.id));
   return conversationOrThrow(ctx, id);
+}
+
+/**
+ * The conversation a customer is talking in, once the one they were talking in is closed.
+ *
+ * `closed` is terminal on purpose — it is the escape hatch out of the inbox, and a
+ * thread that anyone could climb back into by writing one more line would not be one.
+ * So this does not reopen anything: the closed conversation stays closed, keeps its
+ * history and keeps counting as closed, and the message lands in a NEW conversation
+ * for the same contact whose `follows` says which one it continues.
+ *
+ * The alternative the state machine offers unaided is a 409 — which reached an actual
+ * visitor of substrat.net as `invalid transition: conversation … is 'closed'`, and left
+ * them unable to say anything at all in a chat bubble that was still inviting them to.
+ * A customer writing in is never a rule violation; where their words go is a question
+ * this app has to answer, and the answer is here rather than in the machine.
+ */
+function followUp(
+  ctx: OperationContext,
+  closed: ConversationRow,
+  contact: ContactRow,
+  subject: string,
+): ConversationRow {
+  return openConversation(ctx, contact, closed.channel, subject, closed.id);
 }
 
 /**
@@ -738,6 +763,28 @@ function bindOpening(ctx: OperationContext, opening: OpeningRow): ConversationRo
 }
 
 /**
+ * Point a live widget session at the conversation it is talking in NOW.
+ *
+ * The visitor's token is unchanged and their browser learns nothing: what they have is
+ * a chat bubble, and which row it writes into is the desk's business. The link to the
+ * conversation they have left is not removed — `ctx.link` is permanent by design, and
+ * it is also true: this session did belong to that thread, and the timeline should
+ * still say so.
+ */
+function moveSession(
+  ctx: OperationContext,
+  sessionId: string,
+  conversation: ConversationRow,
+): ConversationRow {
+  ctx.sql.exec('UPDATE ticket0_widget_sessions SET conversation_id = ? WHERE id = ?', [
+    conversation.id,
+    sessionId,
+  ]);
+  ctx.link({ entityType: 'widgetSession', entityId: sessionId }, conversationRef(conversation.id));
+  return conversation;
+}
+
+/**
  * Resolve every message's cited ids to articles, in one query for the whole page.
  *
  * A citation exists so a human can check it, and an id is not checkable — so the join
@@ -829,7 +876,7 @@ function likeTerm(term: string): string {
 /** Named rather than `SELECT c.*`: a search read returns the published entity, not the table. */
 const CONVERSATION_COLUMNS = `c.id, c.contact_id, c.channel, c.subject, c.state, c.assignee,
   c.priority, c.snoozed_until, c.first_public_reply_at, c.resolved_at, c.merged_into,
-  c.created_at, c.updated_at`;
+  c.follows, c.created_at, c.updated_at`;
 
 // ---------------------------------------------------------------------------
 // Pricing - the vertical's, never the ledger's
@@ -2718,9 +2765,15 @@ const operations = {
         verified_at: ctx.now(),
       });
 
-    const conversation = input.conversationId
+    const bound = input.conversationId
       ? conversationOrThrow(ctx, input.conversationId)
       : openConversation(ctx, contact, 'email', input.subject);
+    // A reply to a thread the desk has closed is a new thread, for the reason
+    // `followUp` gives. The relay is told which conversation the message landed in by
+    // the row it gets back, so a threading header pointing at the closed one does not
+    // have to be right for the mail to arrive somewhere a person will read it.
+    const conversation =
+      bound.state === 'closed' ? followUp(ctx, bound, contact, input.subject) : bound;
 
     const next = step(conversation, 'ticket0/ingest-message');
     const row = writeMessage(ctx, {
@@ -2912,8 +2965,19 @@ const operations = {
     // input for a caller to substitute one.
     const hold = await holdOrThrow(ctx, input.sessionId, input.token);
     // The first message opens the conversation; every later one finds it bound.
+    const bound = hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
+    // ...unless an agent closed it in the meantime. The session then moves to a
+    // follow-up rather than the visitor discovering that their chat bubble has gone
+    // read-only, which is what `closed` being terminal would otherwise mean for them.
+    // Only the session branch can be closed: `bindOpening` has just made this one.
     const conversation =
-      hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
+      bound.state === 'closed'
+        ? moveSession(
+            ctx,
+            input.sessionId,
+            followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), bound.subject),
+          )
+        : bound;
     const next = step(conversation, 'ticket0/widget-post');
     const row = writeMessage(ctx, {
       conversationId: conversation.id,

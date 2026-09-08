@@ -266,4 +266,11 @@ export const ticket0Migrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-ticket0_conversations-follows
+    version: '0007',
+    sql: `
+      ALTER TABLE ticket0_conversations ADD COLUMN follows TEXT;
+    `,
+  },
 ];
