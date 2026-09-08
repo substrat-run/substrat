@@ -1,5 +1,61 @@
 # @substrat-run/kernel
 
+## 0.102.0
+
+### Minor Changes
+
+- e7115b2: Ops-failure rows carry the error's SHAPE (#1233, first step of the Issues
+  view). `opsFailureEntry` gains `origin` (who refused: `platform` / `provider` /
+  `unknown`, the #841 attribution) and `code` (the taxonomy code when the refusal
+  was one of ours) — both nullable, and a null is a fact: the writer predates the
+  columns or could not classify, never a guess. The intent drain already computed
+  exactly this attribution for the journal's `last_failure` and dropped it when
+  writing the fleet row; now it rides along on both the attempt-ceiling and
+  terminal paths. Every other control-plane recorder hands its caught throw to
+  `recordFailure`, which attributes in one place — the same posture as the
+  `reference = <id>` extraction. `GET /ops-failures` narrows by `code`, so a
+  failure class is a column filter, never a message regex — which is what a
+  fingerprint-grouped issues view needs to exist at all.
+- 3e67ebe: Failures group into issues (#1233, the store). Every ops-failure insert now
+  also bumps a row in `_substrat_issues`, keyed by `opsFailureFingerprint` —
+  operation + stage + taxonomy code, deliberately never the message — with a
+  count, first/last seen, the newest exemplar's message, and a lifecycle:
+  `new` on first sight, `resolved`/`ignored` as staff verdicts
+  (`HostAdmin.setIssueStatus`, audited with the before/after diff), and
+  `regressed` written only by ingest when a fresh arrival lands on a resolved
+  issue. An ignored issue stays ignored. The issue row OWNS its counters — the
+  evidence beneath it self-prunes at 90 days, and a count must survive its own
+  exemplars — and outlives its last occurrence by 180 days, long enough for a
+  regression to be recognizable. Failure rows carry their `fingerprint` too,
+  so `listOpsFailures({ fingerprint })` walks one issue's exemplars.
+  `HostAdmin.listIssues` reads the groups newest-last-seen first; no cursor by
+  design, because grouping IS the compression. The 577-attempt intent of #570
+  would have been one issue with a rising count from attempt 2.
+
+### Patch Changes
+
+- 46051ee: Connecting Fortnox from the dashboard works on the hosted platform. Every consent
+  round ended in "the exchange with Fortnox failed" while the same round passed
+  locally: the callback handed the connector the bare global `fetch`, the connector
+  calls it as a method, and the Workers runtime refuses that (`Illegal invocation`)
+  before the code exchange is ever sent — Node's fetch does not, which is why nothing
+  local saw it.
+
+  The kernel now exports `globalFetch`, the runtime's fetch as a `FetchLike` — an arrow
+  over the global, so the receiver is never in play, and the one place the structural
+  cast lives. Every host default (`options.fetch ?? globalFetch` in both adapters) and every
+  connector handoff (the control plane's probes
+  and sweep, the dashboard's consent callback) uses it, and a new `lint:bound-fetch`
+  gate refuses the bare global handed on in any spelling, since no suite can reproduce
+  the refusal. The custom-hostname provisioner keeps its DOM-typed `FetchFn` — a real
+  `fetch` is not assignable to `FetchLike` under strict TypeScript, so an injected
+  DOM-typed fetch must not need a cast there — and its default is the bound global, which
+  is that type with no conversion.
+
+- Updated dependencies [e7115b2]
+- Updated dependencies [3e67ebe]
+  - @substrat-run/contracts@0.102.0
+
 ## 0.101.0
 
 ### Minor Changes
@@ -3839,7 +3895,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

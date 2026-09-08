@@ -1,5 +1,15 @@
 # @substrat-run/engine-invoicing
 
+## 0.9.18
+
+### Patch Changes
+
+- Updated dependencies [46051ee]
+- Updated dependencies [e7115b2]
+- Updated dependencies [3e67ebe]
+  - @substrat-run/kernel@0.102.0
+  - @substrat-run/contracts@0.102.0
+
 ## 0.9.17
 
 ### Patch Changes
@@ -1318,7 +1328,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
