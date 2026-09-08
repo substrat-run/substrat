@@ -186,3 +186,98 @@ export function deriveReleaseComparison(
     metricsAvailable: metrics !== null,
   };
 }
+
+/** One time bucket of traffic, as the series read delivers it. */
+export interface TrafficBucketInput {
+  start: string;
+  bucketMinutes: number;
+  requests: number;
+  errors: number;
+}
+
+/** One plotted bucket — zero-filled, so a gap in the data reads as a gap in traffic. */
+export interface TrafficBucket {
+  start: string;
+  requests: number;
+  errors: number;
+}
+
+/** A moment worth drawing a line at: a push, or a go-live. */
+export interface ReleaseMarker {
+  at: string;
+  kind: 'pushed' | 'went-live';
+  version: string;
+  versionId: string;
+}
+
+export interface TrafficSeries {
+  buckets: TrafficBucket[];
+  markers: ReleaseMarker[];
+  bucketMinutes: number;
+  /** False = the plane cannot bucket; the chart says so rather than drawing silence. */
+  available: boolean;
+}
+
+/**
+ * The series a release chart plots (#1236): traffic over time with every push and
+ * go-live drawn on it — "did this push break anything" as a shape rather than a
+ * table.
+ *
+ * Two rules the rendering depends on. **Zero-fill**: a bucket with no rows is
+ * absent from the backend's answer, and a chart that simply skips it draws a lie
+ * — the neighbours join and an outage becomes a narrower peak — so every bucket
+ * in the window exists here, explicitly zero. **Markers are registry facts, not
+ * telemetry**: a push that produced no traffic still gets its line, which is
+ * exactly the case worth seeing.
+ */
+export function deriveTrafficSeries(input: {
+  /** Null = the bucketed read was unavailable; the chart says so. */
+  buckets: TrafficBucketInput[] | null;
+  releases: ReleaseRow[];
+  hours: number;
+  /** The window's end — the caller's clock, so the series and its markers agree. */
+  now: Date;
+}): TrafficSeries {
+  const { buckets, releases, hours, now } = input;
+  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? (hours <= 6 ? 15 : 60);
+  const widthMs = bucketMinutes * 60_000;
+  const end = Math.floor(now.getTime() / widthMs) * widthMs;
+  const start = end - hours * 3_600_000;
+
+  const totals = new Map<number, { requests: number; errors: number }>();
+  for (const b of buckets ?? []) {
+    const t = Date.parse(b.start);
+    if (Number.isNaN(t)) continue;
+    // Snap to the grid this series is drawn on: the backend's bucket boundary and
+    // ours must agree, or a row lands between two columns and is lost.
+    const slot = Math.floor(t / widthMs) * widthMs;
+    if (slot < start || slot > end) continue;
+    const acc = totals.get(slot) ?? { requests: 0, errors: 0 };
+    acc.requests += b.requests;
+    acc.errors += b.errors;
+    totals.set(slot, acc);
+  }
+
+  const plotted: TrafficBucket[] = [];
+  for (let t = start; t <= end; t += widthMs) {
+    const acc = totals.get(t);
+    plotted.push({ start: new Date(t).toISOString(), requests: acc?.requests ?? 0, errors: acc?.errors ?? 0 });
+  }
+
+  const markers: ReleaseMarker[] = [];
+  const inWindow = (iso: string): boolean => {
+    const t = Date.parse(iso);
+    return !Number.isNaN(t) && t >= start && t <= now.getTime();
+  };
+  for (const r of releases) {
+    if (inWindow(r.pushedAt)) {
+      markers.push({ at: r.pushedAt, kind: 'pushed', version: r.version, versionId: r.versionId });
+    }
+    if (r.wentLiveAt !== null && inWindow(r.wentLiveAt)) {
+      markers.push({ at: r.wentLiveAt, kind: 'went-live', version: r.version, versionId: r.versionId });
+    }
+  }
+  markers.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+
+  return { buckets: plotted, markers, bucketMinutes, available: buckets !== null };
+}

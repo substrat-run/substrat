@@ -5563,6 +5563,21 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt },
         );
       },
+      scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const rows = db
+          .prepare(
+            `SELECT module_id, version, applied_at FROM _substrat_migrations
+              ORDER BY applied_at DESC, module_id, version LIMIT 100`,
+          )
+          .all() as Array<{ module_id: string; version: string; applied_at: string | null }>;
+        this.recordAccess(actor, 'scopeAppliedMigrations', { tenantId, scopeId }, null, rows.length);
+        return rows.map((r) => ({
+          moduleId: r.module_id,
+          version: r.version,
+          appliedAt: r.applied_at ?? null,
+        }));
+      },
       scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
         const scope = this.directory
           .prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?')

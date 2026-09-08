@@ -2837,6 +2837,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
   });
 
+  // #1236: when this scope's migrations actually ran — the schema-change history
+  // whose instants `_substrat_migrations.applied_at` has held all along with no
+  // reader. Read through the vertical that holds the scope's data when one
+  // resolves; the co-located host otherwise. Metadata only, so no masking.
+  app.get('/tenants/:tenantId/scopes/:scopeId/migrations', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.appliedMigrations(scopeId)
+        : await admin.scopeAppliedMigrations(actor, tenantId, scopeId),
+    );
+  });
+
   // #286: the PITR bookmarks a scope recorded before its migration passes — the
   // rewind points the deployments UI offers for a backout. Read through the
   // vertical that holds the scope's data when one resolves; the co-located host
@@ -4150,6 +4168,22 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       .object({ hours: z.coerce.number().int().min(1).max(72).default(24) })
       .parse({ hours: c.req.query('hours') });
     return c.json(await options.observability.serviceMetrics({ hours }));
+  });
+
+  // The bucketed twin (#1236): the series a chart plots, with the deploy markers
+  // drawn on top by the caller (push instants are registry facts, not telemetry).
+  // 501 when the reader cannot bucket — an empty series would render as "quiet".
+  app.get('/observability/metrics-series', async (c) => {
+    if (!options.observability?.serviceMetricsSeries) {
+      return c.json({ error: 'bucketed observability is not configured on this control plane' }, 501);
+    }
+    const { hours } = z
+      .object({ hours: z.coerce.number().int().min(1).max(72).default(24) })
+      .parse({ hours: c.req.query('hours') });
+    // Repeats like /observability/logs' `service`: a caller narrows to the handful
+    // it will plot, which is what keeps scripts × buckets bounded.
+    const services = c.req.queries('service') ?? undefined;
+    return c.json(await options.observability.serviceMetricsSeries({ hours, services }));
   });
 
   app.get('/observability/logs', async (c) => {

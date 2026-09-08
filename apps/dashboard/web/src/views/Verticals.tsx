@@ -8,6 +8,7 @@ import {
   type DeployFailureRow,
   type FailureGroupRow,
   type ReleasesView,
+  type TrafficSeries,
   type Deployment,
   type DeploymentVersion,
   type GitReposResult,
@@ -15,8 +16,9 @@ import {
   type WorkflowPreview,
 } from '../lib/api';
 import { Ic } from '../lib/icons';
-import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS } from '../lib/mock';
+import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS, MOCK_TRAFFIC } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
+import { TrafficChart } from '../components/TrafficChart';
 import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
 /**
@@ -483,6 +485,32 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
  * the panel renders nothing rather than an empty table.
  */
 /**
+ * The chart half of release health (#1236): 24 hours of traffic with every push
+ * and go-live drawn on it, so "did this push break anything" is a shape rather
+ * than a table read. Renders nothing when the plane cannot bucket — a flat line
+ * would read as silence, and unavailable is not quiet.
+ */
+function TrafficPanel({ slug }: { slug: string }) {
+  const [series, setSeries] = useState<TrafficSeries | null>(DEV_MOCK ? MOCK_TRAFFIC : null);
+
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    api
+      .deploymentTraffic(slug, 24)
+      .then((s) => live && setSeries(s))
+      // Tolerated to nothing: a worker or plane predating the route costs the chart, not the panel.
+      .catch(() => live && setSeries(null));
+    return () => {
+      live = false;
+    };
+  }, [slug]);
+
+  if (!series || !series.available || series.buckets.length === 0) return null;
+  return <TrafficChart buckets={series.buckets} markers={series.markers} />;
+}
+
+/**
  * The release ledger (#1236): every version with its adoption and health facts —
  * "did this push break anything" and "is anyone still on the broken one" in one
  * table. Traffic distinguishes unknown from quiet: an unconfigured metrics
@@ -518,6 +546,7 @@ function ReleasesPanel({ d }: { d: Deployment }) {
           traffic from the last 24 hours{view.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.
         </p>
       </div>
+      <TrafficPanel slug={d.slug} />
       <GridTable columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" header={['Version', 'Pushed', 'Went live', 'Where it runs', 'Failures', 'Traffic (24h)']}>
         {rows.map((r, i) => (
           <Row key={r.versionId} columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" last={i === rows.length - 1}>

@@ -390,6 +390,37 @@ export interface ReleaseRow {
   errors: number | null;
 }
 
+/** One migration as an app actually applied it (#1236) — its schema history. */
+export interface AppliedMigration {
+  moduleId: string;
+  version: string;
+  /** Null for a row written before the platform recorded the instant. */
+  appliedAt: string | null;
+}
+
+/** One plotted bucket of traffic (#1236) — zero-filled worker-side. */
+export interface TrafficBucket {
+  start: string;
+  requests: number;
+  errors: number;
+}
+
+/** A deploy moment drawn on the chart (#1236) — a registry fact, not telemetry. */
+export interface ReleaseMarker {
+  at: string;
+  kind: 'pushed' | 'went-live';
+  version: string;
+  versionId: string;
+}
+
+export interface TrafficSeries {
+  buckets: TrafficBucket[];
+  markers: ReleaseMarker[];
+  bucketMinutes: number;
+  /** False = the plane cannot bucket; the chart says so rather than drawing silence. */
+  available: boolean;
+}
+
 /** One side of the running-vs-update comparison (#1236). Nulls = metrics unavailable. */
 export interface ReleaseSide {
   versionId: string;
@@ -1314,6 +1345,14 @@ export const api = {
   /** Running vs the version an update would move to (#1236) — the last question before Update. */
   releaseComparison: (scopeId: string) =>
     call<ReleaseComparison>(`/apps/${encodeURIComponent(scopeId)}/release-comparison`),
+
+  /** Traffic over time with the deploys drawn on it (#1236). */
+  deploymentTraffic: (slug: string, hours: number) =>
+    call<TrafficSeries>(`/deployments/${encodeURIComponent(slug)}/traffic?hours=${hours}`),
+
+  /** When this app's migrations actually ran (#1236) — its schema history. */
+  appMigrations: (scopeId: string) =>
+    call<AppliedMigration[]>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),

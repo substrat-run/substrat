@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { instant, platformActorId, type ChannelHistoryEntry, type OpsFailureEntry, type Scope } from '@substrat-run/contracts';
-import { deriveReleaseComparison, deriveReleases } from '../src/releases.js';
+import { deriveReleaseComparison, deriveReleases, deriveTrafficSeries } from '../src/releases.js';
 import { versionPair } from '../src/deployments.js';
 import type { Deployment } from '../src/deployments.js';
 
@@ -144,5 +144,65 @@ describe('deriveReleaseComparison (#1236)', () => {
     expect(cmp.metricsAvailable).toBe(false);
     expect(cmp.running).toMatchObject({ versionId: V1, requests: null, cpuTimeP99: null });
     expect(deriveReleaseComparison({ ...pair, updateId: null, updateLabel: null }, []).update).toBeNull();
+  });
+});
+
+describe('deriveTrafficSeries (#1236) — the chart series and its markers', () => {
+  const now = new Date('2026-09-08T12:00:00.000Z');
+  const releasesOf = () =>
+    deriveReleases({ deployment: deployment(), prodHistory: history(), scopes: [], failures: [], metrics: null }).releases;
+
+  it('zero-fills the window so a gap in traffic is a gap on the chart', () => {
+    const series = deriveTrafficSeries({
+      hours: 6,
+      now,
+      releases: [],
+      buckets: [
+        { start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 10, errors: 1 },
+        { start: '2026-09-08T08:00:00.000Z', bucketMinutes: 60, requests: 4, errors: 0 },
+      ],
+    });
+    // Seven hourly columns for a six-hour window (both edges), every one present.
+    expect(series.buckets).toHaveLength(7);
+    expect(series.bucketMinutes).toBe(60);
+    const byStart = new Map(series.buckets.map((b) => [b.start, b]));
+    expect(byStart.get('2026-09-08T11:00:00.000Z')).toMatchObject({ requests: 10, errors: 1 });
+    expect(byStart.get('2026-09-08T08:00:00.000Z')).toMatchObject({ requests: 4, errors: 0 });
+    // The untouched hours exist and are explicitly zero, never absent.
+    expect(byStart.get('2026-09-08T09:00:00.000Z')).toMatchObject({ requests: 0, errors: 0 });
+    expect(series.available).toBe(true);
+  });
+
+  it('sums rows that land in one bucket and drops rows outside the window', () => {
+    const series = deriveTrafficSeries({
+      hours: 2,
+      now,
+      releases: [],
+      buckets: [
+        // Two scripts' rows for the same hour — one column, summed.
+        { start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 10, errors: 1 },
+        { start: '2026-09-08T11:30:00.000Z', bucketMinutes: 60, requests: 5, errors: 2 },
+        { start: '2026-09-01T11:00:00.000Z', bucketMinutes: 60, requests: 999, errors: 999 },
+        { start: 'not-a-date', bucketMinutes: 60, requests: 7, errors: 7 },
+      ],
+    });
+    const hour11 = series.buckets.find((b) => b.start === '2026-09-08T11:00:00.000Z');
+    expect(hour11).toMatchObject({ requests: 15, errors: 3 });
+    expect(series.buckets.reduce((n, b) => n + b.requests, 0)).toBe(15);
+  });
+
+  it('draws a marker per push and go-live inside the window, oldest first', () => {
+    const series = deriveTrafficSeries({ hours: 72, now, releases: releasesOf(), buckets: [] });
+    // V2 pushed 10:00 and went live 11:00 on the 8th; V1's instants are a week old.
+    expect(series.markers.map((m) => `${m.version}:${m.kind}`)).toEqual(['0.0.2:pushed', '0.0.2:went-live']);
+    expect(series.markers[0]!.at < series.markers[1]!.at).toBe(true);
+  });
+
+  it('says unavailable rather than drawing a flat line of silence', () => {
+    const series = deriveTrafficSeries({ hours: 24, now, releases: releasesOf(), buckets: null });
+    expect(series.available).toBe(false);
+    // The window still exists (so a caller CAN render an axis), but the caller is
+    // told not to — an all-zero chart and "I could not look" are different answers.
+    expect(series.buckets.every((b) => b.requests === 0)).toBe(true);
   });
 });

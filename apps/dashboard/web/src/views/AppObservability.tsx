@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { AppSchedules } from './AppSchedules';
-import { type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
-import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_RELEASE_COMPARISON } from '../lib/mock';
+import { type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
+import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_RELEASE_COMPARISON, MOCK_APP_MIGRATIONS } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
@@ -361,11 +361,72 @@ function ReleaseComparisonCard({ app }: { app: AppRow }) {
   );
 }
 
+
+/**
+ * The app's schema history (#1236): when each migration actually ran, from
+ * `_substrat_migrations.applied_at` — written since the table shipped, read by
+ * nothing until now, because every reader wanted only the frontier.
+ *
+ * A list rather than markers on the traffic chart, deliberately: a migration
+ * applies to ONE scope while traffic is measured per script and a script serves
+ * many scopes, so a per-scope line on a fleet-wide axis would draw a claim the
+ * telemetry cannot support. A null instant is a fact — the row predates the
+ * platform recording one — and reads as "before we recorded", never as unknown
+ * noise.
+ */
+function SchemaHistoryCard({ app }: { app: AppRow }) {
+  const [rows, setRows] = useState<AppliedMigration[] | null>(DEV_MOCK ? MOCK_APP_MIGRATIONS : null);
+
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    api
+      .appMigrations(app.app_scope_id)
+      .then((r) => live && setRows(r))
+      // Tolerated to nothing: a worker or plane predating the route costs the card, not the tab.
+      .catch(() => live && setRows(null));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  if (!rows || rows.length === 0) return null;
+  const shown = rows.slice(0, 8);
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Schema history</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          When this app&rsquo;s migrations ran, newest first — the other thing that changes
+          under a release.
+        </p>
+      </div>
+      <div style={{ display: 'grid', gap: 6 }}>
+        {shown.map((m) => (
+          <div
+            key={`${m.moduleId}:${m.version}`}
+            style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12.5 }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {m.moduleId} <span style={{ color: 'var(--text-tertiary)' }}>{m.version}</span>
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+              {m.appliedAt ? new Date(m.appliedAt).toLocaleString() : 'before we recorded'}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function AppObservability({ app }: { app: AppRow }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <AppSchedules scopeId={app.app_scope_id} />
       <ReleaseComparisonCard app={app} />
+      <SchemaHistoryCard app={app} />
       <AppTelemetry app={app} />
     </div>
   );

@@ -46,6 +46,32 @@ const METRICS_QUERY = `
   }
 `;
 
+/**
+ * The same dataset with a TIME dimension (#1236). Cloudflare exposes fixed bucket
+ * dimensions rather than an arbitrary interval, so the width is chosen from the
+ * window and reported back on every row — a renderer must never infer spacing
+ * from the gaps between the rows it happens to receive, because an empty bucket
+ * is omitted, not zero-filled (the caller zero-fills; see `bucketMinutes`).
+ */
+function seriesQuery(dimension: 'datetimeFifteenMinutes' | 'datetimeHour'): string {
+  return `
+  query ScriptMetricsSeries($accountTag: String!, $datetimeGeq: Time!, $datetimeLeq: Time!, $scripts: [String!]) {
+    viewer {
+      accounts(filter: { accountTag: $accountTag }) {
+        workersInvocationsAdaptive(
+          limit: 5000
+          filter: { datetime_geq: $datetimeGeq, datetime_leq: $datetimeLeq, scriptName_in: $scripts }
+          orderBy: [${dimension}_ASC]
+        ) {
+          sum { requests errors }
+          dimensions { scriptName dispatchNamespaceName ${dimension} }
+        }
+      }
+    }
+  }
+`;
+}
+
 export function createCfObservabilityReader(opts: CfObservabilityOptions): ObservabilityReader {
   const authed = (url: string, body: unknown) =>
     fetch(url, {
@@ -99,6 +125,61 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           cpuTimeP99: g.quantiles?.cpuTimeP99 ?? 0,
         }))
         .sort((a, b) => b.requests - a.requests);
+    },
+
+    async serviceMetricsSeries({ hours, services }) {
+      // Fixed-width buckets, chosen so a window is legible rather than dense: a
+      // few hours wants quarter-hours, a day or three wants hours.
+      const bucketMinutes = hours <= 6 ? 15 : 60;
+      const dimension = bucketMinutes === 15 ? 'datetimeFifteenMinutes' : 'datetimeHour';
+      const to = new Date();
+      const from = new Date(to.getTime() - hours * 3_600_000);
+      const res = await authed(GRAPHQL_URL, {
+        query: seriesQuery(dimension),
+        variables: {
+          accountTag: opts.accountId,
+          datetimeGeq: from.toISOString(),
+          datetimeLeq: to.toISOString(),
+          // `null` is "every script": the GraphQL filter omits an unset list, and
+          // the fleet view legitimately wants all of them.
+          scripts: services && services.length > 0 ? services : null,
+        },
+      });
+      const json = (await res.json()) as {
+        data?: {
+          viewer?: {
+            accounts?: Array<{
+              workersInvocationsAdaptive?: Array<{
+                sum?: { requests?: number; errors?: number };
+                dimensions?: Record<string, string | undefined>;
+              }>;
+            }>;
+          };
+        };
+        errors?: Array<{ message?: string }>;
+      };
+      if (!res.ok || json.errors?.length) {
+        const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+        throw new Error(`Cloudflare analytics series query failed: ${message}`);
+      }
+      const groups = json.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [];
+      return groups.flatMap((g) => {
+        const start = g.dimensions?.[dimension];
+        // A row with no bucket instant cannot be placed on an axis — dropping it
+        // beats plotting it at an invented time.
+        if (start === undefined) return [];
+        return [
+          {
+            service: g.dimensions?.scriptName ?? '(unknown)',
+            namespace: g.dimensions?.dispatchNamespaceName || null,
+            // Cloudflare answers these without a zone designator; the axis is UTC.
+            start: start.endsWith('Z') ? start : `${start}Z`,
+            bucketMinutes,
+            requests: g.sum?.requests ?? 0,
+            errors: g.sum?.errors ?? 0,
+          },
+        ];
+      });
     },
 
     async recentLogs({ services, level, search, hours, limit }) {

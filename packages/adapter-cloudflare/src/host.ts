@@ -148,6 +148,7 @@ import {
   type OpsFailureFilter,
   type OpsFailureInput,
   type IssueFilter,
+  type AppliedMigration,
   type SweepRunFilter,
   type SweepRunInput,
   type ModelUsageFilter,
@@ -920,6 +921,7 @@ interface ScopeStubRpc {
   redactSubject(subjectId: string): Promise<number>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+  appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1633,6 +1635,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * rewind points a backout UI offers. Behind the vertical's platform-gated
    * `/internal/bookmarks`; the control plane is the gate and the auditor.
    */
+  /** When this host's own scope applied each migration (#1236) — the vertical-host read. */
+  async appliedMigrationsLocal(scopeId: ScopeId): Promise<AppliedMigration[]> {
+    return this.scopeStub(scopeId).appliedMigrations();
+  }
+
   async migrationBookmarksLocal(
     scopeId: ScopeId,
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {
@@ -3601,6 +3608,13 @@ export class CloudflareScopeHost implements ScopeHost {
           { expiresAt: scope.expires_at ?? null },
           { expiresAt },
         );
+      },
+      scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
+        const scope = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
+        const applied = await this.scopeStub(scopeId).appliedMigrations();
+        await this.recordAccess(actor, 'scopeAppliedMigrations', { tenantId, scopeId }, null, applied.length);
+        return applied;
       },
       scopeMigrationBookmarks: async (actor, tenantId, scopeId) => {
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);

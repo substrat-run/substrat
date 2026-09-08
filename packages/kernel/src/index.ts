@@ -33,6 +33,7 @@ export type {
   OperationContext,
   PageParams,
   OperationHandler,
+  AppliedMigration,
   OpsFailureFilter,
   OpsFailureInput,
   IssueFilter,
