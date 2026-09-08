@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { AppSchedules } from './AppSchedules';
-import { api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
-import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS } from '../lib/mock';
+import { type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
+import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_RELEASE_COMPARISON } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
@@ -299,10 +299,73 @@ function AppTelemetry({ app }: { app: AppRow }) {
  * app running another team's vertical and even where Workers Logs is absent;
  * the guards below only fence the metrics/logs half they were written for.
  */
+
+/**
+ * Running vs the version an update would move this app to (#1236): the last
+ * question before pressing Update, from the same 24h version-stamped traffic
+ * the release ledger reads. Renders nothing when the app already runs prod's
+ * head — an empty comparison is not information. An error rate that IMPROVES
+ * is the green story; unavailable metrics render as em dashes, never zeros.
+ */
+function ReleaseComparisonCard({ app }: { app: AppRow }) {
+  const [cmp, setCmp] = useState<ReleaseComparison | null>(DEV_MOCK ? MOCK_RELEASE_COMPARISON : null);
+
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    api
+      .releaseComparison(app.app_scope_id)
+      // Tolerated to nothing: a worker or plane predating the route costs the card, not the tab.
+      .then((r) => live && setCmp(r))
+      .catch(() => live && setCmp(null));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  if (!cmp || !cmp.running || !cmp.update) return null;
+
+  const rate = (side: { requests: number | null; errors: number | null }): string => {
+    if (side.requests === null || side.errors === null) return '—';
+    if (side.requests === 0) return 'no traffic';
+    return `${((side.errors / side.requests) * 100).toFixed(1)}%`;
+  };
+  const ms = (v: number | null): string => (v === null ? '—' : `${v.toFixed(1)}ms`);
+  const sideCell = (label: string, side: NonNullable<ReleaseComparison['running']>) => (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+        {label} · <span style={{ fontFamily: 'var(--font-mono)' }}>{side.version ?? side.versionId.slice(-6)}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 14, fontSize: 12.5, fontFamily: 'var(--font-mono)' }}>
+        <span>{side.requests === null ? '—' : `${side.requests.toLocaleString()} req`}</span>
+        <span style={{ color: side.errors ? 'var(--status-danger-fg)' : undefined }}>{rate(side)} err</span>
+        <span title="CPU p50 / p99, busiest script">{ms(side.cpuTimeP50)} / {ms(side.cpuTimeP99)}</span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Update comparison</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          The version this app runs beside the one an update would move it to — last 24h of
+          traffic, fleet-wide per version{cmp.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.
+        </p>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        {sideCell('Running', cmp.running)}
+        {sideCell('Update target', cmp.update)}
+      </div>
+    </div>
+  );
+}
+
 export function AppObservability({ app }: { app: AppRow }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <AppSchedules scopeId={app.app_scope_id} />
+      <ReleaseComparisonCard app={app} />
       <AppTelemetry app={app} />
     </div>
   );
