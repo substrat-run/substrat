@@ -879,15 +879,30 @@ export class TenantNarrowedControlPlane {
    * to empty against a plane predating the route (deploy skew).
    */
   async listOpsFailures(filter: { vertical?: string; limit?: number } = {}): Promise<OpsFailureEntry[]> {
-    const q = new URLSearchParams({ tenantId: this.tenantId });
-    if (filter.vertical !== undefined) q.set('vertical', filter.vertical);
-    if (filter.limit !== undefined) q.set('limit', String(filter.limit));
+    // A limit past the plane's page cap must not become one oversized request —
+    // so a larger ask is a CURSOR WALK of capped pages, the listSweepRuns pattern.
+    const wanted = filter.limit ?? LIST_PAGE_MAX;
+    const out: OpsFailureEntry[] = [];
+    let cursor: string | undefined;
     try {
-      const page = await this.call<Page<OpsFailureEntry> | OpsFailureEntry[] | undefined>(`/ops-failures?${q.toString()}`);
-      if (Array.isArray(page)) return page;
-      return page?.entries ?? [];
+      while (out.length < wanted) {
+        const q = new URLSearchParams({ tenantId: this.tenantId });
+        if (filter.vertical !== undefined) q.set('vertical', filter.vertical);
+        q.set('limit', String(Math.min(wanted - out.length, LIST_PAGE_MAX)));
+        if (cursor !== undefined) q.set('cursor', cursor);
+        const page = await this.call<Page<OpsFailureEntry> | OpsFailureEntry[] | undefined>(
+          `/ops-failures?${q.toString()}`,
+        );
+        // A bare array is a pre-envelope plane (deploy skew): one exhausted page.
+        if (Array.isArray(page)) return [...out, ...page];
+        out.push(...(page?.entries ?? []));
+        if (!page?.nextCursor) return out;
+        cursor = page.nextCursor;
+      }
+      return out;
     } catch {
-      return [];
+      // Deploy skew (a plane predating the route): no panel, never an error.
+      return out.length > 0 ? out : [];
     }
   }
 

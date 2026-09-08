@@ -6,6 +6,7 @@ import {
   ApiError,
   type ChannelHistoryEntry,
   type DeployFailureRow,
+  type FailureGroupRow,
   type Deployment,
   type DeploymentVersion,
   type GitReposResult,
@@ -13,7 +14,7 @@ import {
   type WorkflowPreview,
 } from '../lib/api';
 import { Ic } from '../lib/icons';
-import { DEV_MOCK, MOCK_FAILURES, MOCK_PREVIEWS } from '../lib/mock';
+import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_PREVIEWS } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
@@ -480,6 +481,64 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
  * pushed code), and the handle is what a support ticket needs. Empty = nothing recent —
  * the panel renders nothing rather than an empty table.
  */
+function IssuesPanel({ d }: { d: Deployment }) {
+  const [rows, setRows] = useState<FailureGroupRow[] | null>(DEV_MOCK ? MOCK_FAILURE_GROUPS : null);
+
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    api
+      .listFailureGroups(d.slug)
+      .then((r) => live && setRows(r))
+      // Tolerated to nothing: a worker or plane predating the route costs the panel, not the page.
+      .catch(() => live && setRows(null));
+    return () => {
+      live = false;
+    };
+  }, [d.slug]);
+
+  // Rendered only when grouping actually compresses — a recurred shape. A list
+  // of singletons is already its own best summary, and the flat panel below has it.
+  if (!rows || rows.length === 0 || !rows.some((g) => g.count >= 2)) return null;
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Recurring failures</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          The rows below, grouped by shape — operation, stage, error code — so a retried failure
+          reads as one line with a count, not a page of copies. Counts cover the last 90 days of
+          record.
+        </p>
+      </div>
+      <GridTable columns="0.45fr 1.7fr 0.8fr 1.1fr 2fr" header={['Count', 'Shape', 'Origin', 'Last seen', 'Latest detail']}>
+        {rows.map((g, i) => (
+          <Row key={g.fingerprint} columns="0.45fr 1.7fr 0.8fr 1.1fr 2fr" last={i === rows.length - 1}>
+            <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>{g.count}×</span>
+            <span>
+              <MonoTag>{g.operation}</MonoTag>
+              {g.stage && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {g.stage}</span>}
+              {g.code && <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}> · {g.code}</span>}
+            </span>
+            <span>
+              <Pill kind={g.origin === 'platform' ? 'danger' : g.origin === 'provider' ? 'warning' : 'neutral'}>
+                {g.origin ?? 'unclassified'}
+              </Pill>
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{new Date(g.lastSeen).toLocaleString()}</span>
+            <span
+              title={g.lastMessage}
+              style={{ fontSize: 12.5, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+            >
+              {g.lastMessage}
+            </span>
+          </Row>
+        ))}
+      </GridTable>
+    </div>
+  );
+}
+
 function FailuresPanel({ d }: { d: Deployment }) {
   const [rows, setRows] = useState<DeployFailureRow[] | null>(DEV_MOCK ? MOCK_FAILURES : null);
 
@@ -626,6 +685,7 @@ export function VerticalDetail({
             </div>
             <ProdHistory d={d} busy={busy} onPromote={onPromote} />
             <PreviewsPanel d={d} busy={busy} />
+            <IssuesPanel d={d} />
             <FailuresPanel d={d} />
           </>
         )}

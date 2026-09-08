@@ -370,6 +370,24 @@ export interface DeployFailureRow {
   at: string;
 }
 
+/**
+ * One failure shape on MY vertical (#1233): the fingerprint grouping over the
+ * rows above, derived worker-side. Counts cover the evidence window (90 days),
+ * not all time; there is no lifecycle here — verdicts are staff concerns.
+ */
+export interface FailureGroupRow {
+  fingerprint: string;
+  operation: string;
+  stage: string | null;
+  code: string | null;
+  origin: string | null;
+  count: number;
+  firstSeen: string;
+  lastSeen: string;
+  lastMessage: string;
+  lastStatus: number | null;
+}
+
 /** The result of updating an app to its vertical's prod version. */
 export interface UpdateResult {
   updated: boolean;
@@ -1239,6 +1257,10 @@ export const api = {
    *  why a red CI run was red, from the durable record, without staff involvement. */
   listFailures: (slug: string) =>
     call<DeployFailureRow[]>(`/deployments/${encodeURIComponent(slug)}/failures`),
+
+  /** The same record grouped by failure shape (#1233) — counted, newest-seen first. */
+  listFailureGroups: (slug: string) =>
+    call<FailureGroupRow[]>(`/deployments/${encodeURIComponent(slug)}/issues`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),
