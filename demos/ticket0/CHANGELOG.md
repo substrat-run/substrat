@@ -1,5 +1,23 @@
 # @substrat-run/demo-ticket0
 
+## 0.3.12
+
+### Patch Changes
+
+- a13b459: A customer writing into a conversation the desk has closed is answered instead of refused. `closed` stays terminal — it is the escape hatch out of the inbox, and a thread anyone could climb back into by writing one more line would not be one — so the message opens a follow-up conversation for the same contact, with `conversation.follows` naming the thread it continues. A widget session moves to the follow-up carrying the same token, so the visitor's chat bubble keeps working; an inbound email does the same. Before this, both paths returned `invalid transition: conversation … is 'closed'`, which reached a visitor of substrat.net verbatim.
+
+  The widget also stops rendering server error text at visitors: the status decides a plain sentence and the real error goes to the browser console, where the person debugging an embed is.
+
+- Updated dependencies [dd999a9]
+  - @substrat-run/contracts@0.104.0
+  - @substrat-run/adapter-sqlite@0.104.0
+  - @substrat-run/adapter-cloudflare@0.104.0
+  - @substrat-run/engine-metering@0.5.10
+  - @substrat-run/dev-issuer@0.1.19
+  - @substrat-run/kernel@0.104.0
+  - @substrat-run/vertical-auth@0.12.7
+  - @substrat-run/vertical-host@0.104.0
+
 ## 0.3.11
 
 ### Patch Changes

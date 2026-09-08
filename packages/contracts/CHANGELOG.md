@@ -1,5 +1,19 @@
 # @substrat-run/contracts
 
+## 0.104.0
+
+### Minor Changes
+
+- dd999a9: A regression names its versions (#1236, unlocking what #1233 parked). Issues
+  gain `lastVersion` (the newest version-stamped occurrence, kept through
+  unstamped arrivals) and `resolvedVersion` (what `lastVersion` was when the
+  resolve verdict landed). Together they are the sentence Sentry's release
+  tracking is famous for: "resolved under X, seen again under Y" — the ingest
+  already flipped a resolved issue to `regressed` on a fresh arrival, and now
+  the flip carries the pair. A reopen or ignore clears the resolution's version
+  with its timestamp; the console's issue detail renders the pair on a
+  regressed row.
+
 ## 0.103.0
 
 ### Minor Changes
@@ -4856,7 +4870,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

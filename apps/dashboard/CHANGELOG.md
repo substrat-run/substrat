@@ -1,5 +1,37 @@
 # @substrat-run/dashboard
 
+## 0.32.0
+
+### Minor Changes
+
+- ae8af38: The per-version comparison (#1236): an Update comparison card on the app's
+  Observability tab shows the version this app RUNS beside the one an update
+  would move it to — requests, error rate, and CPU p50/p99 from the same 24-hour
+  version-stamped traffic the release ledger reads. It renders only when an
+  update actually exists; an app already on prod's head gets nothing, because an
+  empty comparison is not information. Requests and errors sum across a version's
+  scripts while the percentiles come from its busiest one — percentiles cannot be
+  summed, and the busiest script is where the latency story happened.
+
+  The (running, update) frame every per-app tab reasons about is now one helper,
+  `versionPair`, instead of three inline restatements: running is the bound
+  version, else the prod head for an unpinned scope, and an update is offered iff
+  prod points somewhere other than the version the scope effectively runs — the
+  rule that keeps an unpinned scope from being offered its own head as an update.
+
+### Patch Changes
+
+- Updated dependencies [dd999a9]
+  - @substrat-run/contracts@0.104.0
+  - @substrat-run/adapter-cloudflare@0.104.0
+  - @substrat-run/connector-fortnox@0.4.6
+  - @substrat-run/demo-callout@0.3.22
+  - @substrat-run/engine-invites@0.7.3
+  - @substrat-run/engine-invoicing@0.9.20
+  - @substrat-run/engine-protocol@0.12.9
+  - @substrat-run/engine-workorder@0.11.3
+  - @substrat-run/kernel@0.104.0
+
 ## 0.31.0
 
 ### Minor Changes
