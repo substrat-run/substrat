@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
+import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox } from '@substrat-run/kernel';
 import {
   atomicContractSuite,
+  grantExpiryContractSuite,
   impersonationContractSuite,
   connectorTestFetch,
   permissionContractSuite,
@@ -193,6 +194,25 @@ spineGuardContractSuite('adapter-sqlite', async () => {
   const host = new SqliteScopeHost({ dir, checker: UNSAFE_allowAllChecker });
   return {
     host,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #956: a timed grant expires against the HOST's clock. The DEFAULT checker, on a
+// manual clock the suite moves — the subject is that the checker's `expires_at`
+// judgement reads `options.clock` and not `new Date()`. Mounted here and not on the
+// Cloudflare adapter: the DO reads the wall clock and no option reaches it (the
+// suite header says why), so a mount there would be a fact the adapter cannot show.
+grantExpiryContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-expiry-'));
+  const clock = manualClock();
+  const host = new SqliteScopeHost({ dir, clock: clock.read });
+  return {
+    host,
+    clock,
     cleanup: async () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
