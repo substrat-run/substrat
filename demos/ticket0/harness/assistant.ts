@@ -509,6 +509,78 @@ export function smallTalk(text: string): SmallTalk {
 }
 
 /**
+ * Is this a request for a person rather than a question?
+ *
+ * The widget has always had a "Talk to a human" button, and for everything except the
+ * button itself this is the only thing that can tell. A visitor who types *"can I
+ * speak to someone?"* means precisely what the button means, and before this the
+ * sentence went to retrieval like any other: bm25 found the documentation's
+ * best-matching page about people and permissions, the model answered from it, and
+ * the customer was told which roles may file an absence. Asking a model to classify
+ * this would cost a request per message and put the judgement somewhere nobody can
+ * read; deciding it here costs nothing and is a rule you can argue with.
+ *
+ * Two conditions, both required. There must be a **person** in the sentence — human,
+ * agent, someone — and there must be a **handoff**: talking to them, getting them,
+ * having them look. The second condition is what keeps the documentation's own
+ * subject matter out of it. "Can a person be assigned to a work order?" names a
+ * person and asks a question about the product; "can a person take a look at this?"
+ * names one and asks for them. A long message is doing something else whatever words
+ * it uses, so length caps it, the same way `smallTalk` is capped.
+ */
+/** A person, in the words a customer uses for one. */
+const PERSON = '(human|humans|person|people|agent|agents|someone|somebody|anyone|anybody|staff|operator|representative|support)';
+
+/**
+ * The five shapes an ask for a person takes. Patterns rather than a bag of words,
+ * because the bag matches the documentation's own subject matter: this product's
+ * pages are full of people being assigned things and approving things, and "do I need
+ * a person to approve a migration?" is a question for the assistant, not a request
+ * for one.
+ */
+const ASKS = [
+  /** The bare ask, where the person IS the message: "human", "a real person please". */
+  new RegExp(`^(a |an |the |real |actual |live |can i |i want |i need |get me |talk to |speak to |please )*${PERSON}( being)?( please| now)?$`),
+  /** Talking to one: "can I talk to a human", "I'd like to speak with someone". */
+  new RegExp(`\\b(talk|talking|speak|speaking|chat|chatting|deal) (to|with) (a |an |the |real |actual |live )*${PERSON}\\b`),
+  /** Being handed to one, which needs no noun at all: "escalate this", "transfer me". */
+  /\b(escalate|transfer|forward|hand over|handover|pass this on)\b/,
+  /** Asking one to act: "can a person take a look at this", "could someone help". */
+  new RegExp(`\\b${PERSON}\\b.{0,20}\\b(take a look|takes a look|look at|look into|help|reply|answer|respond|check|pick (this|it) up|get back)\\b`),
+  /** The unmistakable adjective: "a real person", "an actual human". */
+  new RegExp(`\\b(real|actual|live|actually) ${PERSON}\\b`),
+];
+
+/**
+ * Is this a request for a person rather than a question?
+ *
+ * The widget has always had a "Talk to a human" button, and the button now says so
+ * outright — but a visitor who TYPES *"can I speak to someone?"* means precisely what
+ * the button means, and only this can tell. Before it, the sentence went to retrieval
+ * like any other: bm25 found the documentation's best-matching page about people and
+ * permissions, the model answered from it, and the customer was told which roles may
+ * file an absence.
+ *
+ * Deliberately a local check and not a model call, for the reason `smallTalk` gives:
+ * a request per message to decide one narrow thing, and a judgement nobody can read
+ * afterwards. And deliberately liberal at the margin — the cost of being wrong here
+ * is asymmetric. A question escalated by mistake reaches a person who answers it; a
+ * request for a person answered by the model reaches nobody at all.
+ */
+export function wantsHuman(text: string): boolean {
+  const words = text
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  // Past a sentence or two it is a description of a problem, not a request for a
+  // person — and a description of a problem is what the assistant is for.
+  if (words.length === 0 || words.length > 16) return false;
+  const line = words.join(' ');
+  return ASKS.some((pattern) => pattern.test(line));
+}
+
+/**
  * Turn a question into a short list of searches, most specific first.
  *
  * Three facts about the index decide this shape, and all three were measured rather

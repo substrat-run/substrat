@@ -75,9 +75,25 @@ itself, and it refuses the request *before* the handler, because withholding
 stop the write behind it. An origin removed from
 the list stops working without a redeploy; the list is read per request.
 
-Behind the script are three unauthenticated routes — open a session, post a message, read
-the thread — confined by a session token rather than a login, since a visitor in a chat
-bubble has no principal. The session lives in `localStorage`; a token that no longer names
+Behind the script are four unauthenticated routes — open a session, post a message, read
+the thread, and **ask for a person** — confined by a session token rather than a login,
+since a visitor in a chat bubble has no principal.
+
+**"Talk to a human" is a route, not a sentence.** The button used to post the words
+*"Can a person take a look at this, please?"* through the ordinary message route, where
+retrieval and the model treated them as a question and answered from whichever
+documentation page matched best — and nobody at the desk was told anything. It posts to
+`/handoff` now: one call writes what the visitor said, writes the desk's acknowledgement
+so they are never left watching dots, and notifies the desk. Someone who *types* the
+request instead gets the same treatment — `wantsHuman` in `harness/assistant.ts` decides
+it in the surface, before the assistant is ever asked, on patterns rather than a model
+call, and the questions this product's own documentation is full of ("can a person be
+assigned to a work order?") are the half it is written to keep out.
+
+Who is notified is the conversation's assignee, or — when nobody holds it, which is every
+widget conversation — every agent in the desk's directory. "It is back in the inbox" is a
+true thing to say about an unassigned conversation and a useless one about an escalated
+one. The session lives in `localStorage`; a token that no longer names
 anything (reaped session, reseeded desk) is thrown away and replaced silently rather than
 shown to the visitor as an id.
 

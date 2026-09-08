@@ -2367,6 +2367,61 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   /**
+   * The visitor is asking for a person, and that is not a question to answer.
+   *
+   * The widget has had a "Talk to a human" button all along, and it worked by TYPING
+   * one — it posted `Can a person take a look at this, please?` through `widget-post`
+   * like any other message, so retrieval ran, the model ran, and the customer got a
+   * paragraph out of whichever documentation page bm25 liked best. The intent was
+   * there in the click and the pipeline threw it away.
+   *
+   * So the ask has its own operation. It writes what the visitor said, writes the
+   * desk's acknowledgement in the same transaction, and tells the people who can
+   * act on it — `notified` is how many were told, which is a fact worth having on
+   * the event: a desk with nobody to tell says zero, and that is a real answer.
+   *
+   * Same permission and the same session token as `widget-post`, because it is the
+   * same visitor doing the same kind of thing. What it never does is call a model.
+   */
+  'ticket0/request-human': {
+    // Not a tool: the widget service's surface — held by the desk's `widget` principal, driven by a browser.
+    mcp: false,
+    summary: 'Ask for a person to take over the conversation',
+    permission: 'conversation:widget',
+    input: z.object({
+      sessionId: z.string(),
+      token: z.string(),
+      /**
+       * What the visitor said, when they have not said it yet — the button's own
+       * sentence, posted and escalated in ONE call so a desk can never end up
+       * holding the request without having told anybody about it.
+       *
+       * Omitted when the message is already in the thread: a visitor who TYPED
+       * "can I talk to a human" has posted through `widget-post` already, and
+       * writing their sentence a second time would put it in the thread twice.
+       */
+      body: z.string().min(1).optional(),
+    }),
+    output: ticket0Entities.message.fields.extend({
+      /**
+       * How many people were told. Zero is never a failure: it is a desk with no
+       * agents, or an ask that already stands — a second click while the first
+       * request is still outstanding is the same request, and the desk hears once.
+       */
+      notified: z.number(),
+    }),
+    http: { method: 'POST', path: '/widget/sessions/{sessionId}/handoff' },
+    emits: {
+      entity: 'message',
+      entityIdFrom: 'id',
+      type: 'ticket0.human-requested',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'conversation_id', 'notified'],
+    },
+  },
+
+  /**
    * The visitor's view of their own thread.
    *
    * A different operation from `list-messages`, not the same one with a flag: this
@@ -2765,6 +2820,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/record-assistant-failure',
           'ticket0/ingest-message',
           'ticket0/widget-post',
+          'ticket0/request-human',
           'ticket0/tag-conversation',
           'ticket0/untag-conversation',
           'ticket0/set-priority',
@@ -2784,6 +2840,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/record-assistant-failure',
           'ticket0/ingest-message',
           'ticket0/widget-post',
+          'ticket0/request-human',
           'ticket0/assign',
           'ticket0/tag-conversation',
           'ticket0/untag-conversation',
@@ -2797,6 +2854,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/wake-snoozed': 'open',
           'ticket0/ingest-message': 'open',
           'ticket0/widget-post': 'open',
+          'ticket0/request-human': 'open',
           'ticket0/resolve': 'resolved',
           'ticket0/close': 'closed',
         },
@@ -2813,6 +2871,7 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/close': 'closed',
           'ticket0/ingest-message': 'open',
           'ticket0/widget-post': 'open',
+          'ticket0/request-human': 'open',
           'ticket0/post-public-reply': 'open',
         },
         allow: [

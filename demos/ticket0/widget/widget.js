@@ -48,6 +48,13 @@
     session = null;
   }
 
+  /**
+   * What the button says on the visitor's behalf. It reads as something a person
+   * would type because it appears in the thread as something they said — but it is
+   * no longer what carries the intent: the route is.
+   */
+  var ASK_FOR_A_PERSON = 'Can a person take a look at this, please?';
+
   var open = false;
   var waiting = false;
   /**
@@ -62,6 +69,14 @@
   var WAIT_CEILING = 20000;
   /** The wait ran out. Persistent, or the notice would show for one render and go. */
   var gaveUp = false;
+  /**
+   * This wait is for a PERSON, not for the assistant.
+   *
+   * The button posts to its own route, so the visitor is not told the assistant is
+   * reading documentation on their behalf when nobody asked it to, and is not offered
+   * an escape hatch to the thing they just used.
+   */
+  var handoff = false;
   var seen = 0;
   var poll = null;
   var error = null;
@@ -285,6 +300,7 @@
     helpDone = false;
     waiting = false;
     gaveUp = false;
+    handoff = false;
   }
 
   /** One recovery attempt. A second failure is a real error and is shown as one. */
@@ -475,7 +491,7 @@
     // route to a person cannot live only inside it.
     root.querySelector('.ft [data-act="human"]').onclick = function () {
       helpDone = true;
-      post('Can a person take a look at this, please?');
+      post(ASK_FOR_A_PERSON, true);
     };
 
     // Delegated: the log's contents are replaced on every update, so a handler bound
@@ -487,7 +503,7 @@
         renderLog();
       } else if (act === 'human') {
         helpDone = true;
-        post('Can a person take a look at this, please?');
+        post(ASK_FOR_A_PERSON, true);
       }
     });
 
@@ -586,6 +602,12 @@
       body +=
         '<div class="escape">No answer from the assistant on this one \u2014 ' +
         'a person will pick it up. <button data-act="human">Ask for a human now</button></div>';
+    } else if (waiting && handoff) {
+      // Asked for already. Offering the same button again under the dots would read
+      // as if the click had not registered.
+      body +=
+        '<div class="wait"><div class="dots"><span></span><span></span><span></span></div>' +
+        '<span class="waitlabel">Asking a person to take over\u2026</span></div>';
     } else if (waiting) {
       body +=
         '<div class="wait"><div class="dots"><span></span><span></span><span></span></div>' +
@@ -648,7 +670,12 @@
       });
   }
 
-  function post(text) {
+  /**
+   * Say something. `asPerson` sends it as a REQUEST FOR A PERSON instead of a
+   * question — a different route, which posts the message, acknowledges it and tells
+   * the desk in one call, and never reaches a model.
+   */
+  function post(text, asPerson) {
     text = (text || '').trim();
     if (!text) return;
     // Without a session there is nowhere to send it. Say so rather than reading
@@ -668,10 +695,11 @@
     waiting = true;
     waitingSince = Date.now();
     gaveUp = false;
+    handoff = Boolean(asPerson);
     schedule();
     messages = messages.concat([{ author_kind: 'contact', body_text: text }]);
     draw();
-    call('POST', '/widget/sessions/' + session.sessionId + '/messages', {
+    call('POST', '/widget/sessions/' + session.sessionId + (asPerson ? '/handoff' : '/messages'), {
       token: session.token,
       body: text,
     })
@@ -682,7 +710,7 @@
         // should not have to notice that the old session had gone.
         if (
           recover(e, function () {
-            return post(text);
+            return post(text, asPerson);
           })
         )
           return;

@@ -1317,6 +1317,7 @@
             "ticket0/post-note",
             "ticket0/record-answer",
             "ticket0/record-assistant-failure",
+            "ticket0/request-human",
             "ticket0/set-priority",
             "ticket0/tag-conversation",
             "ticket0/untag-conversation",
@@ -1337,6 +1338,7 @@
             "ticket0/post-public-reply",
             "ticket0/record-answer",
             "ticket0/record-assistant-failure",
+            "ticket0/request-human",
             "ticket0/set-priority",
             "ticket0/tag-conversation",
             "ticket0/untag-conversation",
@@ -1348,6 +1350,7 @@
             "ticket0/close": "closed",
             "ticket0/ingest-message": "open",
             "ticket0/post-public-reply": "open",
+            "ticket0/request-human": "open",
             "ticket0/widget-post": "open"
           },
           "allow": [
@@ -1362,6 +1365,7 @@
           "on": {
             "ticket0/close": "closed",
             "ticket0/ingest-message": "open",
+            "ticket0/request-human": "open",
             "ticket0/resolve": "resolved",
             "ticket0/wake": "open",
             "ticket0/wake-snoozed": "open",

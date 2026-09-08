@@ -25,6 +25,7 @@ import {
   type PublicServiceActor,
   type ResolvePublicActor,
 } from '@substrat-run/vertical-host';
+import { wantsHuman } from './assistant.js';
 
 /** A desk, resolved for one request: how to act as its widget service, and where it is embeddable. */
 export type WidgetDesk = PublicServiceActor;
@@ -99,10 +100,34 @@ export function mountWidgetSurface(
 
       route.post('/sessions/:sessionId/messages', async (c, { actor: desk, origin }) => {
         const body = (await c.req.json().catch(() => ({}))) as { token?: string; body?: string };
+        const sessionId = c.req.param('sessionId');
         const message = await desk.invoke<{ id: string; conversation_id: string; body_text: string }>(
           'ticket0/widget-post',
-          { sessionId: c.req.param('sessionId'), token: body.token, body: body.body },
+          { sessionId, token: body.token, body: body.body },
         );
+        /**
+         * A message that asks for a person is not a question, and must not reach a
+         * model. The widget's button says so through the route below; this is for a
+         * visitor who TYPED it, which the button cannot know about.
+         *
+         * The decision is here rather than in `answerConversation` because of who is
+         * allowed to speak: the handoff's acknowledgement is the DESK confirming
+         * receipt, written by the widget service, and a desk that keeps a human in
+         * the loop refuses the assistant a public word — correctly, and it must not
+         * take this sentence down with it.
+         *
+         * If the escalation itself fails, the assistant answers after all. A poor
+         * answer beats the silence of a message that nothing was ever going to pick
+         * up, and the visitor can always press the button.
+         */
+        if (wantsHuman(message.body_text)) {
+          try {
+            await desk.invoke('ticket0/request-human', { sessionId, token: body.token });
+            return c.json(message);
+          } catch {
+            /* fall through to the assistant */
+          }
+        }
         options.onCustomerMessage?.(c, {
           origin,
           conversationId: message.conversation_id,
@@ -110,6 +135,26 @@ export function mountWidgetSurface(
           body: message.body_text,
         });
         return c.json(message);
+      });
+
+      /**
+       * "Talk to a human", as a click rather than a sentence about one.
+       *
+       * The button used to post its own prose through the route above and hope
+       * something downstream recognised it. Nothing did: the intent was in the click
+       * and the pipeline turned it back into a guess. One call now posts what the
+       * visitor said, acknowledges it, and tells the desk — in one transaction, so
+       * the request cannot be recorded without being announced.
+       */
+      route.post('/sessions/:sessionId/handoff', async (c, { actor: desk }) => {
+        const body = (await c.req.json().catch(() => ({}))) as { token?: string; body?: string };
+        return c.json(
+          await desk.invoke('ticket0/request-human', {
+            sessionId: c.req.param('sessionId'),
+            token: body.token,
+            ...(body.body ? { body: body.body } : {}),
+          }),
+        );
       });
 
       route.get('/sessions/:sessionId/messages', async (c, { actor: desk }) => {

@@ -601,6 +601,13 @@ export interface Ticket0Client {
   renderSavedReply(input: { conversationId: string; savedReplyId: string }): Promise<{ id: string; title: string; body: string; blank: string[]; unresolved: string[] }>;
 
   /**
+   * Ask for a person to take over the conversation
+   *
+   * `POST /widget/sessions/{sessionId}/handoff` — `ticket0/request-human`
+   */
+  requestHuman(input: { sessionId: string; token: string; body?: string }): Promise<{ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; notified: number }>;
+
+  /**
    * Mark a conversation resolved
    *
    * `POST /conversations/{conversationId}/resolve` — `ticket0/resolve`
@@ -1021,6 +1028,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/failure`, "POST", omit(input, ["sourceId"]), undefined),
     renderSavedReply: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/render`, "GET", undefined, omit(input, ["conversationId","savedReplyId"])),
+    requestHuman: (input: Args) =>
+      send(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/handoff`, "POST", omit(input, ["sessionId"]), undefined),
     resolve: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/resolve`, "POST", omit(input, ["conversationId"]), undefined),
     rotateVerificationSecret: () =>
