@@ -181,9 +181,13 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   themselves — sign-in options, and the issuer's own discovery details. The issuer is its
   own first relying party; the dashboard is gated by its `admin` role.
 - **Federated sign-in, enabled from the dashboard.** Microsoft (optionally pinned to one
-  Entra directory), Google and GitHub, as a closed catalogue: enabling one is a credential
-  plus two decisions — may it create accounts, and is its email trusted for linking to
-  existing ones — rather than a form of URLs to get subtly wrong. One open door sits beside
+  Entra directory), Google, GitHub and Supabase, as a closed catalogue: enabling one is a
+  credential plus two decisions — may it create accounts, and is its email trusted for
+  linking to existing ones — rather than a form of URLs to get subtly wrong. Supabase asks
+  for one thing more, because no one could guess it: a project's issuer is the project URL
+  with `/auth/v1` on the end, and the project URL alone serves no discovery document. (It
+  also needs the project's own OAuth 2.1 server turned on, authorization UI included — work
+  on the Supabase side that no setting here can stand in for.) One open door sits beside
   that catalogue: **Custom (OIDC)**, for the directory it does not name — Keycloak, Okta,
   Auth0, another auth server like this one. The ask keeps its shape. A custom provider is a
   slug (which *is* its callback path segment), a button label, the upstream's **issuer URL**

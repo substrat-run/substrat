@@ -116,15 +116,27 @@ time would mean a pair of declared env keys per provider and a redeploy to add o
 dashboard, and because both runtimes rebuild Better Auth per request — the same property the
 sign-up toggle relies on — the button appears on the login screen on the next request.
 
-The catalogue is deliberately **closed** (Microsoft, Google, GitHub). Each entry is a provider
-the library ships endpoints and a profile mapping for, so enabling one is a credential plus two
-decisions rather than a form of URLs to get subtly wrong. The redirect URI is **shown, not
-asked for**: it is `{issuer}/api/auth/callback/{provider}`, derived, and every upstream refuses
-a sign-in whose registered URI differs by a character.
+The catalogue is deliberately **closed** (Microsoft, Google, GitHub, Supabase). Enabling one
+is a credential plus two decisions rather than a form of URLs to get subtly wrong. The
+redirect URI is **shown, not asked for**: it is `{issuer}/api/auth/callback/{provider}`,
+derived, and every upstream refuses a sign-in whose registered URI differs by a character.
+
+Most entries are providers the library ships endpoints and a profile mapping for. **Supabase
+is not**, and that is the one thing an entry may vary: it carries an `issuerField` instead, so
+its row is a generic OIDC row underneath — the same discovery, the same `genericOAuth`
+mounting, the same everything below — while the catalogue still owns its id, its button and
+its console string. The reason it is named rather than left to the open door below is one
+unguessable fact: a Supabase project's issuer is the project URL **with `/auth/v1` on the
+end**, and the project URL alone serves no discovery document. An operator pastes the URL they
+have, gets a 404, and nothing in that error names the suffix. Naming the provider is what lets
+the field say it. (The Supabase side has its own precondition the entry states rather than
+hides: the project must have its OAuth 2.1 server turned on, with the authorization UI
+Supabase requires its owner to build. Without that the authorize endpoint has no page behind
+it, and no configuration here can supply one.)
 
 Beside the catalogue there is one open door: a **custom (generic OIDC) provider** — Keycloak,
-Okta, Auth0, another auth server like this one. It is the same row with three more columns
-(`issuer`, `label`, `endpoints`) and the same shape of ask: the issuer URL is the ONE address
+Okta, Auth0, another auth server like this one. It is the same row Supabase already uses, with
+three more columns (`issuer`, `label`, `endpoints`), and the same shape of ask: the issuer URL is the ONE address
 OIDC lets everything else be derived from, so the form is a name, a label, a URL and a
 credential — never five endpoints typed by hand. The endpoints come from the issuer's own
 discovery document (`{issuer}/.well-known/openid-configuration`), **resolved once, at save

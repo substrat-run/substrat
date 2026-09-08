@@ -8,8 +8,10 @@ import { SCHEMA_STATEMENTS } from '../db/ddl.generated.js';
 import { buildAuth, type Auth } from '../src/auth.js';
 import { createAdminApi } from '../src/admin-api.js';
 import {
+  PROVIDER_CATALOGUE,
   discoveryUrlOf,
   genericProvidersFrom,
+  isReservedProviderId,
   publicProvidersFrom,
   readProviders,
   socialProvidersFrom,
@@ -129,6 +131,24 @@ const addAcme = (cookie: string, body: Record<string, unknown> = {}, id = 'acme'
     }),
   });
 
+/**
+ * Enable Supabase, as the panel's named catalogue button does: an issuer URL and a credential,
+ * and deliberately NO label — that one is the catalogue's, and the route fills it in.
+ */
+const addSupabase = (cookie: string, body: Record<string, unknown> = {}) =>
+  adminCall('/providers/supabase', cookie, {
+    method: 'PUT',
+    body: JSON.stringify({
+      clientId: 'supabase-client-id',
+      clientSecret: 'supabase-secret',
+      issuer: SUPABASE_ISSUER,
+      allowSignup: true,
+      trustEmail: false,
+      disabled: false,
+      ...body,
+    }),
+  });
+
 /** Build a fresh Better Auth over the CURRENT rows — what both runtimes do per request. */
 function rebuild(): Auth {
   const rows = readProviders(sql);
@@ -170,6 +190,23 @@ const ACME_DISCOVERY = {
   jwks_uri: 'https://id.acme.test/.well-known/jwks.json',
 };
 
+/**
+ * A Supabase project, as its OAuth 2.1 server actually presents itself: the issuer is the
+ * project URL with `/auth/v1` on the end, and the project URL alone serves no discovery
+ * document at all. That gap is the whole reason Supabase is a NAMED catalogue entry rather
+ * than one more thing to type into the Custom (OIDC) door — see `SUPABASE_PROJECT` below,
+ * which the stub deliberately 404s.
+ */
+const SUPABASE_PROJECT = 'https://abcdefghijklmnopqrst.supabase.co';
+const SUPABASE_ISSUER = `${SUPABASE_PROJECT}/auth/v1`;
+const SUPABASE_DISCOVERY = {
+  issuer: SUPABASE_ISSUER,
+  authorization_endpoint: `${SUPABASE_ISSUER}/oauth/authorize`,
+  token_endpoint: `${SUPABASE_ISSUER}/oauth/token`,
+  userinfo_endpoint: `${SUPABASE_ISSUER}/oauth/userinfo`,
+  jwks_uri: `${SUPABASE_ISSUER}/.well-known/jwks.json`,
+};
+
 /** A GENERIC OIDC row — what a saved custom provider looks like in the table. */
 const genericRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
   row({
@@ -180,6 +217,21 @@ const genericRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
     issuer: 'https://id.acme.test',
     label: 'Acme SSO',
     endpoints: JSON.stringify(ACME_DISCOVERY),
+    ...over,
+  });
+
+/**
+ * A NAMED generic row: Supabase. Identical in kind to `genericRow` — the `issuer` column is
+ * what makes a row generic — except that its id and its label come from the catalogue.
+ */
+const supabaseRow = (over: Partial<ProviderRow> = {}): ProviderRow =>
+  genericRow({
+    provider_id: 'supabase',
+    client_id: 'supabase-client-id',
+    client_secret: 'supabase-secret',
+    issuer: SUPABASE_ISSUER,
+    label: 'Supabase',
+    endpoints: JSON.stringify(SUPABASE_DISCOVERY),
     ...over,
   });
 
@@ -211,6 +263,14 @@ beforeEach(() => {
           authorization_endpoint: 'http://sneaky.acme.test/oauth/authorize',
           token_endpoint: 'https://sneaky.acme.test/oauth/token',
         });
+      }
+      if (target === `${SUPABASE_ISSUER}/.well-known/openid-configuration`) {
+        return Response.json(SUPABASE_DISCOVERY);
+      }
+      // The project URL WITHOUT `/auth/v1` — Supabase serves nothing here, which is exactly
+      // the mistake the named entry's hint exists to prevent.
+      if (target === `${SUPABASE_PROJECT}/.well-known/openid-configuration`) {
+        return new Response('not found', { status: 404 });
       }
       if (target === 'http://localhost:8080/realms/dev/.well-known/openid-configuration') {
         return Response.json({
@@ -405,6 +465,44 @@ describe('the providers admin surface', () => {
     expect((await addAcme(cookie, { issuer: 'http://localhost:8080/realms/dev' })).status).toBe(201);
   });
 
+  it('enables Supabase from the catalogue — a named entry that is a generic row underneath', async () => {
+    const cookie = await signInAs(ADMIN);
+    expect((await addSupabase(cookie)).status).toBe(201);
+    // Discovery ran at SAVE time, against the issuer the operator gave — the same one path a
+    // custom provider takes. Nothing about this row is special at runtime.
+    expect(discoveryHits).toEqual([`${SUPABASE_ISSUER}/.well-known/openid-configuration`]);
+
+    const [provider] = await listProviders(cookie);
+    expect(provider).toMatchObject({
+      id: 'supabase',
+      issuer: SUPABASE_ISSUER,
+      // The catalogue's, not the operator's — the request sent no label at all.
+      label: 'Supabase',
+      clientSecretSet: true,
+      callbackPath: '/api/auth/callback/supabase',
+    });
+    expect(JSON.stringify(provider)).not.toContain('supabase-secret');
+    // The directory field belongs to Entra; an issuer URL already names one project.
+    expect(provider!.tenantId).toBeNull();
+  });
+
+  it('refuses Supabase without an issuer, and refuses the project URL that serves no discovery', async () => {
+    const cookie = await signInAs(ADMIN);
+    // A named generic entry is not a built-in: the issuer is the one thing the catalogue
+    // cannot know, so its absence is refused rather than defaulted.
+    const bare = await addSupabase(cookie, { issuer: undefined });
+    expect(bare.status).toBe(400);
+    expect(((await bare.json()) as { error: string }).error).toContain('issuer');
+
+    // The mistake the hint is for: the project URL an operator has to hand is NOT the issuer,
+    // and Supabase serves no discovery document there. It fails at save time, in the form,
+    // rather than at the first person's sign-in.
+    const projectUrl = await addSupabase(cookie, { issuer: SUPABASE_PROJECT });
+    expect(projectUrl.status).toBe(400);
+    expect(((await projectUrl.json()) as { error: string }).error).toContain('discovery');
+    expect(readProviders(sql)).toEqual([]);
+  });
+
   it('removes a provider, and says so when there is nothing to remove', async () => {
     const cookie = await signInAs(ADMIN);
     await enableMicrosoft(cookie);
@@ -485,6 +583,49 @@ describe('rows becoming Better Auth config', () => {
     expect(genericProvidersFrom([genericRow({ endpoints: null })])).toBeUndefined();
   });
 
+  it('mounts a NAMED generic row (Supabase) exactly as it mounts a custom one', () => {
+    const rows = [row(), supabaseRow()];
+    // `supabase` is not a provider Better Auth ships, so it must never reach socialProviders:
+    // the library would read it as a built-in id and fail on the endpoints it has none of.
+    expect(Object.keys(socialProvidersFrom(rows) ?? {})).toEqual(['microsoft']);
+    const [supabase] = genericProvidersFrom(rows)!;
+    expect(supabase).toMatchObject({
+      providerId: 'supabase',
+      name: 'Supabase',
+      authorizationUrl: `${SUPABASE_ISSUER}/oauth/authorize`,
+      tokenUrl: `${SUPABASE_ISSUER}/oauth/token`,
+      userInfoUrl: `${SUPABASE_ISSUER}/oauth/userinfo`,
+      // The account namespace is the issuer Supabase declares — the project, not the host.
+      // Two projects on `supabase.co` are two directories, and this is what keeps them apart.
+      accountIssuer: SUPABASE_ISSUER,
+      clientId: 'supabase-client-id',
+      scopes: ['openid', 'profile', 'email'],
+      pkce: true,
+    });
+    expect(supabase).not.toHaveProperty('discoveryUrl');
+    // The login screen labels it from the CATALOGUE, which is the half a named entry adds.
+    expect(publicProvidersFrom([supabaseRow()])).toEqual([{ id: 'supabase', label: 'Supabase' }]);
+    expect(trustedProvidersFrom([supabaseRow({ trust_email: 1 })])).toEqual(['supabase']);
+  });
+
+  it('keeps the catalogue honest about which entries the library actually ships', () => {
+    // The two kinds of catalogue entry are decided by whether Better Auth has a built-in, and
+    // getting that backwards fails QUIETLY in both directions. An entry with no `issuerField`
+    // goes into `socialProviders` under its id: if the library does not ship it, that config
+    // names endpoints nobody has. An entry WITH one becomes a `genericOAuth` provider, and
+    // the plugin prepends its providers to the built-in list: if the library DOES ship that
+    // id, ours silently shadows it — the same button, someone else's endpoints, and a bug
+    // that reads as "Supabase is broken" rather than "two things share a name".
+    //
+    // So this is the guard for the day Better Auth adds a built-in we have named generically.
+    for (const entry of PROVIDER_CATALOGUE) {
+      expect({ id: entry.id, builtIn: isReservedProviderId(entry.id) }).toEqual({
+        id: entry.id,
+        builtIn: !entry.issuerField,
+      });
+    }
+  });
+
   it('derives the discovery URL from an issuer without doubling a pasted one', () => {
     expect(discoveryUrlOf('https://id.acme.test')).toBe('https://id.acme.test/.well-known/openid-configuration');
     expect(discoveryUrlOf('https://id.acme.test/')).toBe('https://id.acme.test/.well-known/openid-configuration');
@@ -560,6 +701,30 @@ describe('the login screen', () => {
     expect(authorize.searchParams.get('redirect_uri')).toBe(`${ORIGIN}/api/auth/callback/acme`);
     expect(authorize.searchParams.get('scope')).toContain('openid');
     // OAuth 2.1's PKCE, pinned in `genericProvidersFrom` rather than left to a default.
+    expect(authorize.searchParams.get('code_challenge')).toBeTruthy();
+  });
+
+  it('sends the browser to the Supabase project a named catalogue row configured', async () => {
+    const cookie = await signInAs(ADMIN);
+    expect((await addSupabase(cookie)).status).toBe(201);
+    auth = rebuild();
+    discoveryHits.length = 0;
+
+    const res = await call('/api/auth/sign-in/social', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'supabase', callbackURL: '/' }),
+    });
+    expect(res.status).toBe(200);
+    const { url } = (await res.json()) as { url: string };
+    const authorize = new URL(url);
+    expect(discoveryHits).toEqual([]);
+    // The project's own OAuth 2.1 authorize endpoint, from the document stored at save time.
+    expect(`${authorize.origin}${authorize.pathname}`).toBe(`${SUPABASE_ISSUER}/oauth/authorize`);
+    expect(authorize.searchParams.get('client_id')).toBe('supabase-client-id');
+    // The redirect URI the panel tells the operator to register in the Supabase dashboard —
+    // the id is the path segment, which is why a catalogue entry fixes it.
+    expect(authorize.searchParams.get('redirect_uri')).toBe(`${ORIGIN}/api/auth/callback/supabase`);
     expect(authorize.searchParams.get('code_challenge')).toBeTruthy();
   });
 });

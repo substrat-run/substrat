@@ -25,19 +25,27 @@ import type { SqlExec } from './introspect.js';
  */
 
 /**
- * A provider the dashboard can offer. A CLOSED catalogue over Better Auth's own social
- * providers: a built-in provider carries its endpoints, its profile mapping and its quirks
- * (Entra's per-directory authority, GitHub's separate email read) in the library, and an
- * operator gets all of that from a credential and two decisions. Adding one here is a row in
- * this array.
+ * A provider the dashboard can offer, by name. Most entries are Better Auth's own social
+ * providers: a built-in carries its endpoints, its profile mapping and its quirks (Entra's
+ * per-directory authority, GitHub's separate email read) in the library, and an operator gets
+ * all of that from a credential and two decisions. Adding one here is a row in this array.
  *
- * The catalogue is no longer the whole story: a row whose `issuer` column is set is a GENERIC
- * OIDC provider instead — an operator-named upstream (Keycloak, Okta, Auth0, another Substrat
- * auth server) mounted through Better Auth's `genericOAuth` plugin, with its endpoints read
- * from the issuer's own discovery document rather than typed into a form. What stays closed is
- * the shape of the ask: an issuer URL is the ONE address OIDC lets us derive everything else
- * from, so a generic provider is still a credential, one URL and the same two decisions —
- * never a form of five endpoints to get subtly wrong.
+ * The catalogue is not the whole story, and it is no longer only built-ins. A row whose
+ * `issuer` column is set is a GENERIC OIDC provider — mounted through Better Auth's
+ * `genericOAuth` plugin, with its endpoints read from the issuer's own discovery document
+ * rather than typed into a form — and a generic row arrives two ways:
+ *
+ *   - UNNAMED, from the panel's "Custom (OIDC)" door: an operator-named upstream (Keycloak,
+ *     Okta, Auth0, another auth server like this one) that this file knows nothing about, so
+ *     the operator supplies the id, the button label and the issuer URL.
+ *   - NAMED, from a catalogue entry carrying `issuerField` (Supabase): the same generic row,
+ *     but the id, the label and the redirect-URI console come from here, and the operator
+ *     supplies only the issuer URL — under a hint that can be specific about what that
+ *     provider's issuer actually looks like.
+ *
+ * What stays closed either way is the shape of the ask: an issuer URL is the ONE address OIDC
+ * lets us derive everything else from, so a generic provider is still a credential, one URL
+ * and the same two decisions — never a form of five endpoints to get subtly wrong.
  */
 export interface ProviderDescriptor {
   /** Better Auth's own provider id — this IS the callback path segment. */
@@ -50,6 +58,18 @@ export interface ProviderDescriptor {
    * Microsoft account in, personal ones included. That is a decision, so the panel asks.
    */
   tenantField?: { label: string; placeholder: string; hint: string };
+  /**
+   * Set ⇔ this entry is a NAMED GENERIC provider: Better Auth ships no built-in for it, so
+   * the row travels the `genericOAuth` path a custom one does — endpoints from discovery, the
+   * `issuer` column set — and the entry contributes only what an operator could not guess.
+   *
+   * Supabase is the case that asked for it. Its OAuth 2.1 server is standards-compliant, so
+   * the Custom (OIDC) door already admitted it; what the door could not say is that the
+   * issuer is the project URL with `/auth/v1` on the end. An operator pastes the project URL
+   * they have, discovery 404s, and nothing in the error names the suffix. Naming the provider
+   * is what lets the field say it.
+   */
+  issuerField?: { label: string; placeholder: string; hint: string };
   /** Where the operator registers the redirect URI, so the panel can say it plainly. */
   console: string;
 }
@@ -74,6 +94,16 @@ export const PROVIDER_CATALOGUE: readonly ProviderDescriptor[] = [
     id: 'github',
     label: 'GitHub',
     console: 'GitHub → Settings → Developer settings → OAuth Apps → your app',
+  },
+  {
+    id: 'supabase',
+    label: 'Supabase',
+    issuerField: {
+      label: 'Project auth URL',
+      placeholder: 'https://abcdefghijklmnopqrst.supabase.co/auth/v1',
+      hint: "The project URL with `/auth/v1` on the end — that path IS the issuer Supabase's discovery document declares, and the project URL alone serves no discovery document. The project must have its OAuth 2.1 server turned on and an authorization UI built, which is work on the Supabase side: without it the sign-in reaches an authorize endpoint with no page behind it.",
+    },
+    console: 'Supabase dashboard → Authentication → OAuth Apps → your app → Redirect URIs',
   },
 ] as const;
 
@@ -374,8 +404,11 @@ export function toWireProvider(row: ProviderRow) {
  * would tell them anyway.
  */
 export function publicProvidersFrom(rows: ProviderRow[]): { id: string; label: string }[] {
+  // The catalogue answers first, because a NAMED generic row (Supabase) is both: an issuer
+  // column, and an entry here that owns what its button says. The stored label is what an
+  // UNNAMED custom row has instead, and the id is the last resort neither should reach.
   return live(rows).map((row) => ({
     id: row.provider_id,
-    label: isGenericRow(row) ? (row.label ?? row.provider_id) : descriptorOf(row.provider_id)!.label,
+    label: descriptorOf(row.provider_id)?.label ?? row.label ?? row.provider_id,
   }));
 }
