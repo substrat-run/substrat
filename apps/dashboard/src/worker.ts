@@ -32,8 +32,8 @@ import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
-import { deriveReleases } from './releases.js';
-import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned } from './deployments.js';
+import { deriveReleases, deriveReleaseComparison } from './releases.js';
+import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -1525,16 +1525,9 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
   // THIS scope is pinned to. "Running" is the router's truth (the bound version); an update
   // diff compares against the prod channel head, not merely the newest push.
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
-  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
-  // Fall back to the prod head only when the scope is unpinned (static binding) — mirrors
-  // the Deployments tab's `running` derivation exactly.
-  const runningId = boundVersionId ?? prod?.versionId ?? null;
-  const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
-  // An update is offered iff prod points somewhere other than the version this scope RUNS —
-  // the effective version, not the raw pin: an unpinned (static-binding) scope runs the prod
-  // head already, and comparing prod to the null pin offered that same head as its own "update".
-  const updateId = prod && prod.versionId !== runningId ? prod.versionId : null;
-  const updateVersion = updateId ? deployment.versions.find((v) => v.id === updateId) : undefined;
+  // The shared (running, update) frame (#1236) — see versionPair's doc for the
+  // effective-version rule this used to restate inline.
+  const { runningId, runningLabel, updateId, updateLabel } = versionPair(deployment, boundVersionId);
 
   const registryOf = (versionId: string | null): Promise<PermissionRegistry | null> => {
     if (!versionId) return Promise.resolve(null);
@@ -1543,10 +1536,8 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
   const [runningRegistry, updateRegistry] = await Promise.all([registryOf(runningId), registryOf(updateId)]);
 
   return c.json({
-    running: { versionId: runningId, version: runningVersion?.version ?? null, registry: runningRegistry },
-    update: updateId
-      ? { versionId: updateId, version: updateVersion?.version ?? null, registry: updateRegistry }
-      : null,
+    running: { versionId: runningId, version: runningLabel, registry: runningRegistry },
+    update: updateId ? { versionId: updateId, version: updateLabel, registry: updateRegistry } : null,
   });
 });
 
@@ -1574,13 +1565,7 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   const scope = scopeId.parse(appRow.app_scope_id);
   const slug = appRow.vertical_slug;
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
-  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
-  const runningId = boundVersionId ?? prod?.versionId ?? null;
-  const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
-  // Against the EFFECTIVE running version, not the raw pin: an unpinned scope runs the prod
-  // head, and comparing prod to the null pin would offer that same head as its own "update".
-  const updateId = prod && prod.versionId !== runningId ? prod.versionId : null;
-  const updateVersion = updateId ? deployment.versions.find((v) => v.id === updateId) : undefined;
+  const { runningId, runningLabel, updateId, updateLabel } = versionPair(deployment, boundVersionId);
 
   const modelOf = (versionId: string | null): Promise<EmittedModel | null> => {
     if (!versionId) return Promise.resolve(null);
@@ -1589,9 +1574,32 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   const [runningModel, updateModel] = await Promise.all([modelOf(runningId), modelOf(updateId)]);
 
   return c.json({
-    running: { versionId: runningId, version: runningVersion?.version ?? null, model: runningModel },
-    update: updateId ? { versionId: updateId, version: updateVersion?.version ?? null, model: updateModel } : null,
+    running: { versionId: runningId, version: runningLabel, model: runningModel },
+    update: updateId ? { versionId: updateId, version: updateLabel, model: updateModel } : null,
   });
+});
+
+/**
+ * The per-version comparison (#1236): how the version this app RUNS behaves
+ * beside the one an update would move it to — the last question before pressing
+ * Update, answered from the same version-stamped 24h traffic the release ledger
+ * reads. `update: null` = already on prod's head; unavailable metrics render as
+ * unknown, never zero (the ledger's rule, for the ledger's reason).
+ */
+app.get('/api/apps/:scopeId/release-comparison', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const slug = appRow.vertical_slug;
+  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
+  const metrics = await cp.observabilityMetrics(24, slug).catch(() => null);
+  return c.json(deriveReleaseComparison(versionPair(deployment, boundVersionId), metrics));
 });
 
 /**

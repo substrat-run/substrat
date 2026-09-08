@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -316,6 +316,27 @@ export const MOCK_PREVIEWS: VerticalPreview[] = [
     url: 'https://acme-hr--pr-42.global.substrat.run',
   },
 ];
+
+/** Running vs update (#1236): the update fixes the error rate but costs some p99. */
+export const MOCK_RELEASE_COMPARISON: ReleaseComparison = {
+  running: {
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR01',
+    version: '0.0.10',
+    requests: 122,
+    errors: 61,
+    cpuTimeP50: 4.1,
+    cpuTimeP99: 18.2,
+  },
+  update: {
+    versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR02',
+    version: '0.0.11',
+    requests: 1810,
+    errors: 2,
+    cpuTimeP50: 4.4,
+    cpuTimeP99: 24.9,
+  },
+  metricsAvailable: true,
+};
 
 /** The release ledger (#1236): prod trails the newest push; one scope still pinned back. */
 export const MOCK_RELEASES: ReleasesView = {

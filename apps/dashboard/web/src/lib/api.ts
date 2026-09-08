@@ -390,6 +390,23 @@ export interface ReleaseRow {
   errors: number | null;
 }
 
+/** One side of the running-vs-update comparison (#1236). Nulls = metrics unavailable. */
+export interface ReleaseSide {
+  versionId: string;
+  version: string | null;
+  requests: number | null;
+  errors: number | null;
+  cpuTimeP50: number | null;
+  cpuTimeP99: number | null;
+}
+
+export interface ReleaseComparison {
+  running: ReleaseSide | null;
+  /** Null = already on prod's head — nothing an update would move to. */
+  update: ReleaseSide | null;
+  metricsAvailable: boolean;
+}
+
 export interface ReleasesView {
   releases: ReleaseRow[];
   /** Scopes with no pin — they follow the prod channel. */
@@ -1293,6 +1310,10 @@ export const api = {
   /** The release ledger (#1236) — every version with its adoption and health facts. */
   listReleases: (slug: string) =>
     call<ReleasesView>(`/deployments/${encodeURIComponent(slug)}/releases`),
+
+  /** Running vs the version an update would move to (#1236) — the last question before Update. */
+  releaseComparison: (scopeId: string) =>
+    call<ReleaseComparison>(`/apps/${encodeURIComponent(scopeId)}/release-comparison`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),

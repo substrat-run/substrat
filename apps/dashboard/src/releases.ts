@@ -121,3 +121,68 @@ export function deriveReleases(input: {
 
   return { releases, scopesTrackingProd: tracking, metricsAvailable: metrics !== null };
 }
+
+/** One side of the running-vs-update comparison (#1236). Traffic nullable = metrics unavailable. */
+export interface ReleaseSide {
+  versionId: string;
+  version: string | null;
+  requests: number | null;
+  errors: number | null;
+  cpuTimeP50: number | null;
+  cpuTimeP99: number | null;
+}
+
+export interface ReleaseComparison {
+  /** Null only when the vertical has no versions at all. */
+  running: ReleaseSide | null;
+  /** Null = already on prod's head — nothing an update would move to. */
+  update: ReleaseSide | null;
+  metricsAvailable: boolean;
+}
+
+/** A metrics row as the comparison needs it — the ledger's row plus the CPU percentiles. */
+export interface ComparisonMetricsRow extends ReleaseMetricsRow {
+  cpuTimeP50: number;
+  cpuTimeP99: number;
+}
+
+/**
+ * Join the (running, update) pair against 24h of version-stamped traffic
+ * (#1236): the last question before pressing Update, answered from the same
+ * rows the ledger reads. Requests and errors sum across a version's scripts;
+ * the CPU percentiles come from its busiest script — percentiles cannot be
+ * summed, and the busiest script is where the latency story actually happened.
+ */
+export function deriveReleaseComparison(
+  pair: { runningId: string | null; runningLabel: string | null; updateId: string | null; updateLabel: string | null },
+  metrics: ComparisonMetricsRow[] | null,
+): ReleaseComparison {
+  const side = (versionId: string | null, version: string | null): ReleaseSide | null => {
+    if (versionId === null) return null;
+    if (metrics === null) {
+      return { versionId, version, requests: null, errors: null, cpuTimeP50: null, cpuTimeP99: null };
+    }
+    let requests = 0;
+    let errors = 0;
+    let busiest: ComparisonMetricsRow | undefined;
+    for (const m of metrics) {
+      if (m.versionId !== versionId) continue;
+      requests += m.requests;
+      errors += m.errors;
+      if (busiest === undefined || m.requests > busiest.requests) busiest = m;
+    }
+    return {
+      versionId,
+      version,
+      requests,
+      errors,
+      cpuTimeP50: busiest?.cpuTimeP50 ?? null,
+      cpuTimeP99: busiest?.cpuTimeP99 ?? null,
+    };
+  };
+  return {
+    running: side(pair.runningId, pair.runningLabel),
+    update: side(pair.updateId, pair.updateLabel),
+    metricsAvailable: metrics !== null,
+  };
+}

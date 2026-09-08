@@ -303,6 +303,33 @@ export async function versionAssetsFromHost(
  * caller's tenant owns. The dashboard acts on the shared plane with a staff-level service
  * token, so without this a customer could name another tenant's vertical. Throws if not.
  */
+/**
+ * The (running, update) version pair every per-app tab reasons about (#1236):
+ * "running" is the router's truth — the bound version, else the prod head for an
+ * unpinned (static-binding) scope — and an update is offered iff prod points
+ * somewhere other than the version the scope EFFECTIVELY runs. Comparing prod to
+ * a null pin would offer the head as its own update; this helper keeps that bug
+ * fixed in one place instead of three route bodies. `updateApp` in provision.ts
+ * stays deliberately outside it: an update PINS the scope, so its null-pin
+ * semantics differ, and folding it in would change a mutation's behavior.
+ */
+export function versionPair(
+  deployment: Deployment,
+  boundVersionId: string | null,
+): {
+  runningId: string | null;
+  runningLabel: string | null;
+  updateId: string | null;
+  updateLabel: string | null;
+} {
+  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
+  const runningId = boundVersionId ?? prod?.versionId ?? null;
+  const updateId = prod && prod.versionId !== runningId ? prod.versionId : null;
+  const labelOf = (id: string | null): string | null =>
+    id === null ? null : (deployment.versions.find((v) => v.id === id)?.version ?? null);
+  return { runningId, runningLabel: labelOf(runningId), updateId, updateLabel: labelOf(updateId) };
+}
+
 export function assertOwned(deployments: Deployment[], slug: string): void {
   if (!deployments.some((d) => d.slug === slug)) {
     throw new Error(`vertical '${slug}' is not one of your deployments`);

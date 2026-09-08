@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { instant, platformActorId, type ChannelHistoryEntry, type OpsFailureEntry, type Scope } from '@substrat-run/contracts';
-import { deriveReleases } from '../src/releases.js';
+import { deriveReleaseComparison, deriveReleases } from '../src/releases.js';
+import { versionPair } from '../src/deployments.js';
 import type { Deployment } from '../src/deployments.js';
 
 const actor = platformActorId.parse('01ARZ3NDEKTSV4RRFFQ69G5FAV');
@@ -109,5 +110,39 @@ describe('deriveReleases (#1236)', () => {
       metrics: null,
     });
     expect(view.releases.map((r) => r.versionId)).toEqual([V2, V1]);
+  });
+});
+
+describe('versionPair (#1236) — the shared running/update frame', () => {
+  it('pins win, and an unpinned scope runs the prod head without being offered it as an update', () => {
+    const d = deployment(); // prod → V2
+    expect(versionPair(d, V1)).toMatchObject({ runningId: V1, runningLabel: '0.0.1', updateId: V2, updateLabel: '0.0.2' });
+    // Unpinned = effectively on prod's head; comparing prod to the null pin must
+    // not offer that same head as its own "update" — the bug the helper pins down.
+    expect(versionPair(d, null)).toMatchObject({ runningId: V2, updateId: null });
+  });
+});
+
+describe('deriveReleaseComparison (#1236)', () => {
+  const pair = { runningId: V1, runningLabel: '0.0.1', updateId: V2, updateLabel: '0.0.2' };
+
+  it('sums traffic per side and takes the busiest script\u2019s percentiles', () => {
+    const cmp = deriveReleaseComparison(pair, [
+      { versionId: V1, requests: 10, errors: 5, cpuTimeP50: 3, cpuTimeP99: 9 },
+      { versionId: V2, requests: 100, errors: 1, cpuTimeP50: 4, cpuTimeP99: 12 },
+      // V2's quieter second script: adds traffic, must not win the percentiles.
+      { versionId: V2, requests: 2, errors: 0, cpuTimeP50: 99, cpuTimeP99: 999 },
+      { versionId: null, requests: 7, errors: 7, cpuTimeP50: 1, cpuTimeP99: 1 },
+    ]);
+    expect(cmp.running).toMatchObject({ requests: 10, errors: 5, cpuTimeP50: 3 });
+    expect(cmp.update).toMatchObject({ requests: 102, errors: 1, cpuTimeP50: 4, cpuTimeP99: 12 });
+    expect(cmp.metricsAvailable).toBe(true);
+  });
+
+  it('renders unavailable metrics as unknown sides, and no update as null', () => {
+    const cmp = deriveReleaseComparison(pair, null);
+    expect(cmp.metricsAvailable).toBe(false);
+    expect(cmp.running).toMatchObject({ versionId: V1, requests: null, cpuTimeP99: null });
+    expect(deriveReleaseComparison({ ...pair, updateId: null, updateLabel: null }, []).update).toBeNull();
   });
 });
