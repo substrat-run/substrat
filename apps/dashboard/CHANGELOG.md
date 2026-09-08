@@ -1,5 +1,50 @@
 # @substrat-run/dashboard
 
+## 0.30.1
+
+### Patch Changes
+
+- 46051ee: Connecting Fortnox from the dashboard works on the hosted platform. Every consent
+  round ended in "the exchange with Fortnox failed" while the same round passed
+  locally: the callback handed the connector the bare global `fetch`, the connector
+  calls it as a method, and the Workers runtime refuses that (`Illegal invocation`)
+  before the code exchange is ever sent — Node's fetch does not, which is why nothing
+  local saw it.
+
+  The kernel now exports `globalFetch`, the runtime's fetch as a `FetchLike` — an arrow
+  over the global, so the receiver is never in play, and the one place the structural
+  cast lives. Every host default (`options.fetch ?? globalFetch` in both adapters) and every
+  connector handoff (the control plane's probes
+  and sweep, the dashboard's consent callback) uses it, and a new `lint:bound-fetch`
+  gate refuses the bare global handed on in any spelling, since no suite can reproduce
+  the refusal. The custom-hostname provisioner keeps its DOM-typed `FetchFn` — a real
+  `fetch` is not assignable to `FetchLike` under strict TypeScript, so an injected
+  DOM-typed fetch must not need a cast there — and its default is the bound global, which
+  is that type with no conversion.
+
+- b3151dc: A custom domain can no longer be bound under one of the deployment's own platform
+  zones (#973). The Domains tab's custom-domain path refused only two bases — the
+  platform default and the app's own zone — because the call chain had no way to read
+  the deployment's configured `PLATFORM_BASE_DOMAINS`; a deployment serving a zone
+  outside those two accepted a custom hostname under it, and the control plane then
+  classified the result as a platform hostname and marked it active. The worker now
+  reads that var and hands the list down to the bind. The three sources are unioned,
+  so configuring the var can only widen the refusal, never narrow it, and a deployment
+  that leaves it unset behaves exactly as before.
+- Updated dependencies [46051ee]
+- Updated dependencies [e7115b2]
+- Updated dependencies [3e67ebe]
+- Updated dependencies [ea6b99f]
+  - @substrat-run/kernel@0.102.0
+  - @substrat-run/adapter-cloudflare@0.102.0
+  - @substrat-run/contracts@0.102.0
+  - @substrat-run/engine-workorder@0.11.1
+  - @substrat-run/connector-fortnox@0.4.4
+  - @substrat-run/demo-callout@0.3.20
+  - @substrat-run/engine-invites@0.7.1
+  - @substrat-run/engine-invoicing@0.9.18
+  - @substrat-run/engine-protocol@0.12.7
+
 ## 0.30.0
 
 ### Minor Changes

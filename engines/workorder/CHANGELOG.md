@@ -1,5 +1,25 @@
 # @substrat-run/engine-workorder
 
+## 0.11.1
+
+### Patch Changes
+
+- ea6b99f: `workorder/complete` declares its `total` as the `Money` it has always returned.
+
+  The operation's declared output said `total: z.string()` while the handler
+  returned `{ amount, currency }` — the shape `completeWorkOrder` parses through
+  the engine seam and the shape `workorder.completed` carries. A vertical binding
+  the operation to a URL would have generated a client typed on a string and read
+  `[object Object]`. The declaration is now `money`, and a test parses a real
+  completion result through the declared schema so the two cannot part company
+  again.
+
+- Updated dependencies [46051ee]
+- Updated dependencies [e7115b2]
+- Updated dependencies [3e67ebe]
+  - @substrat-run/kernel@0.102.0
+  - @substrat-run/contracts@0.102.0
+
 ## 0.11.0
 
 ### Minor Changes
@@ -1388,7 +1408,7 @@ active`, `unknown tenant/scope/table`). Those are next, and they are the ones th
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
