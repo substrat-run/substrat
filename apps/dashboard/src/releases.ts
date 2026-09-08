@@ -96,7 +96,12 @@ export function deriveReleases(input: {
     }
   }
 
-  const releases = deployment.versions.map((v): ReleaseRow => {
+  // Newest first, owned here: the panel slices the top eight as "the latest
+  // pushes", and that must not hinge on how a caller happened to order its
+  // versions (`shape()` does sort, but the ledger is the one that depends on it).
+  // Ids are ULIDs, so lexicographic order is chronological.
+  const newestFirst = [...deployment.versions].sort((a, b) => (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+  const releases = newestFirst.map((v): ReleaseRow => {
     const t = traffic?.get(v.id);
     return {
       versionId: v.id,

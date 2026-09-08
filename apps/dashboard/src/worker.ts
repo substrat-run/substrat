@@ -3325,7 +3325,10 @@ app.get('/api/deployments/:slug/failures', async (c) => {
  * version pins, and the version-stamped health facts all exist; this route is
  * the join that did not. Metrics are tolerated to "unavailable" (an
  * unconfigured plane, a truncated service map) and rendered as unknown — never
- * as zero traffic, which would read as "the broken version went quiet".
+ * as zero traffic, which would read as "the broken version went quiet". The
+ * scope read is NOT tolerated: a failed one would render as "0 pinned / 0
+ * following prod" — the same misreading, on the adoption column — so the route
+ * fails and the panel hides instead.
  */
 app.get('/api/deployments/:slug/releases', async (c) => {
   const host = hostFor(c.env);
@@ -3338,7 +3341,7 @@ app.get('/api/deployments/:slug/releases', async (c) => {
   const deployment = deployments.find((d) => d.slug === slug)!;
   const [prodHistory, scopes, failures, metrics] = await Promise.all([
     cp.channelHistory(slug, 'prod'),
-    cp.listScopes(slug).catch(() => []),
+    cp.listScopes(slug),
     cp.listOpsFailures({ vertical: slug, limit: 400 }),
     cp.observabilityMetrics(24, slug).catch(() => null),
   ]);

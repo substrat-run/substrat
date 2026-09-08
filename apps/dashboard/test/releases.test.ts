@@ -95,4 +95,19 @@ describe('deriveReleases (#1236)', () => {
     // And a never-promoted version has no go-live instant, not an invented one.
     expect(view.releases[0]!.wentLiveAt).toBeNull();
   });
+
+  it('orders releases newest first whatever order the versions arrive in', () => {
+    // The panel reads the top of the list as "the latest pushes"; an
+    // oldest-first input (a raw `listVersions` page) must not become the
+    // oldest eight on screen.
+    const d = deployment();
+    const view = deriveReleases({
+      deployment: { ...d, versions: [...d.versions].reverse() },
+      prodHistory: [],
+      scopes: [],
+      failures: [],
+      metrics: null,
+    });
+    expect(view.releases.map((r) => r.versionId)).toEqual([V2, V1]);
+  });
 });
