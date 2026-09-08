@@ -24,14 +24,24 @@ import type { PlanimaAction, PlanimaBuilding, PlanimaComponent, PlanimaFacility 
  */
 
 /**
- * A JSON number as an exact decimal string.
+ * A JSON number as a decimal string, at `moneyAmount`'s six-decimal ceiling.
  *
- * `toFixed(6)` matches `moneyAmount`'s six-decimal ceiling exactly, which is what makes
- * this total rather than best-effort: the contract cannot represent more precision than
- * this produces, so there is no input that formats correctly here and fails to parse
- * there. Trailing zeros are trimmed so `125000.50` and `125000.5` are the same string —
- * a content hash over these values is a change detector, and two spellings of one
- * number would make an unchanged plan look changed on every sweep.
+ * **It rounds, and that is a deliberate choice rather than an oversight.** `toFixed(6)`
+ * is half-away-from-zero at the sixth decimal, so `1.0000009` becomes `1.000001`. The
+ * alternative — refusing any value that does not round-trip — was considered and
+ * rejected, because it fails on data Planima legitimately sends: `investment_rate` is a
+ * computed fraction, and a third is `0.3333333333333333`. Refusing would take down a
+ * whole tenant's sync over a ratio, which is a far worse outcome than losing precision
+ * below the sixth decimal of a value that is either kronor (two decimals of real
+ * precision) or a ratio (where six is already more than anyone means).
+ *
+ * What that costs is worth naming: the rounded value is what lands AND what the content
+ * hash is computed over, so two plans differing only past the sixth decimal are one
+ * plan as far as this connector is concerned. For prices and ratios, they are.
+ *
+ * Trailing zeros are trimmed so `125000.50` and `125000.5` are the same string — the
+ * content hash is a change detector, and two spellings of one number would make an
+ * unchanged plan look changed on every sweep.
  *
  * Two inputs are refused rather than coerced, because both would produce a string that
  * lies: a non-finite number has no decimal form at all, and `toFixed` switches to

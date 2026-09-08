@@ -113,11 +113,12 @@ exactly this reason.
 that the answer was cut, so a client that trusts its own limit and stops after one page syncs a
 truncated plan and reports success. The walk asks for 50 and pages until a short page arrives.
 
-**Ten requests per ten seconds, per token.** A sweep costs `1 + 3 × facilities` requests, so
-twenty facilities is sixty-one requests and about a minute of mostly waiting. The client throttles
-itself with a sliding window and, when Planima answers `429`, obeys the `Retry-After` it sends
-rather than backing off on a schedule of its own invention. That is why the sweep interval is a
-real decision rather than a free knob.
+**Ten requests per ten seconds, per token.** A sweep costs *at least* `1 + 3 × facilities`
+requests — twenty facilities is sixty-one requests and about a minute of mostly waiting — and any
+collection over the 50-item page cap adds more. The client throttles itself with a sliding window
+shared across every binding in a pass (Planima meters per token, not per client) and, when Planima
+answers `429`, obeys the `Retry-After` it sends rather than backing off on a schedule of its own
+invention. That is why the sweep interval is a real decision rather than a free knob.
 
 **There is no currency anywhere.** Planima sends `unit_price: 1200` and nothing else — no currency
 on the action, the facility, the organization or the account. Substrat money is an
@@ -136,7 +137,12 @@ would make the sweep interval look free.
 
 Pages are global across one sync and each names exactly one facility. A facility's buildings and
 components ride its **first** page (`facilityHead`); actions ride every page, 500 at a time;
-`final` marks the last page of the whole sync. So a consumer upserts on `facilityHead`, appends
+`final` marks the last page of the whole sync.
+
+A sync that finds **no facilities at all** lands exactly one page with `facility: null`,
+`actions: []` and `final: true` — a *clear* page. Landing nothing would be the one answer that
+corrupts a consumer: it swaps on `final`, so a silent pass would leave last month's plan in place
+for ever while the cursor recorded the empty plan as synced, and no later sweep would repair it. So a consumer upserts on `facilityHead`, appends
 actions as they arrive, and commits or swaps on `final`. Every page of one sync carries the same
 `syncId` — which *is* the content hash — so a redelivered page cannot double a cost.
 

@@ -314,6 +314,16 @@ export interface PlanimaApiOptions {
    * Zero disables the retry entirely, which is what a probe wants.
    */
   maxRateLimitRetries?: number;
+  /**
+   * A sliding window SHARED with other clients using the same token.
+   *
+   * Planima's limit is per token, not per client, so a sweep that builds one
+   * `PlanimaApi` per bound scope gives each a fresh window — and the second scope's
+   * first ten requests go out on top of the first scope's, which is a burst of twenty
+   * in one window. Passing one array through a whole sweep makes the throttle model
+   * the thing the provider actually meters.
+   */
+  rateWindow?: number[];
 }
 
 /**
@@ -339,14 +349,19 @@ export class PlanimaApi {
   /**
    * When the last {@link RATE_LIMIT_REQUESTS} requests went out, oldest first.
    *
-   * Per-instance rather than per-token-global, matching `FortnoxApi`'s token cache: an
-   * instance is built for one sweep pass, so the window lives exactly as long as the
-   * work that uses it and no cross-request state accumulates in a Worker's isolate.
-   * The cost of that choice is honest and small — two concurrent passes on one token
-   * each keep their own window and can jointly exceed the limit, which the 429 retry
-   * below then absorbs.
+   * Per-instance by default, matching `FortnoxApi`'s token cache: an instance is built
+   * for one unit of work, so the window lives exactly as long as that work and no
+   * cross-request state accumulates in a Worker's isolate. But the limit Planima
+   * enforces is per TOKEN, so a caller that builds several clients on one token passes
+   * {@link PlanimaApiOptions.rateWindow} to share one — which `sweepPlanimaPlan` does
+   * across every binding in a pass.
+   *
+   * What that still does not cover, stated rather than hidden: two sweeps overlapping
+   * on one token, or the tenant's own scripts using it. Both are absorbed by the 429
+   * retry below rather than prevented here, because preventing them needs a lock this
+   * connector has nowhere to keep.
    */
-  private readonly sent: number[] = [];
+  private readonly sent: number[];
 
   constructor(conn: ConnectorConnection, options?: PlanimaApiOptions) {
     this.conn = conn;
@@ -354,6 +369,7 @@ export class PlanimaApi {
     this.now = options?.now ?? (() => Date.now());
     this.sleep = options?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.maxRateLimitRetries = options?.maxRateLimitRetries ?? 3;
+    this.sent = options?.rateWindow ?? [];
   }
 
   private secret(): PlanimaSecret {
@@ -446,11 +462,26 @@ export class PlanimaApi {
       }
       url.searchParams.set('page[limit]', String(PLANIMA_MAX_PAGE));
       url.searchParams.set('page[offset]', String(offset));
-      const raw = (await this.getJson(url.toString().slice(this.apiBase.length))) as {
+      const requested = url.toString().slice(this.apiBase.length);
+      const raw = (await this.getJson(requested)) as {
         data?: unknown;
         pagination?: unknown;
       };
-      const page = z.array(schema).parse(raw.data ?? []);
+      // A 200 with no `data` array is NOT an empty list, and the difference is the
+      // whole plan. `raw.data ?? []` would read a malformed success — a proxy's
+      // rewritten body, a partial outage, a shape change — as "this facility has no
+      // components any more", land it, and record the content hash for it. A consumer
+      // that swaps its plan on `final` then replaces real rows with nothing, and the
+      // next sweep sees an unchanged hash and never repairs it. So a missing `data` is
+      // a response fault, reported as one.
+      if (!Array.isArray(raw.data)) {
+        throw new PlanimaApiError(
+          `Planima GET ${requested} returned success with no 'data' array`,
+          502,
+          JSON.stringify(raw).slice(0, 500),
+        );
+      }
+      const page = z.array(schema).parse(raw.data);
       rows.push(...page);
       if (page.length === 0) return rows;
 

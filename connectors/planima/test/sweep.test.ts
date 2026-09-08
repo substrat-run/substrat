@@ -216,7 +216,9 @@ describe('planima connector — inbound sync', () => {
     expect(landed).toHaveLength(2);
 
     const [first, second] = landed as [PlanimaPlanPage, PlanimaPlanPage];
-    expect(first.facility.name).toBe('Kvarteret Önskan');
+    // Non-null: a page with a facility is the ordinary case, and `facility: null` is
+    // reserved for the clear page a plan with no facilities lands.
+    expect(first.facility!.name).toBe('Kvarteret Önskan');
     expect(first.organization).toEqual({ id: 1, name: 'Bostads AB Exempel' });
     expect(first.window).toEqual(WINDOW);
     expect(first.facilityHead).toBe(true);
@@ -422,7 +424,7 @@ describe('planima connector — inbound sync', () => {
     const result = await syncPlanimaScope(host, connId, await only(), options());
     // Facility 20 belongs to organization 2; facility 10 does not.
     expect(result.facilities).toBe(1);
-    expect(landed[0]!.facility.id).toBe(20);
+    expect(landed[0]!.facility!.id).toBe(20);
     expect(planima.requests.some((r) => r.includes('organization_id=2'))).toBe(true);
   });
 
@@ -470,6 +472,99 @@ describe('planima connector — inbound sync', () => {
     expect(probe.ok).toBe(false);
     expect(probe.refused).toBe(true);
     expect(planima.requests).toEqual([]);
+  });
+
+  it('lands an explicit clear page when the plan has become empty', async () => {
+    // The failure this prevents: landing NOTHING. A consumer swaps its plan on `final`,
+    // so a pass with zero pages leaves last month's facilities in place for ever — while
+    // the cursor records the empty plan as synced, so no later sweep repairs it either.
+    await host.close();
+    rmSync(dir, { recursive: true, force: true });
+    await world({ mock: new PlanimaMock({ facilities: [], buildings: [], components: [], actions: [] }) });
+    await bind();
+
+    const result = await syncPlanimaScope(host, connId, await only(), options());
+    expect(result.changed).toBe(true);
+    expect(result.facilities).toBe(0);
+    expect(result.pages).toBe(1);
+
+    expect(landed).toHaveLength(1);
+    const clear = landed[0]!;
+    expect(clear.facility).toBeNull();
+    expect(clear.actions).toEqual([]);
+    expect(clear.buildings).toEqual([]);
+    expect(clear.final).toBe(true);
+    expect(clear.pageCount).toBe(1);
+  });
+
+  it('refuses a success whose body carries no data array', async () => {
+    // `data ?? []` would read a malformed 200 as "this facility has no components any
+    // more", land it, and record the hash — so the next sweep sees no change and never
+    // repairs it. A missing `data` is a response fault, not an empty list.
+    const broken = new PlanimaMock({ facilities: FACILITIES, buildings: BUILDINGS, components: COMPONENTS, actions: ACTIONS });
+    const inner = broken.fetch;
+    const stripped = (async (input: string, init?: unknown) => {
+      const res = await (inner as unknown as (i: string, x?: unknown) => Promise<{
+        ok: boolean;
+        status: number;
+        headers: { get(n: string): string | null };
+        text(): Promise<string>;
+      }>)(input, init);
+      if (!res.ok || !input.includes('/facilities?')) return res;
+      // A 200 with the envelope but no rows key — a rewritten body, a partial outage.
+      return { ...res, text: async () => JSON.stringify({ pagination: { total_count: 2, offset: 0, limit: 50 } }) };
+    }) as unknown as typeof inner;
+
+    await bind();
+    const result = await sweepPlanimaPlan(host, connId, { ...options(), fetch: stripped });
+    expect(result.synced).toHaveLength(0);
+    expect(result.failed[0]!.error).toMatch(/no 'data' array/);
+    expect(landed).toEqual([]);
+    // And the cursor did not move, so the next sweep retries rather than calling it done.
+    expect((await only()).lastSync).toBeUndefined();
+  });
+
+  it('refuses to sync when the live connection is not the one the binding names', async () => {
+    // Asserts the GUARD, not a reachable production path — and the distinction matters.
+    // The directory refuses a second live connection for one (tenant, vertical, provider)
+    // and revoking one takes its bindings with it, so the two ids cannot drift apart
+    // today. The guard is a backstop for the day Planima grows a per-account credential
+    // and `openConnection` starts choosing between rows; this drives it directly by
+    // sweeping under an id that is not the live connection's.
+    await bind();
+    const stranger = connectionId.parse(ulid());
+    await expect(
+      syncPlanimaScope(host, stranger, await only(), options()),
+    ).rejects.toThrow(/the credential that reads and the identity that writes/);
+    expect(landed).toEqual([]);
+  });
+
+  it('shares one rate-limit window across every binding in a pass', async () => {
+    // Planima meters per TOKEN. A per-scope window lets the second scope's first ten
+    // requests land on top of the first scope's ten — twenty in one window.
+    const second = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: second, jurisdiction: 'eu', vertical: 'maintenance' });
+    await host.admin.activateScope(staff, t, second);
+    await host.admin.grantToConnection(staff, {
+      connectionId: connId,
+      permission: PLAN_RECORD,
+      node: { tenantId: t, scopeId: second },
+      grantedBy: staff,
+    });
+    await bind();
+    await bind({ scopeId: second });
+
+    // A clock that never advances, so the window can only ever be cleared by the
+    // throttle waiting — which is exactly what is under test.
+    const frozen = Date.parse('2026-09-08T00:00:00Z');
+    const opts = { ...options(), now: () => frozen };
+    await sweepPlanimaPlan(host, connId, opts);
+
+    // Two scopes × (1 facilities + 3 × 2 facilities) = 14 requests on one token. With a
+    // shared window the eleventh onward must wait; with a per-scope window the second
+    // scope would start fresh and burst.
+    expect(planima.requests.length).toBe(14);
+    expect(waited.length).toBe(planima.requests.length - 10);
   });
 
   it('projects the binding ledger for a console without touching the provider', async () => {

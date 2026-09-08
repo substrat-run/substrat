@@ -250,7 +250,18 @@ export const planimaPlanPage = z.object({
   connectionId: z.string().min(1),
   /** The organization the facility belongs to, when Planima nested one on it. */
   organization: z.object({ id: z.number().int(), name: z.string() }).nullable(),
-  facility: planimaFacilityFact,
+  /**
+   * The facility this page carries — or `null` on a CLEAR page.
+   *
+   * A sync that finds no facilities at all still has something to say, and saying
+   * nothing is the one answer that corrupts a consumer: it commits or swaps on `final`,
+   * so a pass that lands zero pages leaves last month's facilities and actions in place
+   * for ever, while the cursor records the empty plan as synced and no later sweep
+   * repairs it. So an empty plan lands exactly one page — `facility: null`,
+   * `actions: []`, `final: true` — which reads as "this plan is now empty" rather than
+   * as silence.
+   */
+  facility: planimaFacilityFact.nullable(),
   /** The year range the actions on this page were read through — inclusive both ends. */
   window: z.object({ fromYear: z.number().int(), toYear: z.number().int() }),
   /** The currency every `Money` on this page is denominated in; declared, not read — see the binding. */
@@ -275,6 +286,14 @@ export interface PlanimaConnectorOptions {
   now?: () => number;
   /** Injected for the same reason — the rate-limit throttle waits through this. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * A sliding rate-limit window shared by every client built during one sweep.
+   *
+   * `sweepPlanimaPlan` creates one and threads it through, because Planima meters per
+   * TOKEN: without it, each bound scope's client starts with an empty window and the
+   * second scope's requests pile on top of the first's.
+   */
+  rateWindow?: number[];
 }
 
 /**
@@ -440,11 +459,14 @@ export async function syncPlanimaScope(
     binding.tenantId,
     binding.vertical,
     options.timeoutMs ?? 30_000,
+    // The binding's own connection, or nothing. See `openPlanimaConnection`.
+    connectionId,
   );
   const api = new PlanimaApi(conn, {
     apiBase: options.apiBase,
     now: options.now,
     sleep: options.sleep,
+    rateWindow: options.rateWindow,
   });
 
   const nowMs = options.now?.() ?? Date.now();
@@ -507,12 +529,44 @@ export async function syncPlanimaScope(
   // Every page of every facility, counted BEFORE the first invoke, because `pageCount`
   // and `final` are on page 0 and a consumer swapping a plan atomically needs to know
   // from the first page how many are coming.
-  const pageCount = plans.reduce((n, p) => n + Math.max(1, Math.ceil(p.actions.length / PAGE_SIZE)), 0);
+  //
+  // Floored at one: a plan with no facilities still lands a single CLEAR page. Landing
+  // nothing would leave a consumer holding the previous sync's rows for ever, because
+  // it swaps on `final` and no `final` would ever arrive — while the cursor below
+  // recorded the empty plan as synced, so no later sweep would repair it either.
+  const pageCount = Math.max(
+    1,
+    plans.reduce((n, p) => n + Math.max(1, Math.ceil(p.actions.length / PAGE_SIZE)), 0),
+  );
 
   // The connection acting as itself (#97). Refuses a scope in another tenant or running
   // another vertical by construction, and the invoke below is gated on the connection's
   // own grant — the one `bindPlanimaScope` verified.
   const scope = await host.getConnectorScope(connectionId, scopeIdSchema.parse(binding.scopeId));
+
+  if (plans.length === 0) {
+    // "This plan is now empty", said explicitly. Every facility deleted, an
+    // organization filter that matches nothing, a token whose access was narrowed —
+    // all of them arrive here, and all of them are a fact the consumer needs.
+    await scope.invoke(
+      binding.operation,
+      planimaPlanPage.parse({
+        syncId: contentHash,
+        connectionId,
+        organization: null,
+        facility: null,
+        window,
+        currency,
+        page: 0,
+        pageCount: 1,
+        final: true,
+        facilityHead: false,
+        buildings: [],
+        components: [],
+        actions: [],
+      }),
+    );
+  }
 
   let page = 0;
   for (const plan of plans) {
@@ -591,13 +645,18 @@ export async function sweepPlanimaPlan(
   const rows = await host.admin.listConnectorState(connectionId, BINDING_PREFIX);
   const result: PlanimaSweepResult = { found: 0, synced: [], unchanged: 0, failed: [] };
 
+  // ONE rate-limit window for the whole pass. Every binding under this connection
+  // shares its token, and Planima meters per token — so a per-scope window would let
+  // the second scope's first ten requests land on top of the first scope's ten.
+  const rateWindow = options.rateWindow ?? [];
+
   for (const { value } of rows) {
     // A tombstoned binding (`unbindPlanimaScope`) — present as a row, not a target.
     if (value === null || typeof value !== 'object') continue;
     const binding = value as PlanimaBinding;
     result.found += 1;
     try {
-      const r = await syncPlanimaScope(host, connectionId, binding, options);
+      const r = await syncPlanimaScope(host, connectionId, binding, { ...options, rateWindow });
       if (r.changed) result.synced.push(r);
       else result.unchanged += 1;
     } catch (err) {
@@ -831,11 +890,36 @@ async function openPlanimaConnection(
   tenant: string,
   vertical: string,
   timeoutMs: number,
+  expected?: ConnectionId,
 ): Promise<ConnectorConnection> {
   const parsedTenant = tenantIdSchema.parse(tenant);
   const open = await admin.openConnection(parsedTenant, vertical, 'planima');
   if (!open) {
     throw new Error(`no live 'planima' connection for tenant ${tenant} / vertical '${vertical}'`);
+  }
+  // The credential that READS and the identity that WRITES must be the same connection.
+  //
+  // A binding names a `connectionId`, and that id is what opens the scope, stamps the
+  // spine and is checked for the grant. The token, though, comes from
+  // `openConnection(tenant, vertical, provider)` — whichever live row exists. Nothing in
+  // THIS file makes those the same row; two layers below it do, and both were checked
+  // rather than assumed: the directory holds a UNIQUE constraint that refuses a second
+  // live connection for one (tenant, vertical, provider, account), and revoking one
+  // takes its bindings with it. So a mismatch is currently unreachable.
+  //
+  // This is a backstop for the day that stops being true, not a fix for a live bug. It
+  // is here because the invariant is load-bearing and invisible: if Planima ever gains
+  // an `accountRefField` — one token per client company, the shape Fortnox already has —
+  // a (tenant, vertical) grows several live connections, `openConnection` starts
+  // choosing between them, and the sweep would silently read one company's plan with
+  // another's credential while the audit trail named a connection that fetched nothing.
+  // One comparison buys a loud refusal instead of that.
+  if (expected !== undefined && open.id !== expected) {
+    throw new Error(
+      `binding names connection ${expected}, but the live 'planima' connection for tenant ` +
+        `${tenant} / vertical '${vertical}' is ${open.id} — the credential that reads and the ` +
+        `identity that writes must be the same connection. Re-bind the scope against ${open.id}.`,
+    );
   }
   return {
     ...open,
