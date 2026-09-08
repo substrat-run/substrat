@@ -152,6 +152,15 @@ interface Env extends OidcEnv, ConnectorEnv {
    */
   MASK_SALT?: string;
   /**
+   * The CLI version advisory (#971): the oldest `@substrat-run/cli` this deployment still
+   * accepts pushes from, and the newest one published. Emitted as response headers the
+   * CLI reads to nudge a builder who has fallen behind; the server refuses nothing on
+   * their account. `vars`, not secrets — a deployment fact worth reading in a diff.
+   * Either or both unset ⇒ that header is simply not sent, and the CLI stays quiet.
+   */
+  CLI_MIN_VERSION?: string;
+  CLI_LATEST_VERSION?: string;
+  /**
    * The support desk the console embeds (`https://ticket0.substrat.net`) and the
    * secret it verifies an identity claim against — the desk's own
    * `verification_secret`, minted at Settings → Identity verification and readable
@@ -1361,6 +1370,16 @@ export default {
         authenticate: authFor(env),
         // #1054: the platform's margin over list for model usage it provides. Whole percent.
         ...(env.MODEL_MARGIN_PERCENT ? { modelMarginPercent: Number(env.MODEL_MARGIN_PERCENT) } : {}),
+        // #971: the CLI freshness nudge. Deployment vars, passed through only when set so
+        // an unconfigured deployment emits no header and the CLI reads nothing.
+        ...(env.CLI_MIN_VERSION || env.CLI_LATEST_VERSION
+          ? {
+              cliAdvisory: {
+                ...(env.CLI_MIN_VERSION ? { minVersion: env.CLI_MIN_VERSION } : {}),
+                ...(env.CLI_LATEST_VERSION ? { latestVersion: env.CLI_LATEST_VERSION } : {}),
+              },
+            }
+          : {}),
         // A tenant user acting on their own verticals — self-serve, no vetting roster.
         // Tried only after staff/service auth declines (control-plane-api middleware).
         // A CI push token (`spt1.…` in x-service-token) authenticates as the same kind

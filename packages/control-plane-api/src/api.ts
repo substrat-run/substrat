@@ -394,7 +394,28 @@ export interface ControlPlaneApiOptions {
    * (correct for a deployment that mints no platform hostnames).
    */
   platformBaseDomains?: string[];
+  /**
+   * The CLI version advisory (#971) — what `substrat` reads off every response to nudge
+   * a builder whose CLI has fallen behind (`packages/cli/src/version.ts`). The control
+   * plane is the authority on whether a CLI is still *compatible*, which npm's `latest`
+   * tag is not, so the two values are deployment facts, not package metadata:
+   *   `minVersion`    the oldest CLI this platform still accepts pushes from (the floor)
+   *   `latestVersion` the newest published CLI
+   * Each is emitted only when supplied, as {@link CLI_MIN_VERSION_HEADER} /
+   * {@link CLI_LATEST_VERSION_HEADER}. Absent ⇒ no header at all, and a CLI that reads
+   * nothing says nothing — a server that stays silent costs nobody anything. Advisory
+   * only: this package does not refuse a push below the floor.
+   */
+  cliAdvisory?: { minVersion?: string; latestVersion?: string };
 }
+
+/**
+ * Response headers carrying the CLI version advisory (`ControlPlaneApiOptions.cliAdvisory`).
+ * The CLI reads these by the same spelling (`packages/cli/src/version.ts`); exported so a
+ * host or a test names the header rather than restating the string.
+ */
+export const CLI_MIN_VERSION_HEADER = 'x-substrat-cli-min-version';
+export const CLI_LATEST_VERSION_HEADER = 'x-substrat-cli-latest-version';
 
 // `actor` is the audited subject for every HostAdmin call (staff or builder alike).
 // `principal` carries the authz distinction the builder routes read. Both are set by
@@ -749,6 +770,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   const { host, authenticate, authenticateBuilder } = options;
   const admin = host.admin;
   const app = new Hono<{ Variables: Vars }>();
+
+  // The CLI version advisory (#971), stamped on EVERY response — including the 401 the
+  // auth middleware below answers with, since a CLI too old to authenticate is exactly
+  // the one that needs to hear it. Registered first so nothing can return around it.
+  // Nothing configured ⇒ no header touched, byte-identical to before this existed.
+  const advisory = options.cliAdvisory;
+  if (advisory?.minVersion || advisory?.latestVersion) {
+    app.use('*', async (c, next) => {
+      await next();
+      if (advisory.minVersion) c.header(CLI_MIN_VERSION_HEADER, advisory.minVersion);
+      if (advisory.latestVersion) c.header(CLI_LATEST_VERSION_HEADER, advisory.latestVersion);
+    });
+  }
 
   // Fail closed, before any route runs: no principal, no reach. Staff/service first
   // (unchanged, a superset); a builder session only when staff declines.
