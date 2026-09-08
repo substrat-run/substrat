@@ -8,6 +8,12 @@
  * screen is not keeping — so these are wired, and every one of them narrows the read on
  * the server rather than in the browser.
  *
+ * The tag chip is the one facet that is NOT a filter column: a tag is a row in its own
+ * table, so `list-conversations` cannot narrow on it, and picking one switches the list
+ * to `list-conversations-by-tag` instead (#1084). That read carries none of the other
+ * narrowings, which is why choosing a tag puts the other chips down and vice versa —
+ * a "State: Open" chip beside a tag the read ignores would be the promise above, broken.
+ *
  * Two more things from the handoff that are easy to lose:
  *
  *  - the state-badge legend, because `resolved → open` is a real edge and a reader has
@@ -76,6 +82,9 @@ const askedForSearch = (f: Filters, q: string) => {
 
 const EMPTY: Filters = { state: '', assignee: '', channel: '', priority: '', contact_id: '' };
 
+/** One entry of the desk's tag vocabulary, as `list-tags` hands it back. */
+type DeskTag = Awaited<ReturnType<typeof api.listTags>>['tags'][number];
+
 const OPTIONS: { key: keyof Filters; label: string; values: [string, string][] }[] = [
   {
     key: 'state',
@@ -129,6 +138,17 @@ export function Inbox({
   const [q, setQ] = useState('');
   const [term, setTerm] = useState('');
   /**
+   * The tag the list is narrowed to, or `''` for none.
+   *
+   * Beside `filters` rather than inside it, because it is not an input of
+   * `list-conversations`: when it is set the list comes from a different read
+   * (`list-conversations-by-tag`), and folding it into `asked()` would send the walk a
+   * column it does not declare.
+   */
+  const [tag, setTag] = useState('');
+  /** The desk's tag vocabulary — what the tag chip may offer, most-used first. */
+  const [vocabulary, setVocabulary] = useState<DeskTag[]>([]);
+  /**
    * People whose email or name matches the term — the "who is this" half of #1081,
    * stamped with the term they answer.
    *
@@ -175,9 +195,13 @@ export function Inbox({
       if (fromFilters) setPage(null);
       const seq = ++latest.current;
       const searching = term.length >= SEARCH_MIN;
-      (searching
-        ? api.searchConversations(askedForSearch(filters, term))
-        : api.listConversations(asked(filters))
+      // A tag is its own read, and the exclusive one: picking it put the filters and
+      // the box down (see `choose`), so there is nothing else to send with it.
+      (tag !== ''
+        ? api.listConversationsByTag({ tag })
+        : searching
+          ? api.searchConversations(askedForSearch(filters, term))
+          : api.listConversations(asked(filters))
       )
         .then((p) => {
           if (seq !== latest.current) return;
@@ -194,16 +218,34 @@ export function Inbox({
           setError(e.message);
         });
     },
-    [filters, term],
+    [filters, term, tag],
   );
+
+  /**
+   * The vocabulary behind the tag chip. The same key as the inbox
+   * (`conversation:read`), so whoever can see this screen can see its tags — and a
+   * failed read leaves the chip out rather than putting a banner over a working list.
+   */
+  const loadTags = useCallback(() => {
+    api
+      .listTags()
+      .then((r) => setVocabulary(r.tags))
+      .catch(() => setVocabulary([]));
+  }, []);
 
   // A filter change blanks the list; a background tick must not.
   useEffect(() => load(true), [load]);
-  useLiveReload(load);
+  // The vocabulary rides the same tick as the list: a tag added in the rail is
+  // pickable here on the next one, without a reload.
+  useLiveReload(() => {
+    load();
+    loadTags();
+  });
   useEffect(() => {
     void contacts().then(setPeople);
     void agents().then(setStaff);
-  }, []);
+    loadTags();
+  }, [loadTags]);
 
   /** Typing settles into a term. Everything downstream hangs off `term`, never `q`. */
   useEffect(() => {
@@ -286,13 +328,39 @@ export function Inbox({
     );
 
   const mine = filters.assignee === session.principal;
-  const active = Object.values(filters).some(Boolean) || term.length >= SEARCH_MIN;
+  const tagged = tag !== '';
+  const active = Object.values(filters).some(Boolean) || term.length >= SEARCH_MIN || tagged;
   const searching = term.length >= SEARCH_MIN;
   const person = filters.contact_id ? people.get(filters.contact_id) : undefined;
+
+  /**
+   * Narrow the walk. Every chip but the tag goes through here, because the by-tag
+   * read cannot carry a filter column: setting one takes the tag off, so no chip is
+   * ever lit over a list that ignores it.
+   */
+  const refine = (update: (f: Filters) => Filters) => {
+    setTag('');
+    setFilters(update);
+  };
+
+  /**
+   * Choose a tag — or `''` for none. The exclusive facet: the by-tag read declares
+   * neither the filter columns nor a search term, so the other chips and the box go
+   * down with it rather than staying lit over a list that does not honour them.
+   */
+  const choose = (value: string) => {
+    setTag(value);
+    if (value !== '') {
+      setFilters({ ...EMPTY });
+      setQ('');
+      setTerm('');
+    }
+  };
 
   /** Typing is a desk-wide search; it and one person's history are not both true. */
   const type = (value: string) => {
     setQ(value);
+    setTag('');
     if (filters.contact_id) setFilters((f) => ({ ...f, contact_id: '' }));
   };
 
@@ -300,8 +368,19 @@ export function Inbox({
   const pick = (contactId: string) => {
     setQ('');
     setTerm('');
-    setFilters((f) => ({ ...f, contact_id: contactId }));
+    refine((f) => ({ ...f, contact_id: contactId }));
   };
+
+  /**
+   * What the tag chip offers: the vocabulary, plus the chosen tag if the vocabulary
+   * no longer carries it (its last conversation was untagged since) — a select whose
+   * value is not among its options would show "All" over a list narrowed to one tag.
+   */
+  const tagOptions: [string, string][] = [
+    ['', 'All'],
+    ...vocabulary.map((t): [string, string] => [t.tag, `${t.tag} (${t.count})`]),
+    ...(tagged && !vocabulary.some((t) => t.tag === tag) ? [[tag, tag] as [string, string]] : []),
+  ];
 
   /**
    * Am I in my own desk's directory?
@@ -386,9 +465,7 @@ export function Inbox({
             {/* The agent's own queue. First, because it is the one most used. */}
             <Chip
               active={mine}
-              onClick={() =>
-                setFilters((f) => ({ ...f, assignee: mine ? '' : session.principal }))
-              }
+              onClick={() => refine((f) => ({ ...f, assignee: mine ? '' : session.principal }))}
             >
               Assigned to me
             </Chip>
@@ -398,13 +475,19 @@ export function Inbox({
                 label={o.label}
                 value={filters[o.key]}
                 values={o.values}
-                onChange={(v) => setFilters((f) => ({ ...f, [o.key]: v }))}
+                onChange={(v) => refine((f) => ({ ...f, [o.key]: v }))}
               />
             ))}
+            {/* The tag facet — a different read, not a filter column (see the header).
+                Left out while the desk has no tags: a chip with nothing to choose is a
+                control that does nothing. */}
+            {tagOptions.length > 1 ? (
+              <Select label="Tag" value={tag} values={tagOptions} onChange={choose} />
+            ) : null}
             {/* A picked person is a filter with no chip of its own, so it gets one —
                 otherwise the list is narrowed and the screen never says by whom. */}
             {filters.contact_id ? (
-              <Chip active onClick={() => setFilters((f) => ({ ...f, contact_id: '' }))}>
+              <Chip active onClick={() => refine((f) => ({ ...f, contact_id: '' }))}>
                 {person ? nameOf(person) : 'One person'} ✕
               </Chip>
             ) : null}
@@ -413,6 +496,7 @@ export function Inbox({
                 className="btn btn-ghost"
                 onClick={() => {
                   setFilters({ ...EMPTY });
+                  setTag('');
                   setQ('');
                   setTerm('');
                 }}
@@ -484,11 +568,19 @@ export function Inbox({
           ) : page.entries.length === 0 ? (
             active ? (
               <Empty
-                title={searching ? `Nothing matches “${term}”` : 'Nothing matches those filters'}
+                title={
+                  tagged
+                    ? `Nothing is tagged “${tag}”`
+                    : searching
+                      ? `Nothing matches “${term}”`
+                      : 'Nothing matches those filters'
+                }
                 note={
-                  searching
-                    ? 'Subjects and message bodies were both searched.'
-                    : 'Clear them to see the whole desk.'
+                  tagged
+                    ? 'Tags match exactly, closed conversations included.'
+                    : searching
+                      ? 'Subjects and message bodies were both searched.'
+                      : 'Clear them to see the whole desk.'
                 }
               />
             ) : (
@@ -539,7 +631,8 @@ export function Inbox({
         >
           <span className="t-small">
             Showing {page?.entries.length ?? 0} of {page?.total ?? page?.entries.length ?? 0}
-            {active ? ' matching' : ''} · sorted by {searching ? 'newest first' : 'last activity'}
+            {active ? ' matching' : ''} · sorted by{' '}
+            {searching || tagged ? 'newest first' : 'last activity'}
           </span>
           <span className="t-small mono" style={{ letterSpacing: '.02em' }}>
             J / K to move · O to open
