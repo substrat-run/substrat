@@ -23,11 +23,15 @@ import type {
   ScopeId,
   ScopeStatus,
 } from '@substrat-run/contracts';
-import { globalFetch, type ConnectorResponse, type FetchLike } from '@substrat-run/kernel';
 import { getRegistrableDomain, isPublicSuffix, normalizeHost } from '@substrat-run/psl';
 
-/** The subset of `fetch` this module uses — the kernel's structural one, injectable for tests. */
-export type FetchFn = FetchLike;
+/**
+ * The subset of `fetch` this module uses — DOM-typed, injectable for tests. Deliberately
+ * NOT the kernel's `FetchLike`: a real `fetch` is not assignable to that under strict
+ * TypeScript (see `globalFetch`), and a caller injecting a DOM-typed fetch here must not
+ * need a cast. The bound global below IS this type, with no conversion.
+ */
+export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
 /** The normalized result of an issuance step — what the control plane persists. */
 export interface CustomHostnameIssuance {
@@ -186,7 +190,7 @@ export function extractRecords(ch: CfCustomHostname, routingTarget: string): Dns
 export function createCustomHostnameProvisioner(
   opts: CustomHostnameProvisionerOptions,
 ): CustomHostnameProvisioner {
-  const fetchFn: FetchFn = opts.fetch ?? globalFetch;
+  const fetchFn: FetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
   const base = `https://api.cloudflare.com/client/v4/zones/${opts.zoneId}/custom_hostnames`;
   const auth = { authorization: `Bearer ${opts.apiToken}` };
 
@@ -195,7 +199,7 @@ export function createCustomHostnameProvisioner(
     return { customHostnameId: ch.id, status, note, records: extractRecords(ch, opts.routingTarget) };
   };
 
-  const readEnvelope = async (res: ConnectorResponse, what: string): Promise<CfCustomHostname> => {
+  const readEnvelope = async (res: Response, what: string): Promise<CfCustomHostname> => {
     const text = await res.text().catch(() => '');
     let env: CfEnvelope<CfCustomHostname> | undefined;
     try {

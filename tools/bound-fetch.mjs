@@ -37,7 +37,8 @@ const COMMENT_LINE = /^\s*(?:\/\/|\/?\*)/;
  * unrelated `options.fetch` on the same line is not judged.
  */
 const FETCH_MEMBER = /(?:globalThis|\}\))\.fetch\b(?<after>\.bind\(globalThis\)|\()?/g;
-const TYPEOF = /typeof\s+globalThis\.fetch\b/g;
+/** A type query is not a handoff — `typeof globalThis.fetch`, or the same through a cast. */
+const TYPEOF = /typeof\s+(?:globalThis\.fetch\b|\(globalThis\b[^)]*\)\.fetch\b)/g;
 
 const walk = (dir, out = []) => {
   if (!existsSync(dir)) return out;
@@ -56,6 +57,36 @@ const handsFetchOn = (line) => {
   const stripped = line.replace(TYPEOF, '');
   return [...stripped.matchAll(FETCH_MEMBER)].some((m) => m.groups.after === undefined);
 };
+
+/**
+ * The predicate, judged against every shape it exists to tell apart — on every run,
+ * before the tree is read. A text rule drifts silently when a regex is "tidied", and a
+ * check that has stopped checking reports green (the same reason `lint:model` exits 2
+ * on an empty scan). Refused first, then allowed.
+ */
+const SELF_CHECK = [
+  ['fetch: globalThis.fetch as unknown as FetchLike,', true],
+  ['fetch: globalThis.fetch,', true],
+  ['egress: (globalThis as unknown as { fetch: FetchLike }).fetch,', true],
+  ['const f = (globalThis as unknown as { fetch: FetchLike }).fetch;', true],
+  ['this.fetchImpl = options.fetch ?? globalThis.fetch;', true],
+  ['fetch: globalFetch,', false],
+  ['fetch: globalThis.fetch.bind(globalThis) as unknown as FetchLike,', false],
+  ['this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);', false],
+  ['(input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init)', false],
+  ['const r = await globalThis.fetch(url);', false],
+  ['fetch?: typeof globalThis.fetch;', false],
+  ['fetchImpl: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),', false],
+  ['type F = typeof (globalThis as unknown as { fetch: FetchLike }).fetch;', false],
+  [' * The real globalThis.fetch in Node is assignable to it.', false],
+  ['// egress: globalThis.fetch,', false],
+];
+const drift = SELF_CHECK.filter(([line, want]) => handsFetchOn(line) !== want);
+if (drift.length > 0) {
+  console.error('bound-fetch: the rule no longer tells its own cases apart — fix the predicate before trusting a run:');
+  for (const [line, want] of drift) console.error(`  expected ${want ? 'REFUSED' : 'allowed'}: ${line}`);
+  process.exit(2);
+}
 
 const offenders = [];
 for (const root of ROOTS) {
