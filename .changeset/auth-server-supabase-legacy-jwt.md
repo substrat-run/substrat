@@ -15,7 +15,9 @@ refuses is the part worth knowing about: on a legacy project the JWT secret sign
 people, and the project's public `anon` key — the one printed in its own browser bundle —
 is itself a valid signature. That key, the `service_role` admin key, any unfamiliar role,
 an anonymous session, another project's token and anything not signed with HS256 are all
-turned away, and every refusal says the same thing to the caller so the endpoint cannot be
-used to probe the configuration. Whether someone arriving at an address that already has an
+turned away, and every one of those says the same thing to the caller, so the endpoint cannot
+be used to probe which check a token failed. A token that verifies but is turned away by
+policy — sign-up closed, or an address that already has an account — says which, because the
+person reading it has proved the token and can act on the answer. Whether someone arriving at an address that already has an
 account here is joined to it or refused is the issuer's existing account-linking setting,
 applied to this door too.

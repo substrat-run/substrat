@@ -85,12 +85,12 @@ function rebuild(cfg: Record<string, string | undefined> = {}): Auth {
   });
 }
 
-const post = (token: string): Promise<Response> =>
+const post = (token: string, extra: Record<string, unknown> = {}): Promise<Response> =>
   auth.handler(
     new Request(`${ORIGIN}/api/auth/supabase/session`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ token, ...extra }),
     }) as never,
   );
 
@@ -149,6 +149,19 @@ describe('signing in with a Supabase token', () => {
     await post(await mint({ sub: 'supabase-user-2', email: 'second@supabase.test' }));
     expect(users()).toHaveLength(2);
     expect(accounts().map((a) => a.account_id).sort()).toEqual(['supabase-user-1', 'supabase-user-2']);
+  });
+
+  it("engages oauthProvider's resume hooks: a forged pending authorize is refused", async () => {
+    // The before-hook verifies `oauth_query`'s signature on ANY endpoint body that carries
+    // one, so a forged one being refused — with the hook's own `invalid_signature`, before any
+    // account is touched — is what proves this endpoint sits inside the resume contract, the
+    // same way `bankid.test.ts` proves it for collect and without driving a whole OIDC
+    // round-trip. What it does NOT prove is that declaring the field in the body schema is
+    // load-bearing: better-call passes undeclared keys through, so this passes either way.
+    // The declaration is a statement of what the endpoint takes, not the thing that works.
+    const res = await post(await mint(), { oauth_query: 'client_id=x&sig=forged' });
+    expect(res.status).toBe(400);
+    expect(users()).toHaveLength(0);
   });
 
   it('refuses every bad token with the SAME words, so it is not an oracle', async () => {

@@ -61,10 +61,15 @@ export interface SupabaseBridgeOptions {
 const PROVIDER_ID = 'supabase';
 
 /**
- * What the caller is told when a token is not accepted — one message for every reason. The
+ * What the caller is told when a token fails VERIFICATION — one message for every reason. The
  * verifier distinguishes a bad signature from a wrong issuer from an anon key so that a test
  * can, but telling a caller which of those they hit turns this endpoint into an oracle for
  * probing the configuration.
+ *
+ * Deliberately not the whole story: a token that verifies can still be refused by policy —
+ * sign-up being closed, or an address that already has an account here — and those say what
+ * they are, because the person reading them can act on the answer and has already proved the
+ * token. Uniformity is for the checks an unauthenticated caller could otherwise probe.
  */
 const REFUSED = 'That Supabase token was not accepted.';
 
@@ -75,7 +80,18 @@ export const supabasePlugin = (opts: SupabaseBridgeOptions) => {
     endpoints: {
       supabaseSession: createAuthEndpoint(
         '/supabase/session',
-        { method: 'POST', body: z.object({ token: z.string().min(1) }) },
+        {
+          method: 'POST',
+          body: z.object({
+            token: z.string().min(1),
+            /** The pending authorize request, for `oauthProvider`'s resume hooks — see the
+             *  header, and `bankid-plugin.ts`, which declares it for the same reason. Not what
+             *  makes the resume work: better-call hands undeclared body keys through, so the
+             *  hook reads this either way (checked, both ways). Declared so the schema states
+             *  every field this endpoint expects rather than relying on that. */
+            oauth_query: z.string().optional(),
+          }),
+        },
         async (ctx) => {
           const identity = await verifySupabaseToken(ctx.body.token, {
             secret: opts.secret,
@@ -133,6 +149,14 @@ export const supabasePlugin = (opts: SupabaseBridgeOptions) => {
                 { method: PROVIDER_ID },
               );
             }
+            // Two writes, no transaction, and that is safe HERE for a reason worth recording
+            // rather than assuming: both runtimes serialize requests to one issuer's storage —
+            // the Durable Object behind its input gate, the Node dev server on synchronous
+            // better-sqlite3 — so two first sign-ins for one subject cannot interleave between
+            // the miss above and this link. Swap in an adapter with a genuinely async driver
+            // and that stops being true: both would miss, both would create a user, and the
+            // loser of the unique `(issuer, accountId)` index would leave an account-less row
+            // squatting an email address. Whoever makes that change owns this sequence.
             await ctx.context.internalAdapter.linkAccount({
               userId: user.id,
               providerId: PROVIDER_ID,

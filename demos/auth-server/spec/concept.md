@@ -220,7 +220,11 @@ unknown role is refused rather than allow-listed against the two known-bad ones,
 project can define more Postgres roles. Beside that: `alg` is pinned to HS256 before anything
 else is read (a token never chooses how it is checked), `iss` must be the configured project,
 `aud` must be `authenticated`, `exp` is required, and Supabase's anonymous sign-in — a real
-`authenticated` token for nobody — is refused as the session-without-an-identity it is.
+`authenticated` token for nobody — is refused as the session-without-an-identity it is. Every
+one of those refusals reaches the caller as the same sentence, so an unauthenticated caller
+cannot use the endpoint to learn which check they failed. A token that verifies and is then
+refused by POLICY — sign-up closed, or an address that already has an account here — says
+which instead: that reader has proved their token, and the answer is one they can act on.
 
 Two properties worth stating because they are choices, not consequences:
 
