@@ -7,6 +7,7 @@ import {
   type ChannelHistoryEntry,
   type DeployFailureRow,
   type FailureGroupRow,
+  type ReleasesView,
   type Deployment,
   type DeploymentVersion,
   type GitReposResult,
@@ -14,7 +15,7 @@ import {
   type WorkflowPreview,
 } from '../lib/api';
 import { Ic } from '../lib/icons';
-import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_PREVIEWS } from '../lib/mock';
+import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
@@ -481,6 +482,101 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
  * pushed code), and the handle is what a support ticket needs. Empty = nothing recent —
  * the panel renders nothing rather than an empty table.
  */
+/**
+ * The release ledger (#1236): every version with its adoption and health facts —
+ * "did this push break anything" and "is anyone still on the broken one" in one
+ * table. Traffic distinguishes unknown from quiet: an unconfigured metrics
+ * plane renders as an em dash, never as zero, because "the broken version went
+ * quiet" is exactly the misreading that would invite. Newest eight versions —
+ * the ledger is a health view, not the archive (the Versions table above is).
+ */
+function ReleasesPanel({ d }: { d: Deployment }) {
+  const [view, setView] = useState<ReleasesView | null>(DEV_MOCK ? MOCK_RELEASES : null);
+
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    api
+      .listReleases(d.slug)
+      .then((r) => live && setView(r))
+      // Tolerated to nothing: a worker or plane predating the route costs the panel, not the page.
+      .catch(() => live && setView(null));
+    return () => {
+      live = false;
+    };
+  }, [d.slug]);
+
+  if (!view || view.releases.length === 0) return null;
+  const rows = view.releases.slice(0, 8);
+
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Releases</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Each version with where it runs and how it behaves: failures from the 90-day record,
+          traffic from the last 24 hours{view.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.
+        </p>
+      </div>
+      <GridTable columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" header={['Version', 'Pushed', 'Went live', 'Where it runs', 'Failures', 'Traffic (24h)']}>
+        {rows.map((r, i) => (
+          <Row key={r.versionId} columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" last={i === rows.length - 1}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <MonoTag>{r.version}</MonoTag>
+              {r.schemaChange && (
+                <span title="updating to this version crosses a migration boundary" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+                  schema
+                </span>
+              )}
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }} title={r.origin ? `pushed via ${r.origin}` : undefined}>
+              {new Date(r.pushedAt).toLocaleString()}
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+              {r.wentLiveAt ? new Date(r.wentLiveAt).toLocaleString() : <span style={{ color: 'var(--text-tertiary)' }}>—</span>}
+            </span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+              {r.isProd && <Pill kind="success">prod</Pill>}
+              {r.isProd && !r.isServing && (
+                <Pill kind="warning">serve pending</Pill>
+              )}
+              {(r.scopesPinned > 0 || (r.isProd && view.scopesTrackingProd > 0)) && (
+                <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                  {r.scopesPinned > 0 ? `${r.scopesPinned} pinned` : ''}
+                  {r.scopesPinned > 0 && r.isProd && view.scopesTrackingProd > 0 ? ' · ' : ''}
+                  {r.isProd && view.scopesTrackingProd > 0 ? `${view.scopesTrackingProd} following prod` : ''}
+                </span>
+              )}
+              {!r.isProd && r.scopesPinned === 0 && <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>—</span>}
+            </span>
+            <span>
+              {r.failures > 0 ? (
+                <Pill kind={r.failures >= 3 ? 'danger' : 'warning'}>{r.failures}</Pill>
+              ) : (
+                <span style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>0</span>
+              )}
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+              {r.requests === null ? (
+                <span title="metrics unavailable — unknown, not zero" style={{ color: 'var(--text-tertiary)' }}>
+                  —
+                </span>
+              ) : (
+                <>
+                  {r.requests.toLocaleString()} req
+                  {r.errors !== null && r.errors > 0 && (
+                    <span style={{ color: 'var(--status-danger-fg)' }}> · {r.errors} err</span>
+                  )}
+                </>
+              )}
+            </span>
+          </Row>
+        ))}
+      </GridTable>
+    </div>
+  );
+}
+
 function IssuesPanel({ d }: { d: Deployment }) {
   const [rows, setRows] = useState<FailureGroupRow[] | null>(DEV_MOCK ? MOCK_FAILURE_GROUPS : null);
 
@@ -684,6 +780,7 @@ export function VerticalDetail({
               </GridTable>
             </div>
             <ProdHistory d={d} busy={busy} onPromote={onPromote} />
+            <ReleasesPanel d={d} />
             <PreviewsPanel d={d} busy={busy} />
             <IssuesPanel d={d} />
             <FailuresPanel d={d} />

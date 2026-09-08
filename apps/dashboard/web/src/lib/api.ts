@@ -371,6 +371,34 @@ export interface DeployFailureRow {
 }
 
 /**
+ * One version as a release (#1236): the version as the axis every other fact is
+ * read against. Push instant, go-live moment, adoption, and the version-stamped
+ * health facts — the join, not a new record.
+ */
+export interface ReleaseRow {
+  versionId: string;
+  version: string;
+  pushedAt: string;
+  origin: string | null;
+  schemaChange: boolean;
+  wentLiveAt: string | null;
+  isProd: boolean;
+  isServing: boolean;
+  scopesPinned: number;
+  failures: number;
+  requests: number | null;
+  errors: number | null;
+}
+
+export interface ReleasesView {
+  releases: ReleaseRow[];
+  /** Scopes with no pin — they follow the prod channel. */
+  scopesTrackingProd: number;
+  /** False = the plane's observability is unconfigured; traffic renders as unknown, never zero. */
+  metricsAvailable: boolean;
+}
+
+/**
  * One failure shape on MY vertical (#1233): the fingerprint grouping over the
  * rows above, derived worker-side. Counts cover the evidence window (90 days),
  * not all time; there is no lifecycle here — verdicts are staff concerns.
@@ -1261,6 +1289,10 @@ export const api = {
   /** The same record grouped by failure shape (#1233) — counted, newest-seen first. */
   listFailureGroups: (slug: string) =>
     call<FailureGroupRow[]>(`/deployments/${encodeURIComponent(slug)}/issues`),
+
+  /** The release ledger (#1236) — every version with its adoption and health facts. */
+  listReleases: (slug: string) =>
+    call<ReleasesView>(`/deployments/${encodeURIComponent(slug)}/releases`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),
