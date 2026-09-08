@@ -367,6 +367,10 @@ to argue about shape.
 **Notifications**
 
 - **`notification`** — who should be told, about what conversation, what kind, read or not.
+  An **escalation** — the assistant giving up, the assistant failing to run, or a visitor
+  asking for a person — is told to whoever holds the conversation, and when nobody holds
+  it, to every agent in the directory. The assignee-only rule tells nobody on the path
+  that needs it most: a widget conversation is unassigned by construction.
 
 ---
 

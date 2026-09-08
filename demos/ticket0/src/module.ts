@@ -442,6 +442,53 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
   return messageOrThrow(ctx, id);
 }
 
+/**
+ * What a visitor who asked for a person is told, straight away. One sentence, one
+ * place — and deliberately not a promise about how long it will take, which is a thing
+ * this code cannot know and the desk's own reply can say.
+ */
+export const HANDED_TO_A_PERSON =
+  'Passing this to a person now \u2014 someone from the team will reply here.';
+
+/**
+ * The message the handoff is about, when the visitor typed it rather than clicking.
+ *
+ * The newest public thing they said. Their request IS a message the thread already
+ * holds; the event needs an entity, and it should be that one rather than the
+ * acknowledgement, which is the desk talking to itself about them.
+ */
+function lastCustomerMessage(ctx: OperationContext, conversationId: string): MessageRow {
+  const row = ctx.sql.query<MessageRow>(
+    `SELECT * FROM ticket0_messages
+      WHERE conversation_id = ? AND author_kind = 'contact' AND visibility = 'public'
+      ORDER BY id DESC LIMIT 1`,
+    [conversationId],
+  )[0];
+  if (!row) throw substratError('validation_failed', 'nothing has been said in this conversation yet');
+  return row;
+}
+
+/**
+ * Is a request for a person still standing on this conversation?
+ *
+ * True when the newest thing the DESK said in public is the acknowledgement — nobody
+ * has replied since, so the ask is still outstanding and everyone who could pick it up
+ * has already been told. A second click is the same request, and telling the desk twice
+ * is how a support tool teaches its staff to ignore it. Any agent or assistant word
+ * after the acknowledgement clears it: the conversation moved, and the next ask is a
+ * new one.
+ */
+function handoffStands(ctx: OperationContext, conversationId: string): boolean {
+  const last = ctx.sql.query<MessageRow>(
+    `SELECT * FROM ticket0_messages
+      WHERE conversation_id = ? AND visibility = 'public'
+        AND author_kind IN ('system', 'agent', 'assistant')
+      ORDER BY id DESC LIMIT 1`,
+    [conversationId],
+  )[0];
+  return last?.author_kind === 'system' && last.body_text === HANDED_TO_A_PERSON;
+}
+
 /** The one shape every message event carries. Bodies are erasable and never ride. */
 function messageEvent(row: MessageRow, type: string) {
   return {
@@ -463,14 +510,55 @@ function notify(
   principal: string,
   kind: NotificationRow['kind'],
   conversationId: string | null,
-): void {
+): boolean {
   // Never tell someone about their own act.
-  if (principal === String(ctx.principal)) return;
+  if (principal === String(ctx.principal)) return false;
   ctx.sql.exec(
     `INSERT INTO ticket0_notifications (id, principal, kind, conversation_id, read_at, created_at)
      VALUES (?, ?, ?, ?, NULL, ?)`,
     [ulid(), principal, kind, conversationId, ctx.now()],
   );
+  return true;
+}
+
+/**
+ * Tell whoever is holding this conversation — and when nobody is, tell everybody.
+ *
+ * The rule used to be the first half alone, and on the path that needs it most the
+ * first half tells nobody: a widget conversation is unassigned by construction, so
+ * every escalation the assistant made — no documentation, a model that would not
+ * run, a visitor asking for a person — wrote its turn, moved on, and pinged thin
+ * air. "It is back in the inbox" is a true sentence about an unassigned conversation
+ * and a useless one about an escalated conversation, which is the difference: the
+ * inbox is somewhere people look eventually, and an escalation is a claim that
+ * eventually is too late.
+ *
+ * "Everybody" is `ticket0_agent_profiles`, which is this desk's only in-scope record
+ * of a colleague — the same directory `staffOrThrow` admits an assignee from, and
+ * for the same reason: module code cannot ask the kernel who else holds a permission.
+ * There is no presence to read, so nobody here pretends to know who is at their desk.
+ *
+ * Returns how many rows it wrote, which is how many people were actually told.
+ */
+function notifyStaff(
+  ctx: OperationContext,
+  conversation: ConversationRow,
+  kind: NotificationRow['kind'],
+): number {
+  if (conversation.assignee) return notify(ctx, conversation.assignee, kind, conversation.id) ? 1 : 0;
+  // Not the assistant's own accounts, which are in this directory because they need a
+  // byline and a desk must be able to hand a conversation BACK to them. Telling the
+  // assistant that the assistant gave up is a notification nobody will ever read, and
+  // it would make `notified` claim more people than the desk actually has. The name
+  // is the test the same way `post-public-reply` decides an author's kind by it — one
+  // rule about who the assistant is, not two.
+  const staff = ctx.sql.query<{ principal: string }>(
+    'SELECT principal FROM ticket0_agent_profiles WHERE display_name != ? ORDER BY principal',
+    [ASSISTANT_NAME],
+  );
+  let told = 0;
+  for (const row of staff) if (notify(ctx, row.principal, kind, conversation.id)) told++;
+  return told;
 }
 
 // ---------------------------------------------------------------------------
@@ -2238,9 +2326,11 @@ const operations = {
       input.turnId,
     ])[0]!;
     // Both are the assistant handing the conversation to a person — one because the
-    // documentation had nothing, one because the assistant itself did not run.
-    if ((input.outcome === 'escalated' || input.outcome === 'failed') && conversation.assignee)
-      notify(ctx, conversation.assignee, 'escalated', conversation.id);
+    // documentation had nothing, one because the assistant itself did not run. Whoever
+    // holds it, or everybody when nobody does: a widget conversation is unassigned,
+    // which is exactly the shape this used to tell nobody about.
+    if (input.outcome === 'escalated' || input.outcome === 'failed')
+      notifyStaff(ctx, conversation, 'escalated');
     ctx.emit({
       type: 'ticket0.answer-recorded',
       schemaVersion: 1,
@@ -2302,7 +2392,7 @@ const operations = {
     const row = ctx.sql.query<AiTurnRow>('SELECT * FROM ticket0_ai_turns WHERE id = ?', [
       input.turnId,
     ])[0]!;
-    if (conversation.assignee) notify(ctx, conversation.assignee, 'escalated', conversation.id);
+    notifyStaff(ctx, conversation, 'escalated');
     ctx.emit({
       type: 'ticket0.assistant-failed',
       schemaVersion: 1,
@@ -2926,6 +3016,75 @@ const operations = {
     if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
     return row;
+  },
+
+  /**
+   * "Talk to a human" — the click, rather than a sentence that happens to say so.
+   *
+   * Three writes and no model: what the visitor said (when the caller has it), the
+   * desk's acknowledgement, and a notification for everyone who could pick it up. All
+   * in one transaction, because the failure this closes is a request for a person that
+   * is recorded and never announced.
+   *
+   * The acknowledgement is written by the DESK, not by the assistant, and that is why
+   * it does not go through `post-public-reply`: a desk that keeps a human in the loop
+   * refuses the assistant a public word, correctly, and a visitor who asked for a
+   * person must still be told that one is coming. Confirming receipt is not answering.
+   */
+  'ticket0/request-human': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationWidget));
+    const hold = await holdOrThrow(ctx, input.sessionId, input.token);
+    const conversation =
+      hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
+    const next = step(conversation, 'ticket0/request-human');
+
+    /**
+     * The visitor's own words, when they are not already in the thread.
+     *
+     * With a `body` this is the button: one call posts and escalates. Without one the
+     * visitor typed the request and `widget-post` has already written it — so the
+     * message this returns is that one, found rather than written, and the thread
+     * shows the ask once.
+     */
+    const asked = input.body
+      ? writeMessage(ctx, {
+          conversationId: conversation.id,
+          authorKind: 'contact',
+          authorPrincipal: null,
+          visibility: 'public',
+          bodyText: input.body,
+        })
+      : lastCustomerMessage(ctx, conversation.id);
+
+    /**
+     * Ask twice, and the desk hears once. The acknowledgement and the notifications
+     * both belong to a request that is outstanding, and a second click while the first
+     * one still stands is the same request being made again — impatience, not news.
+     * What the visitor SAID is written either way, above: they may have added
+     * something, and the thread is theirs.
+     */
+    const standing = handoffStands(ctx, conversation.id);
+    if (!standing)
+      writeMessage(ctx, {
+        conversationId: conversation.id,
+        authorKind: 'system',
+        authorPrincipal: String(ctx.principal),
+        visibility: 'public',
+        bodyText: HANDED_TO_A_PERSON,
+      });
+    settle(ctx, conversation, next);
+
+    const notified = standing ? 0 : notifyStaff(ctx, conversation, 'escalated');
+    ctx.emit({
+      type: 'ticket0.human-requested',
+      schemaVersion: 1,
+      entity: { entityType: 'message', entityId: asked.id },
+      piiClass: 'none',
+      // Never the body — it is erasable, and what a consumer needs is that somebody
+      // asked, on which conversation, and how many people the desk could tell.
+      payload: { id: asked.id, conversation_id: conversation.id, notified },
+    });
+    return { ...asked, notified };
   },
 
   'ticket0/widget-thread': async (ctx, input) => {

@@ -24,6 +24,7 @@ import {
   recordAssistantFailure,
   searchQueriesOf,
   spreadAcrossDocuments,
+  wantsHuman,
   type Model,
   type RetrievedArticle,
   type ModelDescription,
@@ -37,6 +38,8 @@ import { Hono } from 'hono';
 import { fetchArticles, parseLlmsFull, parseLlmsIndex, runIngest } from '../harness/kb-ingest.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { mountApi } from '../src/routes.js';
+import { HANDED_TO_A_PERSON } from '../src/module.js';
+import { mountWidgetSurface } from '../harness/widget-surface.js';
 import { buildHost, seed, signIdentity, type Desk, type World } from '../src/seed.js';
 
 let dir: string;
@@ -997,5 +1000,284 @@ describe('answering a customer', () => {
     expect(errorText(new Error('x'.repeat(ASSISTANT_ERROR_MAX * 3)))).toHaveLength(ASSISTANT_ERROR_MAX);
     expect(errorText(new Error('   '))).toBe('failed without a message');
     expect(errorText('a string, not an Error')).toBe('a string, not an Error');
+  });
+});
+
+/**
+ * The route to a person — the one thing a support widget must never get wrong.
+ *
+ * It got it wrong for a long time in the quietest possible way: the "Talk to a human"
+ * button posted a SENTENCE saying so, that sentence went to retrieval like any other,
+ * and the customer got a paragraph out of whichever documentation page bm25 liked
+ * best — while nobody at the desk was told anything at all.
+ */
+describe('asking for a person', () => {
+  /** Open a widget session and return the two things a visitor's browser holds. */
+  async function opened(desk: Desk) {
+    const widget = await at(desk, 'widget');
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: desk.origin,
+      identity: {
+        externalId: desk.customer.email,
+        signature: await signIdentity(desk.verificationSecret, desk.customer.email),
+      },
+    })) as { sessionId: string; token: string };
+    return { widget, ...started };
+  }
+
+  const notificationsOf = async (desk: Desk, who: 'admin' | 'agent', conversationId: string) => {
+    const page = (await (await at(desk, who)).invoke('ticket0/my-notifications', {})) as Page<{
+      kind: string;
+      conversation_id: string | null;
+    }>;
+    return page.entries.filter((n) => n.conversation_id === conversationId);
+  };
+
+  it('tells a request for a person from a question about people', () => {
+    // The button's own sentence, and the ways somebody types it.
+    for (const said of [
+      'Can a person take a look at this, please?',
+      'human',
+      'a real person please',
+      'can I talk to a human?',
+      "I'd like to speak with someone",
+      'get me a human',
+      'escalate this please',
+      'could someone help me?',
+      'is there an actual person there?',
+    ])
+      expect(wantsHuman(said), said).toBe(true);
+
+    /**
+     * And the half that matters more. This product's documentation is ABOUT people
+     * holding permissions, so a classifier built from the word "person" would escalate
+     * the questions the assistant exists to answer.
+     */
+    for (const asked of [
+      'How do I run a migration against a live scope?',
+      'Can a person be assigned to a work order?',
+      'Do I need a person to approve a migration?',
+      'How do agents work in Substrat?',
+      'what permissions does the support role hold?',
+      'who can see an absence?',
+    ])
+      expect(wantsHuman(asked), asked).toBe(false);
+  });
+
+  it('the button posts, acknowledges and tells the desk — in one call, with no model', async () => {
+    const { widget, sessionId, token } = await opened(world.substrat);
+    const asked = (await widget.invoke('ticket0/request-human', {
+      sessionId,
+      token,
+      body: 'Can a person take a look at this, please?',
+    })) as { id: string; conversation_id: string; notified: number };
+
+    // The visitor sees their own message and an answer to it — not silence, and not a
+    // paragraph of documentation.
+    const thread = (await widget.invoke('ticket0/widget-thread', { sessionId, token })) as Page<{
+      author_kind: string;
+      body_text: string;
+    }>;
+    expect(thread.entries.map((m) => m.author_kind)).toEqual(['contact', 'system']);
+    expect(thread.entries[1]!.body_text).toBe(HANDED_TO_A_PERSON);
+
+    // Nothing was generated, so nothing was recorded as generated and nothing is owed.
+    const turns = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-turns', {
+      conversationId: asked.conversation_id,
+    })) as Page<{ id: string }>;
+    expect(turns.entries).toHaveLength(0);
+  });
+
+  /**
+   * The half the assignee rule could not reach.
+   *
+   * A widget conversation is unassigned by construction, so "tell whoever holds it"
+   * told nobody — every escalation this desk ever made went to an empty inbox row.
+   */
+  it('an unassigned conversation tells every agent, because nobody holds it', async () => {
+    const { widget, sessionId, token } = await opened(world.substrat);
+    const asked = (await widget.invoke('ticket0/request-human', {
+      sessionId,
+      token,
+      body: 'Can a person take a look at this, please?',
+    })) as { conversation_id: string; notified: number };
+
+    expect(asked.notified).toBeGreaterThan(0);
+    for (const who of ['admin', 'agent'] as const) {
+      const mine = await notificationsOf(world.substrat, who, asked.conversation_id);
+      expect(mine.map((n) => n.kind)).toContain('escalated');
+    }
+    // And it counts PEOPLE: the assistant's own accounts are in the same directory,
+    // because a desk must be able to hand a conversation back to them.
+    const staff = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-agents', {})) as Page<{
+      display_name: string;
+    }>;
+    expect(asked.notified).toBe(
+      staff.entries.filter((a) => a.display_name !== 'Assistant').length,
+    );
+  });
+
+  it('an assigned one tells only whoever is holding it', async () => {
+    const { widget, sessionId, token } = await opened(world.substrat);
+    const first = (await widget.invoke('ticket0/widget-post', {
+      sessionId,
+      token,
+      body: 'My invoice export is empty.',
+    })) as { conversation_id: string };
+    await (await at(world.substrat, 'admin')).invoke('ticket0/assign', {
+      conversationId: first.conversation_id,
+      assignee: world.substrat.agent.principal,
+    });
+
+    const asked = (await widget.invoke('ticket0/request-human', { sessionId, token })) as {
+      conversation_id: string;
+      notified: number;
+    };
+    expect(asked.notified).toBe(1);
+    expect((await notificationsOf(world.substrat, 'agent', asked.conversation_id)).map((n) => n.kind))
+      .toContain('escalated');
+
+    // The message it is about is the one the visitor already sent; asking for a person
+    // does not put words in their mouth a second time.
+    const thread = (await widget.invoke('ticket0/widget-thread', { sessionId, token })) as Page<{
+      author_kind: string;
+      body_text: string;
+    }>;
+    expect(thread.entries.filter((m) => m.author_kind === 'contact')).toHaveLength(1);
+    expect(thread.entries.at(-1)!.body_text).toBe(HANDED_TO_A_PERSON);
+  });
+
+  it('asking twice while the first ask stands tells the desk once', async () => {
+    const { widget, sessionId, token } = await opened(world.substrat);
+    const first = (await widget.invoke('ticket0/request-human', {
+      sessionId,
+      token,
+      body: 'Can a person take a look at this, please?',
+    })) as { conversation_id: string; notified: number };
+    expect(first.notified).toBeGreaterThan(0);
+
+    const again = (await widget.invoke('ticket0/request-human', {
+      sessionId,
+      token,
+      body: 'Anyone there?',
+    })) as { notified: number };
+    // Impatience, not news. The visitor's second message is in the thread; the desk is
+    // not told a second time, and is not told the same thing twice in its own voice.
+    expect(again.notified).toBe(0);
+
+    const thread = (await widget.invoke('ticket0/widget-thread', { sessionId, token })) as Page<{
+      author_kind: string;
+      body_text: string;
+    }>;
+    expect(thread.entries.filter((m) => m.body_text === HANDED_TO_A_PERSON)).toHaveLength(1);
+    expect((await notificationsOf(world.substrat, 'agent', first.conversation_id))).toHaveLength(1);
+
+    // And once somebody answers, the next ask is a new one.
+    await (await at(world.substrat, 'agent')).invoke('ticket0/post-public-reply', {
+      conversationId: first.conversation_id,
+      body: 'I am here — what is going on?',
+    });
+    const third = (await widget.invoke('ticket0/request-human', { sessionId, token })) as {
+      notified: number;
+    };
+    expect(third.notified).toBeGreaterThan(0);
+  });
+
+  /**
+   * A desk that keeps a human in the loop refuses its assistant a public word — and
+   * must not take the acknowledgement down with it. The visitor asked for a person,
+   * and being told one is coming is the desk confirming receipt, not the AI answering.
+   */
+  it('a supervised desk still answers the ask, because the desk is the one answering', async () => {
+    const { widget, sessionId, token } = await opened(world.kestrel);
+    await widget.invoke('ticket0/request-human', {
+      sessionId,
+      token,
+      body: 'Can I talk to a human?',
+    });
+    const thread = (await widget.invoke('ticket0/widget-thread', { sessionId, token })) as Page<{
+      body_text: string;
+    }>;
+    expect(thread.entries.at(-1)!.body_text).toBe(HANDED_TO_A_PERSON);
+  });
+});
+
+/**
+ * The routing decision itself — which is host code, and the one place that decides
+ * whether a customer's message reaches a model at all.
+ *
+ * Worth driving through the actual surface rather than asserting about `wantsHuman`
+ * twice: what broke was not the classifier (there was none) but the route, which sent
+ * everything to the assistant because that is all it knew how to do.
+ */
+describe('the widget surface routes a request for a person away from the model', () => {
+  async function mounted(desk: Desk) {
+    const app = new Hono();
+    const answered: string[] = [];
+    const stub = await at(desk, 'widget');
+    mountWidgetSurface(app, {
+      resolveDesk: async () => ({
+        invoke: <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T>,
+        allowedOrigins: [desk.origin],
+      }),
+      onCustomerMessage: (_c, m) => {
+        answered.push(m.body);
+      },
+    });
+    const call = (path: string, body: unknown) =>
+      app.request(path, {
+        method: 'POST',
+        headers: { origin: desk.origin, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    const started = (await (await call('/widget/sessions', {})).json()) as {
+      sessionId: string;
+      token: string;
+    };
+    const thread = async () => {
+      const res = await app.request(
+        `/widget/sessions/${started.sessionId}/messages?token=${encodeURIComponent(started.token)}`,
+        { headers: { origin: desk.origin } },
+      );
+      return (await res.json()) as { entries: { author_kind: string; body_text: string }[] };
+    };
+    return { call, answered, session: started, thread };
+  }
+
+  it('an ordinary question goes to the assistant, as it always did', async () => {
+    const { call, answered, session } = await mounted(world.substrat);
+    const res = await call(`/widget/sessions/${session.sessionId}/messages`, {
+      token: session.token,
+      body: 'How do I run a migration against a live scope?',
+    });
+    expect(res.status).toBe(200);
+    expect(answered).toEqual(['How do I run a migration against a live scope?']);
+  });
+
+  it('a TYPED request for a person does not, and is acknowledged instead', async () => {
+    const { call, answered, session, thread } = await mounted(world.substrat);
+    const res = await call(`/widget/sessions/${session.sessionId}/messages`, {
+      token: session.token,
+      body: 'Can I speak to someone please?',
+    });
+    expect(res.status).toBe(200);
+    // The model never ran. Before this it did, and answered from whichever page
+    // mentioned people.
+    expect(answered).toEqual([]);
+
+    const said = await thread();
+    expect(said.entries.map((m) => m.author_kind)).toEqual(['contact', 'system']);
+    expect(said.entries[1]!.body_text).toBe(HANDED_TO_A_PERSON);
+  });
+
+  it('the button’s own route posts and escalates in one call', async () => {
+    const { call, answered, session } = await mounted(world.substrat);
+    const res = await call(`/widget/sessions/${session.sessionId}/handoff`, {
+      token: session.token,
+      body: 'Can a person take a look at this, please?',
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { notified: number }).notified).toBeGreaterThan(0);
+    expect(answered).toEqual([]);
   });
 });
