@@ -24,7 +24,7 @@ import { AUTH_SERVER_ENV } from './manifest.js';
 import { createAdminApi } from './admin-api.js';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
-import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
@@ -141,6 +141,11 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     genericProviders: genericProvidersFrom(providers),
     trustedProviders: trustedProvidersFrom(providers),
     autoLinkAccounts: accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link',
+    // The legacy-secret bridge, when configured. It is handed the SAME linking answer:
+    // a plugin mints accounts through the internal adapter and so never passes through
+    // Better Auth's own implicit-linking rules, which would leave a second door
+    // quietly ignoring the operator's policy.
+    supabase: supabaseBridgeFrom(cfg, accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link'),
     bankid: bankidFor(readBankIdConfig(sql)),
   });
 };

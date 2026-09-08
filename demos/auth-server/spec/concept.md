@@ -195,6 +195,51 @@ establishes the session also resumes the authorize and returns the person to the
 that sent them. Dropping `oauth_query` on that path would sign someone in while silently
 abandoning the application waiting on them — #898, wearing a different hat.
 
+## Supabase on the legacy secret
+
+The `supabase` catalogue entry above is the way in for a Supabase project, and it is the one
+to prefer: a redirect, PKCE, no shared secret held here. It is unavailable to a project still
+on the **legacy shared JWT secret**, and not by our choice — Supabase's own OAuth 2.1 server
+refuses to mint an id_token under HS256 ("ID token generation will fail with HS256"), and the
+id_token is what carries the subject in that flow. Such a project cannot be a redirect upstream
+at all.
+
+What it can offer is a token its own app is already holding, so there is one endpoint that
+accepts one: `POST /api/auth/supabase/session`, mounted only when `SUPABASE_LEGACY_JWT_SECRET`
+and `SUPABASE_ISSUER` are both set (`src/supabase-plugin.ts`). A plugin rather than a route
+beside Better Auth, for BankID's reasons unchanged — the flow must END in a session, and the
+ban check and the `oauth_query` authorize-resume then come along for free.
+
+The verification (`src/supabase-token.ts`) is most of the feature, because on a legacy project
+**the JWT secret signs more than people**. The project's `anon` API key is itself an HS256 JWT
+signed with this same secret, and it is public — it ships in every browser bundle that talks to
+the project. So does `service_role`, the project-wide admin key. A verifier that checked the
+signature and stopped would accept a string printed in public JavaScript as proof of identity.
+What separates them is the `role` claim, so a token must carry exactly `authenticated`; an
+unknown role is refused rather than allow-listed against the two known-bad ones, since a
+project can define more Postgres roles. Beside that: `alg` is pinned to HS256 before anything
+else is read (a token never chooses how it is checked), `iss` must be the configured project,
+`aud` must be `authenticated`, `exp` is required, and Supabase's anonymous sign-in — a real
+`authenticated` token for nobody — is refused as the session-without-an-identity it is.
+
+Two properties worth stating because they are choices, not consequences:
+
+- **The account key is `(project issuer, sub)`** — the SAME pair `genericOAuth` writes for the
+  redirect flow. So a project that later migrates its JWT secret and moves to the catalogue
+  entry finds its people in the accounts they already had, and the `sub` every relying party
+  of this issuer stored does not move. The legacy bridge is a stage, and this is what makes
+  leaving it cheap.
+- **`ACCOUNT_LINKING` is applied here explicitly.** Better Auth's own implicit-linking rules
+  live in the OAuth callback; a plugin minting accounts through the internal adapter never
+  passes through them. Without that, an address that already had an account here would have
+  met the `user.email` UNIQUE constraint as a database error rather than a policy, and an
+  issuer set to `block` would have had a second door quietly ignoring it.
+
+It is a shared secret, and the manifest key says so rather than implying otherwise: anyone
+holding it can mint a token for any user of that project. That is Supabase's own stated reason
+for retiring it, and the reason this path is documented as the fallback rather than the
+recommendation.
+
 ## BankID
 
 Swedish e-ID sign-in, beside the OAuth upstreams but not among them: BankID is not a redirect

@@ -201,6 +201,13 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   two separate accounts on one address is not offered — an email resolves to exactly one
   user in password sign-in, reset and recovery, so a second row at that address would make
   each of those pick one arbitrarily.
+- **A Supabase project on the legacy JWT secret.** Such a project cannot be a redirect
+  upstream — Supabase will not mint an OIDC id_token under HS256 — so instead the issuer can
+  accept an access token that project already issued, and turn it into a session here. The
+  same person lands in the same account they would have had via the redirect flow, so
+  migrating the project's signing keys later costs nothing. Off unless configured, and it
+  refuses the project's own `anon` and `service_role` keys, which are signed with that very
+  secret and are not people.
 - **Swedish BankID.** Not an OAuth redirect but the real relying-party flow: an animated
   QR code or same-device start, approval in the BankID app, and the verified personal
   number as the account key. The mTLS client certificate is pasted in the dashboard;
