@@ -40,9 +40,21 @@ export const ASSISTANT_DISPLAY_NAME = 'Assistant';
  * carries, or module code can ask who holds `conversation:assign`, a display name is
  * the only thing a browser has to go on.
  *
+ * `keep` is the principal a conversation is assigned to RIGHT NOW, and it survives the
+ * filter. Without it a conversation already handed to the assistant — which `assign`
+ * still accepts, so this is reachable from the API today — falls out of the option list
+ * and `OwnerPicker` renders its `!known` branch: the tail of a ULID, next to an avatar
+ * that says "Assistant" because it read the unfiltered directory. Narrowing what may be
+ * CHOSEN must not change how what is already chosen is NAMED.
+ *
  * Structural rather than tied to `AgentProfile`, which is the only way this file stays
- * a leaf; the two callers pass the generated entity and get it back.
+ * a leaf; the callers pass the generated entity and get it back.
  */
-export function assignableStaff<T extends { display_name: string }>(staff: Iterable<T>): T[] {
-  return [...staff].filter((a) => a.display_name !== ASSISTANT_DISPLAY_NAME);
+export function assignableStaff<T extends { principal: string; display_name: string }>(
+  staff: Iterable<T>,
+  keep?: string | null,
+): T[] {
+  return [...staff].filter(
+    (a) => a.display_name !== ASSISTANT_DISPLAY_NAME || a.principal === keep,
+  );
 }

@@ -1198,7 +1198,7 @@ function Rail({
             <OwnerPicker
               compact
               value={conv.assignee}
-              staff={assignableStaff(staff.values())}
+              staff={assignableStaff(staff.values(), conv.assignee)}
               disabled={busy || conv.state === 'closed'}
               onChange={(assignee) =>
                 void act(() => api.assign({ conversationId: conv.id, assignee }))

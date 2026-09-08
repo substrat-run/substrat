@@ -34,6 +34,21 @@ describe('the assignee directory', () => {
     expect(assignableStaff(staff).map((a) => a.principal)).toEqual(['01AGENT', '01OTHER']);
   });
 
+  it('keeps a conversation already assigned to the assistant, so it is still named', () => {
+    // `ticket0/assign` still accepts the assistant, so this state is reachable from the
+    // API today. Drop the row and `OwnerPicker` falls through to its `!known` branch and
+    // shows the tail of a ULID beside an avatar that says "Assistant" — narrowing what
+    // may be chosen must not change how what is already chosen is named.
+    const staff = [profile('01AGENT', 'Rae Okonjo'), profile('01ASSISTANT', ASSISTANT_NAME)];
+    expect(assignableStaff(staff, '01ASSISTANT').map((a) => a.principal)).toEqual([
+      '01AGENT',
+      '01ASSISTANT',
+    ]);
+    // …and only for the one it is actually assigned to.
+    expect(assignableStaff(staff, '01AGENT').map((a) => a.principal)).toEqual(['01AGENT']);
+    expect(assignableStaff(staff, null).map((a) => a.principal)).toEqual(['01AGENT']);
+  });
+
   it('leaves the directory it was given alone, so names still resolve', () => {
     // The half that must NOT change: `agentName` reads the same map to give an
     // assistant-authored message a byline, so the filter has to be a copy.

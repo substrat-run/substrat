@@ -963,7 +963,7 @@ function Row({
         <OwnerPicker
           compact
           value={c.assignee}
-          staff={assignableStaff(staff.values())}
+          staff={assignableStaff(staff.values(), c.assignee)}
           disabled={assigning || c.state === 'closed'}
           onChange={onAssign}
         />
