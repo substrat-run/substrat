@@ -1,5 +1,5 @@
 ---
-'@substrat-run/create-substrat': patch
+'create-substrat': patch
 ---
 
 A scaffolded project's dev API now defaults to `:8891` instead of `:8873`. The `887x`/`527x`
