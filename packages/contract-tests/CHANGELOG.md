@@ -1,5 +1,19 @@
 # @substrat-run/contract-tests
 
+## 0.103.0
+
+### Minor Changes
+
+- 87321a3: `grantExpiryContractSuite` — a contract suite that grants a node-level and an entity-narrowed permission with an `expiresAt` an hour ahead, asserts both are live, moves a `ManualClock` past it and asserts both are refused (and that a later re-grant is live again on its own `expiresAt`). Its fixture returns `{ host, clock, cleanup }`, so only an adapter that can hand its host a clock mounts it; `adapter-sqlite` does. The Cloudflare adapter does not, because the Durable Object reads the wall clock and no option reaches it — the gap is written down in the package README rather than hidden behind a skip (#956).
+
+### Patch Changes
+
+- Updated dependencies [dc9995c]
+- Updated dependencies [dcde11e]
+- Updated dependencies [adf6bfb]
+  - @substrat-run/contracts@0.103.0
+  - @substrat-run/kernel@0.103.0
+
 ## 0.102.0
 
 ### Minor Changes
@@ -3705,7 +3719,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

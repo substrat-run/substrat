@@ -1,5 +1,45 @@
 # @substrat-run/dashboard
 
+## 0.31.0
+
+### Minor Changes
+
+- 6c774ab: A vertical's failures group by shape on its dashboard page (#1233, the builder
+  slice). A "Recurring failures" panel sits above the flat list: the same
+  fingerprint grouping the staff issues store materializes, derived here from the
+  tenant-forced failure rows — 4× "preview restore hit a platform fault" reads as
+  one line with a count, not a page of copies. Rendered only when grouping
+  actually compresses (some shape recurred); counts honestly cover the evidence
+  window (90-day retention), and lifecycle verdicts stay a staff concern. Rows
+  written before the fingerprint column group by the same computed key, so old
+  evidence joins its group instead of standing alone.
+- 4fc0eec: The release ledger (#1236, first cut): a Releases panel on the vertical's
+  dashboard page — every version with its push instant, prod go-live moment,
+  where it runs (prod / serve-pending / scopes pinned to it / scopes following
+  prod), failures from the 90-day record, and 24-hour traffic with its error
+  count. "Did this push break anything" and "is anyone still on the broken one"
+  become one table. Nothing is newly recorded — push instants, channel history,
+  version pins and the version-stamped health facts all existed; this is the
+  join that did not. An unconfigured metrics plane renders traffic as unknown,
+  never as zero: "the broken version went quiet" is exactly the misreading that
+  would invite.
+
+### Patch Changes
+
+- Updated dependencies [dc9995c]
+- Updated dependencies [dcde11e]
+- Updated dependencies [eebb055]
+- Updated dependencies [adf6bfb]
+  - @substrat-run/contracts@0.103.0
+  - @substrat-run/engine-workorder@0.11.2
+  - @substrat-run/engine-protocol@0.12.8
+  - @substrat-run/engine-invoicing@0.9.19
+  - @substrat-run/engine-invites@0.7.2
+  - @substrat-run/kernel@0.103.0
+  - @substrat-run/adapter-cloudflare@0.103.0
+  - @substrat-run/demo-callout@0.3.21
+  - @substrat-run/connector-fortnox@0.4.5
+
 ## 0.30.1
 
 ### Patch Changes
