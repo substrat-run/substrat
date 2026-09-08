@@ -5,6 +5,7 @@ import {
   impersonationByIdQuery,
   impersonationListQuery,
   impersonationRowValues,
+  ISSUE_RETENTION_DAYS,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
   MODEL_USAGE_RETENTION_DAYS,
@@ -287,7 +288,50 @@ export interface OpsFailureRow {
   reference: string | null;
   origin: string | null;
   code: string | null;
+  fingerprint: string | null;
   at: string;
+}
+
+/** One issue row as stored (#1233) — see the issueEntry contract for field semantics. */
+export interface IssueRow {
+  fingerprint: string;
+  operation: string;
+  stage: string | null;
+  origin: string | null;
+  code: string | null;
+  status: string;
+  seen_count: number;
+  first_seen: string;
+  last_seen: string;
+  last_message: string;
+  last_vertical: string | null;
+  resolved_at: string | null;
+}
+
+/** The issues filter, flattened for the RPC hop (#1233). */
+export interface IssueQuery {
+  status?: string;
+  operation?: string;
+  code?: string;
+  limit?: number;
+}
+
+/** snake_case row → the camelCase `issueEntry` shape (#1233). */
+function issueOf(r: IssueRow): unknown {
+  return {
+    fingerprint: r.fingerprint,
+    operation: r.operation,
+    stage: r.stage,
+    origin: r.origin,
+    code: r.code,
+    status: r.status,
+    count: r.seen_count,
+    firstSeen: r.first_seen,
+    lastSeen: r.last_seen,
+    lastMessage: r.last_message,
+    lastVertical: r.last_vertical,
+    resolvedAt: r.resolved_at,
+  };
 }
 
 /** The ops-failures filter, flattened for the RPC hop (#559). */
@@ -368,6 +412,7 @@ export interface OpsFailureQuery {
   version?: string;
   operation?: string;
   code?: string;
+  fingerprint?: string;
   reference?: string;
   since?: string;
   until?: string;
@@ -821,12 +866,32 @@ const DIRECTORY_DDL = `
     reference TEXT,
     origin TEXT,
     code TEXT,
+    fingerprint TEXT,
     at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_vertical ON _substrat_ops_failures (vertical, id);
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
   CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
+  -- #1233: fingerprint-grouped failure classes ("issues"), materialized on every
+  -- ops-failure insert. The row OWNS its counters: the evidence beneath it prunes
+  -- at 90 days, and a count must survive its own exemplars. Lifecycle in status;
+  -- 'regressed' is written only by ingest (a fresh arrival on a resolved issue).
+  CREATE TABLE IF NOT EXISTS _substrat_issues (
+    fingerprint TEXT PRIMARY KEY,
+    operation TEXT NOT NULL,
+    stage TEXT,
+    origin TEXT,
+    code TEXT,
+    status TEXT NOT NULL DEFAULT 'new',
+    seen_count INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    last_message TEXT NOT NULL,
+    last_vertical TEXT,
+    resolved_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS _substrat_issues_seen ON _substrat_issues (last_seen);
   -- The durable sweep record (#1232): one row per unit outcome per pass - a
   -- connection swept/skipped/failed, a schedule fired/skipped/failed. What makes
   -- "when was this last swept" answerable after the log line rolls off. Pruned on
@@ -1034,6 +1099,13 @@ export class ControlPlaneDO extends DurableObject {
     // The error shape (#1233): who refused + the taxonomy code, on a DO that predates them.
     this.addColumn('_substrat_ops_failures', 'origin TEXT');
     this.addColumn('_substrat_ops_failures', 'code TEXT');
+    // #1233: the grouping key + its exemplar-walk index. The index rides here, not
+    // in the DDL above: the DDL runs BEFORE this ledger, and an index on a column
+    // an old DO has not ALTERed in yet would fail the constructor.
+    this.addColumn('_substrat_ops_failures', 'fingerprint TEXT');
+    this.sql.exec(
+      'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
+    );
     // #1232: the drained batch's dedupe key + its unique index, on a DO that predates
     // them. The index rides here so it is created only after the column exists.
     this.addColumn('_substrat_sweep_runs', 'request_id TEXT');
@@ -3286,8 +3358,8 @@ export class ControlPlaneDO extends DurableObject {
   recordOpsFailure(row: OpsFailureRow): void {
     this.sql.exec(
       `INSERT INTO _substrat_ops_failures
-         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       row.id,
       row.actor,
       row.operation,
@@ -3301,6 +3373,7 @@ export class ControlPlaneDO extends DurableObject {
       row.reference,
       row.origin,
       row.code,
+      row.fingerprint,
       row.at,
     );
     // Prune-on-write (#559): the retention lives HERE, not in a cron — every insert
@@ -3308,6 +3381,35 @@ export class ControlPlaneDO extends DurableObject {
     // whose scheduled pass is broken (the exact circumstance this table records).
     const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
     this.sql.exec('DELETE FROM _substrat_ops_failures WHERE at < ?', horizon);
+    // The issues materialization (#1233): the group's counters live on their own
+    // row, bumped in the same call, because the evidence self-prunes above and a
+    // count must survive its own exemplars. A fresh arrival regresses a resolved
+    // issue; an ignored one stays ignored — that is what ignoring means.
+    if (row.fingerprint !== null) {
+      this.sql.exec(
+        `INSERT INTO _substrat_issues
+           (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, resolved_at)
+         VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, NULL)
+         ON CONFLICT (fingerprint) DO UPDATE SET
+           seen_count = seen_count + 1,
+           last_seen = excluded.last_seen,
+           last_message = excluded.last_message,
+           last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+           origin = COALESCE(excluded.origin, origin),
+           status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
+        row.fingerprint,
+        row.operation,
+        row.stage,
+        row.origin,
+        row.code,
+        row.at,
+        row.at,
+        row.message,
+        row.vertical,
+      );
+      const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
+      this.sql.exec('DELETE FROM _substrat_issues WHERE last_seen < ?', issueHorizon);
+    }
   }
 
   listOpsFailures(query: OpsFailureQuery): OpsFailureEntry[] {
@@ -3336,6 +3438,10 @@ export class ControlPlaneDO extends DurableObject {
     if (query.code) {
       where.push('code = ?');
       params.push(query.code);
+    }
+    if (query.fingerprint) {
+      where.push('fingerprint = ?');
+      params.push(query.fingerprint);
     }
     if (query.reference) {
       where.push('reference = ?');
@@ -3379,6 +3485,7 @@ export class ControlPlaneDO extends DurableObject {
       reference: r.reference,
       origin: r.origin,
       code: r.code,
+      fingerprint: r.fingerprint,
       at: r.at,
     })) as OpsFailureEntry[];
   }
@@ -3468,6 +3575,57 @@ export class ControlPlaneDO extends DurableObject {
       observedAt: r.observed_at,
       at: r.at,
     })) as SweepRunEntry[];
+  }
+
+  /** The fingerprint-grouped failure classes (#1233), most recently seen first. */
+  listIssues(query: IssueQuery): unknown[] {
+    const where: string[] = [];
+    const params: (string | number)[] = [];
+    if (query.status) {
+      where.push('status = ?');
+      params.push(query.status);
+    }
+    if (query.operation) {
+      where.push('operation = ?');
+      params.push(query.operation);
+    }
+    if (query.code) {
+      where.push('code = ?');
+      params.push(query.code);
+    }
+    // No cursor by design: grouping IS the compression — cardinality is the number
+    // of distinct failure shapes, not the number of failures.
+    let sql =
+      'SELECT * FROM _substrat_issues' +
+      (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+      ' ORDER BY last_seen DESC, fingerprint LIMIT ?';
+    params.push(query.limit ?? 100);
+    const rows = this.sql.exec(sql, ...params).toArray() as unknown as IssueRow[];
+    return rows.map((r) => issueOf(r));
+  }
+
+  /** The lifecycle write (#1233). Returns before/after for the caller's audit, or undefined. */
+  setIssueStatus(
+    fingerprint: string,
+    status: 'new' | 'resolved' | 'ignored',
+    at: string,
+  ): { before: unknown; after: unknown } | undefined {
+    const rows = this.sql
+      .exec('SELECT * FROM _substrat_issues WHERE fingerprint = ?', fingerprint)
+      .toArray() as unknown as IssueRow[];
+    const existing = rows[0];
+    if (!existing) return undefined;
+    const resolvedAt = status === 'resolved' ? at : null;
+    this.sql.exec(
+      'UPDATE _substrat_issues SET status = ?, resolved_at = ? WHERE fingerprint = ?',
+      status,
+      resolvedAt,
+      fingerprint,
+    );
+    return {
+      before: issueOf(existing),
+      after: issueOf({ ...existing, status, resolved_at: resolvedAt }),
+    };
   }
 
   /** #1054: idempotent on request_id — a replayed intent writes nothing. */

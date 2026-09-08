@@ -5,6 +5,8 @@ import {
   accessLogEntry,
   adminLogEntry,
   opsFailureEntry,
+  opsFailureFingerprint,
+  issueEntry,
   FRESHNESS_HEARTBEAT_MINUTES,
   sweepRunEntry,
   type FreshnessSpec,
@@ -76,6 +78,7 @@ import {
   type SystemGrant,
   type AdminLogEntry,
   type OpsFailureEntry,
+  type IssueEntry,
   type SweepRunEntry,
   type ModelUsageEntry,
   type ModelUsageSummary,
@@ -162,6 +165,7 @@ import {
   parseValidationRecords,
   resolveScopeRecord,
   ulid,
+  ISSUE_RETENTION_DAYS,
   OPS_FAILURE_RETENTION_DAYS,
   SWEEP_RUN_RETENTION_DAYS,
   type FreshnessReport,
@@ -171,6 +175,7 @@ import {
   type AuditLogFilter,
   type OpsFailureFilter,
   type OpsFailureInput,
+  type IssueFilter,
   type SweepRunFilter,
   type SweepRunInput,
   type ModelUsageFilter,
@@ -794,7 +799,42 @@ interface OpsFailureRow {
   reference: string | null;
   origin: string | null;
   code: string | null;
+  fingerprint: string | null;
   at: string;
+}
+
+/** One issue row as stored (#1233) — see the issueEntry contract for field semantics. */
+interface IssueRow {
+  fingerprint: string;
+  operation: string;
+  stage: string | null;
+  origin: string | null;
+  code: string | null;
+  status: string;
+  seen_count: number;
+  first_seen: string;
+  last_seen: string;
+  last_message: string;
+  last_vertical: string | null;
+  resolved_at: string | null;
+}
+
+/** snake_case row → the camelCase `issueEntry` shape (#1233). */
+function issueOf(r: IssueRow): unknown {
+  return {
+    fingerprint: r.fingerprint,
+    operation: r.operation,
+    stage: r.stage,
+    origin: r.origin,
+    code: r.code,
+    status: r.status,
+    count: r.seen_count,
+    firstSeen: r.first_seen,
+    lastSeen: r.last_seen,
+    lastMessage: r.last_message,
+    lastVertical: r.last_vertical,
+    resolvedAt: r.resolved_at,
+  };
 }
 
 interface SweepRunRow {
@@ -1528,12 +1568,31 @@ export class SqliteScopeHost implements ScopeHost {
         reference TEXT,
         origin TEXT,
         code TEXT,
+        fingerprint TEXT,
         at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_vertical ON _substrat_ops_failures (vertical, id);
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_tenant ON _substrat_ops_failures (tenant_id, id);
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_reference ON _substrat_ops_failures (reference);
       CREATE INDEX IF NOT EXISTS _substrat_ops_failures_at ON _substrat_ops_failures (at);
+      -- #1233: fingerprint-grouped failure classes ("issues"), materialized on
+      -- every ops-failure insert. The row OWNS its counters: the evidence beneath
+      -- it prunes at 90 days, and a count must survive its own exemplars.
+      CREATE TABLE IF NOT EXISTS _substrat_issues (
+        fingerprint TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        stage TEXT,
+        origin TEXT,
+        code TEXT,
+        status TEXT NOT NULL DEFAULT 'new',
+        seen_count INTEGER NOT NULL DEFAULT 0,
+        first_seen TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        last_message TEXT NOT NULL,
+        last_vertical TEXT,
+        resolved_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS _substrat_issues_seen ON _substrat_issues (last_seen);
       -- The durable sweep record (#1232): one row per unit outcome per pass —
       -- a connection swept/skipped/failed, a schedule fired/skipped/failed. What
       -- makes "when was this last swept" answerable after the log line rolls off.
@@ -7062,11 +7121,13 @@ export class SqliteScopeHost implements ScopeHost {
         );
       },
       recordOpsFailure: async (entry: OpsFailureInput): Promise<void> => {
+        const at = new Date().toISOString();
+        const fingerprint = opsFailureFingerprint(entry);
         this.directory
           .prepare(
             `INSERT INTO _substrat_ops_failures
-               (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               (id, actor, operation, stage, tenant_id, scope_id, vertical, version, status, message, reference, origin, code, fingerprint, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             ulid(),
@@ -7084,13 +7145,44 @@ export class SqliteScopeHost implements ScopeHost {
             entry.reference ?? null,
             entry.origin ?? null,
             entry.code ?? null,
-            new Date().toISOString(),
+            fingerprint,
+            at,
           );
         // Prune-on-write (#559): retention lives here, not in a cron — every insert
         // pays for its own housekeeping, so the table stays bounded even where no
         // scheduled pass runs (this adapter has none).
         const horizon = new Date(Date.now() - OPS_FAILURE_RETENTION_DAYS * 86_400_000).toISOString();
         this.directory.prepare('DELETE FROM _substrat_ops_failures WHERE at < ?').run(horizon);
+        // The issues materialization (#1233): the group's counters live on their
+        // own row, bumped in the same call, because the evidence self-prunes above
+        // and a count must survive its own exemplars. A fresh arrival regresses a
+        // resolved issue; an ignored one stays ignored — that is what ignoring means.
+        this.directory
+          .prepare(
+            `INSERT INTO _substrat_issues
+               (fingerprint, operation, stage, origin, code, status, seen_count, first_seen, last_seen, last_message, last_vertical, resolved_at)
+             VALUES (?, ?, ?, ?, ?, 'new', 1, ?, ?, ?, ?, NULL)
+             ON CONFLICT (fingerprint) DO UPDATE SET
+               seen_count = seen_count + 1,
+               last_seen = excluded.last_seen,
+               last_message = excluded.last_message,
+               last_vertical = COALESCE(excluded.last_vertical, last_vertical),
+               origin = COALESCE(excluded.origin, origin),
+               status = CASE WHEN status = 'resolved' THEN 'regressed' ELSE status END`,
+          )
+          .run(
+            fingerprint,
+            entry.operation,
+            entry.stage ?? null,
+            entry.origin ?? null,
+            entry.code ?? null,
+            at,
+            at,
+            entry.message.slice(0, 2000),
+            entry.vertical ?? null,
+          );
+        const issueHorizon = new Date(Date.now() - ISSUE_RETENTION_DAYS * 86_400_000).toISOString();
+        this.directory.prepare('DELETE FROM _substrat_issues WHERE last_seen < ?').run(issueHorizon);
       },
       listOpsFailures: async (actor, filter?: OpsFailureFilter): Promise<OpsFailureEntry[]> => {
         const where: string[] = [];
@@ -7118,6 +7210,10 @@ export class SqliteScopeHost implements ScopeHost {
         if (filter?.code) {
           where.push('code = ?');
           params.push(filter.code);
+        }
+        if (filter?.fingerprint) {
+          where.push('fingerprint = ?');
+          params.push(filter.fingerprint);
         }
         if (filter?.reference) {
           where.push('reference = ?');
@@ -7171,6 +7267,7 @@ export class SqliteScopeHost implements ScopeHost {
             reference: r.reference,
             origin: r.origin,
             code: r.code,
+            fingerprint: r.fingerprint,
             at: r.at,
           }),
         );
@@ -7274,6 +7371,53 @@ export class SqliteScopeHost implements ScopeHost {
             at: r.at,
           }),
         );
+      },
+      listIssues: async (actor, filter?: IssueFilter): Promise<IssueEntry[]> => {
+        const where: string[] = [];
+        const params: (string | number)[] = [];
+        if (filter?.status) {
+          where.push('status = ?');
+          params.push(filter.status);
+        }
+        if (filter?.operation) {
+          where.push('operation = ?');
+          params.push(filter.operation);
+        }
+        if (filter?.code) {
+          where.push('code = ?');
+          params.push(filter.code);
+        }
+        // No cursor by design: grouping IS the compression — cardinality is the
+        // number of distinct failure shapes, not the number of failures.
+        const sql =
+          'SELECT * FROM _substrat_issues' +
+          (where.length ? ` WHERE ${where.join(' AND ')}` : '') +
+          ' ORDER BY last_seen DESC, fingerprint LIMIT ?';
+        params.push(filter?.limit ?? 100);
+        const rows = this.directory.prepare(sql).all(...params) as IssueRow[];
+        // Issues aggregate fleet-wide failures; the read is recorded like the rows' own (K-24).
+        this.recordAccess(actor, 'listIssues', {}, filter, rows.length);
+        return rows.map((r) => issueEntry.parse(issueOf(r)));
+      },
+      setIssueStatus: async (actor, fingerprint, status): Promise<IssueEntry | undefined> => {
+        const existing = this.directory
+          .prepare('SELECT * FROM _substrat_issues WHERE fingerprint = ?')
+          .get(fingerprint) as IssueRow | undefined;
+        if (!existing) return undefined;
+        const resolvedAt = status === 'resolved' ? new Date().toISOString() : null;
+        this.directory
+          .prepare('UPDATE _substrat_issues SET status = ?, resolved_at = ? WHERE fingerprint = ?')
+          .run(status, resolvedAt, fingerprint);
+        const after = issueEntry.parse(issueOf({ ...existing, status, resolved_at: resolvedAt }));
+        // A lifecycle flip is a staff mutation — audited with the diff (K-33).
+        this.recordAdmin(
+          actor,
+          'setIssueStatus',
+          { tenantId: null, vertical: after.lastVertical },
+          { fingerprint, status: existing.status },
+          { fingerprint, status: after.status },
+        );
+        return after;
       },
       recordModelUsage: async (input: ModelUsageInput): Promise<{ recorded: boolean }> => {
         const l = input.line;
@@ -7482,6 +7626,12 @@ export class SqliteScopeHost implements ScopeHost {
     // The error shape (#1233): who refused + the taxonomy code, on a directory that predates them.
     this.ensureColumn(this.directory, '_substrat_ops_failures', 'origin', 'origin TEXT');
     this.ensureColumn(this.directory, '_substrat_ops_failures', 'code', 'code TEXT');
+    // #1233: the grouping key + its exemplar-walk index — created only after the
+    // column exists on every path, the sweep-runs pattern.
+    this.ensureColumn(this.directory, '_substrat_ops_failures', 'fingerprint', 'fingerprint TEXT');
+    this.directory.exec(
+      'CREATE INDEX IF NOT EXISTS _substrat_ops_failures_fingerprint ON _substrat_ops_failures (fingerprint, id)',
+    );
     // #1232: the drained batch's dedupe key, on a directory created before it. The
     // unique index rides here too — created after the column exists on every path.
     this.ensureColumn(this.directory, '_substrat_sweep_runs', 'request_id', 'request_id TEXT');
