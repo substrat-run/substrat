@@ -77,14 +77,23 @@ Both shipped adapters run every suite in that file **except `grantExpiryContract
 which mounts on the SQLite host only** — and the reason is a property of the runtime, not
 an omission.
 
-That suite proves the *transition*: a grant that is live now and denied an hour later. The
-only way to reach it without waiting is to move the host's clock, so the fixture hands the
-suite a `manualClock` and advances it. The pure host takes one
-(`SqliteScopeHostOptions.clock`), and judges tuple expiry, session expiry, entitlement
-expiry and schedule cadence against it. The Durable-Object host cannot: every one of those
-reads happens *inside* the ScopeDO, which workerd constructs, and `CloudflareScopeHost`
-only ever holds a stub — so `CloudflareScopeHostOptions` carries no `clock` at all rather
-than one that would silently do nothing.
+That suite proves the *transition*: a grant that is live now and denied an hour later.
+Reaching it by waiting would mean a test that sleeps for the expiry window, so the fixture
+hands the suite a `manualClock` and moves it instead. The pure host takes one
+(`SqliteScopeHostOptions.clock`) and judges tuple expiry, session expiry, entitlement
+expiry and schedule cadence against it.
+
+The Durable-Object host cannot offer the same option, because its elapsed-time reads sit on
+both sides of a boundary. Two of them are **coordinator-side** and a clock would reach
+them: impersonation-session expiry, and schedule cadence. The rest are **DO-local** —
+`ctx.now()`, the permission checker's tuple expiry, the system-grant check, the projected
+entitlement reads — and the ScopeDO is constructed by workerd, not by `CloudflareScopeHost`,
+which only ever holds a stub. Grant expiry, the fact this suite is about, is on the far
+side.
+
+So `CloudflareScopeHostOptions` carries no `clock` at all. A partial one would be worse
+than none: it would take the pure adapter's name and signature while silently disagreeing
+with it on exactly the judgement being tested.
 
 Both hosts run the same predicate (`expires_at IS NULL OR expires_at > ?`) and
 `permissionContractSuite` proves an already-expired grant is refused on both. What is
@@ -235,7 +244,8 @@ adapter gets it wrong:
 **Grant expiry under an injected clock** (`grantExpiryContractSuite`, #956 —
 [SQLite only](#the-one-suite-the-two-adapters-do-not-share))
 - a grant with an `expiresAt` is live before it and denied after it, node-level and
-  entity-narrowed alike — the transition, which no amount of waiting makes assertable;
+  entity-narrowed alike — the transition, which against the wall clock a test could only
+  reach by sleeping through the window;
 - expiry is judged at **check** time, not at grant time: the same grant is live again once
   the clock moves back before it, and a re-grant grants on its own `expiresAt`;
 - a grant with no `expiresAt` is not touched by the clock at all.

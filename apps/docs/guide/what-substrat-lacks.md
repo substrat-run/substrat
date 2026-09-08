@@ -71,11 +71,11 @@ a certificate we don't have.
   suite](/reference/contract-tests) is the mechanism behind "the guarantees are properties
   of the substrate", and both shipped adapters pass all of it but one suite: the one that
   moves a clock forward past a grant's `expiresAt` and demands the denial. That needs a
-  clock the host can be handed, and the Durable-Object host has none — the reads live
-  inside a DO the runtime constructs. So *time-dependent* behaviour (a grant lapsing,
-  schedule cadence) is proven on the self-host adapter and taken on the production one,
-  where the same predicate runs against the wall clock. Not a known bug; an asymmetry in
-  the evidence, and the conformance page names it rather than averaging it away.
+  clock the host can be handed, and the Durable-Object host cannot take one for that
+  judgement — grant expiry is decided inside a DO the runtime constructs. So a grant
+  *lapsing* is proven on the self-host adapter and taken on the production one, where the
+  same predicate runs against the wall clock. Not a known bug; an asymmetry in the
+  evidence, and the conformance page names it rather than averaging it away.
 
 ## When Substrat is simply the wrong tool
 
