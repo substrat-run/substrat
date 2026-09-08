@@ -484,6 +484,15 @@ export const issueEntry = z.object({
   /** The newest exemplar's message — a sample for the reader, never the group's identity. */
   lastMessage: z.string(),
   lastVertical: z.string().nullable(),
+  /**
+   * The newest version-stamped occurrence's version-registry id (#1236) — kept
+   * through unstamped arrivals (a writer that cannot say says nothing). With
+   * `resolvedVersion` this is the regression's whole sentence: "resolved under
+   * X, seen again under Y".
+   */
+  lastVersion: z.string().nullable(),
+  /** What `lastVersion` was when the `resolved` verdict landed — the X of the sentence above. */
+  resolvedVersion: z.string().nullable(),
   /** Set by a `resolved` verdict; kept through a regression as "when somebody last thought this was over". */
   resolvedAt: instant.nullable(),
 });
