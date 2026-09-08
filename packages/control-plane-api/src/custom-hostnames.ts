@@ -25,7 +25,12 @@ import type {
 } from '@substrat-run/contracts';
 import { getRegistrableDomain, isPublicSuffix, normalizeHost } from '@substrat-run/psl';
 
-/** The subset of `fetch` this module uses — web-standard, injectable for tests. */
+/**
+ * The subset of `fetch` this module uses — DOM-typed, injectable for tests. Deliberately
+ * NOT the kernel's `FetchLike`: a real `fetch` is not assignable to that under strict
+ * TypeScript (see `globalFetch`), and a caller injecting a DOM-typed fetch here must not
+ * need a cast. The bound global below IS this type, with no conversion.
+ */
 export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
 
 /** The normalized result of an issuance step — what the control plane persists. */
@@ -185,7 +190,7 @@ export function extractRecords(ch: CfCustomHostname, routingTarget: string): Dns
 export function createCustomHostnameProvisioner(
   opts: CustomHostnameProvisionerOptions,
 ): CustomHostnameProvisioner {
-  const fetchFn: FetchFn = opts.fetch ?? (globalThis.fetch as FetchFn);
+  const fetchFn: FetchFn = opts.fetch ?? globalThis.fetch.bind(globalThis);
   const base = `https://api.cloudflare.com/client/v4/zones/${opts.zoneId}/custom_hostnames`;
   const auth = { authorization: `Bearer ${opts.apiToken}` };
 

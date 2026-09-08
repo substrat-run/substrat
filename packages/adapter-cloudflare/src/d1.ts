@@ -1,4 +1,4 @@
-import type { ConnectorResponse, FetchLike, SqlValue, TenantRelationalStore } from '@substrat-run/kernel';
+import { globalFetch, type ConnectorResponse, type FetchLike, type SqlValue, type TenantRelationalStore } from '@substrat-run/kernel';
 
 /**
  * The live D1 side of per-tenant relational stores (#301, PR-2): a minimal client over
@@ -76,8 +76,7 @@ export async function tenantStoreDatabaseName(
 }
 
 export function createD1TenantStores(opts: D1TenantStoresOptions): D1TenantStores {
-  const fetchImpl: FetchLike =
-    opts.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
+  const fetchImpl: FetchLike = opts.fetch ?? globalFetch;
   const base = `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/d1/database`;
   const auth = { authorization: `Bearer ${opts.apiToken}` };
 

@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
-import { startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
+import { globalFetch, startPlatformSweeper, ulid, type FetchLike, type ScopeStub } from '@substrat-run/kernel';
 import { problemResponse } from '@substrat-run/vertical-host';
 import {
   ScriveMock,
@@ -104,7 +104,7 @@ function resolveScrive(): { config: ScriveConfig; egress: FetchLike; mock: Scriv
           ? { callbackBaseUrl: process.env.SCRIVE_CALLBACK_BASE }
           : {}),
       },
-      egress: (globalThis as unknown as { fetch: FetchLike }).fetch,
+      egress: globalFetch,
       mock: null,
     };
   }
@@ -332,7 +332,7 @@ if (scrive) {
   const pollMs = Number(process.env.SCRIVE_POLL_MS ?? 15_000);
   startPlatformSweeper(host, {
     actor: platformActorId.parse(ulid()),
-    fetch: scrive?.egress ?? (globalThis.fetch as unknown as FetchLike),
+    fetch: scrive?.egress ?? globalFetch,
     // The deployment binds its own provider base into the sweeper (#990): the
     // connector defaults nowhere, so the poll cannot silently hit the testbed.
     sweepers: scrive

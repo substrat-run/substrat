@@ -758,6 +758,29 @@ export interface FetchLike {
 }
 
 /**
+ * The runtime's own `fetch`, as a `FetchLike` — the ONE place the structural cast
+ * lives. A host that takes a `fetch` defaults to this; a caller that hands one to a
+ * connector passes this. Nobody else spells `globalThis.fetch` (`lint:bound-fetch`).
+ *
+ * The cast is needed at all because a real `fetch` is NOT assignable to `FetchLike`
+ * under strict TypeScript: `ConnectorRequestInit.body` is a `Uint8Array` the DOM lib's
+ * `BodyInit` no longer accepts unparameterized, and `signal` is `unknown`. Structurally
+ * the runtime satisfies it — every field is one `fetch` reads — and this is where that
+ * claim is made, once. Code typed against the DOM `fetch` itself (a `Response` in hand)
+ * does not want this; `globalThis.fetch.bind(globalThis)` is that type with no cast.
+ *
+ * An arrow, deliberately, rather than the global handed on as a value: workerd
+ * refuses the bare global invoked with any other receiver — `TypeError: Illegal
+ * invocation` — and a callee is free to call what it was given as `input.fetch(…)`.
+ * Node's fetch accepts any `this`, and so does the wrapper the workers vitest pool
+ * installs, so no suite in this repo sees the difference; the Fortnox consent
+ * callback shipped green and failed every hosted round that way (#1291). Closing
+ * over the global here means the receiver is never in play, anywhere downstream.
+ */
+export const globalFetch: FetchLike = (input, init) =>
+  (globalThis as unknown as { fetch: FetchLike }).fetch(input, init);
+
+/**
  * The host's clock (#812) — what `ctx.now()` reads.
  *
  * Injectable for the same reason `FetchLike` is: the thing outside the process

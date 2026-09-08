@@ -37,7 +37,7 @@ import {
   assertPlatformCall,
   PlatformCallError,
   webCryptoSecretBox,
-  type FetchLike,
+  globalFetch,
   type SecretBox,
 } from '@substrat-run/kernel';
 import {
@@ -916,9 +916,8 @@ export default {
     const resolveVersion = resolveVerticalVersionFor(env);
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
-      // Sanctioned egress for the connector sweepers below (kernel's FetchLike vs the
-      // workers RequestInit — a type bridge, same fetch).
-      fetch: globalThis.fetch as unknown as FetchLike,
+      // Sanctioned egress for the connector sweepers below.
+      fetch: globalFetch,
       // #574: the platform runs the connector pass FOR dispatch verticals — they are
       // CP-less and cannot reach the connection directory. The sweep enumerates THIS
       // directory's connections, opens each with the coordinator-held secret box, polls

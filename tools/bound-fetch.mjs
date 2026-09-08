@@ -1,0 +1,107 @@
+#!/usr/bin/env node
+/**
+ * The runtime's `fetch` is never handed on bare.
+ *
+ * workerd checks the receiver: `const o = { fetch: globalThis.fetch }; o.fetch(url)`
+ * throws `TypeError: Illegal invocation` before a byte leaves the runtime. Node's
+ * fetch accepts any `this`, and so does the wrapper `@cloudflare/vitest-pool-workers`
+ * installs — so NO suite in this repo can reproduce the refusal; only a real worker
+ * can. A connector is free to call the fetch it was handed as a method (`input.fetch(…)`,
+ * `options.fetch(…)`), which is how the dashboard's Fortnox consent callback shipped
+ * green and failed every hosted round: the code exchange never left the worker, the
+ * page said "the exchange with Fortnox failed", and the log named the line but not
+ * the error (#1291).
+ *
+ * The sanctioned spelling is `globalFetch` from `@substrat-run/kernel` — an arrow that
+ * closes over the global, so the receiver is never in play and the structural cast to
+ * `FetchLike` lives in one place. This check holds the rule for everything else: on a
+ * line that reaches `fetch` through `globalThis` — plainly (`globalThis.fetch`) or
+ * through a cast (`(globalThis as unknown as { fetch: FetchLike }).fetch`) — every such
+ * `.fetch` must be CALLED right there, BOUND (`.bind(globalThis)`), or a `typeof`. A
+ * `.fetch` followed by anything else is a value handed on, and is refused.
+ *
+ * Text, not an AST: comment lines are skipped, and a loud false positive beats a
+ * silent pass. Tests and browser bundles are exempt — a test runs in Node or under the
+ * wrapper, and a browser's `window.fetch` accepts `window`-or-undefined as Node does.
+ */
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
+
+const ROOTS = ['packages', 'engines', 'connectors', 'demos', 'apps'];
+const SOURCE = /\.(?:ts|mts|tsx|js|mjs)$/;
+const SKIP_DIRS = new Set(['node_modules', 'dist', 'test', 'tests', '__tests__', 'app', 'web', '.wrangler']);
+const COMMENT_LINE = /^\s*(?:\/\/|\/?\*)/;
+/**
+ * Every `fetch` reached from `globalThis` — `globalThis.fetch` or the cast form
+ * `{ fetch: FetchLike }).fetch` — with what follows it. Anchored on the receiver so an
+ * unrelated `options.fetch` on the same line is not judged.
+ */
+const FETCH_MEMBER = /(?:globalThis|\}\))\.fetch\b(?<after>\.bind\(globalThis\)|\()?/g;
+/** A type query is not a handoff — `typeof globalThis.fetch`, or the same through a cast. */
+const TYPEOF = /typeof\s+(?:globalThis\.fetch\b|\(globalThis\b[^)]*\)\.fetch\b)/g;
+
+const walk = (dir, out = []) => {
+  if (!existsSync(dir)) return out;
+  for (const e of readdirSync(dir)) {
+    if (SKIP_DIRS.has(e)) continue;
+    const p = join(dir, e);
+    if (statSync(p).isDirectory()) walk(p, out);
+    else if (SOURCE.test(e) && !/\.(?:test|generated)\.\w+$/.test(e)) out.push(p);
+  }
+  return out;
+};
+
+/** True when the line hands the runtime's fetch on as a value. */
+const handsFetchOn = (line) => {
+  if (!line.includes('globalThis') || COMMENT_LINE.test(line)) return false;
+  const stripped = line.replace(TYPEOF, '');
+  return [...stripped.matchAll(FETCH_MEMBER)].some((m) => m.groups.after === undefined);
+};
+
+/**
+ * The predicate, judged against every shape it exists to tell apart — on every run,
+ * before the tree is read. A text rule drifts silently when a regex is "tidied", and a
+ * check that has stopped checking reports green (the same reason `lint:model` exits 2
+ * on an empty scan). Refused first, then allowed.
+ */
+const SELF_CHECK = [
+  ['fetch: globalThis.fetch as unknown as FetchLike,', true],
+  ['fetch: globalThis.fetch,', true],
+  ['egress: (globalThis as unknown as { fetch: FetchLike }).fetch,', true],
+  ['const f = (globalThis as unknown as { fetch: FetchLike }).fetch;', true],
+  ['this.fetchImpl = options.fetch ?? globalThis.fetch;', true],
+  ['fetch: globalFetch,', false],
+  ['fetch: globalThis.fetch.bind(globalThis) as unknown as FetchLike,', false],
+  ['this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);', false],
+  ['(input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init)', false],
+  ['const r = await globalThis.fetch(url);', false],
+  ['fetch?: typeof globalThis.fetch;', false],
+  ['fetchImpl: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),', false],
+  ['type F = typeof (globalThis as unknown as { fetch: FetchLike }).fetch;', false],
+  [' * The real globalThis.fetch in Node is assignable to it.', false],
+  ['// egress: globalThis.fetch,', false],
+];
+const drift = SELF_CHECK.filter(([line, want]) => handsFetchOn(line) !== want);
+if (drift.length > 0) {
+  console.error('bound-fetch: the rule no longer tells its own cases apart — fix the predicate before trusting a run:');
+  for (const [line, want] of drift) console.error(`  expected ${want ? 'REFUSED' : 'allowed'}: ${line}`);
+  process.exit(2);
+}
+
+const offenders = [];
+for (const root of ROOTS) {
+  for (const file of walk(root)) {
+    readFileSync(file, 'utf8')
+      .split('\n')
+      .forEach((line, i) => {
+        if (handsFetchOn(line)) offenders.push(`${relative(process.cwd(), file)}:${i + 1}: ${line.trim().slice(0, 160)}`);
+      });
+  }
+}
+
+if (offenders.length > 0) {
+  console.error('bound-fetch: the runtime fetch is handed on bare — use `globalFetch` from @substrat-run/kernel:');
+  for (const o of offenders) console.error(`  ${o}`);
+  process.exit(1);
+}
+console.log('bound-fetch: ok');

@@ -23,7 +23,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { SweepRunEntry } from '@substrat-run/contracts';
 import { parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
-import { ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
+import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
@@ -2734,14 +2734,24 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
       clientSecret: cfg.clientSecret,
       code,
       redirectUri: `${origin}/api/integrations/fortnox/callback`,
-      fetch: globalThis.fetch as unknown as Parameters<typeof completeFortnoxConsent>[0]['fetch'],
+      // The kernel's, not the bare global: the connector calls this as `input.fetch(…)`,
+      // and workerd refuses the global `fetch` invoked with any other receiver ("Illegal
+      // invocation") — before a byte leaves the runtime. Node's fetch does not care,
+      // which is why every local round passed and every hosted round failed (#1291).
+      fetch: globalFetch,
       ...(cfg.oauthBase ? { oauthBase: cfg.oauthBase } : {}),
       ...(cfg.apiBase ? { apiBase: cfg.apiBase } : {}),
     });
   } catch (e) {
     // The page below deliberately shows only Fortnox's own words; everything else —
-    // a thrown fetch, a schema refusal — is invisible without this line.
-    console.error('fortnox consent completion failed', e);
+    // a thrown fetch, a schema refusal — is invisible without this line. Name and
+    // message spelled out: Workers Logs kept only the stack frames of an Error
+    // argument, which is how the first hosted failure logged WHERE but not WHAT.
+    console.error(
+      'fortnox consent completion failed',
+      e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+      e,
+    );
     const detail = e instanceof FortnoxApiError
       ? e.message
       : `the exchange with Fortnox failed (${e instanceof Error ? e.name : typeof e})`;

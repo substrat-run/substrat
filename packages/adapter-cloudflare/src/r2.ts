@@ -1,4 +1,4 @@
-import type { ConnectorResponse, FetchLike, TenantBlobStore } from '@substrat-run/kernel';
+import { globalFetch, type ConnectorResponse, type FetchLike, type TenantBlobStore } from '@substrat-run/kernel';
 
 /**
  * The live R2 side of per-tenant blob stores (#473): a minimal client over Cloudflare's
@@ -70,8 +70,7 @@ export async function blobStoreBucketName(
 }
 
 export function createR2BlobStores(opts: R2BlobStoresOptions): R2BlobStores {
-  const fetchImpl: FetchLike =
-    opts.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
+  const fetchImpl: FetchLike = opts.fetch ?? globalFetch;
   const base = `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/r2/buckets`;
   const auth = { authorization: `Bearer ${opts.apiToken}` };
 

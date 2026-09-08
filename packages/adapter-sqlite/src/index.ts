@@ -290,6 +290,7 @@ import {
   idempotencyRecordStatement,
   idempotencyOptedOutMessage,
   replayFor,
+  globalFetch,
   type IdempotencyRow,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -1077,7 +1078,7 @@ export class SqliteScopeHost implements ScopeHost {
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
-    this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
+    this.fetchImpl = options.fetch ?? globalFetch;
     this.clock = options.clock ?? (() => instant.parse(new Date().toISOString()));
     this.versionId = options.versionId ?? null;
     this.dir = options.dir;

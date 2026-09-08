@@ -353,7 +353,13 @@ tools/boundary-lint.mjs`), `lint:cycles` (`tools/workspace-cycles.mjs`), `lint:d
 independently by each adapter, and the copies have nothing keeping them in step — it
 executes each side's DDL *plus* the columns it ALTERs in afterwards and compares the
 schemas a query would actually meet, so only a real divergence between what self-host runs
-and what production runs is red, #969), `lint:tests`, and `lint:changelog --check` — which asserts a hand-written digest accounts
+and what production runs is red, #969), `lint:bound-fetch` (`tools/bound-fetch.mjs`: the
+runtime's `fetch` is handed on as **`globalFetch` from `@substrat-run/kernel`** — the one
+place the `FetchLike` cast lives — never as the bare global, in any spelling. workerd
+throws `Illegal invocation` when a connector calls the bare global as `input.fetch(…)`,
+and neither Node nor the workers vitest pool does, so no suite can catch it; the Fortnox
+consent callback shipped green and failed every hosted round that way, #1291),
+`lint:tests`, and `lint:changelog --check` — which asserts a hand-written digest accounts
 for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`
 is the exception that runs **off** the PR — post-release and weekly, for the reason its
 bullet above gives.
