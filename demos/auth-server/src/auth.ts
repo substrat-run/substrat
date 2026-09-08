@@ -8,6 +8,7 @@ import { genericOAuth, type GenericOAuthConfig } from 'better-auth/plugins/gener
 import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { resetPasswordEmail, verifyEmail } from './email.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
+import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
 
 /**
  * The Better Auth instance that IS this standalone OIDC provider. Runtime-agnostic: the
@@ -101,6 +102,16 @@ export interface AuthDeps {
    * matching address does not.
    */
   autoLinkAccounts?: boolean;
+  /**
+   * The Supabase LEGACY-secret bridge (`src/supabase-plugin.ts`), mounted only when an
+   * operator has configured both halves. Absent, the endpoint does not exist — the same
+   * honesty CIMD and BankID keep about a flow that could not finish.
+   *
+   * Not an alternative to the `supabase` entry in the sign-in providers catalogue but a
+   * fallback for the case that entry cannot serve: a project still on the shared HS256 secret,
+   * whose OAuth 2.1 server refuses to mint the id_token the redirect flow needs.
+   */
+  supabase?: SupabaseBridgeOptions;
   /**
    * BankID sign-in (`src/bankid.ts` / `src/bankid-plugin.ts`), mounted only when the caller
    * has both a stored configuration AND a runtime able to present the mTLS client
@@ -255,6 +266,9 @@ export function buildAuth(deps: AuthDeps) {
       // same social-provider list the catalogue providers live in, so nothing downstream
       // knows the difference.
       ...(deps.genericProviders?.length ? [genericOAuth({ config: deps.genericProviders })] : []),
+      // The Supabase legacy-secret bridge — see the `supabase` dep above for when it is
+      // mounted, and `supabase-token.ts` for what it refuses.
+      ...(deps.supabase ? [supabasePlugin(deps.supabase)] : []),
       // BankID sign-in — see the `bankid` dep above for when this is (and is not) mounted.
       ...(deps.bankid ? [bankidPlugin(deps.bankid)] : []),
       admin(),

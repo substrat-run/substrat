@@ -74,6 +74,48 @@ export function boolValue(on: boolean): string {
   return on ? 'true' : 'false';
 }
 
+/* ---- the Supabase legacy-secret bridge ---- */
+
+/** The project's legacy (HS256) JWT secret — delivered as a secret, never read back out. */
+export const SUPABASE_LEGACY_JWT_SECRET = 'SUPABASE_LEGACY_JWT_SECRET';
+/** The project's issuer, `https://<ref>.supabase.co/auth/v1`. */
+export const SUPABASE_ISSUER = 'SUPABASE_ISSUER';
+/** Whether a Supabase user with no account here gets one made. */
+export const SUPABASE_ALLOW_SIGNUP = 'SUPABASE_ALLOW_SIGNUP';
+
+/**
+ * Absent ⇒ TRUE, which is the opposite of `isTruthy`'s convention and of `ALLOW_SIGNUP`'s.
+ * The act of trust has already happened by the time this is read: an operator pasted a shared
+ * secret for one specific project, and the bridge admits exactly the people that project
+ * authenticated. A bridge that refused all of them by default would not be a safer version of
+ * the feature, it would be a broken one — and the interesting case, an address that already
+ * has an account here, is `ACCOUNT_LINKING`'s to answer rather than this key's.
+ */
+export function supabaseAllowsSignup(value: string | undefined): boolean {
+  return value === undefined || value.trim() === '' ? true : isTruthy(value);
+}
+
+/**
+ * The bridge's options, or `undefined` when it is not configured — in which case the endpoint
+ * is not mounted at all. Both halves are required and neither has a default: a secret with no
+ * issuer cannot say which project a token came from, and an issuer with no secret cannot check
+ * that it came from there.
+ */
+export function supabaseBridgeFrom(
+  cfg: Record<string, string | undefined>,
+  autoLinkAccounts: boolean,
+): { secret: string; issuer: string; allowSignup: boolean; autoLinkAccounts: boolean } | undefined {
+  const secret = cfg[SUPABASE_LEGACY_JWT_SECRET]?.trim();
+  const issuer = cfg[SUPABASE_ISSUER]?.trim();
+  if (!secret || !issuer) return undefined;
+  return {
+    secret,
+    issuer,
+    allowSignup: supabaseAllowsSignup(cfg[SUPABASE_ALLOW_SIGNUP]),
+    autoLinkAccounts,
+  };
+}
+
 /** The per-instance `cfg:` rows for the DECLARED keys — a stray delivered key is never read. */
 export function deliveredConfig(sql: SqlExec, specs: EnvVarSpec[]): Record<string, string> {
   const delivered: Record<string, string> = {};

@@ -61,6 +61,36 @@ export const AUTH_SERVER_ENV: EnvVarSpec[] = [
     group: 'Accounts',
   },
   {
+    key: 'SUPABASE_LEGACY_JWT_SECRET',
+    label: 'Supabase legacy JWT secret',
+    description:
+      'Accept access tokens a Supabase project already issued, for a project still on the LEGACY shared secret (Settings \u2192 API \u2192 JWT Secret). Only for that case: a project with asymmetric signing keys should be added as an ordinary upstream in Sign-in providers instead \u2014 a redirect, with no shared secret held here. Set this and SUPABASE_ISSUER together, or the endpoint is not mounted at all. Anyone holding this secret can mint a token for any user of that project, which is why Supabase is retiring it.',
+    placeholder: 'the project\u2019s JWT secret',
+    required: false,
+    secret: true,
+    group: 'Supabase',
+  },
+  {
+    key: 'SUPABASE_ISSUER',
+    label: 'Supabase project auth URL',
+    description:
+      'The issuer the accepted tokens must declare \u2014 the project URL with `/auth/v1` on the end. A bare project URL is accepted and the suffix added. Required alongside SUPABASE_LEGACY_JWT_SECRET: without it a valid signature says nothing about which project a token came from.',
+    placeholder: 'https://abcdefghijklmnopqrst.supabase.co/auth/v1',
+    required: false,
+    secret: false,
+    group: 'Supabase',
+  },
+  {
+    key: 'SUPABASE_ALLOW_SIGNUP',
+    label: 'Supabase may create accounts',
+    description:
+      'Whether a Supabase user with no account here gets one (`true`/`false`). Unlike ALLOW_SIGNUP this defaults to TRUE: configuring the secret is already the decision, and the bridge admits exactly the people that one project authenticated. What happens when the address already belongs to an account here is ACCOUNT_LINKING\u2019s answer, not this key\u2019s.',
+    placeholder: 'true',
+    required: false,
+    secret: false,
+    group: 'Supabase',
+  },
+  {
     key: 'EMAIL_FROM',
     label: 'Sender address',
     description: 'The From address for password-reset and verification mail. Its domain must be onboarded for sending. Absent ⇒ a safe default; without an EMAIL binding, mail is dropped.',
