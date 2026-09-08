@@ -63,8 +63,8 @@ scheduleContractSuite('adapter-yours', async () => { /* default checker */ });
 ```
 
 Every adapter suite takes the same `(adapterName, makeFixture)` pair; the one thing that
-varies is which checker the fixture is built with, and the table says which and why. Those
-are what an *adapter* runs. One more suite, `entityCheckConformanceSuite`, holds a
+varies is which checker the fixture is built with, and the table says which and why. Every
+suite above is one an *adapter* runs. One more, `entityCheckConformanceSuite`, holds a
 **vertical or engine** to its declarations rather than an adapter to the contract, and has
 [its own section](#the-entity-check-kit) below. The complete adapter wiring — every suite,
 with the reason beside each — is

@@ -1073,11 +1073,11 @@ export interface CloudflareScopeHostOptions {
    * expiry, session expiry, entitlement expiry, schedule cadence. This host
    * cannot offer the same option, because every one of those reads happens
    * inside the ScopeDO, which **workerd** constructs — `CloudflareScopeHost`
-   * only ever holds a stub. The reads are `scope-do.ts` (the `at` that becomes
-   * `ctx.now()`, the entitlement gate, `hasSystemGrant`) and `checker.ts`'s
-   * `now: () => new Date().toISOString()`, none of which this options bag is on
-   * the path to. An accepted-and-ignored `clock` would be worse than none: it
-   * would read as a seam and silently do nothing.
+   * only ever holds a stub. The reads live in `scope-do.ts` (the `at` that
+   * becomes `ctx.now()`, the entitlement gate, `hasSystemGrant`) and in
+   * `checker.ts` (`now: () => new Date().toISOString()`); this options bag is on
+   * the path to none of them. An accepted-and-ignored `clock` would be worse
+   * than none: it would read as a seam and silently do nothing.
    *
    * What this costs, stated rather than hidden: expiry-dependent behaviour is
    * held to the contract on the SQLite host only. `grantExpiryContractSuite`
