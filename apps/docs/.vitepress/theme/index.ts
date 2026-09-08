@@ -35,7 +35,6 @@ import ScopeTopology from './components/ScopeTopology.vue';
 import StateMachine from './components/StateMachine.vue';
 import BlastRadius from './components/BlastRadius.vue';
 import GuardPath from './components/GuardPath.vue';
-import Ticket0Widget from './components/Ticket0Widget.vue';
 import SignupForm from './components/SignupForm.vue';
 
 export default {
@@ -53,7 +52,6 @@ export default {
     app.component('StateMachine', StateMachine);
     app.component('BlastRadius', BlastRadius);
     app.component('GuardPath', GuardPath);
-    app.component('Ticket0Widget', Ticket0Widget);
     app.component('SignupForm', SignupForm);
   },
 } satisfies Theme;

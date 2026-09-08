@@ -94,27 +94,24 @@ app — it is part of somebody else's.
 
 ## The widget on the real docs site
 
-The fake sites are stand-ins. To put the widget on the actual documentation:
+The fake sites are stand-ins. The actual documentation carries the widget on **every
+page**: `apps/docs/.vitepress/config.mts` puts the same `<script>` tag in each page's
+`<head>`, aimed at `https://ticket0.substrat.net`, and the site's CSP names that origin
+because the config reads it from the one place it is spelled. That is the whole
+dogfood — the widget on substrat.net's own site, answering out of substrat.net's own
+`llms-full.txt`. A head script runs once per real page load, so the bubble survives
+every client-side navigation with nothing to take down and put back on the way.
+
+To aim a local docs build at this local desk instead:
 
 ```sh
-TICKET0_WIDGET=1 pnpm --filter @substrat-run/docs dev     # :5173
+TICKET0_API=http://localhost:8874 pnpm --filter @substrat-run/docs dev     # :5173
 ```
 
-That is the whole dogfood — the widget on substrat.net's own site, answering out of
-substrat.net's own `llms-full.txt`. It is **opt-in** because the same config array
-ships to production, and a support widget on the live site is a deliberate decision
-rather than a side effect of this demo landing.
-
-The site also carries the widget on **one page**, always:
-[substrat.net/guide/support](https://substrat.net/guide/support) mounts `<Ticket0Widget
-desk="https://ticket0.substrat.net" />` (`apps/docs/.vitepress/theme/components/`),
-which appends the same `<script>` tag on the way in and calls `window.ticket0.unmount()`
-on the way out. That verb exists for exactly this: a host with a client-side router
-adds and removes tags without a reload, and a removed `<script>` undoes nothing — so
-`widget.js` keeps one widget per page (a second run replaces the first) and offers the
-host one way to take it down, poll and all. For the hosted desk to answer there,
-`https://substrat.net` must be on its origin allowlist (Settings → Widget origins), and
-`http://localhost:5173` for the docs dev server.
+and `TICKET0_WIDGET=0` builds the docs with no widget at all. For a desk to answer,
+the docs origin must be on its origin allowlist (Settings → Widget origins) —
+`https://substrat.net` for the hosted desk, `http://localhost:5173` for the docs dev
+server.
 
 ### The platform apps embed it signed in
 

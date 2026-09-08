@@ -6,11 +6,21 @@ import { emitHeaders } from './headers.mjs';
 import { changelogSidebar, guideSidebar } from './sidebar.mjs';
 
 /**
- * Where the opt-in ticket0 widget is served from — named once, because it is
- * read twice: the `<script>` tag below, and the CSP that has to allow it.
- * A widget the policy did not name would load and then fail silently.
+ * The ticket0 support desk every page embeds — named once, because it is read
+ * twice: the `<script>` tag below, and the CSP that has to allow it. A widget the
+ * policy did not name would load and then fail silently.
+ *
+ * On by default and pointed at the live desk, so substrat.net carries the bubble on
+ * every page: the whole dogfood is the widget on substrat.net answering out of
+ * substrat.net's own `llms-full.txt`. `TICKET0_API=http://localhost:8874` aims a
+ * local build at a local desk (`pnpm --filter @substrat-run/demo-ticket0 dev`), and
+ * `TICKET0_WIDGET=0` builds without one. Off is the exception now, not on — this
+ * array ships to production, and a person made that decision once, here.
  */
-const WIDGET_API = process.env.TICKET0_API ?? 'http://localhost:8874';
+const WIDGET_API =
+  process.env.TICKET0_WIDGET === '0'
+    ? undefined
+    : (process.env.TICKET0_API ?? 'https://ticket0.substrat.net');
 
 export default withMermaid(defineConfig({
   title: 'Substrat',
@@ -19,17 +29,14 @@ export default withMermaid(defineConfig({
   lastUpdated: true,
 
   /**
-   * The ticket0 support widget — OPT-IN, and off unless asked for.
+   * The ticket0 support widget, in every page's `<head>` (see `WIDGET_API`).
    *
-   * `TICKET0_WIDGET=1 pnpm --filter @substrat-run/docs dev` embeds the demo desk's
-   * chat bubble on the real documentation site, which is the whole dogfood: the widget
-   * on substrat.net answering out of substrat.net's own `llms-full.txt`.
-   *
-   * Gated on the variable rather than checked in unconditionally because this array is
-   * also what ships to production. A support widget on the live site is a decision for
-   * a person to make deliberately, not a side effect of a demo landing.
+   * A `<script>` in the head rather than a component in a layout slot: it is in the
+   * built HTML, so the CSP guard in headers.mts sees the origin it has to allow, and
+   * VitePress runs it once per real page load — the bubble then survives every
+   * client-side navigation, with nothing to unmount and remount on the way.
    */
-  head: process.env.TICKET0_WIDGET
+  head: WIDGET_API
     ? [['script', { src: `${WIDGET_API}/widget.js`, 'data-api': WIDGET_API, defer: '' }]]
     : [],
 
@@ -55,14 +62,10 @@ export default withMermaid(defineConfig({
     // whose script hashes are read back out of the HTML this build just wrote
     // (headers.mts explains why they cannot be written down). Emitted last: it
     // hashes the inline scripts on every page, and the twins above add none.
-    // srcDir too: a page can mount the widget itself (`<Ticket0Widget desk="…" />` in
-    // guide/support.md), and that tag compiles away — the origin is nowhere in the HTML
-    // this policy would otherwise be derived from.
-    emitHeaders(
-      siteConfig.outDir,
-      siteConfig.srcDir,
-      process.env.TICKET0_WIDGET ? WIDGET_API : undefined,
-    );
+    // srcDir too: the signup forms name the desk they `fetch` as a `desk` attribute
+    // (index.md, changelog/index.md), and that tag compiles away — the origin is
+    // nowhere in the HTML this policy would otherwise be derived from.
+    emitHeaders(siteConfig.outDir, siteConfig.srcDir, WIDGET_API);
   },
 
   themeConfig: {

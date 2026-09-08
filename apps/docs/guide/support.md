@@ -1,11 +1,9 @@
 ---
 title: Support
-description: Ask the Substrat documentation a question — a ticket0 support desk, embedded on this page.
+description: Ask the Substrat documentation a question — a ticket0 support desk, embedded on every page of this site.
 ---
 
 # Ask the docs
-
-<Ticket0Widget desk="https://ticket0.substrat.net" />
 
 The bubble in the corner is a [ticket0](https://github.com/substrat-run/substrat/tree/main/demos/ticket0)
 support desk — a demo vertical running on Substrat, whose knowledge base is this
@@ -13,9 +11,9 @@ site's own `llms-full.txt`. Ask it something the documentation answers and it ci
 section; ask it something the documentation does not, and it hands the conversation to
 a person instead of guessing.
 
-This page is the trial. The widget is embedded **here and nowhere else** — leave the
-page and it goes with you — so the desk can be watched answering real questions from
-the real site before it is put on every page.
+The widget is on every page of this site, and a conversation follows you from page to
+page: it began as a trial on this page alone, so the desk could be watched answering
+real questions from the real site before it went everywhere.
 
 A few things worth knowing:
 
