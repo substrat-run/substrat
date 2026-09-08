@@ -7,10 +7,15 @@
  * and a caller who may not read the desk gets the honest fallback rather than an error
  * on a screen that is otherwise fine.
  *
- * It is also the source the assignee pickers offer: the same rows `ticket0/assign`
- * validates against, so the app cannot offer a choice the handler would refuse.
+ * It is also the source the assignee pickers offer — see `assignableStaff`, which is
+ * that set minus the one row in it that is not a colleague.
  */
 import { api, type AgentProfile } from './api.js';
+
+// The picker's rule lives in `staff.ts` — a leaf the vertical's suite can import
+// without a DOM — and is re-exported here so a screen has one place to import staff
+// from. See that file for why the assistant is in the directory and not in the picker.
+export { ASSISTANT_DISPLAY_NAME, assignableStaff } from './staff.js';
 
 let cache: Promise<Map<string, AgentProfile>> | null = null;
 

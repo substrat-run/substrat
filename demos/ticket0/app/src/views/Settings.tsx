@@ -19,7 +19,7 @@ import {
   type PendingInvite,
   type Session,
 } from '../api.js';
-import { forgetAgents } from '../agents.js';
+import { assignableStaff, forgetAgents } from '../agents.js';
 import { contacts } from '../contacts.js';
 import { Avatar, Dot, Empty, UnitPrice, ago } from '../ui.js';
 
@@ -177,7 +177,11 @@ function Team({ session }: { session: Session }) {
     void api
       .listAgents()
       .then((p) => {
-        setStaff(p.entries);
+        // "On the desk" means the people on it, so the assistant's profile — which
+        // exists for its byline — is not one of them (#1154). Same filter the two
+        // assignee pickers use, so the roster and the pickers cannot disagree about
+        // who works here.
+        setStaff(assignableStaff(p.entries));
         setStaffFailed(null);
       })
       .catch((e: Error) => setStaffFailed(e.message));

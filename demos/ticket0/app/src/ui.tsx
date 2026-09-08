@@ -122,10 +122,11 @@ export function Unassigned({ size = 24 }: { size?: number }) {
  * choice, so the rail and the inbox both call `ticket0/assign` in their own
  * `act(…)` and neither grows a second idea of what an error looks like.
  *
- * The options are the desk's directory and nothing else — the same rows the handler
- * validates against — so the screen cannot offer a choice the server would refuse.
- * "Unassigned" is first because dropping a conversation is a real move, not the
- * absence of one.
+ * The options are the rows the caller passes and nothing else. Those are a SUBSET of
+ * the desk's directory — `assignableStaff` drops the assistant, which is in the
+ * directory for its byline rather than because anyone can hand it work (#1154) — so
+ * the picker offers less than `ticket0/assign` accepts, never more. "Unassigned" is
+ * first because dropping a conversation is a real move, not the absence of one.
  */
 export function OwnerPicker({
   value,

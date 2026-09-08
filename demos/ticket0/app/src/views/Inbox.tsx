@@ -44,7 +44,7 @@ import {
   type Paged,
   type Session,
 } from '../api.js';
-import { agentName, agents } from '../agents.js';
+import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
 import { Avatar, Empty, OwnerPicker, Priority, StateBadge, Unassigned, ago } from '../ui.js';
@@ -207,7 +207,11 @@ export function Inbox({
   const [error, setError] = useState<string | null>(null);
   const [cursor, setCursor] = useState(0);
   const [people, setPeople] = useState<Map<string, Contact>>(new Map());
-  /** The desk's staff — the owner column's names, and what its picker may offer. */
+  /**
+   * The desk's staff — the owner column's names. The picker gets `assignableStaff` of
+   * it, which is a narrower set: a name is resolved for everyone in the directory, and
+   * only people are offered as somebody to hand work to.
+   */
   const [staff, setStaff] = useState<Map<string, AgentProfile>>(new Map());
   /** A failed assignment, said out loud. A row that silently snaps back is worse. */
   const [assignError, setAssignError] = useState<string | null>(null);
@@ -959,7 +963,7 @@ function Row({
         <OwnerPicker
           compact
           value={c.assignee}
-          staff={[...staff.values()]}
+          staff={assignableStaff(staff.values())}
           disabled={assigning || c.state === 'closed'}
           onChange={onAssign}
         />
