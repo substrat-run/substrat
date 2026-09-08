@@ -258,6 +258,10 @@ export function Inbox({
       const walked = async (): Promise<Paged<Conversation>> => {
         let p = await first();
         for (let i = 1; i < want && p.next !== null; i++) {
+          // Stop the moment this read is superseded. The guard below would drop the
+          // result anyway; without this, a filter change mid-walk still pays for every
+          // remaining page of a list nobody is going to see.
+          if (seq !== latest.current) break;
           const more = await api.follow<Conversation>(p.next);
           p = { entries: [...p.entries, ...more.entries], next: more.next, total: p.total };
         }
@@ -295,9 +299,18 @@ export function Inbox({
   const more = useCallback(() => {
     const cursorUrl = page?.next;
     if (cursorUrl == null || loadingMore) return;
-    // Bound to the read that produced this cursor: if a filter moves under us the
-    // appended rows would belong to a list nobody is looking at any more.
-    const seq = latest.current;
+    /*
+     * An append is a read like any other, so it takes the next sequence number rather
+     * than borrowing the current one.
+     *
+     * Two things fall out, and the second is the reason. It is still dropped if a
+     * filter moves under it — those rows would belong to a list nobody is looking at.
+     * And it SUPERSEDES a background tick that was already in flight when the click
+     * happened: `loadingMore` holds the next tick off, but not one that had already
+     * gone out, and that one would have landed a moment later carrying `depth - 1`
+     * pages and quietly taken the appended page back off the screen.
+     */
+    const seq = ++latest.current;
     setLoadingMore(true);
     api
       .follow<Conversation>(cursorUrl)
