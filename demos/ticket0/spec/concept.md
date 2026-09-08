@@ -74,7 +74,8 @@ The lifecycle:
 - **resolved is not the end.** A customer who replies to a resolved conversation reopens
   it, in the same thread, with the same history. This is the single most important thing
   about the lifecycle and the reason a conversation is *not* a work order (section 3).
-- **closed** is the end, and only a human puts it there — from anywhere.
+- **closed** is the end, and only a human puts it there — from anywhere. A customer who
+  writes in afterwards gets a follow-up conversation, not a refusal (below).
 
 One transition must not be skippable, and it is the one a naive implementation gets
 wrong: nothing reaches `resolved` without at least one public reply having been sent.
@@ -87,9 +88,21 @@ are told apart by what they write instead. Only `resolve` stamps `resolved_at`, 
 reports count that stamp rather than the state — so a conversation closed straight out of
 `new` leaves the desk's answered-work numbers exactly where they were.
 
+**Closing a thread does not silence the person on the other end of it.** `closed` has no
+way back in, and that is deliberate — a state anyone could climb out of by writing one
+more line is not an end. But the customer does not know their thread was closed, and a
+chat bubble that answers them with a rule violation is the desk's failure, not theirs. So
+a message arriving into a closed conversation — from the widget or from an inbound email —
+opens a **follow-up**: a new conversation for the same contact, recording which thread it
+continues. The closed one is untouched, keeps its history and goes on counting as closed.
+The visitor's widget carries on in the same bubble with the same session; only which
+thread it writes into has changed, which is the desk's business and not theirs.
+
 Conversations also **merge** — the same person asking the same thing twice in two channels
 is one problem, not two. A merged conversation keeps its history and forwards to its
-survivor; it is never deleted.
+survivor; it is never deleted. A merge and a follow-up are opposite claims and never share
+a field: a merge says these were always one conversation, a follow-up says the first one is
+over and this is the next one.
 
 ---
 
