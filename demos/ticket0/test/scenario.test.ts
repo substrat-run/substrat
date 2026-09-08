@@ -1353,6 +1353,83 @@ describe('what the desk wrote down and could not read back', () => {
     expect(tags.every((t) => t.conversation_id === conversation)).toBe(true);
   });
 
+  /**
+   * The third clause of #1081: a tag was writable and readable per conversation, and
+   * nothing could answer "every conversation tagged billing". Asserted here, on rows
+   * this story wrote, rather than beside the text search — by now there is a tag.
+   */
+  it('a tag finds the conversations that carry it — exactly, and only those', async () => {
+    const anna = await at(desk(), 'agent');
+    const billing = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'billing',
+    })) as Page<Conversation>;
+    expect(billing.entries.map((c) => c.id)).toContain(conversation);
+    // The published entity, not the tag row: the same shape the inbox returns.
+    expect(billing.entries.every((c) => 'subject' in c && !('tag' in c))).toBe(true);
+
+    // Exact, not a prefix: the tag is a word chosen from the vocabulary.
+    const prefix = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'bill',
+    })) as Page<Conversation>;
+    expect(prefix.entries).toHaveLength(0);
+
+    const nobody = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'zeppelin',
+    })) as Page<Conversation>;
+    expect(nobody.entries).toHaveLength(0);
+  });
+
+  it('the advertised order is the order — both ways, and the cursor follows it', async () => {
+    const relay = await at(desk(), 'relay');
+    const second = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: desk().customer.email,
+      subject: 'Charged for a seat we removed',
+      bodyText: 'The seat was removed in July and is still on the invoice.',
+      emailMessageId: '<tags-2@mail.example>',
+    })) as Message;
+    const anna = await at(desk(), 'agent');
+    await anna.invoke('ticket0/tag-conversation', {
+      conversationId: second.conversation_id,
+      tag: 'billing',
+    });
+
+    const asc = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'billing',
+      order: 'asc',
+    })) as Page<Conversation>;
+    const ids = asc.entries.map((c) => c.id);
+    expect(ids.length).toBeGreaterThanOrEqual(2);
+    expect([...ids].sort()).toEqual(ids);
+    const desc = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'billing',
+    })) as Page<Conversation>;
+    expect(desc.entries.map((c) => c.id)).toEqual([...ids].reverse());
+
+    // One row per page, so the cursor is exercised rather than merely accepted.
+    const first = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'billing',
+      order: 'asc',
+      limit: 1,
+    })) as Page<Conversation>;
+    expect(first.entries[0]!.id).toBe(ids[0]);
+    const next = (await anna.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'billing',
+      order: 'asc',
+      limit: 1,
+      cursor: first.nextCursor!,
+    })) as Page<Conversation>;
+    expect(next.entries[0]!.id).toBe(ids[1]);
+  });
+
+  it('another desk’s tag finds nothing here — not filtered out, not present', async () => {
+    const omar = await at(world.kestrel, 'agent');
+    const found = (await omar.invoke('ticket0/list-conversations-by-tag', {
+      tag: 'billing',
+    })) as Page<Conversation>;
+    expect(found.entries).toHaveLength(0);
+  });
+
   it('the desk’s vocabulary is whatever has been typed, most-used first', async () => {
     const anna = await at(desk(), 'agent');
     const { tags } = (await anna.invoke('ticket0/list-tags', {})) as {
@@ -1434,6 +1511,9 @@ describe('what the desk wrote down and could not read back', () => {
       priya.invoke('ticket0/get-csat', { conversationId: conversation }),
     ).rejects.toThrow(/permission denied/i);
     await expect(priya.invoke('ticket0/list-tags', {})).rejects.toThrow(/permission denied/i);
+    await expect(
+      priya.invoke('ticket0/list-conversations-by-tag', { tag: 'billing' }),
+    ).rejects.toThrow(/permission denied/i);
     await expect(
       priya.invoke('ticket0/untag-conversation', { conversationId: conversation, tag: 'billing' }),
     ).rejects.toThrow(/permission denied/i);
