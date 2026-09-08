@@ -877,6 +877,36 @@ function moveSession(
 }
 
 /**
+ * Which conversation this widget session is writing into, right now.
+ *
+ * Three cases, and only the middle one is interesting. A bound session has its
+ * conversation; an opening has none yet and gets one; a session whose conversation an
+ * agent CLOSED gets the follow-up that continues it, and is re-pointed at it — because
+ * `closed` is terminal and the alternative is a chat bubble that has silently gone
+ * read-only while still inviting the visitor to type.
+ *
+ * Both widget writes go through here, so the two cannot disagree about it. They did,
+ * for one commit: `widget-post` learned the follow-up rule and `request-human` was
+ * written against the version before it, which would have handed the visitor the same
+ * `invalid transition` on the route they press when nothing else is working.
+ */
+function heldConversation(
+  ctx: OperationContext,
+  sessionId: string,
+  hold: WidgetHold,
+): ConversationRow {
+  // Only the session branch can be closed: `bindOpening` has just made the other one.
+  const bound = hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
+  return bound.state === 'closed'
+    ? moveSession(
+        ctx,
+        sessionId,
+        followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), bound.subject),
+      )
+    : bound;
+}
+
+/**
  * Resolve every message's cited ids to articles, in one query for the whole page.
  *
  * A citation exists so a human can check it, and an id is not checkable — so the join
@@ -3068,20 +3098,9 @@ const operations = {
     // The token decides WHICH conversation, and there is no conversation id in the
     // input for a caller to substitute one.
     const hold = await holdOrThrow(ctx, input.sessionId, input.token);
-    // The first message opens the conversation; every later one finds it bound.
-    const bound = hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
-    // ...unless an agent closed it in the meantime. The session then moves to a
-    // follow-up rather than the visitor discovering that their chat bubble has gone
-    // read-only, which is what `closed` being terminal would otherwise mean for them.
-    // Only the session branch can be closed: `bindOpening` has just made this one.
-    const conversation =
-      bound.state === 'closed'
-        ? moveSession(
-            ctx,
-            input.sessionId,
-            followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), bound.subject),
-          )
-        : bound;
+    // The first message opens the conversation, every later one finds it bound — and a
+    // conversation an agent has closed hands over to the follow-up that continues it.
+    const conversation = heldConversation(ctx, input.sessionId, hold);
     const next = step(conversation, 'ticket0/widget-post');
     const row = writeMessage(ctx, {
       conversationId: conversation.id,
@@ -3112,8 +3131,7 @@ const operations = {
   'ticket0/request-human': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationWidget));
     const hold = await holdOrThrow(ctx, input.sessionId, input.token);
-    const conversation =
-      hold.kind === 'session' ? hold.conversation : bindOpening(ctx, hold.opening);
+    const conversation = heldConversation(ctx, input.sessionId, hold);
     const next = step(conversation, 'ticket0/request-human');
 
     /**

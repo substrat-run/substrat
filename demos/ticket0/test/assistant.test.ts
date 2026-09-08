@@ -1195,6 +1195,48 @@ describe('asking for a person', () => {
   });
 
   /**
+   * The rule #1311 taught `widget-post`, on the route a visitor presses when nothing
+   * else is working.
+   *
+   * `closed` is terminal, so a session whose thread an agent closed would have met
+   * `invalid transition: conversation … is 'closed'` — the exact 409 that reached a
+   * visitor of substrat.net, on the one button that is supposed to work when the rest
+   * of the desk has not.
+   */
+  it('asking for a person in a closed thread opens the follow-up, rather than a lifecycle error', async () => {
+    const { widget, sessionId, token } = await opened(world.substrat);
+    const first = (await widget.invoke('ticket0/widget-post', {
+      sessionId,
+      token,
+      body: 'My export is empty.',
+    })) as { conversation_id: string };
+    await (await at(world.substrat, 'agent')).invoke('ticket0/close', {
+      conversationId: first.conversation_id,
+    });
+
+    const asked = (await widget.invoke('ticket0/request-human', {
+      sessionId,
+      token,
+      body: 'Can a person take a look at this, please?',
+    })) as { conversation_id: string; notified: number };
+    expect(asked.conversation_id).not.toBe(first.conversation_id);
+    expect(asked.notified).toBeGreaterThan(0);
+
+    const followUp = (await (await at(world.substrat, 'agent')).invoke('ticket0/get-conversation', {
+      conversationId: asked.conversation_id,
+    })) as { follows: string | null; state: string };
+    expect(followUp.follows).toBe(first.conversation_id);
+
+    // The visitor's bubble shows the new thread: their ask, and an answer to it.
+    const thread = (await widget.invoke('ticket0/widget-thread', { sessionId, token })) as Page<{
+      author_kind: string;
+      body_text: string;
+    }>;
+    expect(thread.entries.map((m) => m.author_kind)).toEqual(['contact', 'system']);
+    expect(thread.entries[1]!.body_text).toBe(HANDED_TO_A_PERSON);
+  });
+
+  /**
    * A desk that keeps a human in the loop refuses its assistant a public word — and
    * must not take the acknowledgement down with it. The visitor asked for a person,
    * and being told one is coming is the desk confirming receipt, not the AI answering.
