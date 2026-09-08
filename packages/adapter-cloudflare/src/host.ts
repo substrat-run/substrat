@@ -5189,6 +5189,41 @@ export class CloudflareScopeHost implements ScopeHost {
   }
 
   /**
+   * Take a scope-level role back — the counterpart `assignScopeRole` went without (#1161).
+   * A tombstone, exactly as `HostAdmin.unassignRole` writes for a scope-level assignment:
+   * the row stays with `revoked_at` set and the local checker's walk skips it, so the
+   * principal loses the role's permissions on the next check. `assignScopeRole` is
+   * `INSERT OR REPLACE`, so a later re-assign clears the tombstone and grants again.
+   *
+   * Returns whether anything changed: a repeat revoke, or a revoke of a role that was never
+   * assigned, is a silent `false` rather than an error, which lets a harness route stay
+   * idempotent. Emits nothing on the scope outbox — the vertical whose flow revoked the
+   * seat is the one that knows what to announce, and it emits from its own operation.
+   * Guarded like `assignScopeRole`: at the harness route, not at this seam.
+   *
+   * Two things a caller has to know, because the tombstone is only as durable as the next
+   * `INSERT OR REPLACE` on the same row:
+   * - Anything that re-projects the scope's tuples clears it — `provisionScopeLocal` on a
+   *   reconcile re-seats the owner and the `system:` grants, and a vertical's `onProvision`
+   *   hook that re-issues `assignScopeRole` re-seats whatever it names. A revoke of a role
+   *   such a path grants is undone on the next reconcile, silently. Revoke the seats your
+   *   own flow granted, not the ones provisioning did.
+   * - Revoking the LAST live role tuple in a scope leaves nobody who passes a check, and
+   *   the local checker has no way back in (#332 guards the flip to local on the way in
+   *   only). Seat the successor before unseating the last holder.
+   * On a CP-less host this records no admin-log row (there is no control plane to hold
+   * one), so the row's `revoked_at` is the only evidence, and a re-assign replaces it.
+   */
+  async revokeScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean> {
+    return this.scopeStub(scopeId).revokeTuple(
+      `principal:${principal}`,
+      `role:${roleKey}`,
+      `scope:${scopeId}`,
+      new Date().toISOString(),
+    );
+  }
+
+  /**
    * Grant a principal an ENTITY-NARROWED permission in a CP-less vertical — the self-service
    * half of membership, the local equivalent of `HostAdmin.grant` with an `entity`. Where a
    * role reaches every entity in the scope, this reaches exactly one: an employee logging time

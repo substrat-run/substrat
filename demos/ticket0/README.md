@@ -283,9 +283,11 @@ What a hosted desk does **not** get from a seed, and how it gets it instead:
   `post-public-reply` takes an optional `turnId` and moves the row in the same
   transaction, whether the assistant sent it or a person did from the draft card.
 
-  Two principals rather than one principal moved between roles, because `assignScopeRole`
-  writes a role tuple and the platform has nothing that takes one back (#1161): promoting
-  the one account would be a one-way door. The setting picks who is asked; the kernel
+  Two principals rather than one principal moved between roles: when this was designed
+  `assignScopeRole` wrote a role tuple and the platform had nothing that took one back
+  (#1161), so promoting the one account would have been a one-way door. The host has a
+  `revokeScopeRole` now, but the provision hook re-grants every service role on each
+  reconcile, so a role move would need that loop changed too. The setting picks who is asked; the kernel
   still decides what that account may do, so turning the flag on grants nothing by
   itself — `test/scenario.test.ts` pins exactly that.
 - **Teammates and portal customers.** `POST /api/invites` — `desk-admin` / `agent` at
