@@ -17,6 +17,7 @@ import { Login } from './views/Login';
 import { Members } from './views/Members';
 import { OpsFailures } from './views/OpsFailures';
 import { SweepRuns } from './views/SweepRuns';
+import { Issues } from './views/Issues';
 import { Permissions } from './views/Permissions';
 import { ScopeDetail } from './views/ScopeDetail';
 import { Scopes } from './views/Scopes';
@@ -102,6 +103,9 @@ export function App() {
   const [openVertical, setOpenVertical] = useState<string | undefined>(() => readNav().vertical);
   // A vertical's "view failures" jump pre-narrows the Failures view; sidebar nav clears it.
   const [failuresVertical, setFailuresVertical] = useState<string | undefined>();
+  // The Issues → Failures exemplar jump (#1233): the fingerprint travels by
+  // navigation state, never a URL or input — it embeds U+001F.
+  const [failuresFingerprint, setFailuresFingerprint] = useState<string | undefined>();
   const [dark, setDark] = useState(false);
   const [toast, setToast] = useState<Toast>();
   const [error, setError] = useState<string>();
@@ -246,7 +250,7 @@ export function App() {
         : undefined;
 
   const crumbs: BreadcrumbItem[] = [
-    { label: view === 'settings' || view === 'members' ? 'Console' : view === 'failures' || view === 'sweeps' ? 'Operations' : 'Fleet' },
+    { label: view === 'settings' || view === 'members' ? 'Console' : view === 'failures' || view === 'issues' || view === 'sweeps' ? 'Operations' : 'Fleet' },
     { label: view === 'admin-log' ? 'Admin log' : view[0]!.toUpperCase() + view.slice(1), onClick: clearDetail },
     ...(detailCrumb ? [detailCrumb] : []),
   ];
@@ -301,6 +305,7 @@ export function App() {
       onNav={(v) => {
         setView(v);
         setFailuresVertical(undefined);
+        setFailuresFingerprint(undefined);
         clearDetail();
       }}
       onToggleDark={() => setDark((d) => !d)}
@@ -399,6 +404,7 @@ export function App() {
           onBack={() => setOpenVertical(undefined)}
           onOpenFailures={(slug) => {
             setFailuresVertical(slug);
+            setFailuresFingerprint(undefined);
             setView('failures');
             clearDetail();
           }}
@@ -418,7 +424,21 @@ export function App() {
         />
       )}
       {view === 'admin-log' && <AdminLog api={api} tenants={tenantMap} />}
-      {view === 'failures' && <OpsFailures api={api} tenants={tenantMap} initialVertical={failuresVertical} />}
+      {view === 'failures' && (
+        <OpsFailures api={api} tenants={tenantMap} initialVertical={failuresVertical} initialFingerprint={failuresFingerprint} />
+      )}
+      {view === 'issues' && (
+        <Issues
+          api={api}
+          onToast={notify}
+          onExemplars={(fp) => {
+            setFailuresFingerprint(fp);
+            setFailuresVertical(undefined);
+            setView('failures');
+            clearDetail();
+          }}
+        />
+      )}
       {view === 'sweeps' && <SweepRuns api={api} tenants={tenantMap} />}
       {view === 'permissions' && <Permissions api={api} tenants={tenantMap} />}
       {view === 'members' && <Members api={api} onToast={notify} />}

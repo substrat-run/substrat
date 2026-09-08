@@ -16,6 +16,9 @@ import type {
   MigrationProgress,
   OpsFailureEntry,
   SweepRunEntry,
+  IssueEntry,
+  IssueStatus,
+  IssueStatusInput,
   Page,
   PromotionAcknowledgement,
   Scope,
@@ -203,9 +206,21 @@ export interface OpsFailuresQuery extends PageQuery {
   scopeId?: ScopeId;
   vertical?: string;
   operation?: string;
+  /** The taxonomy code — the error-shape narrowing (#1233). */
+  code?: string;
+  /** One issue's exemplar rows (#1233) — the jump from Operations → Issues. */
+  fingerprint?: string;
   reference?: string;
   since?: string;
   until?: string;
+}
+
+/** The issues read (#1233). No cursor by design — grouping IS the compression. */
+export interface IssuesQuery {
+  status?: IssueStatus;
+  operation?: string;
+  code?: string;
+  limit?: number;
 }
 
 /**
@@ -486,6 +501,18 @@ export function createApi(actor: string | null, baseUrl = '/api') {
     // skipped, freshness verdicts. Newest first; 14-day retention.
     listSweepRuns: (q: SweepRunsQuery = {}) =>
       call<Page<SweepRunEntry>>(`/sweep-runs${query({ ...q })}`),
+
+    // Failures grouped by fingerprint (#1233) — counted defects with a lifecycle.
+    // `{ entries }` alone: the server sends no cursor, deliberately.
+    listIssues: (q: IssuesQuery = {}) => call<{ entries: IssueEntry[] }>(`/issues${query({ ...q })}`),
+    // The staff verdict: resolve / ignore / reopen. The fingerprint rides in the
+    // body — it embeds U+001F, and a path segment would demand percent-encoding
+    // every caller can get subtly wrong.
+    setIssueStatus: (fingerprint: string, status: IssueStatusInput) =>
+      call<IssueEntry>('/issues/status', {
+        method: 'PUT',
+        body: JSON.stringify({ fingerprint, status }),
+      }),
 
     // -- vertical + version registry (orchestration.md §5.6) ----------------
     // The staff surface for the two human checkpoints: admit/reject a version,

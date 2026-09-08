@@ -21,6 +21,8 @@ export interface OpsFailuresProps {
   tenants: Map<TenantId, Tenant>;
   /** Pre-narrow to one vertical — the jump from a vertical's failures strip. */
   initialVertical?: string;
+  /** Pre-narrow to one issue's exemplar rows — the jump from Operations → Issues (#1233). */
+  initialFingerprint?: string;
 }
 
 /**
@@ -31,7 +33,7 @@ export interface OpsFailuresProps {
  * side — and copies out for a Cloudflare support ticket, which is the only place
  * a redacted storage fault's reference actually resolves.
  */
-export function OpsFailures({ api, tenants, initialVertical }: OpsFailuresProps) {
+export function OpsFailures({ api, tenants, initialVertical, initialFingerprint }: OpsFailuresProps) {
   const [entries, setEntries] = useState<OpsFailureEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string>();
@@ -39,6 +41,9 @@ export function OpsFailures({ api, tenants, initialVertical }: OpsFailuresProps)
   const [copied, setCopied] = useState<string>();
 
   const [tenantFilter, setTenantFilter] = useState('all');
+  // The issue jump (#1233): an exact fingerprint filter with no typing surface —
+  // it embeds U+001F, so it arrives by navigation and leaves by the clear chip.
+  const [fingerprint, setFingerprint] = useState(initialFingerprint);
   const [verticalInput, setVerticalInput] = useState(initialVertical ?? '');
   const [referenceInput, setReferenceInput] = useState('');
   // Server-side narrowing is EXACT match (vertical slug, upstream reference) —
@@ -51,6 +56,7 @@ export function OpsFailures({ api, tenants, initialVertical }: OpsFailuresProps)
     tenantId: tenantFilter === 'all' ? undefined : (tenantFilter as TenantId),
     vertical: vertical || undefined,
     reference: reference || undefined,
+    fingerprint: fingerprint || undefined,
   };
 
   useEffect(() => {
@@ -72,7 +78,7 @@ export function OpsFailures({ api, tenants, initialVertical }: OpsFailuresProps)
     return () => {
       live = false;
     };
-  }, [api, tenantFilter, vertical, reference]);
+  }, [api, tenantFilter, vertical, reference, fingerprint]);
 
   async function loadOlder() {
     if (!cursor) return;
@@ -140,6 +146,11 @@ export function OpsFailures({ api, tenants, initialVertical }: OpsFailuresProps)
         />
         <Input placeholder="Vertical (exact slug)" mono value={verticalInput} onChange={(e) => setVerticalInput(e.target.value)} style={{ width: 200 }} />
         <Input placeholder="reference = …" mono value={referenceInput} onChange={(e) => setReferenceInput(e.target.value)} style={{ width: 220 }} />
+        {fingerprint && (
+          <Button variant="ghost" size="sm" onClick={() => setFingerprint(undefined)}>
+            showing one issue's rows · clear
+          </Button>
+        )}
       </div>
 
       {error && (
