@@ -1970,6 +1970,38 @@ const operations = {
     return { tags };
   },
 
+  /**
+   * The conversations under one tag.
+   *
+   * `EXISTS` rather than a join, for the reason `search-conversations` gives: the
+   * tag table is keyed by both columns, so one conversation matches one tag at most
+   * once today — but the page is built on that staying true, and an `EXISTS` does not
+   * care whether it does. Exact match, not `LIKE`: the tag is a word chosen from the
+   * vocabulary, so `billing` must not find `billing-dispute`.
+   *
+   * Desk-wide `conversation:read`, like the inbox and the text search — a tag is a
+   * staff word and this read hands back nothing a customer could see anyway.
+   */
+  'ticket0/list-conversations-by-tag': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRead));
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const params: SqlValue[] = [input.tag];
+    let sql = `SELECT ${CONVERSATION_COLUMNS}
+                 FROM ticket0_conversations c
+                WHERE EXISTS (SELECT 1 FROM ticket0_conversation_tags t
+                               WHERE t.conversation_id = c.id AND t.tag = ?)`;
+    // Newest first by default, and the caller's `?order=` honoured — see the note on
+    // `search-contacts` for why an advertised direction is not optional to obey.
+    const desc = (input.order ?? 'desc') === 'desc';
+    if (input.cursor) {
+      sql += desc ? ' AND c.id < ?' : ' AND c.id > ?';
+      params.push(input.cursor);
+    }
+    sql += ` ORDER BY c.id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
+    params.push(limit);
+    return pageOf(ctx.sql.query<ConversationRow>(sql, params), limit, (row) => row.id);
+  },
+
   // --- Saved replies -------------------------------------------------------
 
   'ticket0/list-saved-replies': async (ctx, input) => {

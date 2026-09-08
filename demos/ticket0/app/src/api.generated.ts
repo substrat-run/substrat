@@ -435,6 +435,15 @@ export interface Ticket0Client {
   listConversations(input: { state?: "new" | "open" | "snoozed" | "resolved" | "closed"; assignee?: string; channel?: "widget" | "email"; priority?: "low" | "normal" | "urgent"; contact_id?: string; include_closed?: boolean }): Promise<Paged<Conversation>>;
 
   /**
+   * The conversations carrying a tag
+   *
+   * `GET /conversations/by-tag` — `ticket0/list-conversations-by-tag`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listConversationsByTag(input: { tag: string }): Promise<Paged<Conversation>>;
+
+  /**
    * The desk’s documentation sources
    *
    * `GET /kb/sources` — `ticket0/list-kb-sources`
@@ -969,6 +978,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "GET", undefined, omit(input, ["conversationId"])),
     listConversations: (input: Args) =>
       page("/conversations", "GET", undefined, input),
+    listConversationsByTag: (input: Args) =>
+      page("/conversations/by-tag", "GET", undefined, input),
     listKbSources: () =>
       page("/kb/sources", "GET", undefined, undefined),
     listMessages: (input: Args) =>

@@ -1559,6 +1559,41 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     http: { method: 'GET', path: '/tags' },
   },
 
+  /**
+   * The conversations that carry one tag — the third clause of #1081, and the one
+   * `search-conversations` (text) and `search-contacts` (a person) left open.
+   *
+   * Its own paged read rather than a `tag` entry in `list-conversations`'
+   * `filterable`, and the reason is what `filterable` means: an equality predicate on
+   * a COLUMN of the walked entity, with an index provisioned behind it. A tag is not a
+   * column — it is a row in `ticket0_conversation_tags`, keyed by both halves — so a
+   * declared `tag` filter would advertise a narrowing the pager cannot apply. The two
+   * alternatives that would make it a column are a denormalized `tags` column (a
+   * migration, a human checkpoint) and a join-aware `ctx.page` (a kernel change), and
+   * neither belongs in a demo's PR.
+   *
+   * The match is EXACT, which is the other reason this is not a search: a tag is a
+   * word an agent chose from `list-tags`, not a phrase to be found inside. So the
+   * floor is one character, the same one `tag-conversation` accepts — a two-character
+   * floor here would make a one-character tag writable and unfindable.
+   *
+   * `/conversations/by-tag` is a static segment beside `/conversations/search`, and
+   * the host mounts static before parameter (`comparePaths`, #785), so neither is
+   * swallowed as a `{conversationId}`. The tag rides the query string rather than the
+   * path because it is free text: a tag with a slash in it is legal, and a path
+   * segment is the wrong container for one.
+   */
+  'ticket0/list-conversations-by-tag': {
+    summary: 'The conversations carrying a tag',
+    permission: 'conversation:read',
+    input: z.object({ tag: z.string().min(1) }),
+    output: ticket0Entities.conversation.fields,
+    // `sortKey`, because the handler composes its own join. Newest first, like the
+    // inbox and the text search.
+    paged: { sortKey: 'id', order: 'desc' },
+    http: { method: 'GET', path: '/conversations/by-tag' },
+  },
+
   // ─── Saved replies ───────────────────────────────────────────────────────────
 
   'ticket0/list-saved-replies': {
