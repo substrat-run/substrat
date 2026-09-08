@@ -20,6 +20,8 @@ import {
   hostnameStatus,
   identityLink,
   errorCode,
+  issueStatus,
+  issueStatusInput,
   listPageQuery,
   matchesOutboundHost,
   pageOf,
@@ -660,6 +662,23 @@ const opsFailuresQuery = z.object({
   until: z.string().optional(),
   // Bounded by default exactly as /admin-log, and for the same reason.
   ...listPageQuery.shape,
+});
+
+// The issues read (#1233). No cursor by design: grouping IS the compression —
+// cardinality is the number of distinct failure shapes — and `limit` bounds it.
+const issuesQuery = z.object({
+  status: issueStatus.optional(),
+  operation: z.string().optional(),
+  code: errorCode.optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional(),
+});
+
+// The lifecycle verdict (#1233). The fingerprint rides in the BODY, not the path:
+// it embeds U+001F by construction, and a path segment would force every caller
+// through percent-encoding it can get subtly wrong.
+const issueStatusUpdate = z.object({
+  fingerprint: z.string().min(1),
+  status: issueStatusInput,
 });
 
 const sweepRunsQuery = z.object({
@@ -4921,6 +4940,33 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       filter as Parameters<typeof admin.listSweepRuns>[1],
     );
     return c.json(pageOf(entries, filter.limit, (e) => e.id));
+  });
+
+  // -- issues (#1233): failures grouped by fingerprint, with a lifecycle --------
+  // Staff-only (absent from BUILDER_ROUTES): an issue is a fleet-scoped aggregate
+  // with no tenant column, so the forced-filter posture cannot narrow it — a
+  // builder's per-app view derives from their tenant-forced /ops-failures instead.
+  app.get('/issues', async (c) => {
+    const filter = issuesQuery.parse({
+      status: c.req.query('status'),
+      operation: c.req.query('operation'),
+      code: c.req.query('code'),
+      limit: c.req.query('limit'),
+    });
+    const entries = await admin.listIssues(c.get('actor'), filter as Parameters<typeof admin.listIssues>[1]);
+    // No cursor, deliberately — see issuesQuery. `entries` alone, so a client
+    // never walks a continuation that cannot exist.
+    return c.json({ entries });
+  });
+
+  // The staff verdict on one issue: resolve, ignore, or reopen. `regressed` is
+  // ingest's word and the input schema refuses it. 404 for an unknown fingerprint
+  // rather than an invented row.
+  app.put('/issues/status', async (c) => {
+    const input = issueStatusUpdate.parse(await c.req.json());
+    const updated = await admin.setIssueStatus(c.get('actor'), input.fingerprint, input.status);
+    if (!updated) return c.json({ error: 'unknown issue fingerprint' }, 404);
+    return c.json(updated);
   });
 
   // -- model usage (#1054): meter 3, the one D-30 could not compute -------------

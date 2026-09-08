@@ -4063,6 +4063,51 @@ describe('control-plane API — builder authz', () => {
     expect(byConn[0]).toMatchObject({ outcome: 'failed', error: 'provider 500' });
   });
 
+  it('serves the issues read and lifecycle to staff, and refuses a builder (#1233)', async () => {
+    // Two failures of one shape, one of another — grouped server-side at ingest.
+    for (const message of ['provider said no', 'provider said no again']) {
+      await host.admin.recordOpsFailure({
+        actor: staff, operation: 'intent.connector:issuesprov', stage: 'terminal',
+        vertical: `${acmeSlug}/helpdesk`, origin: 'provider', message,
+      });
+    }
+    await host.admin.recordOpsFailure({
+      actor: staff, operation: 'intent.connector:issuesprov', stage: 'terminal',
+      vertical: `${acmeSlug}/helpdesk`, origin: 'platform', code: 'permission_denied',
+      message: 'permission denied',
+    });
+
+    // The staff read: grouped, counted, no cursor by design.
+    const grouped = (await (await staffReq('/issues?operation=intent.connector:issuesprov')).json()) as {
+      entries: Array<{ fingerprint: string; code: string | null; count: number; status: string }>;
+    };
+    expect(grouped.entries).toHaveLength(2);
+    const recurring = grouped.entries.find((e) => e.code === null)!;
+    expect(recurring.count).toBe(2);
+    expect(recurring.status).toBe('new');
+    expect('nextCursor' in grouped).toBe(false);
+
+    // The lifecycle verdict rides the body (the fingerprint embeds U+001F).
+    const resolved = await staffReq('/issues/status', 'PUT', {
+      fingerprint: recurring.fingerprint,
+      status: 'resolved',
+    });
+    expect(resolved.status).toBe(200);
+    expect(((await resolved.json()) as { status: string }).status).toBe('resolved');
+
+    // `regressed` is ingest's word — the input schema refuses it.
+    expect(
+      (await staffReq('/issues/status', 'PUT', { fingerprint: recurring.fingerprint, status: 'regressed' })).status,
+    ).toBe(400);
+    // An unknown fingerprint is a 404, never an invented row.
+    expect((await staffReq('/issues/status', 'PUT', { fingerprint: 'no-such', status: 'ignored' })).status).toBe(404);
+
+    // Staff-only: an issue is a fleet aggregate with no tenant column, so the
+    // forced-filter posture cannot narrow it — a builder is refused outright.
+    expect((await acmeReq('/issues')).status).toBe(403);
+    expect((await acmeReq('/issues/status', 'PUT', { fingerprint: recurring.fingerprint, status: 'new' })).status).toBe(403);
+  });
+
   it('claims a bare slug under the tenant prefix, stamping the owner', async () => {
     // The builder pushes a BARE `helpdesk`; the id becomes `<tenantSlug>/helpdesk` (§5),
     // and the owner is stamped from the principal — a forged ownerTenant in the body loses.
