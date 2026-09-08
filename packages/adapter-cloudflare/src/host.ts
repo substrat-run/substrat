@@ -200,6 +200,7 @@ import {
   type TenantStoreRecord,
   type FreshnessRegistration,
   type FreshnessReport,
+  globalFetch,
 } from '@substrat-run/kernel';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
 import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
@@ -1150,7 +1151,7 @@ export class CloudflareScopeHost implements ScopeHost {
     this.tenantStores = options.tenantStores;
     this.blobStores = options.blobStores;
     this.attachmentBuckets = options.attachmentBuckets;
-    this.fetchImpl = options.fetch ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
+    this.fetchImpl = options.fetch ?? globalFetch;
     this.scopeLocalPermissions = options.scopeLocalPermissions ?? false;
     this.scopeNs = options.scope;
     this.cpLess = !options.controlPlane;

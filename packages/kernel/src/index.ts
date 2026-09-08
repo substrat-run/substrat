@@ -62,6 +62,7 @@ export {
   consumersFor,
   entitlementDenial,
   backoffAt,
+  globalFetch,
   parseValidationRecords,
   resolveRetryPolicy,
   OPS_FAILURE_RETENTION_DAYS,

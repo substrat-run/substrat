@@ -47,12 +47,12 @@ jobs:
       # a package's published types can require a module its package.json never
       # mentions. contract-tests shipped 130 `import("zod")` that way.
       - run: node tools/declared-deps.mjs
-      # The global `fetch` is handed on bound, never bare. workerd refuses the bare
-      # global called with any other receiver ("Illegal invocation") and nothing that
-      # runs in CI does — Node's fetch accepts any `this`, and so does the wrapper the
-      # workers vitest pool installs — so the Fortnox consent callback shipped green
-      # and failed every hosted round (#1263). A source check is the only kind that
-      # can hold this rule.
+      # The runtime's `fetch` is handed on as the kernel's `globalFetch`, never as the
+      # bare global. workerd refuses the bare global called with any other receiver
+      # ("Illegal invocation") and nothing that runs in CI does — Node's fetch accepts
+      # any `this`, and so does the wrapper the workers vitest pool installs — so the
+      # Fortnox consent callback shipped green and failed every hosted round (#1291).
+      # A source check is the only kind that can hold this rule.
       - run: pnpm lint:bound-fetch
       # The permission-diff human checkpoint (CLAUDE.md). Re-emit every vertical's
       # snapshot and fail if it drifts from what is checked in — an agent that

@@ -71,7 +71,10 @@ export class PlatformRelayEmailTransport implements EmailTransport {
     if (!recipient || rest.length) {
       throw new EmailError(`the platform email relay sends to one recipient at a time (got ${m.to.length})`);
     }
-    const fetchImpl: FetchLike = this.opts.fetchImpl ?? (globalThis as unknown as { fetch: FetchLike }).fetch;
+    // Called in an arrow, never handed on: the package is kernel-free by design, so it
+    // cannot use `globalFetch` and carries the same one-liner (see `lint:bound-fetch`).
+    const fetchImpl: FetchLike =
+      this.opts.fetchImpl ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
     const base = this.opts.controlPlaneUrl.replace(/\/$/, '');
     const res = await fetchImpl(`${base}/internal/email/send`, {
       method: 'POST',

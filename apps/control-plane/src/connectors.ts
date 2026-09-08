@@ -1,4 +1,4 @@
-import type { ConnectorHandler, ConnectorSweeper, FetchLike, ScopeHost } from '@substrat-run/kernel';
+import { globalFetch, type ConnectorHandler, type ConnectorSweeper, type ScopeHost } from '@substrat-run/kernel';
 import type { ConnectionInspector } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
@@ -132,24 +132,18 @@ function required(value: string | undefined, name: string): string {
   return value;
 }
 
-// Bound to the global: a connector is free to call this as `options.fetch(…)` (the
-// Scrive candidate probe does), and workerd throws "Illegal invocation" for the bare
-// global invoked with any other receiver — Node's does not, so only the hosted path
-// would see it. (The dashboard's Fortnox callback was that exact failure.)
-const fetchImpl = () => globalThis.fetch.bind(globalThis) as unknown as FetchLike;
-
 const SCRIVE: ConnectorRegistration = {
   provider: 'scrive',
   grants: SCRIVE_CONNECTION_GRANTS,
   inspector: (env) => ({
     probe: async (h, row) =>
       probeScriveConnection(h, row, {
-        fetch: fetchImpl(),
+        fetch: globalFetch,
         baseUrl: required(env.SCRIVE_BASE_URL, 'SCRIVE_BASE_URL'),
       }),
     activity: async (h, row, opts) =>
       scriveConnectionActivity(h, row, {
-        fetch: fetchImpl(),
+        fetch: globalFetch,
         baseUrl: required(env.SCRIVE_BASE_URL, 'SCRIVE_BASE_URL'),
         live: opts.live,
         source: opts.source,
@@ -157,7 +151,7 @@ const SCRIVE: ConnectorRegistration = {
     credential: (h, row) => scriveCredentialSummary(h, row),
     probeCandidate: async (secret) =>
       probeScriveSecret(secret, {
-        fetch: fetchImpl(),
+        fetch: globalFetch,
         baseUrl: required(env.SCRIVE_BASE_URL, 'SCRIVE_BASE_URL'),
       }),
   }),
@@ -193,7 +187,7 @@ const SCRIVE: ConnectorRegistration = {
           token: ref.token ?? '',
         },
         {
-          fetch: fetchImpl(),
+          fetch: globalFetch,
           baseUrl: required(env.SCRIVE_BASE_URL, 'SCRIVE_BASE_URL'),
         },
       );
@@ -222,7 +216,7 @@ const FORTNOX: ConnectorRegistration = {
   inspector: (env) => ({
     probe: async (h, row) =>
       probeFortnoxConnection(h, row, {
-        fetch: fetchImpl(),
+        fetch: globalFetch,
         ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
         ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
       }),
@@ -230,7 +224,7 @@ const FORTNOX: ConnectorRegistration = {
     credential: (h, row) => fortnoxCredentialSummary(h, row),
     probeCandidate: async (secret) =>
       probeFortnoxSecret(secret, {
-        fetch: fetchImpl(),
+        fetch: globalFetch,
         ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
         ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
       }),
