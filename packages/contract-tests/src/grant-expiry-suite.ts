@@ -147,6 +147,22 @@ export function grantExpiryContractSuite(
     });
 
     /**
+     * The boundary is part of the contract, not an adapter detail: the predicate is
+     * `expires_at > now`, so at the expiry instant itself the grant is already gone.
+     * A `>=` would pass every other test in this suite and silently widen every
+     * timed grant on that adapter by one instant — so the suite pins both sides of
+     * the line, for both shapes of grant.
+     */
+    it('is gone at the expiry instant itself, not one past it', async () => {
+      clock.set(at(HOUR - 1));
+      expect(await probe(nora, PERM_READ)).toBe(true);
+      expect(await probe(eve, PERM_READ, box)).toBe(true);
+      clock.set(at(HOUR));
+      expect(await probe(nora, PERM_READ)).toBe(false);
+      expect(await probe(eve, PERM_READ, box)).toBe(false);
+    });
+
+    /**
      * Expiry is judged on every check, not cached at grant time — so the same
      * grant reads as live again if the clock is moved back before it. This is
      * what distinguishes "the checker consults the clock" from "the grant was
@@ -162,8 +178,13 @@ export function grantExpiryContractSuite(
     });
 
     /**
-     * A later re-grant is a new tuple with its own `expiresAt`, and the expired one
-     * must not shadow it — the checker has to find the live row beside the dead one.
+     * Expiry is not sticky: a later re-grant of the same (principal, permission,
+     * node) carries its own `expiresAt`, and the checker judges that one. How the
+     * adapter stores it is its own business — the SQLite host keys tuples on
+     * (subject, relation, object) and the re-grant REPLACES the expired row, so
+     * there is never a dead row beside a live one there. What the contract holds is
+     * only the outcome: the expired grant does not shadow the new one, and the new
+     * one dies on its own clock.
      */
     it('a re-grant after expiry grants again, on its own expiresAt', async () => {
       clock.set(at(HOUR + 60_000));
