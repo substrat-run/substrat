@@ -165,6 +165,13 @@ export {
   CONNECTOR_ATTACHMENT_RECORD_HEADER,
 } from './platform-call.js';
 export {
+  signConnectState,
+  verifyConnectState,
+  ConnectStateError,
+  CONNECT_STATE_PURPOSE,
+} from './connect-state.js';
+export type { ConnectStateClaim } from './connect-state.js';
+export {
   PLATFORM_REQUEST_COLUMNS,
   platformRequestHistoryQuery,
 } from './platform-request-query.js';

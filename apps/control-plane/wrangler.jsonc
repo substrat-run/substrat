@@ -39,6 +39,11 @@
 	// `substrat.run` covers every `<label>.<jurisdiction>.substrat.run` mint.
 	// PLATFORM_CP_URL is this worker's own origin, injected into every pushed vertical as
 	// CONTROL_PLANE_URL — the callback address for the email relay (#303). Public, per-env: a var.
+	// PLATFORM_CONNECT_URL is where provider CONSENT rounds run (§3.5.3) — the dashboard
+	// worker, which holds the platform's provider client credentials and owns the ONE
+	// redirect_uri registered with each provider. Not this origin, and not a mistake: moving
+	// the callback would mean a portal round-trip per provider, so the var names where the
+	// flow already works instead.
 	// SCRIVE_BASE_URL is set EXPLICITLY, in both environments, because the connector's
 	// default is the testbed — and a production credential sent to the testbed is a 401
 	// that looks exactly like a mistyped key. An unset var here is not "unconfigured", it
@@ -48,6 +53,7 @@
 	"vars": {
 		"PLATFORM_BASE_DOMAINS": "substrat.run",
 		"PLATFORM_CP_URL": "https://console.substrat.net",
+		"PLATFORM_CONNECT_URL": "https://app.substrat.net",
 		"SCRIVE_BASE_URL": "https://scrive.com",
 		// The support desk the console embeds (ticket0). Paired with the
 		// SUPPORT_WIDGET_SECRET secret — that desk's verification secret — without which
@@ -199,6 +205,7 @@
 			"vars": {
 				"PLATFORM_BASE_DOMAINS": "substrat.run",
 				"PLATFORM_CP_URL": "https://console-test.substrat.net",
+				"PLATFORM_CONNECT_URL": "https://app-test.substrat.net", // differs
 				"SCRIVE_BASE_URL": "https://api-testbed.scrive.com",
 				"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net", // same desk; console-test.substrat.net must be on its origin list
 				// #858: pushed verticals declare Workers automatic tracing at 100%, on TEST

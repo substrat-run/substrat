@@ -74,6 +74,8 @@ import {
   drainScopePlatformRequests,
   relayConnectionUpsert,
   ConnectionRelayError,
+  relayConnectUrl,
+  ConnectUrlRelayError,
   provisionSiblingHandler,
   archiveScopeHandler,
   provisionTenantHandler,
@@ -104,6 +106,7 @@ import {
   CONNECTORS,
   connectionInspectorsFor,
   connectorGrantsFor,
+  connectFlowsFor,
   connectorSweepersFor,
   type ConnectorEnv,
 } from './connectors.js';
@@ -276,6 +279,20 @@ interface Env extends OidcEnv, ConnectorEnv {
    * differs per environment. Absent ⇒ verticals get no relay URL and fall back to the drop-mock.
    */
   PLATFORM_CP_URL?: string;
+  /**
+   * The origin hosting provider CONSENT rounds and the `redirect_uri` registered with
+   * each provider (`https://app.substrat.net` — the dashboard worker, which holds the
+   * client credentials). Read only by `/internal/connections/connect-url` (§3.5.3), to
+   * build the URL it hands a vertical. A checked-in `var` for the same reasons as
+   * PLATFORM_CP_URL: public, and different per environment.
+   *
+   * Deliberately NOT the same origin as this worker. The registered `redirect_uri` is
+   * one string agreed with the provider and changing it is a portal round-trip per
+   * provider, so the consent flow stays where it already works and this var names it
+   * rather than moving it. Absent ⇒ the relay 503s naming this var, and verticals fall
+   * back to the dashboard-minted connect link.
+   */
+  PLATFORM_CONNECT_URL?: string;
   /**
    * The WfP dispatch namespace holding pushed verticals — the control plane reaches one
    * to provision an instance of it (orchestration.md §5.4), the mirror of the router.
@@ -1322,6 +1339,46 @@ export default {
         if (e instanceof ConnectionRelayError) {
           return c.json({ error: e.message, ...(e.probe ? { probe: e.probe } : {}) }, e.status);
         }
+        throw e;
+      }
+    });
+
+    // The connect-url relay (connections.md §3.5.3) — the OAuth half of the relay above.
+    // The paste door assumes the tenant admin HOLDS a credential; a provider that mints one
+    // only at the end of a browser consent round has none to paste, and the client
+    // credentials plus the single registered `redirect_uri` for that round are the
+    // platform's, not the vertical's. So the vertical cannot run the round — yet it is the
+    // only place that knows WHICH of a bureau's client companies is being connected, and
+    // its users have no dashboard account to run it from either.
+    //
+    // What crosses the seam is therefore a URL and nothing else. The vertical's operation
+    // is the authorizing act (`ctx.check`, §3.5); this turns it into a link its user
+    // follows; every step that touches a credential stays on the platform origin that owns
+    // the callback. Same trust posture as the two relays above: PLATFORM_SECRET proves only
+    // that a platform script is calling, and the VERTICAL is re-derived from this
+    // directory's record — then derived a second time at the callback from the scope in the
+    // signed state, so neither hop takes the other's word for it.
+    app.post('/internal/connections/connect-url', async (c) => {
+      try {
+        assertPlatformCall(c.req.raw.headers, { expectedSecret: c.env.PLATFORM_SECRET });
+      } catch (e) {
+        if (e instanceof PlatformCallError) return c.json({ error: e.message }, 403);
+        throw e;
+      }
+      try {
+        const result = await relayConnectUrl(
+          hostFor(c.env),
+          CONNECTION_RELAY_ACTOR,
+          await c.req.json().catch(() => ({})),
+          {
+            ...(c.env.PLATFORM_CONNECT_URL ? { connectOrigin: c.env.PLATFORM_CONNECT_URL } : {}),
+            ...(c.env.PLATFORM_SECRET ? { platformSecret: c.env.PLATFORM_SECRET } : {}),
+            flows: connectFlowsFor(),
+          },
+        );
+        return c.json(result);
+      } catch (e) {
+        if (e instanceof ConnectUrlRelayError) return c.json({ error: e.message }, e.status);
         throw e;
       }
     });

@@ -770,6 +770,8 @@ export function mountPlatformSurface<Env extends object>(
 }
 
 export * from './operations-routes.js';
+export { requestConnectUrl, ConnectUrlRequestError } from './connect-url.js';
+export type { ConnectUrlRequest } from './connect-url.js';
 export * from './mcp.js';
 export * from './public-surface.js';
 export {

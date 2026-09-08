@@ -1,5 +1,5 @@
 import { globalFetch, type ConnectorHandler, type ConnectorSweeper, type ScopeHost } from '@substrat-run/kernel';
-import type { ConnectionInspector } from '@substrat-run/control-plane-api';
+import type { ConnectFlowSpec, ConnectionInspector } from '@substrat-run/control-plane-api';
 import {
   SCRIVE_CALLBACK_ROUTE,
   SCRIVE_CONNECTION_GRANTS,
@@ -116,6 +116,22 @@ export interface ConnectorRegistration {
       ref: Record<string, string | undefined>,
     ): Promise<ConnectorCallbackOutcome>;
   };
+  /**
+   * The BROWSER CONSENT ROUND that creates this provider's connection, when the platform
+   * hosts one (connections.md §3.5.3). Absent means the credential is pasted instead —
+   * a complete connector, just a different door (`/internal/connections/upsert`).
+   *
+   * Only the entry path is declared here, and deliberately so: the round itself lives on
+   * the platform origin that owns the provider's registered `redirect_uri`, which is not
+   * this worker. What this array decides is whether `/internal/connections/connect-url`
+   * will mint a state for the provider at all — so a vertical asking to connect something
+   * with no consent round gets a 404 naming the paste door, rather than a URL that
+   * dead-ends.
+   */
+  readonly consent?: {
+    /** Absolute path on the connect origin, taking the signed state as `?token=`. */
+    readonly startPath: string;
+  };
 }
 
 /**
@@ -204,11 +220,17 @@ const SCRIVE: ConnectorRegistration = {
 /**
  * Fortnox (#1203, #1220) — inbound accounting, poll-only. No dispatch (nothing in a
  * scope initiates the work) and no callback (Fortnox pushes nothing); the consent
- * round that CREATES a connection is the dashboard's (`/api/integrations/fortnox/…`),
- * which relays the sealed triple here like any other credential. What this
- * registration adds is everything after that: the connect-time probe (#605) that
- * refuses a broken triple before it lands, the sweep that polls each bound scope's
- * books, and the inspection views a console reads.
+ * round that CREATES a connection runs on the platform's connect origin
+ * (`/api/integrations/fortnox/…`) and relays the sealed triple here like any other
+ * credential. What this registration adds is everything after that: the connect-time
+ * probe (#605) that refuses a broken triple before it lands, the sweep that polls each
+ * bound scope's books, and the inspection views a console reads.
+ *
+ * `consent` is what lets a VERTICAL start that round for its own user (§3.5.3) — a
+ * bureau's staff connect a client company from the bookkeeping screen they already work
+ * in, with no dashboard account. Fortnox is the provider that forces the case: consent
+ * is per company and there is no bulk grant, so a bureau runs the round as often as it
+ * takes on new clients.
  */
 const FORTNOX: ConnectorRegistration = {
   provider: 'fortnox',
@@ -235,6 +257,7 @@ const FORTNOX: ConnectorRegistration = {
       ...(env.FORTNOX_API_BASE ? { apiBase: env.FORTNOX_API_BASE } : {}),
       ...(env.FORTNOX_OAUTH_BASE ? { oauthBase: env.FORTNOX_OAUTH_BASE } : {}),
     }),
+  consent: { startPath: '/api/integrations/fortnox/connect' },
 };
 
 /**
@@ -252,6 +275,17 @@ export function connectionInspectorsFor(env: ConnectorEnv): Record<string, Conne
 /** The `{ provider → sweeper }` shape `runPlatformSweep` takes. */
 export function connectorSweepersFor(env: ConnectorEnv) {
   return Object.fromEntries(CONNECTORS.map((c) => [c.provider, c.sweep(env)]));
+}
+
+/**
+ * The `{ provider → consent flow }` shape the connect-url relay takes (§3.5.3), derived
+ * from the same array as everything else — so a connector that declares a round gets one
+ * and a poll-only paste-credential connector cannot accidentally be offered one.
+ */
+export function connectFlowsFor(): Readonly<Record<string, ConnectFlowSpec | undefined>> {
+  return Object.fromEntries(
+    CONNECTORS.flatMap((c) => (c.consent ? [[c.provider, { startPath: c.consent.startPath }]] : [])),
+  );
 }
 
 /** The `{ provider → declared grants }` shape `createControlPlaneApi` takes (#726). */
