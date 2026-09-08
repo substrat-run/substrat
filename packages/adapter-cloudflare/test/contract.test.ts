@@ -512,9 +512,30 @@ describe('scope-local permissions — a CP-less host (Phase 3)', () => {
     await host.assignScopeRole(s, member, 'office-admin');
     expect(await probe(member, ADMIN)).toBe(true);
     expect(await probe(member, READ)).toBe(true);
-    // And it can be taken back a second time — the cycle is repeatable.
-    expect(await host.revokeScopeRole(s, member, 'office-admin')).toBe(true);
-    expect(await probe(member, ADMIN)).toBe(false);
+  });
+
+  it('revokeScopeRole takes back ONE role — a second role the member holds survives', async () => {
+    // A projected reader role beside office-admin, so the revoke has a sibling to leave alone.
+    const scope = scopeId.parse(ulid());
+    const member = principalId.parse(ulid());
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: scope,
+      owner,
+      roles: [
+        { key: 'office-admin', permissions: [ADMIN, READ], source: 'vertical' },
+        { key: 'reader', permissions: [READ], source: 'vertical' },
+      ],
+      ownerRoleKey: 'office-admin',
+    });
+    const probeIn = async (perm: typeof ADMIN): Promise<boolean> =>
+      (await (await host.getScope(member, t, scope)).invoke<{ allowed: boolean }>('perm/probe', { permission: perm })).allowed;
+    await host.assignScopeRole(scope, member, 'office-admin');
+    await host.assignScopeRole(scope, member, 'reader');
+    expect(await probeIn(ADMIN)).toBe(true);
+    expect(await host.revokeScopeRole(scope, member, 'office-admin')).toBe(true);
+    expect(await probeIn(ADMIN)).toBe(false); // office-admin is gone
+    expect(await probeIn(READ)).toBe(true); // reader still holds READ
   });
 
   it('the admin directory surface throws — it genuinely has no control plane', async () => {

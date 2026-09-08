@@ -5200,6 +5200,19 @@ export class CloudflareScopeHost implements ScopeHost {
    * idempotent. Emits nothing on the scope outbox — the vertical whose flow revoked the
    * seat is the one that knows what to announce, and it emits from its own operation.
    * Guarded like `assignScopeRole`: at the harness route, not at this seam.
+   *
+   * Two things a caller has to know, because the tombstone is only as durable as the next
+   * `INSERT OR REPLACE` on the same row:
+   * - Anything that re-projects the scope's tuples clears it — `provisionScopeLocal` on a
+   *   reconcile re-seats the owner and the `system:` grants, and a vertical's `onProvision`
+   *   hook that re-issues `assignScopeRole` re-seats whatever it names. A revoke of a role
+   *   such a path grants is undone on the next reconcile, silently. Revoke the seats your
+   *   own flow granted, not the ones provisioning did.
+   * - Revoking the LAST live role tuple in a scope leaves nobody who passes a check, and
+   *   the local checker has no way back in (#332 guards the flip to local on the way in
+   *   only). Seat the successor before unseating the last holder.
+   * On a CP-less host this records no admin-log row (there is no control plane to hold
+   * one), so the row's `revoked_at` is the only evidence, and a re-assign replaces it.
    */
   async revokeScopeRole(scopeId: ScopeId, principal: PrincipalId, roleKey: string): Promise<boolean> {
     return this.scopeStub(scopeId).revokeTuple(

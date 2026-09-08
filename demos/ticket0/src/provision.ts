@@ -167,10 +167,11 @@ export const OWNER_ROLE_KEY = 'desk-admin';
  *
  * Which of the two assistant roles a desk hands its AI is the one policy decision this
  * vertical makes out loud, and a desk must be able to change its mind. It cannot do
- * that by moving one principal between roles: `assignScopeRole` writes a role tuple and
- * the platform has nothing that takes one back (#1161), so an upgrade would be a
- * one-way door — turn the assistant loose once and no admin could ever put it back
- * under review.
+ * that by moving one principal between roles: when this was designed `assignScopeRole`
+ * wrote a role tuple and the platform had nothing that took one back (#1161), so an
+ * upgrade would have been a one-way door. `revokeScopeRole` exists now, but a move
+ * built on it would also have to stop the `onProvision` loop below re-granting every
+ * SERVICE_ROLE on the next reconcile — so the two-principal shape stays.
  *
  * So both principals exist from provision, each genuinely holding what its role holds,
  * and the desk's `assistant_autonomous` setting decides which one the HOST answers as.
