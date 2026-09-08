@@ -1,0 +1,12 @@
+# Copy to `.dev.vars` (gitignored) to un-skip `test/live.test.ts`.
+#
+# The canonical home for this is the shared `secrets/connectors.env` at the repo root —
+# one file for every connector, `<PROVIDER>_`-prefixed so two providers' secrets cannot
+# collide. This per-package file works as a fallback, and `PLANIMA_TOKEN` in the
+# environment wins over both, so a CI job holding the token in its secret store needs no
+# file at all.
+#
+# Mint the token in Planima under `account settings → API`. Mint it as a READ-ONLY user:
+# a Planima token carries the full access of whoever created it, and this connector only
+# ever reads. An admin's token would work identically and cost far more if it leaked.
+PLANIMA_TOKEN=

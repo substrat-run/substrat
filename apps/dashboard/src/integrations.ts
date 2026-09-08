@@ -118,6 +118,41 @@ export const PROVIDERS: Record<string, ProviderSpec> = {
     // DatabaseNumber is what tells 200 connections apart on the upsert key.
     accountRefField: 'tenantId',
   },
+  planima: {
+    provider: 'planima',
+    name: 'Planima',
+    description: 'Planned facility maintenance — reads a maintenance plan and its costed actions.',
+    monogram: 'Pl',
+    // One static token, minted by a person in Planima under `account settings → API`,
+    // and keyed exactly as the connector's `planimaSecret` schema parses it. There is
+    // no consent round and no refresh: a Planima token does not expire, so `connectFlow`
+    // stays the credential form.
+    //
+    // The placeholder says read-only for a reason that is not cosmetic. A Planima token
+    // carries the full access of the user who minted it and there are no scopes to
+    // narrow it with, so choosing WHICH user mints it is the only control available —
+    // and this connector never writes.
+    fields: [
+      {
+        key: 'token',
+        label: 'API token',
+        secret: true,
+        placeholder: 'From account settings → API, minted as a read-only user',
+      },
+    ],
+    // Deliberately empty, and `PLANIMA_CONNECTION_GRANTS` says why at length: this
+    // connector lands its maintenance plan through the CONSUMING vertical's own
+    // operation, so the permission it needs is that vertical's and is unknown here.
+    // `bindPlanimaScope` verifies the grant at bind time instead, and refuses without
+    // it — so the hole this list exists to prevent is closed by a mechanism rather than
+    // by a declaration.
+    grants: [],
+    // No `accountRefField`, and that is a fact about Planima rather than an omission: a
+    // token belongs to one customer ACCOUNT, which may hold several organizations, so no
+    // single field names what the credential reads. One connection per app is therefore
+    // correct, and a re-paste rotates it in place — which is what a re-paste should do
+    // when there is only ever one.
+  },
 };
 
 /** Parse + validate a credential body against the provider's declared fields. */

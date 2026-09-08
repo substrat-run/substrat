@@ -1,0 +1,45 @@
+{
+  "name": "@substrat-run/connector-planima",
+  "version": "0.1.0",
+  "description": "Substrat connector: Planima planned facility maintenance (Swedish). Reads a maintenance plan — facilities, buildings, components and actions — on a poll and lands it into a scope through the vertical's own operation. Auth is a static API token, so there is no token to refresh. Host code — swept on a ScopeHost, never module code.",
+  "license": "AGPL-3.0-only",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/substrat-run/substrat.git",
+    "directory": "connectors/planima"
+  },
+  "homepage": "https://substrat.net/connectors/planima",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^"
+  },
+  "devDependencies": {
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.0"
+  }
+}

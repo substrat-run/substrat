@@ -72,11 +72,13 @@ needs may not exist yet.
 |---|---|---|---|
 | [Scrive](/connectors/scrive) | E-signing & identity | **Published** ([npm](https://www.npmjs.com/package/@substrat-run/connector-scrive), `0.x`) — both halves built and running in production; two caveats: the vertical schedules the poll, and BankID is off on the testbed | Scrive eSign (Swedish BankID) |
 | [Fortnox](/connectors/fortnox) | Accounting | **Live-verified** (`0.x`) — poll-only, reads bookkeeping as SIE4; client-credentials auth, so no refresh token to rotate. The live run corrected the export charset (PC8/CP437, not latin1) | Fortnox (Swedish accounting) |
+| [Planima](/connectors/planima) | Facility maintenance | **Built, not yet live-verified** (`0.x`) — poll-only and read-only, reads a maintenance plan and its costed actions; one static API token, so nothing to rotate. Every claim still rests on the published OpenAPI document and a mock that shares its reading | Planima (Swedish maintenance planning) |
 
 Categories, as they will fill in (from the master plan's build list):
 
 - **E-signing & identity** — Scrive, BankID, Kivra
 - **Accounting** — Fortnox, Visma
+- **Facility maintenance** — Planima
 - **Payments** — Swish
 - **E-invoicing & EDI** — Peppol, Ahlsell / Rexel / Sonepar
 
