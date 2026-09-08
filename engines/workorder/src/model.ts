@@ -1,5 +1,6 @@
 import { emitModel } from '@substrat-run/contracts';
 import { workorderEntities } from './entities.js';
+import { workorderManifest } from './index.js';
 import { workorderLifecycles } from './lifecycle.js';
 
 /**
@@ -14,5 +15,13 @@ import { workorderLifecycles } from './lifecycle.js';
  * so a state added to the machine, an edge redirected, or a state that stops
  * admitting substates all have to appear in a PR diff. That gate is the whole
  * reason the declaration is worth more than the six guards it replaced.
+ *
+ * It also carries `manifest.version` (#976), which makes this artifact the
+ * field's reader: a bump has to appear in the same diff as the shape change it
+ * announces. Importing the manifest from `index.ts` is safe because nothing in
+ * `src/` imports this file back.
  */
-export const workorderModel = emitModel(workorderEntities, { lifecycles: workorderLifecycles });
+export const workorderModel = emitModel(workorderEntities, {
+  lifecycles: workorderLifecycles,
+  version: workorderManifest.version,
+});

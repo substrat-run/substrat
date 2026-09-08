@@ -1,4 +1,5 @@
 {
+  "version": "0.0.1",
   "entities": {
     "metering-entry": {
       "table": "metering_entries",

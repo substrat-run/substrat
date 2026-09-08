@@ -1,5 +1,6 @@
 import { emitModel } from '@substrat-run/contracts';
 import { protocolEntities } from './entities.js';
+import { protocolManifest } from './index.js';
 import { protocolLifecycles } from './lifecycle.js';
 
 /**
@@ -14,5 +15,13 @@ import { protocolLifecycles } from './lifecycle.js';
  * operations and the operations need the entities: `entities.ts` importing the
  * lifecycle would close that loop into a cycle. A third file that imports both
  * and is imported by neither is the shape that does not.
+ *
+ * It also carries `manifest.version` (#976), which makes this artifact the
+ * field's reader: a bump has to appear in the same diff as the shape change it
+ * announces. Importing the manifest from `index.ts` is safe because nothing in
+ * `src/` imports this file back.
  */
-export const protocolModel = emitModel(protocolEntities, { lifecycles: protocolLifecycles });
+export const protocolModel = emitModel(protocolEntities, {
+  lifecycles: protocolLifecycles,
+  version: protocolManifest.version,
+});

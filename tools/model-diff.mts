@@ -43,6 +43,12 @@ const ENGINES = 'engines';
 const check = process.argv.includes('--check');
 
 interface EmittedModel {
+  /**
+   * An engine's `manifest.version` (#976). This artifact is the field's reader:
+   * a bump appears in the checked-in `model.json`, so `--check` gates it the way
+   * it gates a changed table. Verticals declare none and emit none.
+   */
+  version?: string;
   entities: Record<string, { table: string; fields: unknown }>;
   lifecycles?: Record<string, unknown>;
 }

@@ -118,6 +118,8 @@ export const PERM = {
 
 export const absenceManifest = moduleManifest.parse({
   id: '@substrat-run/engine-absence',
+  // Versions the manifest SHAPE, not the package (#976): bumped only when this
+  // declaration changes, and read by `src/model.ts`, which carries it into `model.json`.
   version: '0.0.1',
   kernelContract: '^0.0.1',
   permissions: [
