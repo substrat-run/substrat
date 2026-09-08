@@ -31,6 +31,7 @@ import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, sna
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
+import { deriveFailureGroups } from './failure-groups.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -3315,6 +3316,25 @@ app.get('/api/deployments/:slug/failures', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   assertOwned(await listDeploymentsFromCp(cp), slug);
   return c.json(await cp.listOpsFailures({ vertical: slug, limit: 50 }));
+});
+
+/**
+ * The same record, grouped by failure shape (#1233, the builder slice): counted
+ * groups over MY vertical's rows, derived worker-side from the tenant-forced
+ * read — the staff issues store is fleet-scoped and cannot be narrowed to a
+ * tenant, but every row carries its fingerprint and a builder's own rows group
+ * the same way. Counts cover the evidence window (90-day retention), and there
+ * is no lifecycle here — verdicts are staff concerns on the fleet store.
+ */
+app.get('/api/deployments/:slug/issues', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  assertOwned(await listDeploymentsFromCp(cp), slug);
+  // Two capped pages of evidence — enough for a story, bounded for a request.
+  return c.json(deriveFailureGroups(await cp.listOpsFailures({ vertical: slug, limit: 400 })));
 });
 
 /**

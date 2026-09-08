@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -314,6 +314,34 @@ export const MOCK_PREVIEWS: VerticalPreview[] = [
     expiresAt: new Date(now + 2 * 86400e3).toISOString(),
     hostname: 'acme-hr--pr-42.global.substrat.run',
     url: 'https://acme-hr--pr-42.global.substrat.run',
+  },
+];
+
+/** Failure groups (#1233): the same shapes counted — the preview restore recurs. */
+export const MOCK_FAILURE_GROUPS: FailureGroupRow[] = [
+  {
+    fingerprint: 'preview.create\u001frestore\u001funavailable',
+    operation: 'preview.create',
+    stage: 'restore',
+    code: 'unavailable',
+    origin: 'platform',
+    count: 4,
+    firstSeen: ago(6 * 86400e3),
+    lastSeen: ago(3 * 3600e3),
+    lastMessage: 'internal error; reference = 242sg7l0st8ldln5uqu8ei58',
+    lastStatus: 502,
+  },
+  {
+    fingerprint: 'deploy.upload\u001fwfp-upload\u001f',
+    operation: 'deploy.upload',
+    stage: 'wfp-upload',
+    code: null,
+    origin: 'provider',
+    count: 1,
+    firstSeen: ago(2 * 86400e3),
+    lastSeen: ago(2 * 86400e3),
+    lastMessage: 'deploy rejected: Uncaught Error at module top level (CF 10021)',
+    lastStatus: 422,
   },
 ];
 
