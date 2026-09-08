@@ -85,6 +85,8 @@ export const INVITES_PERM = {
 
 export const invitesManifest = moduleManifest.parse({
   id: '@substrat-run/engine-invites',
+  // Versions the manifest SHAPE, not the package (#976): bumped only when this
+  // declaration changes, and read by `src/model.ts`, which carries it into `model.json`.
   version: '0.0.1',
   kernelContract: '^0.0.1',
   permissions: [

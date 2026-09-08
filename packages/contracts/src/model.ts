@@ -243,6 +243,14 @@ export interface EmittedEntity {
 }
 
 export interface EmittedModel {
+  /**
+   * The version of the declared shape (#976) — an engine passes its
+   * `manifest.version`, which versions the manifest shape independently of the
+   * package version and is bumped only when that shape changes. Optional and
+   * carried verbatim: a module that declares none emits none, so a vertical's
+   * `model.json` is unchanged by the field's existence.
+   */
+  readonly version?: string;
   readonly entities: Record<string, EmittedEntity>;
   /**
    * The declared state machines (#844), keyed by entity. Absent when a module
@@ -286,6 +294,7 @@ export const emittedEntity = z.object({
 });
 
 export const emittedModel = z.object({
+  version: z.string().min(1).optional(),
   entities: z.record(z.string(), emittedEntity),
   lifecycles: z.record(z.string(), emittedLifecycle).optional(),
 });
@@ -297,8 +306,21 @@ export const emittedModel = z.object({
  */
 export function emitModel<T extends Record<string, EntityDef>>(
   entities: T,
-  options: { readonly lifecycles?: Record<string, LifecycleDef> } = {},
+  options: {
+    readonly lifecycles?: Record<string, LifecycleDef>;
+    /**
+     * Rendered as the artifact's top-level `version` when supplied (#976). An
+     * engine passes its `manifest.version`, so the checked-in `model.json` is
+     * the field's reader and `lint:model --check` gates a bump the way it gates
+     * a changed table. Omitted when absent — never defaulted — so a module that
+     * declares no version emits no claim about one.
+     */
+    readonly version?: string;
+  } = {},
 ): EmittedModel {
+  if (options.version !== undefined && options.version.length === 0) {
+    throw new Error('model: `version` is declared but empty — omit it or state one');
+  }
   const out: Record<string, EmittedEntity> = {};
   for (const name of Object.keys(entities).sort()) {
     const e = entities[name];
@@ -330,7 +352,12 @@ export function emitModel<T extends Record<string, EntityDef>>(
       }
     }
   }
-  return { entities: out, ...(lifecycles && Object.keys(lifecycles).length ? { lifecycles } : {}) };
+  return {
+    // First, so a reader of the checked-in artifact meets it before the entities.
+    ...(options.version !== undefined ? { version: options.version } : {}),
+    entities: out,
+    ...(lifecycles && Object.keys(lifecycles).length ? { lifecycles } : {}),
+  };
 }
 
 /**

@@ -508,6 +508,12 @@ It is the artifact for consumers that **must not execute your code** (a hosted c
 drawing your model) or that want diffability rather than validators (a breaking-change
 classifier).
 
+An engine's `model.json` also opens with a top-level `version`: `emitModel(entities, { version })`
+carries the engine's `manifest.version` verbatim, which versions the manifest **shape** rather
+than the package and is bumped only when that shape changes. The checked-in artifact is the
+field's reader, so a bump appears in the same diff as the change it announces. A vertical
+passes no `version` and its artifact carries none.
+
 It is **not** the input for a code generator. `z.toJSONSchema` keeps declarative constraints
 and drops programmatic ones — a `.refine()` and a `.brand()` vanish without trace — so a
 generator reading the JSON would emit validators weaker than you declared. A generator reads

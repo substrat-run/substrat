@@ -13,7 +13,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { defineEntities, emitModel, entityRelationsOf, manifestEntities, primaryKeyOf } from '../src/model.js';
+import {
+  defineEntities,
+  emitModel,
+  emittedModel,
+  entityRelationsOf,
+  manifestEntities,
+  primaryKeyOf,
+} from '../src/model.js';
 import { defineOperations } from '../src/operations.js';
 
 const entities = defineEntities({
@@ -109,6 +116,22 @@ describe('entity registry', () => {
     // by, so sorting it for a tidier diff would emit a different table.
     expect(m.entities.budget?.primaryKey).toEqual(['customer_id', 'year', 'month']);
     expect(m.entities.ext?.primaryKey).toEqual(['workorder_id']);
+  });
+
+  it('carries a declared version to the top of the artifact, and omits an undeclared one', () => {
+    // An engine passes its `manifest.version` (#976), which makes the checked-in
+    // `model.json` the field's reader. First key, so a reader meets it before
+    // the entities. A vertical declares none and its artifact must not change.
+    const versioned = emitModel(entities, { version: '0.0.2' });
+    expect(Object.keys(versioned)[0]).toBe('version');
+    expect(versioned.version).toBe('0.0.2');
+    expect(emitModel(entities)).not.toHaveProperty('version');
+    expect(JSON.stringify(emitModel(entities, {}))).toBe(JSON.stringify(emitModel(entities)));
+    // Declared-but-empty is a lie about having a version; refuse it rather than emit `""`.
+    expect(() => emitModel(entities, { version: '' })).toThrow(/`version` is declared but empty/);
+    // The re-parse at the trust boundary accepts the field, so a deploy manifest
+    // carrying an engine's model.json is not refused for stating its version.
+    expect(emittedModel.parse(JSON.parse(JSON.stringify(versioned))).version).toBe('0.0.2');
   });
 
   it('leaves the artifact unchanged for the id default', () => {

@@ -1,5 +1,6 @@
 import { emitModel } from '@substrat-run/contracts';
 import { bookingEntities } from './entities.js';
+import { bookingManifest } from './index.js';
 import { bookingLifecycles } from './lifecycle.js';
 
 /**
@@ -9,5 +10,12 @@ import { bookingLifecycles } from './lifecycle.js';
  * `operations.ts` gives it a declared registry to check itself against — it used
  * to have to come from `index.ts`. Nothing imports this file back, so the
  * direction stays acyclic.
+ *
+ * It also carries `manifest.version` (#976), which makes this artifact the
+ * field's reader: a bump has to appear in the same diff as the shape change it
+ * announces.
  */
-export const bookingModel = emitModel(bookingEntities, { lifecycles: bookingLifecycles });
+export const bookingModel = emitModel(bookingEntities, {
+  lifecycles: bookingLifecycles,
+  version: bookingManifest.version,
+});
