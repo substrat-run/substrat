@@ -17,7 +17,7 @@ import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
-import { ALLOW_SIGNUP, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
+import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
   bankIdApiUrl,
@@ -162,6 +162,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       socialProviders: socialProvidersFrom(providers),
       genericProviders: genericProvidersFrom(providers),
       trustedProviders: trustedProvidersFrom(providers),
+      // Read on the same per-request basis, so switching the mode in the dashboard decides the
+      // very next federated sign-in rather than the next deploy.
+      autoLinkAccounts: accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link',
       bankid: this.bankid(readBankIdConfig(this.ctx.storage.sql)),
     });
   }

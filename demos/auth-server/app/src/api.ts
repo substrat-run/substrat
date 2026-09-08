@@ -617,15 +617,25 @@ export async function deleteOAuthClient(clientId: string): Promise<void> {
 
 /* ---- the issuer's own settings (`/api/admin`) ---- */
 
+/**
+ * What an upstream sign-in does when its email address already belongs to an account here.
+ * `link` joins them (on Better Auth's terms: the address vouched for upstream or the provider
+ * trusted, AND the local address verified); `block` never joins implicitly. There is no
+ * "separate accounts" value — Better Auth resolves an email to exactly one user.
+ */
+export type AccountLinkingMode = 'link' | 'block';
+
 export interface IssuerSettings {
   allowSignup: boolean;
+  accountLinking: AccountLinkingMode;
 }
 
 export async function issuerSettings(): Promise<IssuerSettings> {
   return admin('/settings');
 }
 
-export async function setIssuerSettings(patch: IssuerSettings): Promise<IssuerSettings> {
+/** A partial patch: only the settings named are written, so one control cannot revert another. */
+export async function setIssuerSettings(patch: Partial<IssuerSettings>): Promise<IssuerSettings> {
   return admin('/settings', { method: 'PATCH', body: JSON.stringify(patch) });
 }
 

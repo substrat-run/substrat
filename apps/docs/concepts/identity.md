@@ -191,7 +191,12 @@ for my users to log in" has a stock answer; it stops being special the moment yo
   because an issuer URL is the one address OIDC lets everything else be derived from.
   Discovery is resolved once, when the provider is saved rather than on every sign-in, so
   an issuer URL that serves no discovery document is refused while the operator is still in
-  the form.
+  the form. One issuer-wide setting sits above the per-provider ones: whether an upstream
+  sign-in may **join** a local account that already holds the same email address, or must
+  refuse and let the person connect the provider deliberately from inside a session. Keeping
+  two separate accounts on one address is not offered — an email resolves to exactly one
+  user in password sign-in, reset and recovery, so a second row at that address would make
+  each of those pick one arbitrarily.
 - **Swedish BankID.** Not an OAuth redirect but the real relying-party flow: an animated
   QR code or same-device start, approval in the BankID app, and the verified personal
   number as the account key. The mTLS client certificate is pasted in the dashboard;

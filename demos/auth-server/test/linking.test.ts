@@ -63,6 +63,8 @@ let db: Database.Database;
 let sql: SqlExec;
 let auth: Auth;
 let adminId: string;
+/** The operator's `ACCOUNT_LINKING` decision, as both runtimes resolve it before `buildAuth`. */
+let autoLinkAccounts: boolean;
 
 function sqlExecOf(database: Database.Database): SqlExec {
   return {
@@ -117,6 +119,7 @@ function rebuild(): Auth {
     socialProviders: socialProvidersFrom(rows),
     genericProviders: genericProvidersFrom(rows),
     trustedProviders: trustedProvidersFrom(rows),
+    autoLinkAccounts,
   });
 }
 
@@ -192,6 +195,9 @@ beforeEach(async () => {
   const created = await auth.api.signUpEmail({ body: ADMIN });
   adminId = created.user.id;
   db.prepare("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?").run(adminId);
+  // `link` — the default, and what this issuer did before the key existed. The block below
+  // is where the other mode is exercised.
+  autoLinkAccounts = true;
   upstreamProfile = {
     sub: 'acme-subject-1',
     email: ADMIN.email,
@@ -249,6 +255,57 @@ describe('signing in with a provider that is not a method on the account yet', (
     expect(res.status).toBe(302);
     expect(userCount()).toBe(1);
     expect(accountsOf(adminId).map((a) => a.provider_id)).toEqual(['acme', 'credential']);
+  });
+});
+
+describe('the operator\u2019s linking mode (`ACCOUNT_LINKING`)', () => {
+  it('refuses under `block` the exact join `link` would have made', async () => {
+    // Everything the permissive mode needs is true here: the provider is trusted, the upstream
+    // vouches for the address, and the local account is verified. The third test above proves
+    // this same state links. The ONLY difference is the operator's decision.
+    autoLinkAccounts = false;
+    saveAcme({ trust_email: 1 });
+
+    const res = await roundTrip('/api/auth/sign-in/social', {
+      provider: 'acme',
+      callbackURL: '/',
+      errorCallbackURL: '/?social_error=1',
+    });
+
+    expect(new URL(res.headers.get('location')!, ORIGIN).searchParams.get('error')).toBe('account_not_linked');
+    expect(userCount()).toBe(1);
+    expect(accountsOf(adminId).map((a) => a.provider_id)).toEqual(['credential']);
+  });
+
+  it('does NOT take away the deliberate connect — that is the whole point of blocking', async () => {
+    // `block` removes the join nobody asked for, not the one the person asks for from inside a
+    // session that already proves the account. Taking both away would leave an issuer where a
+    // second sign-in method simply cannot be added, and the refusal message the login screen
+    // shows — "sign in the way you did before and connect it" — would be a lie.
+    autoLinkAccounts = false;
+    saveAcme();
+    const cookie = await signInAs(ADMIN);
+
+    const res = await roundTrip('/api/auth/link-social', { provider: 'acme', callbackURL: '/' }, cookie);
+
+    expect(res.status).toBe(302);
+    expect(userCount()).toBe(1);
+    expect(accountsOf(adminId).map((a) => a.provider_id)).toEqual(['acme', 'credential']);
+  });
+
+  it('leaves an upstream that is nobody\u2019s account alone — blocking is about the join, not sign-in', async () => {
+    // A new person arriving through the upstream has no local account to be joined TO, so the
+    // mode has nothing to say about them. Reading `block` as "no federated sign-in" would turn
+    // a linking policy into an outage for everyone the directory has not met yet.
+    autoLinkAccounts = false;
+    saveAcme();
+    upstreamProfile = { ...upstreamProfile, sub: 'acme-subject-2', email: 'newcomer@auth.test' };
+
+    const res = await roundTrip('/api/auth/sign-in/social', { provider: 'acme', callbackURL: '/' });
+
+    expect(res.status).toBe(302);
+    expect(new URL(res.headers.get('location')!, ORIGIN).searchParams.get('error')).toBeNull();
+    expect(userCount()).toBe(2);
   });
 });
 

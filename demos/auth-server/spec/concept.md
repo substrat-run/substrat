@@ -155,6 +155,28 @@ The two decisions are per provider, and neither has a safe default that suits ev
   LOCAL account to be email-verified before it will link, which is its own gate against someone
   pre-registering at a victim's address, and is left alone.
 
+Above those two sits one issuer-wide decision, `ACCOUNT_LINKING`, settable from the dashboard
+like `ALLOW_SIGNUP` and read on the same per-request rebuild:
+
+- **`link`** (the default, and what this issuer did before the key existed) — an upstream
+  sign-in may join a local account holding the same address, on the two conditions above.
+- **`block`** — it never joins implicitly. The person signs in the way they already can and
+  connects the provider from inside that session, which is what the refusal message has always
+  told them to do. `block` deliberately does NOT remove that deliberate connect: a session is
+  proof of the account in a way a matching address is not, and an issuer where a second sign-in
+  method cannot be added at all would make the refusal message a lie. Nor does it affect an
+  upstream identity that matches no local account — a newcomer is not a join, and reading
+  `block` as "no federated sign-in" would turn a linking policy into an outage.
+
+There is no third value, and its absence is the interesting part, because every other IdP
+offers one: **keep them as two separate accounts**. Better Auth declares `user.email` UNIQUE in
+its own table definitions, and — the half that survives dropping the index — resolves an email
+to a user with a bare `findOne` in password sign-in, password reset, sign-up, admin
+create-user, email verification, magic-link and OTP. Two rows at one address make each of those
+pick arbitrarily, which for sign-in and reset means the wrong person's account. So the choice
+here is genuinely between joining and refusing, and pretending otherwise would have moved a
+merge problem into the vertical identity map, which has no merge primitive at all.
+
 A pending authorize request survives the round-trip: `oauthProvider`'s before-hook special-
 cases `/sign-in/social` and puts the request into the OAuth state, so the callback that
 establishes the session also resumes the authorize and returns the person to the relying party
