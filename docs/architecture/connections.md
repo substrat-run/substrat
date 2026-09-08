@@ -413,6 +413,70 @@ one is still a deliberate revoke, and `protocol:read` — no longer needed by an
 the per-dispatch capability — stays on connections that were granted it. Harmless, and
 visible in the read-back, which is the trade this makes on purpose.
 
+#### 3.5.3 The connect-url relay — a consent round started from the vertical
+
+§3.5.2 covers the provider whose credential the tenant admin already **holds**. It cannot
+cover the provider that mints one only at the end of a browser consent round, and the gap
+is not academic: the client credentials for that round are the platform's, and the
+`redirect_uri` is a single string registered once with the provider. A vertical cannot run
+it. §3.5.1's connect link cannot cover it either — minting one takes a dashboard session.
+
+The case that forces it is a **bookkeeping bureau**. It connects a new client company most
+weeks; Fortnox consent is per company with no bulk grant, so that is one round each. The
+people doing the work sit in the vertical, have no dashboard account, and have no reason to
+be given one. Today the only path is a Substrat administrator minting a link by hand and
+passing it along — which works, and does not survive two hundred clients.
+
+The division, and it is the same one §3.5 has drawn twice already — **authority in-scope,
+effect host-side**:
+
+- **The vertical's operation is the authorizing act.** `assertAllowed(await
+  ctx.check(<manage-integrations>))`, then it returns which provider and (optionally) which
+  of its own rows this is for. No URL is minted in module code, which has no `fetch` and
+  should not acquire one.
+- **The harness POSTs `/internal/connections/connect-url`** — same platform-secret gate,
+  same trust derivation, same one uniform posture as the email and credential relays. The
+  control plane re-derives the vertical from its own scope record, checks the return URL
+  against the hostname map, signs a state, and answers with a URL.
+- **The vertical redirects its user there and is done.** Consent, exchange, sealing and the
+  upsert all happen on the platform origin that owns the registered `redirect_uri`. The
+  connection is stamped `createdBy` the principal from the state, so the trail leads back to
+  that `ctx.check` rather than to a platform actor.
+
+**What crosses the seam is a link, not an authority.** The vertical never learns the
+provider client id, the consent code, or the token, and holds nothing new when the round is
+over. That is the property that makes this safe to expose to third-party vertical builders
+(D-33) where handing over the platform's provider credentials never would be.
+
+**No link row, and that is a difference in kind rather than a shortcut.** §3.5.1's connect
+link is minted, mailed, and opened days later by someone else, so it needs a row: single-use,
+revocable, dead when the minting admin loses access. A vertical-started round is clicked
+in-session by the person who just pressed the button. Its expiry is minutes, and a replay
+re-consents the **same company**, which the account leg of the connection key (§3.1.1.1)
+turns into a rotation in place rather than a duplicate — so the harm the row guarded against
+does not arise. The consent code is single-use at the provider regardless. Both rounds meet
+at one callback, which asks the row about liveness only when there is a row.
+
+**The two states are separate MAC families.** The link's key is HKDF from the dashboard's
+`SESSION_SECRET`; the platform round's is HKDF from `PLATFORM_SECRET` under its own purpose
+label (`signConnectState`, in the kernel beside `platform-call.ts` — two workers hold the
+halves, so it must not be written twice). A token verifies under at most one. If either
+could sign for the other, a vertical holding the shared script secret could mint a claim
+naming the dashboard's own scope.
+
+**The return URL is checked against the hostname map**, and must be. The round lands on the
+platform's consent origin first — the origin the dashboard's session cookie lives on — so an
+unvalidated `returnUrl` is an open redirect there. K-26's map is the right authority: "a
+hostname bound to this scope" and "a hostname this scope answers on" are the same sentence.
+Refusals return the same way, as a stable `?error=` slug: a bureau's staff must not be
+stranded on a platform page whose only advice is to contact an administrator they do not have.
+
+**What is deliberately still absent.** The vertical cannot list its tenant's connections —
+it learns a landing from the return, and thereafter from the connector's own delivered
+payload (Fortnox's carries the `connectionId` and the organisation number). A read-back for
+"197 of 200 connected" is a separate question, and the §3.5 posture for it is a metadata-only
+read, never one that touches ciphertext.
+
 ### 3.6 Token refresh
 
 Scrive is OAuth2: 1-hour access token, 30-day refresh. So refresh is not optional and it is not

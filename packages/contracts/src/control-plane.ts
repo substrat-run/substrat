@@ -769,6 +769,70 @@ export const connectionRelayResult = z.object({
 export type ConnectionRelayResult = z.infer<typeof connectionRelayResult>;
 
 /**
+ * The body a hosted vertical POSTs to `/internal/connections/connect-url` (connections.md
+ * §3.5.3) — the OAuth half of the relay above.
+ *
+ * §3.5.2 covers the provider whose credential the tenant admin already HOLDS and can
+ * paste. It cannot cover the provider that mints one only at the end of a browser consent
+ * round, because the client credentials for that round are the platform's and the
+ * `redirect_uri` is registered once, with the platform. So the vertical cannot run the
+ * round — but it is the only place that knows WHICH of a bureau's client companies is
+ * being connected, and its users have no dashboard account to run it from either.
+ *
+ * The division that follows: the vertical's operation is the authorizing act
+ * (`ctx.check`, §3.5), this relay turns that act into a URL, and the platform's own
+ * callback does everything that touches a credential. What crosses the seam is a link,
+ * not an authority — the vertical never learns the client id, the consent code, or the
+ * token, and holds nothing new when the round is over.
+ *
+ * Trust posture is the relay's, unchanged: PLATFORM_SECRET proves only that a platform
+ * script is calling, and the VERTICAL is re-derived from this directory's record for the
+ * named `(tenantId, scopeId)` — so a caller cannot mint a round that lands a credential
+ * on a foreign vertical, and the callback re-derives it a second time from the scope in
+ * the signed state.
+ */
+export const connectUrlRelayRequest = z.object({
+  tenantId,
+  /** The vertical's own scope — the connection's home, and what pins the vertical. */
+  scopeId,
+  provider: connectionProvider,
+  /** The tenant principal whose permission-checked act authorized this round (§3.5.1). */
+  createdBy: z.string().min(1),
+  /**
+   * Where the browser returns when the round settles. Must be `https:` on a hostname
+   * THIS scope is bound to — the platform checks that against its own hostname map, so a
+   * vertical cannot turn the platform's consent origin into an open redirect.
+   */
+  returnUrl: z.string().url().optional(),
+  /**
+   * The vertical's own reference for what is being connected — its client row's id.
+   * Opaque to the platform: never parsed, never stored, echoed back on the return so a
+   * bureau with many outstanding rounds can attribute the one that just landed.
+   */
+  subjectRef: z.string().min(1).max(256).optional(),
+  /**
+   * How long the round stays openable. Clamped to 15 minutes, because the person who
+   * pressed Connect is the person about to click: a wider window is a replayable consent
+   * URL sitting in a browser history for no benefit. (The dashboard's connect LINK is
+   * days-long for the opposite case — it is mailed to someone else — and pays for that
+   * with a revocable row.)
+   */
+  ttlSeconds: z.number().int().positive().max(900).optional(),
+});
+export type ConnectUrlRelayRequest = z.infer<typeof connectUrlRelayRequest>;
+
+/** What the connect-url relay answers. No credential exists yet; nothing here is secret. */
+export const connectUrlRelayResult = z.object({
+  /** Send the browser here. Carries the signed state and nothing else. */
+  url: z.string().url(),
+  /** ISO 8601 — after this the URL is inert and the vertical must mint another. */
+  expiresAt: instant,
+  /** The vertical the platform re-derived, so a caller can assert it got what it meant. */
+  vertical: z.string().min(1),
+});
+export type ConnectUrlRelayResult = z.infer<typeof connectUrlRelayResult>;
+
+/**
  * A whole tenant, exported (#36) — GDPR Art. 20 portability, and the escrow handover.
  *
  * Deliberately a DIFFERENT shape from `directoryDump` (#40), because they answer

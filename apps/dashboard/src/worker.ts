@@ -42,6 +42,7 @@ import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, pre
 import { sealForGithub } from './github-seal.js';
 import { b64urlToBytes } from './b64.js';
 import { signClaim, verifyClaim, INVITE_TOKEN_PURPOSE, GITHUB_STATE_PURPOSE, CONNECT_LINK_PURPOSE } from './signed-token.js';
+import { resolveConnectRound, connectionScopeOf, connectReturn, type ConnectLinkClaim } from './connect-round.js';
 import { completeFortnoxConsent, fortnoxConsentUrl, FortnoxApiError } from '@substrat-run/connector-fortnox';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 
@@ -175,6 +176,22 @@ interface Env extends OidcEnv {
    */
   SECRET_BOX_KEY?: string;
   SECRET_BOX_KEY_ID?: string;
+  /**
+   * The platform's shared script secret — the SAME value the control plane holds and
+   * injects into every pushed vertical. Read for exactly one thing here: verifying the
+   * state of a consent round a VERTICAL started through
+   * `/internal/connections/connect-url` (connections.md §3.5.3), whose signing key is
+   * HKDF-derived from it.
+   *
+   * This worker never PRESENTS it — it holds a service credential for the control plane
+   * already (`CP_SERVICE_TOKEN`) and reaches the plane with that. It only needs to
+   * recognise what the plane signed, because the platform's provider `redirect_uri` is
+   * registered here and moving it is a portal round-trip per provider.
+   *
+   * Absent ⇒ platform-minted rounds do not verify and the dashboard's own connect links
+   * keep working exactly as before. Fails closed, never open.
+   */
+  PLATFORM_SECRET?: string;
 }
 
 const DASHBOARD_CP_ACTOR = platformActorId.parse('01JZ000000000000000000DASH');
@@ -2486,20 +2503,6 @@ function fortnoxConfig(env: Env): FortnoxConnectConfig | null {
   };
 }
 
-/** The signed half of a connect link — names the row; the row decides liveness. */
-interface ConnectLinkClaim {
-  linkId: string;
-  tenantId: string;
-  /** The minting tenant's own dashboard scope — where the link row lives. */
-  scopeId: string;
-  /** The app the connection (and its grants) will land on. */
-  appScopeId: string;
-  /** The minting admin — the authority every later step runs as. */
-  principal: string;
-  provider: string;
-  exp: number;
-}
-
 const connectLinkView = (r: ConnectLinkRow) => ({
   id: r.id,
   provider: r.provider,
@@ -2644,12 +2647,10 @@ app.delete('/api/apps/:scopeId/integrations/:provider/connect-links/:linkId', as
 app.get('/api/integrations/:provider/connect', async (c) => {
   const spec = PROVIDERS[c.req.param('provider')];
   if (!spec || spec.connectFlow !== 'redirect') throw new HTTPException(404, { message: 'provider has no connect flow' });
-  const claim = await verifyClaim<ConnectLinkClaim>(
-    c.env.SESSION_SECRET, CONNECT_LINK_PURPOSE, c.req.query('token') ?? '', Date.now(),
-  );
-  if (!claim || claim.provider !== spec.provider) {
+  const round = await resolveConnectRound(c.env, c.req.query('token') ?? '', Date.now());
+  if (!round || round.claim.provider !== spec.provider) {
     return connectPage('This connect link is not valid', [
-      'The link is malformed or has expired. Ask your Substrat administrator for a new one.',
+      'The link is malformed or has expired. Ask whoever sent it to you for a new one.',
     ], 403);
   }
   const cfg = fortnoxConfig(c.env);
@@ -2658,26 +2659,31 @@ app.get('/api/integrations/:provider/connect', async (c) => {
       'This deployment holds no Fortnox integration credentials. Nothing was connected.',
     ], 503);
   }
-  // The row must still stand — a revoked or spent link refuses HERE, before Fortnox
-  // ever shows a consent screen for it.
-  const host = hostFor(c.env);
-  let live = false;
-  try {
-    const dash = await host.getScope(
-      principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
-    );
-    const rows = (await dash.invoke('dashboard/list-connect-links', {
-      appScopeId: claim.appScopeId,
-      provider: spec.provider,
-    })) as ConnectLinkRow[];
-    live = rows.some((r) => r.id === claim.linkId);
-  } catch (e) {
-    // The minting admin lost access (or the scope is gone) — their links die with it.
-    // Logged because a platform fault lands here too, wearing the same refusal.
-    console.error('connect-link liveness check failed', e);
-    live = false;
+  // A LINK round's row must still stand — a revoked or spent link refuses HERE, before
+  // Fortnox ever shows a consent screen for it. A platform round has no row to ask: its
+  // signature and its few minutes of life are the whole of its liveness, so there is
+  // nothing to check and nothing to spend by looking.
+  if (round.kind === 'link') {
+    const claim = round.claim;
+    const host = hostFor(c.env);
+    let live = false;
+    try {
+      const dash = await host.getScope(
+        principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
+      );
+      const rows = (await dash.invoke('dashboard/list-connect-links', {
+        appScopeId: claim.appScopeId,
+        provider: spec.provider,
+      })) as ConnectLinkRow[];
+      live = rows.some((r) => r.id === claim.linkId);
+    } catch (e) {
+      // The minting admin lost access (or the scope is gone) — their links die with it.
+      // Logged because a platform fault lands here too, wearing the same refusal.
+      console.error('connect-link liveness check failed', e);
+      live = false;
+    }
+    if (!live) return connectLinkRefusal('unknown');
   }
-  if (!live) return connectLinkRefusal('unknown');
   const origin = new URL(c.req.url).origin;
   return c.redirect(
     fortnoxConsentUrl({
@@ -2704,26 +2710,37 @@ app.get('/api/integrations/:provider/connect', async (c) => {
  * the wrong company.
  */
 app.get('/api/integrations/fortnox/callback', async (c) => {
-  const claim = await verifyClaim<ConnectLinkClaim>(
-    c.env.SESSION_SECRET, CONNECT_LINK_PURPOSE, c.req.query('state') ?? '', Date.now(),
-  );
-  if (!claim || claim.provider !== 'fortnox') {
-    return connectPage('Not a connect round this dashboard started', [
+  const round = await resolveConnectRound(c.env, c.req.query('state') ?? '', Date.now());
+  if (!round || round.claim.provider !== 'fortnox') {
+    return connectPage('Not a connect round this platform started', [
       'The callback carried no valid state. Nothing was connected.',
     ], 403);
   }
+  const claim = round.claim;
+  // A round that started in a vertical ends there too, refusals included — otherwise the
+  // one screen a bureau's staff see when something goes wrong is a dashboard page telling
+  // them to contact an administrator they do not have. The vertical renders its own copy
+  // from `?error=`; the reason is a stable slug, never the provider's prose, which is
+  // logged and shown on the platform's own page instead.
+  const bounce = (reason: string): Response | null => {
+    const back = connectReturn(round, { error: reason });
+    return back ? c.redirect(back) : null;
+  };
+
   const oauthError = c.req.query('error');
   if (oauthError) {
-    return connectPage('Fortnox declined the connection', [
+    return bounce('declined') ?? connectPage('Fortnox declined the connection', [
       `Fortnox answered: <strong>${escapeHtml(oauthError)}</strong> ${escapeHtml(c.req.query('error_description') ?? '')}`,
       'Nothing was connected. The link is still usable — you can try again.',
     ], 400);
   }
   const code = c.req.query('code');
-  if (!code) return connectPage('Missing consent code', ['The callback carried no code. Nothing was connected.'], 400);
+  if (!code) {
+    return bounce('no_code') ?? connectPage('Missing consent code', ['The callback carried no code. Nothing was connected.'], 400);
+  }
   const cfg = fortnoxConfig(c.env);
   if (!cfg) {
-    return connectPage('Fortnox connect is not configured', [
+    return bounce('not_configured') ?? connectPage('Fortnox connect is not configured', [
       'This deployment holds no Fortnox integration credentials. Nothing was connected.',
     ], 503);
   }
@@ -2757,7 +2774,7 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
     const detail = e instanceof FortnoxApiError
       ? e.message
       : `the exchange with Fortnox failed (${e instanceof Error ? e.name : typeof e})`;
-    return connectPage('The connection could not be completed', [
+    return bounce('exchange_failed') ?? connectPage('The connection could not be completed', [
       escapeHtml(detail),
       'Nothing was connected. A reloaded tab spends its code — open the connect link again to retry.',
     ], 400);
@@ -2765,30 +2782,43 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
 
   // Consume BEFORE storing: of two racing callbacks, exactly one gets past this line.
   // (Consume-first also keeps a revoked link from ever reaching the store below.)
-  let consume: ConnectLinkConsume;
+  //
+  // A platform round has no row, so there is nothing to consume and nothing to race for:
+  // two callbacks would carry the same consent code, and the second one is already dead at
+  // Fortnox. What a replay could do instead is re-consent the SAME company — which the
+  // store's account leg turns into a rotation of that one connection rather than a
+  // duplicate (#1267), so the harm the row was guarding against does not exist here.
   let dash;
-  try {
-    dash = await hostFor(c.env).getScope(
-      principalId.parse(claim.principal), tenantId.parse(claim.tenantId), scopeId.parse(claim.scopeId),
-    );
-    consume = (await dash.invoke('dashboard/consume-connect-link', {
-      linkId: claim.linkId,
-      provider: 'fortnox',
-      accountRef: completion.secret.tenantId,
-      accountLabel: completion.company.CompanyName || undefined,
-    })) as ConnectLinkConsume;
-  } catch (e) {
-    console.error('fortnox connect-link consume failed', e);
-    return connectLinkRefusal('unknown');
+  if (round.kind === 'link') {
+    const linkClaim = round.claim;
+    let consume: ConnectLinkConsume;
+    try {
+      dash = await hostFor(c.env).getScope(
+        principalId.parse(linkClaim.principal), tenantId.parse(linkClaim.tenantId), scopeId.parse(linkClaim.scopeId),
+      );
+      consume = (await dash.invoke('dashboard/consume-connect-link', {
+        linkId: linkClaim.linkId,
+        provider: 'fortnox',
+        accountRef: completion.secret.tenantId,
+        accountLabel: completion.company.CompanyName || undefined,
+      })) as ConnectLinkConsume;
+    } catch (e) {
+      console.error('fortnox connect-link consume failed', e);
+      return connectLinkRefusal('unknown');
+    }
+    if (!consume.ok) return connectLinkRefusal(consume.reason);
   }
-  if (!consume.ok) return connectLinkRefusal(consume.reason);
 
   const label = completion.company.CompanyName
     ? `Fortnox — ${completion.company.CompanyName}`
     : 'Fortnox';
   try {
     await controlPlaneFor(c.env, tenantId.parse(claim.tenantId)).upsertConnection({
-      scopeId: scopeId.parse(claim.appScopeId),
+      // A link round names the app it was minted for; a platform round names the scope
+      // whose own operation authorized it. Either way the control plane re-derives the
+      // VERTICAL from this scope rather than trusting the state — so a forged or replayed
+      // claim still cannot land a credential anywhere but that scope's own vertical.
+      scopeId: scopeId.parse(connectionScopeOf(round)),
       provider: 'fortnox',
       label,
       // The DatabaseNumber keys the connection (the plane's fourth upsert leg): a
@@ -2803,16 +2833,21 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
     // Un-spend the link (best effort): the consent's code is gone either way, but the
     // LINK still stands, so opening it again starts a fresh consent round with no new
     // link needed. Only this callback holds the 'used' row, so the single-use guard
-    // above is not weakened.
+    // above is not weakened. A platform round spent nothing, so there is nothing to
+    // restore — its retry is the vertical minting another URL, which costs one click.
     let restored = false;
-    try {
-      restored = ((await dash.invoke('dashboard/restore-connect-link', { linkId: claim.linkId })) as { restored: boolean }).restored;
-    } catch (restoreErr) {
-      // The refusal copy below falls back to asking for a new link.
-      console.error('fortnox connect-link restore failed', restoreErr);
+    if (round.kind === 'link' && dash) {
+      try {
+        restored = ((await dash.invoke('dashboard/restore-connect-link', { linkId: round.claim.linkId })) as { restored: boolean }).restored;
+      } catch (restoreErr) {
+        // The refusal copy below falls back to asking for a new link.
+        console.error('fortnox connect-link restore failed', restoreErr);
+      }
     }
     console.error('fortnox connection store failed', e);
     const detail = e instanceof ControlPlaneError ? e.message : 'storing the credential failed';
+    const back = connectReturn(round, { error: 'store_failed' });
+    if (back) return c.redirect(back);
     return connectPage('The credential could not be stored', [
       escapeHtml(detail),
       'The Fortnox consent went through, but no connection was saved.' +
@@ -2821,6 +2856,19 @@ app.get('/api/integrations/fortnox/callback', async (c) => {
           : ' Ask your Substrat administrator for a new link and try again.'),
     ], 503);
   }
+
+  // A platform round came FROM a vertical's screen and belongs back on it: the person
+  // never chose to be on app.substrat.net, and leaving them on a page whose only advice
+  // is "tell your Substrat administrator" strands them outside the product they were
+  // using. The return carries what the vertical cannot otherwise know yet — which of its
+  // client rows this was for, and which company actually consented, which is the check
+  // that catches a consent granted while signed into the wrong Fortnox company.
+  const back = connectReturn(round, {
+    connected: '1',
+    account: completion.secret.tenantId,
+    ...(completion.company.CompanyName ? { company: completion.company.CompanyName } : {}),
+  });
+  if (back) return c.redirect(back);
 
   // connectPage escapes the title itself — escaping here again would render &amp;amp;.
   return connectPage(`${completion.company.CompanyName || 'Your company'} is connected`, [

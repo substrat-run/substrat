@@ -394,6 +394,30 @@ describe('connection relay — /internal/connections/upsert', () => {
 });
 
 /**
+ * The connect-url relay's route (connections.md §3.5.3) — the same gate as the upsert
+ * above, for the same reason: minting a consent URL is what lets a caller start a round
+ * whose credential lands on a tenant's vertical, so an unconfigured deployment must
+ * refuse rather than mint for an anonymous caller. The minting logic — vertical
+ * re-derivation, the return-URL check, the deployment 503s — is unit-tested against a
+ * real adapter in control-plane-api's connect-url suite.
+ */
+describe('connect-url relay — /internal/connections/connect-url', () => {
+  it('refuses when the platform secret is not configured (fails closed)', async () => {
+    const res = await SELF.fetch('https://cp.test/internal/connections/connect-url', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-substrat-platform': 'anything' },
+      body: JSON.stringify({
+        tenantId: ulid(),
+        scopeId: ulid(),
+        provider: 'fortnox',
+        createdBy: ulid(),
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
+/**
  * The members surface (console → Members): the staff roster over /api/members*.
  * What's under test: the fail-closed gate, grant/revoke round-trips, attribution
  * (`added_by` = the acting staff actor), and the two K-21 invariants — revocation

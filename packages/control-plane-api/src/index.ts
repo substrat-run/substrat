@@ -12,6 +12,8 @@ export {
   firstBuilderAuth,
 } from './auth.js';
 export { relayConnectionUpsert, ConnectionRelayError } from './connection-relay.js';
+export { relayConnectUrl, ConnectUrlRelayError } from './connect-url.js';
+export type { ConnectFlowSpec, ConnectUrlRelayOptions } from './connect-url.js';
 export {
   reconcileConnectionGrants,
   type ConnectionGrantReconcileDeps,
