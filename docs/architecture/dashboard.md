@@ -107,11 +107,13 @@ What remains of the old dependency list is deliberate, and is of three kinds (pa
 | **Harness mounts** — `calloutModule`, `meridianModule`, four engine modules | `test/scenario.test.ts` | A single-process scenario has nowhere else to put the app's vertical; `provisionEmbedded` stands in for the separate deployment. `demo-meridian` and `engine-absence` are **devDependencies**, which never reach the worker bundle. |
 | **`engine-invites`** | `src/module.ts`, `src/provision.ts` | Not residue — the Dashboard *composes* it as a vertical composes an engine (layer 3), which is the architecture working. |
 
-`test/no-embedded-verticals.test.ts` is what holds this rather than the prose: it reads the worker
-sources and refuses a `…/module` import, refuses a demo subpath other than `/manifest`, refuses an
-engine import binding anything but a SCREAMING_SNAKE constant, and asserts the test-only
-dependencies stay in `devDependencies`. The regression it guards is a single added import line,
-which no behavioural test can see.
+`test/no-embedded-verticals.test.ts` is what holds this rather than the prose: it reads **every**
+file in `src/` — by listing the directory, not by a hand-kept list, because the regression is one
+added import line and it does not care which file receives it — and refuses a `…/module` import,
+refuses a demo subpath other than `/manifest`, refuses an engine import binding anything but a
+SCREAMING_SNAKE constant, and asserts the test-only dependencies stay in `devDependencies`. No
+behavioural test can see an import that merely widens what is bundled, which is why these are
+source assertions.
 
 **Still open, deliberately:** the deployment's own `ControlPlaneDO` (`wrangler.jsonc`), whose
 identity links are best-effort mirrored into the shared control-plane directory on every

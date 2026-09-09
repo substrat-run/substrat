@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect } from 'vitest';
 import { MODULES } from '../src/index.js';
@@ -48,6 +48,16 @@ describe('the privileged worker bundles no vertical module code', () => {
   // `.href` on the way in deliberately: the worker types put a DOM `URL` in scope, which
   // is not node's, so the object overload of `fileURLToPath` does not accept it here.
   const read = (rel: string) => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url).href), 'utf8');
+  /**
+   * EVERY worker source, listed by reading the directory rather than by hand. A fixed list
+   * is the failure mode this whole file exists to prevent: it was five of nineteen files,
+   * so an engine import that landed in `deployments.ts` or `integrations.ts` — neither of
+   * them an implausible home for one — met no rule at all. The regression is one added
+   * import line, and it does not care which file someone adds it to.
+   */
+  const WORKER_SOURCES = readdirSync(fileURLToPath(new URL('../src', import.meta.url).href))
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => `src/${f}`);
   /** Every module specifier in a source file, in order. */
   const importsOf = (src: string) => [...src.matchAll(IMPORT_SPECIFIER)].map((m) => m[1]!);
   /**
@@ -75,8 +85,20 @@ describe('the privileged worker bundles no vertical module code', () => {
     expect(MODULES.map((m) => m.manifest.id)).toEqual(['@substrat-run/dashboard', '@substrat-run/engine-invites']);
   });
 
+  it('reads every worker source, so the two guards below cannot pass vacuously', () => {
+    // Reading a directory buys coverage at the price of a new failure mode the hardcoded
+    // list did not have: if the glob ever comes back empty — a moved `src/`, a changed
+    // build layout — both guards below iterate nothing and report GREEN. So assert the
+    // list is real. The five names are the ones the list used to carry by hand.
+    expect(WORKER_SOURCES).toEqual(expect.arrayContaining(['src/worker.ts', 'src/provision.ts', 'src/module.ts', 'src/catalog.ts', 'src/authority.ts']));
+    expect(WORKER_SOURCES.length).toBeGreaterThan(10);
+    // Deliberately NOT pinned to the files that import an engine today. The rule below
+    // permits a permission-key constant in any worker source, so fixing the set here would
+    // contradict it — and `readdirSync` order is not guaranteed anyway.
+  });
+
   it('no worker source imports a vertical module — a demo is reachable only as data', () => {
-    for (const file of ['src/worker.ts', 'src/provision.ts', 'src/module.ts', 'src/catalog.ts', 'src/authority.ts']) {
+    for (const file of WORKER_SOURCES) {
       for (const spec of importsOf(read(file))) {
         // `…/module` is a vertical's registered code — operations, consumers, migrations.
         // That is the import this issue was about, and it belongs in the vertical's own
@@ -104,7 +126,7 @@ describe('the privileged worker bundles no vertical module code', () => {
     // `createWorkOrder` and `completeWorkOrder` are not — so the NAME SHAPE is what
     // separates "reads a key" from "runs, or drives, an engine", and asserting on it is
     // what keeps the comment in `src/catalog.ts` honest.
-    for (const file of ['src/worker.ts', 'src/provision.ts', 'src/module.ts', 'src/catalog.ts', 'src/authority.ts']) {
+    for (const file of WORKER_SOURCES) {
       const src = read(file);
       const named = namedImportsOf(src);
       const specs = importsOf(src).filter((s) => s.startsWith('@substrat-run/engine-') && s !== COMPOSED_ENGINE);
@@ -117,7 +139,11 @@ describe('the privileged worker bundles no vertical module code', () => {
         const occurrences = specs.filter((s) => s === spec).length;
         expect(clauses.length, `${file} → ${spec}: every import of it must be \`import { NAMED } from\``).toBe(occurrences);
         for (const name of clauses.flatMap((c) => c.names)) {
-          expect(`${file} → ${spec} → ${name}`).toMatch(/→ [A-Z][A-Z0-9_]*$/);
+          // If this reddens on something that genuinely IS a constant — an engine exporting
+          // one in another spelling — that is a decision to widen the rule on purpose, not
+          // a test to silence: the whole point is that the privileged worker's imports get
+          // read by somebody.
+          expect(`${file} → ${spec} → ${name}`, `${name} is not a permission-key constant`).toMatch(/→ [A-Z][A-Z0-9_]*$/);
         }
       }
     }
