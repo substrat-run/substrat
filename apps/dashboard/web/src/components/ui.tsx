@@ -183,7 +183,15 @@ export function OriginTag({
     origin.gitRepo && origin.gitCommit
       ? `https://github.com/${origin.gitRepo}/commit/${origin.gitCommit}`
       : null;
-  const title = `Pushed by the deploy workflow${origin.gitRef ? ` (${origin.gitRef})` : ''}`;
+  // The label ellipsizes, so the title has to be able to REPLACE it: repo and the full
+  // commit sha, not just the workflow and ref. Without them a truncated `acme/helpd…` is
+  // unrecoverable — hovering would say less than the text it is standing in for.
+  const title = [
+    'Pushed by the deploy workflow',
+    origin.gitRepo ? ` from ${origin.gitRepo}` : '',
+    origin.gitRef ? ` (${origin.gitRef})` : '',
+    origin.gitCommit ? ` — ${origin.gitCommit}` : '',
+  ].join('');
   return (
     <span style={style} title={title}>
       <Ic name="gitBranch" size={11} />
