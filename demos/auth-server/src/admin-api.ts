@@ -88,7 +88,8 @@ export interface AdminApiDeps {
 }
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
-  token_endpoint_auth_method, application_type, user_id, client_secret, created_at, scopes`;
+  token_endpoint_auth_method, application_type, user_id, client_secret, created_at, scopes,
+  enable_end_session, post_logout_redirect_uris`;
 
 interface ClientRow {
   client_id: string;
@@ -104,6 +105,8 @@ interface ClientRow {
   client_secret: string | null;
   created_at: number | null;
   scopes: string | null;
+  enable_end_session: number | null;
+  post_logout_redirect_uris: string | null;
 }
 
 /** `string[]`/`json` columns are TEXT here — SQLite is not a JSON provider for the adapter. */
@@ -143,6 +146,14 @@ function toWireClient(row: ClientRow) {
     user_id: row.user_id ?? undefined,
     client_id_issued_at: row.created_at ? Math.round(Number(row.created_at) / 1000) : undefined,
     metadata: jsonColumn<Record<string, unknown>>(row.metadata, {}),
+    /**
+     * RP-initiated logout, which the plugin refuses unless the client row says yes: the
+     * column has no default, so a client registered without it can never sign anyone out.
+     * `post_logout_redirect_uris` is its own list — the plugin matches the requested
+     * `post_logout_redirect_uri` against THIS one, never against `redirect_uris`.
+     */
+    enable_end_session: Boolean(row.enable_end_session),
+    post_logout_redirect_uris: jsonColumn<string[]>(row.post_logout_redirect_uris, []),
     /** Whether a secret exists — never the secret, which is stored hashed. */
     client_secret_set: Boolean(row.client_secret),
   };
@@ -181,6 +192,13 @@ const clientPatch = z
     disabled: z.boolean(),
     application_type: z.enum(['web', 'native']),
     redirect_uris: z.array(z.string().min(1)).min(1),
+    enable_end_session: z.boolean(),
+    /**
+     * Unlike `redirect_uris`, an EMPTY list is meaningful and allowed: a client may end a
+     * session without being sent anywhere afterwards, and clearing the list is how an
+     * operator withdraws a target that has moved.
+     */
+    post_logout_redirect_uris: z.array(z.string().min(1)),
   })
   .partial();
 
@@ -529,10 +547,18 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     if (patch.skip_consent !== undefined) set('skip_consent', patch.skip_consent ? 1 : 0);
     if (patch.disabled !== undefined) set('disabled', patch.disabled ? 1 : 0);
     if (patch.application_type !== undefined) set('application_type', patch.application_type);
-    if (patch.redirect_uris !== undefined) {
+    if (patch.enable_end_session !== undefined) set('enable_end_session', patch.enable_end_session ? 1 : 0);
+    if (patch.redirect_uris !== undefined || patch.post_logout_redirect_uris !== undefined) {
       const type = patch.application_type ?? exists.application_type ?? 'web';
-      for (const uri of patch.redirect_uris) assertRedirectUri(uri, type);
-      set('redirect_uris', JSON.stringify(patch.redirect_uris));
+      if (patch.redirect_uris !== undefined) {
+        for (const uri of patch.redirect_uris) assertRedirectUri(uri, type);
+        set('redirect_uris', JSON.stringify(patch.redirect_uris));
+      }
+      if (patch.post_logout_redirect_uris !== undefined) {
+        // Same rule, and for the same reason: this is a URI the issuer hands to a browser.
+        for (const uri of patch.post_logout_redirect_uris) assertRedirectUri(uri, type);
+        set('post_logout_redirect_uris', JSON.stringify(patch.post_logout_redirect_uris));
+      }
     }
     if (!sets.length) throw new HTTPException(400, { message: 'nothing to change' });
     deps.sql.exec(

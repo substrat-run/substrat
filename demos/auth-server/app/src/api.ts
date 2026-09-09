@@ -693,6 +693,10 @@ export interface RegisteredClient {
   application_type?: string;
   disabled?: boolean;
   skip_consent?: boolean;
+  /** Whether this client may end a session (RP-initiated logout). Off unless set. */
+  enable_end_session?: boolean;
+  /** Where it may be sent afterwards — a separate list from `redirect_uris`. */
+  post_logout_redirect_uris?: string[];
   user_id?: string;
   client_id_issued_at?: number;
   metadata?: Record<string, unknown>;
@@ -707,6 +711,8 @@ export interface ClientDraft {
   logo_uri?: string;
   metadata?: Record<string, unknown>;
   skip_consent: boolean;
+  enable_end_session: boolean;
+  post_logout_redirect_uris: string[];
   disabled: boolean;
 }
 
@@ -727,7 +733,12 @@ export async function createOAuthClient(
   // variant that can set `skip_consent`, which is exactly why a browser cannot reach it.
   const created = await admin<RegisteredClient & { client_secret?: string }>('/clients', {
     method: 'POST',
-    body: JSON.stringify(draft),
+    // The plugin's registration body types `post_logout_redirect_uris` as a NON-empty array,
+    // so an empty one is a 400 rather than "no post-logout targets". Omit it instead; our own
+    // PATCH accepts `[]` and is what clears a list that already exists.
+    body: JSON.stringify(
+      draft.post_logout_redirect_uris.length ? draft : { ...draft, post_logout_redirect_uris: undefined },
+    ),
   });
   return { client: created, clientSecret: created.client_secret ?? '' };
 }
