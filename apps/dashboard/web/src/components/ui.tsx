@@ -133,6 +133,8 @@ export function OriginTag({
           background: 'var(--status-warning-bg)',
           borderRadius: 4,
           padding: '0 4px',
+          // The warning outlives the repo label: it is the label that ellipsizes, never this.
+          flexShrink: 0,
         }}
         title={
           gate === 'skipped'
@@ -153,7 +155,14 @@ export function OriginTag({
     fontSize: 11,
     color: 'var(--text-tertiary)',
     whiteSpace: 'nowrap',
+    // A repo label is the longest thing in any row that carries one, and a grid cell will
+    // not clip it on its own — it spills over the next column. Ellipsize instead; the full
+    // repo, ref and commit are already in the `title`, and the link stays clickable.
+    minWidth: 0,
+    maxWidth: '100%',
+    overflow: 'hidden',
   };
+  const labelStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis' };
   // No origin at all — pushed before origin tracking, or the deploy API was called with
   // none. The source stays absent (we will not guess), but the gate verdict still shows.
   if (!origin) {
@@ -179,11 +188,11 @@ export function OriginTag({
     <span style={style} title={title}>
       <Ic name="gitBranch" size={11} />
       {commitUrl ? (
-        <a href={commitUrl} target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>
+        <a href={commitUrl} target="_blank" rel="noreferrer" style={{ color: 'inherit', ...labelStyle }}>
           {label}
         </a>
       ) : (
-        label
+        <span style={labelStyle}>{label}</span>
       )}
       {ungated}
     </span>
