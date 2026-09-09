@@ -21,6 +21,8 @@ const EMPTY_DRAFT: ClientDraft = {
   logo_uri: '',
   metadata: {},
   skip_consent: false,
+  enable_end_session: false,
+  post_logout_redirect_uris: [],
   disabled: false,
 };
 
@@ -101,6 +103,7 @@ export function ClientsPanel() {
                     {client.client_name ?? 'Unnamed application'}
                     <span className="tag">{client.application_type ?? 'web'}</span>
                     {client.skip_consent && <span className="tag">no consent screen</span>}
+                    {client.enable_end_session && <span className="tag">can sign out</span>}
                     {!client.user_id && <span className="tag">self-registered</span>}
                   </div>
                   <code className="client-id">{client.client_id}</code>
@@ -227,6 +230,8 @@ function ClientEditor({
   const [icon, setIcon] = useState(client?.logo_uri ?? '');
   const [uris, setUris] = useState((client?.redirect_uris ?? []).join('\n'));
   const [skipConsent, setSkipConsent] = useState(Boolean(client?.skip_consent));
+  const [endSession, setEndSession] = useState(Boolean(client?.enable_end_session));
+  const [logoutUris, setLogoutUris] = useState((client?.post_logout_redirect_uris ?? []).join('\n'));
 
   /**
    * The stored theme (`metadata.theme` — the vocabulary src/branding.ts sanitizes). The
@@ -285,6 +290,8 @@ function ClientEditor({
       redirect_uris: uris.split('\n').map((u) => u.trim()).filter(Boolean),
       metadata,
       skip_consent: skipConsent,
+      enable_end_session: endSession,
+      post_logout_redirect_uris: logoutUris.split('\n').map((u) => u.trim()).filter(Boolean),
       disabled: client?.disabled ?? false,
       ...(icon.trim() ? { logo_uri: icon.trim() } : {}),
     };
@@ -332,6 +339,28 @@ function ClientEditor({
           </em>
         </span>
       </label>
+      <label className="toggle">
+        <input type="checkbox" checked={endSession} onChange={(e) => setEndSession(e.target.checked)} />
+        <span>
+          <strong>Let this application sign people out</strong>
+          <em className="hint">
+            Allows RP-initiated logout at <code>/oauth2/end-session</code>. Off by default, and
+            without it the issuer answers <em>“The client is not allowed to initiate logout”</em>.
+          </em>
+        </span>
+      </label>
+      {endSession && (
+        <label className="field">
+          <span>Post-logout redirect URIs</span>
+          <textarea rows={2} value={logoutUris} onChange={(e) => setLogoutUris(e.target.value)} />
+          <em className="hint">
+            One per line, matched exactly — and a SEPARATE list from the redirect URIs above. A
+            <code>post_logout_redirect_uri</code> that is not here is ignored: the person is signed out
+            and left on the issuer&apos;s own page. Leave blank if the application never asks to be
+            sent back.
+          </em>
+        </label>
+      )}
       <h3>Appearance</h3>
       <p className="muted small">
         How the sign-in, sign-up and consent screens look when this application sends someone
