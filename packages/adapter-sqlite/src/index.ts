@@ -8380,7 +8380,7 @@ export class SqliteScopeHost implements ScopeHost {
     // its outbox, not wherever the wall clock happens to be. Read once, here, because
     // this is the one place a scope's runtime is built — a reopened host, a revived
     // process and a first-ever open all arrive through it. `MAX(id)` on the primary
-    // key is an index seek, and the DDL two lines up guarantees the table exists.
+    // key is an index seek, and `db.exec(KERNEL_DDL)` above guarantees the table exists.
     const mintEventId = createUlid();
     const highest = (db.prepare('SELECT MAX(id) AS id FROM _substrat_outbox').get() as
       | { id: string | null }
