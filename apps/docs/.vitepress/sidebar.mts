@@ -173,6 +173,7 @@ export function guideSidebar() {
         { text: 'Manyfold (headless CMS)', link: '/verticals/manyfold' },
         { text: 'Todo (shared lists)', link: '/verticals/todo' },
         { text: 'ticket0 (support desk)', link: '/verticals/ticket0' },
+        { text: 'Tock (measured file loads)', link: '/verticals/tock' },
       ],
     },
     {
