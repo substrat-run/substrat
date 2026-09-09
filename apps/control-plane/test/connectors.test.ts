@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SCRIVE_CALLBACK_ROUTE, SCRIVE_CONNECTION_GRANTS } from '@substrat-run/connector-scrive';
 import { FORTNOX_CONNECTION_GRANTS } from '@substrat-run/connector-fortnox';
+import { PLANIMA_CONNECTION_GRANTS } from '@substrat-run/connector-planima';
 import {
   CONNECTORS,
   connectionInspectorsFor,
@@ -25,6 +26,7 @@ describe('connector registry', () => {
     const providers = CONNECTORS.map((c) => c.provider);
     expect(providers).toContain('scrive');
     expect(providers).toContain('fortnox');
+    expect(providers).toContain('planima');
     expect(Object.keys(connectionInspectorsFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorSweepersFor(ENV)).sort()).toEqual([...providers].sort());
     expect(Object.keys(connectorGrantsFor()).sort()).toEqual([...providers].sort());
@@ -38,6 +40,32 @@ describe('connector registry', () => {
     // that drifted for months. `toBe` on the identity, not `toEqual` on the contents.
     expect(connectorGrantsFor()['scrive']).toBe(SCRIVE_CONNECTION_GRANTS);
     expect(connectorGrantsFor()['fortnox']).toBe(FORTNOX_CONNECTION_GRANTS);
+    expect(connectorGrantsFor()['planima']).toBe(PLANIMA_CONNECTION_GRANTS);
+  });
+
+  it('every registered connector answers both probes', () => {
+    // #1326. `ConnectionInspector` leaves them optional because a caller may find a
+    // provider that has nothing to probe with; a connector on THIS fleet may not, and
+    // `RegisteredConnectionInspector` is what refuses one at compile time. Asserted for
+    // the whole array rather than per connector, because the failure being prevented is
+    // an omission — planima shipped with both probes exported, a dashboard door in
+    // front of them and no registration behind it, so the first tenant to press Test
+    // connection got `501 no probe registered for provider 'planima'` and read it as
+    // Planima being down. A per-connector test cannot catch the connector nobody added.
+    const inspectors = connectionInspectorsFor({});
+    for (const { provider } of CONNECTORS) {
+      expect(typeof inspectors[provider]?.probe, provider).toBe('function');
+      expect(typeof inspectors[provider]?.probeCandidate, provider).toBe('function');
+    }
+  });
+
+  it('refuses a malformed Planima candidate without spending a provider round trip', async () => {
+    // Planima's whole connect path is a pasted token, so this probe is the only thing
+    // between a typo and a connection that looks healthy and syncs nothing.
+    const probe = await connectionInspectorsFor({})['planima']!.probeCandidate!({});
+    expect(probe.ok).toBe(false);
+    expect(probe.refused).toBe(true);
+    expect(probe.error).toMatch(/token/);
   });
 
   it('a poll-only connector registers with no dispatch and no callback — by design, not omission', () => {

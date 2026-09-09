@@ -20,6 +20,14 @@ import {
   probeFortnoxSecret,
   sweepFortnoxLedger,
 } from '@substrat-run/connector-fortnox';
+import {
+  PLANIMA_CONNECTION_GRANTS,
+  planimaConnectionActivity,
+  planimaCredentialSummary,
+  probePlanimaConnection,
+  probePlanimaSecret,
+  sweepPlanimaPlan,
+} from '@substrat-run/connector-planima';
 
 /**
  * The env slice the connectors read — declared HERE rather than in `worker.ts`, so a
@@ -53,6 +61,12 @@ export interface ConnectorEnv {
    */
   FORTNOX_API_BASE?: string;
   FORTNOX_OAUTH_BASE?: string;
+  /**
+   * Planima host override, for a test deployment pointed at a stub. Unset means the
+   * REAL host (`api.planima.se`) — safe as a default for Fortnox's reason: Planima runs
+   * no separate testbed origin, so there is no wrong environment to default into.
+   */
+  PLANIMA_API_BASE?: string;
 }
 
 /** One uniform answer for every callback rejection; the WHY stays server-side. */
@@ -76,6 +90,31 @@ export type ConnectorCallbackOutcome =
  * FORM a human fills in — and `pnpm lint:connector-grants` is what holds the two
  * declarations to each other.
  */
+/**
+ * The inspector a REGISTERED connector hands over — `ConnectionInspector` with both
+ * probes made **mandatory** (#1326).
+ *
+ * They are optional on the interface itself because that interface describes what a
+ * caller may find, and a probe genuinely cannot be written for every provider that
+ * might ever exist. They are required HERE because this array is the platform's own
+ * fleet, and for a provider on it "we did not write one" is not an answer a tenant can
+ * act on: `POST …/connections/:id/verify` answers `501 no probe registered for provider
+ * 'x'`, which reads to the person clicking **Test connection** as the provider being
+ * unreachable. Planima shipped with both probes exported and neither wired, and that
+ * 501 is exactly what the first tenant to press the button got.
+ *
+ * So the rule is: a connector carries a probe, and this type is what refuses one that
+ * does not. If a provider truly offers no cheap authenticated read to probe with, say
+ * so in the registration by writing a probe that returns `{ ok: false, refused: false,
+ * error: '<provider> exposes no verification read' }` — a stated absence a console can
+ * render, rather than a route that 501s.
+ *
+ * `activity` and `credential` stay optional on purpose: an absent one degrades a console
+ * view, where an absent probe breaks a flow the tenant is standing in.
+ */
+export type RegisteredConnectionInspector = ConnectionInspector &
+  Required<Pick<ConnectionInspector, 'probe' | 'probeCandidate'>>;
+
 export interface ConnectorRegistration {
   /** The provider slug — what connection rows, dispatch kinds and grants are keyed by. */
   readonly provider: string;
@@ -85,8 +124,11 @@ export interface ConnectorRegistration {
    * copy is how the dashboard catalog came to disagree with the connector (#716).
    */
   readonly grants: readonly string[];
-  /** #605 — what this connector can ANSWER about a connection. */
-  inspector(env: ConnectorEnv): ConnectionInspector;
+  /**
+   * #605 — what this connector can ANSWER about a connection. Both probes are required;
+   * {@link RegisteredConnectionInspector} says why.
+   */
+  inspector(env: ConnectorEnv): RegisteredConnectionInspector;
   /**
    * #574 phase 3 — the outbound half. The SAME closure a self-host registers
    * in-process; only the host running it changes.
@@ -261,11 +303,48 @@ const FORTNOX: ConnectorRegistration = {
 };
 
 /**
+ * Planima (#1308) — planned facility maintenance, poll-only and read-only. No dispatch
+ * (this connector never writes to Planima), no callback (Planima pushes nothing) and no
+ * consent round: the credential is one static API token a person mints in Planima and
+ * pastes into the dashboard's door, so `/internal/connections/upsert` is the whole
+ * connect path.
+ *
+ * Which makes the connect-time probe the only thing standing between a typo and a
+ * connection that looks healthy and syncs nothing — and makes the account question a
+ * real one: a token from the wrong Planima login is perfectly valid and reads somebody
+ * else's buildings. `probePlanimaSecret` reads `/organizations` and names them back, so
+ * the person pasting sees whose plan they just connected.
+ */
+const PLANIMA: ConnectorRegistration = {
+  provider: 'planima',
+  grants: PLANIMA_CONNECTION_GRANTS,
+  inspector: (env) => ({
+    probe: async (h, row) =>
+      probePlanimaConnection(h, row, {
+        fetch: globalFetch,
+        ...(env.PLANIMA_API_BASE ? { apiBase: env.PLANIMA_API_BASE } : {}),
+      }),
+    activity: async (h, row) => planimaConnectionActivity(h, row.id),
+    credential: (h, row) => planimaCredentialSummary(h, row),
+    probeCandidate: async (secret) =>
+      probePlanimaSecret(secret, {
+        fetch: globalFetch,
+        ...(env.PLANIMA_API_BASE ? { apiBase: env.PLANIMA_API_BASE } : {}),
+      }),
+  }),
+  sweep: (env) => async (h, id, o) =>
+    sweepPlanimaPlan(h, id, {
+      ...o,
+      ...(env.PLANIMA_API_BASE ? { apiBase: env.PLANIMA_API_BASE } : {}),
+    }),
+};
+
+/**
  * Every connector this control plane operates. **Adding one is adding one entry here**
  * — the inspector map, the drain handlers, the sweeper map, the declared grants and the
  * callback routes in `worker.ts` are all derived from this array.
  */
-export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX];
+export const CONNECTORS: readonly ConnectorRegistration[] = [SCRIVE, FORTNOX, PLANIMA];
 
 /** The `{ provider → inspector }` shape `control-plane-api` and the relay both take. */
 export function connectionInspectorsFor(env: ConnectorEnv): Record<string, ConnectionInspector> {

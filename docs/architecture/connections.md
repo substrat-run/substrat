@@ -546,6 +546,30 @@ now a property of one array entry. The dashboard's `PROVIDERS` catalog stays sep
 it is a different worker answering a different question (the credential FORM a human fills in), and
 `pnpm lint:connector-grants` is what holds the two declarations to each other.
 
+#### A connector carries a probe (#1326)
+
+`ConnectionInspector` leaves `probe` and `probeCandidate` optional, because it describes what a
+caller may *find* — and a provider that offers no cheap authenticated read genuinely cannot be
+probed. A connector on **this** platform's fleet is a different question, and the answer is that it
+carries both. `apps/control-plane/src/connectors.ts` therefore types `inspector` as
+`RegisteredConnectionInspector`, which is `ConnectionInspector` with those two required, so a
+registration without them does not compile.
+
+The 501 above is why. It is the honest answer to "can this platform verify a provider it does not
+operate"; it is a *misleading* answer for one it does, because the person who reads it is standing
+in the dashboard having just pressed **Test connection**, and what they see is "Couldn't reach the
+provider" — the provider blamed for our missing wiring. `connector-planima` shipped exporting
+`probePlanimaSecret` and `probePlanimaConnection`, with a dashboard door in front of them, and no
+entry in `CONNECTORS` behind it: the first tenant to press the button got that 501, and the token
+they had pasted was never probed, never swept and never dispatched. `pnpm lint:connector-grants`
+now checks the pairing in both directions — a registration with no door, a door with no
+registration — for the reason the whole array exists: every one of those failures is silent.
+
+Where a provider truly offers nothing to probe with, the registration still carries a probe and
+that probe *says so*: `{ ok: false, refused: false, error: '<provider> exposes no verification
+read' }`. A stated absence a console can render beats a route that 501s, because only one of the
+two distinguishes "we cannot check this" from "we have never heard of this provider".
+
 The same change made a connector's provider base **required** rather than defaulted. The connector
 used to fall back to Scrive's testbed, which is right for a developer and wrong for a deployment: a
 production credential sent to the testbed comes back 401, indistinguishable from a mistyped key, and
