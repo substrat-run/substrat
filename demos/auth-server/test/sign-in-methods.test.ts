@@ -180,6 +180,40 @@ describe("an administrator's read of another person's sign-in methods", () => {
     expect(users[0]!.email).toBe(MEMBER.email);
   });
 
+  /**
+   * The Sessions panel's Revoke button keys on `session.token`, because that is what
+   * `revoke-user-session` deletes on — not the `id` the row is otherwise identified by. If the
+   * list ever stopped carrying the token the button would post `undefined` and fail silently,
+   * leaving an operator believing they had signed somebody out. So both halves are pinned: the
+   * token is in the list, and revoking with it actually ends the session.
+   *
+   * It is also the reason the token is never rendered. It IS the credential — putting it in a
+   * table would hand every administrator a way to become anyone they can see.
+   */
+  it('lists a session with the token its revoke keys on, and revoking with it ends the session', async () => {
+    const admin = await signInAs(ADMIN);
+    await signInAs(MEMBER);
+
+    const listed = await call(`/api/auth/admin/list-user-sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-mode': 'cors', cookie: admin },
+      body: JSON.stringify({ userId: memberId }),
+    });
+    expect(listed.status).toBe(200);
+    const { sessions } = (await listed.json()) as { sessions: { id: string; token: string }[] };
+    expect(sessions.length).toBeGreaterThan(0);
+    const token = sessions[0]!.token;
+    expect(token, 'the list stopped carrying the token Revoke keys on').toBeTruthy();
+
+    const revoked = await call('/api/auth/admin/revoke-user-session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'sec-fetch-mode': 'cors', cookie: admin },
+      body: JSON.stringify({ sessionToken: token }),
+    });
+    expect(revoked.status).toBe(200);
+    expect(db.prepare('SELECT id FROM session WHERE token = ?').all(token)).toEqual([]);
+  });
+
   it('refuses a signed-in non-administrator, including on their own id', async () => {
     const member = await signInAs(MEMBER);
     expect((await adminCall(`/users/${memberId}/sign-in-methods`, member)).status).toBe(403);
