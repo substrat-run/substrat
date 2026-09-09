@@ -829,8 +829,10 @@ interface ScopeStubRpc {
   freshnessProbe(
     types: string[],
   ): Promise<Record<string, { observedAt: string | null; stateAt: string | null; stateOutcome: string | null }>>;
-  /** Record a schedule run's timestamp + outcome (#383). */
-  recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void>;
+  /** Write one `_substrat_schedule_state` row (#383) — `unit` is either a schedule
+   *  operation (`module/verb`: when it ran, how it ended) or a freshness key
+   *  (`freshness:<eventType>`: when the verdict was recorded, and what it was). */
+  recordScheduleRun(unit: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void>;
   /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
    *  Unions the scope's own tuples with the projected tenant-level ones, because a
    *  scope check consults both (rule 2 inheritance). */
