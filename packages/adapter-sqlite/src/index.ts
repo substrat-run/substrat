@@ -3021,8 +3021,12 @@ export class SqliteScopeHost implements ScopeHost {
     // holds two kinds of row (#1232): schedule operations keyed `module/verb`, and
     // the rows written just below, keyed `freshness:<eventType>`. For those,
     // `last_run_at`/`last_status` are the last RECORDED at and verdict — nothing ran.
-    // The prefixes cannot collide (event types are `ns.verb`); #1288 tracks making
-    // the table itself say so.
+    // Only half the no-collision claim is enforced: an event type has passed
+    // contracts' `eventType` regex (lowercase `ns.verb`, no colon), so a freshness
+    // key can never look like an operation — but `scheduleSpec.operation` is
+    // `z.string().min(1)`, so a schedule literally named `freshness:orders.placed`
+    // would share this row and nothing would refuse it. #1288 tracks the `kind`
+    // column that would make the distinction real instead of conventional.
     rt.db.exec(
       `CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
          schedule_op TEXT PRIMARY KEY,

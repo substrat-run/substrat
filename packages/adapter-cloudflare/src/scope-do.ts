@@ -275,9 +275,15 @@ const KERNEL_DDL = `
   --   * a freshness key, spelled freshness:<eventType> -- last_run_at / last_status
   --     are when the evaluator last RECORDED a verdict for that event type and what
   --     the verdict was. Nothing ran; the row gates what the sweep records.
-  -- The two namespaces cannot collide: operation names are module/verb and event
-  -- types are ns.verb, so no operation name can start with "freshness:".
-  -- #1288 tracks giving the table a column (or a name) that says this outright.
+  -- Only HALF the no-collision claim is enforced, which is worth knowing before
+  -- trusting it: a freshness key is always "freshness:" followed by a value the
+  -- contracts eventType schema accepted (lowercase ns.verb, no colon and no slash),
+  -- so no freshness key can ever look like an operation. The other direction is
+  -- CONVENTION only -- scheduleSpec.operation is z.string().min(1), so a module
+  -- that declared a schedule operation literally named "freshness:orders.placed"
+  -- would share a row with the evaluator and nothing today would reject it.
+  -- #1288 tracks giving the table a column (or a name) that says this outright,
+  -- which is also what would let the collision be refused rather than avoided.
   -- Spine (kernel-written), never a module migration.
   CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
     schedule_op TEXT PRIMARY KEY,
