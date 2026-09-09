@@ -37,23 +37,33 @@ received ──▶ profiled ──▶ mapped ──▶ counted
    └────────────┴────────────┴──▶ failed
 ```
 
-- **received** — the file is stored, byte for byte. Nothing has been read.
+- **received** — the file is stored, byte for byte. Nothing has been read. **The stored
+  bytes are raw rows**, so reading one back is guarded by the same permission as reading
+  raw rows — a source file that anyone could download would be a way around the whole of
+  section 4.
 - **profiled** — Tock has read it and recorded what fields appeared, how often, what
   types they look like, and what was missing. This is observation, not judgement.
 - **mapped** — a person has bound the run to a **schema version**: which field means what,
   which are dimensions, which are measures, what to do with the rest.
-- **counted** — the rollups are written. The run is now **current** for the period it
-  covers, and immutable.
+- **counted** — the rollups are written, and the run is frozen. Nothing about it changes
+  again, including which run is current: **"current" is a query, not a column.** The
+  current run for a period is the latest counted one covering it, and that is derived at
+  read time rather than stamped on a row that immutability says may not be written.
 
 **Transitions that must not be skippable:**
 
 - You cannot map a run before profiling it. Mapping an unprofiled file is guessing with
   evidence sitting right there unread.
 - You cannot count a run before mapping it.
-- A **counted run is immutable, and no run is ever deleted.** A correction is a new run
-  over the same period. When it is counted it becomes current and the previous run is
-  marked superseded — still stored, still readable, still able to answer "what did we
-  report in April, and on what basis".
+- A **counted run is immutable, and no run is ever deleted.** Not one field. A correction
+  is a new run over the same period; counting it makes it the latest, and the earlier run
+  is superseded *by consequence* rather than by an update — still stored, still readable,
+  still able to answer "what did we report in April, and on what basis".
+- **Exactly one run is current per source and period**, and nothing has to enforce that
+  under contention: a workspace's operations are serialised, so two corrections counted at
+  the same moment are two ordered transactions and the later one simply wins. Each run
+  publishes its own rollup rows tagged with its own id, in the transaction that counts it,
+  so a report never reads half of one run's numbers beside half of another's.
 
 ## 3. What already exists vs. what's yours
 
@@ -87,12 +97,19 @@ actually use — the modelling screen and the report.
 
 Four roles. The two answers that must be impossible to miss are at the bottom.
 
-| | read reports | read raw rows | upload a run | edit a schema | manage people |
+| | read reports | read raw rows *and source files* | run the lifecycle | edit a schema | manage people |
 |---|---|---|---|---|---|
 | **viewer** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **analyst** | ✅ | ✅ | ✅ | ❌ | ❌ |
 | **modeller** | ✅ | ✅ | ✅ | ✅ | ❌ |
 | **admin** | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+**"Run the lifecycle" is one permission covering all four steps** — upload, profile, map
+and count — and re-running a corrected period is the same permission again, because a
+correction is an ordinary run. Splitting them would suggest a workflow where one person
+uploads and another counts; there is no such review step here, and a permission that
+implies one would be a lie about the design. What is *not* in it is schema editing:
+mapping a run **selects** a schema version, and only a modeller can **write** one.
 
 **Who can see the money.** The counts *are* the money — they are what an advertiser is
 invoiced against. Every role can read them, including a viewer, because a report nobody
@@ -157,12 +174,24 @@ append-only once shipped, so this is the cheap moment to argue about them.
   a measure or ignored, and whether it is required.
 - **`tock_run`** — one file taken through the lifecycle. `id`, `source_key`,
   `schema_version`, `filename`, `byte_size`, `content_hash`, `status`, `period_from`,
-  `period_to`, `row_count`, `rejected_count`, `superseded_by`, `received_at`, `counted_at`,
-  `received_by`. The `id` is what "which run produced this number" points at.
+  `period_to`, `row_count`, `rejected_count`, `received_at`, `counted_at`, `received_by`.
+  The `id` is what "which run produced this number" points at. **No `superseded_by`**: a
+  counted run is immutable, so it cannot carry a field that a later run has to write.
+  Which run is current for a period is derived — the latest counted one covering it.
 - **`tock_rule_state`** — the rules in force for a run, captured when it was counted:
-  `run_id`, `rule_kind` (`bot_list`, `threshold`, `dedup_window`), `identifier`,
-  `captured_at`. This is what makes a superseded run explainable a year later; without it
-  the old numbers are preserved and unaccountable, which is barely better than losing them.
+  `run_id`, `rule_kind` (`bot_list`, `threshold`, `dedup_window`, `salt`), `identifier`,
+  **`content_hash`**, `captured_at`. This is what makes a superseded run explainable a year
+  later; without it the old numbers are preserved and unaccountable, which is barely better
+  than losing them. The `content_hash` is the part that actually holds: a bot list called
+  "2026-03" can be edited upstream without changing its name, so a name alone records
+  which list we *meant* and not which rules we *applied*. A rerun that reproduces the hash
+  reproduces the numbers; one that cannot is telling you something true.
+- **`tock_salt`** — the daily salt behind `subject_key`: `day`, `salt_id`, `secret`,
+  `created_at`, `destroyed_at`. Runs reference the `salt_id` through `tock_rule_state`, so
+  a re-run of an old day can say whether it used the same salt or a new one — which decides
+  whether its de-duplication is comparable to the original at all. Destroying the secret is
+  what makes the subject keys of that day permanently unlinkable, and is the erasure
+  mechanism section 9 leans on.
 - **`tock_observation`** — what actually arrived, per run per field: `run_id`, `field`,
   `present_count`, `null_count`, `inferred_type`, `distinct_estimate`. Recorded whether or
   not the field is declared.
@@ -170,16 +199,30 @@ append-only once shipped, so this is the cheap moment to argue about them.
   the runs themselves**: `source_key`, `field`, `first_seen`, `last_seen`, `day`, `n`. Its
   entire job is to answer questions about March after March's rows are gone, which it
   cannot do if it expires with them. Field names and counts only — never sample values.
+- **`tock_source_file`** — the delivered bytes and what identifies them: `run_id`,
+  `content_hash`, `byte_size`, `stored_at`, `purge_after`. Reading one back is guarded like
+  a raw row, because that is what it contains.
 - **`tock_row`** — the mapped rows a run produced. `id`, `run_id`, `occurred_at`,
   `subject_key`, `dims_json`, `metrics_json`. The personal-data table, and the one the
-  `read raw rows` permission guards.
+  `read raw rows` permission guards. `subject_key` is the day-salted hash, never a raw
+  identifier, and it is erasable — which also means no event may carry it.
 - **`tock_rollup`** — the counts. `period_ts`, `grain`, `dim_set`, `dim1`, `dim2`,
   `run_id`, `events`, `measure`, `unit`. Keyed so that one grain, one grouping and a date
-  range is a single ordered scan.
-- **`tock_label`** — the display name for a dimension value: `source_key`, `dim`, `value`,
-  `label`, `captured_at`. The report shows "Episode 114 — Harbour Lights", and that string
-  has to come from somewhere; it is captured at count time, so a report re-read next year
-  shows the title as it was, not as it has since been renamed.
+  range is a single ordered scan. **Two dimension slots is a hard limit, and the schema
+  editor enforces it**: a schema declaring a third grouping dimension is refused at save
+  time with that reason, rather than accepted and silently unable to group by it. Two
+  covers every grouping in section 8 and keeps the key a fixed shape; widening it later
+  is a new column and a rebuild, which is cheap precisely because rollups are derived.
+  `dim1`/`dim2` are never null — an empty string means "this grouping has no such
+  dimension", and a value that was absent in the source row is its own reserved token, so
+  the unknown bucket stays a bucket rather than a hole in the primary key.
+- **`tock_label`** — the display name for a dimension value, **pinned to the run that
+  captured it**: `run_id`, `dim`, `value`, `label`, `captured_at`. The report shows
+  "Episode 114 — Harbour Lights", and that string has to come from somewhere. Keying it by
+  `run_id` rather than by source is what makes the promise true: a rollup row already names
+  its run, so re-reading an old report joins to the labels *that run* captured and shows
+  the title as it was. Keyed by source with a timestamp instead, the same report would
+  quietly pick up a rename, which is the failure this table exists to prevent.
 
 Two rules the storage enforces rather than merely intends:
 
@@ -216,8 +259,12 @@ Two rules the storage enforces rather than merely intends:
    the first run is marked superseded. The report shows the corrected number. The first
    run is still readable, still shows its original number, and still names the bot list
    version it used.
-9. **The lifecycle cannot be skipped.** Mapping an unprofiled run fails. Counting an
-   unmapped run fails. Editing a counted run fails. Deleting any run fails.
+9. **The lifecycle cannot be skipped, and not everyone may drive it.** Mapping an
+   unprofiled run fails. Counting an unmapped run fails. Editing a counted run fails.
+   Deleting any run fails. And each step is refused for Wren, who holds no lifecycle
+   permission — profiling, mapping, counting and re-running a corrected period are all
+   denied to her by the same key, asserted step by step rather than inferred from the
+   upload denial in step 3. Tomas, who holds it, is denied only the schema write.
 10. **Isolation.** Backlot's workspace has no runs and no schemas. Petra, a legitimate
     admin of Backlot, is denied every read and every write in Fjord's workspace — reports
     included.
@@ -237,20 +284,40 @@ Two rules the storage enforces rather than merely intends:
    sector. **One thing the name must not be allowed to imply:** a clock suggests a live
    heartbeat, and this path is explicitly not one — see the freshness note in section 10.
    No screen should promise real-time.
-2. **Where the file is read.** The browser reads the dropped file and sends Tock the
-   observations plus the rows. **Default: this**, because the inference is a conversation
-   with the person dropping the file and a round-trip per guess makes that worse. The cost
-   is an upload ceiling in the low tens of megabytes, which is fine for a day of logs and
-   not fine for a month.
+2. **Where the file is read — and which reading counts.** These are two questions and
+   only the first is open. **The browser reads the dropped file to drive the modelling
+   conversation**: inferred types, a preview of the rows, the fields it can see. That is
+   what makes correcting a guess feel immediate instead of costing a round-trip each time.
+   **None of it is authoritative.** The bytes are uploaded, and every number that reaches
+   a rollup — the content hash, the row count, the observations, the counts themselves —
+   is produced by re-reading those bytes on the server. A design whose entire claim is
+   "numbers you can stand behind" cannot take its numbers from the client that submitted
+   them; a browser-supplied row count is a claim, not evidence. **Default: this split.**
+   The genuinely open part is the preview's ceiling — reading a whole file in the browser
+   caps the preview in the low tens of megabytes, and beyond that the preview has to become
+   a sample, which makes the inference weaker without making it wrong.
 3. **How many workspaces per publisher.** One. **Default: this.** Feed-per-workspace is
    the obvious growth direction and costs nothing to add later; starting there would make
    the first slice bigger for no proof.
 4. **Sign-in.** The shared local identity provider every other demo here uses, so the local
    login is the same round-trip as the real one. **Default: this.**
-5. **How long raw rows are kept.** Forever, for now, because the workspace holds one
-   publisher's own data and the demo needs the rows to re-run from. **Default: this, with
-   the limitation stated on screen** rather than quietly assumed. A real retention window
-   is a decision to take when there is a second store to move them to.
+5. **Retention and erasure.** Worth being exact about what personal data actually exists
+   here, because it is less than the shape suggests. Raw IP addresses and user agents are
+   **never stored**: they are hashed with the day's salt at profiling and only the
+   `subject_key` is written. So the rows hold a pseudonymous key plus the dimensions and
+   measures a schema declared, and the rollups hold no personal data at all.
+   **Defaults:** source files and rows are kept for a bounded window — **90 days**, long
+   enough to re-run a quarter's corrections — and the daily salt's secret is destroyed
+   after **35 days**, which is past every de-duplication window in use. Destroying the salt
+   is the erasure: the subject keys of that day stop being linkable to anyone, including by
+   us, and no later re-run can reconstruct them. Rollups are **not** erased and do not need
+   to be, because a count is not personal data — which is also why a re-run after the salt
+   is gone produces a *different* de-duplication and must say so rather than silently
+   differ. An erasure request that names an individual cannot be honoured field-by-field
+   here, because the mapping from a person to a subject key is exactly what has been
+   destroyed; that limit belongs on screen and in the sales conversation, not in a backlog.
+   A legal hold suspends the window, which means someone has to be able to set one — an
+   admin act, and the one piece of this that is deferred rather than decided.
 6. **Deploy or stay local.** Local. **Default: this.**
 
 ## 10. Out of scope, deliberately
@@ -288,7 +355,9 @@ Named so the review is about a bounded thing:
    defensible, and it is also the part that will feel like overhead every time a run
    executes. Is "what did we report, and on what basis" a question you actually expect to
    be asked — or are we building an audit trail nobody will open?
-3. **Section 9's second decision.** Reading the file in the browser makes the modelling
-   conversation good and puts a hard ceiling on file size. If the real files are already
-   larger than that, the first slice should be built the other way round and the modelling
-   screen will be worse for it. Which is it?
+3. **Section 9's retention defaults.** 90 days of rows and a salt destroyed at 35 are
+   numbers I picked to be defensible, not ones derived from how Fjord actually works. The
+   35 has a rule behind it — past every de-duplication window — but the 90 is a guess at
+   how far back a correction is ever re-run. If corrections routinely reach further back
+   than that, the window is wrong and the design should say so before the first row is
+   stored rather than after.
