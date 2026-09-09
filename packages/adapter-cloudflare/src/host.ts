@@ -1065,6 +1065,44 @@ export interface CloudflareScopeHostOptions {
    * locally.
    */
   connectorDelegation?: ConnectorDelegation;
+  /**
+   * **There is deliberately no `clock` here** (#956), and the absence is the fact.
+   *
+   * The pure adapter takes one (`SqliteScopeHostOptions.clock`): it is what
+   * `ctx.now()` reads AND what the host judges elapsed time against — tuple
+   * expiry, session expiry, entitlement expiry, schedule cadence. This host
+   * cannot offer the same option, and the reason is that the elapsed-time reads
+   * split across a boundary an options bag cannot cross:
+   *
+   *   - **Coordinator-side, and therefore reachable.** `resolveImpersonation`
+   *     (`assertSessionUsable(record, new Date()…)`) and `runDueSchedules`
+   *     (`const now = Date.now()`, compared against each schedule's cadence) run
+   *     in this class. A `clock` option would reach both.
+   *   - **DO-local, and therefore not.** `ctx.now()` (`scope-do.ts`, the `at`
+   *     read once per invocation), the permission checker's tuple expiry
+   *     (`checker.ts`, `now: () => new Date().toISOString()`), `hasSystemGrant`,
+   *     and the projected-entitlement reads. The ScopeDO is constructed by
+   *     **workerd**, not by this class, which only ever holds a stub.
+   *
+   * So the honest option is not "a clock that works" but "a clock that moves
+   * *some* of the host's judgements" — and that is worse than none. It would
+   * carry the pure adapter's name and signature while silently disagreeing with
+   * it on the one judgement the contract suite tests: a grant lapsing. `never`
+   * makes a mistaken `clock:` a compile error rather than that.
+   *
+   * What this costs, stated rather than hidden: expiry-dependent behaviour is
+   * held to the contract on the SQLite host only. `grantExpiryContractSuite`
+   * (`packages/contract-tests/src/grant-expiry-suite.ts`) advances a
+   * `manualClock` past a grant's `expiresAt` and asserts the denial; it mounts
+   * on `adapter-sqlite` and NOT here, and its header carries the same reasoning
+   * plus the two alternatives that were rejected. Both hosts run the same
+   * predicate (`expires_at IS NULL OR expires_at > ?`); what differs is that on
+   * one of them the transition can be reached without waiting for it.
+   *
+   * The day the ScopeDO can take a clock, this comment and that suite's mount
+   * are the whole change.
+   */
+  clock?: never;
 }
 
 /**

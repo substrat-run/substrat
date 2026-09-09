@@ -67,6 +67,15 @@ a certificate we don't have.
 - **The egress sandbox has a documented hole.** Outbound traffic is bounded by a
   [declared per-version allowlist](/concepts/platform), enforced at the egress seam. Durable
   Object subrequests are a known gap. Don't call it airtight; it isn't yet.
+- **One contract suite runs on one adapter.** The [conformance
+  suite](/reference/contract-tests) is the mechanism behind "the guarantees are properties
+  of the substrate", and both shipped adapters pass all of it but one suite: the one that
+  moves a clock forward past a grant's `expiresAt` and demands the denial. That needs a
+  clock the host can be handed, and the Durable-Object host cannot take one for that
+  judgement — grant expiry is decided inside a DO the runtime constructs. So a grant
+  *lapsing* is proven on the self-host adapter and taken on the production one, where the
+  same predicate runs against the wall clock. Not a known bug; an asymmetry in the
+  evidence, and the conformance page names it rather than averaging it away.
 
 ## When Substrat is simply the wrong tool
 

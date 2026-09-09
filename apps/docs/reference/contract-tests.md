@@ -34,6 +34,8 @@ a fresh host.
 | `idempotencyContractSuite` | `Idempotency-Key` — a retry does not do the work twice, because the recording is written in the same transaction as the work (#116) | the **default** checker, for the same ordering reason |
 | `timelineContractSuite` | `readTimeline` / `readHistory` — the supported read of an entity's history, including the page-boundary and actor-decoding cases five demos got wrong (#800) | the **default** checker; the history half asserts the K-34 authorization stamp |
 | `impersonationContractSuite` | acting as a principal with the real actor preserved — authority is the impersonated principal's, both actors are stamped, read-only holds on `ctx.sql`, the time box is checked per invoke (K-42) | the **default** checker; half the suite is that the door confers no authority of its own |
+| `spineGuardContractSuite` | the spine guard on `ctx.sql` — module code cannot *write* a `_substrat_*` table through the connection the kernel hands it, and can still read one (#954) | `UNSAFE_allowAllChecker`; a forged grant must be refused by the connection, not by a permission |
+| `grantExpiryContractSuite` | a grant with an `expiresAt` stops granting the moment the **host's** clock passes it — the transition, not the already-dead grant `permissionContractSuite` covers (#956) | the **default** checker, on a `manualClock` the suite advances. **SQLite only** — see below |
 
 ```ts
 // packages/adapter-yours/test/contract.test.ts
@@ -61,15 +63,44 @@ scheduleContractSuite('adapter-yours', async () => { /* default checker */ });
 ```
 
 Every adapter suite takes the same `(adapterName, makeFixture)` pair; the one thing that
-varies is which checker the fixture is built with, and the table says which and why. Those
-twelve are what an *adapter* runs. The package's thirteenth suite,
-`entityCheckConformanceSuite`, holds a **vertical or engine** to its declarations rather
-than an adapter to the contract, and has [its own section](#the-entity-check-kit) below.
-The complete adapter wiring — all twelve, with the reason beside each — is
-[`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts),
-and the two shipped adapters run every suite in it. The count is deliberately not written
-here: it grows with every merged guarantee, and the number that matters is that the
-Cloudflare host's is the same as SQLite's.
+varies is which checker the fixture is built with, and the table says which and why. Every
+suite above is one an *adapter* runs. One more, `entityCheckConformanceSuite`, holds a
+**vertical or engine** to its declarations rather than an adapter to the contract, and has
+[its own section](#the-entity-check-kit) below. The complete adapter wiring — every suite,
+with the reason beside each — is
+[`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts).
+The count is deliberately not written here: it grows with every merged guarantee.
+
+### The one suite the two adapters do not share
+
+Both shipped adapters run every suite in that file **except `grantExpiryContractSuite`,
+which mounts on the SQLite host only** — and the reason is a property of the runtime, not
+an omission.
+
+That suite proves the *transition*: a grant that is live now and denied an hour later.
+Reaching it by waiting would mean a test that sleeps for the expiry window, so the fixture
+hands the suite a `manualClock` and moves it instead. The pure host takes one
+(`SqliteScopeHostOptions.clock`) and judges tuple expiry, session expiry, entitlement
+expiry and schedule cadence against it.
+
+The Durable-Object host cannot offer the same option, because its elapsed-time reads sit on
+both sides of a boundary. Two of them are **coordinator-side** and a clock would reach
+them: impersonation-session expiry, and schedule cadence. The rest are **DO-local** —
+`ctx.now()`, the permission checker's tuple expiry, the system-grant check, the projected
+entitlement reads — and the ScopeDO is constructed by workerd, not by `CloudflareScopeHost`,
+which only ever holds a stub. Grant expiry, the fact this suite is about, is on the far
+side.
+
+So `CloudflareScopeHostOptions` carries no `clock` at all. A partial one would be worse
+than none: it would take the pure adapter's name and signature while silently disagreeing
+with it on exactly the judgement being tested.
+
+Both hosts run the same predicate (`expires_at IS NULL OR expires_at > ?`) and
+`permissionContractSuite` proves an already-expired grant is refused on both. What is
+asserted on one adapter only is that the refusal arrives *when the clock passes*. The suite
+is deliberately not mounted-and-skipped on the Cloudflare host: a skipped test reads as
+coverage the adapter does not have. Its header and the `clock` note in
+`CloudflareScopeHostOptions` carry the two alternatives that were considered and rejected.
 
 ## What the suites verify
 
@@ -209,6 +240,15 @@ adapter gets it wrong:
   not only one that calls `ctx.emit`;
 - the time box is checked per invoke, so an expired session expires for the caller holding
   the stub too.
+
+**Grant expiry under an injected clock** (`grantExpiryContractSuite`, #956 —
+[SQLite only](#the-one-suite-the-two-adapters-do-not-share))
+- a grant with an `expiresAt` is live before it and denied after it, node-level and
+  entity-narrowed alike — the transition, which against the wall clock a test could only
+  reach by sleeping through the window;
+- expiry is judged at **check** time, not at grant time: the same grant is live again once
+  the clock moves back before it, and a re-grant grants on its own `expiresAt`;
+- a grant with no `expiresAt` is not touched by the clock at all.
 
 ## The entity-check kit
 
