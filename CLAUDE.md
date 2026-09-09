@@ -5,6 +5,34 @@ Substrat is a hosted substrate for vertical business software: a multi-tenant ke
 **verticals** owning everything a user touches. Canonical docs: [docs/master-plan.md](docs/master-plan.md)
 (strategy, decision log) and [docs/architecture/kernel-design.md](docs/architecture/kernel-design.md) (architecture).
 
+## This repo is public, and it names no customer
+
+`substrat-run/substrat` is a **public** repository. Everything in it — source, tests,
+fixtures, docs, commit messages, branch names, issue and PR titles — is world-readable
+the moment it is pushed, and stays readable in the git history after it is removed.
+
+**Never write a customer's name, their app's name, or their repo's path.** Not in a doc,
+not in a code comment, not as a test tenant slug, not in a changeset, not in a PR title.
+This holds even when the surrounding text is unambiguously flattering, and even when the
+fact is already public somewhere else: a customer decides what to say about their own use
+of a vendor, and the repo does not decide it for them. It is sharper still for anything
+that is *theirs* rather than ours — a private repo path, the size or shape of their
+schema, a production incident they had — which is their information appearing in our
+public repo without them.
+
+**Write the shape instead of the identity**, because the shape is the part a reader needs:
+"the SDL adopter — a whole vertical modelled as SDL and re-emitted, 55 tables, arriving
+mid-life" carries every fact that makes the evidence worth citing. Link the issue number
+if the thread has more. For fixtures and test slugs, use a demo name that already exists
+(`callout`, `todo`, `meridian`) or an obvious placeholder (`acme`, `tenant-a`).
+
+`docs/briefs/model-package-adoption.md` is the reference for how an adopter-derived
+document reads once the name is out of it.
+
+This rule is prose, not a gate — nothing in CI refuses a name today, so it is the
+reviewer and the author who hold it. It is written down because the hourly issue→PR
+automation reads this file and had no other way to know.
+
 ## Layout
 
 Every package, engine, connector, demo and app, plus `examples/` and `spikes/`. The licence

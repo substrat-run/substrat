@@ -90,7 +90,7 @@ type PiiShape<O, OutKeys extends string> = O extends { emits: { piiClass: 'none'
 
 /**
  * An operation carries a leading `permission` OR `narrows` with a reason, never
- * both and never neither (rule 5 / CRM-EFF's check 14). `narrows` is the
+ * both and never neither (rule 5 / the SDL adopter's check 14, #695). `narrows` is the
  * per-row proof walk: a salesperson listing their own customers must get their
  * list, not a denial.
  */
@@ -1146,8 +1146,9 @@ export function listsDeclaredBy(
 }
 
 /**
- * The handler map a declared operation set requires — CRM-EFF's `satisfies Impl`
- * seam, which is what makes the declaration BINDING rather than decorative.
+ * The handler map a declared operation set requires — the `satisfies Impl`
+ * seam the SDL adopter asked for (#695), which is what makes the declaration
+ * BINDING rather than decorative.
  *
  * ```ts
  * export const operations = { … } satisfies OperationImpl<typeof calloutOps, OperationContext>;

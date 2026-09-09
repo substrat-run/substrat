@@ -6,7 +6,7 @@ description: The model phase. Umbrella #685 open.
 
 # The model phase — a plan
 
-Status: **building** (#685 open). Written **before** reading `Egeryds/CRM-EFF`, deliberately, so
+Status: **building** (#685 open). Written **before** reading the SDL adopter's implementation (§10.2), deliberately, so
 that it and their implementation are two independent descriptions and every disagreement
 between them is a defect in one of the two. **Proposes** changes to #680/#681/#684/#685 — it
 decides nothing on its own; the issue-by-issue mapping is §9, and §3's notation
@@ -44,7 +44,7 @@ The single most important boundary in this plan. Four tiers:
 The bright line: **the model says what exists and what shape it has; prose says how it
 behaves; the AI writes behaviour into emitted stubs.**
 
-**A fifth tier, found by CRM-EFF (§10.2) — lifecycle.** `@retired(because:)` and
+**A fifth tier, found by the SDL adopter (§10.2) — lifecycle.** `@retired(because:)` and
 `@renamedFrom(name:)` are neither "what exists" nor "how it behaves": they say how the
 *current* model relates to the *previous* one, and they exist solely to make a diff
 interpretable. The four tiers above had no home for them, which is exactly the failure mode
@@ -77,7 +77,7 @@ from a language model to a program that is fast, free, and consistent across run
 ## 3. Notation — the open fork, and my recommendation
 
 #680 specifies GraphQL SDL. I land somewhere else, and this is the highest-value
-disagreement to test against CRM-EFF (§10.2).
+disagreement to test against the SDL adopter (§10.2).
 
 **The case for SDL (#680's):** LLM-fluent, human-skimmable, parseable without executing it
 (`graphql-js buildSchema`), directives are a natural extension point, and mature schema-diff
@@ -138,7 +138,7 @@ is worth more than my argument from `definePermissions`.
 ### 3.1 Spiked, and the claim held — `spikes/model-phase/`
 
 435 lines, ~1 hour, `tsc --strict`. **Nine of the 22 checks are compile errors in a typed TS
-model, plus CRM-EFF's `satisfies Impl` seam.** Run it with
+model, plus the SDL adopter's `satisfies Impl` seam.** Run it with
 `npx tsc -p spikes/model-phase`.
 
 | check | what it catches | bites |
@@ -163,7 +163,7 @@ error TS2322: Type '"id"' is not assignable to type '"contractId" | "status"'.
 
 ### 3.2 Round 2 — the cross-module checks, and a correction
 
-Round 1 concluded that CRM-EFF's checks 9–12 "need the composed engines' manifests and stay
+Round 1 concluded that the SDL adopter's checks 9–12 "need the composed engines' manifests and stay
 real work in any notation". **That was wrong, and it was wrong because it inherited the SDL
 framing.** An SDL file cannot import anything, so cross-module reference integrity is
 necessarily manual. An engine is an npm package: in TypeScript it *exports its contract* and
@@ -181,7 +181,7 @@ Six more checks, all biting (`engines.ts`, `example2.ts`, `should-fail2.ts`):
 | **#696** | **a consumer payload field that is not on the engine's payload** |
 | **#696** | **a half-handled completion group** |
 
-The last is the Egeryds production defect — consuming `protocol.signed` and not
+The last is a production defect seen in a live vertical — consuming `protocol.signed` and not
 `protocol.countersigned`, so every multi-party contract stayed `pending` for ever. As a type:
 
 ```
@@ -228,7 +228,7 @@ Property 'permission' is missing … but required in type
 Declared permissions also make typos a *suggestion*, not just an error:
 `Type '"contract:amount"' is not assignable … Did you mean '"contract:amounts"'?`
 
-**The genuine limit, and it is worth stating precisely.** CRM-EFF's check 5 is
+**The genuine limit, and it is worth stating precisely.** The adopter's check 5 is
 *"`@renamedFrom(name:)` exists in the previous journal **and not** in the current schema."*
 Neither half is a type, for two different reasons:
 
@@ -246,7 +246,7 @@ and history is not a type.
 
 ### 3.4 Round 4 — `@erasable`, and one place the types beat the SDL implementation
 
-CRM-EFF calls check 15 *"the check the whole PII posture rests on"* — no event payload may
+The adopter calls check 15 *"the check the whole PII posture rests on"* — no event payload may
 carry a field marked `@erasable`, because immutable events are the one place in a scope an
 erasure cannot reach. They also call their own implementation of it crude, and say why: it
 matches the field **name** across all entities, so *"a different `email` that is not erasable
@@ -331,7 +331,7 @@ Honest cost, now larger than round 1 implied: **373 lines of type machinery** (`
 `engines.ts`) against 435 lines of model and harness. Parts of it are genuinely arcane —
 `UnionToIntersection`, the `[X] extends [never]` bracketing, and self-referential mapped
 constraints in three places — and it will need real comments wherever it lands. That is the
-trade against a bespoke validator CRM-EFF describes as larger than their emitter.
+trade against a bespoke validator the adopter describes as larger than their emitter.
 
 The fix in every case is a **self-referential mapped constraint** — each member checked against
 its own declared shape rather than against an erased supertype:
@@ -474,7 +474,7 @@ Where "low cost" stops holding: regenerating *code* is cheap in every cell. Rege
 turn a model diff into a **migration delta**, never a fresh schema. That is the bottom-right
 cell and the real engineering behind "change and regenerate".
 
-### 5.3 The journal is derived — adopt CRM-EFF's design wholesale
+### 5.3 The journal is derived — adopt the SDL adopter's design wholesale
 
 This plan left the migration delta as named work. They designed it, and the design answers a
 question I had not thought to ask: **who writes the version number?** Nobody.
@@ -549,7 +549,7 @@ Wasp is the existence proof (§10.1), in its strongest form: generated code land
 bodies live in the developer's own `src/`, referenced from the spec. Preserve-authored-across-
 regenerate is not a problem they solved — it is a problem they made impossible.
 
-**CRM-EFF reached the same place independently, and their mechanism is better than the one I
+**The SDL adopter reached the same place independently, and their mechanism is better than the one I
 first proposed here.** I had suggested tracking emitted files with a generation header and a
 content hash, gated by re-emission. They did something cleaner:
 
@@ -746,9 +746,9 @@ Still open on Wasp, worth a look if the notation fork stays contested: how Prism
 `migrate dev` vs `migrate deploy` split maps onto #115's phase gate, and whether their
 schema-diff-to-migration-delta is reusable for §5's bottom-right cell.
 
-### 10.2 CRM-EFF — read, findings folded in
+### 10.2 The SDL adopter (#695) — read, findings folded in
 
-`sdl/` in `Egeryds/CRM-EFF`: a 1,054-line README, a 25-directive language, an 88 KB schema of
+The SDL adopter's own `sdl/` directory: a 1,054-line README, a 25-directive language, an 88 KB schema of
 the full app, a generator, a validator spec, and three harnesses. Substantially more finished
 than #695 conveys. Findings against the six questions this section originally posed:
 
@@ -830,7 +830,7 @@ the others:
    the emitter is deterministic, and #695 is the measurement: 159 operations, 164 routes,
    73 permission keys reproduced exactly, because their shape was never in question.
 
-   CRM-EFF states the sharp version of this, and it is the best single idea in their write-up
+   The adopter states the sharp version of this, and it is the best single idea in their write-up
    (§10.2). Nothing in their language annotates tenancy — no `@tenant`, no scope declaration,
    no validator check that anyone remembered — because *"scope is structural in the kernel: an
    operation is invoked through a stub that already is a tenant and a scope, and `ctx.sql`
