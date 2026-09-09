@@ -12,6 +12,7 @@ import {
   type ClientTheme,
   type PublicProvider,
 } from '../api';
+import { returnTarget } from '../console/routes';
 import { Centered, Card, Field } from '../primitives';
 
 export function SignIn({
@@ -56,8 +57,11 @@ export function SignIn({
                   if (provider.id === 'bankid') return setBankidOpen(true);
                   try {
                     // Nothing follows: the response is a redirect to the provider and the
-                    // browser client follows it. The pending authorize request goes along.
-                    await signInSocial(provider.id, oauthQuery);
+                    // browser client follows it. The pending authorize request goes along —
+                    // and so does where to come back to, read from the address bar at the
+                    // moment of the click, because this screen is rendered ON the console URL
+                    // the person asked for and that URL is about to be left behind.
+                    await signInSocial(provider.id, oauthQuery, returnTarget(window.location.pathname));
                   } catch (e) {
                     setErr(e instanceof Error ? e.message : String(e));
                   }

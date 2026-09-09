@@ -18,6 +18,7 @@ import { Setup } from './auth/Setup';
 import { SignIn } from './auth/SignIn';
 import { SignUp } from './auth/SignUp';
 import { Console } from './console/Console';
+import { returnTarget } from './console/routes';
 import { Centered } from './primitives';
 
 type Phase =
@@ -140,12 +141,22 @@ export default function App() {
   }, [refresh]);
 
   /**
-   * Sign-in finished without an OIDC request to resume — leave `/login` for the console. `/`
-   * is not a screen; the console replaces it with its first section on the way in, so the
-   * back button never has to step through this hop.
+   * Sign-in finished without an OIDC request to resume — hand the URL to the console.
+   *
+   * A console screen the person actually asked for is KEPT: someone pasted `/applications`,
+   * was shown the sign-in screen because they had no session, and the link they were sent is
+   * the whole reason they are here. Everything else — the four hand-off paths, an unknown
+   * URL — becomes `/`, which is not a screen either; the console replaces it with its first
+   * section on the way in, so the back button never has to step through this hop.
+   * `returnTarget` is the allowlist that decides which of the two a path is.
    */
   const doneSigningIn = useCallback(() => {
-    if (window.location.pathname !== '/') window.history.replaceState({}, '', '/');
+    const target = returnTarget(window.location.pathname);
+    // Compared WITH the query, so a refusal that has since been answered (`?social_error=1`
+    // and its `error…` companions) does not ride along into the signed-in console's address bar.
+    if (window.location.pathname + window.location.search !== target) {
+      window.history.replaceState({}, '', target);
+    }
     void refresh();
   }, [refresh]);
 

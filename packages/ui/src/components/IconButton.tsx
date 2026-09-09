@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { forwardRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
 export interface IconButtonProps {
@@ -19,15 +19,14 @@ const dims: Record<NonNullable<IconButtonProps['size']>, string> = {
   lg: 'var(--control-h-lg)',
 };
 
-export function IconButton({
-  size = 'md',
-  variant = 'ghost',
-  label,
-  disabled,
-  onClick,
-  children,
-  style,
-}: IconButtonProps) {
+/**
+ * The ref reaches the `<button>`, so a caller that opens something modal from it can put
+ * focus back where the person left it when that thing closes.
+ */
+export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
+  { size = 'md', variant = 'ghost', label, disabled, onClick, children, style },
+  ref,
+) {
   const [hover, setHover] = useState(false);
 
   const variants: Record<NonNullable<IconButtonProps['variant']>, CSSProperties> = {
@@ -44,6 +43,7 @@ export function IconButton({
 
   return (
     <button
+      ref={ref}
       aria-label={label}
       title={label}
       disabled={disabled}
@@ -68,4 +68,4 @@ export function IconButton({
       {children}
     </button>
   );
-}
+});

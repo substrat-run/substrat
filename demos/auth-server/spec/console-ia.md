@@ -77,6 +77,40 @@ be pasted into a support conversation. `src/console/router.ts` is the whole rout
 a `useSyncExternalStore` subscription over `popstate` plus one event `navigate()` dispatches,
 and no dependency.
 
+**Every nav item is a real link.** `SideNav` takes an `href` per item and only swallows the
+plain left click; ⌘/Ctrl-click, middle-click, Copy Link and Open in New Tab are handed to
+the browser. A URL that cannot be copied out of the chrome that shows it is not a URL.
+
+### A pasted URL survives the sign-in it triggers
+
+The table above is also an **allowlist**, `returnTarget()` in `src/console/routes.ts`, and
+that is why the table lives apart from the console that renders it: the signed-out screens
+need it too.
+
+Someone pasted `/applications`, has no session, and is shown the sign-in screen. The path is
+what they were sent, so it is what they get back:
+
+| Path they arrived on | Where signing in lands them |
+|---|---|
+| a path in the route table | that path |
+| `/login`, `/signup`, `/consent`, `/reset-password` | `/` → the first section they may see |
+| anything else | `/` → the first section they may see |
+
+Password and BankID sign-in never leave the page, so for those it is only a matter of not
+overwriting the address bar. A **social** sign-in does leave: the value is handed to the
+provider as `callbackURL` and comes back through a redirect the issuer performs, which is
+exactly why an allowlist of literal paths rather than "whatever was in the address bar" —
+the alternative is an open redirect with a round trip through Google attached. The refusal
+(`errorCallbackURL`) comes back to the same screen, so a retry still lands where it was going.
+
+### The drawer below 900px
+
+The sidebar becomes an overlay, and an overlay has to answer for focus. It renders *before*
+the hamburger in DOM order, so opening it and leaving focus on the trigger would send the
+next Tab into the page behind the scrim. Opening moves focus to the first nav link, Escape
+closes, and closing — by Escape, by the scrim, or by picking a section — puts focus back on
+the hamburger rather than leaving it on an element that is now `visibility: hidden`.
+
 ## Component inventory
 
 | Used for | From |
@@ -90,8 +124,15 @@ and no dependency.
 | Card, Field, Centered on the hand-off screens | `src/primitives.tsx` — deliberately **not** the branded set |
 
 **What `@substrat-run/ui` does not have:** a single-person icon. `users` is a group, and
-"Your account" is emphatically not the directory, so `console/Console.tsx` inlines Lucide's
-`circle-user` locally. A shared icon set earns an entry from a second caller, not the first.
+"Your account" is emphatically not the directory, so `console/routes.ts` inlines Lucide's
+`circle-user` beside the route it belongs to. A shared icon set earns an entry from a second
+caller, not the first.
+
+Two additions were made to `@substrat-run/ui` rather than worked around here, because both
+are the component's business and not this app's: `SideNavItem.href` (above), and a forwarded
+ref on `SideNav` and `IconButton` — an off-canvas drawer cannot manage its own focus from
+outside the elements involved. Both are additive; `apps/console` passes neither and renders
+exactly as before.
 
 ## Migration note
 

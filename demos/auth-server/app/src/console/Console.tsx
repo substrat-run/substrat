@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { EmptyState, IconButton, SideNav, SubIcon, SubIcons, useMediaQuery } from '@substrat-run/ui';
 import type { SideNavSection } from '@substrat-run/ui';
 import { discovery, type Discovery, type Session } from '../api';
@@ -10,50 +10,9 @@ import { IssuerPanel } from '../views/Issuer';
 import { ProvidersPanel } from '../views/Providers';
 import { UsersView } from '../views/Users';
 import { navigate, usePathname } from './router';
+import { ROUTES } from './routes';
 // (`console.css` is imported from main.tsx, not here: its load ORDER relative to tokens.css
 //  decides which set wins the property they share, and only main.tsx can guarantee it.)
-
-/**
- * Lucide `circle-user`. `@substrat-run/ui` has `users` (a group) but no single-person icon,
- * and "Your account" is emphatically not the directory — borrowing the group glyph would say
- * the wrong thing in the one place a non-administrator ever looks. Inlined rather than added
- * to the package: this app is the only caller so far, and a shared icon set earns an entry
- * from a second one.
- */
-const ICON_ACCOUNT =
-  '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="10" r="3"/><path d="M7 20.7a8 8 0 0 1 10 0"/>';
-
-interface Route {
-  path: string;
-  label: string;
-  icon: string;
-  /** Which nav group it sits in — the order of first appearance is the order on screen. */
-  group: string;
-  /** False for the one screen an ordinary person of this issuer reaches. */
-  adminOnly: boolean;
-}
-
-/**
- * The route table. Two groupings are deliberate rather than inherited from the order the
- * panels happened to grow in:
- *
- * - **BankID is a sign-in method, beside the OAuth providers** — not a section of its own
- *   because it is exotic. It is separate from "Sign-in providers" only because it is
- *   configured on completely different terms (an mTLS certificate and an environment, no
- *   client id and no redirect URI to register), so one editor could not serve both.
- * - **Access sits with them, not with the issuer's settings.** It reads as a lone toggle
- *   between two registries today; it is in fact the answer to "who may get in at all",
- *   which is the same question the providers list answers one upstream at a time.
- */
-const ROUTES: Route[] = [
-  { path: '/users', label: 'Users', icon: SubIcons.users, group: 'Directory', adminOnly: true },
-  { path: '/applications', label: 'Applications', icon: SubIcons.layers, group: 'Directory', adminOnly: true },
-  { path: '/providers', label: 'Sign-in providers', icon: SubIcons.globe, group: 'Sign-in', adminOnly: true },
-  { path: '/bankid', label: 'BankID', icon: SubIcons.box, group: 'Sign-in', adminOnly: true },
-  { path: '/access', label: 'Access', icon: SubIcons.sliders, group: 'Sign-in', adminOnly: true },
-  { path: '/issuer', label: 'Issuer', icon: SubIcons.cog, group: 'Issuer', adminOnly: true },
-  { path: '/account', label: 'Your account', icon: ICON_ACCOUNT, group: 'You', adminOnly: false },
-];
 
 function sectionsFor(admin: boolean): SideNavSection[] {
   const visible = ROUTES.filter((r) => admin || !r.adminOnly);
@@ -61,7 +20,10 @@ function sectionsFor(admin: boolean): SideNavSection[] {
   for (const route of visible) {
     let section = groups.find((g) => g.title === route.group);
     if (!section) groups.push((section = { title: route.group, items: [] }));
-    section.items.push({ value: route.path, label: route.label, icon: <SubIcon d={route.icon} /> });
+    // `href` as well as `value`: the screen HAS a URL, so the nav item should be a link a
+    // browser can copy, open in a tab, or middle-click. `onSelect` still handles the plain
+    // click, so a normal navigation stays same-document.
+    section.items.push({ value: route.path, href: route.path, label: route.label, icon: <SubIcon d={route.icon} /> });
   }
   return groups;
 }
@@ -83,6 +45,8 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
   // Below this the sidebar becomes an overlay rather than a column — see console.css.
   const compact = useMediaQuery('(max-width: 900px)');
   const [navOpen, setNavOpen] = useState(false);
+  const navRef = useRef<HTMLElement>(null);
+  const menuRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     // The issuer's own metadata: `ProvidersPanel` shows the callback URL an upstream has to
@@ -95,6 +59,28 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
   useEffect(() => {
     if (!compact) setNavOpen(false);
   }, [compact]);
+
+  // An opened drawer takes focus, Escape closes it, and closing gives focus back to the
+  // trigger. Without the first of those the nav is visible but unreachable: it sits BEFORE
+  // the trigger in DOM order, so Tab from the hamburger walks into the page behind the scrim
+  // instead of into the navigation that just appeared. Without the last, focus is left on an
+  // element that closing has just made `visibility: hidden`, and the next Tab starts over at
+  // the top of the document.
+  useEffect(() => {
+    if (!compact || !navOpen) return;
+    navRef.current?.querySelector<HTMLElement>('a[href], button')?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      // All three ways out — Escape, the scrim, picking a section — end with the drawer gone
+      // and the hamburger the thing on screen that opened it. `menuRef` is null once the
+      // layout is wide again, and then there is nothing to return to.
+      menuRef.current?.focus();
+    };
+  }, [compact, navOpen]);
 
   const visible = ROUTES.filter((r) => admin || !r.adminOnly);
   // `/account` is `adminOnly: false`, so this list is never empty for either audience — the
@@ -118,6 +104,7 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
     <div className="console-root" data-theme="dark" style={{ colorScheme: 'dark' }}>
       {compact && navOpen && <div className="console-scrim" onClick={() => setNavOpen(false)} />}
       <SideNav
+        ref={navRef}
         sections={sectionsFor(admin)}
         activeValue={active?.path}
         onSelect={(path) => {
@@ -167,7 +154,7 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
       <div className="console-main">
         <header className="console-topbar">
           {compact && (
-            <IconButton label="Open navigation" onClick={() => setNavOpen(true)}>
+            <IconButton ref={menuRef} label="Open navigation" onClick={() => setNavOpen(true)}>
               <SubIcon d={SubIcons.menu} />
             </IconButton>
           )}

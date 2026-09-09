@@ -276,12 +276,23 @@ export async function discovery(): Promise<Discovery | null> {
  * client's `redirectPlugin` follows it. `errorCallbackURL` is what makes a refusal visible —
  * "account not linked" is a real outcome (see the trust toggle in the providers panel) and
  * without it the browser comes back to a blank sign-in screen with no reason given.
+ *
+ * `returnTo` is where the browser lands afterwards, and it is the ONLY thing carrying a
+ * pasted console URL across this round trip: nothing else survives the navigation to the
+ * provider and back. Callers pass `returnTarget(...)`, an allowlist of the console's own
+ * paths — this value ends up in a redirect the issuer performs, so an arbitrary one would be
+ * an open redirect with a trip through Google attached. The refusal comes back to the SAME
+ * screen, so retrying after "connect it under Sign-in methods" still lands where it was going.
  */
-export async function signInSocial(providerId: string, oauthQuery?: string | null): Promise<void> {
+export async function signInSocial(
+  providerId: string,
+  oauthQuery?: string | null,
+  returnTo = '/',
+): Promise<void> {
   const { error } = await authClient.signIn.social({
     provider: providerId,
-    callbackURL: '/',
-    errorCallbackURL: '/?social_error=1',
+    callbackURL: returnTo,
+    errorCallbackURL: `${returnTo}?social_error=1`,
     ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
   } as Parameters<typeof authClient.signIn.social>[0]);
   if (error) throw new Error(error.message ?? `could not start sign-in with ${providerId}`);
