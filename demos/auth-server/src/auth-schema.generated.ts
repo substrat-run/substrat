@@ -47,6 +47,7 @@ export const session = sqliteTable(
   userAgent: text('user_agent'),
   userId: text('user_id').references(() => user.id, { onDelete: 'cascade' }).notNull(),
   impersonatedBy: text('impersonated_by'),
+  signInProvider: text('sign_in_provider'),
   },
   (table) => [index('session_user_id_idx').on(table.userId)],
 );

@@ -100,5 +100,17 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
     }
   }
 
+  // Per-client sign-in policy (`src/sign-in-policy.ts`): `session` grew `sign_in_provider`,
+  // the method each session was established with, and `IF NOT EXISTS` cannot add a column to
+  // a table that already exists. Nullable with NO backfill, deliberately: a session made
+  // before this column existed has no honest value, and `policyAdmits` refuses a null under
+  // any policy — so the upgrade costs those sessions one re-login at a restricted client and
+  // never guesses a method on their behalf.
+  const session = columnsOf(sql, 'session');
+  if (session.length > 0 && !session.includes('sign_in_provider')) {
+    sql.exec('ALTER TABLE session ADD COLUMN sign_in_provider TEXT');
+    upgrade.added.push('session.sign_in_provider');
+  }
+
   return upgrade;
 }

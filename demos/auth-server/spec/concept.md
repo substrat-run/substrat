@@ -334,14 +334,66 @@ deliberately Clerk-shaped (`colorPrimary`, `colorBackground`, `borderRadius`, `l
 custom property in the SPA's `tokens.css`. The dashboard's client editor exposes the common
 keys as an **Appearance** section; the rest ride in the metadata JSON.
 
-The public read (`GET /api/branding?client_id=…`, `/__branding` in the DO) returns **only**
-the sanitized theme — never the client's name, icon or existence. Unknown, disabled and
-unthemed clients all answer `{ theme: {} }` byte-identically, so the endpoint cannot become
+The public read (`GET /api/client-options?client_id=…`, `/__client-options` in the DO)
+returns **only** the sanitized theme and the sign-in methods below — never the client's name,
+icon or existence. Unknown, disabled and unconfigured clients all answer with the issuer's
+plain defaults, so the endpoint cannot become
 the registry-enumeration oracle that `public-client-prelogin`'s signed-query gate exists to
 prevent; naming the application stays that endpoint's job. Values are validated key by key
 on the way out (hex colors, a bounded px radius, https/data-image logo URLs), because they
 land in CSS custom properties and an `<img src>` on the most security-sensitive origin this
 demo owns — and a typo in one color drops that color, not the whole theme.
+
+## Per-client sign-in methods
+
+A relying party can also decide **which ways people may sign in to it**: "everyone who
+reaches us comes through our Entra directory", said per client rather than per issuer. The
+same issuer can therefore send one vendor's staff to Microsoft alone while the next client
+keeps Microsoft, Google and passwords, with no second deploy and no second issuer.
+
+Stored where the theme is, and for the same reasons: a `signIn` object in the client's own
+`metadata` (`{ "providers": ["microsoft"], "password": false }`), written by the existing
+admin PATCH. Absent means every method the issuer offers, so no existing client changes
+behaviour. `providers` absent is "any upstream", `[]` is "none of them" — a client that takes
+passwords only. The one that decides this column rather than a new one:
+`clientRegistrationRequestSchema` carries no `metadata` field, so **dynamic registration
+cannot write a policy**. A stranger self-registering through
+`allowUnauthenticatedClientRegistration` gets the default and no way to say otherwise. The
+policy is the operator's, which is the only way it could be one.
+
+**It is enforced at `/oauth2/authorize`, not on the screen.** Drawing one button is
+decoration: `POST /sign-in/social` names its provider directly, and a session established any
+way at all resumes an authorize request into a code. So `src/auth.ts` carries a before-hook on
+that endpoint — the one place where the client id is the request's own and the session is
+whoever holds the browser — and what it reads is `session.sign_in_provider`, the method the
+current session was established with, stamped at session creation by the same config. That
+column is the piece Better Auth does not otherwise have: `account` records which providers a
+user has *ever* linked, which is a different question from the one a directory-restricted
+client is asking. An unstamped session (one that predates the column, or an administrator's
+impersonation) is refused under any policy and admitted under none — a restriction that fails
+open is not one, and the cost is a single re-login.
+
+The refusal is `max_age=0`, and the plugin does the rest: it redirects to the login page with
+the signed query, or answers `login_required` at the redirect URI for a relying party that
+asked for `prompt=none`. Not the more obvious `prompt=login`, for two library facts — the
+authorize query schema refuses `none` combined with any other prompt value, so adding `login`
+to a silent request would turn it into an `invalid_request` blaming the relying party for
+something we did; and `isWithinMaxAge` special-cases zero as never satisfied, so nothing can
+accidentally meet it. It cannot loop: the plugin strips `max_age` from the query it resumes
+after a fresh sign-in.
+
+**One method means no screen.** When a client's policy leaves exactly one provider and no
+password, the login page sends the browser straight there rather than showing a card with a
+single button. Three conditions guard it, and each has a failure behind it: the narrowing must
+be the client's own (an issuer that merely happens to have one provider still shows the
+password form, and skipping the screen there would be skipping a real choice); there must be
+no refusal in the URL (this screen is where a rejected sign-in comes back to, and redirecting
+again would loop the person past the reason unread); and it fires once per mount, or React's
+double-invoked effect starts two sign-ins and abandons one half-open. BankID is "straight
+through" to its own QR screen instead — it is not a redirect.
+
+The console's own sign-in has no client and is never narrowed. That is also the way back in
+when a client is pinned to an upstream that has broken.
 
 ## Storage
 

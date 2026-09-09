@@ -38,7 +38,8 @@ export const SCHEMA_STATEMENTS: string[] = [
     ip_address TEXT,
     user_agent TEXT,
     user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE,
-    impersonated_by TEXT)`,
+    impersonated_by TEXT,
+    sign_in_provider TEXT)`,
   `CREATE TABLE IF NOT EXISTS account (
     id TEXT PRIMARY KEY NOT NULL,
     issuer TEXT NOT NULL,

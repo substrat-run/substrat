@@ -432,7 +432,7 @@ export async function disconnectProvider(accountId: string): Promise<void> {
   if (error) throw new Error(error.message ?? 'could not disconnect that sign-in method');
 }
 
-/* ---- per-client theming ---- */
+/* ---- what the login screen knows about the client that sent someone here ---- */
 
 /**
  * The theme a relying party's operator stored in its client `metadata.theme` — the
@@ -454,15 +454,54 @@ export interface ClientTheme {
   title?: string;
 }
 
-/** The sanitized theme for a client id. Any failure is the default theme, never an error —
- *  a person mid-sign-in must reach the form whatever happened to the branding read. */
-export async function clientBranding(clientId: string): Promise<ClientTheme> {
+/**
+ * The sign-in methods ONE relying party accepts — the issuer's own live providers already
+ * narrowed by that client's policy (`src/sign-in-policy.ts`), so this list is what the screen
+ * should draw rather than something to filter again here.
+ *
+ * `restricted` says an operator narrowed this client deliberately. It is what separates "the
+ * only button, because that is all this application allows" from "the only button, because
+ * that is all the issuer has" — and only the first may skip the screen and redirect straight
+ * through.
+ *
+ * An empty `providers` with `password: false` is a real answer, not a loading state: a policy
+ * whose provider was removed from the issuer afterwards. The screen says so plainly instead
+ * of showing a form that cannot work.
+ */
+export interface ClientSignIn {
+  providers: PublicProvider[];
+  password: boolean;
+  restricted: boolean;
+}
+
+/** Theme + sign-in methods for a client id, in one read. */
+export interface ClientOptions {
+  theme: ClientTheme;
+  signIn: ClientSignIn;
+}
+
+/**
+ * The per-client read behind the login screen. Any failure falls back to the issuer's plain
+ * defaults — an unbranded card offering everything — because a person mid-sign-in must reach
+ * a form whatever happened to this request.
+ *
+ * The fallback is deliberately the PERMISSIVE one, and it is safe here for one reason only:
+ * this read decides what is drawn, never what is accepted. The policy itself is enforced at
+ * `/oauth2/authorize`, where no browser gets a vote — so the worst a failed read can do is
+ * offer a button that the issuer then refuses to honour.
+ */
+export async function clientOptions(clientId: string, issuerProviders: PublicProvider[]): Promise<ClientOptions> {
+  const fallback: ClientOptions = {
+    theme: {},
+    signIn: { providers: issuerProviders, password: true, restricted: false },
+  };
   try {
-    const res = await fetch(`/api/branding?client_id=${encodeURIComponent(clientId)}`);
-    if (!res.ok) return {};
-    return ((await res.json()) as { theme?: ClientTheme }).theme ?? {};
+    const res = await fetch(`/api/client-options?client_id=${encodeURIComponent(clientId)}`);
+    if (!res.ok) return fallback;
+    const body = (await res.json()) as Partial<ClientOptions>;
+    return { theme: body.theme ?? {}, signIn: body.signIn ?? fallback.signIn };
   } catch {
-    return {};
+    return fallback;
   }
 }
 

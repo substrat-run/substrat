@@ -106,6 +106,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 1
 .toggle span { display: block; }
 .toggle strong { display: block; font-weight: 600; margin-bottom: 2px; }
 
+/* the per-client sign-in methods (`src/sign-in-policy.ts`), indented under their toggle so
+   the list reads as what "accept every method" was turned off in favour of */
+.methods { display: flex; flex-direction: column; gap: 8px; margin: 2px 0 0 26px; }
+
 /* the application registry */
 .grid td.uris { overflow-wrap: anywhere; }
 .grid td.uris div { padding: 1px 0; }

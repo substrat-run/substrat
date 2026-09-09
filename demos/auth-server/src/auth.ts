@@ -1,4 +1,5 @@
 import { betterAuth, type BetterAuthOptions } from 'better-auth';
+import { createAuthMiddleware, getSessionFromCtx } from 'better-auth/api';
 import type { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { oauthProvider, type ClientMetadataResourceFetch } from '@better-auth/oauth-provider';
 import { cimd } from '@better-auth/cimd';
@@ -9,6 +10,7 @@ import type { EmailAddress, EmailTransport } from '@substrat-run/adapter-email';
 import { resetPasswordEmail, verifyEmail } from './email.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
+import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
 
 /**
  * The Better Auth instance that IS this standalone OIDC provider. Runtime-agnostic: the
@@ -119,6 +121,16 @@ export interface AuthDeps {
    * the endpoints do not exist, which is the honest version of a flow that could not finish.
    */
   bankid?: BankIdPluginOptions;
+  /**
+   * One relying party's sign-in policy, by client id (`src/sign-in-policy.ts`) — read from
+   * the registry by the caller, on the same per-request basis as everything else here, so an
+   * operator narrowing a client decides the very next authorize request.
+   *
+   * A callback rather than the rows, because this module is runtime-agnostic and the two
+   * stores are not: the Durable Object reads its own SQLite, the dev server reads
+   * better-sqlite3. Undefined ⇒ no client is restricted, and the hook below never runs.
+   */
+  signInPolicyFor?: (clientId: string) => SignInPolicy | undefined;
 }
 
 /**
@@ -309,6 +321,88 @@ export function buildAuth(deps: AuthDeps) {
          */
         ...(deps.autoLinkAccounts === false ? { disableImplicitLinking: true } : {}),
       },
+    },
+    /**
+     * The session carries WHICH METHOD established it (`src/sign-in-policy.ts`).
+     *
+     * Better Auth records the providers a USER has linked, in `account` — but not the one the
+     * person in front of us used just now, and those are different questions. "Has a Microsoft
+     * identity" is satisfied forever by one link; "signed in with Microsoft" is what a client
+     * restricted to a directory is actually asking, and it is the only one an enforcement
+     * check can honour. So it is stamped here, and the authorize hook below reads it.
+     *
+     * `input: false` — nothing a caller sends can set it. The stamp is derived from the path
+     * the session was created on and from nothing else.
+     */
+    session: {
+      additionalFields: {
+        signInProvider: { type: 'string', required: false, input: false },
+      },
+    },
+    databaseHooks: {
+      session: {
+        create: {
+          /**
+           * The stamp itself. `ctx` is the endpoint context Better Auth carries ambiently, so
+           * this fires for EVERY session — including the two this issuer's own plugins mint
+           * through `internalAdapter.createSession` (BankID, the Supabase bridge), which pass
+           * no context of their own. A path the vocabulary does not name stamps `null`, which
+           * every policy then refuses; see `signInMethodOfPath` for why that direction.
+           */
+          before: async (_session, ctx) => ({ data: { signInProvider: signInMethodOfPath(ctx?.path) } }),
+        },
+      },
+    },
+    hooks: {
+      /**
+       * PER-CLIENT SIGN-IN POLICY, enforced (`src/sign-in-policy.ts`).
+       *
+       * `/oauth2/authorize` is the only place this can live. The login screen showing one
+       * button is decoration — `POST /sign-in/social` names its provider directly, and a
+       * session established ANY way at all resumes an authorize request into a code. Here the
+       * client id is the request's own, the session is whoever is holding the browser, and the
+       * two can finally be compared.
+       *
+       * The refusal is `max_age=0` — re-authenticate — and the plugin does the rest: it
+       * redirects to `loginPage` with the signed query (where the screen, reading the same
+       * policy, offers only the methods that would pass), and for a relying party that asked
+       * for `prompt=none` it answers `login_required` at the redirect URI instead, which is
+       * the spec's own answer and one we would otherwise have had to build by hand over a URI
+       * we have not validated.
+       *
+       * `max_age=0` rather than the more obvious `prompt=login`, for two library facts. The
+       * authorize query schema REFUSES `none` combined with any other prompt value, so adding
+       * `login` to a silent request turns it into `invalid_request` — a refusal that blames
+       * the relying party for something we did. And `isWithinMaxAge` special-cases zero as
+       * never satisfied, so this cannot be accidentally met by a session created in the same
+       * millisecond. One lever, both paths, no clock races. It can only ever be stricter than
+       * what the client asked for: an untouched request is one that passed.
+       *
+       * It cannot loop: the plugin STRIPS `max_age` from the query it resumes after a fresh
+       * sign-in, and the session that comes back through here is stamped with whatever the
+       * person just used. Satisfy the policy and this hook is a no-op; refuse to, and you are
+       * asked again — by a screen that only offers what it will accept.
+       *
+       * This runs on the resume too. `oauthProvider` re-enters the endpoint through
+       * `dispatchAuthEndpoint`, which is the hook-running path — deliberately, per its own
+       * docs — so a sign-in that carried `oauth_query` for a restricted client is checked at
+       * the moment it tries to become a code, not merely on the way in.
+       */
+      before: createAuthMiddleware(async (ctx) => {
+        if (ctx.path !== '/oauth2/authorize' || !deps.signInPolicyFor) return;
+        const query = ctx.query as Record<string, string | undefined> | undefined;
+        const clientId = query?.client_id;
+        if (!clientId) return;
+        const policy = deps.signInPolicyFor(clientId);
+        if (!policy) return;
+        // No session is not this hook's business: the plugin already sends that person to the
+        // login screen, which applies the same policy to what it draws.
+        const session = await getSessionFromCtx(ctx);
+        if (!session) return;
+        const method = (session.session as Record<string, unknown>).signInProvider;
+        if (policyAdmits(policy, typeof method === 'string' ? method : null)) return;
+        return { context: { query: { ...query, max_age: '0' } } };
+      }),
     },
     disabledPaths: ['/token'],
     secret: deps.secret,

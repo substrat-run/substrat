@@ -17,6 +17,7 @@ import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
+import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
@@ -171,6 +172,9 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // quietly ignoring the operator's policy.
       supabase: supabaseBridgeFrom(cfg, accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link'),
       bankid: this.bankid(readBankIdConfig(this.ctx.storage.sql)),
+      // Read per request like everything else here, so narrowing a client in the dashboard
+      // decides the very next authorize request rather than the next deploy.
+      signInPolicyFor: (clientId) => readSignInPolicy(this.ctx.storage.sql, clientId),
     });
   }
 
@@ -316,12 +320,22 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
    * and it says nothing a visitor could not learn by posting to the endpoints themselves.
    */
   async issuerState(): Promise<IssuerState> {
-    const bankid = publicBankIdFrom(readBankIdConfig(this.ctx.storage.sql), Boolean(this.env.BANKID));
     return {
       needsSetup: this.needsSetup(),
       signupEnabled: isTruthy(this.effectiveCfg()[ALLOW_SIGNUP]),
-      providers: [...publicProvidersFrom(readProviders(this.ctx.storage.sql)), ...(bankid ? [bankid] : [])],
+      providers: this.offeredProviders(),
     };
+  }
+
+  /**
+   * Every sign-in button this issuer could draw: the enabled upstream rows, plus BankID when
+   * it is both configured and presentable. The issuer-wide answer — a client's own policy
+   * narrows it (`sign-in-policy.ts`), and both readers below go through here so the two
+   * cannot come to disagree about what exists.
+   */
+  private offeredProviders(): { id: string; label: string }[] {
+    const bankid = publicBankIdFrom(readBankIdConfig(this.ctx.storage.sql), Boolean(this.env.BANKID));
+    return [...publicProvidersFrom(readProviders(this.ctx.storage.sql)), ...(bankid ? [bankid] : [])];
   }
 
   /**
@@ -345,9 +359,10 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
 
   /**
    * The DO's HTTP surface. Three `/__*` control paths — `/__session` resolves the request to
-   * `{ sub, email, name, role }` (or null), `/__branding` is the public per-client theme read
-   * for the login/consent screens (see `branding.ts` — it answers identically for unknown and
-   * unthemed clients, so it needs no gate), and `/__admin/*` is the issuer's own admin API
+   * `{ sub, email, name, role }` (or null), `/__client-options` is the public per-client read
+   * for the login/consent screens — the theme (`branding.ts`) and the sign-in methods that
+   * client accepts (`sign-in-policy.ts`), which answer identically for an unknown and an
+   * unconfigured client, so it needs no gate, and `/__admin/*` is the issuer's own admin API
    * (the relying-party registry + settings, `admin`-gated inside). Everything else is a
    * Better Auth request — sign-in, sign-up, the whole OIDC surface (discovery, authorize,
    * token, jwks, userinfo), and Better Auth's own admin API.
@@ -361,8 +376,12 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
       });
     if (url.pathname === '/__session') return Response.json(await session(request.headers));
-    if (url.pathname === '/__branding') {
-      return Response.json(clientBranding(this.ctx.storage.sql, url.searchParams.get('client_id')));
+    if (url.pathname === '/__client-options') {
+      const clientId = url.searchParams.get('client_id');
+      return Response.json({
+        ...clientBranding(this.ctx.storage.sql, clientId),
+        signIn: clientSignIn(this.ctx.storage.sql, clientId, this.offeredProviders()),
+      });
     }
     if (url.pathname.startsWith('/__admin')) {
       const api = new Hono().route(

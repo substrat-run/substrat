@@ -6,23 +6,24 @@ import {
   bankidQr,
   bankidStart,
   requestPasswordReset,
-  signIn,
+  signIn as signInWithPassword,
   signInSocial,
   type BankIdStart,
+  type ClientSignIn,
   type ClientTheme,
-  type PublicProvider,
 } from '../api';
 import { returnTarget } from '../console/routes';
 import { Centered, Card, Field } from '../primitives';
 
 export function SignIn({
-  onDone, signupEnabled, oauthQuery, onSignUp, providers, socialError, theme,
+  onDone, signupEnabled, oauthQuery, onSignUp, signIn, socialError, theme,
 }: {
   onDone: () => void;
   signupEnabled: boolean;
   oauthQuery: string | null;
   onSignUp: () => void;
-  providers: PublicProvider[];
+  /** What THIS client accepts (`src/sign-in-policy.ts`), already narrowed server-side. */
+  signIn: ClientSignIn;
   socialError: string | null;
   theme: ClientTheme;
 }) {
@@ -31,14 +32,85 @@ export function SignIn({
   const [err, setErr] = useState<string | null>(socialError);
   const [notice, setNotice] = useState<string | null>(null);
   const [bankidOpen, setBankidOpen] = useState(false);
+  const { providers, password: passwordEnabled } = signIn;
   // A signed authorize query ⇒ a relying party sent this person here, not an operator opening
   // the console. Same form either way, but promising the dashboard would be a lie about where
   // they end up.
   const forOidc = oauthQuery !== null;
+
+  /**
+   * The one method, when there IS only one — no choice to present, so no screen to present it
+   * on. Every clause of this condition is load-bearing:
+   *
+   *  - `restricted`: the narrowing was an operator's decision about this application. An
+   *    issuer that merely happens to have one provider still shows the password form, and a
+   *    screen that skipped itself for that reason would be skipping a choice the visitor has.
+   *  - `!passwordEnabled` and exactly one provider: anything else is a choice.
+   *  - `!socialError`: this screen is where a refused sign-in comes back to. Redirecting
+   *    again from here would send the person round the same failing loop with the reason
+   *    flashing past unread — the ONE case where the automatic thing must not happen.
+   *
+   * There is no `oauthQuery` clause and there does not need to be: `restricted` cannot be
+   * true without a client id, and the console's own sign-in has no client.
+   */
+  const only = providers.length === 1 && !passwordEnabled ? providers[0] : undefined;
+  const straightThrough = signIn.restricted && only !== undefined && !socialError;
+  const [redirecting, setRedirecting] = useState(straightThrough);
+  /** Fired once per mount, whatever React does with the effect. Without this, StrictMode's
+   *  double-invoke starts two sign-ins, each minting its own OAuth state — the last
+   *  navigation wins and the others are abandoned half-open at the issuer (observed). */
+  const started = useRef(false);
+
+  useEffect(() => {
+    if (!straightThrough || !only || started.current) return;
+    started.current = true;
+    // BankID is not a redirect — the browser stays here while the person approves in the app —
+    // so "straight through" means its own screen rather than a navigation.
+    if (only.id === 'bankid') {
+      setBankidOpen(true);
+      setRedirecting(false);
+      return;
+    }
+    void (async () => {
+      try {
+        await signInSocial(only.id, oauthQuery, returnTarget(window.location.pathname));
+      } catch (e) {
+        // The redirect never happened, so this screen is still what the person is looking at:
+        // show the failure and let them press the button themselves.
+        setRedirecting(false);
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }, [straightThrough, only, oauthQuery]);
+
   // BankID is in the same providers list but is not a redirect: the browser stays here while
   // the person approves in the app, so its button opens a screen instead of leaving.
   if (bankidOpen) {
     return <BankIdSignIn oauthQuery={oauthQuery} theme={theme} onDone={onDone} onBack={() => setBankidOpen(false)} />;
+  }
+  if (redirecting && only) {
+    return (
+      <Centered>
+        <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+          <p className="muted">Continuing to {only.label}…</p>
+        </Card>
+      </Centered>
+    );
+  }
+  // A policy naming a provider this issuer no longer offers, with no password to fall back
+  // on. Saying so is the honest answer; a sign-in form the authorize hook would refuse to
+  // honour is not (see `effectiveSignIn`).
+  if (!providers.length && !passwordEnabled) {
+    return (
+      <Centered>
+        <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+          <p className="error">
+            This application accepts no sign-in method this issuer currently offers. Its
+            administrator has to enable one before anyone can sign in to it.
+          </p>
+        </Card>
+      </Centered>
+    );
   }
   return (
     <Centered>
@@ -70,46 +142,53 @@ export function SignIn({
                 Continue with {provider.label}
               </button>
             ))}
-            <div className="or"><span>or</span></div>
+            {passwordEnabled && <div className="or"><span>or</span></div>}
           </div>
         )}
-        <Field label="Email" value={email} onChange={setEmail} type="email" />
-        <Field label="Password" value={password} onChange={setPassword} type="password" />
-        {err && <p className="error">{err}</p>}
-        {notice && <p className="notice">{notice}</p>}
-        <button
-          className="btn primary"
-          onClick={async () => {
-            setErr(null);
-            try {
-              // `resumed` ⇒ an authorize request took over and the browser is already on its
-              // way back to the relying party; re-rendering here would flash the dashboard.
-              const { resumed } = await signIn(email, password, oauthQuery);
-              if (!resumed) onDone();
-            } catch (e) {
-              setErr(e instanceof Error ? e.message : String(e));
-            }
-          }}
-        >
-          Sign in
-        </button>
-        <button
-          className="btn link"
-          onClick={async () => {
-            setErr(null);
-            setNotice(null);
-            if (!email) return setErr('Enter your email first, then request a reset.');
-            try {
-              await requestPasswordReset(email);
-              setNotice('If that email has an account, a reset link is on its way.');
-            } catch (e) {
-              setErr(e instanceof Error ? e.message : String(e));
-            }
-          }}
-        >
-          Forgot password?
-        </button>
-        {signupEnabled && (
+        {err && !passwordEnabled && <p className="error">{err}</p>}
+        {passwordEnabled && (
+          <>
+          <Field label="Email" value={email} onChange={setEmail} type="email" />
+          <Field label="Password" value={password} onChange={setPassword} type="password" />
+          {err && <p className="error">{err}</p>}
+          {notice && <p className="notice">{notice}</p>}
+          <button
+            className="btn primary"
+            onClick={async () => {
+              setErr(null);
+              try {
+                // `resumed` ⇒ an authorize request took over and the browser is already on its
+                // way back to the relying party; re-rendering here would flash the dashboard.
+                const { resumed } = await signInWithPassword(email, password, oauthQuery);
+                if (!resumed) onDone();
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e));
+              }
+            }}
+          >
+            Sign in
+          </button>
+          <button
+            className="btn link"
+            onClick={async () => {
+              setErr(null);
+              setNotice(null);
+              if (!email) return setErr('Enter your email first, then request a reset.');
+              try {
+                await requestPasswordReset(email);
+                setNotice('If that email has an account, a reset link is on its way.');
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e));
+              }
+            }}
+          >
+            Forgot password?
+          </button>
+          </>
+        )}
+        {/* Sign-up here IS a password account, so a client that does not accept passwords
+            does not offer it — the endpoint would make an account nobody could use it with. */}
+        {signupEnabled && passwordEnabled && (
           <button className="btn link" onClick={onSignUp}>
             Create an account
           </button>

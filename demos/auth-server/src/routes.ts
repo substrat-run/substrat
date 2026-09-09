@@ -159,14 +159,17 @@ app.get('/api/session', async (c) => {
 });
 
 /**
- * The per-client theme for the login/consent screens (`src/branding.ts`). Public and
- * ungated on purpose: it answers `{ theme: {} }` identically for an unknown, disabled or
- * unthemed client id, so it discloses nothing about the registry — unlike a name lookup,
- * which stays behind the plugin's signed-query prelogin endpoint.
+ * What the signed-out login and consent screens may know about the client that sent someone
+ * here: its theme (`src/branding.ts`) and the sign-in methods it accepts
+ * (`src/sign-in-policy.ts`). Public and ungated on purpose — an unknown, a disabled and an
+ * unconfigured client id all answer with the issuer's plain defaults, so it discloses nothing
+ * about the registry, unlike a name lookup (which stays behind the plugin's signed-query
+ * prelogin endpoint). What an operator DOES configure here is visible by construction: it
+ * decides what the screen draws, which is a thing the visitor is about to see anyway.
  */
-app.get('/api/branding', async (c) => {
+app.get('/api/client-options', async (c) => {
   const url = new URL(c.req.url);
-  url.pathname = '/__branding';
+  url.pathname = '/__client-options';
   const res = await issuerFor(c.env, c.req.raw).fetch(new Request(url, { headers: c.req.raw.headers }));
   return c.json(await res.json());
 });
