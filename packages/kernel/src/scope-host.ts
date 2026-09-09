@@ -99,6 +99,8 @@ import type {
   Page,
   CountedPage,
   FreshnessSpec,
+  EntityHistoryInput,
+  HistoryEntry,
   ErrorCode,
   PlatformRequestFailureOrigin,
   IssueEntry,
@@ -1952,6 +1954,25 @@ export interface HostAdmin {
    * `limit` is clamped to the contract ceiling and `offset` pages. Rows are positional
    * arrays aligned to `columns`.
    */
+  /**
+   * One record's event history (#1235) on a CO-LOCATED scope — `readHistory`'s
+   * answer, hoisted to the platform so a screen can render one entity's story:
+   * payloads, the K-34 authorization chain, the K-42 impersonation stamp, the PII
+   * class, the emitting operation and the version it ran as. For a dispatch
+   * vertical the route reads it through the vertical's `/internal/history`
+   * instead; this is the co-located fallback, exactly like `readScopeTable`.
+   *
+   * The nulls are facts, and the helper's contract keeps them distinct — an
+   * erased payload, an unrecorded authorization, nobody impersonating. A caller
+   * that flattens them to "missing" throws away the point of the read.
+   */
+  entityHistory(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: EntityHistoryInput,
+  ): Promise<Page<HistoryEntry>>;
+
   readScopeTable(
     actor: PlatformActorId,
     tenantId: TenantId,

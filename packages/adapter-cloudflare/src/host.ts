@@ -69,6 +69,9 @@ import {
   type AdminLogEntry,
   type OpsFailureEntry,
   type IssueEntry,
+  type EntityHistoryInput,
+  type HistoryEntry,
+  type Page,
   type SweepRunEntry,
   type SweepRunsPayload,
   type FreshnessSpec,
@@ -924,6 +927,12 @@ interface ScopeStubRpc {
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
+  entityHistory(input: {
+    entityType: string;
+    entityId: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<Page<HistoryEntry>>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1675,6 +1684,11 @@ export class CloudflareScopeHost implements ScopeHost {
    * rewind points a backout UI offers. Behind the vertical's platform-gated
    * `/internal/bookmarks`; the control plane is the gate and the auditor.
    */
+  /** One record's event history (#1235) on this host's own scope — the vertical-host read. */
+  async entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>> {
+    return this.scopeStub(scopeId).entityHistory(input);
+  }
+
   /** When this host's own scope applied each migration (#1236) — the vertical-host read. */
   async appliedMigrationsLocal(scopeId: ScopeId): Promise<AppliedMigration[]> {
     return this.scopeStub(scopeId).appliedMigrations();
@@ -3863,6 +3877,25 @@ export class CloudflareScopeHost implements ScopeHost {
         const tables = await this.scopeStub(scopeId).introspectTables();
         await this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
+      },
+      entityHistory: async (
+        actor,
+        tenantId,
+        scopeId,
+        input: EntityHistoryInput,
+      ): Promise<Page<HistoryEntry>> => {
+        // K-3 cross-check on the directory BEFORE the scope DO, like every read here.
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        const page = await this.scopeStub(scopeId).entityHistory(input);
+        await this.recordAccess(
+          actor,
+          'entityHistory',
+          { tenantId, scopeId },
+          { entityType: input.entityType, entityId: input.entityId },
+          page.entries.length,
+        );
+        return page;
       },
       readScopeTable: async (
         actor,

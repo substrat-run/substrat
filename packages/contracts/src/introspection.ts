@@ -57,6 +57,20 @@ export const readScopeTableInput = z.object({
 });
 export type ReadScopeTableInput = z.infer<typeof readScopeTableInput>;
 
+/**
+ * One record's history (#1235): the entity whose story to read, and where to
+ * continue. Cursor-paged rather than offset-paged, unlike the table read above —
+ * `readHistory` pages by the outbox id, so a new event arriving mid-walk cannot
+ * shift a page boundary and duplicate or skip an entry.
+ */
+export const entityHistoryInput = z.object({
+  entityType: z.string().min(1),
+  entityId: z.string().min(1),
+  limit: z.number().int().positive().max(SCOPE_TABLE_PAGE_MAX).optional(),
+  cursor: z.string().min(1).optional(),
+});
+export type EntityHistoryInput = z.infer<typeof entityHistoryInput>;
+
 // The hard ceiling on a console query's result — same order as a table page. The cap
 // (with the single-statement rule) is also the time bound: there is no per-query
 // timeout on either adapter, so "bounded rows out" is what keeps the read cheap.

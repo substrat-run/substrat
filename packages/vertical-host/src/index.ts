@@ -57,6 +57,10 @@ import {
   platformRequestStatus,
   platformRequestFailure,
   readScopeTableInput,
+  entityHistoryInput,
+  type EntityHistoryInput,
+  type HistoryEntry,
+  type Page,
   queryScopeInput,
   type ScopeId,
   type TenantId,
@@ -110,6 +114,7 @@ export interface VerticalScopeHost {
   appliedMigrationsLocal(
     scopeId: ScopeId,
   ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
+  entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -402,6 +407,24 @@ export function mountPlatformSurface<Env extends object>(
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json(result);
   });
+
+  // #1235: one record's event history — payloads, the K-34 chain, impersonation, the
+  // PII class. Scope bytes DO cross here, exactly as the table reads do, and for the
+  // same reason: it is the tenant's own data, answered to the tenant's own dashboard
+  // through the platform's tenant-scoped read.
+  app.get('/internal/history', async (c) =>
+    c.json(
+      await deps.hostFor(c.env).entityHistoryLocal(
+        scopeIdOf.parse(c.req.query('scopeId')),
+        entityHistoryInput.parse({
+          entityType: c.req.query('entityType'),
+          entityId: c.req.query('entityId'),
+          limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+          cursor: c.req.query('cursor') ?? undefined,
+        }),
+      ),
+    ),
+  );
 
   // #1236: when one scope's migrations actually ran — the schema-change annotation
   // release health reads. Metadata only; no scope bytes cross the boundary.

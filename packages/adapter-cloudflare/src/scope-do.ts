@@ -116,6 +116,8 @@ import {
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
+import { readHistory } from '@substrat-run/kernel';
+import type { HistoryEntry, Page } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
 
 /**
@@ -954,6 +956,27 @@ export function defineScopeDO(
           version: r.version as string,
           appliedAt: (r.applied_at as string | null) ?? null,
         }));
+    }
+
+    /**
+     * One record's event history (#1235) — `readHistory` over this scope's own
+     * outbox, which is the sanctioned read and the only one that decodes the
+     * envelope's nullable facts correctly (an erased payload, an unrecorded
+     * authorization chain, nobody impersonating). A hand-rolled SELECT here would
+     * read each of those as missing data, which is the whole reason the helper
+     * exists.
+     */
+    entityHistory(input: {
+      entityType: string;
+      entityId: string;
+      limit?: number;
+      cursor?: string;
+    }): Page<HistoryEntry> {
+      return readHistory(
+        { sql: doScopedSql(this.sql) },
+        { entityType: input.entityType, entityId: input.entityId },
+        { limit: input.limit, cursor: input.cursor },
+      );
     }
 
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {

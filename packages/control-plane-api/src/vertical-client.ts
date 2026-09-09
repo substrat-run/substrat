@@ -18,6 +18,9 @@ import type {
   OwnerClaimLink,
   QueryScopeInput,
   ReadScopeTableInput,
+  EntityHistoryInput,
+  HistoryEntry,
+  Page,
   ScopeDumpTable,
   ScopeId,
   ScopeQueryResult,
@@ -637,6 +640,18 @@ export class VerticalClient {
     tables: ScopeDumpTable[],
   ): Promise<{ tables: number }> {
     return this.postInternal<{ tables: number }>('/internal/restore', { tenantId, scopeId, tables }, 'restore');
+  }
+
+  /** One record's event history (#1235) — `readHistory`'s answer, through the vertical that holds the data. */
+  async entityHistory(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>> {
+    const q = new URLSearchParams({
+      scopeId,
+      entityType: input.entityType,
+      entityId: input.entityId,
+    });
+    if (input.limit !== undefined) q.set('limit', String(input.limit));
+    if (input.cursor !== undefined) q.set('cursor', input.cursor);
+    return this.getInternal<Page<HistoryEntry>>(`/internal/history?${q.toString()}`);
   }
 
   /**

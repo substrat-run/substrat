@@ -540,6 +540,58 @@ export function scopeHostContractSuite(
       expect(journal2.filter((r) => r.module_id === '@test/mod')).toHaveLength(1);
     });
 
+    it('answers one record’s history through the platform (#1235)', async () => {
+      // `readHistory` has been the sanctioned read since #800 and, until this
+      // verb, nothing above the scope could call it — the whole point of #1235.
+      const stub = await host.getScope(alice, t1, s1);
+      await stub.invoke('test/emit-event');
+      await stub.invoke('test/emit-event', { subject: ulid(), secret: 'shh' });
+
+      const page = await host.admin.entityHistory(staff, t1, s1, {
+        entityType: 'test-thing',
+        entityId: 'x1',
+      });
+      expect(page.entries.length).toBeGreaterThanOrEqual(2);
+      expect(page.entries.every((e) => e.type === 'test.happened')).toBe(true);
+
+      // The fields a timeline exists to show, decoded rather than hand-parsed: the
+      // payload, the operation that emitted it, and the PII class that says whether
+      // the payload is personal at all.
+      const withSecret = page.entries.find(
+        (e) => (e.payload as { secret?: string } | null)?.secret === 'shh',
+      )!;
+      expect(withSecret).toBeDefined();
+      expect(withSecret.operation).toBe('test/emit-event');
+      expect(withSecret.piiClass).toBe('pseudonymous');
+      expect(withSecret.subjectId).not.toBeNull();
+      // Nobody was impersonating — a fact, not a gap, and the contract keeps the
+      // two apart.
+      expect(withSecret.impersonation).toBeNull();
+
+      // Another entity's history is a different story, never this one's.
+      const other = await host.admin.entityHistory(staff, t1, s1, {
+        entityType: 'test-thing',
+        entityId: 'no-such-record',
+      });
+      expect(other.entries).toEqual([]);
+
+      // Cursor-paged like every other list read: the page carries its own continuation.
+      const first = await host.admin.entityHistory(staff, t1, s1, {
+        entityType: 'test-thing',
+        entityId: 'x1',
+        limit: 1,
+      });
+      expect(first.entries).toHaveLength(1);
+      expect(first.nextCursor).toBe(first.entries[0]!.id);
+      const next = await host.admin.entityHistory(staff, t1, s1, {
+        entityType: 'test-thing',
+        entityId: 'x1',
+        limit: 1,
+        cursor: first.nextCursor!,
+      });
+      expect(next.entries[0]!.id).not.toBe(first.entries[0]!.id);
+    });
+
     it('answers WHEN each migration ran, newest first (#1236)', async () => {
       // `applied_at` has been written since this table shipped and read by
       // nothing — every reader wanted the frontier. This is the read that makes

@@ -30,6 +30,7 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     deleteScopeLocal: async () => note('deleteScopeLocal', undefined),
     migrationBookmarksLocal: async () => note('migrationBookmarksLocal', []),
     appliedMigrationsLocal: async () => note('appliedMigrationsLocal', []),
+    entityHistoryLocal: async () => note('entityHistoryLocal', { entries: [], nextCursor: null }),
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
