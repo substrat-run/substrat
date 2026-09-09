@@ -59,6 +59,15 @@ export const bikeShopEntities = defineEntities({
      * for `ctx.link`; this is the model's half of it.
      */
     parents: ['customer'],
+    /**
+     * A frame number identifies a bike, and a bike identifies its owner — it is
+     * the serial a police report quotes. Pseudonymous rather than direct, which
+     * is exactly why it is easy to leave out: an erasure that kept it would
+     * leave a pointer to the person it just erased. Declaring it here is what
+     * keeps a future `bike.*` event payload from carrying it, since an immutable
+     * event is the one place in a scope an erasure cannot reach.
+     */
+    erasable: ['frame_no'],
   },
 });
 

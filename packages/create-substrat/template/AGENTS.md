@@ -161,6 +161,16 @@ walk, a table the registry does not carry — the handler composes its own and n
 field the cursor walks (`paged: { sortKey: 'article' }`). Keyset, never offset: on
 live data an offset shifts between requests, so pages drop and duplicate rows.
 
+**A paged read has an HTTP half, and this route table is hand-written.** The
+operation answers with a `Page<T>` — it is transport-agnostic, and a test or a seed
+must be able to walk a list with no response to read headers off — so `src/routes.ts`
+does the projection at the edge: it forwards the page trio in (`pageInput`) and hands
+the entries back as the body with the walk in a `Link` header (`pageJson`). Forget the
+first and the endpoint is pinned to page one no matter what the operation supports;
+forget the second and it answers with an envelope where it used to answer with an
+array. Both helpers are already in `src/routes.ts` — use them for every route that
+invokes a paged operation, the engines' list reads included.
+
 ## The rules (non-negotiable)
 
 **Module code** = everything reachable from a `ModuleRegistration` (operations,

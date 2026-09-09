@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import { Hono } from 'hono';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import {
   addMoney,
@@ -14,6 +15,7 @@ import type { ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
 import { buildBikeShopHost, seedBikeShop, type BikeShopWorld } from '../src/seed.js';
+import { mountApi } from '../src/routes.js';
 
 // ============================================================================
 // The bike-shop scenario, replayed headlessly against a temp dir: a repair's
@@ -324,14 +326,81 @@ describe('bike-shop scenario', () => {
     expect(cursor).toBeNull();
     expect(walked).toEqual(['chain-9s', 'labor', 'shop-supplies', 'tube-28']);
 
-    // The customer list pages the same way, and its entries still carry the
-    // hydrated bikes — the page bounds that hydration rather than removing it.
-    const customers = await greta.invoke<Page<{ number: string; bikes: { id: string }[] }>>(
-      'shop/list-customers',
-      { limit: 1 },
-    );
-    expect(customers.entries).toHaveLength(1);
-    expect(customers.nextCursor).toBe(customers.entries[0]!.number);
-    expect(Array.isArray(customers.entries[0]!.bikes)).toBe(true);
+    // The customer list has its OWN hand-written keyset SQL, so it gets its own
+    // walk rather than being trusted because the price list's worked. Its entries
+    // still carry the hydrated bikes — the page bounds that hydration rather than
+    // removing it.
+    type CustomerEntry = { number: string; bikes: { id: string }[] };
+    const first = await greta.invoke<Page<CustomerEntry>>('shop/list-customers', { limit: 1 });
+    expect(first.entries).toHaveLength(1);
+    expect(first.nextCursor).toBe(first.entries[0]!.number);
+    expect(Array.isArray(first.entries[0]!.bikes)).toBe(true);
+
+    const seen: string[] = [];
+    let at: string | null = null;
+    for (let hop = 0; hop < 10; hop += 1) {
+      const page: Page<CustomerEntry> = await greta.invoke('shop/list-customers', {
+        limit: 1,
+        ...(at === null ? {} : { cursor: at }),
+      });
+      seen.push(...page.entries.map((c) => c.number));
+      at = page.nextCursor;
+      if (at === null) break;
+    }
+    expect(at).toBeNull();
+    // Every seeded customer, once, in the order the cursor walks — a boundary
+    // that repeated or skipped a row would show up here and nowhere else.
+    expect(seen).toEqual(['2001', '2002']);
+  });
+
+  // ROUTE-LEVEL, and it has to be: everything above calls operations through a
+  // `ScopeStub`, where a paged read's answer IS the `Page`. On the wire it is not
+  // — the entries are the body and the walk rides in a `Link` header — and this
+  // template's route table is hand-written, so nothing else holds the two halves
+  // together. A route that forwarded no cursor would pass every assertion above
+  // and still pin its endpoint to page one forever.
+  it('12. the HTTP routes forward the page and hand back a Link to the next one', async () => {
+    const app = new Hono();
+    mountApi(app, async () => greta);
+
+    const nextOf = (res: Response): string | null => {
+      // `<http://localhost/api/prices?limit=1&cursor=labor>; rel="next"` — the
+      // page size and every filter ride along, which is why a client FOLLOWS the
+      // link instead of assembling one.
+      const url = /<([^>]+)>;\s*rel="next"/.exec(res.headers.get('Link') ?? '')?.[1];
+      if (url === undefined) return null;
+      const parsed = new URL(url);
+      return `${parsed.pathname}${parsed.search}`;
+    };
+
+    const walked: string[] = [];
+    let next: string | null = '/api/prices?limit=1';
+    for (let hop = 0; hop < 10 && next !== null; hop += 1) {
+      const res = await app.request(next);
+      expect(res.status).toBe(200);
+      // The BODY is the entries — the same array this endpoint answered with
+      // before it was paged, which is what makes adopting the page cost a client
+      // nothing.
+      const body = (await res.json()) as { article: string }[];
+      expect(Array.isArray(body)).toBe(true);
+      walked.push(...body.map((p) => p.article));
+      next = nextOf(res);
+    }
+    expect(next).toBeNull();
+    expect(walked).toEqual(['chain-9s', 'labor', 'shop-supplies', 'tube-28']);
+
+    // The other hand-written paged routes forward the trio the same way. The
+    // customer list is the one with its own keyset SQL; the timeline is the
+    // kernel's own read, reached through a per-entity permission check.
+    const customers = await app.request('/api/customers?limit=1');
+    expect(((await customers.json()) as { number: string }[]).map((c) => c.number)).toEqual([
+      '2001',
+    ]);
+    expect(nextOf(customers)).toBe('/api/customers?limit=1&cursor=2001');
+
+    const timeline = await app.request(`/api/repairs/${repairId}/timeline?limit=1`);
+    expect(timeline.status).toBe(200);
+    expect((await timeline.json()) as unknown[]).toHaveLength(1);
+    expect(nextOf(timeline)).toMatch(/^\/api\/repairs\/.+\/timeline\?limit=1&cursor=.+$/);
   });
 });

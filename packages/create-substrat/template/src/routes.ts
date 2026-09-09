@@ -1,5 +1,13 @@
 import type { Context, Hono } from 'hono';
 import { problemResponse } from '@substrat-run/vertical-host';
+import {
+  isPage,
+  listPageQuery,
+  LIST_SORT_PARAM,
+  nextPageLink,
+  PAGE_LINK_HEADER,
+  PAGE_TOTAL_HEADER,
+} from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 
 /**
@@ -21,6 +29,58 @@ import type { ScopeStub } from '@substrat-run/kernel';
  * `/api/me` in the worker) — those answer "who am I on THIS host" and cannot be shared.
  */
 export type ResolveStub = (c: Context) => Promise<ScopeStub>;
+
+/**
+ * The page trio, off the query string — what a route hands a PAGED operation.
+ *
+ * A paged read takes `limit`/`cursor` (and, where its declaration offers them,
+ * `order`/`sort`) as ordinary input, so a route that forwards nothing pins its
+ * endpoint to page one forever: the operation still pages, the caller just has
+ * no way to say which page it wants. Parsed with the platform's own
+ * `listPageQuery`, so this endpoint's default page size and its ceiling are the
+ * same numbers every other list read on the platform uses — a hand-written route
+ * table is not a licence to invent a second convention.
+ *
+ * `order` and `sort` travel only when asked for, so the DECLARATION's own
+ * defaults stay the answer when a caller says nothing.
+ */
+function pageInput(c: Context): Record<string, unknown> {
+  const q = c.req.query();
+  const page = listPageQuery.parse({ limit: q['limit'], cursor: q['cursor'], order: q['order'] });
+  return {
+    limit: page.limit,
+    ...(page.cursor === undefined ? {} : { cursor: page.cursor }),
+    ...(page.order === undefined ? {} : { order: page.order }),
+    ...(q[LIST_SORT_PARAM] === undefined ? {} : { sort: q[LIST_SORT_PARAM] }),
+  };
+}
+
+/**
+ * A page's answer on the WIRE: the entries are the body, the walk rides in
+ * headers (`Link: <…?cursor=…>; rel="next"`, RFC 8288).
+ *
+ * The operation's own shape stays `Page<T>` — a test, a seed or another
+ * operation must be able to walk a list with no HTTP response to read headers
+ * off — so this is a projection at the edge, not a change to what the operation
+ * returns. Adopting paging then costs a client nothing: a list endpoint returns
+ * the array it always returned and gains a walk it did not have.
+ *
+ * `isPage` is CHECKED rather than assumed, so an operation that has not adopted
+ * `pageOf` yet reaches the client unchanged instead of being emptied into a body
+ * of `undefined`.
+ *
+ * This is the same projection `mountOperations` (@substrat-run/vertical-host)
+ * performs for a declared surface. This route table is hand-written, so it does
+ * it here — one helper, used by every paged read below.
+ */
+function pageJson(c: Context, result: unknown): Response {
+  if (!isPage(result)) return c.json(result as never);
+  const link = nextPageLink(c.req.url, result.nextCursor);
+  if (link) c.header(PAGE_LINK_HEADER, link);
+  const total = (result as { total?: unknown }).total;
+  if (typeof total === 'number') c.header(PAGE_TOTAL_HEADER, String(total));
+  return c.json(result.entries as never);
+}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): void {
@@ -57,7 +117,9 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
   });
 
   // -- customers, bikes, price list (the vertical's own tables) ---------------
-  app.get('/api/customers', async (c) => c.json(await (await S(c)).invoke('shop/list-customers')));
+  app.get('/api/customers', async (c) =>
+    pageJson(c, await (await S(c)).invoke('shop/list-customers', pageInput(c))),
+  );
   app.post('/api/customers', async (c) =>
     c.json(await (await S(c)).invoke('shop/create-customer', await c.req.json())),
   );
@@ -69,7 +131,9 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
       }),
     ),
   );
-  app.get('/api/prices', async (c) => c.json(await (await S(c)).invoke('shop/price-list')));
+  app.get('/api/prices', async (c) =>
+    pageJson(c, await (await S(c)).invoke('shop/price-list', pageInput(c))),
+  );
   app.post('/api/prices', async (c) =>
     c.json(await (await S(c)).invoke('shop/upsert-price', await c.req.json())),
   );
@@ -79,7 +143,13 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
   // the pricing moment); assign/start/report/get/list are the ENGINE's own, invoked
   // directly. Which is which is the composition boundary, visible right here.
   app.get('/api/repairs', async (c) =>
-    c.json(await (await S(c)).invoke('workorder/list', { status: c.req.query('status') })),
+    pageJson(
+      c,
+      await (await S(c)).invoke('workorder/list', {
+        status: c.req.query('status'),
+        ...pageInput(c),
+      }),
+    ),
   );
   app.post('/api/repairs', async (c) =>
     c.json(await (await S(c)).invoke('shop/create-repair', await c.req.json())),
@@ -88,10 +158,12 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
     c.json(await (await S(c)).invoke('workorder/get', { orderId: c.req.param('id') })),
   );
   app.get('/api/repairs/:id/timeline', async (c) =>
-    c.json(
+    pageJson(
+      c,
       await (await S(c)).invoke('shop/timeline', {
         entityType: 'workorder',
         entityId: c.req.param('id'),
+        ...pageInput(c),
       }),
     ),
   );
@@ -130,10 +202,14 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
   );
 
   // -- the customer portal (the per-entity proof walk) ------------------------
-  app.get('/api/portal/repairs', async (c) => c.json(await (await S(c)).invoke('shop/portal-repairs')));
+  app.get('/api/portal/repairs', async (c) =>
+    pageJson(c, await (await S(c)).invoke('shop/portal-repairs', pageInput(c))),
+  );
 
   // -- invoicing (the sibling engine, fed by event) ---------------------------
-  app.get('/api/invoicing', async (c) => c.json(await (await S(c)).invoke('invoicing/list')));
+  app.get('/api/invoicing', async (c) =>
+    pageJson(c, await (await S(c)).invoke('invoicing/list', pageInput(c))),
+  );
   app.get('/api/invoicing/:id', async (c) =>
     c.json(await (await S(c)).invoke('invoicing/get', { underlagId: c.req.param('id') })),
   );
