@@ -50,7 +50,7 @@ What it proves:
 | | |
 |---|---|
 | **Package** | `@substrat-run/demo-tock` |
-| **Engines composed** | *none* — kernel only. The nearest candidate is [metering](/engines/metering), and the concept says why it does not fit: a one-row-per-observation ledger is the wrong shape at log volume, and its closed-period floor forbids exactly the re-run this app exists to perform |
+| **Engines composed** | *none* — kernel only. The nearest candidate is [metering](/engines/metering/), and the concept says why it does not fit: a one-row-per-observation ledger is the wrong shape at log volume, and its closed-period floor forbids exactly the re-run this app exists to perform |
 | **Own tables** | `tock_sources` · `tock_schemas` · `tock_runs` · `tock_source_files` · `tock_rule_states` · `tock_salts` · `tock_observations` · `tock_field_history` · `tock_rows` · `tock_rollups` · `tock_labels` |
 | **Permission surface** | 4 keys — `report:read` · `row:read` · `run:manage` · `schema:manage` |
 | **Auth** | [OIDC only](/concepts/identity), like every other demo here |
