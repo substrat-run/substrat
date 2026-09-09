@@ -1,5 +1,52 @@
 # @substrat-run/adapter-sqlite
 
+## 0.105.0
+
+### Minor Changes
+
+- 5201683: Release health gets its time axis (#1236, completing the issue). The
+  observability seam gains an optional `serviceMetricsSeries` — the same
+  invocations bucketed over time, with the backend choosing a bucket width from
+  the window and reporting it on every row — and the Cloudflare reader
+  implements it. Absent, the route 501s rather than answering an empty series,
+  because a chart would draw that as silence.
+
+  On the dashboard, a vertical's Releases panel now opens with 24 hours of
+  traffic with every push and go-live drawn on it, as a hand-rolled SVG (the
+  shape is bars plus rules; a charting dependency would be more bytes than the
+  drawing). The series is zero-filled worker-side so an outage stays a gap
+  rather than letting its neighbours join, and markers come from the registry
+  rather than telemetry, so a push that produced no traffic still gets its line
+  — the most interesting push on the chart. Every promotion draws its own line,
+  so a version that was rolled back and put live again shows both go-lives, not
+  just the later one. Where the chart cannot be drawn it says so: a plane that
+  serves window totals but no time axis, or a window whose traffic exceeds what
+  the analytics backend will answer in one page, gets "not available" instead of
+  a flat line — a partial answer would render as an outage that never happened.
+
+  And an app's schema history is finally readable: `_substrat_migrations.applied_at`
+  has been written since the table shipped and selected by nobody, since every
+  reader wanted only the frontier. `scopeAppliedMigrations` (both adapters, plus
+  the vertical's own `/internal/migrations` for a scope whose data it holds)
+  makes "when did my schema change" answerable, and the app's Observability tab
+  lists it. Deliberately a list and not chart markers: a migration applies to one
+  scope while traffic is measured per script, and a script serves many scopes.
+
+### Patch Changes
+
+- 2338a8b: The `_substrat_schedule_state` spine table now says what it actually holds. Since the
+  freshness evaluator landed it has carried two kinds of row — schedule operations keyed
+  `module/verb`, and freshness expectations keyed `freshness:<eventType>`, where
+  `last_run_at`/`last_status` mean the last _recorded_ time and verdict rather than a run.
+  The bootstrap DDL comment on both adapters, the lazy-create sites, and the spine table
+  reference in the docs now state both shapes, and are precise about the fact that only
+  half of the "the two keys cannot collide" claim is enforced: an event type has passed a
+  regex that admits no colon, but a schedule's operation name is an unconstrained string,
+  so the other direction is convention. No schema or behaviour change.
+- Updated dependencies [5201683]
+  - @substrat-run/kernel@0.105.0
+  - @substrat-run/contracts@0.105.0
+
 ## 0.104.0
 
 ### Minor Changes
@@ -4129,7 +4176,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
