@@ -221,7 +221,9 @@ hand-written `SELECT` would have got:
 - **`id` is the entity's version at that point.** The same token
   [`ctx.versionOf`](/concepts/api-design#_7b-a-read-modify-write-says-what-it-is-writing-over) returns and `If-Match` compares, so listing
   the history, naming a version, and refusing a stale write are one vocabulary. It is
-  therefore the cursor: `ORDER BY id` is creation order, because `ulid()` is monotonic.
+  therefore the cursor: `ORDER BY id` is creation order, because the mint is monotonic.
+  The timestamp inside the id is the operation's instant — the same one `occurredAt`
+  carries — so the cursor and the column can never tell different stories about when.
 
 Do not page a spine read on `occurred_at`. `ctx.now()` is stable for a whole invocation,
 so every event one operation emits carries the *identical* instant — a cursor of
