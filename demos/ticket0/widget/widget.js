@@ -98,6 +98,19 @@
    * it would have made is skipped until the hold is up.
    */
   var heldUntil = 0;
+  /**
+   * Where the sentence in `error` came from, so a later success can take back the ones
+   * it disproves — and only those.
+   *
+   * A failed poll's notice ("can't load the latest replies") is a claim about right
+   * now, and the next poll that works is the evidence against it. Nothing cleared it
+   * before, so a single `429` — or one dropped request — left the widget apologising
+   * for the rest of the visit, under replies that were arriving normally. A failed
+   * SEND is not the same claim: that message really was not delivered, and a poll
+   * succeeding afterwards does not deliver it, so it stays until the visitor sends
+   * again.
+   */
+  var errorFrom = null;
 
   // ── shadow root ───────────────────────────────────────────────────────────
   var host = document.createElement('div');
@@ -386,6 +399,7 @@
         // fails is still a visitor looking at a chat bubble, so it says what the other
         // three say rather than whatever the desk put in the body.
         error = visitorError(err, 'start');
+        errorFrom = 'start';
         draw();
       })
       .then(function () {
@@ -672,6 +686,13 @@
     if (Date.now() < heldUntil) return Promise.resolve();
     return thread()
       .then(function (page) {
+        // The poll worked, so the last one's "can't load the latest replies" — including
+        // the one a `429` put there, which is why the hold ends visibly rather than just
+        // quietly — is no longer true. Somebody else's error is left alone.
+        if (errorFrom === 'refresh') {
+          error = null;
+          errorFrom = null;
+        }
         var next = page.entries || [];
         // "Waiting" ends when something arrives that is not ours — not when our own
         // POST resolves, because the answer is produced out of band.
@@ -689,6 +710,7 @@
         if (recover(e, refresh)) return;
         if (e && e.status === 429) heldUntil = Date.now() + e.retryAfter * 1000;
         error = visitorError(e, 'refresh');
+        errorFrom = 'refresh';
         draw();
       });
   }
@@ -705,6 +727,7 @@
     // `session.sessionId` off null and leaving the dots spinning forever.
     if (!session) {
       error = 'Not connected — reopen the chat to start a new conversation.';
+      errorFrom = 'post';
       waiting = false;
       draw();
       return;
@@ -715,6 +738,7 @@
       ta.focus();
     }
     error = null;
+    errorFrom = null;
     waiting = true;
     waitingSince = Date.now();
     gaveUp = false;
@@ -738,6 +762,7 @@
         )
           return;
         error = visitorError(e, 'post');
+        errorFrom = 'post';
         draw();
       });
   }
@@ -760,6 +785,7 @@
         // sentence and the console gets the reason — and the composer is disabled,
         // because there is nothing behind it.
         error = visitorError(e, 'start');
+        errorFrom = 'start';
         draw();
         var ta = root.getElementById('t');
         var send = root.querySelector('.send');

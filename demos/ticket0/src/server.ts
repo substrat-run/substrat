@@ -198,6 +198,10 @@ async function boot() {
       return {
         invoke,
         allowedOrigins: [...new Set([desk.origin, ...desk.devOrigins, ...declared.origins])],
+        // The rate limiter's scope. This node serves several desks at once, so without
+        // it two stand-in sites would spend one budget — the same mistake a worker
+        // isolate serving several tenants would make.
+        deskKey: `${desk.tenant}:${desk.scope}`,
       };
     },
     onCustomerMessage: (_c, { origin, conversationId, messageId, body }) => {

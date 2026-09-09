@@ -35,8 +35,24 @@ import {
 } from '@substrat-run/vertical-host';
 import { wantsHuman } from './assistant.js';
 
-/** A desk, resolved for one request: how to act as its widget service, and where it is embeddable. */
-export type WidgetDesk = PublicServiceActor;
+/**
+ * A desk, resolved for one request: how to act as its widget service, where it is
+ * embeddable, and which installation it is.
+ */
+export type WidgetDesk = PublicServiceActor & {
+  /**
+   * Which installation this is — the unit every rate-limit key is scoped to.
+   *
+   * It has to be a fact the HOST resolved, never anything the caller sent: the worker
+   * takes it from the router's SIGNED assertion of (tenant, scope), and the dev server
+   * from the desk the embedding origin picked. One script answers for many desks — a
+   * worker isolate serves every tenant the router sends it, and the dev server serves
+   * several stand-in sites at once — so without this in the key, two installations
+   * sharing an embedding origin would spend one budget, and a desk that allowlists a
+   * page could spend a neighbour's `start` allowance on it.
+   */
+  readonly deskKey: string;
+};
 
 /**
  * What one caller may do on this surface in a minute (#937).
@@ -67,14 +83,19 @@ export type WidgetDesk = PublicServiceActor;
  * A caller with no token has no identity of its own and falls into its origin's bucket
  * rather than an unlimited one.
  *
- * **Approximate by construction, in three ways, and that is the trade this demo makes.**
+ * Every key is scoped to the DESK first (`deskKey` above). One script answers for many
+ * installations, so an unscoped key would let two desks embedded on the same page spend
+ * one budget — and would let a desk that allowlists a page exhaust a neighbour's
+ * allowance for it.
+ *
+ * **Approximate by construction, in two ways, and that is the trade this demo makes.**
  * The window is fixed rather than sliding, so a caller straddling a boundary can spend
  * two budgets in a moment. The state is one `Map` in one isolate, so a worker running
- * several isolates limits per isolate. And the map is bounded: a caller spreading keys
- * faster than the window retires them evicts the oldest counters, which weakens the
- * limit rather than switching it off. The alternative — a real, shared, per-caller
- * limiter — is platform work (#936, #130), and these constants sit in one exported
- * object so it can lift them when it lands.
+ * several isolates limits per isolate. What it deliberately is NOT is resettable: the
+ * map is bounded, but a live counter is never dropped to make room — see `createLimiter`
+ * for why that distinction is the whole design. The alternative — a real, shared,
+ * per-caller limiter — is platform work (#936, #130), and these constants sit in one
+ * exported object so it can lift them when it lands.
  */
 export const WIDGET_RATE_LIMITS = {
   /** The window every budget below is spent inside, in milliseconds. */
@@ -85,7 +106,10 @@ export const WIDGET_RATE_LIMITS = {
   write: 10,
   /** Thread reads one session may make per window. Generous on purpose: see above. */
   read: 180,
-  /** How many callers are counted at once before the oldest counters are dropped. */
+  /**
+   * How many callers are counted at once. Past this, a caller with no counter of its
+   * own shares one — it never takes somebody else's.
+   */
   maxKeys: 5_000,
 } as const;
 
@@ -99,35 +123,55 @@ interface Budget {
  *
  * Returns 0 when the call is within budget, and otherwise the whole seconds until the
  * window resets — which is what the caller is told to wait.
+ *
+ * **A counter that is still live is never dropped, and that is the whole design of the
+ * bound.** The obvious way to cap the map — evict the oldest when it is full — hands the
+ * budget back to the one caller it was holding: spend a session's ten messages, mint
+ * 5,000 throwaway tokens to push that counter out, and the eleventh message starts a
+ * fresh window. So capacity is reclaimed only from counters the clock has already
+ * retired, and a caller arriving while every slot is live is charged to a shared
+ * overflow bucket — one per (desk, kind) — instead of being given one of its own.
+ *
+ * That degrades under a key flood: callers the map has no room for share an allowance
+ * and are refused sooner than they deserve. It is the right way round. A limiter that is
+ * unfair while it is being attacked still bounds what the desk spends; one that can be
+ * reset bounds nothing, which is the only property the route that costs money per
+ * request is here for.
  */
 function createLimiter(now: () => number) {
-  const budgets = new Map<string, Budget>();
+  /** One counter per caller. Never larger than `maxKeys`, and never evicted while live. */
+  const callers = new Map<string, Budget>();
+  /** One counter per (desk, kind), reached only while `callers` has no room. Tiny by shape. */
+  const overflow = new Map<string, Budget>();
 
-  /**
-   * Make room. Expired counters go first, and every counter expires within one window,
-   * so this frees the map in the ordinary case. If it does not — someone is minting
-   * keys faster than the window retires them — the oldest go too: a limiter that stops
-   * counting is worse than one that counts approximately.
-   */
-  const sweep = (at: number) => {
-    for (const [key, budget] of budgets) if (budget.resetAt <= at) budgets.delete(key);
-    for (const key of budgets.keys()) {
-      if (budgets.size < WIDGET_RATE_LIMITS.maxKeys) break;
-      budgets.delete(key);
-    }
+  /** The only way a slot is freed: the clock. */
+  const dropExpired = (map: Map<string, Budget>, at: number) => {
+    for (const [key, budget] of map) if (budget.resetAt <= at) map.delete(key);
   };
 
-  return (key: string, allowance: number): number => {
-    const at = now();
-    let budget = budgets.get(key);
+  const charge = (map: Map<string, Budget>, key: string, allowance: number, at: number): number => {
+    let budget = map.get(key);
     if (!budget || budget.resetAt <= at) {
-      if (budgets.size >= WIDGET_RATE_LIMITS.maxKeys) sweep(at);
       budget = { count: 0, resetAt: at + WIDGET_RATE_LIMITS.windowMs };
-      budgets.set(key, budget);
+      map.set(key, budget);
     }
     budget.count += 1;
     if (budget.count <= allowance) return 0;
     return Math.max(1, Math.ceil((budget.resetAt - at) / 1000));
+  };
+
+  return (bucket: string, key: string, allowance: number): number => {
+    const at = now();
+    // A key already counted keeps its counter, whatever the map's size — the check is
+    // about admitting a NEW one.
+    const room = () => callers.has(key) || callers.size < WIDGET_RATE_LIMITS.maxKeys;
+    if (!room()) {
+      // Every counter expires within one window, so this is what frees the map in the
+      // ordinary case. When it frees nothing, the caller falls to the shared bucket.
+      dropExpired(callers, at);
+      dropExpired(overflow, at);
+    }
+    return room() ? charge(callers, key, allowance, at) : charge(overflow, bucket, allowance, at);
   };
 }
 
@@ -160,12 +204,29 @@ function tooManyRequests(c: Context, retryAfter: number): Response {
 }
 
 /**
- * Which caller this is. The session token when there is one — it is what the desk
- * issued and what confines the visitor — and the embedding origin when there is not,
- * so a tokenless flood shares one bucket instead of having none.
+ * The desk `mountPublicSurface` hands a route, named again.
+ *
+ * It types what it passes as the contract it declares — `PublicServiceActor` — while
+ * `deskKey` is ticket0's own addition to it. The object IS the one this file's
+ * `resolveActor` returned from `options.resolveDesk`, so this restores a fact rather
+ * than assuming one.
  */
-const callerKey = (kind: string, token: unknown, origin: string): string =>
-  typeof token === 'string' && token !== '' ? `${kind}:t:${token}` : `${kind}:o:${origin}`;
+const deskOf = (actor: PublicServiceActor): WidgetDesk => actor as WidgetDesk;
+
+/**
+ * Which budget a route spends out of: this desk's, for this kind of call. Also the key
+ * of the shared bucket a caller falls into when the limiter has no room for its own.
+ */
+const bucketOf = (desk: PublicServiceActor, kind: string): string =>
+  `${deskOf(desk).deskKey}|${kind}`;
+
+/**
+ * Which caller this is inside that bucket. The session token when there is one — it is
+ * what the desk issued and what confines the visitor — and the embedding origin when
+ * there is not, so a tokenless flood shares one bucket instead of having none.
+ */
+const callerKey = (bucket: string, token: unknown, origin: string): string =>
+  typeof token === 'string' && token !== '' ? `${bucket}|t:${token}` : `${bucket}|o:${origin}`;
 
 /**
  * Which desk this request is for. Async on purpose: reading a desk's allowlist is a
@@ -233,8 +294,10 @@ export function mountWidgetSurface(
     resolveActor,
     routes: (route) => {
       route.post('/sessions', async (c, { actor: desk, origin }) => {
-        // Per origin, not per token: this is the route that mints the token.
-        const wait = spend(`start:${origin}`, WIDGET_RATE_LIMITS.start);
+        // Per origin, not per token: this is the route that mints the token. And per
+        // desk, because one script answers for many of them.
+        const bucket = bucketOf(desk, 'start');
+        const wait = spend(bucket, `${bucket}|o:${origin}`, WIDGET_RATE_LIMITS.start);
         if (wait) return tooManyRequests(c, wait);
         const body = (await c.req.json().catch(() => ({}))) as { identity?: unknown };
         // `origin` comes from the header, and so does `client`: both are facts about the
@@ -253,7 +316,8 @@ export function mountWidgetSurface(
         const body = (await c.req.json().catch(() => ({}))) as { token?: string; body?: string };
         // The one call on this surface that costs the desk money, so it is counted
         // before anything reaches a scope, let alone a model.
-        const wait = spend(callerKey('write', body.token, origin), WIDGET_RATE_LIMITS.write);
+        const bucket = bucketOf(desk, 'write');
+        const wait = spend(bucket, callerKey(bucket, body.token, origin), WIDGET_RATE_LIMITS.write);
         if (wait) return tooManyRequests(c, wait);
         const sessionId = c.req.param('sessionId');
         const message = await desk.invoke<{ id: string; conversation_id: string; body_text: string }>(
@@ -305,7 +369,8 @@ export function mountWidgetSurface(
         const body = (await c.req.json().catch(() => ({}))) as { token?: string; body?: string };
         // The same budget as a message, and deliberately: it is the same visitor writing
         // to the same conversation, and pressing the button is a way of posting.
-        const wait = spend(callerKey('write', body.token, origin), WIDGET_RATE_LIMITS.write);
+        const bucket = bucketOf(desk, 'write');
+        const wait = spend(bucket, callerKey(bucket, body.token, origin), WIDGET_RATE_LIMITS.write);
         if (wait) return tooManyRequests(c, wait);
         return c.json(
           await desk.invoke('ticket0/request-human', {
@@ -318,7 +383,8 @@ export function mountWidgetSurface(
 
       route.get('/sessions/:sessionId/messages', async (c, { actor: desk, origin }) => {
         const token = c.req.query('token');
-        const wait = spend(callerKey('read', token, origin), WIDGET_RATE_LIMITS.read);
+        const bucket = bucketOf(desk, 'read');
+        const wait = spend(bucket, callerKey(bucket, token, origin), WIDGET_RATE_LIMITS.read);
         if (wait) return tooManyRequests(c, wait);
         const entries = await desk.invoke<{ entries: unknown[] }>('ticket0/widget-thread', {
           sessionId: c.req.param('sessionId'),

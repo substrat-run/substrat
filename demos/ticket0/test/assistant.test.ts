@@ -1272,6 +1272,7 @@ describe('the widget surface routes a request for a person away from the model',
       resolveDesk: async () => ({
         invoke: <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T>,
         allowedOrigins: [desk.origin],
+        deskKey: `${desk.tenant}:${desk.scope}`,
       }),
       onCustomerMessage: (_c, m) => {
         answered.push(m.body);

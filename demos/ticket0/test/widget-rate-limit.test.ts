@@ -19,38 +19,61 @@ import { mountWidgetSurface, WIDGET_RATE_LIMITS } from '../harness/widget-surfac
 
 const ORIGIN = 'https://embedder.example';
 
-/** A desk that answers every invocation, so nothing but the limiter can refuse. */
+/**
+ * A desk that answers every invocation, so nothing but the limiter can refuse.
+ *
+ * ONE mount answering for several desks, which is what a deployed worker is: the isolate
+ * is per script, the installation is per routed hostname. `x-test-desk` stands in for the
+ * router's signed assertion — every call takes an optional desk and defaults to one, so a
+ * test that is not about desks reads as if there were only ever one.
+ */
 function mounted(now: () => number, origin = ORIGIN) {
   const app = new Hono();
   const invoked: string[] = [];
   mountWidgetSurface(app, {
     now,
-    resolveDesk: async () => ({
+    resolveDesk: async (c) => ({
       invoke: async <T,>(operation: string) => {
         invoked.push(operation);
         return { id: 'm1', conversation_id: 'c1', body_text: 'hello', entries: [] } as unknown as T;
       },
       allowedOrigins: [origin],
+      deskKey: c.req.header('x-test-desk') ?? 'desk-1',
     }),
   });
 
-  const post = async (path: string, body: unknown): Promise<Response> =>
+  const headers = (desk?: string): Record<string, string> => ({
+    origin,
+    ...(desk ? { 'x-test-desk': desk } : {}),
+  });
+
+  const post = async (path: string, body: unknown, desk?: string): Promise<Response> =>
     app.request(path, {
       method: 'POST',
-      headers: { origin, 'content-type': 'application/json' },
+      headers: { ...headers(desk), 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
 
   return {
     invoked,
-    start: () => post('/widget/sessions', {}),
-    say: (token: string) => post('/widget/sessions/s1/messages', { token, body: 'hi' }),
+    start: (desk?: string) => post('/widget/sessions', {}, desk),
+    say: (token: string, desk?: string) =>
+      post('/widget/sessions/s1/messages', { token, body: 'hi' }, desk),
     handoff: (token: string) => post('/widget/sessions/s1/handoff', { token }),
-    read: async (token: string): Promise<Response> =>
+    read: async (token: string, desk?: string): Promise<Response> =>
       app.request(`/widget/sessions/s1/messages?token=${encodeURIComponent(token)}`, {
-        headers: { origin },
+        headers: headers(desk),
       }),
   };
+}
+
+/**
+ * More distinct callers than the limiter counts at once — the shape of an attack on the
+ * BOOKKEEPING rather than on the desk. Cheapest route on purpose: minting keys is the
+ * point, and the read route needs no body.
+ */
+async function floodWithNewCallers(surface: { read: (token: string) => Promise<Response> }) {
+  for (let i = 0; i < WIDGET_RATE_LIMITS.maxKeys + 1; i += 1) await surface.read(`flood-${i}`);
 }
 
 /** Spend a whole budget, and assert the desk was willing all the way through it. */
@@ -133,6 +156,43 @@ describe('the widget surface limits one caller, not the whole desk', () => {
 
     at += WIDGET_RATE_LIMITS.windowMs;
     expect((await surface.say('token-a')).status).toBe(200);
+  });
+
+  it('does not let one desk spend another desk\'s allowance', async () => {
+    const surface = mounted(() => 1_000_000);
+    await spendAll(() => surface.start('desk-a'), WIDGET_RATE_LIMITS.start);
+    expect((await surface.start('desk-a')).status).toBe(429);
+
+    // The same embedding origin, a different installation. One script answers for every
+    // desk the router sends it, so a key that did not name the desk would have closed
+    // this widget because somebody else's was flooded — and would have let a desk that
+    // allowlists a page spend the neighbour it shares that page with.
+    expect((await surface.start('desk-b')).status).toBe(200);
+  });
+
+  it('does not hand a spent budget back to a caller that floods it with new keys', async () => {
+    const surface = mounted(() => 1_000_000);
+    await spendAll(() => surface.say('token-a'), WIDGET_RATE_LIMITS.write);
+    expect((await surface.say('token-a')).status).toBe(429);
+
+    // Evicting the oldest counter to bound the map is the obvious implementation, and it
+    // is exactly how a caller buys its own budget back: the counter holding `token-a` at
+    // its limit is the first one out. A live counter is never dropped, so this changes
+    // nothing about what `token-a` has already spent.
+    await floodWithNewCallers(surface);
+
+    expect((await surface.say('token-a')).status).toBe(429);
+  });
+
+  it('counts a caller it has no room for in a shared bucket rather than not at all', async () => {
+    const surface = mounted(() => 1_000_000);
+    await floodWithNewCallers(surface);
+
+    // No slot left to give these, and refusing to count them would be the other way to
+    // lose the limit. They share one allowance instead — unfair while the flood lasts,
+    // which is the trade: what the desk spends is still bounded.
+    await spendAll(() => surface.say(`fresh-${Math.random()}`), WIDGET_RATE_LIMITS.write);
+    expect((await surface.say('fresh-last')).status).toBe(429);
   });
 
   it('does not let a caller without a token escape into an unlimited bucket', async () => {
