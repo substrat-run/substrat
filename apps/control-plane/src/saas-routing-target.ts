@@ -4,13 +4,17 @@ import { DEFAULT_PLATFORM_BASE_DOMAIN, parsePlatformBaseDomains } from '@substra
  * The CNAME value a tenant points a custom domain at — the Cloudflare-for-SaaS fallback
  * ingress (#973).
  *
- * The name is `cname.<first platform base domain>`, and that prefix is not a preference:
- * it is the record production publishes, the one `wrangler.jsonc` documents beside
- * `CF_SAAS_ROUTING_TARGET`, and the one the custom-domain runbook tells a tenant to grey-cloud.
- * The default here used to read `edge.<base>`, which resolves nowhere — so a deployment that
- * never set the secret handed every tenant a routing record that could not validate, and the
- * custom bind sat in `verifying` with nothing in the logs to say why. The default and the
- * documented value have to be the same string or the default is a trap.
+ * The name is `cname.<first platform base domain>`, and that prefix is not a preference. It is
+ * the record that exists: `apps/router/wrangler.jsonc` describes `cname.substrat.run` as the
+ * proxied placeholder the zone-wide catch-all SaaS route is served through, this worker's own
+ * `wrangler.jsonc` documents it beside `CF_SAAS_ROUTING_TARGET`, and the single-CNAME DCV
+ * switch (3aa9cde) named it as the routing target when it moved issuance to `http`.
+ *
+ * The default here still read `edge.<base>`, which no zone publishes. A deployment that never
+ * set the secret therefore handed every tenant a routing record that cannot validate, and the
+ * custom bind sat in `verifying` through the whole §4.7 reconcile loop with nothing to say
+ * why. The default and the documented value have to be the same string, or the default is a
+ * trap for exactly the deployment that trusted it.
  *
  * Unlike `dispatchNamespaceOf`, an absent value is NOT an error: a wrong guess here costs a
  * tenant one DNS record they can re-point, not a deploy written into another environment.
