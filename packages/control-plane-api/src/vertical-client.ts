@@ -640,6 +640,18 @@ export class VerticalClient {
   }
 
   /**
+   * When one scope's migrations actually ran (#1236) — the schema-change
+   * annotation release health reads. Metadata only; no scope bytes cross.
+   */
+  async appliedMigrations(
+    scopeId: ScopeId,
+  ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]> {
+    return this.getInternal<{ moduleId: string; version: string; appliedAt: string | null }[]>(
+      `/internal/migrations?scopeId=${encodeURIComponent(scopeId)}`,
+    );
+  }
+
+  /**
    * The PITR bookmarks one scope recorded before its migration passes (#286) —
    * the rewind points the deployments UI offers for a backout. Metadata only;
    * no scope bytes cross the boundary.

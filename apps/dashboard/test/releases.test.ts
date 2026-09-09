@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { instant, platformActorId, type ChannelHistoryEntry, type OpsFailureEntry, type Scope } from '@substrat-run/contracts';
-import { deriveReleaseComparison, deriveReleases } from '../src/releases.js';
+import { deriveReleaseComparison, deriveReleases, deriveTrafficSeries } from '../src/releases.js';
 import { versionPair } from '../src/deployments.js';
 import type { Deployment } from '../src/deployments.js';
 
@@ -144,5 +144,99 @@ describe('deriveReleaseComparison (#1236)', () => {
     expect(cmp.metricsAvailable).toBe(false);
     expect(cmp.running).toMatchObject({ versionId: V1, requests: null, cpuTimeP99: null });
     expect(deriveReleaseComparison({ ...pair, updateId: null, updateLabel: null }, []).update).toBeNull();
+  });
+});
+
+describe('deriveTrafficSeries (#1236) — the chart series and its markers', () => {
+  const now = new Date('2026-09-08T12:00:00.000Z');
+  const releasesOf = () =>
+    deriveReleases({ deployment: deployment(), prodHistory: history(), scopes: [], failures: [], metrics: null }).releases;
+
+  it('zero-fills the window so a gap in traffic is a gap on the chart', () => {
+    const series = deriveTrafficSeries({
+      hours: 6,
+      now,
+      releases: [],
+      prodHistory: [],
+      buckets: [
+        { start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 10, errors: 1 },
+        { start: '2026-09-08T08:00:00.000Z', bucketMinutes: 60, requests: 4, errors: 0 },
+      ],
+    });
+    // Seven hourly columns for a six-hour window (both edges), every one present.
+    expect(series.buckets).toHaveLength(7);
+    expect(series.bucketMinutes).toBe(60);
+    const byStart = new Map(series.buckets.map((b) => [b.start, b]));
+    expect(byStart.get('2026-09-08T11:00:00.000Z')).toMatchObject({ requests: 10, errors: 1 });
+    expect(byStart.get('2026-09-08T08:00:00.000Z')).toMatchObject({ requests: 4, errors: 0 });
+    // The untouched hours exist and are explicitly zero, never absent.
+    expect(byStart.get('2026-09-08T09:00:00.000Z')).toMatchObject({ requests: 0, errors: 0 });
+    expect(series.available).toBe(true);
+  });
+
+  it('sums rows that land in one bucket and drops rows outside the window', () => {
+    const series = deriveTrafficSeries({
+      hours: 2,
+      now,
+      releases: [],
+      prodHistory: [],
+      buckets: [
+        // Two scripts' rows for the same hour — one column, summed.
+        { start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 10, errors: 1 },
+        { start: '2026-09-08T11:30:00.000Z', bucketMinutes: 60, requests: 5, errors: 2 },
+        { start: '2026-09-01T11:00:00.000Z', bucketMinutes: 60, requests: 999, errors: 999 },
+        { start: 'not-a-date', bucketMinutes: 60, requests: 7, errors: 7 },
+      ],
+    });
+    const hour11 = series.buckets.find((b) => b.start === '2026-09-08T11:00:00.000Z');
+    expect(hour11).toMatchObject({ requests: 15, errors: 3 });
+    expect(series.buckets.reduce((n, b) => n + b.requests, 0)).toBe(15);
+  });
+
+  it('draws a marker per push and go-live inside the window, oldest first', () => {
+    const series = deriveTrafficSeries({ hours: 72, now, releases: releasesOf(), prodHistory: history(), buckets: [] });
+    // V2 pushed 10:00 and went live 11:00 on the 8th; V1's instants are a week old.
+    expect(series.markers.map((m) => `${m.version}:${m.kind}`)).toEqual(['0.0.2:pushed', '0.0.2:went-live']);
+    expect(series.markers[0]!.at < series.markers[1]!.at).toBe(true);
+  });
+
+  it('draws EVERY go-live of a rolled-back version, not just the newest one', () => {
+    // v2 live at 08:00, rolled back to v1 at 09:00, v2 again at 10:00 — three lines.
+    // `ReleaseRow.wentLiveAt` collapses to the newest instant per version, so reading
+    // markers from it would lose v2's 08:00 promotion and the chart would not explain
+    // why the rollback happened. The raw history is the source for exactly that reason.
+    const prodHistory = [
+      { versionId: V2, at: '2026-09-08T10:00:00.000Z' },
+      { versionId: V1, at: '2026-09-08T09:00:00.000Z' },
+      { versionId: V2, at: '2026-09-08T08:00:00.000Z' },
+    ];
+    const releases = deriveReleases({ deployment: deployment(), prodHistory, scopes: [], failures: [], metrics: null }).releases;
+    // The collapsed field really does keep only the newest — the premise of this test.
+    expect(releases.find((r) => r.versionId === V2)!.wentLiveAt).toBe('2026-09-08T10:00:00.000Z');
+
+    const series = deriveTrafficSeries({ hours: 6, now, releases, prodHistory, buckets: [] });
+    expect(series.markers.filter((m) => m.kind === 'went-live').map((m) => `${m.version}@${m.at}`)).toEqual([
+      '0.0.2@2026-09-08T08:00:00.000Z',
+      '0.0.1@2026-09-08T09:00:00.000Z',
+      '0.0.2@2026-09-08T10:00:00.000Z',
+    ]);
+  });
+
+  it('still draws a go-live whose version the registry no longer lists', () => {
+    // A pruned version leaves a promotion the label map cannot name. The instant is
+    // still a fact, so the line is drawn with the UI's '—' placeholder.
+    const prodHistory = [{ versionId: '01ARZ3NDEKTSV4RRFFQ69G5FA9', at: '2026-09-08T09:00:00.000Z' }];
+    const series = deriveTrafficSeries({ hours: 6, now, releases: releasesOf(), prodHistory, buckets: [] });
+    expect(series.markers.filter((m) => m.kind === 'went-live')).toEqual([
+      { at: '2026-09-08T09:00:00.000Z', kind: 'went-live', version: '—', versionId: '01ARZ3NDEKTSV4RRFFQ69G5FA9' },
+    ]);
+  });
+
+  it('says unavailable rather than drawing a flat line of silence', () => {
+    const series = deriveTrafficSeries({ hours: 24, now, releases: releasesOf(), prodHistory: history(), buckets: null });
+    expect(series.available).toBe(false);
+    // The window still exists (so a caller CAN render an axis), but the caller is
+    // told not to — an all-zero chart and "I could not look" are different answers.
+    expect(series.buckets.every((b) => b.requests === 0)).toBe(true);
   });
 });

@@ -907,6 +907,27 @@ export function defineScopeDO(
      * a rewind's target no longer exist post-rewind, by construction (they live
      * in the storage the rewind restores).
      */
+    /**
+     * When each migration ran (#1236), newest first. `applied_at` has been
+     * written since this table shipped and selected by nobody — the frontier
+     * readers want `(module_id, version)` only — so "when did this scope's
+     * schema change" had no answer. A pre-column row reads null, a fact.
+     */
+    appliedMigrations(limit = 100): { moduleId: string; version: string; appliedAt: string | null }[] {
+      return this.sql
+        .exec(
+          `SELECT module_id, version, applied_at FROM _substrat_migrations
+            ORDER BY applied_at DESC, module_id, version LIMIT ?`,
+          limit,
+        )
+        .toArray()
+        .map((r) => ({
+          moduleId: r.module_id as string,
+          version: r.version as string,
+          appliedAt: (r.applied_at as string | null) ?? null,
+        }));
+    }
+
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {
       return this.sql
         .exec(

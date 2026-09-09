@@ -540,6 +540,24 @@ export function scopeHostContractSuite(
       expect(journal2.filter((r) => r.module_id === '@test/mod')).toHaveLength(1);
     });
 
+    it('answers WHEN each migration ran, newest first (#1236)', async () => {
+      // `applied_at` has been written since this table shipped and read by
+      // nothing — every reader wanted the frontier. This is the read that makes
+      // "when did my schema change" answerable.
+      await host.getScope(alice, t1, s1);
+      const applied = await host.admin.scopeAppliedMigrations(staff, t1, s1);
+      const mine = applied.filter((m) => m.moduleId === '@test/mod');
+      expect(mine.length).toBeGreaterThanOrEqual(1);
+      expect(mine.map((m) => m.version)).toContain('0001-init');
+      // The instant is a real one — the fact the frontier readers threw away.
+      const init = mine.find((m) => m.version === '0001-init')!;
+      expect(init.appliedAt).not.toBeNull();
+      expect(Number.isNaN(Date.parse(init.appliedAt!))).toBe(false);
+      // Newest first: a caller renders a history without re-sorting it.
+      const stamped = applied.filter((m) => m.appliedAt !== null).map((m) => m.appliedAt!);
+      expect([...stamped].sort((a, b) => (a < b ? 1 : a > b ? -1 : 0))).toEqual(stamped);
+    });
+
     // -- the migration frontier + deliberate wake (kernel-design §5.3, #49) --
     // The reconciliation sweep's two host affordances, held to their contract on
     // every adapter: the frontier is what "up to date" means for this build, and

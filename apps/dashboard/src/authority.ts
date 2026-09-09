@@ -31,6 +31,14 @@ import type {
 import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 
 /**
+ * Bytes of `&service=…` params one bucketed-metrics request may carry (#1236). A Workers
+ * request URL is capped at 16 KB; a quarter of that leaves ample room for the base URL
+ * and every other param, and a vertical's owned service refs grow with every push it has
+ * ever made — so the ask batches rather than eventually becoming unsendable.
+ */
+const SERIES_URL_BUDGET = 4096;
+
+/**
  * The tenant-narrowed platform authority — the crux of docs/architecture/dashboard.md §4.
  *
  * A customer's tenant-admin must be able to provision an app on the SHARED control
@@ -700,6 +708,69 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * The same invocations bucketed over time (#1236) — the series a chart plots.
+   * Owner-narrowed the same way `observabilityMetrics` is, with one difference
+   * that matters: the owned service names are pushed DOWN to the plane as the
+   * `service` filter, because a bucketed fleet read is scripts × buckets and a
+   * tenant has no business paying for (or seeing) the rest of the fleet's rows.
+   * Throws `ControlPlaneError(501)` when the plane cannot bucket — the caller
+   * renders "not available", never an empty chart that reads as silence.
+   */
+  async observabilityMetricsSeries(
+    hours: number,
+    vertical?: string,
+  ): Promise<Array<{ versionId: string | null; version: string; start: string; bucketMinutes: number; requests: number; errors: number }>> {
+    const refs = await this.ownedServiceRefs();
+    if (refs.truncated) {
+      throw new ControlPlaneError(503, 'service map truncated: too many verticals to resolve in one answer');
+    }
+    let owned = refs.owned;
+    if (vertical !== undefined) {
+      owned = new Map([...owned].filter(([, v]) => v.vertical === vertical));
+    }
+    if (owned.size === 0) return [];
+    // One request per URL-sized batch of service names, merged. A vertical's owned refs
+    // grow with every push it has ever made and nothing caps them, while a Workers
+    // request URL is capped at 16 KB — so a long-lived vertical would eventually send an
+    // unsendable URL and its chart would read as "not available". Batching by BYTES
+    // rather than a count is what keeps that true whatever the names are.
+    const batches: string[][] = [[]];
+    let budget = SERIES_URL_BUDGET;
+    for (const service of owned.keys()) {
+      const cost = `&service=${encodeURIComponent(service)}`.length;
+      if (budget - cost < 0 && batches[batches.length - 1]!.length > 0) {
+        batches.push([]);
+        budget = SERIES_URL_BUDGET;
+      }
+      batches[batches.length - 1]!.push(service);
+      budget -= cost;
+    }
+    const pages = await Promise.all(
+      batches.map((services) => {
+        const q = new URLSearchParams({ hours: String(hours) });
+        for (const service of services) q.append('service', service);
+        return this.call<Array<{ service: string; start: string; bucketMinutes: number; requests: number; errors: number }>>(
+          `/observability/metrics-series?${q.toString()}`,
+        );
+      }),
+    );
+    const rows = pages.flatMap((page) => page ?? []);
+    // The narrowing is re-applied on the way back, not trusted from the request:
+    // the plane is staff-wide over the service token, so an unowned row that
+    // slipped into the answer must not reach a tenant's chart.
+    return rows
+      .filter((r) => owned.has(r.service))
+      .map((r) => ({
+        versionId: owned.get(r.service)!.versionId,
+        version: owned.get(r.service)!.version,
+        start: r.start,
+        bucketMinutes: r.bucketMinutes,
+        requests: r.requests,
+        errors: r.errors,
+      }));
+  }
+
+  /**
    * Invocation metrics for this tenant's pushed verticals (design/observability.md §5,
    * view 2). The plane's `/observability/metrics` is staff-wide over the service token,
    * so the owner-narrowing is here — same posture as `listVerticals`: rows are kept only
@@ -1095,6 +1166,18 @@ export class TenantNarrowedControlPlane {
     return this.call(`/verticals/${encodeURIComponent(verticalSlug)}/previews/${encodeURIComponent(tag)}`, {
       method: 'DELETE',
     });
+  }
+
+  /** When this app's migrations actually ran (#1236) — its schema history,
+   *  newest first. Tolerated to empty against a plane predating the route. */
+  async appliedMigrations(
+    scopeId: ScopeId,
+  ): Promise<Array<{ moduleId: string; version: string; appliedAt: string | null }>> {
+    try {
+      return (await this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/migrations`)) ?? [];
+    } catch {
+      return [];
+    }
   }
 
   /** The PITR bookmarks a scope recorded before its migration passes (#286) —

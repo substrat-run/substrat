@@ -8,6 +8,7 @@ import {
   type DeployFailureRow,
   type FailureGroupRow,
   type ReleasesView,
+  type TrafficSeries,
   type Deployment,
   type DeploymentVersion,
   type GitReposResult,
@@ -15,8 +16,9 @@ import {
   type WorkflowPreview,
 } from '../lib/api';
 import { Ic } from '../lib/icons';
-import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS } from '../lib/mock';
+import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS, MOCK_TRAFFIC } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
+import { TrafficChart } from '../components/TrafficChart';
 import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
 /**
@@ -483,6 +485,51 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
  * the panel renders nothing rather than an empty table.
  */
 /**
+ * The chart half of release health (#1236): 24 hours of traffic with every push
+ * and go-live drawn on it, so "did this push break anything" is a shape rather
+ * than a table read.
+ *
+ * `available: false` is SAID, not swallowed. A plane can serve the window
+ * aggregates the ledger above reads and have no time dimension at all, and the
+ * whole point of the flag is that "I could not look" and "nobody called" are
+ * different answers — collapsing both to a missing chart re-introduces exactly
+ * the misreading. A failed fetch is the one silent case: an older worker has no
+ * route to answer, which costs the chart and should not annotate the panel.
+ */
+function TrafficPanel({ slug }: { slug: string }) {
+  const [series, setSeries] = useState<TrafficSeries | null>(DEV_MOCK ? MOCK_TRAFFIC : null);
+
+  useEffect(() => {
+    if (DEV_MOCK) return;
+    let live = true;
+    // Cleared first: the panel is not keyed on the vertical, so switching verticals
+    // reruns the effect with the previous one's chart still on screen — a traffic shape
+    // attributed to the wrong vertical is the misreading this whole view exists to stop.
+    setSeries(null);
+    api
+      .deploymentTraffic(slug, 24)
+      .then((s) => live && setSeries(s))
+      // Tolerated to nothing: a worker or plane predating the route costs the chart, not the panel.
+      .catch(() => live && setSeries(null));
+    return () => {
+      live = false;
+    };
+  }, [slug]);
+
+  if (!series) return null;
+  if (!series.available) {
+    return (
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+        Traffic over time is not available on this plane — the figures above are window totals, and no
+        chart is drawn rather than one that would read as silence.
+      </p>
+    );
+  }
+  if (series.buckets.length === 0) return null;
+  return <TrafficChart buckets={series.buckets} markers={series.markers} bucketMinutes={series.bucketMinutes} />;
+}
+
+/**
  * The release ledger (#1236): every version with its adoption and health facts —
  * "did this push break anything" and "is anyone still on the broken one" in one
  * table. Traffic distinguishes unknown from quiet: an unconfigured metrics
@@ -496,6 +543,8 @@ function ReleasesPanel({ d }: { d: Deployment }) {
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
+    // Same reason as the chart above: unkeyed, so clear before refetching.
+    setView(null);
     api
       .listReleases(d.slug)
       .then((r) => live && setView(r))
@@ -518,6 +567,7 @@ function ReleasesPanel({ d }: { d: Deployment }) {
           traffic from the last 24 hours{view.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.
         </p>
       </div>
+      <TrafficPanel slug={d.slug} />
       <GridTable columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" header={['Version', 'Pushed', 'Went live', 'Where it runs', 'Failures', 'Traffic (24h)']}>
         {rows.map((r, i) => (
           <Row key={r.versionId} columns="1fr 1.1fr 1.1fr 1.3fr 0.8fr 1.1fr" last={i === rows.length - 1}>

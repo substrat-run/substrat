@@ -32,7 +32,7 @@ import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
-import { deriveReleases, deriveReleaseComparison } from './releases.js';
+import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './releases.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -1883,6 +1883,29 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
  * points the Deployments tab offers for a backout. Same ownership check as every
  * per-app route; connected-plane only (PITR is a Durable-Object-plane mechanism).
  */
+/**
+ * One app's schema history (#1236): when each of its migrations actually ran.
+ * The instants come from `_substrat_migrations.applied_at`, which the platform
+ * has written since the table shipped and nothing read — every reader wanted
+ * the frontier, so "when did my schema change" had no answer until now.
+ *
+ * Deliberately a LIST, not markers on the traffic chart: a migration applies to
+ * one scope, while traffic is measured per script and a script serves many
+ * scopes — so a per-scope line on a fleet-wide axis would be a drawn claim the
+ * telemetry cannot support.
+ */
+app.get('/api/apps/:scopeId/migrations', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(await cp.appliedMigrations(scopeId.parse(appRow.app_scope_id)));
+});
+
 app.get('/api/apps/:scopeId/bookmarks', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
@@ -3402,6 +3425,37 @@ app.get('/api/deployments/:slug/releases', async (c) => {
     cp.observabilityMetrics(24, slug).catch(() => null),
   ]);
   return c.json(deriveReleases({ deployment, prodHistory, scopes, failures, metrics }));
+});
+
+/**
+ * The release chart's series (#1236): traffic over the window with every push and
+ * go-live drawn on it — the marker view the issue asks for. The buckets come from
+ * the plane's bucketed read (501 there ⇒ `available: false`, and the chart says
+ * "not available" rather than drawing a flat line that reads as silence); the
+ * markers come from the registry, so a push that produced no traffic still gets
+ * its line — exactly the case worth seeing.
+ */
+app.get('/api/deployments/:slug/traffic', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const slug = c.req.param('slug');
+  // Rounded, not just clamped: the plane's schema is `.int()`, so `?hours=6.5` would be
+  // rejected there and the chart would say "not available" for what is really a bad
+  // parameter. The window is also the marker grid, so a fractional one is meaningless.
+  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const deployments = await listDeploymentsFromCp(cp);
+  assertOwned(deployments, slug);
+  const deployment = deployments.find((d) => d.slug === slug)!;
+  const [prodHistory, buckets] = await Promise.all([
+    cp.channelHistory(slug, 'prod'),
+    cp.observabilityMetricsSeries(hours, slug).catch(() => null),
+  ]);
+  // The markers need the ledger's version rows (push + go-live instants), not its
+  // health joins — so the adoption/failure reads are skipped deliberately here.
+  const { releases } = deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null });
+  return c.json(deriveTrafficSeries({ buckets, releases, prodHistory, hours, now: new Date() }));
 });
 
 /**

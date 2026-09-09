@@ -1696,6 +1696,20 @@ export interface HostAdmin {
   ): Promise<void>;
 
   /**
+   * When each of a CO-LOCATED scope's migrations actually ran (#1236), newest
+   * first. `_substrat_migrations.applied_at` has been written since the table
+   * shipped and read by nothing — every reader wanted only the frontier — so a
+   * scope could not answer "when did this schema change", the annotation release
+   * health wants. For a dispatch vertical the route reads it through the
+   * vertical's `/internal/migrations` instead; this is the co-located fallback.
+   */
+  scopeAppliedMigrations(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+  ): Promise<AppliedMigration[]>;
+
+  /**
    * The PITR bookmarks a CO-LOCATED scope recorded before its migration passes
    * (#286) — the rewind points a backout offers. For a dispatch vertical the route
    * reads them through the vertical's `/internal/bookmarks` instead; this is the
@@ -3031,6 +3045,19 @@ export interface SweepRunFilter {
   cursor?: string;
   /** Default 'desc' — the strip and "last run" both read newest-first. */
   order?: 'asc' | 'desc';
+}
+
+/**
+ * One migration as the scope actually applied it (#1236) — the module it belongs
+ * to, its version, and WHEN it ran. The instant is the fact nothing could read
+ * before: a schema change is the most consequential thing that happens to a
+ * scope, and until now its timing lived only in a row nobody selected.
+ */
+export interface AppliedMigration {
+  moduleId: string;
+  version: string;
+  /** ISO instant the migration committed, or null for a row written before the column. */
+  appliedAt: string | null;
 }
 
 /**

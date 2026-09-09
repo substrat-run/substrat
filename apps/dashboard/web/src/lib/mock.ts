@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, AppliedMigration, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -316,6 +316,36 @@ export const MOCK_PREVIEWS: VerticalPreview[] = [
     url: 'https://acme-hr--pr-42.global.substrat.run',
   },
 ];
+
+/** Schema history (#1236): two module migrations, newest first. */
+export const MOCK_APP_MIGRATIONS: AppliedMigration[] = [
+  { moduleId: 'crm', version: '0003-add-owner-index', appliedAt: ago(2 * 86400e3) },
+  { moduleId: 'crm', version: '0002-contacts', appliedAt: ago(9 * 86400e3) },
+  { moduleId: 'crm', version: '0001-init', appliedAt: null },
+];
+
+/** Traffic with deploys drawn on it (#1236): the push at hour 18 spikes the errors. */
+export const MOCK_TRAFFIC: TrafficSeries = (() => {
+  const now = Date.now();
+  const buckets = Array.from({ length: 24 }, (_, i) => {
+    const t = now - (23 - i) * 3600e3;
+    const busy = i > 6 && i < 21;
+    return {
+      start: new Date(Math.floor(t / 3600e3) * 3600e3).toISOString(),
+      requests: busy ? 60 + ((i * 37) % 45) : 8 + ((i * 11) % 9),
+      errors: i >= 18 && i <= 20 ? 14 + ((i * 5) % 7) : i % 7 === 0 ? 1 : 0,
+    };
+  });
+  return {
+    buckets,
+    markers: [
+      { at: buckets[18]!.start, kind: 'pushed' as const, version: '0.0.12', versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR03' },
+      { at: buckets[6]!.start, kind: 'went-live' as const, version: '0.0.11', versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR02' },
+    ].sort((a, b) => (a.at < b.at ? -1 : 1)),
+    bucketMinutes: 60,
+    available: true,
+  };
+})();
 
 /** Running vs update (#1236): the update fixes the error rate but costs some p99. */
 export const MOCK_RELEASE_COMPARISON: ReleaseComparison = {

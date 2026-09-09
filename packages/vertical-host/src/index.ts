@@ -107,6 +107,9 @@ export interface VerticalScopeHost {
   migrationBookmarksLocal(
     scopeId: ScopeId,
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
+  appliedMigrationsLocal(
+    scopeId: ScopeId,
+  ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -399,6 +402,12 @@ export function mountPlatformSurface<Env extends object>(
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json(result);
   });
+
+  // #1236: when one scope's migrations actually ran — the schema-change annotation
+  // release health reads. Metadata only; no scope bytes cross the boundary.
+  app.get('/internal/migrations', async (c) =>
+    c.json(await deps.hostFor(c.env).appliedMigrationsLocal(scopeIdOf.parse(c.req.query('scopeId')))),
+  );
 
   // #286: the PITR bookmarks one scope recorded before its migration passes — the rewind
   // points a backout offers. Metadata only; no scope bytes cross the boundary.

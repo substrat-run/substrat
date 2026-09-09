@@ -46,6 +46,42 @@ const METRICS_QUERY = `
   }
 `;
 
+/**
+ * The same dataset with a TIME dimension (#1236). Cloudflare exposes fixed bucket
+ * dimensions rather than an arbitrary interval, so the width is chosen from the
+ * window and reported back on every row — a renderer must never infer spacing
+ * from the gaps between the rows it happens to receive, because an empty bucket
+ * is omitted, not zero-filled (the caller zero-fills; see `bucketMinutes`).
+ */
+/**
+ * The row ceiling Cloudflare's GraphQL will answer in one page. A bucketed read is
+ * scripts × buckets, so this is a real edge and not a theoretical one — and hitting it
+ * is the WORST failure the series has, because `orderBy` is ascending: the rows that get
+ * cut are the newest ones, and the caller's zero-fill then draws the missing tail as an
+ * outage. So the read batches to stay under it, and refuses outright if a batch still
+ * saturates — `available: false` is a true answer, a fabricated outage is not.
+ */
+const SERIES_ROW_LIMIT = 5000;
+
+function seriesQuery(dimension: 'datetimeFifteenMinutes' | 'datetimeHour'): string {
+  return `
+  query ScriptMetricsSeries($accountTag: String!, $datetimeGeq: Time!, $datetimeLeq: Time!, $scripts: [String!]) {
+    viewer {
+      accounts(filter: { accountTag: $accountTag }) {
+        workersInvocationsAdaptive(
+          limit: ${SERIES_ROW_LIMIT}
+          filter: { datetime_geq: $datetimeGeq, datetime_leq: $datetimeLeq, scriptName_in: $scripts }
+          orderBy: [${dimension}_ASC]
+        ) {
+          sum { requests errors }
+          dimensions { scriptName dispatchNamespaceName ${dimension} }
+        }
+      }
+    }
+  }
+`;
+}
+
 export function createCfObservabilityReader(opts: CfObservabilityOptions): ObservabilityReader {
   const authed = (url: string, body: unknown) =>
     fetch(url, {
@@ -99,6 +135,91 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           cpuTimeP99: g.quantiles?.cpuTimeP99 ?? 0,
         }))
         .sort((a, b) => b.requests - a.requests);
+    },
+
+    async serviceMetricsSeries({ hours, services }) {
+      // Fixed-width buckets, chosen so a window is legible rather than dense: a
+      // few hours wants quarter-hours, a day or three wants hours.
+      const bucketMinutes = hours <= 6 ? 15 : 60;
+      const dimension = bucketMinutes === 15 ? 'datetimeFifteenMinutes' : 'datetimeHour';
+      const to = new Date();
+      const from = new Date(to.getTime() - hours * 3_600_000);
+
+      // A script answers at most one row per bucket in the window, so the window's
+      // bucket count is the per-script row ceiling — which turns the page limit into
+      // a batch size. `null` is "every script": the GraphQL filter omits an unset
+      // list, and the fleet view legitimately wants all of them, which is also the
+      // one case that cannot be batched and so leans on the saturation check below.
+      const bucketsInWindow = Math.ceil((hours * 60) / bucketMinutes) + 1;
+      // STRICTLY under the ceiling, not up to it: at `SERIES_ROW_LIMIT / buckets` a batch
+      // whose every script filled every bucket returns exactly the limit, which the
+      // saturation check below cannot tell from a truncated page — so a complete series
+      // would be refused as unavailable. One row of headroom removes the ambiguity.
+      const perBatch = Math.max(1, Math.floor((SERIES_ROW_LIMIT - 1) / bucketsInWindow));
+      const wanted = services && services.length > 0 ? services : null;
+      const batches: Array<string[] | null> = [];
+      if (wanted === null) batches.push(null);
+      else for (let i = 0; i < wanted.length; i += perBatch) batches.push(wanted.slice(i, i + perBatch));
+
+      const pages = await Promise.all(
+        batches.map(async (scripts) => {
+          const res = await authed(GRAPHQL_URL, {
+            query: seriesQuery(dimension),
+            variables: {
+              accountTag: opts.accountId,
+              datetimeGeq: from.toISOString(),
+              datetimeLeq: to.toISOString(),
+              scripts,
+            },
+          });
+          const json = (await res.json()) as {
+            data?: {
+              viewer?: {
+                accounts?: Array<{
+                  workersInvocationsAdaptive?: Array<{
+                    sum?: { requests?: number; errors?: number };
+                    dimensions?: Record<string, string | undefined>;
+                  }>;
+                }>;
+              };
+            };
+            errors?: Array<{ message?: string }>;
+          };
+          if (!res.ok || json.errors?.length) {
+            const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+            throw new Error(`Cloudflare analytics series query failed: ${message}`);
+          }
+          const rows = json.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [];
+          // At the ceiling the answer is a PREFIX, and the newest buckets are the ones
+          // missing — a silent truncation the caller would zero-fill into an outage.
+          // Refusing hands it `available: false`, which is the honest answer.
+          if (rows.length >= SERIES_ROW_LIMIT) {
+            throw new Error(
+              `Cloudflare analytics series query saturated at ${SERIES_ROW_LIMIT} rows: the answer would be a partial prefix, not a series`,
+            );
+          }
+          return rows;
+        }),
+      );
+
+      const groups = pages.flat();
+      return groups.flatMap((g) => {
+        const start = g.dimensions?.[dimension];
+        // A row with no bucket instant cannot be placed on an axis — dropping it
+        // beats plotting it at an invented time.
+        if (start === undefined) return [];
+        return [
+          {
+            service: g.dimensions?.scriptName ?? '(unknown)',
+            namespace: g.dimensions?.dispatchNamespaceName || null,
+            // Cloudflare answers these without a zone designator; the axis is UTC.
+            start: start.endsWith('Z') ? start : `${start}Z`,
+            bucketMinutes,
+            requests: g.sum?.requests ?? 0,
+            errors: g.sum?.errors ?? 0,
+          },
+        ];
+      });
     },
 
     async recentLogs({ services, level, search, hours, limit }) {

@@ -27,6 +27,22 @@ export interface ServiceMetricsRow {
   cpuTimeP99: number;
 }
 
+/**
+ * One service's invocations inside ONE time bucket (#1236). The aggregate row
+ * above answers "how did this version behave"; this answers "when" — which is
+ * what a push marker needs an axis to be drawn on. `start` is the bucket's
+ * opening instant (ISO), `bucketMinutes` its width, so a renderer never has to
+ * infer spacing from the gaps between rows it was given.
+ */
+export interface ServiceMetricsBucket {
+  service: string;
+  namespace: string | null;
+  start: string;
+  bucketMinutes: number;
+  requests: number;
+  errors: number;
+}
+
 export interface RecentLogEvent {
   /** Unix ms, when the event was recorded. */
   timestamp: number | null;
@@ -143,4 +159,20 @@ export interface ObservabilityReader {
     hours: number;
     limit: number;
   }): Promise<ObservedEgressReport>;
+
+  /**
+   * The same invocations, bucketed over time (#1236) — the series a chart plots
+   * and a deploy marker is drawn onto.
+   *
+   * OPTIONAL for the same honest reason as `observedEgress`: a backend can serve
+   * window aggregates and have no time dimension at all, and absent must 501
+   * rather than answer an empty series, which a chart would render as "quiet"
+   * — the exact misreading the release views exist to prevent.
+   *
+   * `services` narrows server-side and is what keeps the answer bounded: a
+   * fleet-wide bucketed read is scripts × buckets, so a caller asks for the
+   * handful it will actually plot. The backend picks the bucket width from the
+   * window and reports it on every row.
+   */
+  serviceMetricsSeries?(input: { hours: number; services?: string[] }): Promise<ServiceMetricsBucket[]>;
 }
