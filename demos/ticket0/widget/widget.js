@@ -89,6 +89,15 @@
    * useful question into a tic, and somebody who already said yes has answered.
    */
   var helpDone = false;
+  /**
+   * When the desk will take a poll again, after it said `429` (#937).
+   *
+   * A limited poll that keeps its interval is the one caller a rate limit does not
+   * slow down: it spends the next window the moment it opens and gets refused again.
+   * So the desk's `Retry-After` is honoured — the timer keeps ticking, and the request
+   * it would have made is skipped until the hold is up.
+   */
+  var heldUntil = 0;
 
   // ── shadow root ───────────────────────────────────────────────────────────
   var host = document.createElement('div');
@@ -226,6 +235,14 @@
         if (!r.ok) {
           var err = new Error((j && (j.detail || j.title)) || t.slice(0, 120) || 'Request failed');
           err.status = r.status;
+          // How long the desk asked for, from the header when CORS exposed it and from
+          // the problem document's `retryAfter` when it did not. Neither is a promise:
+          // a missing or absurd one falls back to a sane pause rather than to none.
+          if (r.status === 429) {
+            var asked = Number(r.headers.get('retry-after'));
+            if (!(asked > 0)) asked = Number(j && j.retryAfter);
+            err.retryAfter = asked > 0 && asked < 300 ? asked : 30;
+          }
           throw err;
         }
         return j;
@@ -297,6 +314,8 @@
     messages = [];
     drawn = null;
     seen = 0;
+    // A new session is a new caller, and the hold was on the old token's budget.
+    heldUntil = 0;
     helpDone = false;
     waiting = false;
     gaveUp = false;
@@ -648,6 +667,9 @@
   function refresh() {
     tickWait();
     if (!session) return Promise.resolve();
+    // Held by a `429`. The interval still fires — it is what notices the hold is over —
+    // but it makes no request while one is on.
+    if (Date.now() < heldUntil) return Promise.resolve();
     return thread()
       .then(function (page) {
         var next = page.entries || [];
@@ -665,6 +687,7 @@
       })
       .catch(function (e) {
         if (recover(e, refresh)) return;
+        if (e && e.status === 429) heldUntil = Date.now() + e.retryAfter * 1000;
         error = visitorError(e, 'refresh');
         draw();
       });
