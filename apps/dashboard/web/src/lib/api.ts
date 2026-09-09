@@ -436,6 +436,8 @@ export interface ReleaseComparison {
   /** Null = already on prod's head — nothing an update would move to. */
   update: ReleaseSide | null;
   metricsAvailable: boolean;
+  /** False = another team publishes this vertical; its traffic is theirs to see, not ours. */
+  owned: boolean;
 }
 
 export interface ReleasesView {

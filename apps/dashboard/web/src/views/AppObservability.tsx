@@ -325,39 +325,52 @@ function ReleaseComparisonCard({ app }: { app: AppRow }) {
     };
   }, [app.app_scope_id]);
 
-  if (!cmp || !cmp.running || !cmp.update) return null;
+  // Renders whenever there IS a running version. Hiding on "no update" made the
+  // common, GOOD state — you are current — indistinguishable from a broken panel,
+  // and on this tab three self-hiding cards added up to a page that looked like
+  // nothing shipped. "You are on the latest" is information; silence is not.
+  if (!cmp || !cmp.running) return null;
 
   const rate = (side: { requests: number | null; errors: number | null }): string => {
     if (side.requests === null || side.errors === null) return '—';
     if (side.requests === 0) return 'no traffic';
     return `${((side.errors / side.requests) * 100).toFixed(1)}%`;
   };
+  // Traffic is the builder's to see. For an installed app the numbers are absent,
+  // not zero, and the row says so in words rather than showing a confident 0.
+  const trafficLine = (side: NonNullable<ReleaseComparison['running']>) =>
+    cmp.owned ? (
+      <div style={{ display: 'flex', gap: 14, fontSize: 12.5, fontFamily: 'var(--font-mono)' }}>
+        <span>{side.requests === null ? '—' : `${side.requests.toLocaleString()} req`}</span>
+        <span style={{ color: side.errors ? 'var(--status-danger-fg)' : undefined }}>{rate(side)} err</span>
+        <span title="CPU p50 / p99, busiest script">{ms(side.cpuTimeP50)} / {ms(side.cpuTimeP99)}</span>
+      </div>
+    ) : null;
   const ms = (v: number | null): string => (v === null ? '—' : `${v.toFixed(1)}ms`);
   const sideCell = (label: string, side: NonNullable<ReleaseComparison['running']>) => (
     <div style={{ display: 'grid', gap: 4 }}>
       <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
         {label} · <span style={{ fontFamily: 'var(--font-mono)' }}>{side.version ?? side.versionId.slice(-6)}</span>
       </div>
-      <div style={{ display: 'flex', gap: 14, fontSize: 12.5, fontFamily: 'var(--font-mono)' }}>
-        <span>{side.requests === null ? '—' : `${side.requests.toLocaleString()} req`}</span>
-        <span style={{ color: side.errors ? 'var(--status-danger-fg)' : undefined }}>{rate(side)} err</span>
-        <span title="CPU p50 / p99, busiest script">{ms(side.cpuTimeP50)} / {ms(side.cpuTimeP99)}</span>
-      </div>
+      {trafficLine(side)}
     </div>
   );
 
   return (
     <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
       <div>
-        <h3 style={{ margin: 0, fontSize: 15 }}>Update comparison</h3>
+        <h3 style={{ margin: 0, fontSize: 15 }}>{cmp.update ? 'Update comparison' : 'Version'}</h3>
         <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          The version this app runs beside the one an update would move it to — last 24h of
-          traffic, fleet-wide per version{cmp.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.
+          {!cmp.owned
+            ? 'The version this app runs. Its traffic belongs to the team that publishes the vertical, so the numbers stay with them.'
+            : cmp.update
+              ? `The version this app runs beside the one an update would move it to — last 24h of traffic, fleet-wide per version${cmp.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.`
+              : `Running the latest version — nothing to update to${cmp.metricsAvailable ? '' : ' (metrics unavailable on this plane)'}.`}
         </p>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: cmp.update ? '1fr 1fr' : '1fr', gap: 16 }}>
         {sideCell('Running', cmp.running)}
-        {sideCell('Update target', cmp.update)}
+        {cmp.update && sideCell('Update target', cmp.update)}
       </div>
     </div>
   );
@@ -377,7 +390,14 @@ function ReleaseComparisonCard({ app }: { app: AppRow }) {
  * noise.
  */
 function SchemaHistoryCard({ app }: { app: AppRow }) {
-  const [rows, setRows] = useState<AppliedMigration[] | null>(DEV_MOCK ? MOCK_APP_MIGRATIONS : null);
+  // Three states, not two. An app ALWAYS has migrations, so an empty answer is never
+  // the truth about the app — it is a fact about the read: a deployment too old to
+  // serve `/internal/migrations` answers 404, the authority swallows it to [], and
+  // hiding on empty turned "we could not read this" into "nothing to see". The
+  // distinction is the whole point of the card during an upgrade window.
+  const [rows, setRows] = useState<AppliedMigration[] | 'unreadable' | null>(
+    DEV_MOCK ? MOCK_APP_MIGRATIONS : null,
+  );
 
   useEffect(() => {
     if (DEV_MOCK) return;
@@ -388,16 +408,17 @@ function SchemaHistoryCard({ app }: { app: AppRow }) {
     setRows(null);
     api
       .appMigrations(app.app_scope_id)
-      .then((r) => live && setRows(r))
-      // Tolerated to nothing: a worker or plane predating the route costs the card, not the tab.
-      .catch(() => live && setRows(null));
+      // Empty is indistinguishable from unreadable at this seam (the authority
+      // swallows the plane's refusal), so both land on the same honest state.
+      .then((r) => live && setRows(r.length > 0 ? r : 'unreadable'))
+      .catch(() => live && setRows('unreadable'));
     return () => {
       live = false;
     };
   }, [app.app_scope_id]);
 
-  if (!rows || rows.length === 0) return null;
-  const shown = rows.slice(0, 8);
+  if (rows === null) return null;
+  const shown = rows === 'unreadable' ? [] : rows.slice(0, 8);
 
   return (
     <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
@@ -408,6 +429,12 @@ function SchemaHistoryCard({ app }: { app: AppRow }) {
           under a release.
         </p>
       </div>
+      {rows === 'unreadable' && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Not readable from the version this app runs — the schema history is served by the
+          deployment itself, and this one predates that. It appears after the next push.
+        </p>
+      )}
       <div style={{ display: 'grid', gap: 6 }}>
         {shown.map((m) => (
           <div

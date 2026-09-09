@@ -366,6 +366,7 @@ export const MOCK_RELEASE_COMPARISON: ReleaseComparison = {
     cpuTimeP99: 24.9,
   },
   metricsAvailable: true,
+  owned: true,
 };
 
 /** The release ledger (#1236): prod trails the newest push; one scope still pinned back. */

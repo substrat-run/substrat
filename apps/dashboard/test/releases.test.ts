@@ -147,6 +147,36 @@ describe('deriveReleaseComparison (#1236)', () => {
   });
 });
 
+describe('deriveReleaseComparison — unowned is unknown, never zero', () => {
+  const pair = { runningId: V1, runningLabel: '0.0.1', updateId: V2, updateLabel: '0.0.2' };
+
+  it('reports traffic as unknown for a vertical another team publishes', () => {
+    // The authority answers an unowned vertical with an EMPTY list, not a throw —
+    // it narrows its ownership map and short-circuits. Summed literally that is a
+    // confident "0 req / no traffic" about an app we cannot see, which is the
+    // misreading every other derivation here refuses.
+    const cmp = deriveReleaseComparison(
+      pair,
+      [{ versionId: V1, requests: 5, errors: 1, cpuTimeP50: 2, cpuTimeP99: 4 }],
+      { owned: false },
+    );
+    expect(cmp.owned).toBe(false);
+    expect(cmp.metricsAvailable).toBe(false);
+    expect(cmp.running).toMatchObject({ versionId: V1, requests: null, errors: null, cpuTimeP99: null });
+    // The version pair stays knowable: the registry is not telemetry, and "am I
+    // behind?" is the half ownership never gated.
+    expect(cmp.update).toMatchObject({ versionId: V2, version: '0.0.2' });
+  });
+
+  it('defaults to owned, so the existing callers keep their numbers', () => {
+    const cmp = deriveReleaseComparison(pair, [
+      { versionId: V1, requests: 5, errors: 1, cpuTimeP50: 2, cpuTimeP99: 4 },
+    ]);
+    expect(cmp.owned).toBe(true);
+    expect(cmp.running).toMatchObject({ requests: 5, errors: 1 });
+  });
+});
+
 describe('deriveTrafficSeries (#1236) — the chart series and its markers', () => {
   const now = new Date('2026-09-08T12:00:00.000Z');
   const releasesOf = () =>

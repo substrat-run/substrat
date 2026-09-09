@@ -1597,9 +1597,19 @@ app.get('/api/apps/:scopeId/release-comparison', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   const scope = scopeId.parse(appRow.app_scope_id);
   const slug = appRow.vertical_slug;
-  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
-  const metrics = await cp.observabilityMetrics(24, slug).catch(() => null);
-  return c.json(deriveReleaseComparison(versionPair(deployment, boundVersionId), metrics));
+  // `mine` decides ownership exactly as the Deployments tab does: an app installed
+  // from another team's vertical has no visible traffic, and the authority signals
+  // that with an EMPTY list rather than a throw — so `.catch()` never sees it and
+  // the comparison would read "not visible" as "zero". Ownership is resolved here,
+  // and the derivation is told, so unknown stays unknown.
+  const [deployment, boundVersionId, mine] = await Promise.all([
+    verticalDeploymentFromCp(cp, slug),
+    cp.boundVersionId(scope),
+    cp.listVerticals(),
+  ]);
+  const owned = mine.some((v) => v.slug === slug);
+  const metrics = owned ? await cp.observabilityMetrics(24, slug).catch(() => null) : null;
+  return c.json(deriveReleaseComparison(versionPair(deployment, boundVersionId), metrics, { owned }));
 });
 
 /**
