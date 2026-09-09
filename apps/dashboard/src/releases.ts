@@ -138,6 +138,14 @@ export interface ReleaseComparison {
   /** Null = already on prod's head — nothing an update would move to. */
   update: ReleaseSide | null;
   metricsAvailable: boolean;
+  /**
+   * Whether this team BUILDS the vertical (#1236 follow-up). False for an app
+   * installed from another team's vertical: its traffic is the builder's to see,
+   * not ours. The version pair stays knowable either way — the registry is not
+   * telemetry — so the card still answers "am I behind?", which is the half a
+   * tenant most needs and the half ownership never gated.
+   */
+  owned: boolean;
 }
 
 /** A metrics row as the comparison needs it — the ledger's row plus the CPU percentiles. */
@@ -156,16 +164,25 @@ export interface ComparisonMetricsRow extends ReleaseMetricsRow {
 export function deriveReleaseComparison(
   pair: { runningId: string | null; runningLabel: string | null; updateId: string | null; updateLabel: string | null },
   metrics: ComparisonMetricsRow[] | null,
+  opts: { owned?: boolean } = {},
 ): ReleaseComparison {
+  // An app whose vertical another team publishes has no visible traffic — and the
+  // authority answers that case with an EMPTY array, not an error, because it
+  // narrows its ownership map and short-circuits. Read literally, empty summed to
+  // zero and the card said "0 req, no traffic" about an app we simply cannot see.
+  // That is the precise misreading every other derivation here refuses; it belongs
+  // refused here too, so unowned collapses to the same unknown as no metrics at all.
+  const owned = opts.owned ?? true;
+  const visible = owned ? metrics : null;
   const side = (versionId: string | null, version: string | null): ReleaseSide | null => {
     if (versionId === null) return null;
-    if (metrics === null) {
+    if (visible === null) {
       return { versionId, version, requests: null, errors: null, cpuTimeP50: null, cpuTimeP99: null };
     }
     let requests = 0;
     let errors = 0;
     let busiest: ComparisonMetricsRow | undefined;
-    for (const m of metrics) {
+    for (const m of visible) {
       if (m.versionId !== versionId) continue;
       requests += m.requests;
       errors += m.errors;
@@ -183,7 +200,8 @@ export function deriveReleaseComparison(
   return {
     running: side(pair.runningId, pair.runningLabel),
     update: side(pair.updateId, pair.updateLabel),
-    metricsAvailable: metrics !== null,
+    metricsAvailable: visible !== null,
+    owned,
   };
 }
 

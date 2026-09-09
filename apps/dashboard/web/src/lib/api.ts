@@ -398,6 +398,17 @@ export interface AppliedMigration {
   appliedAt: string | null;
 }
 
+/**
+ * One app's schema history with its availability (#1236). `available: false` is a
+ * fact about the read — a deployment that does not serve the endpoint, or a plane
+ * fault — while `migrations: []` with `available: true` is a fact about the app:
+ * it genuinely has none, which a module registering `migrations: []` produces.
+ */
+export interface AppMigrationsView {
+  available: boolean;
+  migrations: AppliedMigration[];
+}
+
 /** One plotted bucket of traffic (#1236) — zero-filled worker-side. */
 export interface TrafficBucket {
   start: string;
@@ -436,6 +447,8 @@ export interface ReleaseComparison {
   /** Null = already on prod's head — nothing an update would move to. */
   update: ReleaseSide | null;
   metricsAvailable: boolean;
+  /** False = another team publishes this vertical; its traffic is theirs to see, not ours. */
+  owned: boolean;
 }
 
 export interface ReleasesView {
@@ -1352,7 +1365,7 @@ export const api = {
 
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>
-    call<AppliedMigration[]>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
+    call<AppMigrationsView>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),

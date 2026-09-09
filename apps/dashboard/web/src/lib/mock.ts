@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, AppliedMigration, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -318,11 +318,11 @@ export const MOCK_PREVIEWS: VerticalPreview[] = [
 ];
 
 /** Schema history (#1236): two module migrations, newest first. */
-export const MOCK_APP_MIGRATIONS: AppliedMigration[] = [
+export const MOCK_APP_MIGRATIONS: AppMigrationsView = { available: true, migrations: [
   { moduleId: 'crm', version: '0003-add-owner-index', appliedAt: ago(2 * 86400e3) },
   { moduleId: 'crm', version: '0002-contacts', appliedAt: ago(9 * 86400e3) },
   { moduleId: 'crm', version: '0001-init', appliedAt: null },
-];
+] };
 
 /** Traffic with deploys drawn on it (#1236): the push at hour 18 spikes the errors. */
 export const MOCK_TRAFFIC: TrafficSeries = (() => {
@@ -366,6 +366,7 @@ export const MOCK_RELEASE_COMPARISON: ReleaseComparison = {
     cpuTimeP99: 24.9,
   },
   metricsAvailable: true,
+  owned: true,
 };
 
 /** The release ledger (#1236): prod trails the newest push; one scope still pinned back. */

@@ -1170,13 +1170,20 @@ export class TenantNarrowedControlPlane {
 
   /** When this app's migrations actually ran (#1236) — its schema history,
    *  newest first. Tolerated to empty against a plane predating the route. */
+  /**
+   * Null when the read FAILED, `[]` when the app genuinely has no migrations —
+   * a distinction this swallowed until a review caught it. Both are real states:
+   * a module may register `migrations: []`, and a deployment predating
+   * `/internal/migrations` (or any transient plane fault) answers neither. Reading
+   * empty as "unreadable" invented a cause; reading unreadable as empty hid one.
+   */
   async appliedMigrations(
     scopeId: ScopeId,
-  ): Promise<Array<{ moduleId: string; version: string; appliedAt: string | null }>> {
+  ): Promise<Array<{ moduleId: string; version: string; appliedAt: string | null }> | null> {
     try {
-      return (await this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/migrations`)) ?? [];
+      return (await this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/migrations`)) ?? null;
     } catch {
-      return [];
+      return null;
     }
   }
 
