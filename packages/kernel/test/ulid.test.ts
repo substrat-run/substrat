@@ -42,4 +42,14 @@ describe('ulid', () => {
     expect(() => ulidTime('not-a-ulid-at-all-nope!!!!!')).toThrow(/not a ULID/);
     expect(() => ulidTime(ulid().slice(0, 20))).toThrow(/not a ULID/);
   });
+
+  it('ulidTime refuses a timestamp that does not fit 48 bits', () => {
+    // Right length, right alphabet, first digit above 7 — ten base32 digits can
+    // spell 50 bits and the timestamp is 48, so this is not a far-future id, it is
+    // a malformed one. It used to decode to a millisecond past the encodable range.
+    expect(() => ulidTime('80000000000000000000000000')).toThrow(/not a ULID/);
+    expect(() => ulidTime('ZZZZZZZZZZZZZZZZZZZZZZZZZZ')).toThrow(/not a ULID/);
+    // The digit either side of the boundary: `7ZZZ…` is the last decodable instant.
+    expect(ulidTime('7ZZZZZZZZZ0000000000000000')).toBe(2 ** 48 - 1);
+  });
 });

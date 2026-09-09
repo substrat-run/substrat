@@ -21,6 +21,9 @@ declare const crypto: { getRandomValues<T extends Uint8Array>(array: T): T };
 
 const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
+/** The largest instant 48 bits can hold — `7ZZZZZZZZZ`, some time in 10889 AD. */
+const MAX_ULID_TIME = 2 ** 48 - 1;
+
 /** A monotonic ULID mint. `now` is epoch milliseconds; it defaults to the wall clock. */
 export type UlidMint = (now?: number) => string;
 
@@ -93,6 +96,9 @@ export function ulid(now: number = Date.now()): string {
  *
  * Refuses anything that is not 26 Crockford digits rather than decoding a prefix:
  * a truncated id decodes to a plausible-looking number, which is worse than a throw.
+ * Ten base32 digits hold 50 bits and the timestamp is 48, so the first digit is
+ * bounded too — `8` through `Z` there is not a large date, it is not a ULID, and
+ * decoding it would hand back a millisecond past the encodable range.
  */
 export function ulidTime(id: string): number {
   if (id.length !== 26) throw new Error(`not a ULID: ${id}`);
@@ -102,5 +108,6 @@ export function ulidTime(id: string): number {
     if (d < 0) throw new Error(`not a ULID: ${id}`);
     t = t * 32 + d;
   }
+  if (t > MAX_ULID_TIME) throw new Error(`not a ULID: ${id}`);
   return t;
 }

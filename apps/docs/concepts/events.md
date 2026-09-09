@@ -223,7 +223,11 @@ hand-written `SELECT` would have got:
   the history, naming a version, and refusing a stale write are one vocabulary. It is
   therefore the cursor: `ORDER BY id` is creation order, because the mint is monotonic.
   The timestamp inside the id is the operation's instant — the same one `occurredAt`
-  carries — so the cursor and the column can never tell different stories about when.
+  carries — so the cursor and the column agree about when, and paging by one does not
+  reorder the other. Monotonicity is the stronger promise of the two, and where they
+  part company it is the one that wins: if the clock goes *backwards*, `occurredAt`
+  reports what it said and the id holds at the last instant it stamped, because an id
+  that followed the clock down would bury a newer row underneath an older one.
 
 Do not page a spine read on `occurred_at`. `ctx.now()` is stable for a whole invocation,
 so every event one operation emits carries the *identical* instant — a cursor of
