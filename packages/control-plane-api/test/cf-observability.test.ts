@@ -51,8 +51,8 @@ function stub(reply: (scripts: string[] | null) => unknown) {
 
 describe('cf observability serviceMetricsSeries (#1236) — the page ceiling', () => {
   it('batches a long service list so no single ask can reach the row limit', async () => {
-    // 24h at hourly buckets is 25 rows per script, so 5,000 rows is 200 scripts —
-    // 250 must therefore arrive as two asks, and every name must appear in exactly one.
+    // 24h at hourly buckets is 25 rows per script, so a batch is 199 scripts (4,975
+    // rows) — 250 must therefore arrive as two asks, and every name in exactly one.
     const services = Array.from({ length: 250 }, (_, i) => `acme-crm-${i}`);
     const asked = stub((scripts) =>
       answer((scripts ?? []).map((s) => ({ scriptName: s, datetimeHour: '2026-09-08T11:00:00', requests: 1, errors: 0 }))),
@@ -65,6 +65,27 @@ describe('cf observability serviceMetricsSeries (#1236) — the page ceiling', (
     expect(rows).toHaveLength(250);
     // And the bucket instant is normalised to UTC, as the axis reads it.
     expect(rows[0]).toMatchObject({ start: '2026-09-08T11:00:00Z', bucketMinutes: 60, namespace: 'verticals' });
+  });
+
+  it('resolves a batch whose every script filled every bucket — the busiest legitimate answer', async () => {
+    // The batch size has to be STRICTLY under the ceiling, not equal to it: at exactly
+    // the limit a complete answer is indistinguishable from a truncated page, and the
+    // refusal below would report a full series as unavailable. This is the case that
+    // catches that off-by-one — a whole batch of maximally busy scripts.
+    // 200 is the number that breaks a `floor(LIMIT / buckets)` batch: one ask of 200
+    // maximally busy scripts is 200 × 25 = exactly 5,000 rows, which the refusal cannot
+    // distinguish from a truncated page. Strict sizing splits it 199 + 1 instead.
+    const services = Array.from({ length: 200 }, (_, i) => `acme-crm-${i}`);
+    const hourly = Array.from({ length: 25 }, (_, h) => `2026-09-08T${String(h % 24).padStart(2, '0')}:00:00`);
+    const asked = stub((scripts) =>
+      answer(
+        (scripts ?? []).flatMap((s) => hourly.map((datetimeHour) => ({ scriptName: s, datetimeHour, requests: 1, errors: 0 }))),
+      ),
+    );
+    const rows = await reader().serviceMetricsSeries!({ hours: 24, services });
+    expect(asked.map((a) => (a ?? []).length)).toEqual([199, 1]);
+    // No page reached the ceiling, so nothing was refused and every row came back.
+    expect(rows).toHaveLength(5000);
   });
 
   it('refuses a saturated answer rather than returning a prefix the caller would zero-fill', async () => {

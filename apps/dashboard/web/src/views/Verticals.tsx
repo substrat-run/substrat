@@ -502,6 +502,10 @@ function TrafficPanel({ slug }: { slug: string }) {
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
+    // Cleared first: the panel is not keyed on the vertical, so switching verticals
+    // reruns the effect with the previous one's chart still on screen — a traffic shape
+    // attributed to the wrong vertical is the misreading this whole view exists to stop.
+    setSeries(null);
     api
       .deploymentTraffic(slug, 24)
       .then((s) => live && setSeries(s))
@@ -539,6 +543,8 @@ function ReleasesPanel({ d }: { d: Deployment }) {
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
+    // Same reason as the chart above: unkeyed, so clear before refetching.
+    setView(null);
     api
       .listReleases(d.slug)
       .then((r) => live && setView(r))

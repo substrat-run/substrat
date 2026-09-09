@@ -151,7 +151,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       // list, and the fleet view legitimately wants all of them, which is also the
       // one case that cannot be batched and so leans on the saturation check below.
       const bucketsInWindow = Math.ceil((hours * 60) / bucketMinutes) + 1;
-      const perBatch = Math.max(1, Math.floor(SERIES_ROW_LIMIT / bucketsInWindow));
+      // STRICTLY under the ceiling, not up to it: at `SERIES_ROW_LIMIT / buckets` a batch
+      // whose every script filled every bucket returns exactly the limit, which the
+      // saturation check below cannot tell from a truncated page — so a complete series
+      // would be refused as unavailable. One row of headroom removes the ambiguity.
+      const perBatch = Math.max(1, Math.floor((SERIES_ROW_LIMIT - 1) / bucketsInWindow));
       const wanted = services && services.length > 0 ? services : null;
       const batches: Array<string[] | null> = [];
       if (wanted === null) batches.push(null);

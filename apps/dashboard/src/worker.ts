@@ -3440,7 +3440,10 @@ app.get('/api/deployments/:slug/traffic', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
-  const hours = Math.min(72, Math.max(1, Number(c.req.query('hours') ?? 24) || 24));
+  // Rounded, not just clamped: the plane's schema is `.int()`, so `?hours=6.5` would be
+  // rejected there and the chart would say "not available" for what is really a bad
+  // parameter. The window is also the marker grid, so a fractional one is meaningless.
+  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
   const cp = controlPlaneFor(c.env, node.tenantId);
   const deployments = await listDeploymentsFromCp(cp);
   assertOwned(deployments, slug);

@@ -313,6 +313,8 @@ function ReleaseComparisonCard({ app }: { app: AppRow }) {
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
+    // Same reason as the schema-history card below: unkeyed, so clear before refetching.
+    setCmp(null);
     api
       .releaseComparison(app.app_scope_id)
       // Tolerated to nothing: a worker or plane predating the route costs the card, not the tab.
@@ -380,6 +382,10 @@ function SchemaHistoryCard({ app }: { app: AppRow }) {
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
+    // Cleared first: this card is not keyed on the app, so switching apps reruns the
+    // effect with last app's rows still mounted — and a schema history attributed to
+    // the wrong app is worse than an empty card for the moment the request is in flight.
+    setRows(null);
     api
       .appMigrations(app.app_scope_id)
       .then((r) => live && setRows(r))

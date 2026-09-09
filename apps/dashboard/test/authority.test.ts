@@ -576,6 +576,56 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       expect(calls.some((u) => u.includes('rival'))).toBe(false);
     });
 
+    it('splits a long service list across requests so no URL can exceed the Workers cap', async () => {
+      // A vertical's owned refs grow with every push it ever made, and a Workers request
+      // URL is capped at 16 KB — so the ask batches by bytes and the rows are merged.
+      const entries = Array.from({ length: 400 }, (_, i) => ({
+        service: `acme-helpdesk-01ARZ3NDEKTSV4RRFFQ69G5F${String(i).padStart(3, '0')}`,
+        role: 'archive',
+        stamp: { vertical: 'acme/helpdesk', version: `v${i}` },
+        versionLabel: `0.1.${i}`,
+      }));
+      const calls: string[] = [];
+      const fetch = (async (url: string | URL | Request) => {
+        const u = String(url);
+        calls.push(u);
+        const path = u.replace('https://cp/api', '');
+        if (path.startsWith('/service-refs')) {
+          return new Response(JSON.stringify({ entries, verticalsTruncated: false }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        // Answer one bucket per service this batch actually asked for.
+        const asked = new URL(u).searchParams.getAll('service');
+        return new Response(
+          JSON.stringify(
+            asked.map((service) => ({ service, start: '2026-09-08T11:00:00Z', bucketMinutes: 60, requests: 1, errors: 0 })),
+          ),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }) as unknown as typeof globalThis.fetch;
+      const cp = new TenantNarrowedControlPlane({
+        baseUrl: 'https://cp/api',
+        actor: '01JZ000000000000000000TEST',
+        serviceToken: 'secret-token',
+        tenantId: T,
+        fetch,
+      });
+
+      const rows = await cp.observabilityMetricsSeries(24, 'acme/helpdesk');
+      const seriesCalls = calls.filter((u) => u.includes('/observability/metrics-series'));
+      expect(seriesCalls.length).toBeGreaterThan(1);
+      // Every URL stays well inside the 16 KB cap…
+      expect(Math.max(...seriesCalls.map((u) => u.length))).toBeLessThan(16_384);
+      // …every service was asked for exactly once, across the batches…
+      const askedAll = seriesCalls.flatMap((u) => new URL(u).searchParams.getAll('service'));
+      expect(new Set(askedAll).size).toBe(400);
+      // …and the pages are merged, so no version silently loses its traffic.
+      expect(rows).toHaveLength(400);
+      expect(seriesCalls.every((u) => u.includes('hours=24'))).toBe(true);
+    });
+
     it('refuses a truncated ownership map BEFORE asking the plane for telemetry', async () => {
       // A partial map would send a partial service filter, and the chart would draw the
       // unresolved verticals' traffic as zero — an outage that never happened.
