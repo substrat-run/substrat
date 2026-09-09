@@ -199,6 +199,10 @@ function SignInMethodsPanel({ userId, reloadKey }: { userId: string; reloadKey: 
   // on saying "No way to sign in" about a method it had just been used to create.
   useEffect(() => {
     let live = true;
+    // Every read starts from nothing: a re-read after a failed first one has to be able to
+    // clear the error, or the panel would keep an obsolete banner above a fresh table.
+    setErr(null);
+    setMethods(null);
     adminSignInMethods(userId)
       .then((m) => live && setMethods(m))
       .catch((e: unknown) => live && setErr(e instanceof Error ? e.message : String(e)));
