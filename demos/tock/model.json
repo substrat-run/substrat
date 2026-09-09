@@ -1,0 +1,553 @@
+{
+  "entities": {
+    "field_history": {
+      "table": "tock_field_history",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "source_key": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "day": {
+            "type": "string"
+          },
+          "first_seen": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": "string"
+          },
+          "n": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "source_key",
+          "field",
+          "day",
+          "first_seen",
+          "last_seen",
+          "n"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "source_key",
+        "field",
+        "day"
+      ]
+    },
+    "label": {
+      "table": "tock_labels",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "dim": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "dim",
+          "value",
+          "label",
+          "captured_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "run_id",
+        "dim",
+        "value"
+      ]
+    },
+    "observation": {
+      "table": "tock_observations",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "field": {
+            "type": "string"
+          },
+          "present_count": {
+            "type": "number"
+          },
+          "null_count": {
+            "type": "number"
+          },
+          "inferred_type": {
+            "type": "string"
+          },
+          "distinct_estimate": {
+            "type": "number"
+          },
+          "declared": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "field",
+          "present_count",
+          "null_count",
+          "inferred_type",
+          "distinct_estimate",
+          "declared"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "run"
+      ],
+      "key": [
+        "field",
+        "run_id"
+      ]
+    },
+    "rollup": {
+      "table": "tock_rollups",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "grain": {
+            "type": "string"
+          },
+          "dim_set": {
+            "type": "string"
+          },
+          "dim1": {
+            "type": "string"
+          },
+          "dim2": {
+            "type": "string"
+          },
+          "period_ts": {
+            "type": "number"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "events": {
+            "type": "number"
+          },
+          "measure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "grain",
+          "dim_set",
+          "dim1",
+          "dim2",
+          "period_ts",
+          "run_id",
+          "events",
+          "measure",
+          "unit"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "grain",
+        "dim_set",
+        "dim1",
+        "dim2",
+        "period_ts"
+      ]
+    },
+    "row": {
+      "table": "tock_rows",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "string"
+          },
+          "subject_key": {
+            "type": "string"
+          },
+          "dims_json": {
+            "type": "string"
+          },
+          "metrics_json": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "occurred_at",
+          "subject_key",
+          "dims_json",
+          "metrics_json"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "run"
+      ],
+      "erasable": [
+        "subject_key"
+      ]
+    },
+    "rule_state": {
+      "table": "tock_rule_states",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "rule_kind": {
+            "type": "string",
+            "enum": [
+              "bot_list",
+              "threshold",
+              "dedup_window",
+              "salt"
+            ]
+          },
+          "identifier": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "captured_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "rule_kind",
+          "identifier",
+          "content_hash",
+          "captured_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "run"
+      ],
+      "key": [
+        "rule_kind",
+        "run_id"
+      ]
+    },
+    "run": {
+      "table": "tock_runs",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_key": {
+            "type": "string"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "filename": {
+            "type": "string"
+          },
+          "byte_size": {
+            "type": "number"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "received",
+              "profiled",
+              "mapped",
+              "counted",
+              "failed"
+            ]
+          },
+          "period_from": {
+            "type": "string"
+          },
+          "period_to": {
+            "type": "string"
+          },
+          "row_count": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rejected_count": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "received_at": {
+            "type": "string"
+          },
+          "received_by": {
+            "type": "string"
+          },
+          "counted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "source_key",
+          "schema_version",
+          "filename",
+          "byte_size",
+          "content_hash",
+          "status",
+          "period_from",
+          "period_to",
+          "row_count",
+          "rejected_count",
+          "received_at",
+          "received_by",
+          "counted_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "source"
+      ]
+    },
+    "salt": {
+      "table": "tock_salts",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "day": {
+            "type": "string"
+          },
+          "salt_id": {
+            "type": "string"
+          },
+          "secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "destroyed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "day",
+          "salt_id",
+          "secret",
+          "created_at",
+          "destroyed_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "day"
+      ]
+    },
+    "schema": {
+      "table": "tock_schemas",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "fields_json": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_key",
+          "version",
+          "fields_json",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "source"
+      ],
+      "key": [
+        "source_key",
+        "version"
+      ]
+    },
+    "source": {
+      "table": "tock_sources",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "expected_cadence": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "expected_cadence",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "primaryKey": [
+        "key"
+      ]
+    },
+    "source_file": {
+      "table": "tock_source_files",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "run_id": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string"
+          },
+          "byte_size": {
+            "type": "number"
+          },
+          "storage_key": {
+            "type": "string"
+          },
+          "stored_at": {
+            "type": "string"
+          },
+          "purge_after": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "content_hash",
+          "byte_size",
+          "storage_key",
+          "stored_at",
+          "purge_after"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "run"
+      ],
+      "primaryKey": [
+        "run_id"
+      ]
+    }
+  }
+}
