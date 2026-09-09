@@ -1,4 +1,4 @@
-import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, SweepRunView } from './api';
+import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, FieldCoverageView as WireFieldCoverageView, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, SweepRunView } from './api';
 // Type-only reach into the worker: schedules.ts is environment-free (contracts types
 // only), so it compiles under the DOM tsconfig, where the worker program could never
 // swallow this file's DOM-typed sibling. Never imported at runtime — the two bundles
@@ -9,6 +9,11 @@ import type {
   ScheduleRunView as WorkerRunView,
 } from '../../../src/schedules';
 import type { FailureGroupRow as WorkerFailureGroupRow } from '../../../src/failure-groups';
+import type {
+  FieldCoverageView as WorkerFieldCoverageView,
+  EntityCoverage as WorkerEntityCoverage,
+  FieldCoverageRow as WorkerFieldCoverageRow,
+} from '../../../src/field-coverage';
 import type { ReleaseRow as WorkerReleaseRow, ReleasesView as WorkerReleasesView, ReleaseComparison as WorkerReleaseComparison, ReleaseSide as WorkerReleaseSide, TrafficSeries as WorkerTrafficSeries, TrafficBucket as WorkerTrafficBucket, ReleaseMarker as WorkerReleaseMarker } from '../../../src/releases';
 
 /**
@@ -42,3 +47,6 @@ export const RELEASE_COMPARISON_PARITY: Equal<WireReleaseComparison, WorkerRelea
 export const TRAFFIC_BUCKET_PARITY: Equal<WireTrafficBucket, WorkerTrafficBucket> = true;
 export const RELEASE_MARKER_PARITY: Equal<WireReleaseMarker, WorkerReleaseMarker> = true;
 export const TRAFFIC_SERIES_PARITY: Equal<WireTrafficSeries, WorkerTrafficSeries> = true;
+export const FIELD_COVERAGE_ROW_PARITY: Equal<WireFieldCoverageRow, WorkerFieldCoverageRow> = true;
+export const ENTITY_COVERAGE_PARITY: Equal<WireEntityCoverage, WorkerEntityCoverage> = true;
+export const FIELD_COVERAGE_VIEW_PARITY: Equal<WireFieldCoverageView, WorkerFieldCoverageView> = true;

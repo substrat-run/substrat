@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { renderModelHtml } from '@substrat-run/model-view';
@@ -180,7 +180,12 @@ export function AppDetail({
       )}
       {main === 'deployments' && <Deployments app={app} />}
       {main === 'observability' && <AppObservability app={app} />}
-      {main === 'model' && <Model app={app} />}
+      {main === 'model' && (
+        <div style={{ display: 'grid', gap: 16 }}>
+          <FieldCoverage app={app} />
+          <Model app={app} />
+        </div>
+      )}
       {main === 'permissions' && <Permissions app={app} />}
       {main === 'audit' && <Audit app={app} />}
       {main === 'previews' && <Previews app={app} />}
@@ -923,6 +928,113 @@ function diffRegistries(from: PermissionRegistry, to: PermissionRegistry): Regis
     changedKeys: [...toKeys.entries()].filter(([k, d]) => fromKeys.has(k) && fromKeys.get(k) !== d).map(([k]) => k),
     roleChanges,
   };
+}
+
+/**
+ * Field coverage (#1321): which declared fields is any operation even capable of
+ * returning, and which of those are erasable — a retention argument, not just
+ * cleanup.
+ *
+ * The claim is about DECLARATIONS and the copy says so: "no operation declares
+ * this field in its output" is exactly true from the two artifacts a push
+ * carries, where "nobody reads this" would need traffic nobody counts yet
+ * (#1331). Matching is by field name across the whole surface, so the list is
+ * CONSERVATIVE — a field on it is named nowhere, while one absent from it may
+ * still be unreachable. Under-reporting is the safe direction for a list whose
+ * purpose is to justify deleting something.
+ */
+function FieldCoverage({ app }: { app: AppRow }) {
+  const [view, setView] = useState<FieldCoverageView | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setView(null);
+    api
+      .appFieldCoverage(app.app_scope_id)
+      .then((v) => live && setView(v))
+      // A worker predating the route: the card cannot say anything true, so it says nothing.
+      .catch(() => live && setView(null));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  if (!view) return null;
+
+  // The load-bearing branch. Without the declared output surface EVERY field is
+  // unnamed, and rendering the join anyway would report the app's whole schema as
+  // dead — a confident, wrong finding. Unknown says unknown.
+  if (!view.available) {
+    return (
+      <div style={{ ...card, padding: 14, display: 'grid', gap: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Field coverage</h3>
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Not available for the version this app runs — it was pushed before the platform
+          carried which fields each operation declares it returns. It appears after the next push.
+        </p>
+      </div>
+    );
+  }
+
+  const withUnreturned = view.entities.filter((e) => e.neverReturned.length > 0);
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Field coverage</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          {view.returned} of {view.declared} declared fields are named by an operation&rsquo;s
+          declared output, across {view.operations} operations. A field below is named by{' '}
+          <em>none</em> of them — which is a fact about what this version declares, not about
+          what anyone reads.
+        </p>
+      </div>
+      {withUnreturned.length === 0 ? (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+          Every declared field is returned by something.
+        </p>
+      ) : (
+        <>
+          {view.neverReturnedErasable > 0 && (
+            <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+              {view.neverReturnedErasable} of them {view.neverReturnedErasable === 1 ? 'is' : 'are'}{' '}
+              erasable — personal data this version stores and never hands back.
+            </p>
+          )}
+          <div style={{ display: 'grid', gap: 8 }}>
+            {withUnreturned.map((e) => (
+              <div key={e.entity} style={{ display: 'grid', gap: 4 }}>
+                <div style={{ fontSize: 12.5 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)' }}>{e.entity}</span>{' '}
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    {e.neverReturned.length} of {e.fields.length} never returned
+                  </span>
+                </div>
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                  {e.neverReturned.map((f) => (
+                    <span
+                      key={f.field}
+                      title={f.erasable ? 'declared erasable — personal data' : undefined}
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 11.5,
+                        padding: '2px 6px',
+                        borderRadius: 4,
+                        background: f.erasable ? 'var(--status-warning-bg)' : 'var(--surface-inset)',
+                        color: f.erasable ? 'var(--status-warning-fg)' : 'var(--text-secondary)',
+                      }}
+                    >
+                      {f.field}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
 }
 
 /**
