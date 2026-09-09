@@ -80,6 +80,45 @@ scope updates for an app-status view.
 | Hostname binding, the connection store, entitlements | The Dashboard vertical itself + its screens |
 | The audit spine (every action recorded) | Sign-up guard rails (verification, quotas, abuse) |
 
+### What the privileged deployment may contain (#978)
+
+The Dashboard is a vertical, but it is the one vertical that holds the control plane's service
+credential — so what its worker *bundles* is a security property, not a packaging detail. It used
+to bundle Callout, Meridian and Manyfold plus five engines and register them in its own ScopeDO,
+the "M0 embedded path": a vertical's operations executed inside the process holding that
+credential, and master-plan D-33 says a demo is a template that is **copied**, not imported.
+
+That path is retired. Two things are now true of the deployed worker:
+
+- **There is exactly one mode: connected.** `CONTROL_PLANE_SVC` + `CP_SERVICE_TOKEN` are
+  *required*; `controlPlaneFor` (`src/worker.ts`) throws 503 without them. The binding used to be
+  optional and its absence selected a second, embedded mode — so every surface carried two arms
+  and the quiet one wrote into DOs nothing could route to. A misconfigured deployment now says so
+  on the first request that needs the plane, instead of half-working.
+- **Its ScopeDO runs the Dashboard vertical and `engine-invites`, and nothing else.** Every app is
+  a scope on its own vertical deployment, reached through the shared plane.
+
+What remains of the old dependency list is deliberate, and is of three kinds (paths relative to
+`apps/dashboard`):
+
+| kind | where | why it may stay |
+|---|---|---|
+| **Permission keys** — `PROTOCOL_PERM`, `PERM`, `INVOICING_PERM`, Callout's `SC_PERM` | `src/catalog.ts` | Frozen maps of key strings, read to seed a fresh app's owner-grants. Inlining them as literals would trade a compiler-checked reference for a copy that drifts silently the day a key is added — and CLAUDE.md's rule is that permission keys are never *renamed*, which makes the constant the stable end. Callout comes through its `/manifest` subpath, which carries no registration. |
+| **Harness mounts** — `calloutModule`, `meridianModule`, four engine modules | `test/scenario.test.ts` | A single-process scenario has nowhere else to put the app's vertical; `provisionEmbedded` stands in for the separate deployment. `demo-meridian` and `engine-absence` are **devDependencies**, which never reach the worker bundle. |
+| **`engine-invites`** | `src/module.ts`, `src/provision.ts` | Not residue — the Dashboard *composes* it as a vertical composes an engine (layer 3), which is the architecture working. |
+
+`test/no-embedded-verticals.test.ts` is what holds this rather than the prose: it reads the worker
+sources and refuses a `…/module` import, refuses a demo subpath other than `/manifest`, refuses an
+engine import binding anything but a SCREAMING_SNAKE constant, and asserts the test-only
+dependencies stay in `devDependencies`. The regression it guards is a single added import line,
+which no behavioural test can see.
+
+**Still open, deliberately:** the deployment's own `ControlPlaneDO` (`wrangler.jsonc`), whose
+identity links are best-effort mirrored into the shared control-plane directory on every
+`/api/me` (#265). Two sources of truth for identity, healed by polling. Retiring it in favour of
+the shared directory is a **live-data move**, not a refactor, so it is tracked separately from the
+bundling question this section closes.
+
 ## 4. The authority model — the crux
 
 Provisioning a scope, binding a hostname, granting a role, storing a connection credential are all

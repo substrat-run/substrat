@@ -1,5 +1,26 @@
 import type { EnvVarSpec, PermissionKey, PlatformActorId, Vertical } from '@substrat-run/contracts';
 import type { ScopeHost } from '@substrat-run/kernel';
+/**
+ * PERMISSION KEYS ONLY — no vertical or engine code runs here (#978).
+ *
+ * The dashboard is the one PRIVILEGED deployment, so it must not be a place a vertical's
+ * operations execute; the "M0 embedded path" that made it one is gone. What survives is
+ * these four imports, and they are *data*: a `PERM` object is a frozen map of key strings,
+ * read to seed a fresh app's owner-grants below. Callout is reached through its
+ * `/manifest` subpath, which carries no module registration at all.
+ *
+ * Kept rather than inlined as literals deliberately. CLAUDE.md's rule is that permission
+ * keys are never renamed, so the constant is the stable thing and a copy is the fragile
+ * one: a literal here would drift the day an engine adds a key or a vertical narrows a
+ * role, and drift silently, because nothing compares the two spellings. Importing the
+ * engine's own constant makes the compiler the comparison.
+ *
+ * `test/no-embedded-verticals.test.ts` holds the line: it reads this file and refuses an
+ * engine import that binds anything but a SCREAMING_SNAKE constant — so `workorderModule`
+ * cannot arrive beside `PERM`, and this comment cannot quietly stop being true.
+ * `engine-invites` is the one engine the dashboard genuinely composes, as a vertical
+ * (layer 3); that lives in `src/module.ts` and `src/provision.ts`, not here.
+ */
 import { PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { PERM as WO } from '@substrat-run/engine-workorder';
 import { INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
@@ -63,8 +84,9 @@ export const CATALOG: Record<string, CatalogEntry> = {
   // superseded by the tenant-owned `substrat-9yjbbn/meridian` / `substrat-9yjbbn/manyfold`
   // lineages, pushed through the builder plane and staff-listed like any marketplace
   // vertical — so the marketplace shows exactly one of each. The builtin registry rows
-  // persist for their remaining (archived) scopes but are `installsBlocked`, and the
-  // modules stay bundled in the worker so embedded worlds keep serving existing scopes.
+  // persist for their remaining (archived) scopes but are `installsBlocked`. Their modules
+  // are no longer bundled here (#978): an app scope runs on its own vertical deployment, so
+  // serving an existing scope never needed this worker to carry the code in the first place.
 };
 
 /** Seed the registry from the catalog (idempotent) — what `GET /api/catalog` lists. The

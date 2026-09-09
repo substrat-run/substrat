@@ -13,6 +13,24 @@ import {
 } from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
+/**
+ * HARNESS ONLY — these mounts are this test's stand-in for the separate deployments an app
+ * really runs on, and they are the reason #978 stayed open after `a066c3e0` retired the
+ * embedded path from the worker.
+ *
+ * A dashboard scenario has to provision an app and then look at it, and in one process
+ * there is nowhere else for the app's vertical to live: `provisionEmbedded` registers it in
+ * the same `SqliteScopeHost` the dashboard scope uses. That is a property of the harness,
+ * not of the product — in production `controlPlaneFor` REQUIRES the `CONTROL_PLANE_SVC`
+ * binding and 503s without it (`src/worker.ts`), so there is exactly one mode and the app
+ * is always a scope on its own deployment.
+ *
+ * What keeps that distinction from eroding is where these imports are declared, not this
+ * comment: `demo-meridian` and `engine-absence` are **devDependencies**, which never reach
+ * the worker bundle, and `test/no-embedded-verticals.test.ts` asserts both that they stay
+ * there and that no worker source imports a `…/module` at all. So the harness may mount a
+ * vertical; the privileged deployment may not.
+ */
 import { protocolModule, PROTOCOL_PERM } from '@substrat-run/engine-protocol';
 import { absenceModule } from '@substrat-run/engine-absence';
 import { workorderModule } from '@substrat-run/engine-workorder';
