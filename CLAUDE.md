@@ -192,7 +192,16 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   exempt. `cloudflare:workers` exports an ambient `env`: one import gives module code every
   binding and secret the script declares, including its own `SCOPE` DO namespace — which
   reaches another scope's data, where `ctx.sql` cannot. Capabilities come from `ctx`.
-- No `fetch`/network in module code; connectors handle the outside world.
+- No `fetch`/network in module code; connectors handle the outside world. A connector is
+  host code and **answers for itself**: a registration in
+  `apps/control-plane/src/connectors.ts` carries a **probe** — `probeCandidate` for a
+  credential not stored yet, `probe` for the one a live connection holds — reading the
+  cheapest authenticated call that *names the account*, because "does this token see the
+  customer I meant" is the question, not "does it parse". Not optional: `verify` answers
+  `501` without one, which the tenant pressing **Test connection** reads as the provider
+  being down (#1326, planima). A provider with genuinely nothing to probe returns a probe
+  saying so rather than leaving the route to 501. The type refuses a registration without
+  one and `pnpm lint:connector-grants` refuses a door with no registration behind it.
 - Never write to `_substrat_*` tables (reads for projections like timelines are fine —
   writes forge the spine). This one is a **mechanism**, not only a lint rule (#954):
   `ctx.sql` itself refuses a write whose target is a `_substrat_*` table, on both
@@ -336,7 +345,7 @@ generated while nothing re-emits it. So a generated file has all three of:
 The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
 `lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
-`lint:connector-grants`, `lint:auth-schema`.
+`lint:auth-schema`.
 
 A gate must be the thing that **refuses**, and it must be the only thing that touches the
 file. `demos/auth-server`'s schema had marks 1 and 2, and its `--check` lived inside a
@@ -359,7 +368,10 @@ place the `FetchLike` cast lives — never as the bare global, in any spelling. 
 throws `Illegal invocation` when a connector calls the bare global as `input.fetch(…)`,
 and neither Node nor the workers vitest pool does, so no suite can catch it; the Fortnox
 consent callback shipped green and failed every hosted round that way, #1291),
-`lint:tests`, and `lint:changelog --check` — which asserts a hand-written digest accounts
+`lint:tests`, `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
+the `CONNECTORS` registration behind it are the two ends of one connector — this checks
+both directions and the standing grants the door must carry, see the connector rule
+below), and `lint:changelog --check` — which asserts a hand-written digest accounts
 for every merge in its range and could not re-emit prose if it wanted to. `lint:scaffold`
 is the exception that runs **off** the PR — post-release and weekly, for the reason its
 bullet above gives.

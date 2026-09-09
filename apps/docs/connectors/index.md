@@ -51,6 +51,34 @@ and a connector is small because they exist:
 
 <ConnectorLoop />
 
+## What a connector must answer for itself
+
+The seam supplies the machinery; four answers are the connector's own, and only the last is
+optional.
+
+1. **What it does at the provider** — the handler, or the sweep for a poll-only connector.
+2. **Whether this credential is any good** — a **probe**, and this one is not negotiable. Write
+   it as a pair: one that checks a candidate secret at connect time, before anything is stored,
+   and one that checks the credential a live connection already holds. Reach for the cheapest
+   authenticated read the provider offers that *names the account* — Fortnox's
+   `/companyinformation`, Planima's `/organizations` — because the question an operator actually
+   has is not "is this token valid" but "does it see the customer I meant". A valid token from
+   the wrong login is the failure a syntax check cannot catch.
+3. **What this connection has been doing** — activity, projected from the connector's own ledger
+   into a declared shape, so redaction is structural.
+4. **Which credential is loaded** — identifiers whole, secrets masked by the connector's own rule.
+
+The probe is mandatory because of what its absence looks like from the outside. Verify answers
+`501` for a provider with no probe registered — correct for a provider the platform does not
+operate, and actively misleading for one it does: the tenant pressing **Test connection** reads
+"Couldn't reach the provider", and blames the provider for our missing wiring. A connector that
+skips it also skips its own connect-time gate, so a mistyped credential is stored and looks
+healthy until the first real dispatch fails.
+
+If a provider genuinely exposes nothing to probe with, the connector still carries a probe that
+*says* so, rather than leaving the route to 501. A stated "this provider exposes no verification
+read" is something a console can render and a person can act on.
+
 ## What a connector is *not*
 
 - **Not an [engine](/engines/).** An engine owns invariants, operations, events and domain
