@@ -203,10 +203,10 @@ Handoffs with a short shelf life by design. They become `historical` once consum
 
 | document | status | |
 |---|---|---|
-| [crm-eff-adoption.md](briefs/crm-eff-adoption.md) | `historical` | What CRM-EFF can generate from Substrat's model packages, and what it still cannot. Re-derived 2026-09-09. |
 | [dashboard-ui.md](briefs/dashboard-ui.md) | `historical` | Visual UI brief handed to a design tool. Consumed. |
 | [first-flow.md](briefs/first-flow.md) | `historical` | The first end-to-end flow. Milestone completed. |
 | [manyfold-ui.md](briefs/manyfold-ui.md) | `historical` | UI design brief for Manyfold. Consumed. |
+| [model-package-adoption.md](briefs/model-package-adoption.md) | `historical` | What an external adopter can generate from Substrat's model packages, and what it still cannot. Re-derived 2026-09-09. |
 
 ### `research/`
 

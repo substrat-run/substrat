@@ -1,10 +1,10 @@
 ---
 status: historical
 layer: plan
-description: What CRM-EFF can generate from Substrat's model packages, and what it still cannot. Re-derived 2026-09-09.
+description: What an external adopter can generate from Substrat's model packages, and what it still cannot. Re-derived 2026-09-09.
 ---
 
-# CRM-EFF — an adoption note for the model packages
+# Adopting the model packages — a dated reading
 
 Status: **historical** — a dated reading, taken from `main` on **2026-09-09**. It exists so
 the answer is not reconstructed from a conversation each time (#743). It is not maintained:
@@ -14,12 +14,13 @@ it was taken. Re-derive it rather than edit it.
 It supersedes the reading in #743, which was taken against `contracts` 0.72.0 /
 `model-emit` 0.2.0 and named three blockers that have all since closed.
 
-CRM-EFF is the app behind the field report in
-[#695](https://github.com/substrat-run/substrat/issues/695) — a whole vertical modelled as
-SDL and re-emitted, 55 tables, 159 operations, 164 routes, 73 permission keys. Their
-evidence shaped most of the model phase
-([`../rfc/model-phase-plan.md`](../rfc/model-phase-plan.md) §10.2), so this note is the
-half that goes back to them.
+The reading is written against a specific shape of adopter — the one behind the field report
+in [#695](https://github.com/substrat-run/substrat/issues/695), **the SDL adopter**: a whole
+vertical modelled as SDL and re-emitted, 55 tables, 159 operations, 164 routes, 73 permission
+keys, arriving with an app already mid-life rather than a greenfield one. Their evidence
+shaped most of the model phase ([`../rfc/model-phase-plan.md`](../rfc/model-phase-plan.md)
+§10.2), and an app that size is where the layer's refusals actually bite, so it is the
+useful case to answer.
 
 ## 1. What is available now
 
@@ -32,16 +33,16 @@ Versions and licences are the ones the packages carry on the day above.
 | `@substrat-run/vertical-host` | 0.105.0 | `mountOperations` — the declared operation set, served | **AGPL-3.0-only** |
 | `@substrat-run/kernel` | 0.105.0 | the runtime the emitted parts run on; `ctx.grant` / `ctx.revoke` | **AGPL-3.0-only** |
 
-Three things on that list did not exist at the 0.72.0 reading and answer asks CRM-EFF made
-directly:
+Three things on that list did not exist at the 0.72.0 reading, and each answers an ask the
+field report made directly:
 
-- **`OperationImpl<Ops, Ctx>`** is their `satisfies Impl` seam, taken as designed: the
-  handler map a declared operation set requires, so the compiler names a drifting method
+- **`OperationImpl<Ops, Ctx>`** is the `satisfies Impl` seam it asked for, taken as designed:
+  the handler map a declared operation set requires, so the compiler names a drifting method
   instead of a runtime 404 doing it later.
-- **`defineLifecycles` / `emitLifecycles`** are the lifecycle tier their `@retired` /
+- **`defineLifecycles` / `emitLifecycles`** are the lifecycle tier its `@retired` /
   `@renamedFrom` vocabulary argued for — declarations whose job is to be deleted after use.
-- **`renderClient`** emits the browser client from the same model, which is the piece their
-  `differential.ts` harness had no counterpart for.
+- **`renderClient`** emits the browser client from the same model, which is the piece its
+  differential harness had no counterpart for.
 
 ### The licence seam, stated plainly
 
@@ -59,10 +60,10 @@ how that plays out on the hosted path.
 
 ## 2. The cheapest first move is parity, not generation
 
-Point `emitTables` at their entities and diff against their journal. One test file, no
-runtime, no AGPL, and it tells them exactly where their two descriptions of the app already
-disagree. That is how 54 of 55 tables were measured in #695, and it is what six demos and
-six of the seven engines run today — `demos/callout` and `demos/handlebar` as
+Point `emitTables` at the adopter's entities and diff against their journal. One test file,
+no runtime, no AGPL, and it tells them exactly where their two descriptions of the app
+already disagree. That is how 54 of 55 tables were measured in #695, and it is what six
+demos and six of the seven engines run today — `demos/callout` and `demos/handlebar` as
 `test/emit-parity.test.ts`, `demos/{manyfold,meridian,rally,shop}` and
 `engines/{absence,booking,invites,invoicing,protocol,workorder}` as `test/entities.test.ts`.
 (`engines/metering` is the one without it.)
@@ -91,7 +92,8 @@ gated on us:
 - [#734](https://github.com/substrat-run/substrat/issues/734) **`renamedFrom`** — shipped.
   It landed as `renamedFrom?: Readonly<Record<string, string>>` on the entity — a
   `{ currentName: previousName }` record, not the `[{ to, from }]` list the RFC sketched.
-  `to` must name a real current field, so half of CRM-EFF's check 5 is now a compile error.
+  `to` must name a real current field, so half of the field report's check 5 is now a
+  compile error.
 - [#735](https://github.com/substrat-run/substrat/issues/735) **composite keys** — shipped.
   A composite `key` emits a table-level `PRIMARY KEY (a, b)` in declaration order, not one
   UNIQUE per field.
@@ -123,8 +125,8 @@ and each refusal names its reason:
    declaration has to be there before the diff runs.
 3. **A composite-keyed table cannot be pointed at.** #735 emits the composite key; a
    single-column foreign key to one is still refused, because a platform `EntityRef` cannot
-   name half a key. If any of the 55 entities is both composite-keyed and referenced, that
-   entity needs a surrogate id.
+   name half a key. An entity that is both composite-keyed and referenced needs a surrogate
+   id.
 4. **History is not a type.** The other half of check 5 — *"the name exists in the previous
    journal and not in the current schema"* — stays in the emitter, read against
    `journal.json`, for the two reasons `../rfc/model-phase-plan.md` §3.3 gives: the type
@@ -155,12 +157,12 @@ the model:
 ## 5. Where the argument lives
 
 [`../rfc/model-phase-plan.md`](../rfc/model-phase-plan.md) — §3 for why the notation is
-typed TypeScript rather than SDL (their unchecked-string cost is the deciding evidence),
-§5.3 for the derived journal adopted from their design, §10.2 for the full reading of their
-`sdl/` directory. The umbrella issue is
+typed TypeScript rather than SDL (the unchecked-string cost the field report measured is the
+deciding evidence), §5.3 for the derived journal adopted from its design, §10.2 for the full
+reading. The umbrella issue is
 [#685](https://github.com/substrat-run/substrat/issues/685).
 
-The best idea in their write-up is still the one to hold this note against:
+The best idea in that report is still the one to hold this note against:
 
 > The best thing a modelling language can do with a rule is not need to express it.
 
