@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
-import { beginLogin, completeLogin, type OidcEnv } from '../src/index.js';
+import { beginLogin, completeLogin, USERINFO_TIMEOUT_MS, type OidcEnv } from '../src/index.js';
 
 /**
  * The callback's code→token exchange, against a STUBBED issuer, focused on where the
@@ -11,27 +11,29 @@ import { beginLogin, completeLogin, type OidcEnv } from '../src/index.js';
  * entirely within spec to return an ID token carrying nothing but `sub` and the protocol
  * claims. Providers split on this, and reading only the ID token quietly produced a
  * session with no address against the spec-faithful half.
+ *
+ * **Every case gets its own issuer URL**, and that is load-bearing rather than tidy:
+ * discovery and JWKS are cached per issuer for the life of the isolate, so a shared
+ * issuer would hand the second case the first case's metadata. The "advertises no
+ * userinfo_endpoint" case in particular would then still call the endpoint it was
+ * supposed to prove it never looks up, and pass for the wrong reason.
  */
 
-const ISSUER = 'https://issuer.test';
 const APP = 'https://app.test';
 
-const env: OidcEnv = {
-  OIDC_ISSUER: ISSUER,
-  OIDC_CLIENT_ID: 'client-1',
-  OIDC_CLIENT_SECRET: 'client-secret-1',
-  SESSION_SECRET: 'session-secret-000000000000000000000001',
-};
+let issuers = 0;
+let ISSUER: string;
+let env: OidcEnv;
 
 let privateKey: CryptoKey;
 let jwks: { keys: object[] };
 
 /** What the stubbed issuer does on this test's round trip. */
 let idTokenClaims: Record<string, unknown>;
-let userInfo: { status: number; body: unknown } | null;
+let userInfo: { status: number; body: unknown } | 'never answers' | null;
 let advertiseUserInfo: boolean;
 let issueAccessToken: boolean;
-let userInfoRequests: { authorization: string | null }[];
+let userInfoRequests: { authorization: string | null; deadline: boolean }[];
 
 beforeAll(async () => {
   const pair = await generateKeyPair('RS256');
@@ -40,6 +42,13 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
+  ISSUER = `https://issuer-${++issuers}.test`;
+  env = {
+    OIDC_ISSUER: ISSUER,
+    OIDC_CLIENT_ID: 'client-1',
+    OIDC_CLIENT_SECRET: 'client-secret-1',
+    SESSION_SECRET: 'session-secret-000000000000000000000001',
+  };
   idTokenClaims = {};
   userInfo = null;
   advertiseUserInfo = true;
@@ -73,10 +82,19 @@ beforeEach(() => {
       });
     }
     if (url === `${ISSUER}/userinfo`) {
+      const signal = init?.signal ?? null;
       userInfoRequests.push({
         authorization: new Headers(init?.headers).get('authorization'),
+        deadline: signal !== null && !signal.aborted,
       });
       if (!userInfo) throw new Error('userinfo called with nothing staged');
+      // The endpoint that accepts the connection and then says nothing: it answers only
+      // when the caller's own deadline gives up on it, which is the whole point.
+      if (userInfo === 'never answers') {
+        return new Promise<Response>((_resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal.reason));
+        });
+      }
       return new Response(JSON.stringify(userInfo.body), {
         status: userInfo.status,
         headers: { 'content-type': 'application/json' },
@@ -118,8 +136,9 @@ describe('the profile claims OIDC Core §5.4 routes to UserInfo', () => {
     const { user } = await login();
 
     expect(user).toEqual({ id: 'u-1', email: 'a@example.test', name: 'A Person' });
-    // The access token is what authorizes the call — it used to be discarded unread.
-    expect(userInfoRequests).toEqual([{ authorization: 'Bearer at-1' }]);
+    // The access token is what authorizes the call — it used to be discarded unread —
+    // and the call carries a deadline, because a `fetch` with no signal has none.
+    expect(userInfoRequests).toEqual([{ authorization: 'Bearer at-1', deadline: true }]);
   });
 
   it('does not call UserInfo when the ID token already carried them', async () => {
@@ -162,11 +181,13 @@ describe('what it refuses, and what it merely shrugs at', () => {
     await expect(login()).rejects.toThrow(/sub does not match/);
   });
 
-  for (const [label, stage] of [
-    ['the endpoint answers non-2xx', () => { userInfo = { status: 403, body: { error: 'nope' } }; }],
-    ['the endpoint answers something that is not JSON', () => { userInfo = { status: 200, body: undefined }; }],
-    ['the issuer advertises no userinfo_endpoint', () => { advertiseUserInfo = false; }],
-    ['no access token came back with the code', () => { issueAccessToken = false; }],
+  for (const [label, stage, calls] of [
+    ['the endpoint answers non-2xx', () => { userInfo = { status: 403, body: { error: 'nope' } }; }, 1],
+    ['the endpoint answers something that is not JSON', () => { userInfo = { status: 200, body: undefined }; }, 1],
+    // These two never reach the endpoint at all, and the request count is what says so:
+    // a login that degraded because the call failed would look identical from the user.
+    ['the issuer advertises no userinfo_endpoint', () => { advertiseUserInfo = false; }, 0],
+    ['no access token came back with the code', () => { issueAccessToken = false; }, 0],
   ] as const) {
     it(`stands the login up when ${label}`, async () => {
       idTokenClaims = { sub: 'u-1' };
@@ -177,6 +198,24 @@ describe('what it refuses, and what it merely shrugs at', () => {
       // The ID token is the authentication; this is enrichment, and enrichment must
       // never be able to lock anyone out.
       expect(user).toEqual({ id: 'u-1', email: undefined, name: undefined });
+      expect(userInfoRequests).toHaveLength(calls);
     });
   }
+
+  it(
+    'stands the login up when the endpoint accepts the connection and never answers',
+    async () => {
+      idTokenClaims = { sub: 'u-1' };
+      userInfo = 'never answers';
+
+      // Real time, because the deadline is a real one: this is the case where an
+      // unbounded fetch would hang the callback instead of degrading, so the test waits
+      // for the actual signal rather than asserting one was merely attached.
+      const { user } = await login();
+
+      expect(user).toEqual({ id: 'u-1', email: undefined, name: undefined });
+      expect(userInfoRequests).toEqual([{ authorization: 'Bearer at-1', deadline: true }]);
+    },
+    USERINFO_TIMEOUT_MS + 5_000,
+  );
 });

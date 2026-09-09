@@ -57,6 +57,12 @@ export const FLOW_COOKIE = 'sb_oidc_flow';
 /** Session lifetime; the flow (login round-trip) is deliberately short. */
 export const SESSION_MAXAGE = 60 * 60 * 24 * 7; // 7 days
 export const FLOW_MAXAGE = 60 * 10; // 10 minutes
+/**
+ * How long the optional UserInfo enrichment may take before the login proceeds without
+ * it. This call sits inside the user's redirect, so the ceiling is what a person will
+ * wait, not what a background job would — deliberately far below the connectors' 15–30s.
+ */
+export const USERINFO_TIMEOUT_MS = 5_000;
 
 const enc = new TextEncoder();
 
@@ -235,9 +241,13 @@ export async function completeLogin(
  *    throws rather than being ignored — every other integrity failure in this flow
  *    (state, nonce, signature) throws too, and the caller renders them all the same way.
  *  - **Transport problems degrade, they do not fail.** No endpoint advertised, no access
- *    token, a non-2xx, unreadable JSON: the login stands with what the ID token gave. The
- *    ID token is the authentication; this is enrichment, and enrichment must not be able
- *    to lock anyone out.
+ *    token, a non-2xx, unreadable JSON, an endpoint that accepts the connection and then
+ *    says nothing: the login stands with what the ID token gave. The ID token is the
+ *    authentication; this is enrichment, and enrichment must not be able to lock anyone
+ *    out — which is why the call carries a deadline. A `fetch` with no `signal` has no
+ *    timeout of its own, so a stalled endpoint would hang the login callback for as long
+ *    as the runtime allowed, and the enrichment would lock out exactly the bare-token
+ *    users it exists to help.
  */
 async function withUserInfo(
   d: Discovery,
@@ -251,6 +261,7 @@ async function withUserInfo(
   try {
     const res = await fetch(d.userinfo_endpoint, {
       headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
     });
     if (!res.ok) return user;
     claims = (await res.json()) as typeof claims;
