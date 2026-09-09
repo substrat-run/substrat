@@ -1,0 +1,130 @@
+/*
+ * Substrat's design tokens, for the ADMIN CONSOLE ONLY.
+ *
+ * Two decisions are baked in here, both of them about the fact that this SPA is a single
+ * bundle serving two audiences — the issuer's operator, and every person any relying party
+ * sends to /login.
+ *
+ * 1. `@substrat-run/ui/styles.css` is deliberately NOT imported whole. It pulls
+ *    `tokens/fonts.css` (Geist from the Google Fonts CDN) and `tokens/typography.css`
+ *    (a `body` rule). An unscoped import would put a third-party font request on the login
+ *    path of every relying party and restyle the hand-off screens — so the three token
+ *    files that only declare custom properties are imported, the typography scale is
+ *    restated below over the system stack, and no webfont is fetched at all. Self-hosting
+ *    Geist is the follow-up; a CDN request on a customer's sign-in path is not.
+ * 2. `tokens.css` is loaded AFTER this file (see main.tsx), so on the one name the two sets
+ *    share — `--radius-lg` — the themed vocabulary wins. That vocabulary is an API for every
+ *    client's stored `metadata.theme`; adopting these tokens has to be additive or it is a
+ *    breaking change (#1278 constraint 2).
+ */
+@import "@substrat-run/ui/tokens/colors.css";
+@import "@substrat-run/ui/tokens/spacing.css";
+@import "@substrat-run/ui/tokens/effects.css";
+
+/* `@substrat-run/ui`'s typography scale, minus its webfont and its `body` rule. */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --text-xs: 11px;   --lh-xs: 16px;
+  --text-sm: 12.5px; --lh-sm: 18px;
+  --text-base: 14px; --lh-base: 21px;
+  --text-md: 16px;   --lh-md: 24px;
+  --text-lg: 18px;   --lh-lg: 26px;
+  --text-xl: 22px;   --lh-xl: 29px;
+  --text-2xl: 28px;  --lh-2xl: 34px;
+
+  --weight-regular: 400; --weight-medium: 500; --weight-semibold: 600; --weight-bold: 700;
+  --tracking-tight: -0.02em; --tracking-display: -0.03em; --tracking-caps: 0.06em;
+}
+
+/*
+ * The console's own chrome, and the bridge onto the panels that moved here verbatim: the
+ * `.panel` / `.btn.primary` / `.grid` rules in tokens.css still draw them, and these
+ * overrides — scoped to the console root, so they cannot reach a themed hand-off screen —
+ * re-point their surfaces at the Substrat ramp. The console runs on the dark stratum
+ * (`data-theme="dark"` on this element) because the panels it wraps are dark; a light
+ * console is the next slice, once the panel internals are components rather than CSS
+ * classes.
+ */
+.console-root {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  position: relative;
+  background: var(--surface-page);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--lh-base);
+}
+
+.console-main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.console-topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: var(--topbar-h);
+  flex: 0 0 auto;
+  padding: 0 var(--space-6);
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-card);
+}
+.console-topbar h1 { font-size: var(--text-md); font-weight: var(--weight-semibold); margin: 0; }
+.console-topbar .spacer { flex: 1; }
+.console-topbar .who { color: var(--text-secondary); font-size: var(--text-sm); }
+
+.console-content {
+  padding: var(--space-6);
+  display: grid;
+  gap: var(--space-4);
+  align-content: start;
+  width: 100%;
+  max-width: var(--content-max-w);
+  margin: 0 auto;
+}
+
+.console-root .panel {
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+}
+.console-root .panel-head h2 { font-size: var(--text-md); font-weight: var(--weight-semibold); }
+.console-root .grid th { border-bottom-color: var(--border-default); color: var(--text-tertiary); }
+.console-root .grid td { border-bottom-color: var(--border-subtle); }
+.console-root .editor,
+.console-root .new-user { background: var(--surface-inset); border-color: var(--border-default); }
+.console-root .btn { border-color: var(--border-strong); background: var(--surface-raised); color: var(--text-primary); }
+.console-root .btn:hover:not(:disabled) { border-color: var(--border-brand); }
+.console-root .btn.primary {
+  background: var(--action-primary-bg);
+  border-color: var(--action-primary-bg);
+  color: var(--action-primary-text);
+}
+.console-root .btn.primary:hover:not(:disabled) { background: var(--action-primary-bg-hover); }
+.console-root .btn.danger { color: var(--status-danger-fg); }
+.console-root .btn.link { background: none; border: none; color: var(--text-link); }
+.console-root .muted { color: var(--text-secondary); }
+.console-root .error { color: var(--status-danger-fg); }
+.console-root .tag { background: var(--surface-inset); color: var(--text-secondary); }
+.console-root .tag.warn { color: var(--status-warning-fg); background: var(--status-warning-bg); }
+.console-root .field > span { color: var(--text-secondary); }
+.console-root .field input,
+.console-root .field select,
+.console-root .editor textarea {
+  background: var(--surface-inset);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+
+/* Below 900px the sidebar stops being a column and becomes an overlay — the same width
+   `apps/console` picked, and for the same reason: a table's trailing Actions cell goes
+   off-screen long before the viewport is a phone. */
+.console-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 30; }
