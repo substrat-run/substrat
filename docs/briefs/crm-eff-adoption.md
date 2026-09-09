@@ -104,11 +104,20 @@ What remains is not a roadmap item. It is the set of things the layer **refuses 
 and each refusal names its reason:
 
 1. **`planMigration` refuses anything that rewrites history or loses data.** A dropped table
-   or column, a retyped column, a moved or added primary key, a `UNIQUE` constraint added to
-   an existing table, and a `NOT NULL` column with no default added to a table that may
-   already hold rows. Every one of those is a real decision — expand/contract, a rebuild, a
-   backfill — and it goes to a hand-written migration under the migration checkpoint. On a
-   55-table app mid-life, expect to meet several of these on the first run.
+   or column, a moved or added primary key, a `UNIQUE` constraint added to an existing table,
+   and a `NOT NULL` column with no default added to a table that may already hold rows. Every
+   one of those is a real decision — expand/contract, a rebuild, a backfill — and it goes to a
+   hand-written migration under the migration checkpoint. On a 55-table app mid-life, expect
+   to meet several of these on the first run.
+
+   **One thing on that list is not there, and it matters more than the ones that are: a
+   retyped column is neither planned nor refused — it is invisible.** The planner diffs
+   column *names* (`journalColumns` against `columnsOf`), and an existing name is skipped
+   before anything looks at its type, so changing a field's type in the model produces
+   `up-to-date` while the live table keeps the old column. The doc comment on
+   `packages/model-emit/src/plan.ts` claims a retype is refused; the code does not do it.
+   For an app migrating 55 tables that is the one silent failure mode in the loop, so widen
+   any parity test to compare `ddl`, not just names.
 2. **A column that leaves the model still reads as a drop** unless `renamedFrom` says
    otherwise. #734 makes the rename *declarable*; it does not make it derivable. The
    declaration has to be there before the diff runs.
@@ -134,10 +143,14 @@ the model:
   permission list and vanishes from the one artifact where a widened permission is supposed
   to be impossible to miss. A composed engine's keys are deliberately *not* listed — the
   engine's own manifest declares them.
-- **An ungated operation needs `unchecked: true`.** `checks: []` alone means two different
-  things: a walk whose only key belongs to a composed engine, versus an operation that
-  checks nothing anywhere and says why. The flag is opt-in on purpose — an operation that
-  forgets it is reported as a proof walk, which is the claim that gets scrutinised.
+- **An ungated operation needs `unchecked: true` — inside its `narrows` block.** The
+  invariant above does not bend: an operation that checks nothing still carries `narrows`,
+  with a `reason`, `checks: []` and this flag. It is a third field on that block, not a third
+  alternative to `permission` and `narrows`. The flag is needed because `checks: []` alone
+  means two different things — a walk whose only key belongs to a composed engine, versus an
+  operation that checks nothing anywhere and says why — and it is opt-in on purpose: an
+  operation that forgets it is reported as a proof walk, which is the claim that gets
+  scrutinised.
 
 ## 5. Where the argument lives
 
