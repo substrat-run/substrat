@@ -1913,7 +1913,11 @@ app.get('/api/apps/:scopeId/migrations', async (c) => {
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  return c.json(await cp.appliedMigrations(scopeId.parse(appRow.app_scope_id)));
+  // Availability rides the response rather than being inferred from emptiness by
+  // the client: `migrations: []` is a valid registration, so an empty list is a
+  // fact about the APP, while `available: false` is a fact about the READ.
+  const migrations = await cp.appliedMigrations(scopeId.parse(appRow.app_scope_id));
+  return c.json({ available: migrations !== null, migrations: migrations ?? [] });
 });
 
 app.get('/api/apps/:scopeId/bookmarks', async (c) => {

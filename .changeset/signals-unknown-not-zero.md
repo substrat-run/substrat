@@ -20,8 +20,9 @@ update, so the common GOOD state — you are current — looked identical to a
 broken panel; it now says so, beside the running version. And schema history
 hid on an empty answer, but an app always HAS migrations: empty only ever meant
 the read failed, which during an upgrade window is exactly the fact worth
-seeing. It now distinguishes unreadable from empty and explains that the
-history is served by the deployment itself, so it appears after the next push.
+seeing. It now carries availability from the server — `available: false` is a fact
+about the READ, while an empty list with `available: true` is a fact about the
+app, since a module may legitimately register no migrations at all.
 
 Individually each panel's "an empty panel is not information" was defensible.
 Together they made a tab that looked like nothing had shipped.

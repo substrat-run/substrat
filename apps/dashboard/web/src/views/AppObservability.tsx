@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { AppSchedules } from './AppSchedules';
-import { type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
+import { type AppMigrationsView, type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
 import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_RELEASE_COMPARISON, MOCK_APP_MIGRATIONS } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
@@ -303,9 +303,19 @@ function AppTelemetry({ app }: { app: AppRow }) {
 /**
  * Running vs the version an update would move this app to (#1236): the last
  * question before pressing Update, from the same 24h version-stamped traffic
- * the release ledger reads. Renders nothing when the app already runs prod's
- * head — an empty comparison is not information. An error rate that IMPROVES
- * is the green story; unavailable metrics render as em dashes, never zeros.
+ * the release ledger reads.
+ *
+ * Renders whenever there IS a running version — including when the app is
+ * already current, which it then says. It used to hide in that case ("an empty
+ * comparison is not information"), and production showed why that was wrong:
+ * being up to date is the common GOOD state, and hiding made it identical to a
+ * broken panel — three self-hiding cards on this tab composed into a page that
+ * looked like nothing had shipped. Do not restore the hiding.
+ *
+ * An error rate that IMPROVES is the green story. Unavailable metrics render as
+ * em dashes, never zeros — and for an app whose vertical another team publishes
+ * the traffic is absent rather than zero (`owned: false`), while the version
+ * pair still renders, because the registry is not telemetry.
  */
 function ReleaseComparisonCard({ app }: { app: AppRow }) {
   const [cmp, setCmp] = useState<ReleaseComparison | null>(DEV_MOCK ? MOCK_RELEASE_COMPARISON : null);
@@ -390,14 +400,12 @@ function ReleaseComparisonCard({ app }: { app: AppRow }) {
  * noise.
  */
 function SchemaHistoryCard({ app }: { app: AppRow }) {
-  // Three states, not two. An app ALWAYS has migrations, so an empty answer is never
-  // the truth about the app — it is a fact about the read: a deployment too old to
-  // serve `/internal/migrations` answers 404, the authority swallows it to [], and
-  // hiding on empty turned "we could not read this" into "nothing to see". The
-  // distinction is the whole point of the card during an upgrade window.
-  const [rows, setRows] = useState<AppliedMigration[] | 'unreadable' | null>(
-    DEV_MOCK ? MOCK_APP_MIGRATIONS : null,
-  );
+  // Availability comes from the SERVER, never inferred from emptiness here: a
+  // module may register `migrations: []`, so an empty list is a fact about the app,
+  // while `available: false` is a fact about the read (a deployment that does not
+  // serve the endpoint, or a plane fault). Collapsing those was the bug this card
+  // shipped with — and then, briefly, its inverse.
+  const [view, setView] = useState<AppMigrationsView | null>(DEV_MOCK ? MOCK_APP_MIGRATIONS : null);
 
   useEffect(() => {
     if (DEV_MOCK) return;
@@ -405,20 +413,19 @@ function SchemaHistoryCard({ app }: { app: AppRow }) {
     // Cleared first: this card is not keyed on the app, so switching apps reruns the
     // effect with last app's rows still mounted — and a schema history attributed to
     // the wrong app is worse than an empty card for the moment the request is in flight.
-    setRows(null);
+    setView(null);
     api
       .appMigrations(app.app_scope_id)
-      // Empty is indistinguishable from unreadable at this seam (the authority
-      // swallows the plane's refusal), so both land on the same honest state.
-      .then((r) => live && setRows(r.length > 0 ? r : 'unreadable'))
-      .catch(() => live && setRows('unreadable'));
+      .then((r) => live && setView(r))
+      // A worker predating the route: the card cannot say anything true, so it says nothing.
+      .catch(() => live && setView(null));
     return () => {
       live = false;
     };
   }, [app.app_scope_id]);
 
-  if (rows === null) return null;
-  const shown = rows === 'unreadable' ? [] : rows.slice(0, 8);
+  if (view === null) return null;
+  const shown = view.migrations.slice(0, 8);
 
   return (
     <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
@@ -429,10 +436,15 @@ function SchemaHistoryCard({ app }: { app: AppRow }) {
           under a release.
         </p>
       </div>
-      {rows === 'unreadable' && (
+      {!view.available && (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          Not readable from the version this app runs — the schema history is served by the
-          deployment itself, and this one predates that. It appears after the next push.
+          Could not be read. The history is served by the deployment itself, so a version
+          that predates the endpoint cannot answer — it appears after the next push.
+        </p>
+      )}
+      {view.available && view.migrations.length === 0 && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          No migrations — this app&rsquo;s modules declare no schema of their own.
         </p>
       )}
       <div style={{ display: 'grid', gap: 6 }}>
