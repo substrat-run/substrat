@@ -32,6 +32,7 @@ import {
   publishVersionInput,
   queryScopeInput,
   readScopeTableInput,
+  entityHistoryInput,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
   registerVerticalInput,
@@ -1998,6 +1999,28 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
+  });
+
+  // #1235: one record's event history — the per-entity pivot of the audit spine.
+  // Delegated exactly like the table reads: through the vertical that holds the
+  // scope's data when one resolves, the co-located host otherwise.
+  app.get('/tenants/:tenantId/scopes/:scopeId/history', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = entityHistoryInput.parse({
+      entityType: c.req.query('entityType'),
+      entityId: c.req.query('entityId'),
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+      cursor: c.req.query('cursor') ?? undefined,
+    });
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.entityHistory(scopeId, input)
+        : await admin.entityHistory(c.get('actor'), tenantId, scopeId, input),
+    );
   });
 
   app.get('/tenants/:tenantId/scopes/:scopeId/tables/:table', async (c) => {

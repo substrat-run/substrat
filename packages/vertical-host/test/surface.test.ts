@@ -10,6 +10,8 @@ const TENANT = '01JZ0000000000000000TEN001';
 // Any principal — the denial filter takes the LOGICAL actor, not its stored JSON spelling.
 const ACTOR_ULID = '01JZ0000000000000000PRN001';
 const OWNER = '01JZ0000000000000000PRN001';
+// The record whose history the #1235 read walks — any id; the route only forwards it.
+const ENTITY = '01JZ0000000000000000WO0001';
 
 type Env = { PLATFORM_SECRET: string };
 
@@ -30,6 +32,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     deleteScopeLocal: async () => note('deleteScopeLocal', undefined),
     migrationBookmarksLocal: async () => note('migrationBookmarksLocal', []),
     appliedMigrationsLocal: async () => note('appliedMigrationsLocal', []),
+    entityHistoryLocal: async (_s: unknown, input?: unknown) =>
+      note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
@@ -202,6 +206,11 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     ['/internal/tables/some_table?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/platform-requests?tenantId=' + TENANT + '&scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/platform-requests/history?tenantId=' + TENANT + '&scopeId=' + SCOPE, { headers: authed() }],
+    [
+      `/internal/history?scopeId=${SCOPE}&entityType=work-order&entityId=${ENTITY}`,
+      { headers: authed() },
+    ],
+    ['/internal/migrations?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials/summary?scopeId=' + SCOPE, { headers: authed() }],
   ];
@@ -249,6 +258,47 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(await sum.json()).toEqual({
       buckets: [{ actor: ACTOR_ULID, permission: 'perm:use', limit: 5 }],
     });
+  });
+
+  // #1235: one record's history. Scope bytes DO cross here, so the query string is
+  // parsed at this door rather than forwarded — what it names is the entity whose
+  // payloads come back.
+  it('passes the entity and the cursor page through to the host', async () => {
+    const host = fakeHost();
+    const res = await appWith(host).request(
+      `/internal/history?scopeId=${SCOPE}&entityType=work-order&entityId=${ENTITY}&limit=5&cursor=01JZ0000000000000000EVT001`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      entries: [
+        {
+          entityType: 'work-order',
+          entityId: ENTITY,
+          limit: 5,
+          cursor: '01JZ0000000000000000EVT001',
+        },
+      ],
+      nextCursor: null,
+    });
+    // Proof the read went to the HOST, not to an accidentally-empty default.
+    expect(host.calls).toContain('entityHistoryLocal');
+  });
+
+  it('refuses a malformed history input rather than widening it', async () => {
+    const host = fakeHost();
+    // No entity named at all — a history read with no subject would walk the whole outbox.
+    const bare = await appWith(host).request(`/internal/history?scopeId=${SCOPE}`, { headers: authed() }, ENV);
+    expect(bare.status).toBe(400);
+    // Over the contract ceiling. Refused at the boundary, never silently clamped.
+    const wide = await appWith(host).request(
+      `/internal/history?scopeId=${SCOPE}&entityType=work-order&entityId=${ENTITY}&limit=5000`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(wide.status).toBe(400);
+    expect(host.calls).not.toContain('entityHistoryLocal');
   });
 
   it('refuses a malformed denial filter rather than widening it', async () => {

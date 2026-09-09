@@ -430,6 +430,72 @@ describe('control-plane API', () => {
     expect((await json(`/tenants/${t2}/scopes/${s1}/query`, 'POST', { sql: 'SELECT 1' })).status).toBe(404);
   });
 
+  it("serves one record's history from the co-located host, and fails closed cross-tenant (#1235)", async () => {
+    // The SEMANTICS — the nullable facts, the operation, the PII class, the cursor —
+    // are pinned by the contract suite against both adapters. What this pins is the
+    // TRANSPORT: the route exists, the query string survives the Zod boundary, and the
+    // K-3 cross-check refuses a foreign tenant here as it does everywhere else.
+    const res = await req(`/tenants/${t1}/scopes/${s1}/history?entityType=widget&entityId=w1`);
+    expect(res.status).toBe(200);
+    // This host registers no modules, so the scope's outbox is empty — an empty page,
+    // not a 404. "Nothing happened to this record yet" is an answer.
+    expect(await res.json()).toEqual({ entries: [], nextCursor: null });
+
+    // The entity is REQUIRED: a history read with no subject would walk the whole outbox.
+    expect((await req(`/tenants/${t1}/scopes/${s1}/history`)).status).toBe(400);
+    expect((await req(`/tenants/${t1}/scopes/${s1}/history?entityType=widget`)).status).toBe(400);
+    // Over the contract ceiling — refused at the boundary, never silently clamped.
+    expect(
+      (await req(`/tenants/${t1}/scopes/${s1}/history?entityType=widget&entityId=w1&limit=5000`)).status,
+    ).toBe(400);
+
+    // Cross-tenant fails closed (K-3): another tenant's pair reads as absent, and it
+    // reads that way BEFORE any payload-bearing read is attempted.
+    expect((await req(`/tenants/${t2}/scopes/${s1}/history?entityType=widget&entityId=w1`)).status).toBe(404);
+  });
+
+  it("delegates a record's history to the vertical that holds the scope (#1235)", async () => {
+    // The production shape (K-31): the scope's data lives in a VERTICAL's deployment,
+    // so the route must ask it — and must carry the entity and the cursor across, or a
+    // second page silently re-serves the first.
+    const sH = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sH, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sH);
+
+    const calls: unknown[] = [];
+    const fakeVertical = {
+      entityHistory: async (s: string, input: unknown) => {
+        calls.push([s, input]);
+        return { entries: [{ id: '01JZEVT', type: 'widget.changed' }], nextCursor: '01JZEVT' };
+      },
+    } as unknown as VerticalClient;
+
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const dreq = (path: string) => delegated.request(path, { headers: auth });
+
+    const res = await dreq(
+      `/tenants/${t1}/scopes/${sH}/history?entityType=widget&entityId=w1&limit=1&cursor=01JZPREV`,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      entries: [{ id: '01JZEVT', type: 'widget.changed' }],
+      nextCursor: '01JZEVT',
+    });
+    // Proof the read went to the VERTICAL, with the whole input intact.
+    expect(calls).toEqual([[sH, { entityType: 'widget', entityId: 'w1', limit: 1, cursor: '01JZPREV' }]]);
+
+    // The Zod boundary is in front of the delegation, not behind it: a malformed ask
+    // never reaches the vertical.
+    expect((await dreq(`/tenants/${t1}/scopes/${sH}/history?entityType=widget`)).status).toBe(400);
+    // Cross-tenant fails closed here too — the scope record is resolved first.
+    expect((await dreq(`/tenants/${t2}/scopes/${sH}/history?entityType=widget&entityId=w1`)).status).toBe(404);
+    expect(calls).toHaveLength(1);
+  });
+
   it('delegates introspection to the vertical that owns the scope (connected mode)', async () => {
     // A scope whose data lives in a VERTICAL's deployment, not this control plane's own
     // (empty-module) scope host — the real prod shape (K-31). The route must ask the vertical.

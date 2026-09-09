@@ -294,6 +294,7 @@ import {
   createUlid,
   type UlidMint,
   type IdempotencyRow,
+  readHistory,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -5595,6 +5596,26 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt: scope.expires_at },
           { expiresAt },
         );
+      },
+      entityHistory: async (actor, tenantId, scopeId, input) => {
+        // `readHistory` over this scope's own outbox — the sanctioned read, and the
+        // only one that decodes the envelope's nullable facts (an erased payload, an
+        // unrecorded authorization chain, nobody impersonating) as facts rather than
+        // as missing data.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const page = readHistory(
+          { sql: scopedSql(db) },
+          { entityType: input.entityType, entityId: input.entityId },
+          { limit: input.limit, cursor: input.cursor },
+        );
+        this.recordAccess(
+          actor,
+          'entityHistory',
+          { tenantId, scopeId },
+          { entityType: input.entityType, entityId: input.entityId },
+          page.entries.length,
+        );
+        return page;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeDbFor(tenantId, scopeId);
