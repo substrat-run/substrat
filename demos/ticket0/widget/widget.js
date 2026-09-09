@@ -89,6 +89,28 @@
    * useful question into a tic, and somebody who already said yes has answered.
    */
   var helpDone = false;
+  /**
+   * When the desk will take a poll again, after it said `429` (#937).
+   *
+   * A limited poll that keeps its interval is the one caller a rate limit does not
+   * slow down: it spends the next window the moment it opens and gets refused again.
+   * So the desk's `Retry-After` is honoured — the timer keeps ticking, and the request
+   * it would have made is skipped until the hold is up.
+   */
+  var heldUntil = 0;
+  /**
+   * Where the sentence in `error` came from, so a later success can take back the ones
+   * it disproves — and only those.
+   *
+   * A failed poll's notice ("can't load the latest replies") is a claim about right
+   * now, and the next poll that works is the evidence against it. Nothing cleared it
+   * before, so a single `429` — or one dropped request — left the widget apologising
+   * for the rest of the visit, under replies that were arriving normally. A failed
+   * SEND is not the same claim: that message really was not delivered, and a poll
+   * succeeding afterwards does not deliver it, so it stays until the visitor sends
+   * again.
+   */
+  var errorFrom = null;
 
   // ── shadow root ───────────────────────────────────────────────────────────
   var host = document.createElement('div');
@@ -226,6 +248,14 @@
         if (!r.ok) {
           var err = new Error((j && (j.detail || j.title)) || t.slice(0, 120) || 'Request failed');
           err.status = r.status;
+          // How long the desk asked for, from the header when CORS exposed it and from
+          // the problem document's `retryAfter` when it did not. Neither is a promise:
+          // a missing or absurd one falls back to a sane pause rather than to none.
+          if (r.status === 429) {
+            var asked = Number(r.headers.get('retry-after'));
+            if (!(asked > 0)) asked = Number(j && j.retryAfter);
+            err.retryAfter = asked > 0 && asked < 300 ? asked : 30;
+          }
           throw err;
         }
         return j;
@@ -297,6 +327,8 @@
     messages = [];
     drawn = null;
     seen = 0;
+    // A new session is a new caller, and the hold was on the old token's budget.
+    heldUntil = 0;
     helpDone = false;
     waiting = false;
     gaveUp = false;
@@ -367,6 +399,7 @@
         // fails is still a visitor looking at a chat bubble, so it says what the other
         // three say rather than whatever the desk put in the body.
         error = visitorError(err, 'start');
+        errorFrom = 'start';
         draw();
       })
       .then(function () {
@@ -648,8 +681,18 @@
   function refresh() {
     tickWait();
     if (!session) return Promise.resolve();
+    // Held by a `429`. The interval still fires — it is what notices the hold is over —
+    // but it makes no request while one is on.
+    if (Date.now() < heldUntil) return Promise.resolve();
     return thread()
       .then(function (page) {
+        // The poll worked, so the last one's "can't load the latest replies" — including
+        // the one a `429` put there, which is why the hold ends visibly rather than just
+        // quietly — is no longer true. Somebody else's error is left alone.
+        if (errorFrom === 'refresh') {
+          error = null;
+          errorFrom = null;
+        }
         var next = page.entries || [];
         // "Waiting" ends when something arrives that is not ours — not when our own
         // POST resolves, because the answer is produced out of band.
@@ -665,7 +708,9 @@
       })
       .catch(function (e) {
         if (recover(e, refresh)) return;
+        if (e && e.status === 429) heldUntil = Date.now() + e.retryAfter * 1000;
         error = visitorError(e, 'refresh');
+        errorFrom = 'refresh';
         draw();
       });
   }
@@ -682,6 +727,7 @@
     // `session.sessionId` off null and leaving the dots spinning forever.
     if (!session) {
       error = 'Not connected — reopen the chat to start a new conversation.';
+      errorFrom = 'post';
       waiting = false;
       draw();
       return;
@@ -692,6 +738,7 @@
       ta.focus();
     }
     error = null;
+    errorFrom = null;
     waiting = true;
     waitingSince = Date.now();
     gaveUp = false;
@@ -715,6 +762,7 @@
         )
           return;
         error = visitorError(e, 'post');
+        errorFrom = 'post';
         draw();
       });
   }
@@ -737,6 +785,7 @@
         // sentence and the console gets the reason — and the composer is disabled,
         // because there is nothing behind it.
         error = visitorError(e, 'start');
+        errorFrom = 'start';
         draw();
         var ta = root.getElementById('t');
         var send = root.querySelector('.send');

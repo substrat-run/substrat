@@ -613,7 +613,14 @@ mountWidgetSurface(app, {
     if (!widget) return null; // not provisioned yet — no desk to embed
     const invoke = <T,>(op: string, input: unknown) => widget.invoke(op, input) as Promise<T>;
     const declared = await invoke<{ origins: string[] }>('ticket0/widget-origins', {});
-    return { invoke, allowedOrigins: declared.origins };
+    // The rate limiter's scope. One script answers for every desk the router sends it,
+    // so the node — asserted by the router with a signature, never read off a header
+    // the caller controls — is what keeps one desk's flood out of another's budget.
+    return {
+      invoke,
+      allowedOrigins: declared.origins,
+      deskKey: `${node.tenantId}:${node.scopeId}`,
+    };
   },
   // The edge knows where the request came from; the adapter is the one place that
   // reads `request.cf`, and the operation sees only the normalised shape.

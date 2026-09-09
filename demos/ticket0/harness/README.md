@@ -12,7 +12,7 @@ making that trade.
 
 | File | What it is |
 |---|---|
-| `widget-surface.ts` | ticket0's three `/widget/*` routes, mounted on `vertical-host`'s `mountPublicSurface` — which owns the platform half (unauthenticated mount as a declared service, async CORS, the preflight, refusing an unlisted origin before the handler) since #936. |
+| `widget-surface.ts` | ticket0's three `/widget/*` routes, mounted on `vertical-host`'s `mountPublicSurface` — which owns the platform half (unauthenticated mount as a declared service, async CORS, the preflight, refusing an unlisted origin before the handler) since #936. It keeps its own per-caller rate limit (`WIDGET_RATE_LIMITS`, #937): a budget per embedding origin on the route that mints a session, and one per session token on the routes that spend money, every key scoped to the desk the host resolved because one script answers for many of them. Bounded, and a live counter is never evicted to make room — that is how a caller buys its own spent budget back. Demo-sized and isolate-local until a platform limiter exists to lift it. |
 | `assistant.ts` | The model call — through the platform's model host (`@substrat-run/vertical-host/model`), or an offline extractive fallback — plus the retrieve → record → try-to-send flow. |
 | `kb-ingest.ts` | Fetches and parses a documentation corpus into citable articles. |
 | `demo-site.ts` | Two fake customer websites, so the widget's calls are genuinely cross-origin. |
