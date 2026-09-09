@@ -102,6 +102,7 @@ import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roste
 import { mountCliAuthRoutes } from './cli-auth.js';
 import { studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
 import { dispatchNamespaceOf } from './dispatch-namespace.js';
+import { saasRoutingTargetOf } from './saas-routing-target.js';
 import {
   CONNECTORS,
   connectionInspectorsFor,
@@ -370,10 +371,10 @@ function provisionHostnameFor(env: Env): CustomHostnameProvisioner | undefined {
   return createCustomHostnameProvisioner({
     zoneId: env.CF_SAAS_ZONE_ID,
     apiToken: env.CF_API_TOKEN,
-    // Where a tenant points DNS — the SaaS fallback ingress. Defaults to a conventional
-    // `edge.<first base domain>` when unset, so a standard deployment needs no extra var.
-    routingTarget:
-      env.CF_SAAS_ROUTING_TARGET ?? `edge.${platformBaseDomains(env)[0] ?? 'substrat.run'}`,
+    // Where a tenant points DNS — the SaaS fallback ingress. Defaults to
+    // `cname.<first base domain>`, the record production publishes and wrangler.jsonc
+    // documents, so a standard deployment needs no extra var (#973).
+    routingTarget: saasRoutingTargetOf(env),
     // `http` DCV (default) needs only the routing CNAME and validates at CF's edge; `txt`
     // opts into the two-record flow. Anything but an explicit `txt` means `http`.
     sslMethod: env.CF_SAAS_SSL_METHOD === 'txt' ? 'txt' : 'http',

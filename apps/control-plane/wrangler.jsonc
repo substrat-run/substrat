@@ -26,6 +26,8 @@
 	// `pending` custom binds. It runs only when a SaaS zone is configured —
 	//   wrangler secret put CF_SAAS_ZONE_ID       # the substrat.run zone id
 	//   wrangler secret put CF_SAAS_ROUTING_TARGET # CNAME tenants point at, e.g. cname.substrat.run
+	// Unset ⇒ `cname.<first PLATFORM_BASE_DOMAINS entry>`, i.e. exactly the line above for a
+	// standard deployment (#973). The default and the documented value are one string.
 	// DCV defaults to `http` (single CNAME, validated at CF's edge — nothing to serve);
 	// set CF_SAAS_SSL_METHOD=txt for the two-record flow. The CF_API_TOKEN also needs
 	// SSL / custom-hostname write on that zone. Unset ⇒ a custom bind stays `pending`.
