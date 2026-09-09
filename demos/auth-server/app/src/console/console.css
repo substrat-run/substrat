@@ -67,12 +67,18 @@
   flex-direction: column;
 }
 
+/* Sticky, not merely first: `.console-main` is the scroll container, so a topbar that only
+   sat at the top would scroll away — taking the hamburger with it on exactly the narrow
+   screens where it is the only way back to the nav. */
 .console-topbar {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   height: var(--topbar-h);
   flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 10;
   padding: 0 var(--space-6);
   border-bottom: 1px solid var(--border-default);
   background: var(--surface-card);
