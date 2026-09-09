@@ -8,6 +8,7 @@ import type {
   ConnectionProbe,
   DeployAssets,
   DeployManifest,
+  DeclaredOperationOutput,
   EmittedModel,
   ListPage,
   OpsFailureEntry,
@@ -613,13 +614,28 @@ export class TenantNarrowedControlPlane {
   }
 
   async versionModel(verticalSlug: string, versionId: string): Promise<EmittedModel | null> {
+    return (await this.versionModelSurface(verticalSlug, versionId)).model;
+  }
+
+  /**
+   * The emitted model AND what each operation declares it returns (#1321), from
+   * one read — they are stored side by side on the retained manifest, and the
+   * field-coverage view needs both to say which declared fields nothing returns.
+   * Null on any non-200, so "unknown" and "none" stay the same answer here, as
+   * everywhere else that reads a retained manifest.
+   */
+  async versionModelSurface(
+    verticalSlug: string,
+    versionId: string,
+  ): Promise<{ model: EmittedModel | null; outputSurface: DeclaredOperationOutput[] | null }> {
     try {
-      const res = await this.call<{ model: EmittedModel | null }>(
-        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/model`,
-      );
-      return res?.model ?? null;
+      const res = await this.call<{
+        model: EmittedModel | null;
+        outputSurface?: DeclaredOperationOutput[] | null;
+      }>(`/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/model`);
+      return { model: res?.model ?? null, outputSurface: res?.outputSurface ?? null };
     } catch {
-      return null;
+      return { model: null, outputSurface: null };
     }
   }
 

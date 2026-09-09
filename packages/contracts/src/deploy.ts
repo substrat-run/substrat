@@ -553,6 +553,19 @@ export const deployAssets = assetRouting.extend({
 export type DeployAssets = z.infer<typeof deployAssets>;
 
 /** The JSON part a `substrat push` sends alongside the module files. */
+/**
+ * One operation's DECLARED output fields (#1321) — the operation id as OpenAPI
+ * knows it, and the property names of the response body. An operation whose
+ * response declares no properties (a 204, a bare scalar) contributes nothing and
+ * is omitted rather than carried as an empty list, so absence means "declares no
+ * fields" everywhere in the surface.
+ */
+export const declaredOperationOutput = z.object({
+  operationId: z.string().min(1),
+  fields: z.array(z.string().min(1)).min(1).max(200),
+});
+export type DeclaredOperationOutput = z.infer<typeof declaredOperationOutput>;
+
 export const deployManifest = z.object({
   version: z.string().min(1),
   /** Display name for a first-time register; defaults to the slug. */
@@ -631,6 +644,20 @@ export const deployManifest = z.object({
    *  with no `model.json` beside its package.json pushes without one, and versions pushed
    *  by a pre-#1214 CLI stay readable. */
   model: emittedModel.optional(),
+  /**
+   * What each operation DECLARES it returns (#1321), derived from the emitted
+   * `openapi.json`: the operation id and the field names of its 200/201 response
+   * schema (a paged read contributes its ENTRY's fields, not the envelope's).
+   *
+   * Carried for the same reason as `model` and `schedules`: the fact exists only
+   * inside the vertical's bundle — `openapi.json` is built by each vertical and
+   * never sent — and the dashboard cannot otherwise answer "is this declared field
+   * named by anything at all". Metadata, not code, and in no digest.
+   *
+   * Deliberately field NAMES, not schemas: the question is reachability, and
+   * carrying the shapes again would duplicate `model` at several times the size.
+   */
+  outputSurface: z.array(declaredOperationOutput).max(500).optional(),
   /** The vertical's declared schedules (#1232), flattened across modules with each
    *  spec's owning module beside it — carried so the dashboard can render the DEPLOYED
    *  version's schedule health (next due needs `everyMinutes`, and the manifest is the
