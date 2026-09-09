@@ -18,6 +18,7 @@ import {
 import { Ic } from '../lib/icons';
 import { DEV_MOCK, MOCK_FAILURES, MOCK_FAILURE_GROUPS, MOCK_RELEASES, MOCK_PREVIEWS, MOCK_TRAFFIC } from '../lib/mock';
 import { Page, GridTable, Row } from '../components/layout';
+import { relativeTime } from '../lib/format';
 import { TrafficChart } from '../components/TrafficChart';
 import { card, CopyButton, OriginTag, Pill, PageTitle, MonoTag, type PillKind } from '../components/ui';
 
@@ -46,6 +47,17 @@ function channelsFor(d: Deployment, versionId: string): string[] {
 
 const CHANNEL_PILL: Record<string, PillKind> = { prod: 'success' };
 
+/**
+ * The versions table's shape, shared by the header and every row so the two cannot drift.
+ * `Version` is the widest column on purpose: a prerelease tag (`0.4.0-beta.7`) plus the
+ * schema-change badge used to share 1.2fr with the push origin, which is the longest thing
+ * in the row (`owner/repo@1a2b3c4`). Origin moved to `Pushed`, where it reads as one fact —
+ * when the push happened and where it came from — and the promote column gave up the room
+ * it was holding for a single small button.
+ */
+const VERSION_COLUMNS = '1.5fr 1.4fr 0.9fr 1fr 0.9fr';
+const VERSION_HEADER = ['Version', 'Pushed', 'Admission', 'Channels', '~Promote'];
+
 function VersionRow({
   d,
   v,
@@ -68,13 +80,20 @@ function VersionRow({
   // so it has no self-serve promote at all (use a preview to exercise a version, ask (d)).
   const channels = d.listed ? ([] as const) : (['prod'] as const);
   return (
-    <Row columns="1.2fr 1fr 1.4fr 1.6fr" last={last}>
-      <span style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8 }}>
-        {v.version}
+    <Row columns={VERSION_COLUMNS} last={last}>
+      <span style={{ fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <span style={{ fontFamily: 'var(--font-mono)' }}>{v.version}</span>
         {/* #286: promoting this version migrates every instance's data in place —
             the badge is the at-a-glance half of the acknowledgement gate. */}
         {v.schemaChange && <Pill kind="warning">schema change</Pill>}
-        {/* Where the push came from — the repo's deploy workflow vs someone's terminal. */}
+      </span>
+      {/* When the push landed, and where it came from — the repo's deploy workflow vs
+          someone's terminal. Relative, because "3d ago" is the question being asked here;
+          the exact instant is one hover away rather than eating the column. */}
+      <span style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, color: 'var(--text-secondary)' }}>
+        <span style={{ fontSize: 12.5, whiteSpace: 'nowrap' }} title={new Date(v.createdAt).toLocaleString()}>
+          {relativeTime(v.createdAt)}
+        </span>
         <OriginTag origin={v.origin} />
       </span>
       <span>
@@ -263,7 +282,7 @@ function VerticalCard({
         </div>
       ) : (
         <>
-          <GridTable columns="1.2fr 1fr 1.4fr 1.6fr" header={['Version', 'Admission', 'Channels', '~Promote']}>
+          <GridTable columns={VERSION_COLUMNS} header={VERSION_HEADER}>
             {shown.map((v, i) => (
               <VersionRow
                 key={v.id}
@@ -816,7 +835,7 @@ export function VerticalDetail({
           <>
             <div style={{ display: 'grid', gap: 8 }}>
               <h3 style={{ margin: 0, fontSize: 15 }}>Versions</h3>
-              <GridTable columns="1.2fr 1fr 1.4fr 1.6fr" header={['Version', 'Admission', 'Channels', '~Promote']}>
+              <GridTable columns={VERSION_COLUMNS} header={VERSION_HEADER}>
                 {d.versions.map((v, i) => (
                   <VersionRow
                     key={v.id}
