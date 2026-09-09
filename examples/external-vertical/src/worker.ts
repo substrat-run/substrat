@@ -11,10 +11,11 @@
  *
  * This vertical is SELF-CONTAINED: it embeds its own control plane and seeds its
  * own tenant/scope, exactly like the Callout demo. Registering into a
- * separately-deployed shared control plane is a later step (first-flow.md slice 4).
+ * separately-deployed shared control plane is what `substrat push` does, and this
+ * example deliberately does not.
  *
- * Local run:  pnpm dev      (wrangler dev, no account; dev-header auth on)
- * Deploy:     pnpm deploy   (needs a Workers Paid plan — DO SQLite)
+ * Local run:  npm run dev         (wrangler dev, no account; dev-header auth on)
+ * Deploy:     npm run cf:deploy   (needs a Workers Paid plan — DO SQLite)
  */
 import { Hono, type Context } from 'hono';
 import { HTTPException } from 'hono/http-exception';
@@ -67,8 +68,13 @@ function hostFor(env: Env): CloudflareScopeHost {
 /**
  * Dev-header auth: the `x-principal` header names the caller directly, no
  * credentials. Gated on ALLOW_DEV_HEADER so it is off unless explicitly opted in
- * — secure by default. Production wires a real identity adapter (Better Auth is
- * the demo's choice); the kernel only ever receives the resolved PrincipalId.
+ * — secure by default.
+ *
+ * This is a PLACEHOLDER, not a shape to copy: no vertical in the monorepo carries
+ * an `x-principal` seam any more. They are OIDC-only (docs/architecture/
+ * oidc-only-demos.md) — a real issuer even in dev, and the vertical only maps the
+ * authenticated `sub` onto a scope principal. `packages/vertical-auth` is that
+ * composition; the kernel only ever receives the resolved PrincipalId either way.
  */
 function resolvePrincipal(env: Env, req: Request) {
   if (env.ALLOW_DEV_HEADER !== 'true') return null;

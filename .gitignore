@@ -45,3 +45,14 @@ packages/template-check/GENERATED.md
 
 # ticket0 local model credentials
 demos/*/.env
+
+# The external-vertical example resolves from the REGISTRY, not the workspace, so
+# installing it is what proves the published packages still compose. Anything a
+# documented install writes there PINS that resolution — a lockfile, and pnpm's
+# auto-written minimumReleaseAgeExclude list, which names exact versions — and a
+# pinned example stops testing anything. Ignored rather than checked in. (The
+# example is not a workspace member, so its pnpm-workspace.yaml is pnpm's own
+# artifact, not a second workspace root anyone maintains.)
+examples/external-vertical/package-lock.json
+examples/external-vertical/pnpm-lock.yaml
+examples/external-vertical/pnpm-workspace.yaml

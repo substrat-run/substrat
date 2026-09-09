@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "A Substrat vertical built from published packages — the 'build an app outside the repo' example (first-flow.md slice 2)",
+  "description": "A Substrat vertical built from published packages — the 'build an app outside the repo' example, deliberately not a workspace member so it proves an npm install works",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "wrangler dev --var ALLOW_DEV_HEADER:true",
@@ -11,15 +11,15 @@
     "dry-run": "wrangler deploy --dry-run --outdir dist-worker"
   },
   "dependencies": {
-    "@substrat-run/adapter-cloudflare": "^0.98.1",
-    "@substrat-run/contracts": "^0.98.1",
-    "@substrat-run/engine-workorder": "^0.10.6",
-    "@substrat-run/kernel": "^0.98.1",
+    "@substrat-run/adapter-cloudflare": "^0.106.0",
+    "@substrat-run/contracts": "^0.106.0",
+    "@substrat-run/engine-workorder": "^0.11.5",
+    "@substrat-run/kernel": "^0.106.0",
     "hono": "^4.12.30",
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250109.0",
+    "@cloudflare/workers-types": "^5.20260908.1",
     "typescript": "^7.0.0",
     "wrangler": "^4.110.0"
   }

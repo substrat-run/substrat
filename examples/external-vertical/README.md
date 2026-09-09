@@ -2,10 +2,14 @@
 
 A Substrat vertical built **from published packages**, standing in for a repo
 outside this monorepo. It depends on `@substrat-run/*` at real semver ranges (no
-`workspace:*`) and is **not** a workspace member — `pnpm install` here resolves
-everything from npm, exactly as a real external project would. This is
-[first-flow.md](../../docs/briefs/first-flow.md) slice 2: the "build an app
-outside the repo" half.
+`workspace:*`) and is **not** a workspace member — installing here resolves
+everything from npm, exactly as a real external project would.
+
+That is the whole job of this directory: it is the one place in the repo where
+"the published packages still compose into a working vertical" is a thing you can
+check rather than assume. No workspace link stands in for a registry resolve, so
+the pins below have to be maintained — a caret range on a `0.x` package pins the
+minor, and a stale one silently installs code a release has moved past.
 
 ## What it is
 
@@ -18,24 +22,32 @@ One deployable Cloudflare Worker that composes:
 - [`src/notes.ts`](src/notes.ts) — **your own module**, a minimal one
 
 It is self-contained: it embeds its own control plane and seeds its own tenant and
-scope. (Registering into a separately-deployed shared control plane is slice 4.)
+scope. Registering into a separately-deployed shared control plane is what
+`substrat push` does, and this example deliberately does not.
 
 ## Run it
 
 ```sh
-pnpm install       # from within this monorepo, add --ignore-workspace (see below)
-pnpm dev           # wrangler dev on real workerd — no Cloudflare account needed
+npm install        # or pnpm install --ignore-workspace, from inside this repo
+npm run dev        # wrangler dev on real workerd — no Cloudflare account needed
 ```
 
 Then **open <http://localhost:8787> in your browser**: a tiny built-in page lets
 you *Seed world*, add notes, and see them — driving the same API below. (The `dev`
-script turns on the `x-principal` dev-header auth the page uses.)
+script turns on the `x-principal` dev-header auth the page uses — a placeholder,
+see [What this example does *not* show yet](#what-this-example-does-not-show-yet).)
 
 > **Running from inside this repo:** `examples/` is deliberately **not** a pnpm
 > workspace member, so a plain `pnpm install` here would target the whole
 > monorepo. Use `pnpm install --ignore-workspace` to install it standalone from
 > the registry, the way a real external checkout does. A genuine checkout outside
-> the repo just runs `pnpm install`.
+> the repo just runs `npm install`. Either way the lockfile it writes is
+> gitignored: pinning the resolution is exactly what this example must not do.
+
+> **npm is the stricter check of the two.** pnpm downgrades an unmet peer to a
+> warning; npm refuses to install at all. So a peer range that has gone stale here
+> — `@cloudflare/workers-types` against whatever major current `wrangler` wants —
+> is invisible under pnpm and a hard failure under npm. Run the npm one.
 
 ### Or drive the API directly
 
@@ -64,12 +76,14 @@ No `rel="next"` means the walk is over.
 ## Deploy it
 
 ```sh
-pnpm cf:deploy      # needs a Workers Paid plan (Durable Object SQLite)
+npm run cf:deploy   # needs a Workers Paid plan (Durable Object SQLite)
 ```
 
 `ALLOW_DEV_HEADER` is **not** set on deploy, so a deployed worker is fail-closed
-until you wire real auth. See `packages/vertical-auth` for the OIDC composition a
-vertical mounts; the kernel only ever receives the resolved `PrincipalId`.
+until you wire real auth — which you must, because the dev header is a
+placeholder and not a shape to copy (see below). See `packages/vertical-auth` for
+the OIDC composition a vertical mounts; the kernel only ever receives the
+resolved `PrincipalId`.
 
 ## The shape to copy
 
@@ -89,10 +103,31 @@ vertical mounts; the kernel only ever receives the resolved `PrincipalId`.
   directory row as `provisioning` and `activateScope` is the vertical's
   confirmation that the scope exists. `getScope` fails closed in between.
 
+## Keeping it alive
+
+This example is only worth having if it still installs. The pins in
+`package.json` are literal semver ranges, `catalog:` does not reach here, and
+nothing in CI resolves them — so they go stale silently, and a caret on a `0.x`
+package pins the *minor*, which means a stale pin installs an older release
+rather than failing. Re-check it by hand after a release:
+
+```sh
+npm install                                # must not error on a peer
+npm run typecheck                          # the published surfaces still compile
+npm run dry-run                            # …and still bundle into a worker
+```
+
+If `npm install` refuses on a peer, or `typecheck` reports a surface that moved,
+that is the example doing its job: it is the earliest place an external consumer's
+breakage shows up.
+
 ## What this example does *not* show yet
 
-Auth. The `x-principal` dev header here is a placeholder — every demo vertical in
-the monorepo is now **OIDC-only** (`docs/architecture/oidc-only-demos.md`): they
-run no credential store, start a real OIDC issuer in dev, and map the
-authenticated `sub` onto a scope principal. Porting this example onto that shape
-is the remaining half of #983.
+Auth. The `x-principal` dev header here is a **dev-only placeholder that no
+vertical in this repo uses any more** — do not copy it. Every demo vertical is
+now **OIDC-only** ([`docs/architecture/oidc-only-demos.md`](../../docs/architecture/oidc-only-demos.md)):
+they run no credential store, start a real OIDC issuer in dev
+(`@substrat-run/dev-issuer`), and map the authenticated `sub` onto a scope
+principal, so the local login is the production round-trip. A project from
+`npm create substrat` is scaffolded that way too. Porting this example onto that
+shape is the remaining half of #983.
