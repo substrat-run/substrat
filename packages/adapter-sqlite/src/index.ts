@@ -304,6 +304,13 @@ interface ScopeRuntime {
   db: Database.Database;
   actor: ScopeActor;
   appliedMigrations: Set<string>;
+  /**
+   * The event-id mint for THIS scope (#1335). Per scope, not per host: `ORDER BY id`
+   * is an ordering over one scope's outbox, so a busy scope's floor has no business
+   * dragging a quiet one's ids forward. Seeded from the scope's own persisted maximum
+   * in `runtime()`, which is what carries the floor across a `close()`/reopen.
+   */
+  mintEventId: UlidMint;
 }
 
 /** One `_substrat_attachments` row (#473), as SELECTed. */
@@ -1081,13 +1088,11 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly fetchImpl: FetchLike;
   private readonly clock: Clock;
   private readonly versionId: string | null;
-  /**
-   * The mint for event ids (#956). Its own monotonic floor, because the timestamp
-   * it stamps comes from `this.clock` — a scripted clock behind the wall clock
-   * would otherwise be dragged forward by the process-wide `ulid()` that every
-   * other id here still uses.
-   */
-  private readonly mintEventId: UlidMint = createUlid();
+  // The mint for event ids (#956) is NOT here: it lives on `ScopeRuntime`, one per
+  // scope, seeded from that scope's persisted maximum (#1335). Its own monotonic
+  // floor, because the timestamp it stamps comes from `this.clock` — a scripted
+  // clock behind the wall clock would otherwise be dragged forward by the
+  // process-wide `ulid()` that every other id here still uses.
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
@@ -7908,7 +7913,7 @@ export class SqliteScopeHost implements ScopeHost {
           // is how the outbox and every timeline page, so an id whose timestamp
           // disagreed with its own `occurredAt` sorted the log by a clock nothing
           // else in the operation used.
-          id: eventId.parse(this.mintEventId(Date.parse(at))),
+          id: eventId.parse(rt.mintEventId(Date.parse(at))),
           occurredAt: at,
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
@@ -8371,7 +8376,24 @@ export class SqliteScopeHost implements ScopeHost {
         }[]
       ).map((r) => `${r.module_id}@${r.version}`),
     );
-    const created: ScopeRuntime = { tenantId, scopeId, db, actor: new ScopeActor(), appliedMigrations };
+    // #1335: the floor this scope's ids have to clear is the highest id already in
+    // its outbox, not wherever the wall clock happens to be. Read once, here, because
+    // this is the one place a scope's runtime is built — a reopened host, a revived
+    // process and a first-ever open all arrive through it. `MAX(id)` on the primary
+    // key is an index seek, and `db.exec(KERNEL_DDL)` above guarantees the table exists.
+    const mintEventId = createUlid();
+    const highest = (db.prepare('SELECT MAX(id) AS id FROM _substrat_outbox').get() as
+      | { id: string | null }
+      | undefined)?.id;
+    if (highest) mintEventId.seedFrom(highest);
+    const created: ScopeRuntime = {
+      tenantId,
+      scopeId,
+      db,
+      actor: new ScopeActor(),
+      appliedMigrations,
+      mintEventId,
+    };
     this.scopes.set(key, created);
     this.scopesById.set(scopeId, created);
     return created;

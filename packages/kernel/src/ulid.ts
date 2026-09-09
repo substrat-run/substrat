@@ -16,11 +16,14 @@
 // go backwards against ITS OWN rows, which is the invariant `ORDER BY id` needs.
 //
 // The floor lives in MEMORY, so it is only as old as the mint. A host that closes and
-// reopens — or a Durable Object that is evicted and revived — starts again from the
-// clock alone, and if that clock now reads behind the last id it persisted, the next
-// id sorts underneath rows that are already stored. Within one mint's life the
-// ordering is a guarantee; across a restart it rests on the clock moving forward.
-// Closing that gap means seeding the floor from the persisted maximum, which is #1335.
+// reopens — or a Durable Object that is evicted and revived — would start again from the
+// clock alone, and if that clock now read behind the last id it persisted, the next id
+// would sort underneath rows that are already stored. `seedFrom()` (#1335) is how a
+// writer closes that gap: it hands the mint an id it has ALREADY persisted, and the
+// floor is raised to it before the first mint of the new life. The mint cannot read
+// storage itself — it has no idea what its writer's rows live in — so the durability
+// half is the caller's, and each adapter seeds from `SELECT MAX(id) FROM
+// _substrat_outbox` for the scope it is about to mint into.
 
 // WebCrypto is a global on every WinterTC runtime (Workers, Node 18+, Bun, Deno);
 // declared locally so the kernel needs no platform type packages (§5.8).
@@ -38,7 +41,25 @@ const unencodable = (t: number): string =>
   `not an encodable ULID instant: ${t} (want 0..${MAX_ULID_TIME})`;
 
 /** A monotonic ULID mint. `now` is epoch milliseconds; it defaults to the wall clock. */
-export type UlidMint = (now?: number) => string;
+export interface UlidMint {
+  (now?: number): string;
+  /**
+   * Raise the floor to an id this writer has already persisted (#1335), so the next
+   * mint is strictly greater than it whatever the clock now says.
+   *
+   * The floor only ever goes UP: seeding with an id below where the mint already
+   * stands is a no-op, so a seed racing an in-flight mint cannot undo it, and seeding
+   * twice is harmless. Both halves of the state are taken — the timestamp AND the
+   * random digits — because an id minted in the same millisecond has to beat the
+   * seed's random half too, and re-randomizing could land below it.
+   *
+   * Refuses anything that is not a ULID, for `ulidTime`'s reason: a floor decoded
+   * from a prefix is a plausible-looking number and would silently sit in the wrong
+   * place. Callers read the id back out of their own storage, where the only writer
+   * is a mint like this one.
+   */
+  seedFrom(id: string): void;
+}
 
 /**
  * A ULID mint with its OWN monotonic state — one writer's floor, not the process's.
@@ -70,7 +91,7 @@ export function createUlid(): UlidMint {
     return false; // all digits were 31 — overflowed (astronomically rare)
   }
 
-  return (now: number = Date.now()): string => {
+  const mint = ((now: number = Date.now()): string => {
     // Not a clock reading at all. `NaN` (an unparseable timestamp) is the one that
     // matters: every comparison below is false for it, so it would sail through the
     // floor untouched and encode as a run of `undefined`s.
@@ -104,7 +125,32 @@ export function createUlid(): UlidMint {
     let r = '';
     for (const d of lastRand) r += B32[d];
     return ts + r;
+  }) as UlidMint;
+
+  mint.seedFrom = (id: string): void => {
+    const time = ulidTime(id); // refuses anything that is not a ULID
+    if (time < lastTime) return;
+    // The random half, as the same 16 base32 digits the mint holds. Past `ulidTime`'s
+    // alphabet gate every digit is in `B32`, so `indexOf` cannot miss.
+    const rand: number[] = [];
+    for (const ch of id.slice(10)) rand.push(B32.indexOf(ch));
+    if (time === lastTime) {
+      // Same millisecond: only adopt the seed's random half if it is the higher one,
+      // or the next `incrementRandom()` would step from below where this mint stands.
+      let ahead = false;
+      for (let i = 0; i < 16; i++) {
+        if (rand[i]! !== lastRand[i]!) {
+          ahead = rand[i]! > lastRand[i]!;
+          break;
+        }
+      }
+      if (!ahead) return;
+    }
+    lastTime = time;
+    for (let i = 0; i < 16; i++) lastRand[i] = rand[i]!;
   };
+
+  return mint;
 }
 
 /** The process-wide mint every id in the platform has always come from. */

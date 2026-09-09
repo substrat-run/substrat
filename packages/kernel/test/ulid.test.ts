@@ -101,3 +101,68 @@ describe('ulid', () => {
     expect(ulidTime('7ZZZZZZZZZ0000000000000000')).toBe(MAX);
   });
 });
+
+describe('seedFrom — the floor survives the mint that held it (#1335)', () => {
+  const T = Date.UTC(2026, 0, 2, 3, 4, 5);
+  const REWOUND = Date.UTC(2025, 5, 1);
+
+  it('mints above a seeded id even when the clock is behind it', () => {
+    // The reproduction in the issue, with the storage taken out: the id below is
+    // what a previous mint persisted, and this mint has stamped nothing yet.
+    const persisted = createUlid()(T);
+    const revived = createUlid();
+    revived.seedFrom(persisted);
+
+    const next = revived(REWOUND);
+    expect(next > persisted).toBe(true);
+    // Held at the seed's instant rather than following the clock down — the same
+    // thing the in-memory floor does for a rewind within one mint's life.
+    expect(ulidTime(next)).toBe(T);
+  });
+
+  it('is what makes the difference — without it the new id sorts underneath', () => {
+    // Spelled out so the assertion above cannot be "fixed" into one a bare mint
+    // would also pass: this is the bug, reproduced.
+    const persisted = createUlid()(T);
+    expect(createUlid()(REWOUND) > persisted).toBe(false);
+  });
+
+  it('never lowers a floor the mint has already reached', () => {
+    const mint = createUlid();
+    const high = mint(T);
+    mint.seedFrom(createUlid()(REWOUND));
+    expect(mint(REWOUND) > high).toBe(true);
+  });
+
+  it('takes the random half too, so a same-millisecond seed still wins', () => {
+    // Both ids carry the same instant, so only the random digits separate them. A
+    // seed that moved `lastTime` alone would re-randomize and could land below.
+    const persisted = `${createUlid()(T).slice(0, 10)}ZZZZZZZZZZZZZZZP`;
+    const revived = createUlid();
+    revived.seedFrom(persisted);
+    expect(revived(T) > persisted).toBe(true);
+  });
+
+  it('carries the seed on the timestamp when the random half overflows', () => {
+    // All 16 digits at their maximum: there is no increment left, so the mint steps
+    // the millisecond and re-randomizes. Still strictly greater, one ms later.
+    const persisted = `${createUlid()(T).slice(0, 10)}ZZZZZZZZZZZZZZZZ`;
+    const revived = createUlid();
+    revived.seedFrom(persisted);
+    const next = revived(T);
+    expect(next > persisted).toBe(true);
+    expect(ulidTime(next)).toBe(T + 1);
+  });
+
+  it('is a no-op for a same-millisecond seed the mint is already above', () => {
+    const mint = createUlid();
+    const own = mint(T);
+    mint.seedFrom(`${own.slice(0, 10)}0000000000000000`);
+    expect(mint(T) > own).toBe(true);
+  });
+
+  it('refuses a string that is not a ULID rather than seeding from a prefix', () => {
+    expect(() => createUlid().seedFrom('not-a-ulid')).toThrow(/not a ULID/);
+    expect(() => createUlid().seedFrom('80000000000000000000000000')).toThrow(/not a ULID/);
+  });
+});
