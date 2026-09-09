@@ -35,6 +35,7 @@ export {
   contractTestModules,
   permMod,
   scheduleMod,
+  testMod,
   freshnessMod,
   searchMod,
   searchModManifest,
