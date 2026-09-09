@@ -28,6 +28,7 @@ import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isT
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
+import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
 
 /**
@@ -147,6 +148,9 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // quietly ignoring the operator's policy.
     supabase: supabaseBridgeFrom(cfg, accountLinkingMode(cfg[ACCOUNT_LINKING]) === 'link'),
     bankid: bankidFor(readBankIdConfig(sql)),
+    // Read per request like everything else here, so narrowing a client in the dashboard
+    // decides the very next authorize request rather than the next restart.
+    signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
   });
 };
 
@@ -194,14 +198,21 @@ const demo = await seedDemo();
 
 const app = new Hono();
 
-app.get('/api/setup-state', (c) => {
+/** Every sign-in button this issuer could draw — the DO's `offeredProviders()`, over this
+ *  dev database. A client's own policy narrows it (`sign-in-policy.ts`); both readers below
+ *  go through here so the two cannot come to disagree about what exists. */
+function offeredProviders(): { id: string; label: string }[] {
   const bankid = publicBankIdFrom(readBankIdConfig(sql), true);
-  return c.json({
+  return [...publicProvidersFrom(readProviders(sql)), ...(bankid ? [bankid] : [])];
+}
+
+app.get('/api/setup-state', (c) =>
+  c.json({
     needsSetup: needsSetup(),
     signupEnabled: isTruthy(config()[ALLOW_SIGNUP]),
-    providers: [...publicProvidersFrom(readProviders(sql)), ...(bankid ? [bankid] : [])],
-  });
-});
+    providers: offeredProviders(),
+  }),
+);
 
 app.post('/api/setup', async (c) => {
   const body = await c.req.json<{ email?: string; password?: string; name?: string }>();
@@ -224,9 +235,14 @@ const sessionOf = async (headers: Headers): Promise<SessionSubject | null> => {
 
 app.get('/api/session', async (c) => c.json(await sessionOf(c.req.raw.headers)));
 
-// The per-client theme for the login/consent screens — same shared read the worker's DO
-// serves at `/__branding` (see src/branding.ts for why it is public and ungated).
-app.get('/api/branding', (c) => c.json(clientBranding(sql, c.req.query('client_id'))));
+// The per-client read behind the login/consent screens — the theme (`src/branding.ts`) and
+// the sign-in methods this client accepts (`src/sign-in-policy.ts`). The same shared reads
+// the worker's DO serves at `/__client-options`, and public and ungated for the reason
+// `branding.ts` gives: an unknown and an unconfigured client answer alike.
+app.get('/api/client-options', (c) => {
+  const clientId = c.req.query('client_id');
+  return c.json({ ...clientBranding(sql, clientId), signIn: clientSignIn(sql, clientId, offeredProviders()) });
+});
 
 // The issuer's own admin API — the relying-party registry and settings. The SAME factory the
 // worker's DO mounts, over this dev database, so the dashboard is exercised identically here.

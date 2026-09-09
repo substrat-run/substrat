@@ -447,6 +447,17 @@ describe('the providers admin surface', () => {
     // A built-in provider's name, as a custom row: it would silently shadow the library's
     // GitLab — same button, different endpoints.
     expect((await addAcme(cookie, {}, 'gitlab')).status).toBe(400);
+    // The OTHER namespace an id can collide with, and the one nothing above catches: the
+    // sign-in-method stamp a session carries (`src/sign-in-policy.ts`). Neither `password`
+    // nor `bankid` is a Better Auth built-in, so the check above admits both — and an
+    // upstream registered as `password` would land on `/callback/password` and stamp its
+    // sessions the way a password sign-in is stamped, which a password-only client policy
+    // would then admit wholesale.
+    for (const stamped of ['password', 'bankid']) {
+      const res = await addAcme(cookie, {}, stamped);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain('not an upstream provider');
+    }
     // The id is the callback path segment, so it has to be a path-safe slug.
     expect((await addAcme(cookie, {}, 'Not%20A%20Slug')).status).toBe(400);
     // A custom provider's button needs a name.

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
+import { assertSignInPolicy, isReservedMethodId } from './sign-in-policy.js';
 import {
   GENERIC_ID_PATTERN,
   LOOPBACK_HOSTS,
@@ -182,6 +183,30 @@ async function pluginCall(fn: () => Promise<unknown>): Promise<unknown> {
 
 /** SQLite's own clock, in the epoch-ms Better Auth stores dates as. */
 const NOW_MS = "cast(unixepoch('subsecond') * 1000 as integer)";
+
+/**
+ * Refuse a client write whose `signIn` policy is not one (`src/sign-in-policy.ts`).
+ *
+ * The runtime read is deliberately permissive — a policy it cannot understand is no policy,
+ * because a half-applied restriction is worse than none. That is the right answer for a row
+ * already in the database and the wrong one HERE, where an operator is holding the form: a
+ * misspelt key would be accepted, stored, and quietly not restrict anything. So this is the
+ * strict end, and it is also where a policy allowing nothing at all is caught, while the
+ * person who wrote it can still see why.
+ *
+ * Both write paths go through it — the plugin-backed create and the plain-column patch —
+ * because `metadata` is one column with two doors.
+ */
+function assertClientMetadata(metadata: unknown): void {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return;
+  const signIn = (metadata as Record<string, unknown>).signIn;
+  if (signIn === undefined) return;
+  try {
+    assertSignInPolicy(signIn);
+  } catch (e) {
+    throw new HTTPException(400, { message: e instanceof Error ? e.message : 'invalid signIn policy' });
+  }
+}
 
 const clientPatch = z
   .object({
@@ -401,6 +426,16 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
           message: `'${providerId}' is a provider Better Auth ships built-in — a custom provider cannot take its name`,
         });
       }
+      // The other namespace an id can collide with: the sign-in-method stamp a session
+      // carries (`src/sign-in-policy.ts`). `password` is not a built-in provider, so nothing
+      // above stops it — and an upstream registered under that id would land on
+      // `/callback/password` and stamp its sessions the way a password sign-in is stamped,
+      // which a password-only client policy would then admit wholesale.
+      if (isReservedMethodId(providerId)) {
+        throw new HTTPException(400, {
+          message: `'${providerId}' is how this issuer names a sign-in that is not an upstream provider — a custom provider cannot take its name`,
+        });
+      }
       if (!GENERIC_ID_PATTERN.test(providerId)) {
         throw new HTTPException(400, {
           message: `'${providerId}' is not a usable provider id — lowercase letters, digits and hyphens, up to 40 characters (it becomes the callback path segment)`,
@@ -519,6 +554,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.post('/clients', async (c) => {
     const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body) throw new HTTPException(400, { message: 'a JSON body is required' });
+    assertClientMetadata(body.metadata);
     return c.json((await pluginCall(() => deps.auth().adminCreateOAuthClient({ headers: c.req.raw.headers, body }))) as object, 201);
   });
 
@@ -549,7 +585,10 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     };
     if (patch.client_name !== undefined) set('name', patch.client_name);
     if (patch.logo_uri !== undefined) set('icon', patch.logo_uri || null);
-    if (patch.metadata !== undefined) set('metadata', JSON.stringify(patch.metadata));
+    if (patch.metadata !== undefined) {
+      assertClientMetadata(patch.metadata);
+      set('metadata', JSON.stringify(patch.metadata));
+    }
     if (patch.skip_consent !== undefined) set('skip_consent', patch.skip_consent ? 1 : 0);
     if (patch.disabled !== undefined) set('disabled', patch.disabled ? 1 : 0);
     if (patch.application_type !== undefined) set('application_type', patch.application_type);

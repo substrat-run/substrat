@@ -38,7 +38,7 @@ function fakeAuth() {
       touched.push(doName);
       return {
         fetch: async (request: Request) => {
-          // Path AND query — `/__branding` forwards its `client_id` in the query string.
+          // Path AND query — `/__client-options` forwards its `client_id` in the query string.
           const url = new URL(request.url);
           forwarded.push(`${url.pathname}${url.search}`);
           return Response.json({ ok: true, doName });
@@ -305,13 +305,13 @@ describe('the /internal/* surface never reaches the SPA', () => {
   });
 });
 
-describe('the public branding read (/api/branding)', () => {
-  it('forwards to the issuer DO as /__branding with the client id intact', async () => {
-    const res = await app.request('/api/branding?client_id=abc123', {}, env);
+describe('the public per-client read (/api/client-options)', () => {
+  it('forwards to the issuer DO as /__client-options with the client id intact', async () => {
+    const res = await app.request('/api/client-options?client_id=abc123', {}, env);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
     expect(await res.json()).toMatchObject({ ok: true });
-    expect(auth.forwarded).toEqual(['/__branding?client_id=abc123']);
+    expect(auth.forwarded).toEqual(['/__client-options?client_id=abc123']);
   });
 });
 

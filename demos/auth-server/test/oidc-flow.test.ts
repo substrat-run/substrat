@@ -180,6 +180,45 @@ describe('a self-registering relying party completes the round-trip', () => {
     expect(body.url?.startsWith('/consent?')).toBe(true);
   });
 
+  it('signs a NAMED set of parameters, so a refusal appended to the URL does not corrupt it', async () => {
+    const { clientId } = await registerClient('Refused RP');
+    const authorize = await call(authorizeUrl(clientId, 'st-refused', (await pkce()).challenge), { headers: NAVIGATE });
+    const parked = oauthQueryOf(authorize.headers.get('location') ?? '');
+
+    // What the browser is actually looking at after an upstream sign-in is refused. The
+    // marker is `signInSocial`'s (`socialErrorTarget` puts the signed query on `/login` so the
+    // refusal renders on the screen the CLIENT asked for, rather than on the issuer's own
+    // unrestricted one); `error=` is Better Auth's, appended to whatever errorCallbackURL it
+    // was given. Either way the address bar now holds the request PLUS the reason it failed.
+    const returned = new URL(`http://x/login?${parked}&social_error=1&error=unable_to_get_user_info`);
+
+    const resume = (query: string) =>
+      call('/api/auth/sign-in/email', {
+        method: 'POST',
+        headers: FROM_FETCH,
+        body: JSON.stringify({ email: ADMIN.email, password: ADMIN.password, oauth_query: query }),
+      });
+
+    // Handing that back verbatim resumes NOTHING: the signature covers a smaller set, so the
+    // extra parameters break it — silently, as a session with no redirect. This is the fact
+    // `pendingOAuthQuery` filters for, and it is the library's, not ours.
+    const verbatim = (await (await resume(returned.search.replace(/^\?/, ''))).json()) as { redirect?: boolean };
+    expect(verbatim.redirect).toBeFalsy();
+
+    // And the rule that makes the filter possible: the signed set NAMES ITSELF, one `ba_param`
+    // entry per covered parameter. Keeping those, `sig`, and nothing else gets the request
+    // back — which is what `pendingOAuthQuery` does and why the refusal can ride along.
+    const covered = new Set(returned.searchParams.getAll('ba_param'));
+    expect(covered.size).toBeGreaterThan(0);
+    const signed = new URLSearchParams();
+    for (const [key, value] of returned.searchParams.entries()) {
+      if (key === 'sig' || key === 'ba_param' || covered.has(key)) signed.append(key, value);
+    }
+    const filtered = (await (await resume(signed.toString())).json()) as { redirect?: boolean; url?: string };
+    expect(filtered.redirect).toBe(true);
+    expect(filtered.url?.startsWith('/consent?')).toBe(true);
+  });
+
   it('resumes NOTHING when sign-in omits the query — the failure the SPA must not have', async () => {
     const { clientId } = await registerClient('Forgetful RP');
     await call(authorizeUrl(clientId, 'st-forgot', (await pkce()).challenge), { headers: NAVIGATE });

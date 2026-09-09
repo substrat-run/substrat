@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  clientBranding,
+  clientOptions,
   currentSession,
   pendingConsent,
   pendingOAuthQuery,
   setupState,
   signOut,
   socialErrorFrom,
+  type ClientSignIn,
   type ClientTheme,
   type ConsentRequest,
-  type PublicProvider,
   type Session,
 } from './api';
 import { Consent } from './auth/Consent';
@@ -25,7 +25,14 @@ type Phase =
   | { t: 'loading' }
   | { t: 'reset'; token: string }
   | { t: 'setup' }
-  | { t: 'signin'; signupEnabled: boolean; oauthQuery: string | null; providers: PublicProvider[]; socialError: string | null }
+  | {
+      t: 'signin';
+      signupEnabled: boolean;
+      oauthQuery: string | null;
+      /** The methods THIS client accepts — the issuer's own list when no client sent them. */
+      signIn: ClientSignIn;
+      socialError: string | null;
+    }
   | { t: 'signup'; forOidc: boolean; oauthQuery: string | null }
   | { t: 'consent'; request: ConsentRequest }
   | { t: 'not-admin'; session: Session }
@@ -104,35 +111,39 @@ export default function App() {
     const oauthQuery = pendingOAuthQuery(url);
     const forOidc = oauthQuery !== null;
 
-    // The application that sent this person here decides how these screens look — its
-    // operator's `metadata.theme`, read per client id. Only inside an authorize hand-off:
-    // the dashboard itself is never themed, and `{}` here is what un-themes it again.
-    const clientTheme = forOidc && url.searchParams.get('client_id')
-      ? await clientBranding(url.searchParams.get('client_id')!)
-      : {};
-    applyClientTheme(clientTheme);
-    setTheme(clientTheme);
+    // The application that sent this person here decides how these screens look AND which
+    // sign-in methods they offer — its operator's `metadata.theme` and `metadata.signIn`, read
+    // per client id. Only inside an authorize hand-off: the console's own sign-in is never
+    // themed and never narrowed, which is also the operator's way back in when a client is
+    // restricted to an upstream that has broken.
+    const clientId = forOidc ? url.searchParams.get('client_id') : null;
+    const options = clientId
+      ? await clientOptions(clientId, providers)
+      : { theme: {}, signIn: { providers, password: true, restricted: false } };
+    applyClientTheme(options.theme);
+    setTheme(options.theme);
+    const signIn = options.signIn;
 
     // An authorize request is waiting on an answer. Without a session the consent code cannot
     // be honoured, so fall back to sign-in — Better Auth resumes from its own prompt cookie.
     if (url.pathname === '/consent') {
       const request = pendingConsent(url);
       if (session && request) return setPhase({ t: 'consent', request });
-      return setPhase({ t: 'signin', signupEnabled, oauthQuery, providers, socialError });
+      return setPhase({ t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
     }
     // Sign-up is a pre-auth screen like the other two, and reachable mid-authorize: the
     // pending request lives in a cookie, so creating an account resumes it the same way
     // signing in does. A closed issuer sends this path back to sign-in rather than showing
     // a form the endpoint would refuse.
     if (url.pathname === '/signup') {
-      return setPhase(signupEnabled ? { t: 'signup', forOidc, oauthQuery } : { t: 'signin', signupEnabled, oauthQuery, providers, socialError });
+      return setPhase(signupEnabled ? { t: 'signup', forOidc, oauthQuery } : { t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
     }
     // `/login` means an RP asked for a sign-in, and that stays true when a session already
     // exists: `prompt=login` (and an expired `max_age`) is a re-authentication request, and
     // answering it with the dashboard strands the flow exactly as `/consent` did.
-    if (url.pathname === '/login') return setPhase({ t: 'signin', signupEnabled, oauthQuery, providers, socialError });
+    if (url.pathname === '/login') return setPhase({ t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
 
-    if (!session) return setPhase({ t: 'signin', signupEnabled, oauthQuery, providers, socialError });
+    if (!session) return setPhase({ t: 'signin', signupEnabled, oauthQuery, signIn, socialError });
     setPhase(session.role === 'admin' ? { t: 'dashboard', session } : { t: 'not-admin', session });
   }, []);
 
@@ -181,7 +192,7 @@ export default function App() {
           onDone={doneSigningIn}
           signupEnabled={phase.signupEnabled}
           oauthQuery={phase.oauthQuery}
-          providers={phase.providers}
+          signIn={phase.signIn}
           socialError={phase.socialError}
           theme={theme}
           onSignUp={() => setPhase({ t: 'signup', forOidc: phase.oauthQuery !== null, oauthQuery: phase.oauthQuery })}
