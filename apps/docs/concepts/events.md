@@ -228,9 +228,11 @@ hand-written `SELECT` would have got:
   part company it is the one that wins: if the clock goes *backwards*, `occurredAt`
   reports what it said and the id holds at the last instant it stamped, because an id
   that followed the clock down would bury a newer row underneath an older one. That
-  floor is held in memory, so it is only as old as the process: a host that restarts
-  begins again from the clock, and the ordering then rests on the clock having moved
-  forward rather than on the floor ([#1335](https://github.com/substrat-run/substrat/issues/1335)).
+  floor survives a restart, because it is seeded from the outbox itself: the highest
+  id a scope has already stored is read back when the scope is opened — when a host
+  reopens its directory, and when a scope's Durable Object is revived after an
+  eviction — so the next id clears the rows on disk whatever the clock now says. The
+  floor is per scope, which is the scope the ordering is defined over.
 
 Do not page a spine read on `occurred_at`. `ctx.now()` is stable for a whole invocation,
 so every event one operation emits carries the *identical* instant — a cursor of

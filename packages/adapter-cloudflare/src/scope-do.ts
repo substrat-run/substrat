@@ -680,6 +680,12 @@ export function defineScopeDO(
      * is the operation's instant rather than whatever an unrelated wall-clock `ulid()`
      * in this isolate last stamped. The DO reads the wall clock today, so the two
      * agree; the seam is here for when it does not (the issue's other half).
+     *
+     * One DO is one scope, so this is already the per-scope mint #1335 asks for. What
+     * it is NOT, on its own, is durable: a DO is evicted and revived constantly, and
+     * NTP steps the wall clock backwards by small real amounts. The constructor
+     * raises the floor to the outbox's own maximum, so a revived DO cannot mint
+     * underneath rows it already stored.
      */
     private readonly mintEventId: UlidMint = createUlid();
     private readonly applied = new Set<string>();
@@ -708,6 +714,19 @@ export function defineScopeDO(
         .toArray() as unknown as { module_id: string; version: string }[]) {
         this.applied.add(`${row.module_id}@${row.version}`);
       }
+
+      // #1335: and where this DO's event ids have to resume from. A revived DO would
+      // otherwise start its floor at the wall clock, and a clock that has stepped back
+      // — an NTP correction is small but real — mints underneath rows already stored,
+      // which `ORDER BY id` hands to nobody. Read here for the reason the migrations
+      // above are: this is the code every wake runs, and `MAX(id)` on the primary key
+      // is an index seek. An empty outbox leaves the floor where it was.
+      const highest = (
+        this.sql.exec('SELECT MAX(id) AS id FROM _substrat_outbox').toArray() as unknown as {
+          id: string | null;
+        }[]
+      )[0]?.id;
+      if (highest) this.mintEventId.seedFrom(highest);
 
       const controlPlane = this.controlPlaneReader();
       this.checker = createDoTupleChecker({ scopeSql: this.sql, controlPlane });
