@@ -346,9 +346,11 @@ export function socialErrorFrom(url: URL): string | null {
 }
 
 /**
- * The same, for a refused LINK — `connectProvider` sends those to `/?link_error=1`, a
- * different marker on purpose: a signed-in person is bounced back to the dashboard, where
- * nothing reads the sign-in screen's error and the failure would otherwise be silent.
+ * The same, for a refused LINK — `connectProvider` sends those to `/account?link_error=1`, a
+ * different marker on purpose: a signed-in person is bounced back into the console, where
+ * nothing reads the sign-in screen's error and the failure would otherwise be silent. The
+ * path matters as much as the marker: it has to be the screen that READS the marker, which
+ * is the account screen, not wherever the console happens to open.
  */
 export function linkErrorFrom(url: URL): string | null {
   if (!url.searchParams.has('link_error')) return null;
@@ -393,13 +395,18 @@ export async function signInMethods(): Promise<SignInMethod[]> {
  *
  * Navigates away — the browser client's redirect plugin follows the `url` this answers — so
  * nothing after it runs on success. Refusals come back through `errorCallbackURL`, which is
- * why it is set: without it a refused link lands on a dashboard that says nothing happened.
+ * why it is set: without it a refused link lands somewhere that says nothing happened.
+ *
+ * Both callbacks name `/account` rather than `/`. Now that the console routes, `/` is not a
+ * screen — it is replaced with whichever section the viewer may see first, and that hop drops
+ * the query string. Coming back to `/` would land an administrator on the user list with the
+ * refusal silently gone, which is the exact failure `errorCallbackURL` exists to prevent.
  */
 export async function connectProvider(providerId: string): Promise<void> {
   const { error } = await authClient.linkSocial({
     provider: providerId,
-    callbackURL: '/',
-    errorCallbackURL: '/?link_error=1',
+    callbackURL: '/account',
+    errorCallbackURL: '/account?link_error=1',
   } as Parameters<typeof authClient.linkSocial>[0]);
   if (error) throw new Error(error.message ?? `could not start connecting ${providerId}`);
 }

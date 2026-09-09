@@ -320,12 +320,14 @@ describe('connecting a provider from inside a session', () => {
 
     const res = await roundTrip(
       '/api/auth/link-social',
-      { provider: 'acme', callbackURL: '/', errorCallbackURL: '/?link_error=1' },
+      { provider: 'acme', callbackURL: '/account', errorCallbackURL: '/account?link_error=1' },
       cookie,
     );
 
     expect(res.status).toBe(302);
-    expect(new URL(res.headers.get('location')!, ORIGIN).pathname).toBe('/');
+    // `/account` is the console screen that shows the sign-in methods, and it is what
+    // `connectProvider` asks for — `/` is not a screen once the console routes.
+    expect(new URL(res.headers.get('location')!, ORIGIN).pathname).toBe('/account');
     // One account, two ways in — the point of the whole feature.
     expect(userCount()).toBe(1);
     expect(accountsOf(adminId)).toEqual([
@@ -337,7 +339,7 @@ describe('connecting a provider from inside a session', () => {
   it('lists both ways in, which is what the account screen reads', async () => {
     saveAcme();
     const cookie = await signInAs(ADMIN);
-    await roundTrip('/api/auth/link-social', { provider: 'acme', callbackURL: '/' }, cookie);
+    await roundTrip('/api/auth/link-social', { provider: 'acme', callbackURL: '/account' }, cookie);
 
     const res = await call('/api/auth/list-accounts', { headers: { cookie } });
     expect(res.status).toBe(200);
@@ -363,12 +365,15 @@ describe('connecting a provider from inside a session', () => {
 
     const res = await roundTrip(
       '/api/auth/link-social',
-      { provider: 'acme', callbackURL: '/', errorCallbackURL: '/?link_error=1' },
+      { provider: 'acme', callbackURL: '/account', errorCallbackURL: '/account?link_error=1' },
       cookie,
     );
 
     expect(res.status).toBe(302);
     const back = new URL(res.headers.get('location')!, ORIGIN);
+    // The marker is worth nothing on a path that does not read it: `link_error` is read by
+    // the account screen, so a refusal has to come back to the account screen.
+    expect(back.pathname).toBe('/account');
     expect(back.searchParams.get('link_error')).toBe('1');
     expect(back.searchParams.get('error')).toBe('email_does_not_match');
     expect(accountsOf(adminId).map((a) => a.provider_id)).toEqual(['credential']);
@@ -378,7 +383,7 @@ describe('connecting a provider from inside a session', () => {
     saveAcme();
     unverify();
     const cookie = await signInAs(ADMIN);
-    await roundTrip('/api/auth/link-social', { provider: 'acme', callbackURL: '/' }, cookie);
+    await roundTrip('/api/auth/link-social', { provider: 'acme', callbackURL: '/account' }, cookie);
 
     // Signed out, through the front door, with the provider still untrusted and the local
     // address still unverified — none of that is consulted any more, because the upstream
