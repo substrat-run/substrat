@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { forwardRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 
 export interface SideNavItem {
@@ -6,6 +6,13 @@ export interface SideNavItem {
   label: string;
   icon?: ReactNode;
   count?: number;
+  /**
+   * The item's real URL, when the consumer routes on paths. Given one, the item becomes a
+   * link a browser can act on — Copy Link, Open in New Tab, middle-click and ⌘/Ctrl-click
+   * all reach the screen rather than the page the person is already on. Left out (a consumer
+   * whose views have no URL) the item stays an `onSelect`-only control, as before.
+   */
+  href?: string;
 }
 
 export interface SideNavSection {
@@ -22,18 +29,20 @@ export interface SideNavProps {
   style?: CSSProperties;
 }
 
-export function SideNav({
-  sections,
-  activeValue,
-  onSelect,
-  header,
-  footer,
-  style,
-}: SideNavProps) {
+/**
+ * The ref reaches the `<nav>` itself, which is what a consumer rendering this as an
+ * off-canvas drawer needs: opening one has to move focus inside it, and closing it has to
+ * put focus back — neither is possible from outside the element.
+ */
+export const SideNav = forwardRef<HTMLElement, SideNavProps>(function SideNav(
+  { sections, activeValue, onSelect, header, footer, style },
+  ref,
+) {
   const [hover, setHover] = useState<string | null>(null);
 
   return (
     <nav
+      ref={ref}
       style={{
         width: 'var(--sidebar-w)',
         // Never squeezed: as a flex child it would otherwise give up width to a wide
@@ -76,8 +85,14 @@ export function SideNav({
             return (
               <a
                 key={it.value}
-                href="#"
+                href={it.href ?? '#'}
+                aria-current={on ? 'page' : undefined}
                 onClick={(e) => {
+                  // A click asking for a SECOND destination is the browser's to answer, not
+                  // ours: a modifier click opens a tab or a window, and swallowing it would
+                  // make a real href pointless. Without an href there is nothing to hand
+                  // over, so those clicks are still routed in-page.
+                  if (it.href && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0)) return;
                   e.preventDefault();
                   onSelect?.(it.value);
                 }}
@@ -134,4 +149,4 @@ export function SideNav({
       {footer}
     </nav>
   );
-}
+});

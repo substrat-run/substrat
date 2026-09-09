@@ -276,12 +276,23 @@ export async function discovery(): Promise<Discovery | null> {
  * client's `redirectPlugin` follows it. `errorCallbackURL` is what makes a refusal visible —
  * "account not linked" is a real outcome (see the trust toggle in the providers panel) and
  * without it the browser comes back to a blank sign-in screen with no reason given.
+ *
+ * `returnTo` is where the browser lands afterwards, and it is the ONLY thing carrying a
+ * pasted console URL across this round trip: nothing else survives the navigation to the
+ * provider and back. Callers pass `returnTarget(...)`, an allowlist of the console's own
+ * paths — this value ends up in a redirect the issuer performs, so an arbitrary one would be
+ * an open redirect with a trip through Google attached. The refusal comes back to the SAME
+ * screen, so retrying after "connect it under Sign-in methods" still lands where it was going.
  */
-export async function signInSocial(providerId: string, oauthQuery?: string | null): Promise<void> {
+export async function signInSocial(
+  providerId: string,
+  oauthQuery?: string | null,
+  returnTo = '/',
+): Promise<void> {
   const { error } = await authClient.signIn.social({
     provider: providerId,
-    callbackURL: '/',
-    errorCallbackURL: '/?social_error=1',
+    callbackURL: returnTo,
+    errorCallbackURL: `${returnTo}?social_error=1`,
     ...(oauthQuery ? { oauth_query: oauthQuery } : {}),
   } as Parameters<typeof authClient.signIn.social>[0]);
   if (error) throw new Error(error.message ?? `could not start sign-in with ${providerId}`);
@@ -346,9 +357,11 @@ export function socialErrorFrom(url: URL): string | null {
 }
 
 /**
- * The same, for a refused LINK — `connectProvider` sends those to `/?link_error=1`, a
- * different marker on purpose: a signed-in person is bounced back to the dashboard, where
- * nothing reads the sign-in screen's error and the failure would otherwise be silent.
+ * The same, for a refused LINK — `connectProvider` sends those to `/account?link_error=1`, a
+ * different marker on purpose: a signed-in person is bounced back into the console, where
+ * nothing reads the sign-in screen's error and the failure would otherwise be silent. The
+ * path matters as much as the marker: it has to be the screen that READS the marker, which
+ * is the account screen, not wherever the console happens to open.
  */
 export function linkErrorFrom(url: URL): string | null {
   if (!url.searchParams.has('link_error')) return null;
@@ -393,13 +406,18 @@ export async function signInMethods(): Promise<SignInMethod[]> {
  *
  * Navigates away — the browser client's redirect plugin follows the `url` this answers — so
  * nothing after it runs on success. Refusals come back through `errorCallbackURL`, which is
- * why it is set: without it a refused link lands on a dashboard that says nothing happened.
+ * why it is set: without it a refused link lands somewhere that says nothing happened.
+ *
+ * Both callbacks name `/account` rather than `/`. Now that the console routes, `/` is not a
+ * screen — it is replaced with whichever section the viewer may see first, and that hop drops
+ * the query string. Coming back to `/` would land an administrator on the user list with the
+ * refusal silently gone, which is the exact failure `errorCallbackURL` exists to prevent.
  */
 export async function connectProvider(providerId: string): Promise<void> {
   const { error } = await authClient.linkSocial({
     provider: providerId,
-    callbackURL: '/',
-    errorCallbackURL: '/?link_error=1',
+    callbackURL: '/account',
+    errorCallbackURL: '/account?link_error=1',
   } as Parameters<typeof authClient.linkSocial>[0]);
   if (error) throw new Error(error.message ?? `could not start connecting ${providerId}`);
 }
