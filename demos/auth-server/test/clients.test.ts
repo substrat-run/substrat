@@ -528,4 +528,86 @@ describe('RP-initiated logout', () => {
     });
     expect(res.status).toBe(400);
   });
+
+  /**
+   * The type is half of the rule, so moving it re-judges the URIs already stored. A patch
+   * carrying nothing but `application_type` is the shape that used to slip through: `http:`
+   * on a non-loopback host is ours to allow for a `native` client and refused for a `web`
+   * one, and once the URIs were in the row nothing was ever going to ask about them again.
+   */
+  it('refuses an application type the stored URIs would fail under', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Going Web', admin, { enable_end_session: true });
+    const patch = (body: Record<string, unknown>) =>
+      adminCall(`/clients/${client.client_id}`, admin, { method: 'PATCH', body: JSON.stringify(body) });
+    const storedType = () =>
+      (
+        db.prepare('SELECT application_type FROM oauth_client WHERE client_id = ?').get(client.client_id) as {
+          application_type: string;
+        }
+      ).application_type;
+
+    // Legal for the type it has — the plugin's registration is stricter, but this is an edit
+    // of a native client and `http:` is what a native callback may be here.
+    const native = await patch({
+      redirect_uris: ['http://phone.test/cb'],
+      post_logout_redirect_uris: ['http://phone.test/signed-out'],
+    });
+    expect(native.status).toBe(200);
+
+    // Nothing but the type in the body, and it is refused by the URIs already stored.
+    const refused = await patch({ application_type: 'web' });
+    expect(refused.status).toBe(400);
+    expect(storedType()).toBe('native');
+
+    // Each list on its own, so neither check is standing in for the other: replacing the
+    // post-logout list leaves the stored sign-in callbacks to refuse it, and replacing the
+    // sign-in callbacks leaves the post-logout list — which is its own list, and is handed
+    // to a browser for the same reason.
+    const logoutFixed = await patch({
+      application_type: 'web',
+      post_logout_redirect_uris: ['https://phone.test/signed-out'],
+    });
+    expect(logoutFixed.status).toBe(400);
+    expect(storedType()).toBe('native');
+
+    const callbacksFixed = await patch({ application_type: 'web', redirect_uris: ['https://phone.test/cb'] });
+    expect(callbacksFixed.status).toBe(400);
+    expect(storedType()).toBe('native');
+
+    // Both lists moved with the type, and the edit lands.
+    const accepted = await patch({
+      application_type: 'web',
+      redirect_uris: ['https://phone.test/cb'],
+      post_logout_redirect_uris: ['https://phone.test/signed-out'],
+    });
+    expect(accepted.status).toBe(200);
+    expect(storedType()).toBe('web');
+  });
+
+  /**
+   * The re-check is the type's, not a tax on every edit: an edit that names no application
+   * type must not start refusing over URIs it was never asked about. The row here is the one
+   * that makes that visible — stored URIs its own type would reject, which is what a row
+   * written before the rule looks like.
+   */
+  it('leaves the stored URIs alone when the patch names no application type', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Grandfathered', admin);
+    const res = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ redirect_uris: ['http://phone.test/cb'] }),
+    });
+    expect(res.status).toBe(200);
+    // Straight to the column: an http: callback on a `web` client is a state this endpoint
+    // refuses to write, and the point is that an edit meets one it did not create.
+    db.prepare("UPDATE oauth_client SET application_type = 'web' WHERE client_id = ?").run(client.client_id);
+
+    const renamed = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ client_name: 'Renamed Anyway' }),
+    });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as WireClient).client_name).toBe('Renamed Anyway');
+  });
 });

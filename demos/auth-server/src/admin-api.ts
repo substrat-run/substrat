@@ -531,8 +531,14 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const clientId = c.req.param('clientId');
     const patch = parsedBody(clientPatch, await c.req.json().catch(() => null));
     const exists = deps.sql
-      .exec('SELECT client_id, application_type FROM oauth_client WHERE client_id = ?', clientId)
-      .toArray()[0] as { application_type: string | null } | undefined;
+      .exec(
+        `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris
+           FROM oauth_client WHERE client_id = ?`,
+        clientId,
+      )
+      .toArray()[0] as
+      | { application_type: string | null; redirect_uris: string | null; post_logout_redirect_uris: string | null }
+      | undefined;
     if (!exists) throw new HTTPException(404, { message: `unknown client '${clientId}'` });
 
     const sets: string[] = [];
@@ -548,17 +554,29 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     if (patch.disabled !== undefined) set('disabled', patch.disabled ? 1 : 0);
     if (patch.application_type !== undefined) set('application_type', patch.application_type);
     if (patch.enable_end_session !== undefined) set('enable_end_session', patch.enable_end_session ? 1 : 0);
-    if (patch.redirect_uris !== undefined || patch.post_logout_redirect_uris !== undefined) {
-      const type = patch.application_type ?? exists.application_type ?? 'web';
-      if (patch.redirect_uris !== undefined) {
-        for (const uri of patch.redirect_uris) assertRedirectUri(uri, type);
-        set('redirect_uris', JSON.stringify(patch.redirect_uris));
-      }
-      if (patch.post_logout_redirect_uris !== undefined) {
-        // Same rule, and for the same reason: this is a URI the issuer hands to a browser.
-        for (const uri of patch.post_logout_redirect_uris) assertRedirectUri(uri, type);
-        set('post_logout_redirect_uris', JSON.stringify(patch.post_logout_redirect_uris));
-      }
+    /**
+     * The URI rule is a fact about the PAIR — a list, and the application type that judges it
+     * — so a patch naming the type re-judges whichever list it did not replace. Checking only
+     * what the request carried would let `application_type: 'web'` on its own move a native
+     * client's `http:` callbacks under a rule they fail: a row no registration would have
+     * accepted, that nothing afterwards is asked to look at again.
+     */
+    const type = patch.application_type ?? exists.application_type ?? 'web';
+    const assertList = (uris: string[]) => {
+      for (const uri of uris) assertRedirectUri(uri, type);
+    };
+    if (patch.redirect_uris !== undefined) {
+      assertList(patch.redirect_uris);
+      set('redirect_uris', JSON.stringify(patch.redirect_uris));
+    } else if (patch.application_type !== undefined) {
+      assertList(jsonColumn<string[]>(exists.redirect_uris, []));
+    }
+    if (patch.post_logout_redirect_uris !== undefined) {
+      // Same rule, and for the same reason: this is a URI the issuer hands to a browser.
+      assertList(patch.post_logout_redirect_uris);
+      set('post_logout_redirect_uris', JSON.stringify(patch.post_logout_redirect_uris));
+    } else if (patch.application_type !== undefined) {
+      assertList(jsonColumn<string[]>(exists.post_logout_redirect_uris, []));
     }
     if (!sets.length) throw new HTTPException(400, { message: 'nothing to change' });
     deps.sql.exec(
