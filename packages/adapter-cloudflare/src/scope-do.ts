@@ -268,9 +268,23 @@ const KERNEL_DDL = `
     at TEXT NOT NULL,
     drained_at TEXT
   );
-  -- #383: recurring-schedule bookkeeping. One row per schedule operation that has
-  -- run on this scope, so the platform sweep can tell what is due. Spine (kernel-
-  -- written), never a module migration.
+  -- #383: the platform sweep's per-scope gating state. Despite the name, this table
+  -- holds TWO kinds of row since #1232, told apart by the shape of schedule_op:
+  --   * a schedule operation, spelled module/verb -- last_run_at / last_status are
+  --     when that operation last RAN here and how it ended;
+  --   * a freshness key, spelled freshness:<eventType> -- last_run_at / last_status
+  --     are when the evaluator last RECORDED a verdict for that event type and what
+  --     the verdict was. Nothing ran; the row gates what the sweep records.
+  -- Only HALF the no-collision claim is enforced, which is worth knowing before
+  -- trusting it: a freshness key is always "freshness:" followed by a value the
+  -- contracts eventType schema accepted (lowercase ns.verb, no colon and no slash),
+  -- so no freshness key can ever look like an operation. The other direction is
+  -- CONVENTION only -- scheduleSpec.operation is z.string().min(1), so a module
+  -- that declared a schedule operation literally named "freshness:orders.placed"
+  -- would share a row with the evaluator and nothing today would reject it.
+  -- #1288 tracks giving the table a column (or a name) that says this outright,
+  -- which is also what would let the collision be refused rather than avoided.
+  -- Spine (kernel-written), never a module migration.
   CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
     schedule_op TEXT PRIMARY KEY,
     last_run_at TEXT,
@@ -1759,14 +1773,20 @@ export function defineScopeDO(
       return out;
     }
 
-    /** Record a schedule run's timestamp + outcome (#383). Spine, kernel-written. */
-    async recordScheduleRun(operation: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void> {
+    /**
+     * Write one `_substrat_schedule_state` row (#383). Spine, kernel-written.
+     * `unit` is the row's key in either of the two shapes the table holds: a schedule
+     * operation (`module/verb`, and then `at`/`status` are when it ran and how it
+     * ended) or a freshness key (`freshness:<eventType>`, and then they are when the
+     * verdict was recorded and what it was — nothing ran). See the bootstrap DDL.
+     */
+    async recordScheduleRun(unit: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void> {
       this.sql.exec(
         `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
            VALUES (?, ?, ?)
          ON CONFLICT(schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
                                                 last_status = excluded.last_status`,
-        operation,
+        unit,
         at,
         status,
       );

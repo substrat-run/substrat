@@ -1,0 +1,14 @@
+---
+'@substrat-run/adapter-cloudflare': patch
+'@substrat-run/adapter-sqlite': patch
+---
+
+The `_substrat_schedule_state` spine table now says what it actually holds. Since the
+freshness evaluator landed it has carried two kinds of row — schedule operations keyed
+`module/verb`, and freshness expectations keyed `freshness:<eventType>`, where
+`last_run_at`/`last_status` mean the last *recorded* time and verdict rather than a run.
+The bootstrap DDL comment on both adapters, the lazy-create sites, and the spine table
+reference in the docs now state both shapes, and are precise about the fact that only
+half of the "the two keys cannot collide" claim is enforced: an event type has passed a
+regex that admits no colon, but a schedule's operation name is an unconstrained string,
+so the other direction is convention. No schema or behaviour change.

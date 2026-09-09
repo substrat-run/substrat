@@ -3017,7 +3017,16 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     // Same lazy create as runDueSchedules — a freshness-only module must not hit
-    // `no such table` on a scope no schedule ever swept.
+    // `no such table` on a scope no schedule ever swept. Despite the table's name it
+    // holds two kinds of row (#1232): schedule operations keyed `module/verb`, and
+    // the rows written just below, keyed `freshness:<eventType>`. For those,
+    // `last_run_at`/`last_status` are the last RECORDED at and verdict — nothing ran.
+    // Only half the no-collision claim is enforced: an event type has passed
+    // contracts' `eventType` regex (lowercase `ns.verb`, no colon), so a freshness
+    // key can never look like an operation — but `scheduleSpec.operation` is
+    // `z.string().min(1)`, so a schedule literally named `freshness:orders.placed`
+    // would share this row and nothing would refuse it. #1288 tracks the `kind`
+    // column that would make the distinction real instead of conventional.
     rt.db.exec(
       `CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
          schedule_op TEXT PRIMARY KEY,
@@ -3113,7 +3122,11 @@ export class SqliteScopeHost implements ScopeHost {
       .get(`system:${moduleId}`, nowIso);
     if (!hasGrant) return report;
     // The spine state table is created lazily on first sweep of a scope — it is
-    // kernel-owned (`_substrat_*`), never in a module migration.
+    // kernel-owned (`_substrat_*`), never in a module migration. It holds this
+    // loop's rows, keyed by the schedule operation (`module/verb`, where
+    // `last_run_at`/`last_status` are when it RAN and how it ended), and — since
+    // #1232 — the freshness evaluator's, keyed `freshness:<eventType>`. See
+    // checkFreshness for what the columns mean there; #1288 tracks the widening.
     rt.db.exec(
       `CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
          schedule_op TEXT PRIMARY KEY,
