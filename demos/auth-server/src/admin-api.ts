@@ -89,7 +89,8 @@ export interface AdminApiDeps {
 }
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
-  token_endpoint_auth_method, application_type, user_id, client_secret, created_at, scopes`;
+  token_endpoint_auth_method, application_type, user_id, client_secret, created_at, scopes,
+  enable_end_session, post_logout_redirect_uris`;
 
 interface ClientRow {
   client_id: string;
@@ -105,6 +106,8 @@ interface ClientRow {
   client_secret: string | null;
   created_at: number | null;
   scopes: string | null;
+  enable_end_session: number | null;
+  post_logout_redirect_uris: string | null;
 }
 
 /** `string[]`/`json` columns are TEXT here — SQLite is not a JSON provider for the adapter. */
@@ -144,6 +147,14 @@ function toWireClient(row: ClientRow) {
     user_id: row.user_id ?? undefined,
     client_id_issued_at: row.created_at ? Math.round(Number(row.created_at) / 1000) : undefined,
     metadata: jsonColumn<Record<string, unknown>>(row.metadata, {}),
+    /**
+     * RP-initiated logout, which the plugin refuses unless the client row says yes: the
+     * column has no default, so a client registered without it can never sign anyone out.
+     * `post_logout_redirect_uris` is its own list — the plugin matches the requested
+     * `post_logout_redirect_uri` against THIS one, never against `redirect_uris`.
+     */
+    enable_end_session: Boolean(row.enable_end_session),
+    post_logout_redirect_uris: jsonColumn<string[]>(row.post_logout_redirect_uris, []),
     /** Whether a secret exists — never the secret, which is stored hashed. */
     client_secret_set: Boolean(row.client_secret),
   };
@@ -206,6 +217,13 @@ const clientPatch = z
     disabled: z.boolean(),
     application_type: z.enum(['web', 'native']),
     redirect_uris: z.array(z.string().min(1)).min(1),
+    enable_end_session: z.boolean(),
+    /**
+     * Unlike `redirect_uris`, an EMPTY list is meaningful and allowed: a client may end a
+     * session without being sent anywhere afterwards, and clearing the list is how an
+     * operator withdraws a target that has moved.
+     */
+    post_logout_redirect_uris: z.array(z.string().min(1)),
   })
   .partial();
 
@@ -549,8 +567,14 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     const clientId = c.req.param('clientId');
     const patch = parsedBody(clientPatch, await c.req.json().catch(() => null));
     const exists = deps.sql
-      .exec('SELECT client_id, application_type FROM oauth_client WHERE client_id = ?', clientId)
-      .toArray()[0] as { application_type: string | null } | undefined;
+      .exec(
+        `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris
+           FROM oauth_client WHERE client_id = ?`,
+        clientId,
+      )
+      .toArray()[0] as
+      | { application_type: string | null; redirect_uris: string | null; post_logout_redirect_uris: string | null }
+      | undefined;
     if (!exists) throw new HTTPException(404, { message: `unknown client '${clientId}'` });
 
     const sets: string[] = [];
@@ -568,10 +592,30 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     if (patch.skip_consent !== undefined) set('skip_consent', patch.skip_consent ? 1 : 0);
     if (patch.disabled !== undefined) set('disabled', patch.disabled ? 1 : 0);
     if (patch.application_type !== undefined) set('application_type', patch.application_type);
+    if (patch.enable_end_session !== undefined) set('enable_end_session', patch.enable_end_session ? 1 : 0);
+    /**
+     * The URI rule is a fact about the PAIR — a list, and the application type that judges it
+     * — so a patch naming the type re-judges whichever list it did not replace. Checking only
+     * what the request carried would let `application_type: 'web'` on its own move a native
+     * client's `http:` callbacks under a rule they fail: a row no registration would have
+     * accepted, that nothing afterwards is asked to look at again.
+     */
+    const type = patch.application_type ?? exists.application_type ?? 'web';
+    const assertList = (uris: string[]) => {
+      for (const uri of uris) assertRedirectUri(uri, type);
+    };
     if (patch.redirect_uris !== undefined) {
-      const type = patch.application_type ?? exists.application_type ?? 'web';
-      for (const uri of patch.redirect_uris) assertRedirectUri(uri, type);
+      assertList(patch.redirect_uris);
       set('redirect_uris', JSON.stringify(patch.redirect_uris));
+    } else if (patch.application_type !== undefined) {
+      assertList(jsonColumn<string[]>(exists.redirect_uris, []));
+    }
+    if (patch.post_logout_redirect_uris !== undefined) {
+      // Same rule, and for the same reason: this is a URI the issuer hands to a browser.
+      assertList(patch.post_logout_redirect_uris);
+      set('post_logout_redirect_uris', JSON.stringify(patch.post_logout_redirect_uris));
+    } else if (patch.application_type !== undefined) {
+      assertList(jsonColumn<string[]>(exists.post_logout_redirect_uris, []));
     }
     if (!sets.length) throw new HTTPException(400, { message: 'nothing to change' });
     deps.sql.exec(
@@ -601,6 +645,53 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     deps.sql.exec('DELETE FROM oauth_client WHERE client_id = ?', clientId);
     return c.json({ deleted: clientId });
+  });
+
+  /**
+   * How ANOTHER person signs in — the one read the user-detail screen needs and Better Auth's
+   * admin plugin does not answer. `list-accounts` is scoped to the caller's own session, so an
+   * operator asked "why can this person not sign in with Google" and had nowhere to look.
+   *
+   * The columns are named rather than starred, and the names are the whole security argument:
+   * `account` also holds `password` (the bcrypt hash) and the upstream's `access_token`,
+   * `refresh_token` and `id_token`. None of them may leave the server, and a `SELECT *` here
+   * would put all four on the wire the first time somebody added a field to the screen.
+   *
+   * `account_id` is included and is not a secret: it is the subject the upstream knows this
+   * person by, which is exactly what an operator comparing two Google accounts is looking at.
+   *
+   * A password row is `provider_id = 'credential'`. It is returned like any other method
+   * because the screen has to be able to say "this account has a password" — the fact, never
+   * the hash.
+   */
+  app.get('/users/:userId/sign-in-methods', (c) => {
+    const userId = c.req.param('userId');
+    const user = deps.sql.exec('SELECT id FROM user WHERE id = ?', userId).toArray();
+    // 404 rather than an empty list: "no such person" and "a person with no way in" are
+    // different answers, and the second one is a real state an operator has to be able to see.
+    if (user.length === 0) throw new HTTPException(404, { message: `unknown user '${userId}'` });
+    const rows = deps.sql
+      .exec(
+        `SELECT id, provider_id, account_id, issuer, created_at
+           FROM account WHERE user_id = ? ORDER BY created_at ASC`,
+        userId,
+      )
+      .toArray() as unknown as {
+      id: string;
+      provider_id: string;
+      account_id: string;
+      issuer: string | null;
+      created_at: number | null;
+    }[];
+    return c.json({
+      methods: rows.map((row) => ({
+        id: row.id,
+        provider: row.provider_id,
+        accountId: row.account_id,
+        issuer: row.issuer,
+        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      })),
+    });
   });
 
   app.onError((err, c) => {

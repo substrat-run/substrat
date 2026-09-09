@@ -1,5 +1,86 @@
 # @substrat-run/dashboard
 
+## 0.34.0
+
+### Minor Changes
+
+- 01fc4b6: Field coverage lands on the app's Model tab (#1321, completing the static
+  half): which of the running version's declared fields is any operation even
+  capable of returning, and which of those are erasable — personal data the app
+  stores and never hands back, which is a retention argument rather than mere
+  cleanup.
+
+  Both halves come from artifacts the push already carries — `model` names every
+  declared field, `outputSurface` (#1349) names every field an operation declares
+  it returns — so this needs no telemetry, no sampling, and none of #114.
+
+  Two rules the view is careful about. It claims **"no operation declares this
+  field in its output"**, a fact about declarations that is exactly true, never
+  "nobody reads this", which would need traffic nobody counts yet. And matching
+  is by field name across the whole surface, so the never-returned list is
+  CONSERVATIVE: a field on it is named nowhere, while one absent from it may
+  still be unreachable — under-reporting being the safe direction for a list
+  whose purpose is to justify deleting something.
+
+  A version pushed before the output surface existed reads `available: false` and
+  says so. Rendering the join anyway would have reported every such app's entire
+  schema as dead.
+
+### Patch Changes
+
+- 4a6c4c3: A pushed version carries what each operation declares it RETURNS (#1321). The
+  deploy manifest gains `outputSurface` — operation id plus the field names of its
+  200/201 response body, derived by the CLI from the emitted `openapi.json` that
+  `pnpm lint:api` already gates. A paged read contributes its ENTRY's fields, not
+  the envelope's: the transport's `entries`/`nextCursor` are not the vertical's
+  surface.
+
+  This is the fact the platform could not reach. `openapi.json` is built inside
+  each vertical and never sent, so the control plane held every declared entity
+  field (via `model`) and no way to know which of them anything is capable of
+  returning — the question a field-coverage view has to answer before "is it ever
+  read" is even worth asking. It rides the existing version-model read, since the
+  manifest is already parsed there and the field sits beside the model.
+
+  Field NAMES, not schemas: the question is reachability, and carrying the shapes
+  again would duplicate `model` at several times the size. Absent for a vertical
+  that emits no `openapi.json`, and a malformed one is skipped rather than
+  refusing the push — an observability surface must never cost a release.
+
+- 3cf46bc: The versions table on Verticals says when each version was pushed, and stops
+  crushing the version itself.
+
+  `Version` shared one narrow column with the schema-change badge and the push
+  origin — and the origin (`owner/repo@1a2b3c4`) is the longest thing in the row, so
+  a prerelease tag like `0.4.0-beta.7` had nowhere to go. Origin moved next to a new
+  `Pushed` column, where the two read as one fact: when the push landed and where it
+  came from. The column itself is relative ("3h ago", "yesterday", a date past a
+  week) with the exact instant on hover, matching how an app's own version list
+  already reads. `Promote` gave up the third of the table it was holding for one
+  small button.
+
+  A repo label also used to spill over the next column instead of clipping, because
+  a grid cell does not bound it on its own; it ellipsizes now, with the full repo,
+  ref and commit still in the tooltip and the commit link still clickable — which
+  fixes the same crowding on an app's Deployments tab.
+
+  The dev preview grew a prerelease carrying a schema change, since the widest case
+  a version cell has to survive was the one case the fixture never showed.
+
+- Updated dependencies [bf9490a]
+- Updated dependencies [4a6c4c3]
+- Updated dependencies [2ffed76]
+  - @substrat-run/kernel@0.107.0
+  - @substrat-run/adapter-cloudflare@0.107.0
+  - @substrat-run/contracts@0.107.0
+  - @substrat-run/oidc-rp@0.7.0
+  - @substrat-run/connector-fortnox@0.4.9
+  - @substrat-run/demo-callout@0.3.25
+  - @substrat-run/engine-invites@0.7.6
+  - @substrat-run/engine-invoicing@0.9.23
+  - @substrat-run/engine-protocol@0.12.12
+  - @substrat-run/engine-workorder@0.11.6
+
 ## 0.33.1
 
 ### Patch Changes

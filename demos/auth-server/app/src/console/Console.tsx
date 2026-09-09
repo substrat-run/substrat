@@ -8,9 +8,10 @@ import { ClientsPanel } from '../views/Applications';
 import { BankIdPanel } from '../views/BankId';
 import { IssuerPanel } from '../views/Issuer';
 import { ProvidersPanel } from '../views/Providers';
+import { UserDetailView } from '../views/UserDetail';
 import { UsersView } from '../views/Users';
 import { navigate, usePathname } from './router';
-import { ROUTES } from './routes';
+import { ROUTES, USERS_PATH, userDetailId } from './routes';
 // (`console.css` is imported from main.tsx, not here: its load ORDER relative to tokens.css
 //  decides which set wins the property they share, and only main.tsx can guarantee it.)
 
@@ -89,7 +90,15 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
   // `/` is where signing in leaves you, and it is not a screen. Resolved here rather than
   // only in the effect below, so the first frame is the section rather than a "no such page"
   // that corrects itself.
-  const active = visible.find((r) => r.path === pathname) ?? (pathname === '/' ? home : null);
+  // `/users/<id>` is a screen under Users rather than a section of its own: the nav keeps
+  // Users lit, and only an administrator can be on it — `detailId` is read after the
+  // permission filter, so a non-administrator pasting one gets the "no such page" answer the
+  // nav's own courtesy already implies.
+  const detailId = visible.some((r) => r.path === USERS_PATH) ? userDetailId(pathname) : null;
+  const active =
+    visible.find((r) => r.path === pathname) ??
+    (detailId ? visible.find((r) => r.path === USERS_PATH)! : null) ??
+    (pathname === '/' ? home : null);
 
   useEffect(() => {
     // Replace rather than push: the back button should not have to step through a redirect
@@ -177,6 +186,8 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
                 </button>
               }
             />
+          ) : detailId ? (
+            <UserDetailView userId={detailId} me={session.sub} />
           ) : active.path === '/users' ? (
             <UsersView me={session.sub} />
           ) : active.path === '/applications' ? (

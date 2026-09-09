@@ -204,6 +204,129 @@ export async function removeUser(userId: string): Promise<void> {
   if (error) throw new Error(error.message ?? 'could not remove user');
 }
 
+/* ---- one person: what the user-detail screen at /users/:id reads and does ---- */
+
+/**
+ * One user, read through the list with an equality filter rather than by fetching all 200 and
+ * finding the id in the browser. The filter is what makes a pasted `/users/<id>` link honest:
+ * a deep link has to answer for a person past whatever page the list happens to show, and
+ * "not on the first page" must not render as "no such person".
+ *
+ * `null` means the id matched nobody — the screen's 404, not an error.
+ */
+export async function getUser(userId: string): Promise<AdminUser | null> {
+  const { data, error } = await authClient.admin.listUsers({
+    query: { limit: 1, filterField: 'id', filterOperator: 'eq', filterValue: userId },
+  });
+  if (error) throw new Error(error.message ?? 'could not read that user');
+  return ((data?.users ?? []) as AdminUser[])[0] ?? null;
+}
+
+/**
+ * How this person can sign in. Served by the issuer's own admin API, not Better Auth's:
+ * `listAccounts` answers only for the session making the call, so an administrator looking at
+ * somebody else had no read at all (#1278). The password hash and the stored upstream tokens
+ * stay on the server — see the endpoint in `src/admin-api.ts`.
+ */
+export async function adminSignInMethods(userId: string): Promise<AdminSignInMethod[]> {
+  const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/sign-in-methods`);
+  if (!res.ok) throw new Error(await adminError(res, 'could not read their sign-in methods'));
+  return ((await res.json()) as { methods: AdminSignInMethod[] }).methods;
+}
+
+/** One row of `account`, minus everything that is a credential. */
+export interface AdminSignInMethod {
+  id: string;
+  /** `credential` for a password; otherwise the provider id, e.g. `google` or `bankid`. */
+  provider: string;
+  /** The subject the upstream knows them by — what tells two Google accounts apart. */
+  accountId: string;
+  issuer: string | null;
+  createdAt: string | null;
+}
+
+/** A live session of this person, as the admin plugin reports it. */
+export interface AdminSession {
+  id: string;
+  token: string;
+  createdAt?: string | Date;
+  expiresAt?: string | Date;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+}
+
+export async function listUserSessions(userId: string): Promise<AdminSession[]> {
+  const { data, error } = await authClient.admin.listUserSessions({ userId });
+  if (error) throw new Error(error.message ?? 'could not read their sessions');
+  return (data?.sessions ?? []) as AdminSession[];
+}
+
+/**
+ * Revoke ONE session — keyed by its token, which is what the plugin deletes on. That token is
+ * the credential itself, so it is never rendered; it rides from the list read to this call and
+ * no further.
+ */
+export async function revokeUserSession(sessionToken: string): Promise<void> {
+  const { error } = await authClient.admin.revokeUserSession({ sessionToken });
+  if (error) throw new Error(error.message ?? 'could not revoke that session');
+}
+
+export async function revokeUserSessions(userId: string): Promise<void> {
+  const { error } = await authClient.admin.revokeUserSessions({ userId });
+  if (error) throw new Error(error.message ?? 'could not revoke their sessions');
+}
+
+/**
+ * Ban with the two things a ban needs to be reviewable later: why, and until when. The list
+ * screen's bare `banUser` left both null, so the person's own error message said nothing and
+ * no operator could tell a mistake from a decision.
+ *
+ * `days` is optional and its absence is the permanent ban — the plugin reads seconds, so the
+ * conversion lives here rather than in the screen.
+ *
+ * The contract is enforced HERE rather than in the form, because a helper that quietly dropped
+ * an empty reason would recreate the bare unreviewable ban this call exists to replace — and
+ * the next caller would recreate it again. A blank reason and a zero, negative or fractional
+ * expiry are refused before the request is made.
+ */
+export async function banUserWithReason(userId: string, reason: string, days?: number): Promise<void> {
+  const why = reason.trim();
+  if (!why) {
+    throw new Error('A ban needs a reason: it is what this person is told at sign-in, and what makes the ban reviewable later.');
+  }
+  if (days !== undefined && !(Number.isInteger(days) && days > 0)) {
+    throw new Error('An expiry is a whole number of days greater than zero — leave it empty for a ban with no end date.');
+  }
+  const { error } = await authClient.admin.banUser({
+    userId,
+    banReason: why,
+    ...(days === undefined ? {} : { banExpiresIn: days * 24 * 60 * 60 }),
+  });
+  if (error) throw new Error(error.message ?? 'could not ban that user');
+}
+
+export async function setUserPassword(userId: string, newPassword: string): Promise<void> {
+  const { error } = await authClient.admin.setUserPassword({ userId, newPassword });
+  if (error) throw new Error(error.message ?? 'could not set their password');
+}
+
+/**
+ * Mark the address verified, and it is not cosmetic. Better Auth refuses to attach an upstream
+ * provider to an existing account at sign-in unless the local row is verified, and an account
+ * an administrator created here never is — so without this lever the only symptom is a person
+ * who cannot sign in with Google and an operator with nothing to do about it.
+ */
+export async function markEmailVerified(userId: string): Promise<void> {
+  const { error } = await authClient.admin.updateUser({ userId, data: { emailVerified: true } });
+  if (error) throw new Error(error.message ?? 'could not mark the address verified');
+}
+
+/** The issuer's own admin API answers `{ error }`; a proxy or a crash does not. */
+async function adminError(res: Response, fallback: string): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { error?: string } | null;
+  return body?.error ?? `${fallback} (${res.status})`;
+}
+
 /* ---- the OIDC consent screen ---- */
 
 /**
@@ -646,6 +769,10 @@ export interface RegisteredClient {
   application_type?: string;
   disabled?: boolean;
   skip_consent?: boolean;
+  /** Whether this client may end a session (RP-initiated logout). Off unless set. */
+  enable_end_session?: boolean;
+  /** Where it may be sent afterwards — a separate list from `redirect_uris`. */
+  post_logout_redirect_uris?: string[];
   user_id?: string;
   client_id_issued_at?: number;
   metadata?: Record<string, unknown>;
@@ -660,6 +787,8 @@ export interface ClientDraft {
   logo_uri?: string;
   metadata?: Record<string, unknown>;
   skip_consent: boolean;
+  enable_end_session: boolean;
+  post_logout_redirect_uris: string[];
   disabled: boolean;
 }
 
@@ -680,7 +809,12 @@ export async function createOAuthClient(
   // variant that can set `skip_consent`, which is exactly why a browser cannot reach it.
   const created = await admin<RegisteredClient & { client_secret?: string }>('/clients', {
     method: 'POST',
-    body: JSON.stringify(draft),
+    // The plugin's registration body types `post_logout_redirect_uris` as a NON-empty array,
+    // so an empty one is a 400 rather than "no post-logout targets". Omit it instead; our own
+    // PATCH accepts `[]` and is what clears a list that already exists.
+    body: JSON.stringify(
+      draft.post_logout_redirect_uris.length ? draft : { ...draft, post_logout_redirect_uris: undefined },
+    ),
   });
   return { client: created, clientSecret: created.client_secret ?? '' };
 }

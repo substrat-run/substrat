@@ -5,7 +5,8 @@
  *
  * It authenticates against the platform's AuthHero instance (the Auth0-compatible
  * OIDC authority). The kernel keeps authorization (roles/grants/tenancy); this
- * package only proves *who* the caller is — the ID token `sub` (and `email`).
+ * package only proves *who* the caller is — the `sub` (and `email`), taken from the
+ * ID token and, for the claims OIDC Core §5.4 routes to UserInfo instead, from there.
  *
  * Standard Authorization-Code + PKCE, discovery-driven so nothing but the issuer
  * URL is wired in: endpoints and signing keys come from
@@ -47,6 +48,7 @@ interface Discovery {
   authorization_endpoint: string;
   token_endpoint: string;
   jwks_uri: string;
+  userinfo_endpoint?: string;
   end_session_endpoint?: string;
 }
 
@@ -55,6 +57,12 @@ export const FLOW_COOKIE = 'sb_oidc_flow';
 /** Session lifetime; the flow (login round-trip) is deliberately short. */
 export const SESSION_MAXAGE = 60 * 60 * 24 * 7; // 7 days
 export const FLOW_MAXAGE = 60 * 10; // 10 minutes
+/**
+ * How long the optional UserInfo enrichment may take before the login proceeds without
+ * it. This call sits inside the user's redirect, so the ceiling is what a person will
+ * wait, not what a background job would — deliberately far below the connectors' 15–30s.
+ */
+export const USERINFO_TIMEOUT_MS = 5_000;
 
 const enc = new TextEncoder();
 
@@ -190,7 +198,7 @@ export async function completeLogin(
     const detail = await res.text().catch(() => '');
     throw new Error(`token exchange failed (${res.status})${detail ? `: ${detail.slice(0, 300)}` : ''}`);
   }
-  const tokens = (await res.json()) as { id_token?: string };
+  const tokens = (await res.json()) as { id_token?: string; access_token?: string };
   if (!tokens.id_token) throw new Error('no id_token in token response');
 
   const { payload } = await jwtVerify(tokens.id_token, jwksFor(d), {
@@ -199,9 +207,81 @@ export async function completeLogin(
   });
   if (payload.nonce !== flow.n) throw new Error('nonce mismatch');
 
-  const user = userFromClaims(payload);
+  const user = await withUserInfo(d, userFromClaims(payload), tokens.access_token);
   const session = await mintSession(env, user);
   return { user, session, returnTo: typeof flow.rt === 'string' ? flow.rt : undefined };
+}
+
+/**
+ * Fill in the profile claims the ID token did not carry, from the UserInfo endpoint.
+ *
+ * We asked for `scope=openid email profile` and used to read the answer out of the ID
+ * token alone. That is only half of where OIDC puts it. **OIDC Core §5.4 routes
+ * scope-requested claims to UserInfo whenever an access token is issued** — which the
+ * authorization-code flow always does — so a spec-faithful provider hands back an ID
+ * token carrying `sub` and the protocol claims, and nothing else. Providers differ here
+ * and both readings are correct: some include the profile anyway (Auth0's lineage does,
+ * and its compatibility flag says so out loud), some do not.
+ *
+ * Reading only the ID token therefore silently produced a session with an id and no
+ * address, against a provider doing exactly what the spec says. That is worse than it
+ * sounds wherever the address is the identifier: a relying party that resolves a local
+ * account by e-mail gets no thread to follow, mints something derived from the `sub`
+ * instead, and the person lands authenticated and unrecognised — a working login with
+ * no access, and no error anywhere to explain it.
+ *
+ * Four things this is careful about:
+ *
+ *  - **Only when something is missing.** A provider that already puts the claims in the
+ *    ID token costs no extra round trip, and its behaviour is unchanged.
+ *  - **The ID token still wins.** UserInfo fills gaps; it never overwrites a claim that
+ *    was signed into the token we already verified.
+ *  - **`sub` is verified (OIDC Core §5.3.2).** A UserInfo response whose subject differs
+ *    from the ID token's is exactly the substitution the check exists to catch, so it
+ *    throws rather than being ignored — every other integrity failure in this flow
+ *    (state, nonce, signature) throws too, and the caller renders them all the same way.
+ *  - **Transport problems degrade, they do not fail.** No endpoint advertised, no access
+ *    token, a non-2xx, unreadable JSON, an endpoint that accepts the connection and then
+ *    says nothing: the login stands with what the ID token gave. The ID token is the
+ *    authentication; this is enrichment, and enrichment must not be able to lock anyone
+ *    out — which is why the call carries a deadline. A `fetch` with no `signal` has no
+ *    timeout of its own, so a stalled endpoint would hang the login callback for as long
+ *    as the runtime allowed, and the enrichment would lock out exactly the bare-token
+ *    users it exists to help.
+ */
+async function withUserInfo(
+  d: Discovery,
+  user: SessionUser,
+  accessToken: string | undefined,
+): Promise<SessionUser> {
+  if (user.email !== undefined && user.name !== undefined) return user;
+  if (!d.userinfo_endpoint || !accessToken) return user;
+
+  let claims: { sub?: unknown; email?: unknown; name?: unknown };
+  try {
+    const res = await fetch(d.userinfo_endpoint, {
+      headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
+      signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
+    });
+    if (!res.ok) return user;
+    claims = (await res.json()) as typeof claims;
+  } catch {
+    return user;
+  }
+
+  // §5.3.2: "The sub Claim in the UserInfo Response MUST be verified to exactly match
+  // the sub Claim in the ID Token; if they do not match, the UserInfo Response values
+  // MUST NOT be used." Not using them is the floor; refusing the login says it out loud,
+  // because a mismatch is never a quirk — it is a response for a different subject.
+  if (typeof claims.sub !== 'string' || claims.sub !== user.id) {
+    throw new Error('userinfo sub does not match the id_token sub');
+  }
+
+  return {
+    id: user.id,
+    email: user.email ?? (typeof claims.email === 'string' ? claims.email : undefined),
+    name: user.name ?? (typeof claims.name === 'string' ? claims.name : undefined),
+  };
 }
 
 /**

@@ -90,6 +90,8 @@ interface WireClient {
   redirect_uris: string[];
   disabled?: boolean;
   skip_consent?: boolean;
+  enable_end_session?: boolean;
+  post_logout_redirect_uris?: string[];
   user_id?: string;
   client_secret_set?: boolean;
   metadata?: Record<string, unknown>;
@@ -367,5 +369,245 @@ describe('what the dashboard does to a client', () => {
     // Under the 1.6 plugin this was reachable ONLY from `trustedClients` in source; it is now
     // a column, which is why the dashboard can offer it.
     expect(authorize.headers.get('location') ?? '').toContain(`${RP_REDIRECT}?code=`);
+  });
+});
+
+/**
+ * RP-initiated logout (OpenID Connect RP-Initiated Logout 1.0), which the plugin gates on TWO
+ * client columns neither the registration form nor our PATCH used to write:
+ *
+ *  - `enable_end_session` has **no default**. A client registered without it is refused with
+ *    "The client is not allowed to initiate logout" — every client this issuer had, until the
+ *    Applications panel grew the checkbox.
+ *  - `post_logout_redirect_uris` is a **separate list** from `redirect_uris`. A callback
+ *    registered for sign-IN buys nothing at sign-OUT, and the mismatch does not fail loudly:
+ *    the person is signed out and simply left here.
+ *
+ * Both are asserted against the real endpoint rather than the column, because a column that
+ * round-trips through the panel while the issuer still says no is the bug this fixes.
+ */
+describe('RP-initiated logout', () => {
+  const POST_LOGOUT = 'http://localhost:9999/signed-out';
+
+  /** A protocol call — no `accept: text/html`, so refusals arrive as JSON rather than a page. */
+  const endSession = (params: Record<string, string>, cookie: string, headers: Record<string, string> = {}) =>
+    call(`/api/auth/oauth2/end-session?${new URLSearchParams(params)}`, { headers: { cookie, ...headers } });
+
+  const sessionExists = async (cookie: string): Promise<boolean> =>
+    Boolean(await auth.api.getSession({ headers: new Headers({ cookie }) as never }));
+
+  it('refuses a client that was never allowed to end a session', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Quiet', admin);
+
+    const res = await endSession(
+      { client_id: client.client_id, post_logout_redirect_uri: POST_LOGOUT },
+      admin,
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({
+      error: 'invalid_client',
+      error_description: 'The client is not allowed to initiate logout',
+    });
+    // Refused BEFORE anything was ended — the session is untouched.
+    expect(await sessionExists(admin)).toBe(true);
+  });
+
+  it('signs someone out and returns them to a registered post-logout URI', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Chatty', admin);
+
+    const patched = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ enable_end_session: true, post_logout_redirect_uris: [POST_LOGOUT] }),
+    });
+    expect(patched.status).toBeLessThan(300);
+    const listed = (await listClients(admin)).find((c) => c.client_id === client.client_id);
+    expect(listed?.enable_end_session).toBe(true);
+    expect(listed?.post_logout_redirect_uris).toEqual([POST_LOGOUT]);
+
+    // With no `id_token_hint` the issuer asks the person first, so this is a browser
+    // navigation and the answer is a page, not a redirect.
+    const page = await endSession(
+      { client_id: client.client_id, post_logout_redirect_uri: POST_LOGOUT },
+      admin,
+      { accept: 'text/html' },
+    );
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('data-oidc-logout-confirmation');
+
+    const confirmation = page.headers
+      .getSetCookie()
+      .map((c) => c.split(';')[0] ?? '')
+      .filter((pair) => !pair.endsWith('='))
+      .join('; ');
+    const done = await call('/api/auth/oauth2/end-session/confirm', {
+      method: 'POST',
+      headers: {
+        // The confirm endpoint takes the form post its own page submits; `accept` is what
+        // asks for the redirect as a value instead of a 302 this harness cannot follow.
+        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'application/json',
+        cookie: `${admin}; ${confirmation}`,
+      },
+      body: 'action=confirm',
+    });
+    expect(await done.json()).toMatchObject({ redirect: true, url: POST_LOGOUT });
+    expect(await sessionExists(admin)).toBe(false);
+  });
+
+  it('ends the session but ignores a post-logout URI that is not registered', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Half Configured', admin, { redirect_uris: [RP_REDIRECT] });
+    // Allowed to end a session, with NOTHING in `post_logout_redirect_uris` — the shape an
+    // operator lands in by registering the sign-in callback and assuming it counts twice.
+    await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ enable_end_session: true }),
+    });
+
+    const page = await endSession(
+      { client_id: client.client_id, post_logout_redirect_uri: RP_REDIRECT },
+      admin,
+      { accept: 'text/html' },
+    );
+    const confirmation = page.headers
+      .getSetCookie()
+      .map((c) => c.split(';')[0] ?? '')
+      .filter((pair) => !pair.endsWith('='))
+      .join('; ');
+    const done = await call('/api/auth/oauth2/end-session/confirm', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        accept: 'text/html',
+        cookie: `${admin}; ${confirmation}`,
+      },
+      body: 'action=confirm',
+    });
+    // Signed out — and told, on the issuer's own page, that the redirect was refused. The
+    // sign-in callback registered above bought nothing here.
+    expect(done.status).toBe(200);
+    expect(await done.text()).toContain('was not registered');
+    expect(await sessionExists(admin)).toBe(false);
+  });
+
+  it('carries both columns through registration, not only through an edit', async () => {
+    // The console's Register button proxies the plugin's own create verb, which takes both
+    // fields — so a client can arrive able to sign people out rather than needing an edit
+    // straight afterwards.
+    const admin = await signInAs(ADMIN);
+    const client = await register('Born Ready', admin, {
+      enable_end_session: true,
+      post_logout_redirect_uris: [POST_LOGOUT],
+    });
+    const listed = (await listClients(admin)).find((c) => c.client_id === client.client_id);
+    expect(listed?.enable_end_session).toBe(true);
+    expect(listed?.post_logout_redirect_uris).toEqual([POST_LOGOUT]);
+
+    const res = await endSession(
+      { client_id: client.client_id, post_logout_redirect_uri: POST_LOGOUT },
+      admin,
+    );
+    // Past the client gate now — what stops it is the missing confirmation, not the client.
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error_description: 'User confirmation is required to complete logout',
+    });
+  });
+
+  it('refuses a post-logout URI the plugin would have refused at registration', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Insecure', admin);
+    const res = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        application_type: 'web',
+        post_logout_redirect_uris: ['http://example.test/signed-out'],
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  /**
+   * The type is half of the rule, so moving it re-judges the URIs already stored. A patch
+   * carrying nothing but `application_type` is the shape that used to slip through: `http:`
+   * on a non-loopback host is ours to allow for a `native` client and refused for a `web`
+   * one, and once the URIs were in the row nothing was ever going to ask about them again.
+   */
+  it('refuses an application type the stored URIs would fail under', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Going Web', admin, { enable_end_session: true });
+    const patch = (body: Record<string, unknown>) =>
+      adminCall(`/clients/${client.client_id}`, admin, { method: 'PATCH', body: JSON.stringify(body) });
+    const storedType = () =>
+      (
+        db.prepare('SELECT application_type FROM oauth_client WHERE client_id = ?').get(client.client_id) as {
+          application_type: string;
+        }
+      ).application_type;
+
+    // Legal for the type it has — the plugin's registration is stricter, but this is an edit
+    // of a native client and `http:` is what a native callback may be here.
+    const native = await patch({
+      redirect_uris: ['http://phone.test/cb'],
+      post_logout_redirect_uris: ['http://phone.test/signed-out'],
+    });
+    expect(native.status).toBe(200);
+
+    // Nothing but the type in the body, and it is refused by the URIs already stored.
+    const refused = await patch({ application_type: 'web' });
+    expect(refused.status).toBe(400);
+    expect(storedType()).toBe('native');
+
+    // Each list on its own, so neither check is standing in for the other: replacing the
+    // post-logout list leaves the stored sign-in callbacks to refuse it, and replacing the
+    // sign-in callbacks leaves the post-logout list — which is its own list, and is handed
+    // to a browser for the same reason.
+    const logoutFixed = await patch({
+      application_type: 'web',
+      post_logout_redirect_uris: ['https://phone.test/signed-out'],
+    });
+    expect(logoutFixed.status).toBe(400);
+    expect(storedType()).toBe('native');
+
+    const callbacksFixed = await patch({ application_type: 'web', redirect_uris: ['https://phone.test/cb'] });
+    expect(callbacksFixed.status).toBe(400);
+    expect(storedType()).toBe('native');
+
+    // Both lists moved with the type, and the edit lands.
+    const accepted = await patch({
+      application_type: 'web',
+      redirect_uris: ['https://phone.test/cb'],
+      post_logout_redirect_uris: ['https://phone.test/signed-out'],
+    });
+    expect(accepted.status).toBe(200);
+    expect(storedType()).toBe('web');
+  });
+
+  /**
+   * The re-check is the type's, not a tax on every edit: an edit that names no application
+   * type must not start refusing over URIs it was never asked about. The row here is the one
+   * that makes that visible — stored URIs its own type would reject, which is what a row
+   * written before the rule looks like.
+   */
+  it('leaves the stored URIs alone when the patch names no application type', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Grandfathered', admin);
+    const res = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ redirect_uris: ['http://phone.test/cb'] }),
+    });
+    expect(res.status).toBe(200);
+    // Straight to the column: an http: callback on a `web` client is a state this endpoint
+    // refuses to write, and the point is that an edit meets one it did not create.
+    db.prepare("UPDATE oauth_client SET application_type = 'web' WHERE client_id = ?").run(client.client_id);
+
+    const renamed = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ client_name: 'Renamed Anyway' }),
+    });
+    expect(renamed.status).toBe(200);
+    expect(((await renamed.json()) as WireClient).client_name).toBe('Renamed Anyway');
   });
 });

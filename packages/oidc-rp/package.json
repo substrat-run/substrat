@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/oidc-rp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Substrat OIDC relying party — Authorization-Code + PKCE, workerd-safe (jose + Web Crypto). Shared by the platform apps (console, dashboard) and by @substrat-run/vertical-auth's RP provider.",
   "license": "AGPL-3.0-only",
   "repository": {
@@ -22,7 +22,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "jose": "^6.2.3"
@@ -33,6 +34,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "hono": "^4.6.0",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
