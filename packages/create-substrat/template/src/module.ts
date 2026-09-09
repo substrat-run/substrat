@@ -283,9 +283,14 @@ const portalRepairsOp: Op<'shop/portal-repairs'> = async (ctx, input) =>
  * No `.parse` in here: the host already parsed `entity` against `timelineInput`
  * before this line ran, on whichever path the call came in by.
  */
-const timelineOp: Op<'shop/timeline'> = async (ctx, entity) => {
+const timelineOp: Op<'shop/timeline'> = async (ctx, input) => {
+  // The operation is `paged`, so the host hands the page trio in on the SAME
+  // object as the entity's two fields. An `EntityRef` is exactly those two, so
+  // name them rather than passing the whole input — `ctx.check` and
+  // `readTimeline` should be given a ref, not a ref with a cursor stuck to it.
+  const entity = { entityType: input.entityType, entityId: input.entityId };
   assertAllowed(await ctx.check(WO.read, entity));
-  return readTimeline(ctx, { entityType: entity.entityType, entityId: entity.entityId }, entity);
+  return readTimeline(ctx, entity, input);
 };
 
 /**

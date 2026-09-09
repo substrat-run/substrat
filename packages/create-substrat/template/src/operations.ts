@@ -100,7 +100,7 @@ export const bikeShopOperations = defineOperations(
     paged: { sortKey: 'number' },
   },
   'shop/register-bike': {
-    summary: "Register a bike against a customer",
+    summary: 'Register a bike against a customer',
     permission: 'bike:manage',
     input: z.object({
       customerId: z.string().min(1),
@@ -161,7 +161,7 @@ export const bikeShopOperations = defineOperations(
     output: workOrder,
   },
   'shop/portal-repairs': {
-    summary: "The repairs visible to the calling portal customer",
+    summary: 'The repairs visible to the calling portal customer',
     /**
      * No node-level permission, stated rather than left as an absence: a portal
      * customer holds an entity-narrowed `workorder:read` on their own customer
