@@ -3537,34 +3537,34 @@ export function scopeHostContractSuite(
 
     it('a private vertical version lands ADMITTED on push, noted as auto-admission', async () => {
       await host.admin.registerVertical(staff, {
-        slug: 'egeryds/crm',
-        name: 'Egeryds CRM',
+        slug: 'tenant-a/crm',
+        name: 'Tenant A CRM',
         source: 'cli',
         ownerTenant: t2,
       });
-      const vid = await publishPrivate('egeryds/crm', '0.1.0');
-      const [v] = await host.admin.listVersions(staff, 'egeryds/crm');
+      const vid = await publishPrivate('tenant-a/crm', '0.1.0');
+      const [v] = await host.admin.listVersions(staff, 'tenant-a/crm');
       expect(v?.admission).toBe('admitted');
       expect(v?.admissionNote).toBe(AUTO_ADMISSION_NOTE);
       // Promotable immediately — for a private vertical, push + promote IS the deploy.
-      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', vid);
+      await host.admin.promoteVersion(staff, 'tenant-a/crm', 'prod', vid);
       expect(
-        (await host.admin.listChannels(staff, 'egeryds/crm')).find((c) => c.channel === 'prod')?.versionId,
+        (await host.admin.listChannels(staff, 'tenant-a/crm')).find((c) => c.channel === 'prod')?.versionId,
       ).toBe(vid);
     });
 
     it('getVersion reads ONE version by id, and fails closed across a lineage', async () => {
       // The read that replaced "list every version this vertical ever pushed, then
       // .find() one". Correctness first: same row, same shape as the list gives.
-      const vid = await publishPrivate('egeryds/crm', '0.9.0');
+      const vid = await publishPrivate('tenant-a/crm', '0.9.0');
       const one = await host.admin.getVersion(staff, vid);
       expect(one?.id).toBe(vid);
-      expect(one).toEqual((await host.admin.listVersions(staff, 'egeryds/crm')).find((v) => v.id === vid));
+      expect(one).toEqual((await host.admin.listVersions(staff, 'tenant-a/crm')).find((v) => v.id === vid));
 
       // Narrowed, it keeps what the old `.find()`-inside-one-slug's-list gave for free:
       // a version of ANOTHER vertical is absent, not returned across the boundary. Without
       // this, the slug in the URL stops constraining which version a route can hand back.
-      expect((await host.admin.getVersion(staff, vid, 'egeryds/crm'))?.id).toBe(vid);
+      expect((await host.admin.getVersion(staff, vid, 'tenant-a/crm'))?.id).toBe(vid);
       expect(await host.admin.getVersion(staff, vid, 'callout')).toBeUndefined();
 
       // An id nobody published is absent, not a throw — callers branch on undefined.
@@ -3580,17 +3580,17 @@ export function scopeHostContractSuite(
     });
 
     it('promotion appends to the channel history — the go-live timeline rollback picks from', async () => {
-      const first = (await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod'))!;
+      const first = (await host.admin.listChannelHistory(staff, 'tenant-a/crm', 'prod'))!;
       expect(first).toHaveLength(1);
       expect(first[0]!.fromVersionId).toBeNull(); // nothing before the first go-live
 
-      const v2 = await publishPrivate('egeryds/crm', '0.2.0');
-      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', v2);
+      const v2 = await publishPrivate('tenant-a/crm', '0.2.0');
+      await host.admin.promoteVersion(staff, 'tenant-a/crm', 'prod', v2);
       // Rollback is a NEW promotion of the older version — the timeline only grows.
       const v1 = first[0]!.versionId;
-      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', v1);
+      await host.admin.promoteVersion(staff, 'tenant-a/crm', 'prod', v1);
 
-      const timeline = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod');
+      const timeline = await host.admin.listChannelHistory(staff, 'tenant-a/crm', 'prod');
       expect(timeline.map((h) => h.versionId)).toEqual([v1, v2, v1]); // newest first
       expect(timeline[0]!.fromVersionId).toBe(v2);
       expect(timeline[1]!.fromVersionId).toBe(v1);
@@ -3608,12 +3608,12 @@ export function scopeHostContractSuite(
       const appScope = scopeId.parse(ulid());
       await host.provisionScope(staff, { tenantId: t2, scopeId: appScope });
       await host.admin.activateScope(staff, t2, appScope);
-      const prodNow = (await host.admin.listChannels(staff, 'egeryds/crm')).find((c) => c.channel === 'prod')!
+      const prodNow = (await host.admin.listChannels(staff, 'tenant-a/crm')).find((c) => c.channel === 'prod')!
         .versionId;
       await host.admin.bindScopeVersion(staff, t2, appScope, prodNow);
 
-      const v3 = await publishPrivate('egeryds/crm', '0.3.0');
-      await host.admin.promoteVersion(staff, 'egeryds/crm', 'prod', v3);
+      const v3 = await publishPrivate('tenant-a/crm', '0.3.0');
+      await host.admin.promoteVersion(staff, 'tenant-a/crm', 'prod', v3);
       expect((await host.admin.getScopeRecord(staff, t2, appScope))?.verticalVersionId).toBe(v3);
     });
 
@@ -3621,29 +3621,29 @@ export function scopeHostContractSuite(
       // Listing is the moment OTHER tenants start trusting this code, so the version
       // they would install needs a recorded human decision — the auto-admission note
       // is exactly what marks its absence.
-      await expect(host.admin.setVerticalListed(staff, 'egeryds/crm', true)).rejects.toThrow(
+      await expect(host.admin.setVerticalListed(staff, 'tenant-a/crm', true)).rejects.toThrow(
         /auto-admitted.*staff admit/,
       );
 
       // A staff admit of the already-admitted version upgrades it to a manual vouch
       // (clears the note, audited) — then listing passes.
-      const prodNow = (await host.admin.listChannels(staff, 'egeryds/crm')).find((c) => c.channel === 'prod')!
+      const prodNow = (await host.admin.listChannels(staff, 'tenant-a/crm')).find((c) => c.channel === 'prod')!
         .versionId;
       await host.admin.admitVersion(staff, prodNow);
-      const upgraded = (await host.admin.listVersions(staff, 'egeryds/crm')).find((v) => v.id === prodNow);
+      const upgraded = (await host.admin.listVersions(staff, 'tenant-a/crm')).find((v) => v.id === prodNow);
       expect(upgraded?.admission).toBe('admitted');
       expect(upgraded?.admissionNote).toBeNull();
-      await host.admin.setVerticalListed(staff, 'egeryds/crm', true);
+      await host.admin.setVerticalListed(staff, 'tenant-a/crm', true);
 
       // Listed now: the next push lands PENDING — staff admission is back in the
       // path exactly when the audience widened.
-      const v4 = await publishPrivate('egeryds/crm', '0.4.0');
-      expect((await host.admin.listVersions(staff, 'egeryds/crm')).find((v) => v.id === v4)?.admission).toBe(
+      const v4 = await publishPrivate('tenant-a/crm', '0.4.0');
+      expect((await host.admin.listVersions(staff, 'tenant-a/crm')).find((v) => v.id === v4)?.admission).toBe(
         'pending',
       );
 
       // Unlist again so later suites see the vertical private (and pushes self-admit).
-      await host.admin.setVerticalListed(staff, 'egeryds/crm', false);
+      await host.admin.setVerticalListed(staff, 'tenant-a/crm', false);
     });
 
     // -- the provisioning state (K-31) ---------------------------------------
@@ -4484,9 +4484,10 @@ export function scopeHostContractSuite(
       // Holding nothing: the denial says so, rather than leaving "held" to the imagination.
       await expect(stub.invoke('billed/act')).rejects.toThrow(/holds: none/);
 
-      // The Egeryds shape (#691): the tenant DOES hold keys — just not under the name the
-      // manifest declares. Required-alone reads as "buy the SKU" and sends you shopping;
-      // required-vs-held shows a near-miss at a glance, which is the actual diagnosis.
+      // The slug-prefixed-key shape (#691): the tenant DOES hold keys — just not
+      // under the name the manifest declares. Required-alone reads as "buy the
+      // SKU" and sends you shopping; required-vs-held shows a near-miss at a
+      // glance, which is the actual diagnosis.
       await host.admin.grantEntitlement(staff, t4, 't-0wv2mwk4j5/billed');
       await host.admin.grantEntitlement(staff, t4, 'workorder');
       const err = await stub.invoke('billed/act').then(
@@ -4989,13 +4990,13 @@ export function scopeHostContractSuite(
     });
 
     it('flips listVersions to newest-first on order desc, cursor still exclusive', async () => {
-      const asc = await host.admin.listVersions(staff, 'egeryds/crm');
+      const asc = await host.admin.listVersions(staff, 'tenant-a/crm');
       expect(asc.length).toBeGreaterThanOrEqual(4);
-      const desc = await host.admin.listVersions(staff, 'egeryds/crm', { order: 'desc' });
+      const desc = await host.admin.listVersions(staff, 'tenant-a/crm', { order: 'desc' });
       expect(desc.map((v) => v.id)).toEqual([...asc.map((v) => v.id)].reverse());
 
       // Descending pages backward from the cursor, strictly before it.
-      const page = await host.admin.listVersions(staff, 'egeryds/crm', {
+      const page = await host.admin.listVersions(staff, 'tenant-a/crm', {
         order: 'desc',
         limit: 2,
         cursor: desc[0]!.id,
@@ -5004,21 +5005,21 @@ export function scopeHostContractSuite(
     });
 
     it('keeps listChannelHistory newest-first by default and pages it; asc flips the walk', async () => {
-      const newest = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod');
+      const newest = await host.admin.listChannelHistory(staff, 'tenant-a/crm', 'prod');
       expect(newest.length).toBeGreaterThanOrEqual(4);
       // Entry ids are ULIDs, so newest-first means descending ids — the shipped order.
       expect(newest.map((h) => h.id)).toEqual([...newest.map((h) => h.id)].sort().reverse());
 
-      const first = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod', { limit: 2 });
+      const first = await host.admin.listChannelHistory(staff, 'tenant-a/crm', 'prod', { limit: 2 });
       expect(first.map((h) => h.id)).toEqual(newest.slice(0, 2).map((h) => h.id));
-      const next = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod', {
+      const next = await host.admin.listChannelHistory(staff, 'tenant-a/crm', 'prod', {
         limit: 2,
         cursor: first[1]!.id,
       });
       expect(next.map((h) => h.id)).toEqual(newest.slice(2, 4).map((h) => h.id));
 
       // 'asc' flips to oldest-first — the whole timeline, reversed.
-      const oldest = await host.admin.listChannelHistory(staff, 'egeryds/crm', 'prod', {
+      const oldest = await host.admin.listChannelHistory(staff, 'tenant-a/crm', 'prod', {
         order: 'asc',
       });
       expect(oldest.map((h) => h.id)).toEqual([...newest.map((h) => h.id)].reverse());
