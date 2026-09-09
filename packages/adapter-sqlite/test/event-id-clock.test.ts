@@ -101,4 +101,37 @@ describe('an event id carries the operation instant (#956)', () => {
     // `occurredAt` is not floored — it reports what the clock actually said.
     expect(second.occurred_at).toBe('2020-01-01T00:00:00.000Z');
   });
+
+  it('names the clock when the instant cannot be an id at all', async () => {
+    // `instant` accepts a pre-1970 value, so a host can genuinely be handed one,
+    // and a ULID's timestamp is 48 UNSIGNED bits — there is nothing to encode it
+    // as. This is the one case the monotonic floor cannot absorb, because there is
+    // no floor yet: the pre-epoch instant is the first thing this host stamps.
+    //
+    // Either way the outbox stays clean — `eventId` refuses a malformed id, so the
+    // emit already failed before #956. What the mint adds is the REASON: a
+    // RangeError naming the instant, rather than a schema complaining about the
+    // shape of a string of `undefined`s that says nothing about the clock.
+    clock.set('1969-12-31T23:59:59.999Z');
+    const preDir = mkdtempSync(join(tmpdir(), 'substrat-pre-epoch-'));
+    const pre = new SqliteScopeHost({ dir: preDir, clock: clock.read });
+    try {
+      for (const [name, handler] of Object.entries(contractTestBareOps)) pre.defineOperation(name, handler);
+      pre.registerModule(testMod);
+      await pre.admin.createTenant(staff, { id: t1, slug: 'pre-epoch', name: 'Pre' });
+      await pre.admin.grantEntitlement(staff, t1, 'testmod');
+      await pre.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'clock-vertical' });
+      await pre.admin.activateScope(staff, t1, s1);
+
+      const stub = await pre.getScope(anna, t1, s1);
+      await expect(stub.invoke('test/emit-event')).rejects.toThrow(/not an encodable ULID instant/);
+
+      // The failed emit took its row with it, so nothing unreadable was stored.
+      const rows = await stub.invoke<OutboxRow[]>('test/read-outbox');
+      for (const row of rows) expect(() => ulidTime(row.id)).not.toThrow();
+    } finally {
+      await pre.close();
+      rmSync(preDir, { recursive: true, force: true });
+    }
+  });
 });
