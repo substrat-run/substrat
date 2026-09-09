@@ -1,5 +1,14 @@
 # @substrat-run/engine-absence
 
+## 0.5.19
+
+### Patch Changes
+
+- Updated dependencies [bf9490a]
+- Updated dependencies [4a6c4c3]
+  - @substrat-run/kernel@0.107.0
+  - @substrat-run/contracts@0.107.0
+
 ## 0.5.18
 
 ### Patch Changes

@@ -1,5 +1,17 @@
 # @substrat-run/contract-tests
 
+## 0.107.0
+
+### Patch Changes
+
+- 9bb5f0f: The scope-host contract suite's private-vertical fixture now uses a placeholder
+  slug (`tenant-a/crm`) instead of a real customer's name. Fixture identity only —
+  no assertion, no adapter behaviour and no published surface changes.
+- Updated dependencies [bf9490a]
+- Updated dependencies [4a6c4c3]
+  - @substrat-run/kernel@0.107.0
+  - @substrat-run/contracts@0.107.0
+
 ## 0.106.0
 
 ### Minor Changes
@@ -3801,7 +3813,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
