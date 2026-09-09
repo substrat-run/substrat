@@ -9,11 +9,15 @@ import type { ScopeHost } from '@substrat-run/kernel';
  * read to seed a fresh app's owner-grants below. Callout is reached through its
  * `/manifest` subpath, which carries no module registration at all.
  *
- * Kept rather than inlined as literals deliberately. CLAUDE.md's rule is that permission
- * keys are never renamed, so the constant is the stable thing and a copy is the fragile
- * one: a literal here would drift the day an engine adds a key or a vertical narrows a
- * role, and drift silently, because nothing compares the two spellings. Importing the
- * engine's own constant makes the compiler the comparison.
+ * Kept rather than inlined as literals deliberately, and the guarantee is worth stating
+ * narrowly, because it is not the one it looks like. Every key `ownerGrants` names below
+ * is a property read off the engine's own map, so a key the engine REMOVES or RE-SPELLS
+ * is a build error here; a literal would go on compiling and seed a grant string that
+ * matches no permission the engine checks. What the compiler does NOT do is notice a key
+ * the engine ADDS: `ownerGrants` enumerates by hand what an owner should hold, and a
+ * wider engine surface leaves this file compiling unchanged. Which is right — what an
+ * owner is granted is a product decision, not an upstream one — but it means this import
+ * answers "is that key still spelled that way", never "is this list still complete".
  *
  * `test/no-embedded-verticals.test.ts` holds the line: it reads this file and refuses an
  * engine import that binds anything but a SCREAMING_SNAKE constant — so `workorderModule`

@@ -103,7 +103,7 @@ What remains of the old dependency list is deliberate, and is of three kinds (pa
 
 | kind | where | why it may stay |
 |---|---|---|
-| **Permission keys** — `PROTOCOL_PERM`, `PERM`, `INVOICING_PERM`, Callout's `SC_PERM` | `src/catalog.ts` | Frozen maps of key strings, read to seed a fresh app's owner-grants. Inlining them as literals would trade a compiler-checked reference for a copy that drifts silently the day a key is added — and CLAUDE.md's rule is that permission keys are never *renamed*, which makes the constant the stable end. Callout comes through its `/manifest` subpath, which carries no registration. |
+| **Permission keys** — `PROTOCOL_PERM`, `PERM`, `INVOICING_PERM`, Callout's `SC_PERM` | `src/catalog.ts` | Frozen maps of key strings, read to seed a fresh app's owner-grants. The guarantee is narrower than "the compiler keeps them in step", so state it exactly: each key the grant list names is read off the engine's own map, so a key the engine removes or re-spells is a **build error** here, where a literal would compile and seed a grant matching no permission the engine checks. It does **not** notice a key the engine *adds* — `ownerGrants` enumerates an owner's grants by hand and a wider engine surface leaves this file unchanged, which is right (what an owner holds is a product decision) but is not drift detection. Callout comes through its `/manifest` subpath, which carries no registration. |
 | **Harness mounts** — `calloutModule`, `meridianModule`, four engine modules | `test/scenario.test.ts` | A single-process scenario has nowhere else to put the app's vertical; `provisionEmbedded` stands in for the separate deployment. `demo-meridian` and `engine-absence` are **devDependencies**, which never reach the worker bundle. |
 | **`engine-invites`** | `src/module.ts`, `src/provision.ts` | Not residue — the Dashboard *composes* it as a vertical composes an engine (layer 3), which is the architecture working. |
 
@@ -115,11 +115,13 @@ SCREAMING_SNAKE constant, and asserts the test-only dependencies stay in `devDep
 behavioural test can see an import that merely widens what is bundled, which is why these are
 source assertions.
 
-**Still open, deliberately:** the deployment's own `ControlPlaneDO` (`wrangler.jsonc`), whose
-identity links are best-effort mirrored into the shared control-plane directory on every
-`/api/me` (#265). Two sources of truth for identity, healed by polling. Retiring it in favour of
-the shared directory is a **live-data move**, not a refactor, so it is tracked separately from the
-bundling question this section closes.
+**Still open, deliberately — tracked as #1343:** the deployment's own `ControlPlaneDO`
+(`wrangler.jsonc`), whose identity links are best-effort mirrored into the shared control-plane
+directory on every `/api/me` (#265). Two sources of truth for identity, healed by polling.
+Retiring it in favour of the shared directory is a **live-data move**, not a refactor — existing
+links have to arrive in the shared directory without a window in which a signed-in user resolves
+to no principal — so it is a migration with a human on it, tracked separately from the bundling
+question this section closes.
 
 ## 4. The authority model — the crux
 

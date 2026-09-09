@@ -25,13 +25,28 @@ import { MODULES } from '../src/index.js';
  * can only ever consume characters immediately following the keyword, never skip over code.
  */
 const SEP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*\n)*`;
-const IMPORT_SPECIFIER = new RegExp(String.raw`(?:from|import)${SEP}\(?${SEP}['"]([^'"]+)['"]`, 'g');
+/**
+ * All THREE quote characters, with the closing one a BACKREFERENCE to the opening one.
+ * A backtick cannot open a static `import … from` clause — that is a syntax error, which
+ * is why NAMED_IMPORT below needs only the two — but a template-literal specifier inside
+ * a dynamic import is real, and it bundles and executes the module exactly as thoroughly
+ * as a quoted one. Reading only ' and " here let that single form through every guard in
+ * this file: `/module` and the engine rule alike saw no specifier at all and passed.
+ * An INTERPOLATED specifier is captured whole and judged on its literal text, so a
+ * computed demo path is refused rather than skipped — it is not a static specifier at
+ * all, and refusing is the conservative answer for a file whose whole job is to refuse.
+ */
+const QUOTE = "['\"`]";
+const IMPORT_SPECIFIER = new RegExp(String.raw`(?:from|import)${SEP}\(?${SEP}(${QUOTE})([^'"\`]+)\1`, 'g');
 
 /**
  * A NAMED import, with its clause captured. An import clause's braces cannot nest, so
  * `[^}]*` matches the whole list exactly — no lazy scan that could run past a statement.
  * `type` is captured because a type-only import erases at compile time: it binds no value
- * and can bundle no code, so it is exempt from the constants-only rule below.
+ * and can bundle no code, so it is exempt from the constants-only rule below. Two quote
+ * characters and not `QUOTE`'s three, deliberately: a static import declaration takes a
+ * string literal and nothing else, so a backtick here would describe source that cannot
+ * parse — and a dynamic import, which may carry one, has no clause to read anyway.
  */
 const NAMED_IMPORT = new RegExp(String.raw`import${SEP}(type${SEP})?\{([^}]*)\}${SEP}from${SEP}['"]([^'"]+)['"]`, 'g');
 
@@ -59,7 +74,7 @@ describe('the privileged worker bundles no vertical module code', () => {
     .filter((f) => f.endsWith('.ts'))
     .map((f) => `src/${f}`);
   /** Every module specifier in a source file, in order. */
-  const importsOf = (src: string) => [...src.matchAll(IMPORT_SPECIFIER)].map((m) => m[1]!);
+  const importsOf = (src: string) => [...src.matchAll(IMPORT_SPECIFIER)].map((m) => m[2]!);
   /**
    * Every named import, as `{ spec, names }`. `names` are the names the ENGINE exports —
    * the alias is dropped, because `PROTOCOL_PERM as PROTO` is still a constant and
@@ -161,6 +176,8 @@ describe('the privileged worker bundles no vertical module code', () => {
       `export { d } from '@substrat-run/demo-u/module';`, // re-export
       `import // why\n'@substrat-run/demo-t/module';`, // line comment, side-effect
       `void import(// why\n'@substrat-run/demo-s/module');`, // line comment, dynamic
+      `const e = await import(\`@substrat-run/demo-r/module\`);`, // TEMPLATE LITERAL — bundles the same module
+      `await import(\`@substrat-run/demo-q/\${slug}/module\`);`, // interpolated: captured whole, so `/module` still catches it
     ].join('\n');
     expect(importsOf(src)).toEqual([
       '@substrat-run/demo-x/module',
@@ -171,6 +188,8 @@ describe('the privileged worker bundles no vertical module code', () => {
       '@substrat-run/demo-u/module',
       '@substrat-run/demo-t/module',
       '@substrat-run/demo-s/module',
+      '@substrat-run/demo-r/module',
+      '@substrat-run/demo-q/${slug}/module',
     ]);
   });
 
