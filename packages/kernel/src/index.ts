@@ -153,7 +153,7 @@ export type {
 } from './list-index.js';
 export { frozenClock, manualClock } from './clock.js';
 export type { ManualClock } from './clock.js';
-export { ulid } from './ulid.js';
+export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';

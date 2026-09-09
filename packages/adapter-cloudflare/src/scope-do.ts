@@ -48,6 +48,8 @@ import {
 } from '@substrat-run/contracts';
 import {
   ulid,
+  createUlid,
+  type UlidMint,
   assertAllowed,
   ConnectionSealingKeyUnavailableError,
   noSealingKeyMessage,
@@ -673,6 +675,13 @@ export function defineScopeDO(
     private readonly attachmentTargets = new Map<string, { read: PermissionKey; write: PermissionKey }>();
     private readonly checker: PermissionChecker;
     private readonly systemPrincipal: PrincipalId = principalId.parse(ulid());
+    /**
+     * The mint for event ids (#956) — its own monotonic floor, so the id's timestamp
+     * is the operation's instant rather than whatever an unrelated wall-clock `ulid()`
+     * in this isolate last stamped. The DO reads the wall clock today, so the two
+     * agree; the seam is here for when it does not (the issue's other half).
+     */
+    private readonly mintEventId: UlidMint = createUlid();
     private readonly applied = new Set<string>();
     private migrationPromise?: Promise<boolean>;
     /** Latch: the applied count is reported to the directory once per DO instance. */
@@ -2715,6 +2724,7 @@ export function defineScopeDO(
       const searchPlans = this.searchPlans;
       const listPlans = this.listPlans;
       const sql = this.sql;
+      const mintEventId = this.mintEventId;
       /**
        * The operation's instant (#812), read once. The DO reads the wall clock —
        * there is no options bag to inject through, since workerd constructs it —
@@ -2817,7 +2827,11 @@ export function defineScopeDO(
           const parsed = domainEventInput.parse(event);
           const full = domainEvent.parse({
             ...parsed,
-            id: eventId.parse(ulid()),
+            // #956: from the operation's instant, not a second reading of the clock.
+            // `ORDER BY id` is how the outbox and every timeline page, so an id whose
+            // timestamp disagreed with its own `occurredAt` sorted the log by a clock
+            // nothing else in the operation used.
+            id: eventId.parse(mintEventId(Date.parse(at))),
             occurredAt: at,
             tenantId,
             scopeId,

@@ -291,6 +291,8 @@ import {
   idempotencyOptedOutMessage,
   replayFor,
   globalFetch,
+  createUlid,
+  type UlidMint,
   type IdempotencyRow,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -1079,6 +1081,13 @@ export class SqliteScopeHost implements ScopeHost {
   private readonly fetchImpl: FetchLike;
   private readonly clock: Clock;
   private readonly versionId: string | null;
+  /**
+   * The mint for event ids (#956). Its own monotonic floor, because the timestamp
+   * it stamps comes from `this.clock` — a scripted clock behind the wall clock
+   * would otherwise be dragged forward by the process-wide `ulid()` that every
+   * other id here still uses.
+   */
+  private readonly mintEventId: UlidMint = createUlid();
 
   constructor(options: SqliteScopeHostOptions) {
     this.secretBox = options.secretBox ?? unconfiguredSecretBox;
@@ -7895,7 +7904,11 @@ export class SqliteScopeHost implements ScopeHost {
         const input = domainEventInput.parse(event);
         const full = domainEvent.parse({
           ...input,
-          id: eventId.parse(ulid()),
+          // #956: from the operation's instant, not the wall clock. `ORDER BY id`
+          // is how the outbox and every timeline page, so an id whose timestamp
+          // disagreed with its own `occurredAt` sorted the log by a clock nothing
+          // else in the operation used.
+          id: eventId.parse(this.mintEventId(Date.parse(at))),
           occurredAt: at,
           tenantId: rt.tenantId,
           scopeId: rt.scopeId,
