@@ -1937,6 +1937,9 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 7.0.2
+      vitest:
+        specifier: 'catalog:'
+        version: 3.2.7(@types/debug@4.1.13)(@types/node@24.13.3)(tsx@4.23.1)(yaml@2.9.0)
 
   packages/psl:
     devDependencies:
