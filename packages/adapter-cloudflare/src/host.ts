@@ -1679,11 +1679,6 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId).exportDump();
   }
 
-  /**
-   * The PITR bookmarks one scope recorded before its migration passes (#286) — the
-   * rewind points a backout UI offers. Behind the vertical's platform-gated
-   * `/internal/bookmarks`; the control plane is the gate and the auditor.
-   */
   /** One record's event history (#1235) on this host's own scope — the vertical-host read. */
   async entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>> {
     return this.scopeStub(scopeId).entityHistory(input);
@@ -1694,6 +1689,11 @@ export class CloudflareScopeHost implements ScopeHost {
     return this.scopeStub(scopeId).appliedMigrations();
   }
 
+  /**
+   * The PITR bookmarks one scope recorded before its migration passes (#286) — the
+   * rewind points a backout UI offers. Behind the vertical's platform-gated
+   * `/internal/bookmarks`; the control plane is the gate and the auditor.
+   */
   async migrationBookmarksLocal(
     scopeId: ScopeId,
   ): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]> {

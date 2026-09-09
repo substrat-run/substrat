@@ -1954,6 +1954,13 @@ export interface HostAdmin {
    * `limit` is clamped to the contract ceiling and `offset` pages. Rows are positional
    * arrays aligned to `columns`.
    */
+  readScopeTable(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: ReadScopeTableInput,
+  ): Promise<ScopeTablePage>;
+
   /**
    * One record's event history (#1235) on a CO-LOCATED scope — `readHistory`'s
    * answer, hoisted to the platform so a screen can render one entity's story:
@@ -1972,13 +1979,6 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: EntityHistoryInput,
   ): Promise<Page<HistoryEntry>>;
-
-  readScopeTable(
-    actor: PlatformActorId,
-    tenantId: TenantId,
-    scopeId: ScopeId,
-    input: ReadScopeTableInput,
-  ): Promise<ScopeTablePage>;
 
   /**
    * One read-only SQL statement against the scope's database — the console the two
