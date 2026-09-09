@@ -45,9 +45,11 @@ The linter and tests expect this shape. `manifest`/`migrations`/`module` are **m
 code** (the rules below bind them); `seed`/`server` are **harness** (exempt).
 
 ```
+src/entities.ts        defineEntities — WHAT EXISTS                ← module code
+src/operations.ts      defineOperations — the declared surface     ← module code
 src/manifest.ts        moduleManifest.parse({…}) + PERM consts   ← module code
 src/migrations.ts      the SqlMigration[]                         ← module code
-src/module.ts          imports both; operations + registration    ← module code
+src/module.ts          the handlers, bound to the declaration      ← module code
 src/provision.ts       MODULES, ROLES, grant shapes — node-free    ← module code
 src/seed.ts            host, tenants, demo cast, seed world        ← harness
 src/routes.ts          the HTTP route table — BOTH hosts mount it   ← harness
@@ -96,6 +98,74 @@ every install of one serving script, so `env.FOO` is the same string for every
 tenant no matter what any of them saved. Declare a setting once, in
 `src/manifest.ts` (`SHOP_ENV`) — `src/provision.ts` re-exports it as `envSpec`,
 which is what `substrat push` uploads; package.json carries no copy.
+
+## Declare what exists, then implement it
+
+A vertical declares its **entities** and its **operations** in two typed modules, and
+the compiler checks the joins between them. This is not documentation of the code —
+it is the code's other half, and the reason a whole class of mistake stops being
+something a reviewer has to catch.
+
+`src/entities.ts` says what exists. Each entry names the table, the row shape as
+`ctx.sql` returns it (snake_case included — a prettier second naming is exactly the
+second description this removes), its natural `key`, its `parents` (the permission
+walk), and which fields are `erasable`:
+
+```ts
+export const bikeShopEntities = defineEntities({
+  customer: {
+    table: 'shop_customers',
+    fields: z.object({ id: z.string(), number: z.string(), name: z.string(), … }),
+    key: ['number'],
+    erasable: ['name', 'phone'],
+  },
+  bike: { table: 'shop_bikes', fields: …, parents: ['customer'] },
+});
+```
+
+Not every table is an entity. An entity is a thing the platform can point AT —
+attachments hang off one, grants narrow to one, events are about one. `shop_price_list`
+is keyed by article, has no id and is never the subject of an `EntityRef`, so it is
+deliberately absent and its shape lives beside the operations that return it.
+
+`src/operations.ts` says what each operation accepts, answers with, and is gated by —
+against those entities and a declared list of permission keys:
+
+```ts
+export const bikeShopOperations = defineOperations(bikeShopEntities, SHOP_PERMISSIONS)({
+  'shop/create-customer': {
+    summary: 'Register a workshop customer',
+    permission: 'customer:manage',
+    input: z.object({ number: z.string().min(1), name: z.string().min(1) }),
+    output: bikeShopEntities.customer.fields,   // from the registry, not restated
+  },
+});
+```
+
+Then `src/module.ts` holds only the **bodies**, bound to that declaration:
+
+```ts
+} satisfies OperationImpl<typeof bikeShopOperations, OperationContext>;
+```
+
+Four things are now compile errors at the exact method: a handler whose input
+disagrees with the declared `input`, one whose return disagrees with `output`, an
+operation declared and not implemented, and one implemented and not declared. The
+same object feeds `operationInputs: operationInputsOf(bikeShopOperations)`, so the
+schemas the host parses with are the ones the declaration states — they cannot drift,
+because there is only one of them.
+
+**A list read must declare `paged`.** `defineOperations` refuses a bare-array `output`
+that does not, and it refuses it at module load — so it fires in every build, every
+test and every dev server rather than in a lint tool that has to find you. A list
+endpoint returning the whole table is a bug with a delay on it: it passes review, it
+passes tests, and then one tenant's table gets large. Declare the **entry** as
+`output` and let `paged` wrap it; the handler returns `Page<Entry>`, which `pageOf`
+builds. Either the kernel composes the walk (`paged: { over: { entity: 'customer',
+sortable: ['number'] } }`) or, where it cannot — a kernel table, a per-row permission
+walk, a table the registry does not carry — the handler composes its own and names the
+field the cursor walks (`paged: { sortKey: 'article' }`). Keyset, never offset: on
+live data an offset shifts between requests, so pages drop and duplicate rows.
 
 ## The rules (non-negotiable)
 

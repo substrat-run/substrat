@@ -1,20 +1,24 @@
 import {
   addDecimal,
   compareDecimal,
+  listLimitOf,
   moneyOf,
   mulMoney,
   operationInputsOf,
+  pageOf,
   pageVisible,
   z,
-  type Money,
-  type Page,
+  type HandlerInput,
+  type HandlerOutput,
+  type OperationImpl,
 } from '@substrat-run/contracts';
 import {
   assertAllowed,
+  readTimeline,
   ulid,
   type ModuleRegistration,
+  type OperationContext,
   type OperationHandler,
-  type PageParams,
 } from '@substrat-run/kernel';
 import {
   closeWorkOrder,
@@ -24,13 +28,14 @@ import {
   listOrders,
   PERM as WO,
   type BillableLine,
-  type WorkOrder,
 } from '@substrat-run/engine-workorder';
+import { bikeShopEntities } from './entities.js';
+import { bikeShopOperations, priceRow } from './operations.js';
 import { bikeShopManifest, SHOP_PERM } from './manifest.js';
 import { bikeShopMigrations } from './migrations.js';
 
 // ============================================================================
-// The bike-shop operations. Each is either:
+// The bike-shop HANDLERS. Each is either:
 //   - a thin custodian of the vertical's own tables (customers, bikes, prices),
 //     OR
 //   - a COMPOSITION that wraps an engine's in-scope function inside the same
@@ -38,48 +43,33 @@ import { bikeShopMigrations } from './migrations.js';
 //
 // Every operation's FIRST line is the permission check. Data access is
 // `ctx.sql` only. No `fetch`, no `node:*`, no other engine's tables.
+//
+// WHAT EACH OPERATION IS is declared in `src/operations.ts`, against the
+// entities in `src/entities.ts` — this file holds only the bodies. The binding
+// at the bottom is `satisfies OperationImpl<…>`, so a handler that disagrees
+// with its declaration is a compile error at the exact method.
 // ============================================================================
 
-export interface CustomerRow {
-  id: string;
-  number: string;
-  name: string;
-  phone: string | null;
-  created_at: string;
-}
+/** The row shapes, read off the registry so there is one description of each. */
+export type CustomerRow = z.infer<typeof bikeShopEntities.customer.fields>;
+export type BikeRow = z.infer<typeof bikeShopEntities.bike.fields>;
+export type PriceRow = z.infer<typeof priceRow>;
 
-export interface BikeRow {
-  id: string;
-  customer_id: string;
-  label: string;
-  frame_no: string | null;
-  created_at: string;
-}
+/**
+ * One handler's signature, derived from its declaration.
+ *
+ * `HandlerInput` resolves what the host will hand in — the declared `input`,
+ * plus the page trio when the operation is `paged` — and `HandlerOutput`
+ * resolves what it must answer with, wrapping the declared entry in a `Page`
+ * for a paged read. Neither is restated here, so a change to `operations.ts`
+ * lands on the handler as a type error rather than as a silent disagreement.
+ */
+type Op<K extends keyof typeof bikeShopOperations> = OperationHandler<
+  HandlerInput<(typeof bikeShopOperations)[K]>,
+  HandlerOutput<(typeof bikeShopOperations)[K]>
+>;
 
-export interface PriceRow {
-  article: string;
-  description: string;
-  unit: string;
-  price_amount: string;
-  currency: string;
-  min_qty: string | null;
-  internal: number;
-}
-
-// Every operation that takes an input declares it as a Zod object here, and the
-// handler's input type is `z.infer` of that object — one description of the
-// shape, so the schema and the type cannot drift apart. `bikeShopOperations` at
-// the bottom of this file hands the whole set to the host.
-const createCustomerInput = z.object({
-  number: z.string().min(1),
-  name: z.string().min(1),
-  phone: z.string().min(1).optional(),
-});
-
-const createCustomerOp: OperationHandler<z.infer<typeof createCustomerInput>, CustomerRow> = async (
-  ctx,
-  input,
-) => {
+const createCustomerOp: Op<'shop/create-customer'> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.customerManage));
   const id = ulid();
   ctx.sql.exec(
@@ -89,29 +79,34 @@ const createCustomerOp: OperationHandler<z.infer<typeof createCustomerInput>, Cu
   return ctx.sql.query<CustomerRow>('SELECT * FROM shop_customers WHERE id = ?', [id])[0]!;
 };
 
-const listCustomersOp: OperationHandler<undefined, (CustomerRow & { bikes: BikeRow[] })[]> = async (
-  ctx,
-) => {
+/**
+ * The customer list, hydrated with each customer's bikes.
+ *
+ * Handler-composed keyset paging over `number`, the customer's natural key —
+ * keyset and never offset, because on live data an offset shifts between
+ * requests and pages then drop and duplicate rows. The page also BOUNDS the
+ * hydration: one bikes query per customer ON THE PAGE, where the unpaged read
+ * this replaced ran one per customer in the whole scope.
+ */
+const listCustomersOp: Op<'shop/list-customers'> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.customerManage));
-  const customers = ctx.sql.query<CustomerRow>('SELECT * FROM shop_customers ORDER BY number');
-  return customers.map((c) => ({
+  const limit = listLimitOf(input?.limit);
+  const customers = input?.cursor
+    ? ctx.sql.query<CustomerRow>(
+        'SELECT * FROM shop_customers WHERE number > ? ORDER BY number LIMIT ?',
+        [input.cursor, limit],
+      )
+    : ctx.sql.query<CustomerRow>('SELECT * FROM shop_customers ORDER BY number LIMIT ?', [limit]);
+  const hydrated = customers.map((c) => ({
     ...c,
     bikes: ctx.sql.query<BikeRow>('SELECT * FROM shop_bikes WHERE customer_id = ? ORDER BY label', [
       c.id,
     ]),
   }));
+  return pageOf(hydrated, limit, (row) => row.number);
 };
 
-const registerBikeInput = z.object({
-  customerId: z.string().min(1),
-  label: z.string().min(1),
-  frameNo: z.string().min(1).optional(),
-});
-
-const registerBikeOp: OperationHandler<z.infer<typeof registerBikeInput>, BikeRow> = async (
-  ctx,
-  input,
-) => {
+const registerBikeOp: Op<'shop/register-bike'> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.bikeManage));
   const customer = ctx.sql.query<CustomerRow>('SELECT * FROM shop_customers WHERE id = ?', [
     input.customerId,
@@ -128,20 +123,7 @@ const registerBikeOp: OperationHandler<z.infer<typeof registerBikeInput>, BikeRo
   return ctx.sql.query<BikeRow>('SELECT * FROM shop_bikes WHERE id = ?', [id])[0]!;
 };
 
-const upsertPriceInput = z.object({
-  article: z.string().min(1),
-  description: z.string().min(1),
-  unit: z.string().min(1),
-  priceAmount: z.string().min(1),
-  currency: z.string().min(1).optional(),
-  minQty: z.string().min(1).optional(),
-  internal: z.boolean().optional(),
-});
-
-const upsertPriceOp: OperationHandler<z.infer<typeof upsertPriceInput>, PriceRow> = async (
-  ctx,
-  input,
-) => {
+const upsertPriceOp: Op<'shop/upsert-price'> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.customerManage));
   ctx.sql.exec(
     `INSERT OR REPLACE INTO shop_price_list
@@ -162,9 +144,21 @@ const upsertPriceOp: OperationHandler<z.infer<typeof upsertPriceInput>, PriceRow
   ])[0]!;
 };
 
-const priceListOp: OperationHandler<undefined, PriceRow[]> = async (ctx) => {
+/**
+ * The price list, paged. Handler-composed (see the declaration): a value-keyed
+ * table the entity registry deliberately does not carry, so there is no indexed
+ * entity for the kernel to walk. Keyset over `article`, its natural key.
+ */
+const priceListOp: Op<'shop/price-list'> = async (ctx, input) => {
   assertAllowed(await ctx.check(SHOP_PERM.customerManage));
-  return ctx.sql.query<PriceRow>('SELECT * FROM shop_price_list ORDER BY article');
+  const limit = listLimitOf(input?.limit);
+  const rows = input?.cursor
+    ? ctx.sql.query<PriceRow>(
+        'SELECT * FROM shop_price_list WHERE article > ? ORDER BY article LIMIT ?',
+        [input.cursor, limit],
+      )
+    : ctx.sql.query<PriceRow>('SELECT * FROM shop_price_list ORDER BY article LIMIT ?', [limit]);
+  return pageOf(rows, limit, (row) => row.article);
 };
 
 /**
@@ -172,17 +166,7 @@ const priceListOp: OperationHandler<undefined, PriceRow[]> = async (ctx) => {
  * The vertical resolves its own vocabulary (a bike, its owner) into the engine's
  * `facility`/`customer` refs; the engine owns the number, the state, the event.
  */
-const createRepairInput = z.object({
-  bikeId: z.string().min(1),
-  kind: z.string().min(1),
-  title: z.string().min(1),
-  description: z.string().optional(),
-});
-
-const createRepairOp: OperationHandler<z.infer<typeof createRepairInput>, WorkOrder> = async (
-  ctx,
-  input,
-) => {
+const createRepairOp: Op<'shop/create-repair'> = async (ctx, input) => {
   assertAllowed(await ctx.check(WO.create));
   const bike = ctx.sql.query<BikeRow>('SELECT * FROM shop_bikes WHERE id = ?', [input.bikeId])[0];
   if (!bike) throw new Error(`bike not found: ${input.bikeId}`);
@@ -204,12 +188,7 @@ const createRepairOp: OperationHandler<z.infer<typeof createRepairInput>, WorkOr
  * The engine's `workorder.completed` event carries these lines, and the
  * invoicing engine consumes it — no import between the two.
  */
-const repairIdInput = z.object({ orderId: z.string().min(1) });
-
-const completeRepairOp: OperationHandler<
-  z.infer<typeof repairIdInput>,
-  { order: WorkOrder; billable: BillableLine[]; total: Money }
-> = async (ctx, input) => {
+const completeRepairOp: Op<'shop/complete-repair'> = async (ctx, input) => {
   assertAllowed(await ctx.check(WO.complete));
   const reported = getReportedLines(ctx, input.orderId);
   const prices = new Map<string, PriceRow>(
@@ -264,10 +243,7 @@ const completeRepairOp: OperationHandler<
  * engine's in-scope `closeWorkOrder`; the vertical owns the vocabulary
  * ("pickup"), the engine owns the transition.
  */
-const closeRepairOp: OperationHandler<z.infer<typeof repairIdInput>, WorkOrder> = async (
-  ctx,
-  input,
-) => {
+const closeRepairOp: Op<'shop/close-repair'> = async (ctx, input) => {
   assertAllowed(await ctx.check(WO.close));
   return closeWorkOrder(ctx, { orderId: input.orderId });
 };
@@ -286,10 +262,7 @@ const closeRepairOp: OperationHandler<z.infer<typeof repairIdInput>, WorkOrder> 
  * on the next request, and a page the walk rejects entirely would never advance at
  * all. So a SHORT page does not end this walk; only a null `nextCursor` does.
  */
-const portalRepairsOp: OperationHandler<PageParams | undefined, Page<WorkOrder>> = async (
-  ctx,
-  input,
-) =>
+const portalRepairsOp: Op<'shop/portal-repairs'> = async (ctx, input) =>
   pageVisible(
     (p) => listOrders(ctx, { ...input, ...p }),
     input,
@@ -297,70 +270,56 @@ const portalRepairsOp: OperationHandler<PageParams | undefined, Page<WorkOrder>>
       (await ctx.check(WO.read, { entityType: 'workorder', entityId: order.id })).allowed,
   );
 
-const timelineInput = z.object({
-  entityType: z.string().min(1),
-  entityId: z.string().min(1),
-});
-
 /**
  * An entity's event timeline, read straight off the spine (a read of `_substrat_*`
  * for a projection is allowed; writing it is not). Gated by a per-entity
  * `workorder:read` check, so it obeys the same walk as the portal.
  *
- * No `.parse` in here: the host already parsed `entity` against
- * `timelineInput` before this line ran, on whichever path the call came in by.
+ * `readTimeline` rather than a `SELECT` of our own: it takes an `EntityRef`,
+ * pages like a list read, and DECODES the envelope — `actor` comes back as the
+ * union the spine recorded, where `SELECT actor` returns a string that looks
+ * usable and is not. It checks no permission; we do, above, as always.
+ *
+ * No `.parse` in here: the host already parsed `entity` against `timelineInput`
+ * before this line ran, on whichever path the call came in by.
  */
-const timelineOp: OperationHandler<
-  z.infer<typeof timelineInput>,
-  { type: string; occurred_at: string; actor: string }[]
-> = async (ctx, entity) => {
+const timelineOp: Op<'shop/timeline'> = async (ctx, entity) => {
   assertAllowed(await ctx.check(WO.read, entity));
-  // Append order is authoritative — rowid, not ULID (ids minted in the same
-  // millisecond are not mutually ordered).
-  return ctx.sql.query(
-    `SELECT type, occurred_at, actor FROM _substrat_outbox
-     WHERE entity_type = ? AND entity_id = ? ORDER BY rowid`,
-    [entity.entityType, entity.entityId],
-  );
+  return readTimeline(ctx, { entityType: entity.entityType, entityId: entity.entityId }, entity);
 };
 
 /**
- * What each operation accepts. A complete census of the ten below: an entry with
- * no `input` takes nothing, and `paged: true` is how the portal read says the
- * platform supplies the page trio (`limit`/`cursor`/`order`/`sort`) — declaring
- * those four by hand is how the two descriptions of one page come to disagree.
+ * The handlers, bound to `bikeShopOperations`. `satisfies` is the drift
+ * detector: change a declared input or return and tsc names the method whose
+ * handler no longer agrees. An operation declared but not implemented, or
+ * implemented but not declared, is an error here too.
  */
-const bikeShopOperations = {
-  'shop/create-customer': { input: createCustomerInput },
-  'shop/list-customers': {},
-  'shop/register-bike': { input: registerBikeInput },
-  'shop/upsert-price': { input: upsertPriceInput },
-  'shop/price-list': {},
-  'shop/create-repair': { input: createRepairInput },
-  'shop/complete-repair': { input: repairIdInput },
-  'shop/close-repair': { input: repairIdInput },
-  'shop/portal-repairs': { paged: true },
-  'shop/timeline': { input: timelineInput },
-};
+const declaredOperations = {
+  'shop/create-customer': createCustomerOp,
+  'shop/list-customers': listCustomersOp,
+  'shop/register-bike': registerBikeOp,
+  'shop/upsert-price': upsertPriceOp,
+  'shop/price-list': priceListOp,
+  'shop/create-repair': createRepairOp,
+  'shop/complete-repair': completeRepairOp,
+  'shop/close-repair': closeRepairOp,
+  'shop/portal-repairs': portalRepairsOp,
+  'shop/timeline': timelineOp,
+} satisfies OperationImpl<typeof bikeShopOperations, OperationContext>;
 
 export const bikeShopModule: ModuleRegistration = {
   manifest: bikeShopManifest,
   migrations: bikeShopMigrations,
-  // The host parses every invocation against these before the guards, the
-  // permission check and the handler — so "parse, don't trust" holds on every
-  // path in (HTTP, test, seed, schedule) rather than in the handlers that
-  // remembered to do it themselves.
+  // The host parses every invocation against the DECLARED input schemas before
+  // the guards, the permission check and the handler — so "parse, don't trust"
+  // holds on every path in (HTTP, test, seed, schedule) rather than in the
+  // handlers that remembered to do it themselves.
   operationInputs: operationInputsOf(bikeShopOperations),
   operations: {
-    'shop/create-customer': createCustomerOp as never,
-    'shop/list-customers': listCustomersOp as never,
-    'shop/register-bike': registerBikeOp as never,
-    'shop/upsert-price': upsertPriceOp as never,
-    'shop/price-list': priceListOp as never,
-    'shop/create-repair': createRepairOp as never,
-    'shop/complete-repair': completeRepairOp as never,
-    'shop/close-repair': closeRepairOp as never,
-    'shop/portal-repairs': portalRepairsOp as never,
-    'shop/timeline': timelineOp as never,
+    // All ten bound to the declaration: input and return are checked against
+    // `bikeShopOperations` at the exact method. The `as never` casts this map
+    // used to carry were never necessary — `OperationHandler<never, unknown>`
+    // accepts any handler by contravariance — they simply threw the types away.
+    ...(declaredOperations as Record<string, OperationHandler<never, unknown>>),
   },
 };

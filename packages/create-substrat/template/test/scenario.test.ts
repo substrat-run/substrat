@@ -3,7 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { addMoney, moneyOf, mulMoney, type Page } from '@substrat-run/contracts';
+import {
+  addMoney,
+  moneyOf,
+  mulMoney,
+  type Page,
+  type TimelineEntry,
+} from '@substrat-run/contracts';
 import type { ScopeStub } from '@substrat-run/kernel';
 import type { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import type { WorkOrder, BillableLine } from '@substrat-run/engine-workorder';
@@ -63,11 +69,14 @@ describe('bike-shop scenario', () => {
     expect(repair.facility).toEqual({ entityType: 'bike', entityId: w.crescentId });
     expect(repair.customer.entityId).toBe(w.lisbethId);
 
-    const timeline = await greta.invoke<{ type: string }[]>('shop/timeline', {
+    // A page, not a bare array: every list read on this surface is declared
+    // `paged`, so the envelope is `{ entries, nextCursor }` and a caller with
+    // more rows than one page walks the cursor rather than assuming it saw all.
+    const timeline = await greta.invoke<Page<TimelineEntry>>('shop/timeline', {
       entityType: 'workorder',
       entityId: repairId,
     });
-    expect(timeline.map((e) => e.type)).toContain('workorder.created');
+    expect(timeline.entries.map((e) => e.type)).toContain('workorder.created');
   });
 
   it('3. assign → start → report time and parts', async () => {
@@ -279,5 +288,50 @@ describe('bike-shop scenario', () => {
     await expect(
       rutger.invoke('shop/create-customer', { number: '9001', name: 'x' }),
     ).rejects.toThrow(/permission denied/);
+  });
+
+  // Every list read on this surface is DECLARED `paged` in src/operations.ts, and
+  // `defineOperations` refuses a bare-array output that is not — so an unbounded
+  // list read cannot be added here without the declaration going red.
+  //
+  // Asserting the envelope alone would not be worth much: the interesting half is
+  // that the keyset cursor actually WALKS. A cursor that returns the same page
+  // forever, or skips a row at the page boundary, produces a perfectly
+  // well-shaped `Page` every time — so the walk is driven at `limit: 1`, where
+  // every boundary is a boundary, and checked against the whole set.
+  it('11. the list reads answer with a page, and the cursor walks every row', async () => {
+    const prices = await greta.invoke<Page<{ article: string }>>('shop/price-list');
+    expect(prices.entries.map((p) => p.article)).toEqual([
+      'chain-9s',
+      'labor',
+      'shop-supplies',
+      'tube-28',
+    ]);
+
+    const walked: string[] = [];
+    let cursor: string | null = null;
+    // Bounded so a non-advancing cursor fails the assertion below rather than
+    // hanging the suite — a test that hangs reports nothing.
+    for (let hop = 0; hop < 10; hop += 1) {
+      const page: Page<{ article: string }> = await greta.invoke('shop/price-list', {
+        limit: 1,
+        ...(cursor === null ? {} : { cursor }),
+      });
+      walked.push(...page.entries.map((p) => p.article));
+      cursor = page.nextCursor;
+      if (cursor === null) break;
+    }
+    expect(cursor).toBeNull();
+    expect(walked).toEqual(['chain-9s', 'labor', 'shop-supplies', 'tube-28']);
+
+    // The customer list pages the same way, and its entries still carry the
+    // hydrated bikes — the page bounds that hydration rather than removing it.
+    const customers = await greta.invoke<Page<{ number: string; bikes: { id: string }[] }>>(
+      'shop/list-customers',
+      { limit: 1 },
+    );
+    expect(customers.entries).toHaveLength(1);
+    expect(customers.nextCursor).toBe(customers.entries[0]!.number);
+    expect(Array.isArray(customers.entries[0]!.bikes)).toBe(true);
   });
 });
