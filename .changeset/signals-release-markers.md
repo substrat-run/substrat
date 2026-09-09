@@ -21,7 +21,12 @@ shape is bars plus rules; a charting dependency would be more bytes than the
 drawing). The series is zero-filled worker-side so an outage stays a gap
 rather than letting its neighbours join, and markers come from the registry
 rather than telemetry, so a push that produced no traffic still gets its line
-— the most interesting push on the chart.
+— the most interesting push on the chart. Every promotion draws its own line,
+so a version that was rolled back and put live again shows both go-lives, not
+just the later one. Where the chart cannot be drawn it says so: a plane that
+serves window totals but no time axis, or a window whose traffic exceeds what
+the analytics backend will answer in one page, gets "not available" instead of
+a flat line — a partial answer would render as an outage that never happened.
 
 And an app's schema history is finally readable: `_substrat_migrations.applied_at`
 has been written since the table shipped and selected by nobody, since every

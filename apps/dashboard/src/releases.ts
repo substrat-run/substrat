@@ -234,11 +234,18 @@ export function deriveTrafficSeries(input: {
   /** Null = the bucketed read was unavailable; the chart says so. */
   buckets: TrafficBucketInput[] | null;
   releases: ReleaseRow[];
+  /**
+   * Every prod go-live, as the channel history records them — NOT `ReleaseRow.wentLiveAt`,
+   * which keeps only the newest instant per version. Channel history is append-only and a
+   * rollback writes `v1 → v2 → v1`, so the collapsed field would lose v1's FIRST go-live
+   * and the chart would not draw the line that explains the rollback.
+   */
+  prodHistory: Array<{ versionId: string; at: string }>;
   hours: number;
   /** The window's end — the caller's clock, so the series and its markers agree. */
   now: Date;
 }): TrafficSeries {
-  const { buckets, releases, hours, now } = input;
+  const { buckets, releases, prodHistory, hours, now } = input;
   const bucketMinutes = buckets?.[0]?.bucketMinutes ?? (hours <= 6 ? 15 : 60);
   const widthMs = bucketMinutes * 60_000;
   const end = Math.floor(now.getTime() / widthMs) * widthMs;
@@ -273,9 +280,15 @@ export function deriveTrafficSeries(input: {
     if (inWindow(r.pushedAt)) {
       markers.push({ at: r.pushedAt, kind: 'pushed', version: r.version, versionId: r.versionId });
     }
-    if (r.wentLiveAt !== null && inWindow(r.wentLiveAt)) {
-      markers.push({ at: r.wentLiveAt, kind: 'went-live', version: r.version, versionId: r.versionId });
-    }
+  }
+  // Go-lives come from the raw history, one marker per promotion: a version that was
+  // rolled back and re-promoted inside the window went live TWICE, and both lines are
+  // the point of the chart. '—' is the label for a promotion whose version the
+  // registry no longer lists — the instant is still a fact worth drawing.
+  const labels = new Map(releases.map((r) => [r.versionId, r.version]));
+  for (const h of prodHistory) {
+    if (!inWindow(h.at)) continue;
+    markers.push({ at: h.at, kind: 'went-live', version: labels.get(h.versionId) ?? '—', versionId: h.versionId });
   }
   markers.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 

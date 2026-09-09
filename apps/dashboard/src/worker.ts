@@ -3452,7 +3452,7 @@ app.get('/api/deployments/:slug/traffic', async (c) => {
   // The markers need the ledger's version rows (push + go-live instants), not its
   // health joins — so the adoption/failure reads are skipped deliberately here.
   const { releases } = deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null });
-  return c.json(deriveTrafficSeries({ buckets, releases, hours, now: new Date() }));
+  return c.json(deriveTrafficSeries({ buckets, releases, prodHistory, hours, now: new Date() }));
 });
 
 /**

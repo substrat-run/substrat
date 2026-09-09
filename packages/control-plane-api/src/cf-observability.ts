@@ -53,13 +53,23 @@ const METRICS_QUERY = `
  * from the gaps between the rows it happens to receive, because an empty bucket
  * is omitted, not zero-filled (the caller zero-fills; see `bucketMinutes`).
  */
+/**
+ * The row ceiling Cloudflare's GraphQL will answer in one page. A bucketed read is
+ * scripts × buckets, so this is a real edge and not a theoretical one — and hitting it
+ * is the WORST failure the series has, because `orderBy` is ascending: the rows that get
+ * cut are the newest ones, and the caller's zero-fill then draws the missing tail as an
+ * outage. So the read batches to stay under it, and refuses outright if a batch still
+ * saturates — `available: false` is a true answer, a fabricated outage is not.
+ */
+const SERIES_ROW_LIMIT = 5000;
+
 function seriesQuery(dimension: 'datetimeFifteenMinutes' | 'datetimeHour'): string {
   return `
   query ScriptMetricsSeries($accountTag: String!, $datetimeGeq: Time!, $datetimeLeq: Time!, $scripts: [String!]) {
     viewer {
       accounts(filter: { accountTag: $accountTag }) {
         workersInvocationsAdaptive(
-          limit: 5000
+          limit: ${SERIES_ROW_LIMIT}
           filter: { datetime_geq: $datetimeGeq, datetime_leq: $datetimeLeq, scriptName_in: $scripts }
           orderBy: [${dimension}_ASC]
         ) {
@@ -134,35 +144,61 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       const dimension = bucketMinutes === 15 ? 'datetimeFifteenMinutes' : 'datetimeHour';
       const to = new Date();
       const from = new Date(to.getTime() - hours * 3_600_000);
-      const res = await authed(GRAPHQL_URL, {
-        query: seriesQuery(dimension),
-        variables: {
-          accountTag: opts.accountId,
-          datetimeGeq: from.toISOString(),
-          datetimeLeq: to.toISOString(),
-          // `null` is "every script": the GraphQL filter omits an unset list, and
-          // the fleet view legitimately wants all of them.
-          scripts: services && services.length > 0 ? services : null,
-        },
-      });
-      const json = (await res.json()) as {
-        data?: {
-          viewer?: {
-            accounts?: Array<{
-              workersInvocationsAdaptive?: Array<{
-                sum?: { requests?: number; errors?: number };
-                dimensions?: Record<string, string | undefined>;
-              }>;
-            }>;
+
+      // A script answers at most one row per bucket in the window, so the window's
+      // bucket count is the per-script row ceiling — which turns the page limit into
+      // a batch size. `null` is "every script": the GraphQL filter omits an unset
+      // list, and the fleet view legitimately wants all of them, which is also the
+      // one case that cannot be batched and so leans on the saturation check below.
+      const bucketsInWindow = Math.ceil((hours * 60) / bucketMinutes) + 1;
+      const perBatch = Math.max(1, Math.floor(SERIES_ROW_LIMIT / bucketsInWindow));
+      const wanted = services && services.length > 0 ? services : null;
+      const batches: Array<string[] | null> = [];
+      if (wanted === null) batches.push(null);
+      else for (let i = 0; i < wanted.length; i += perBatch) batches.push(wanted.slice(i, i + perBatch));
+
+      const pages = await Promise.all(
+        batches.map(async (scripts) => {
+          const res = await authed(GRAPHQL_URL, {
+            query: seriesQuery(dimension),
+            variables: {
+              accountTag: opts.accountId,
+              datetimeGeq: from.toISOString(),
+              datetimeLeq: to.toISOString(),
+              scripts,
+            },
+          });
+          const json = (await res.json()) as {
+            data?: {
+              viewer?: {
+                accounts?: Array<{
+                  workersInvocationsAdaptive?: Array<{
+                    sum?: { requests?: number; errors?: number };
+                    dimensions?: Record<string, string | undefined>;
+                  }>;
+                }>;
+              };
+            };
+            errors?: Array<{ message?: string }>;
           };
-        };
-        errors?: Array<{ message?: string }>;
-      };
-      if (!res.ok || json.errors?.length) {
-        const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
-        throw new Error(`Cloudflare analytics series query failed: ${message}`);
-      }
-      const groups = json.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [];
+          if (!res.ok || json.errors?.length) {
+            const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+            throw new Error(`Cloudflare analytics series query failed: ${message}`);
+          }
+          const rows = json.data?.viewer?.accounts?.[0]?.workersInvocationsAdaptive ?? [];
+          // At the ceiling the answer is a PREFIX, and the newest buckets are the ones
+          // missing — a silent truncation the caller would zero-fill into an outage.
+          // Refusing hands it `available: false`, which is the honest answer.
+          if (rows.length >= SERIES_ROW_LIMIT) {
+            throw new Error(
+              `Cloudflare analytics series query saturated at ${SERIES_ROW_LIMIT} rows: the answer would be a partial prefix, not a series`,
+            );
+          }
+          return rows;
+        }),
+      );
+
+      const groups = pages.flat();
       return groups.flatMap((g) => {
         const start = g.dimensions?.[dimension];
         // A row with no bucket instant cannot be placed on an axis — dropping it

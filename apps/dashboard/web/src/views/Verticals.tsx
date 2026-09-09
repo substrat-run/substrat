@@ -487,8 +487,14 @@ function PreviewsPanel({ d, busy }: { d: Deployment; busy: boolean }) {
 /**
  * The chart half of release health (#1236): 24 hours of traffic with every push
  * and go-live drawn on it, so "did this push break anything" is a shape rather
- * than a table read. Renders nothing when the plane cannot bucket — a flat line
- * would read as silence, and unavailable is not quiet.
+ * than a table read.
+ *
+ * `available: false` is SAID, not swallowed. A plane can serve the window
+ * aggregates the ledger above reads and have no time dimension at all, and the
+ * whole point of the flag is that "I could not look" and "nobody called" are
+ * different answers — collapsing both to a missing chart re-introduces exactly
+ * the misreading. A failed fetch is the one silent case: an older worker has no
+ * route to answer, which costs the chart and should not annotate the panel.
  */
 function TrafficPanel({ slug }: { slug: string }) {
   const [series, setSeries] = useState<TrafficSeries | null>(DEV_MOCK ? MOCK_TRAFFIC : null);
@@ -506,8 +512,17 @@ function TrafficPanel({ slug }: { slug: string }) {
     };
   }, [slug]);
 
-  if (!series || !series.available || series.buckets.length === 0) return null;
-  return <TrafficChart buckets={series.buckets} markers={series.markers} />;
+  if (!series) return null;
+  if (!series.available) {
+    return (
+      <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+        Traffic over time is not available on this plane — the figures above are window totals, and no
+        chart is drawn rather than one that would read as silence.
+      </p>
+    );
+  }
+  if (series.buckets.length === 0) return null;
+  return <TrafficChart buckets={series.buckets} markers={series.markers} bucketMinutes={series.bucketMinutes} />;
 }
 
 /**

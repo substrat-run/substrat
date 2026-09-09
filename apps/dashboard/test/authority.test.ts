@@ -527,6 +527,75 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(unowned.calls.some((u) => u.includes('/observability/metrics'))).toBe(false);
   });
 
+  // The bucketed twin (#1236). Same tenant boundary as the aggregate read above, and
+  // it needs its own cases because this one pushes the owned service names DOWN to the
+  // staff-wide plane as the filter — so "which names left this worker" is itself part
+  // of the boundary, not only which rows came back.
+  describe('observabilityMetricsSeries (#1236)', () => {
+    const twoOwned = {
+      '/service-refs': {
+        entries: [
+          ...registry['/service-refs'].entries,
+          {
+            service: 'acme-portal-p1',
+            role: 'archive',
+            stamp: { vertical: 'acme/portal', version: 'p1' },
+            versionLabel: '1.2.0',
+          },
+        ],
+        verticalsTruncated: false,
+      },
+    };
+
+    it('sends ONLY owned service names, and drops an unowned row that came back anyway', async () => {
+      const { cp, calls } = routedHarness({
+        ...twoOwned,
+        '/observability/metrics-series': [
+          { service: 'acme-helpdesk-v1', start: '2026-09-08T11:00:00Z', bucketMinutes: 60, requests: 10, errors: 1 },
+          // The serving ref, whose version the registry could not label — '—' is the
+          // UI's placeholder contract, and the row still belongs on the chart.
+          { service: 'acme-helpdesk', start: '2026-09-08T11:00:00Z', bucketMinutes: 60, requests: 4, errors: 0 },
+          // A rival's row in the staff-wide answer: the request never named it, so its
+          // presence is the plane misbehaving — and the filter on the way back is what
+          // keeps it off a tenant's chart.
+          { service: 'rival-crm-v9', start: '2026-09-08T11:00:00Z', bucketMinutes: 60, requests: 99, errors: 9 },
+        ],
+      });
+      const rows = await cp.observabilityMetricsSeries(24, 'acme/helpdesk');
+      expect(rows).toEqual([
+        { versionId: 'v1', version: '0.1.0', start: '2026-09-08T11:00:00Z', bucketMinutes: 60, requests: 10, errors: 1 },
+        { versionId: 'v0', version: '—', start: '2026-09-08T11:00:00Z', bucketMinutes: 60, requests: 4, errors: 0 },
+      ]);
+      const seriesCall = calls.find((u) => u.includes('/observability/metrics-series'))!;
+      expect(seriesCall).toContain('hours=24');
+      expect(seriesCall).toContain('service=acme-helpdesk-v1');
+      expect(seriesCall).toContain('service=acme-helpdesk');
+      // The other OWNED vertical is out of scope for this chart, and a rival's name
+      // never reaches a staff-wide route at all.
+      expect(seriesCall).not.toContain('acme-portal');
+      expect(calls.some((u) => u.includes('rival'))).toBe(false);
+    });
+
+    it('refuses a truncated ownership map BEFORE asking the plane for telemetry', async () => {
+      // A partial map would send a partial service filter, and the chart would draw the
+      // unresolved verticals' traffic as zero — an outage that never happened.
+      const { cp, calls } = routedHarness({
+        '/service-refs': { entries: registry['/service-refs'].entries, verticalsTruncated: true },
+        '/observability/metrics-series': [
+          { service: 'acme-helpdesk-v1', start: '2026-09-08T11:00:00Z', bucketMinutes: 60, requests: 10, errors: 1 },
+        ],
+      });
+      await expect(cp.observabilityMetricsSeries(24)).rejects.toThrow(/truncated/);
+      expect(calls.some((u) => u.includes('/observability/'))).toBe(false);
+    });
+
+    it('answers [] for a vertical this tenant does not own, WITHOUT a telemetry request', async () => {
+      const { cp, calls } = routedHarness(twoOwned);
+      expect(await cp.observabilityMetricsSeries(24, 'rival/crm')).toEqual([]);
+      expect(calls.some((u) => u.includes('/observability/'))).toBe(false);
+    });
+  });
+
   // The permission-registry read (D-39, #336) the Permissions tab consumes.
   it('versionRegistry reads one version’s declared surface at the right route', async () => {
     const reg = {

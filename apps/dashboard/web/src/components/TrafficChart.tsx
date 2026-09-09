@@ -20,10 +20,13 @@ import type { ReleaseMarker, TrafficBucket } from '../lib/api';
 export function TrafficChart({
   buckets,
   markers,
+  bucketMinutes,
   height = 96,
 }: {
   buckets: TrafficBucket[];
   markers: ReleaseMarker[];
+  /** The series' bucket width — the unit the x axis is drawn in. */
+  bucketMinutes: number;
   height?: number;
 }) {
   if (buckets.length === 0) return null;
@@ -34,9 +37,14 @@ export function TrafficChart({
   const H = 100;
   const peak = Math.max(1, ...buckets.map((b) => b.requests));
   const first = Date.parse(buckets[0]!.start);
-  const last = Date.parse(buckets[buckets.length - 1]!.start);
-  const span = Math.max(1, last - first);
-  const xOf = (iso: string): number => ((Date.parse(iso) - first) / span) * W;
+  // One bucket IS one x unit, so elapsed-over-width converts an instant straight
+  // into the axis. Scaling by the span between the first and LAST bucket's starts
+  // instead would be short by one bucket: the last bar occupies [W-1, W], so its
+  // start would land on the right edge and anything later in that bucket — the
+  // common case, since the newest bucket is the one still filling — would be drawn
+  // outside the viewBox entirely.
+  const widthMs = Math.max(1, bucketMinutes * 60_000);
+  const xOf = (iso: string): number => Math.min(W, Math.max(0, (Date.parse(iso) - first) / widthMs));
 
   const fmt = (iso: string) =>
     new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
