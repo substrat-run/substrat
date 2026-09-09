@@ -1,3 +1,4 @@
+import { env } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { saasRoutingTargetOf } from '../src/saas-routing-target.js';
 
@@ -30,6 +31,16 @@ describe('saasRoutingTargetOf', () => {
     expect(saasRoutingTargetOf({ CF_SAAS_ROUTING_TARGET: '  cname.test.substrat.run  ' })).toBe(
       'cname.test.substrat.run',
     );
+  });
+
+  it("derives, from THIS deployment's own checked-in vars, the value wrangler.jsonc documents", () => {
+    // The pool loads wrangler.jsonc, so its top-level `vars` ARE this suite's environment
+    // (the same trick `dispatch-namespace.test.ts` uses). That makes the comment beside
+    // `wrangler secret put CF_SAAS_ROUTING_TARGET` a tested fact rather than prose: the
+    // documented example and the value an unset deployment actually gets are one string,
+    // and changing either the prefix or `PLATFORM_BASE_DOMAINS` without the other is red.
+    const { PLATFORM_BASE_DOMAINS } = env as { PLATFORM_BASE_DOMAINS?: string };
+    expect(saasRoutingTargetOf({ PLATFORM_BASE_DOMAINS })).toBe('cname.substrat.run');
   });
 
   it('reads a blank secret as unset rather than surfacing an empty routing record', () => {
