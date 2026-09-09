@@ -373,6 +373,22 @@ client is asking. An unstamped session (one that predates the column, or an admi
 impersonation) is refused under any policy and admitted under none — a restriction that fails
 open is not one, and the cost is a single re-login.
 
+That stamp is a namespace, so two ids in it are reserved. `password` and `bankid` name
+sign-ins that are not an upstream, and neither is a Better Auth built-in — so nothing else
+stops an operator registering a custom OIDC provider under one of those ids, whose callback
+would then stamp its sessions the way a password sign-in is stamped and hand a whole upstream
+directory to a password-only client. The provider surface refuses the id at save time, and
+`signInMethodOfPath` refuses to read one back off a callback path, so a row that predates the
+check stamps nothing rather than the wrong thing. `supabase` is deliberately not reserved: the
+legacy-secret bridge stamps a real catalogue provider's id because those sessions are that
+upstream's.
+
+Reading a stored policy is fail-closed by halves. An **absent** key keeps its documented
+default (any upstream; the password form as well), but a key that is **present and
+unreadable** normalizes to the deny value rather than the default — a hand-written
+`"password": "false"` plainly meant to deny passwords, and reading it as the permissive
+default would enable the one method the policy exists to refuse.
+
 The refusal is `max_age=0`, and the plugin does the rest: it redirects to the login page with
 the signed query, or answers `login_required` at the redirect URI for a relying party that
 asked for `prompt=none`. Not the more obvious `prompt=login`, for two library facts — the
@@ -391,6 +407,12 @@ no refusal in the URL (this screen is where a rejected sign-in comes back to, an
 again would loop the person past the reason unread); and it fires once per mount, or React's
 double-invoked effect starts two sign-ins and abandons one half-open. BankID is "straight
 through" to its own QR screen instead — it is not a redirect.
+
+A refused upstream sign-in comes back to `/login` with the **signed query intact**, not to the
+console root: the reason then renders on the screen this client asked for, still narrowed, with
+its own button beside it to press again. The pending request survives an appended
+`error=…` because the plugin's signature names the parameters it covers, and the SPA hands back
+exactly that set — a query with the refusal still in it resumes nothing at all.
 
 The console's own sign-in has no client and is never narrowed. That is also the way back in
 when a client is pinned to an upstream that has broken.

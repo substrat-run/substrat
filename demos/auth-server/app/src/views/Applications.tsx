@@ -260,7 +260,16 @@ function ClientEditor({
    * a client nobody can sign into, and it should not be possible to write it here.
    */
   const storedPolicy = (client?.metadata?.signIn ?? null) as { providers?: unknown; password?: unknown } | null;
-  const [offered, setOffered] = useState<PublicProvider[]>([]);
+  /**
+   * The issuer's live providers — `null` until the read below answers, and that distinction is
+   * load-bearing rather than tidy. `save` writes the policy as `offered ∩ methods`, so an
+   * empty list while the read is still in flight (or after it failed) serializes
+   * `providers: []` — a valid policy the API accepts, and one that silently turns a
+   * Microsoft-and-password client into a password-only one. So the checkbox list has three
+   * states, not two, and saving a RESTRICTED policy waits for this to be one of them.
+   */
+  const [offered, setOffered] = useState<PublicProvider[] | null>(null);
+  const [offeredError, setOfferedError] = useState<string | null>(null);
   const [restrict, setRestrict] = useState(storedPolicy !== null);
   const [methods, setMethods] = useState<Set<string>>(() => {
     const chosen = new Set<string>(Array.isArray(storedPolicy?.providers) ? (storedPolicy.providers as string[]) : []);
@@ -272,16 +281,21 @@ function ClientEditor({
   });
   useEffect(() => {
     void (async () => {
-      const state = await setupState().catch(() => null);
-      if (!state) return;
-      setOffered(state.providers);
-      setMethods((current) => {
-        if (!current.has(ANY_PROVIDER)) return current;
-        const resolved = new Set(current);
-        resolved.delete(ANY_PROVIDER);
-        for (const provider of state.providers) resolved.add(provider.id);
-        return resolved;
-      });
+      try {
+        const state = await setupState();
+        setOffered(state.providers);
+        setMethods((current) => {
+          if (!current.has(ANY_PROVIDER)) return current;
+          const resolved = new Set(current);
+          resolved.delete(ANY_PROVIDER);
+          for (const provider of state.providers) resolved.add(provider.id);
+          return resolved;
+        });
+      } catch (e) {
+        // Said out loud rather than swallowed: without this list the form cannot show what
+        // the stored policy contains, let alone write a new one.
+        setOfferedError(e instanceof Error ? e.message : String(e));
+      }
     })();
   }, []);
   const toggleMethod = (id: string, on: boolean) =>
@@ -333,6 +347,15 @@ function ClientEditor({
     // default, and a stored `{providers: [...everything], password: true}` would silently stop
     // following the issuer as providers are added.
     if (restrict) {
+      // Guarded, not defaulted: `offered` is what turns the ticked boxes into a provider list,
+      // and an absent one would write "no providers" — a policy nobody chose.
+      if (!offered) {
+        return setErr(
+          offeredError
+            ? `Sign-in methods: the issuer's providers could not be read (${offeredError}), so this policy cannot be saved without changing it.`
+            : 'Sign-in methods: still loading the issuer’s providers — try again in a moment.',
+        );
+      }
       metadata.signIn = {
         providers: offered.filter((p) => methods.has(p.id)).map((p) => p.id),
         password: methods.has(PASSWORD_METHOD),
@@ -416,7 +439,7 @@ function ClientEditor({
             />
             <span>Email and password</span>
           </label>
-          {offered.map((provider) => (
+          {(offered ?? []).map((provider) => (
             <label className="toggle" key={provider.id}>
               <input
                 type="checkbox"
@@ -426,12 +449,21 @@ function ClientEditor({
               <span>{provider.label}</span>
             </label>
           ))}
-          {!offered.length && (
+          {/* Three states, because "none configured" and "not read yet" are different answers
+              and only one of them means the boxes below are the whole truth. */}
+          {offeredError ? (
+            <p className="error">
+              The issuer’s sign-in providers could not be read ({offeredError}), so this
+              application’s policy cannot be edited. Reload the page to try again.
+            </p>
+          ) : !offered ? (
+            <em className="hint">Loading the providers this issuer offers…</em>
+          ) : !offered.length ? (
             <em className="hint">
               This issuer has no upstream provider configured yet — add one under Sign-in
               providers, and it can be chosen here.
             </em>
-          )}
+          ) : null}
           <em className="hint">
             Exactly one method ticked and no password: people are sent straight to it, with no
             sign-in screen in between.
@@ -460,7 +492,7 @@ function ClientEditor({
       </label>
       {err && <p className="error">{err}</p>}
       <div className="row">
-        <button className="btn primary" disabled={busy} onClick={() => void save()}>
+        <button className="btn primary" disabled={busy || (restrict && !offered)} onClick={() => void save()}>
           {busy ? 'Saving…' : client ? 'Save changes' : 'Register'}
         </button>
         <button className="btn" onClick={onCancel}>Cancel</button>

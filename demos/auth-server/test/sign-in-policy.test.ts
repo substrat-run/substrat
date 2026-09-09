@@ -195,6 +195,19 @@ describe('the session records HOW it was established', () => {
     expect(signInMethodOfPath('/admin/impersonate-user')).toBe(null);
     expect(signInMethodOfPath(undefined)).toBe(null);
   });
+
+  it('refuses to read a stamp the callback path is not entitled to', () => {
+    // `admin-api.ts` will not register an upstream under either of these ids, but a row
+    // written before that check existed still can be — and reading its callback back as
+    // `password` would hand a whole upstream directory to a password-only client. So the
+    // read is fail-closed too: an unstamped session, refused under every policy.
+    expect(signInMethodOfPath('/callback/password')).toBe(null);
+    expect(signInMethodOfPath('/oauth2/callback/password')).toBe(null);
+    expect(signInMethodOfPath('/callback/bankid')).toBe(null);
+    // `supabase` is not in that list on purpose: `/supabase/session` stamps the id of a real
+    // catalogue provider because those sessions ARE that upstream's.
+    expect(signInMethodOfPath('/callback/supabase')).toBe('supabase');
+  });
 });
 
 describe('a restricted client refuses a session established another way', () => {
@@ -337,6 +350,29 @@ describe('reading an operator-written policy', () => {
     expect(sanitizeSignInPolicy(['microsoft'])).toBeUndefined();
     expect(sanitizeSignInPolicy({})).toBeUndefined();
     expect(sanitizeSignInPolicy({ typo: ['microsoft'] })).toBeUndefined();
+  });
+
+  it('reads a present-but-unreadable half as its DENY value, never as the default', () => {
+    // The fail-open shape: a hand-written or corrupted row whose author plainly meant to deny
+    // passwords. Reading the quoted `'false'` as the documented default would enable the one
+    // method the policy exists to refuse — so a present key that does not parse denies.
+    expect(sanitizeSignInPolicy({ providers: ['microsoft'], password: 'false' })).toEqual({
+      providers: ['microsoft'],
+      password: false,
+    });
+    // And the same the other way: `providers` present and unreadable is "no upstream", not
+    // "any upstream". `[]` rather than `null` is exactly that difference.
+    expect(sanitizeSignInPolicy({ providers: 'microsoft', password: true })).toEqual({
+      providers: [],
+      password: true,
+    });
+    expect(sanitizeSignInPolicy({ providers: ['MICROSOFT'] })).toEqual({ providers: [], password: true });
+    // Absence is still the documented default — that is what keeps every existing client's
+    // behaviour unchanged, and it is a different thing from a key that failed to parse.
+    expect(sanitizeSignInPolicy({ providers: ['microsoft'] })).toEqual({
+      providers: ['microsoft'],
+      password: true,
+    });
   });
 
   it('reads either half alone, and tells "any provider" from "no provider"', () => {

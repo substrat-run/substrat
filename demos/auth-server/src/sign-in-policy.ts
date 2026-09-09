@@ -32,10 +32,39 @@ import type { SqlExec } from './introspect.js';
  * Filtering the buttons is then what it should be: the UX half of a rule that holds anyway.
  */
 
-/** The method id a password sign-in is stamped and matched under. Never a provider id — the
- *  `identity_provider` registry cannot hold a row named this (it is not a Better Auth social
- *  provider), so the two namespaces cannot collide. */
+/** The method id a password sign-in is stamped and matched under. */
 export const PASSWORD_METHOD = 'password';
+
+/** The method id a BankID sign-in is stamped under — minted by `bankid-plugin.ts`, not by any
+ *  upstream's callback. */
+export const BANKID_METHOD = 'bankid';
+
+/**
+ * The stamps that name something OTHER than an upstream provider row, and therefore may not
+ * be worn by one.
+ *
+ * These ids are not otherwise protected, and that is the whole reason this list exists.
+ * `isReservedProviderId` keeps a generic provider off Better Auth's BUILT-IN names, but
+ * neither `password` nor `bankid` is a built-in social provider, so `GENERIC_ID_PATTERN`
+ * happily admits both — and a generic upstream registered as `password` would land on
+ * `/callback/password` and stamp its sessions with the id a password sign-in wears. A
+ * password-only policy would then admit that whole upstream directory.
+ *
+ * Held from both ends, because they answer different rows. `admin-api.ts` refuses the id at
+ * creation, which is the fix for every provider added from here on; `signInMethodOfPath`
+ * refuses to READ one back off a callback path, which is the fix for a row written before
+ * this list existed — such a session stamps `null` and is refused under any policy, the same
+ * fail-closed answer an unstamped session gets.
+ *
+ * `supabase` is deliberately NOT here: `/supabase/session` stamps the id of a real catalogue
+ * provider on purpose, because those sessions ARE that upstream's.
+ */
+export const RESERVED_METHOD_IDS: readonly string[] = [PASSWORD_METHOD, BANKID_METHOD];
+
+/** Is this id one the stamp vocabulary owns outright (`RESERVED_METHOD_IDS`)? */
+export function isReservedMethodId(id: string): boolean {
+  return RESERVED_METHOD_IDS.includes(id);
+}
 
 /**
  * A client's policy, normalized. `providers: null` is "any upstream this issuer offers" and
@@ -64,21 +93,32 @@ const storedPolicySchema = z.object({
  * Read an operator-written policy object into its normalized form, or `undefined` when the
  * client has no policy — which is what an absent key, a malformed one, and `{}` all mean.
  *
- * Per-key validation like `sanitizeTheme`, and for the same reason there: one bad value must
- * not silently discard the good ones. It differs in what a dropped key COSTS. A dropped color
- * is a wrong shade; a dropped `providers` list is a restriction that quietly stopped
- * applying — so `assertSignInPolicy` refuses an invalid one at save time and this permissive
- * read is the second line, for a row written before that or by hand.
+ * Per-key like `sanitizeTheme`, so one bad value does not discard the good ones — and then it
+ * parts company with it, because a dropped key costs something different here. A dropped
+ * colour is a wrong shade. A dropped half of a POLICY is a restriction that quietly stopped
+ * applying, so the two halves are read apart:
+ *
+ *  - **Absent** is the documented default, and keeps it: no `providers` key is "any upstream",
+ *    no `password` key is "the password form as well".
+ *  - **Present and unreadable** normalizes to the DENY value — `[]` for `providers`, `false`
+ *    for `password` — never the default. `{ providers: ['microsoft'], password: 'false' }` is
+ *    a hand-written or corrupt row whose author plainly meant to deny passwords, and reading
+ *    the quoted `'false'` as the permissive default would enable the one method the policy
+ *    was written to refuse.
+ *
+ * An object with neither key is not a policy at all, which is what `{}` and `{ typo: … }`
+ * both are. `assertSignInPolicy` is still the first line — an operator saving a typo is told
+ * so, rather than silently getting a policy that denies more than they wrote.
  */
 export function sanitizeSignInPolicy(value: unknown): SignInPolicy | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
+  if (raw.providers === undefined && raw.password === undefined) return undefined;
   const providers = storedPolicySchema.shape.providers.safeParse(raw.providers);
   const password = storedPolicySchema.shape.password.safeParse(raw.password);
-  if (!providers.success && !password.success) return undefined;
   return {
-    providers: providers.success ? [...new Set(providers.data)] : null,
-    password: password.success ? password.data : true,
+    providers: raw.providers === undefined ? null : providers.success ? [...new Set(providers.data)] : [],
+    password: raw.password === undefined ? true : password.success && password.data,
   };
 }
 
@@ -207,10 +247,15 @@ export function signInMethodOfPath(path: string | undefined): string | null {
   if (path === '/sign-in/email' || path === '/sign-up/email') return PASSWORD_METHOD;
   // BankID's session is minted in `/bankid/collect` (`bankid-plugin.ts`), the poll that sees
   // the order complete — not in `/bankid/start`, which has nobody signed in yet.
-  if (path === '/bankid/collect') return 'bankid';
+  if (path === '/bankid/collect') return BANKID_METHOD;
   // The legacy-secret bridge (`supabase-plugin.ts`). Its sessions are Supabase's, so they
   // answer to the same id the catalogue's redirect-flow Supabase provider carries.
   if (path === '/supabase/session') return 'supabase';
   const callback = /^(?:\/oauth2)?\/callback\/([a-z0-9-]+)$/.exec(path);
-  return callback?.[1] ?? null;
+  const provider = callback?.[1];
+  // A row predating `RESERVED_METHOD_IDS` could still be named `password` or `bankid`. Its
+  // callback stamps nothing rather than the stamp it collides with, and an unstamped session
+  // is refused under every policy — the same answer, for the same reason, as an impersonation.
+  if (!provider || isReservedMethodId(provider)) return null;
+  return provider;
 }

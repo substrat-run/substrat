@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
-import { assertSignInPolicy } from './sign-in-policy.js';
+import { assertSignInPolicy, isReservedMethodId } from './sign-in-policy.js';
 import {
   GENERIC_ID_PATTERN,
   LOOPBACK_HOSTS,
@@ -406,6 +406,16 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
       if (isReservedProviderId(providerId)) {
         throw new HTTPException(400, {
           message: `'${providerId}' is a provider Better Auth ships built-in — a custom provider cannot take its name`,
+        });
+      }
+      // The other namespace an id can collide with: the sign-in-method stamp a session
+      // carries (`src/sign-in-policy.ts`). `password` is not a built-in provider, so nothing
+      // above stops it — and an upstream registered under that id would land on
+      // `/callback/password` and stamp its sessions the way a password sign-in is stamped,
+      // which a password-only client policy would then admit wholesale.
+      if (isReservedMethodId(providerId)) {
+        throw new HTTPException(400, {
+          message: `'${providerId}' is how this issuer names a sign-in that is not an upstream provider — a custom provider cannot take its name`,
         });
       }
       if (!GENERIC_ID_PATTERN.test(providerId)) {
