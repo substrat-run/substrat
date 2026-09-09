@@ -14,7 +14,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { Capabilities, View } from '../App.js';
 import type { Session } from '../api.js';
 import { ApiError, api, type AgentProfile, type Contact, type Conversation, type Message, type SavedReply } from '../api.js';
-import { agentName, agents } from '../agents.js';
+import { agentName, agents, assignableStaff } from '../agents.js';
 import { contacts, isAnonymous, nameOf } from '../contacts.js';
 import { useLiveReload } from '../live.js';
 import { Avatar, EventDivider, OwnerPicker, StateBadge, Unassigned, clock } from '../ui.js';
@@ -73,7 +73,10 @@ export function ConversationView({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [who, setWho] = useState<Contact | undefined>(undefined);
-  /** The desk's staff — what the owner picker offers and what turns a ULID into a name. */
+  /**
+   * The desk's staff — what turns a ULID into a name. The owner picker is offered
+   * `assignableStaff` of it, which is the same map minus the assistant.
+   */
   const [staff, setStaff] = useState<Map<string, AgentProfile>>(new Map());
 
   const load = useCallback(async () => {
@@ -1195,7 +1198,7 @@ function Rail({
             <OwnerPicker
               compact
               value={conv.assignee}
-              staff={[...staff.values()]}
+              staff={assignableStaff(staff.values(), conv.assignee)}
               disabled={busy || conv.state === 'closed'}
               onChange={(assignee) =>
                 void act(() => api.assign({ conversationId: conv.id, assignee }))
