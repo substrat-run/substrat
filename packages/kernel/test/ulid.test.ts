@@ -37,6 +37,9 @@ describe('ulid', () => {
   });
 
   it('ulidTime refuses a string that is not a ULID', () => {
-    expect(() => ulidTime('not-a-ulid-at-all-nope!!!!')).toThrow(/not a ULID/);
+    // Right length, wrong alphabet — and a truncated id, which would otherwise
+    // decode to a plausible-looking millisecond.
+    expect(() => ulidTime('not-a-ulid-at-all-nope!!!!!')).toThrow(/not a ULID/);
+    expect(() => ulidTime(ulid().slice(0, 20))).toThrow(/not a ULID/);
   });
 });

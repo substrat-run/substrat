@@ -88,8 +88,14 @@ export function ulid(now: number = Date.now()): string {
   return processUlid(now);
 }
 
-/** The epoch-millisecond timestamp a ULID carries in its first ten characters. */
+/**
+ * The epoch-millisecond timestamp a ULID carries in its first ten characters.
+ *
+ * Refuses anything that is not 26 Crockford digits rather than decoding a prefix:
+ * a truncated id decodes to a plausible-looking number, which is worse than a throw.
+ */
 export function ulidTime(id: string): number {
+  if (id.length !== 26) throw new Error(`not a ULID: ${id}`);
   let t = 0;
   for (const ch of id.slice(0, 10)) {
     const d = B32.indexOf(ch);
