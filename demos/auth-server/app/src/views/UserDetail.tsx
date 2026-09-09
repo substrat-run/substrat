@@ -36,6 +36,10 @@ import { navigate } from '../console/router';
 export function UserDetailView({ userId, me }: { userId: string; me: string }) {
   const [user, setUser] = useState<AdminUser | null | 'missing'>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Bumped by anything that changes this person, and read by the panels that do not own the
+  // change. Setting a password creates the credential account the Sign-in methods panel is
+  // listing, so that panel has to hear about an edit made two sections below it.
+  const [changed, setChanged] = useState(0);
 
   const reload = useCallback(async () => {
     try {
@@ -46,6 +50,11 @@ export function UserDetailView({ userId, me }: { userId: string; me: string }) {
       setErr(e instanceof Error ? e.message : String(e));
     }
   }, [userId]);
+
+  const onChanged = useCallback(() => {
+    void reload();
+    setChanged((n) => n + 1);
+  }, [reload]);
 
   useEffect(() => {
     void reload();
@@ -74,14 +83,16 @@ export function UserDetailView({ userId, me }: { userId: string; me: string }) {
         ← Users
       </button>
       {err && <p className="error">{err}</p>}
+      {/* A failed read is an error state, not a pending one. Saying "Loading…" underneath the
+          error would tell an operator to keep waiting for a request that already came back. */}
       {user === null ? (
-        <p className="muted">Loading this user…</p>
+        !err && <p className="muted">Loading this user…</p>
       ) : (
         <>
-          <IdentityHeader user={user} me={me} onChanged={reload} />
-          <SignInMethodsPanel userId={userId} />
+          <IdentityHeader user={user} me={me} onChanged={onChanged} />
+          <SignInMethodsPanel userId={userId} reloadKey={changed} />
           <SessionsPanel userId={userId} />
-          <ActionsPanel user={user} me={me} onChanged={reload} />
+          <ActionsPanel user={user} me={me} onChanged={onChanged} />
         </>
       )}
     </>
@@ -109,15 +120,16 @@ function IdentityHeader({ user, me, onChanged }: { user: AdminUser; me: string; 
           {user.emailVerified ? (
             <span className="tag">verified</span>
           ) : (
-            /* Not decoration. An unverified local row is why Better Auth refuses to attach an
-               upstream provider at sign-in, so this badge is the explanation for a support
-               ticket that reads "I cannot sign in with Google". */
-            <span
-              className="tag warn"
-              title="Unverified: this person cannot join an upstream provider to this account at sign-in until the address is verified."
-            >
-              unverified
-            </span>
+            <span className="tag warn">unverified</span>
+          )}
+          {/* Not decoration, and not a `title` either: a native tooltip on a badge is
+              unreachable by keyboard and by touch, and this sentence is the answer to a support
+              ticket that reads "I cannot sign in with Google". It is the visible text. */}
+          {!user.emailVerified && (
+            <p className="muted note">
+              Until this address is verified, this person cannot join an upstream provider to
+              this account at sign-in.
+            </p>
           )}
         </dd>
         <dt>Role</dt>
@@ -170,7 +182,6 @@ function IdentityHeader({ user, me, onChanged }: { user: AdminUser; me: string; 
           >
             Mark address verified
           </button>
-          <span className="muted">Lets them add a sign-in provider to this account.</span>
         </div>
       )}
     </section>
@@ -179,10 +190,13 @@ function IdentityHeader({ user, me, onChanged }: { user: AdminUser; me: string; 
 
 /* ---- how they sign in ---- */
 
-function SignInMethodsPanel({ userId }: { userId: string }) {
+function SignInMethodsPanel({ userId, reloadKey }: { userId: string; reloadKey: number }) {
   const [methods, setMethods] = useState<AdminSignInMethod[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  // `reloadKey` is why this panel is not read-only in effect: setting a password under Actions
+  // creates the very `credential` row listed here, and without the re-read the screen would go
+  // on saying "No way to sign in" about a method it had just been used to create.
   useEffect(() => {
     let live = true;
     adminSignInMethods(userId)
@@ -191,7 +205,7 @@ function SignInMethodsPanel({ userId }: { userId: string }) {
     return () => {
       live = false;
     };
-  }, [userId]);
+  }, [userId, reloadKey]);
 
   return (
     <section className="panel">
@@ -380,10 +394,10 @@ function ActionsPanel({ user, me, onChanged }: { user: AdminUser; me: string; on
           <div className="row">
             <button
               className="btn primary"
-              disabled={busy}
+              disabled={busy || reason.trim().length === 0}
               onClick={() =>
                 act(async () => {
-                  await banUserWithReason(user.id, reason, days ? Number(days) : undefined);
+                  await banUserWithReason(user.id, reason, days.trim() ? Number(days) : undefined);
                   setBanning(false);
                   setReason('');
                   setDays('');

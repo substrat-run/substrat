@@ -141,6 +141,9 @@
 }
 .console-root .kv dt { color: var(--text-secondary); font-size: var(--text-sm); }
 .console-root .kv dd { margin: 0; overflow-wrap: anywhere; }
+/* Supporting text under a value — the "why this badge matters" sentence that used to be a
+   native `title`, which no keyboard or touch user could reach. */
+.console-root .kv dd .note { margin: var(--space-1) 0 0; font-size: var(--text-sm); max-width: 62ch; }
 @media (max-width: 560px) {
   .console-root .kv { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
   .console-root .kv dd { margin-bottom: var(--space-3); }

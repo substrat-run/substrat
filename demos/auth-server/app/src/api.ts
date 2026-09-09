@@ -246,12 +246,24 @@ export async function revokeUserSessions(userId: string): Promise<void> {
  *
  * `days` is optional and its absence is the permanent ban — the plugin reads seconds, so the
  * conversion lives here rather than in the screen.
+ *
+ * The contract is enforced HERE rather than in the form, because a helper that quietly dropped
+ * an empty reason would recreate the bare unreviewable ban this call exists to replace — and
+ * the next caller would recreate it again. A blank reason and a zero, negative or fractional
+ * expiry are refused before the request is made.
  */
 export async function banUserWithReason(userId: string, reason: string, days?: number): Promise<void> {
+  const why = reason.trim();
+  if (!why) {
+    throw new Error('A ban needs a reason: it is what this person is told at sign-in, and what makes the ban reviewable later.');
+  }
+  if (days !== undefined && !(Number.isInteger(days) && days > 0)) {
+    throw new Error('An expiry is a whole number of days greater than zero — leave it empty for a ban with no end date.');
+  }
   const { error } = await authClient.admin.banUser({
     userId,
-    ...(reason ? { banReason: reason } : {}),
-    ...(days ? { banExpiresIn: days * 24 * 60 * 60 } : {}),
+    banReason: why,
+    ...(days === undefined ? {} : { banExpiresIn: days * 24 * 60 * 60 }),
   });
   if (error) throw new Error(error.message ?? 'could not ban that user');
 }

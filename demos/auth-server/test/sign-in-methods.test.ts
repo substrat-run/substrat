@@ -16,9 +16,13 @@ import type { SessionSubject } from '../src/do-contract.js';
  * Better Auth's `list-accounts` answers only for the session making the call, so this is ours,
  * and what has to be proven about it is not that it returns rows. It is that the row it
  * returns is missing four columns — the bcrypt hash and the upstream's three tokens — because
- * the table it reads holds all of them and a `SELECT *` would have shipped every one. The
- * assertion is written against the JSON an administrator's browser actually receives, so it
- * fails if a field is added to the projection later without being thought about.
+ * the table it reads holds all of them and a `SELECT *` would have shipped every one.
+ *
+ * That is proven at BOTH ends, and it takes both. The JSON an administrator's browser receives
+ * is asserted on, so a field added to the projection later has to be thought about — but the
+ * handler maps each row to a fresh object, so that assertion alone would still pass over a
+ * `SELECT *`, which is the regression it is named for. So the SQL itself is captured and its
+ * column list pinned: the read may name these five columns and nothing else, star included.
  */
 
 const ORIGIN = 'http://localhost:8877';
@@ -27,6 +31,8 @@ const MEMBER = { email: 'member@auth.test', password: 'member-demo-pass', name: 
 
 let db: Database.Database;
 let sql: SqlExec;
+/** Every statement the handler ran, so a test can assert on the projection and not only on its output. */
+let queries: string[];
 let auth: Auth;
 let api: ReturnType<typeof createAdminApi>;
 let memberId: string;
@@ -34,6 +40,7 @@ let memberId: string;
 function sqlExecOf(database: Database.Database): SqlExec {
   return {
     exec(query: string, ...bindings: unknown[]) {
+      queries.push(query);
       const stmt = database.prepare(query);
       if (!stmt.reader) {
         stmt.run(...(bindings as []));
@@ -80,9 +87,19 @@ interface WireMethod {
 const methodsFor = async (userId: string, cookie: string): Promise<WireMethod[]> =>
   ((await (await adminCall(`/users/${userId}/sign-in-methods`, cookie)).json()) as { methods: WireMethod[] }).methods;
 
+/** The columns the `account` read actually asked SQLite for — `['*']` if somebody starred it. */
+function accountReadColumns(): string[] {
+  const read = queries.find((q) => /\bFROM\s+account\b/i.test(q));
+  expect(read, 'the handler never read `account`').toBeTruthy();
+  const projection = /SELECT\s+([\s\S]+?)\s+FROM\s+account\b/i.exec(read!);
+  expect(projection, `could not read the projection out of: ${read!}`).toBeTruthy();
+  return projection![1]!.split(',').map((c) => c.trim());
+}
+
 beforeEach(async () => {
   db = new Database(':memory:');
   for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+  queries = [];
   sql = sqlExecOf(db);
   auth = buildAuth({
     database: drizzleAdapter(drizzle(db, { schema }), { provider: 'sqlite', schema }),
@@ -120,7 +137,7 @@ describe("an administrator's read of another person's sign-in methods", () => {
     expect(password!.createdAt).toMatch(/^\d{4}-/);
 
     // The hash IS in the row this read comes from — so the test proves the projection, not
-    // the absence of the column. If it ever regressed to `SELECT *` this is what would catch it.
+    // the absence of the column.
     const stored = db.prepare('SELECT password FROM account WHERE user_id = ?').get(memberId) as {
       password: string | null;
     };
@@ -129,6 +146,17 @@ describe("an administrator's read of another person's sign-in methods", () => {
       expect(Object.keys(password!), `${secret} reached the browser`).not.toContain(secret);
     }
     expect(JSON.stringify(methods)).not.toContain(stored.password);
+  });
+
+  /**
+   * The assertion above is about the JSON, and the JSON is built field by field — so it would
+   * go on passing over a `SELECT *`, and the very regression it warns about would ship. This
+   * one is about the statement: the read asks for five named columns, and a star, an added
+   * `password`, or an added token column is a failure here before it is ever a leak there.
+   */
+  it('asks SQLite for five named columns, so a `SELECT *` fails rather than ships', async () => {
+    await methodsFor(memberId, await signInAs(ADMIN));
+    expect(accountReadColumns()).toEqual(['id', 'provider_id', 'account_id', 'issuer', 'created_at']);
   });
 
   it('shows an upstream account by the subject the provider knows them by', async () => {
