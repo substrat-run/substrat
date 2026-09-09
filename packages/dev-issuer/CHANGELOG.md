@@ -1,5 +1,12 @@
 # @substrat-run/dev-issuer
 
+## 0.1.21
+
+### Patch Changes
+
+- @substrat-run/contracts@0.106.0
+- @substrat-run/vertical-auth@0.12.9
+
 ## 0.1.20
 
 ### Patch Changes

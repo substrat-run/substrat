@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/connector-planima",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Substrat connector: Planima planned facility maintenance (Swedish). Reads a maintenance plan — facilities, buildings, components and actions — on a poll and lands it into a scope through the vertical's own operation. Auth is a static API token, so there is no token to refresh. Host code — swept on a ScopeHost, never module code.",
   "license": "AGPL-3.0-only",
   "repository": {
