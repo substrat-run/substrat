@@ -45,3 +45,10 @@ packages/template-check/GENERATED.md
 
 # ticket0 local model credentials
 demos/*/.env
+
+# The external-vertical example resolves from the REGISTRY, not the workspace, so
+# installing it is what proves the published packages still compose. A committed
+# lockfile would pin that resolution and the example would stop testing anything —
+# so the lockfile the documented install writes is ignored rather than checked in.
+examples/external-vertical/package-lock.json
+examples/external-vertical/pnpm-lock.yaml
