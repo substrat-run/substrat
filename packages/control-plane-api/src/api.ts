@@ -3399,8 +3399,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'not found' }, 404);
     }
     const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
-    const model = json ? (storedDeployManifest.parse(JSON.parse(json)).model ?? null) : null;
-    return c.json({ model });
+    const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
+    // #1321 rides this read for the reason the freshness field rides the schedules
+    // one: the manifest is already parsed, and the field sits beside the model the
+    // caller is asking about — a sibling route would pay for a second full parse.
+    return c.json({ model: parsed?.model ?? null, outputSurface: parsed?.outputSurface ?? null });
   });
 
   // The static files (#340) one version ships: path, size, content type, content address —

@@ -18,6 +18,7 @@ import {
   type AssetEntry,
   type AssetsNeed,
   type DeclaredBinding,
+  type DeclaredOperationOutput,
   type EmittedModel,
   type EnvVarSpec,
   type PermissionRegistry,
@@ -1107,6 +1108,9 @@ export async function push(
   // entity registry pushes without one); a model.json that fails the shape is refused,
   // because shipping a manifest the control plane would bounce helps nobody.
   const model = readDeclaredModel(opts.dir);
+  // #1321: what each operation declares it returns, from the emitted openapi.json.
+  // Never refuses the push — an observability surface must not cost a release.
+  const outputSurface = readDeclaredOutputSurface(opts.dir);
 
   // Parsed with the SAME schema the control plane applies at the trust boundary
   // (contracts' deployManifest, re-parsed server-side in control-plane-api). Drift
@@ -1174,6 +1178,10 @@ export async function push(
     // The emitted entity model (#1214) — metadata like envSpec/surfaces, not in any digest:
     // it describes what the migrations built, it does not build anything.
     ...(model ? { model } : {}),
+    // #1321: the declared output surface travels with the version — `openapi.json`
+    // is built inside the vertical and never sent, so the platform has no other way
+    // to know which declared fields anything is even capable of returning.
+    ...(outputSurface ? { outputSurface } : {}),
     // #1232: the declared schedules travel with the version — the dashboard's
     // schedule-health view needs `everyMinutes`, which exists nowhere off the manifest.
     ...(schedules ? { schedules } : {}),
@@ -1348,6 +1356,64 @@ export function readDeclaredModel(dir: string): EmittedModel | undefined {
     );
   }
   return result.data;
+}
+
+/**
+ * What each operation declares it RETURNS (#1321), from the `openapi.json` beside
+ * the vertical's package.json — the artifact `pnpm lint:api` emits and gates.
+ *
+ * Read from the emitted document rather than from the operation declarations
+ * because the CLI has the file and not the module graph, and because the document
+ * is already the gated, reviewed statement of the API surface. A paged read
+ * contributes its ENTRY's fields: the envelope is the transport's, and the
+ * question is which of the vertical's own fields anything returns.
+ *
+ * `undefined` when there is no `openapi.json` (a vertical that emits none pushes
+ * exactly as before) and, unlike `model.json`, a malformed one does NOT refuse the
+ * push: this surface is an observability nicety, and failing a deploy over it
+ * would trade a working release for a dashboard panel.
+ */
+export function readDeclaredOutputSurface(dir: string): DeclaredOperationOutput[] | undefined {
+  const file = join(dir, 'openapi.json');
+  if (!existsSync(file)) return undefined;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return undefined;
+  }
+  const paths = (doc as { paths?: Record<string, Record<string, unknown>> }).paths;
+  if (!paths || typeof paths !== 'object') return undefined;
+
+  const propertiesOf = (schema: unknown): string[] => {
+    if (!schema || typeof schema !== 'object') return [];
+    const s = schema as { type?: string; properties?: Record<string, unknown>; items?: unknown };
+    // A list read declares an array; its ENTRY carries the fields worth counting.
+    if (s.type === 'array') return propertiesOf(s.items);
+    return s.properties && typeof s.properties === 'object' ? Object.keys(s.properties) : [];
+  };
+
+  const out: DeclaredOperationOutput[] = [];
+  const seen = new Set<string>();
+  for (const methods of Object.values(paths)) {
+    if (!methods || typeof methods !== 'object') continue;
+    for (const op of Object.values(methods)) {
+      const o = op as {
+        operationId?: string;
+        responses?: Record<string, { content?: Record<string, { schema?: unknown }> }>;
+      };
+      if (typeof o.operationId !== 'string' || seen.has(o.operationId)) continue;
+      // 200 and 201: a create answers 201 with the same body shape a read returns.
+      const res = o.responses?.['200'] ?? o.responses?.['201'];
+      const fields = propertiesOf(res?.content?.['application/json']?.schema);
+      // No declared properties (204, a scalar) contributes nothing rather than an
+      // empty row, so "absent" means the same thing everywhere in the surface.
+      if (fields.length === 0) continue;
+      seen.add(o.operationId);
+      out.push({ operationId: o.operationId, fields: fields.slice(0, 200) });
+    }
+  }
+  return out.length > 0 ? out.slice(0, 500) : undefined;
 }
 
 /**
