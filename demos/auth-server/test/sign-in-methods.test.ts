@@ -159,6 +159,27 @@ describe("an administrator's read of another person's sign-in methods", () => {
     expect(((await res.json()) as { methods: WireMethod[] }).methods).toEqual([]);
   });
 
+  /**
+   * Not the library's behaviour for its own sake — the shape of the call `app/src/api.ts`
+   * makes. `getUser` reads one person through `list-users` with an equality filter on `id`
+   * rather than fetching 200 and finding them in the browser, because a pasted `/users/<id>`
+   * has to answer for somebody past whatever page the list happens to show. If an upgrade
+   * changed these query parameter names the deep link would quietly start rendering "no such
+   * user" for people who exist, and nothing else in the suite would notice.
+   */
+  it('answers one user by id, which is how a deep link resolves the person it names', async () => {
+    const cookie = await signInAs(ADMIN);
+    const res = await call(
+      `/api/auth/admin/list-users?limit=1&filterField=id&filterOperator=eq&filterValue=${memberId}`,
+      { headers: { cookie, 'sec-fetch-mode': 'cors' } },
+    );
+    expect(res.status).toBe(200);
+    const { users } = (await res.json()) as { users: { id: string; email: string }[] };
+    expect(users).toHaveLength(1);
+    expect(users[0]!.id).toBe(memberId);
+    expect(users[0]!.email).toBe(MEMBER.email);
+  });
+
   it('refuses a signed-in non-administrator, including on their own id', async () => {
     const member = await signInAs(MEMBER);
     expect((await adminCall(`/users/${memberId}/sign-in-methods`, member)).status).toBe(403);

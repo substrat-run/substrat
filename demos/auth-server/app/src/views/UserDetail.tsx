@@ -134,7 +134,14 @@ function IdentityHeader({ user, me, onChanged }: { user: AdminUser; me: string; 
           <button
             className="btn tiny"
             onClick={async () => {
-              await navigator.clipboard?.writeText(user.id);
+              // Only claim it was copied if it was. `navigator.clipboard` is absent outside a
+              // secure context, and a button that says "Copied" over an empty clipboard is
+              // worse than one that does nothing visible.
+              try {
+                await navigator.clipboard.writeText(user.id);
+              } catch {
+                return;
+              }
               setCopied(true);
               setTimeout(() => setCopied(false), 1500);
             }}
