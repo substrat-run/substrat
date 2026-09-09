@@ -564,6 +564,53 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     return c.json({ deleted: clientId });
   });
 
+  /**
+   * How ANOTHER person signs in — the one read the user-detail screen needs and Better Auth's
+   * admin plugin does not answer. `list-accounts` is scoped to the caller's own session, so an
+   * operator asked "why can this person not sign in with Google" and had nowhere to look.
+   *
+   * The columns are named rather than starred, and the names are the whole security argument:
+   * `account` also holds `password` (the bcrypt hash) and the upstream's `access_token`,
+   * `refresh_token` and `id_token`. None of them may leave the server, and a `SELECT *` here
+   * would put all four on the wire the first time somebody added a field to the screen.
+   *
+   * `account_id` is included and is not a secret: it is the subject the upstream knows this
+   * person by, which is exactly what an operator comparing two Google accounts is looking at.
+   *
+   * A password row is `provider_id = 'credential'`. It is returned like any other method
+   * because the screen has to be able to say "this account has a password" — the fact, never
+   * the hash.
+   */
+  app.get('/users/:userId/sign-in-methods', (c) => {
+    const userId = c.req.param('userId');
+    const user = deps.sql.exec('SELECT id FROM user WHERE id = ?', userId).toArray();
+    // 404 rather than an empty list: "no such person" and "a person with no way in" are
+    // different answers, and the second one is a real state an operator has to be able to see.
+    if (user.length === 0) throw new HTTPException(404, { message: `unknown user '${userId}'` });
+    const rows = deps.sql
+      .exec(
+        `SELECT id, provider_id, account_id, issuer, created_at
+           FROM account WHERE user_id = ? ORDER BY created_at ASC`,
+        userId,
+      )
+      .toArray() as unknown as {
+      id: string;
+      provider_id: string;
+      account_id: string;
+      issuer: string | null;
+      created_at: number | null;
+    }[];
+    return c.json({
+      methods: rows.map((row) => ({
+        id: row.id,
+        provider: row.provider_id,
+        accountId: row.account_id,
+        issuer: row.issuer,
+        createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+      })),
+    });
+  });
+
   app.onError((err, c) => {
     const status = err instanceof HTTPException ? err.status : 400;
     return c.json({ error: err instanceof Error ? err.message : String(err) }, status);

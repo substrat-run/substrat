@@ -60,5 +60,27 @@ export const ROUTES: Route[] = [
  * where the browser already is, never where it should be sent next.
  */
 export function returnTarget(pathname: string): string {
-  return ROUTES.some((r) => r.path === pathname) ? pathname : '/';
+  if (ROUTES.some((r) => r.path === pathname)) return pathname;
+  // A user detail URL is the one path outside the table worth surviving a sign-in: it is the
+  // link an operator pastes into a support conversation, and it is exactly where the person
+  // opening it meant to land. It is still not "whatever was in the address bar" — the id has
+  // to look like an id, so nothing with a slash, a scheme or a `//` can ride this back out of
+  // a provider redirect.
+  const id = userDetailId(pathname);
+  return id ? `/users/${id}` : '/';
+}
+
+/** The section a path belongs to, so `/users/<id>` keeps Users lit in the nav. */
+export const USERS_PATH = '/users';
+
+/**
+ * The id in `/users/<id>`, or null for anything else — the whole of the console's dynamic
+ * routing. Deliberately strict about the shape rather than accepting any tail: this value is
+ * interpolated into an API path AND is an open-redirect parameter by way of `returnTarget`,
+ * so "url-safe id characters only" is the property both callers need. Better Auth mints
+ * 32-character ids from that alphabet.
+ */
+export function userDetailId(pathname: string): string | null {
+  const match = /^\/users\/([A-Za-z0-9_-]{1,64})$/.exec(pathname);
+  return match?.[1] ?? null;
 }

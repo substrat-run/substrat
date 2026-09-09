@@ -9,6 +9,7 @@ import {
   type AdminUser,
 } from '../api';
 import { Field } from '../primitives';
+import { navigate } from '../console/router';
 
 /**
  * The directory, at `/users`. It owns its own read, which the one-page dashboard could not:
@@ -70,7 +71,22 @@ function UserTable({ users, me, onChanged }: { users: AdminUser[] | null; me: st
       <tbody>
         {users.map((u) => (
           <tr key={u.id} className={busy === u.id ? 'busy' : ''}>
-            <td>{u.name}{u.id === me && <span className="tag">you</span>}</td>
+            <td>
+              {/* A real anchor, not a click handler on a cell: the row's whole point is that
+                  it is now a place, so it has to be copyable, middle-clickable and openable
+                  in a tab. The plain click stays same-document. */}
+              <a
+                href={`/users/${u.id}`}
+                onClick={(e) => {
+                  if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                  e.preventDefault();
+                  navigate(`/users/${u.id}`);
+                }}
+              >
+                {u.name || '(no name)'}
+              </a>
+              {u.id === me && <span className="tag">you</span>}
+            </td>
             <td>{u.email}{u.emailVerified ? '' : <span className="tag warn">unverified</span>}</td>
             <td>{u.role ?? 'user'}</td>
             <td>{u.banned ? <span className="tag warn">banned</span> : 'active'}</td>
