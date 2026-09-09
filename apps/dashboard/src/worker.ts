@@ -33,6 +33,7 @@ import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, 
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './releases.js';
+import { deriveFieldCoverage } from './field-coverage.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -1904,6 +1905,40 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
  * scopes — so a per-scope line on a fleet-wide axis would be a drawn claim the
  * telemetry cannot support.
  */
+/**
+ * Field coverage (#1321): which of the running version's declared fields is any
+ * operation even capable of returning, and which are also erasable — a retention
+ * argument rather than mere cleanup.
+ *
+ * Both halves ride one read: `model` names every declared field, `outputSurface`
+ * names every field an operation declares it returns, and they are stored side by
+ * side on the retained manifest. A version pushed before the surface existed
+ * answers `available: false` — never an empty surface, which would report the
+ * app's entire schema as dead.
+ */
+app.get('/api/apps/:scopeId/field-coverage', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const slug = appRow.vertical_slug;
+  const [deployment, boundVersionId] = await Promise.all([
+    verticalDeploymentFromCp(cp, slug),
+    cp.boundVersionId(scope),
+  ]);
+  const { runningId } = versionPair(deployment, boundVersionId);
+  if (runningId === null) {
+    return c.json(deriveFieldCoverage({ model: null, outputSurface: null }));
+  }
+  const { model, outputSurface } = await cp.versionModelSurface(slug, runningId);
+  return c.json(deriveFieldCoverage({ model, outputSurface }));
+});
+
 app.get('/api/apps/:scopeId/migrations', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

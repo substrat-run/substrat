@@ -404,6 +404,34 @@ export interface AppliedMigration {
  * fault — while `migrations: []` with `available: true` is a fact about the app:
  * it genuinely has none, which a module registering `migrations: []` produces.
  */
+/** One declared field and whether anything declares it as output (#1321). */
+export interface FieldCoverageRow {
+  field: string;
+  returned: boolean;
+  erasable: boolean;
+}
+
+export interface EntityCoverage {
+  entity: string;
+  table: string;
+  fields: FieldCoverageRow[];
+  neverReturned: FieldCoverageRow[];
+}
+
+/**
+ * Field coverage for the running version (#1321). `available: false` means the
+ * version predates the declared output surface — unknown, never "nothing is
+ * returned", which would report a whole schema as dead.
+ */
+export interface FieldCoverageView {
+  available: boolean;
+  entities: EntityCoverage[];
+  declared: number;
+  returned: number;
+  neverReturnedErasable: number;
+  operations: number;
+}
+
 export interface AppMigrationsView {
   available: boolean;
   migrations: AppliedMigration[];
@@ -1366,6 +1394,10 @@ export const api = {
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>
     call<AppMigrationsView>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
+
+  /** Field coverage for the running version (#1321) — declared vs returnable. */
+  appFieldCoverage: (scopeId: string) =>
+    call<FieldCoverageView>(`/apps/${encodeURIComponent(scopeId)}/field-coverage`),
 
   // -- per-scope rollout + builder previews (#509) --------------------------
   /** Pin THIS app's scope to a specific admitted version (canary / catch-up / test env),
