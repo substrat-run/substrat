@@ -17,3 +17,8 @@
   --shadow-lg:0 4px 8px rgba(0,0,0,0.4),0 12px 32px rgba(0,0,0,0.5);
   --shadow-popover:0 0 0 1px rgba(255,255,255,0.06),0 4px 8px rgba(0,0,0,0.4),0 12px 32px rgba(0,0,0,0.5);
 }
+
+/* The one animation the primitives need: a Button's in-flight spinner. Lives with the
+   motion tokens because the components carry inline styles only — a keyframe cannot be
+   expressed inline, so it has to be here, where both apps already load it. */
+@keyframes substrat-spin { to { transform: rotate(360deg); } }

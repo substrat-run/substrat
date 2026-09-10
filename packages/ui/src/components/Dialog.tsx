@@ -12,6 +12,12 @@ export interface DialogProps {
   onConfirm?: () => void;
   /** Disable the confirm button (e.g. a type-to-confirm guard not yet satisfied). */
   confirmDisabled?: boolean;
+  /**
+   * The confirm's work is in flight: the confirm spins, and cancel — along with the
+   * click-outside backdrop — stops answering, because a dialog dismissed mid-request
+   * leaves the operator with no idea whether the thing happened.
+   */
+  busy?: boolean;
   onCancel?: () => void;
   /** Optional form body. */
   children?: ReactNode;
@@ -27,6 +33,7 @@ export function Dialog({
   cancelLabel = 'Cancel',
   onConfirm,
   confirmDisabled,
+  busy,
   onCancel,
   children,
   width = 440,
@@ -35,7 +42,7 @@ export function Dialog({
 
   return (
     <div
-      onClick={onCancel}
+      onClick={busy ? undefined : onCancel}
       style={{
         position: 'fixed',
         inset: 0,
@@ -85,10 +92,15 @@ export function Dialog({
         </div>
         {children && <div style={{ padding: '16px 20px 0' }}>{children}</div>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: 20 }}>
-          <Button variant="secondary" onClick={onCancel}>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} disabled={confirmDisabled || !onConfirm}>
+          <Button
+            variant={danger ? 'danger' : 'primary'}
+            onClick={onConfirm}
+            loading={busy}
+            disabled={confirmDisabled || !onConfirm}
+          >
             {confirmLabel}
           </Button>
         </div>

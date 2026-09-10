@@ -13,6 +13,9 @@ export type { RadioGroupProps } from './RadioGroup';
 export { Switch } from './Switch';
 export type { SwitchProps } from './Switch';
 
+export { Spinner } from './Spinner';
+export type { SpinnerProps } from './Spinner';
+
 export { Card } from './Card';
 export type { CardProps } from './Card';
 export { Badge } from './Badge';
