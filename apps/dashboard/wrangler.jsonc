@@ -119,7 +119,11 @@
 			"vars": {
 				"CP_PUBLIC_URL": "https://console-test.substrat.net/api", // differs
 				"SUPPORT_DESK_ORIGIN": "https://ticket0.substrat.net", // same desk; app-test.substrat.net must be on its origin list
-				"PLATFORM_BASE_DOMAINS": "substrat.run" // same zones as prod
+				"PLATFORM_BASE_DOMAINS": "substrat.run", // same zones as prod
+				// Scope-local permissions (#1343): TEST earns this before prod does.
+				// Off in prod (absent above) — flipping it changes how a live app
+				// answers ctx.check, so it is a config decision, not a deploy.
+				"SCOPE_LOCAL_PERMISSIONS": "1" // differs
 			},
 			"send_email": [{ "name": "EMAIL" }],
 			"observability": { "enabled": true }
