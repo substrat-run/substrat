@@ -318,10 +318,15 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
 - **Time comes from `ctx.now()`** — module code has no other clock, and `new Date()` /
   `Date.now()` are boundary-lint **R6** violations (the same class of ban as `node:*`).
   It is stable for the whole invocation, so rows and the events announcing them agree
-  about when. Timestamps are stored as **ISO 8601 text**, never epoch integers. A host
-  takes a `clock`, so a scenario asserts elapsed time with `manualClock`/`frozenClock`
-  instead of sleeping or shrinking the window to zero. Code that must read the *real*
-  clock — a JWT whose `exp` a remote server judges — opts out with a reviewable
+  about when. Timestamps are stored as **ISO 8601 text**, never epoch integers. The
+  **pure** host takes a `clock` — since #1160 it is what that host judges elapsed time
+  against, not only what `ctx.now()` reads — so a scenario asserts elapsed time with
+  `manualClock`/`frozenClock` instead of sleeping or shrinking the window to zero. The
+  **Durable-Object** host takes none (`clock?: never`, #956): the reads that matter happen
+  inside the ScopeDO workerd constructs, which a host option cannot reach, so an expiry
+  *transition* is held to the contract on SQLite only — `grantExpiryContractSuite` is the
+  one suite the two adapters do not share. Code that must read the *real* clock — a JWT
+  whose `exp` a remote server judges — opts out with a reviewable
   `boundary-lint-allow R6` … `boundary-lint-end R6` block.
 - Web-standard APIs always, node-only imports never: hashing/crypto is
   `globalThis.crypto` (Web Crypto — same API in Node, Workers, browsers), encoding is

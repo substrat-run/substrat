@@ -189,8 +189,14 @@ export interface OperationContext {
    * ctx.sql.exec('INSERT INTO shop_carts (id, owner, created_at) VALUES (?, ?, ?)', [id, owner, now]);
    * ```
    *
-   * Injectable host-side (`clock` on the host options, the same seam as `fetch`),
-   * which is what a frozen-clock test and a deterministic replay both need.
+   * Injectable host-side — **on the pure host** (#956). `SqliteScopeHostOptions.clock`
+   * is the same seam as `fetch`, and it is what a frozen-clock test and a deterministic
+   * replay both need. `CloudflareScopeHostOptions` declares `clock?: never` instead: the
+   * instant is read once per invocation inside the ScopeDO, which workerd constructs and
+   * the host only reaches through a stub, so an options bag cannot get there. What that
+   * costs is written up beside that `never` and in
+   * `apps/docs/reference/contract-tests.md` — both hosts run the same expiry predicate,
+   * but only on the pure one can a test reach the transition without waiting for it.
    */
   now(): Instant;
   /** Envelope is stamped kernel-side (id, occurredAt, tenant, scope, actor); input is validated. */
@@ -790,6 +796,20 @@ export const globalFetch: FetchLike = (input, init) =>
  * clock, which is every production path; a test hands in a frozen or scripted
  * one and gets a scenario that asserts the interesting case instead of avoiding
  * it.
+ *
+ * **Which host accepts one is not uniform, and the asymmetry is deliberate**
+ * (#956). `SqliteScopeHostOptions.clock` takes this type, and #1160 made it the
+ * instant the host judges elapsed time against as well as the one `ctx.now()`
+ * reads — tuple expiry in the built-in checker, session expiry, entitlement
+ * expiry, schedule cadence, a migration's `applied_at`.
+ * `CloudflareScopeHostOptions` declares `clock?: never`, because the reads that
+ * matter are DO-local: workerd constructs the ScopeDO, the host holds a stub of
+ * it, and an option on the factory reaches the coordinator half only. A clock
+ * that moved *some* of a host's judgements while carrying the pure adapter's
+ * name would be worse than none, so the type refuses it. This interface is
+ * therefore the seam the pure host honours in full, not a guarantee every host
+ * makes; the cost — expiry transitions asserted on one adapter only — is written
+ * up beside that `never` and in `apps/docs/reference/contract-tests.md`.
  *
  * Returns an `Instant` rather than a number so there is exactly one timestamp
  * format on the way in, and the host never has to guess whether it was handed
