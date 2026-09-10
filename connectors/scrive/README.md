@@ -123,8 +123,8 @@ not avoid it: Scrive claims party #1 and overwrites that instead.
 Two consequences, both of which reached production before this was understood:
 
 - While the issuing party was the author, **the Scrive account owner signed for the sender's
-  organisation** — whoever the vertical actually named. Egeryds sent an avtal naming one person
-  and a different person was invited to sign it.
+  organisation** — whoever the vertical actually named. A live vertical sent an agreement naming
+  one person and a different person was invited to sign it.
 - The **return path could never record that signature.** `reconcileScriveSignatures` refuses to
   attribute when the provider's party name disagrees with the dispatched label — a fail-closed
   guard doing exactly its job — and the substituted name never agrees.

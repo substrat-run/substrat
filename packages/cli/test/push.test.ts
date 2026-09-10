@@ -263,8 +263,8 @@ describe('readVerticalMeta — slug identity', () => {
   });
 
   it('prefers an explicit substrat.slug pin, flagged as explicit', () => {
-    const meta = readVerticalMeta(scratch({ name: 'egeryds-crm', substrat: { slug: 'egeryds-substrat' } }));
-    expect(meta.slug).toBe('egeryds-substrat');
+    const meta = readVerticalMeta(scratch({ name: 'acme-crm', substrat: { slug: 'acme-substrat' } }));
+    expect(meta.slug).toBe('acme-substrat');
     expect(meta.slugExplicit).toBe(true);
   });
 

@@ -83,7 +83,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
 
   it('connection methods stay pinned to the tenant and never send a vertical', async () => {
     const { cp, calls } = harness(200, []);
-    await cp.listConnections({ vertical: 'egeryds-crm', provider: 'scrive' });
+    await cp.listConnections({ vertical: 'acme-crm', provider: 'scrive' });
     await cp.upsertConnection({
       scopeId: S,
       provider: 'scrive',
@@ -94,7 +94,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     });
     await cp.revokeConnection('01JZ00000000000000000000CN');
 
-    expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/connections?vertical=egeryds-crm&provider=scrive`);
+    expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}/connections?vertical=acme-crm&provider=scrive`);
     expect(calls[0]!.method).toBe('GET');
 
     const upsert = calls[1]!;
@@ -280,12 +280,12 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
   it('reads and renames the pinned tenant at its own directory row', async () => {
     const { cp, calls } = harness();
     await cp.getTenant();
-    await cp.setTenantName('Egeryds');
+    await cp.setTenantName('Acme');
     expect(calls[0]!.url).toBe(`https://cp/api/tenants/${T}`);
     expect(calls[0]!.method).toBe('GET');
     expect(calls[1]!.url).toBe(`https://cp/api/tenants/${T}`);
     expect(calls[1]!.method).toBe('PATCH');
-    expect(calls[1]!.body).toEqual({ name: 'Egeryds' });
+    expect(calls[1]!.body).toEqual({ name: 'Acme' });
 
     // Not yet mirrored (404) reads as null, not a throw.
     const missing = harness(404, { error: 'unknown tenant' });

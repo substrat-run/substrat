@@ -37,7 +37,7 @@ defineModel({
 });
 
 // --- #696: half-handled completion group ------------------------------------
-// THE EGERYDS PRODUCTION BUG. Consuming `protocol.signed` and not
+// A REAL PRODUCTION BUG (#696). Consuming `protocol.signed` and not
 // `protocol.countersigned` left every multi-party contract pending for ever,
 // because completion rides on whoever signs LAST.
 defineModel({

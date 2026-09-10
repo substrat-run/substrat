@@ -160,7 +160,7 @@ requires only a valid session.
 ## `packages/vertical-auth`
 
 **No package changes required.** `IdentityDO` (owner-claim/invites) is retained as-is;
-`oidcRpAuthProvider` already exists. The live **Egeryds / sesamy-crm** verticals depend on
+`oidcRpAuthProvider` already exists. The **live pushed verticals** depend on
 this package and are unaffected — this change only rewires the three demos.
 
 ## Local dev

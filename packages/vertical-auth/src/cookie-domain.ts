@@ -1,8 +1,8 @@
 /**
  * The shared-session cookie domain (vertical-auth-detach.md; the multi-surface case,
- * K-26): a scope whose surfaces are sibling hostnames — `crm.egeryds.se`,
- * `eka.egeryds.se`, … — shares ONE login by setting the session cookie with
- * `Domain=egeryds.se`. The signing secret is already per-tenant (DO-minted), so the
+ * K-26): a scope whose surfaces are sibling hostnames — `crm.acme.se`,
+ * `eka.acme.se`, … — shares ONE login by setting the session cookie with
+ * `Domain=acme.se`. The signing secret is already per-tenant (DO-minted), so the
  * cookie verifies on every surface; the Domain attribute is the only missing piece.
  *
  * The domain is per-scope DELIVERED config (`substrat:auth`), never code, and it is

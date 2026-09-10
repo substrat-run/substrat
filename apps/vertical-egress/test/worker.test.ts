@@ -108,7 +108,7 @@ describe('vertical egress worker', () => {
 
 describe('outbound policy (#303)', () => {
   const policy = (hosts: string[] | null): OutboundPolicy => ({
-    slug: 'egeryds-crm',
+    slug: 'acme-crm',
     tenant: '01TENANT',
     hosts,
   });
@@ -276,12 +276,12 @@ describe('outbound policy (#303)', () => {
     await worker.fetch(new Request('https://console.substrat.net/internal/email/send'), env);
 
     expect(points).toEqual([
-      { indexes: ['egeryds-crm'], blobs: ['api.scrive.com', 'allowed', '01TENANT'] },
-      { indexes: ['egeryds-crm'], blobs: ['exfil.example.com', 'refused', '01TENANT'] },
-      { indexes: ['egeryds-crm'], blobs: ['a.global.substrat.run', 'platform', '01TENANT'] },
+      { indexes: ['acme-crm'], blobs: ['api.scrive.com', 'allowed', '01TENANT'] },
+      { indexes: ['acme-crm'], blobs: ['exfil.example.com', 'refused', '01TENANT'] },
+      { indexes: ['acme-crm'], blobs: ['a.global.substrat.run', 'platform', '01TENANT'] },
       // `relay` is its own verdict, not folded into `platform` (which means the router
       // loopback) or `allowed` (which means the vertical declared it).
-      { indexes: ['egeryds-crm'], blobs: ['console.substrat.net', 'relay', '01TENANT'] },
+      { indexes: ['acme-crm'], blobs: ['console.substrat.net', 'relay', '01TENANT'] },
     ]);
   });
 

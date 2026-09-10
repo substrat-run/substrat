@@ -106,7 +106,7 @@ describe('fortnox connector — inbound sync', () => {
     });
     host.registerModule(ledgerModule);
 
-    await host.admin.createTenant(staff, { id: t, slug: 'egeryds', name: 'Egeryds' });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
     await host.admin.grantEntitlement(staff, t, 'ledger');
     await host.provisionScope(staff, {
       tenantId: t,
@@ -121,7 +121,7 @@ describe('fortnox connector — inbound sync', () => {
       tenantId: t,
       vertical: 'forecast',
       provider: 'fortnox',
-      label: 'Egeryds Fortnox',
+      label: 'Acme Fortnox',
       secret: { clientId: 'client-id', clientSecret: 'client-secret', tenantId: '123456' },
     });
     if (opts.grant !== false) {

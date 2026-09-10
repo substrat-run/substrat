@@ -39,7 +39,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
   const DECLARED = { scrive: [RECORD, ATTACH] } as const;
 
   const heal = (declared: Readonly<Record<string, readonly string[]>> = DECLARED) =>
-    reconcileConnectionGrants({ admin: host.admin, actor: staff, declared }, t, 'egeryds-crm');
+    reconcileConnectionGrants({ admin: host.admin, actor: staff, declared }, t, 'acme-crm');
 
   /** What the DIRECTORY holds live for our connection — the source the gather reads. */
   const held = async (): Promise<string[]> =>
@@ -54,8 +54,8 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
       dir,
       secretBox: webCryptoSecretBox('k1', new Uint8Array(32).fill(9)),
     });
-    await host.admin.createTenant(staff, { id: t, slug: 'egeryds', name: 'Egeryds' });
-    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'egeryds-crm' });
+    await host.admin.createTenant(staff, { id: t, slug: 'acme', name: 'Acme' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'acme-crm' });
     await host.admin.activateScope(staff, t, s);
     // The live connection as the dashboard's connect flow would have left it BEFORE the
     // connector declared `attach` — one grant, and a working credential nobody should
@@ -63,7 +63,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
     await host.admin.createConnection(staff, {
       id: conn,
       tenantId: t,
-      vertical: 'egeryds-crm',
+      vertical: 'acme-crm',
       provider: 'scrive',
       label: 'Scrive',
       secret: { accessToken: 'a-working-credential' },
@@ -90,7 +90,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
     expect(await held()).toEqual([ATTACH, RECORD]);
     // The credential is untouched: still openable, still the same bytes. This is the
     // whole point — the repair no longer runs through a rotation path.
-    const open = await host.admin.openConnection(t, 'egeryds-crm', 'scrive');
+    const open = await host.admin.openConnection(t, 'acme-crm', 'scrive');
     expect(open?.secret).toEqual({ accessToken: 'a-working-credential' });
   });
 
@@ -98,7 +98,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
     // A directory row nobody delivers is the #592 failure mode in reverse, so this
     // asserts against the SCOPE's own read-back rather than the directory's list.
     await heal();
-    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'egeryds-crm' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'acme-crm' });
 
     const inScope = (await host.connectionGrantsInScope(t, s))
       .filter((g) => g.connectionId === conn)
@@ -112,7 +112,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
     // scope, so a second install provisioned later holds it without replaying anything.
     await heal();
     const later = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t, scopeId: later, vertical: 'egeryds-crm' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: later, vertical: 'acme-crm' });
     await host.admin.activateScope(staff, t, later);
 
     const inScope = (await host.connectionGrantsInScope(t, later))
@@ -164,7 +164,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
     await host.admin.createConnection(staff, {
       id: otherProvider,
       tenantId: t,
-      vertical: 'egeryds-crm',
+      vertical: 'acme-crm',
       provider: 'fortnox',
       label: 'Fortnox',
       secret: { accessToken: 'x' },
@@ -183,7 +183,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
     await host.admin.createConnection(staff, {
       id: revoked,
       tenantId: t,
-      vertical: 'egeryds-crm',
+      vertical: 'acme-crm',
       provider: 'scrive',
       label: 'Scrive (old)',
       secret: { accessToken: 'x' },
@@ -204,7 +204,7 @@ describe('reconcileConnectionGrants — a declared grant repairs itself', () => 
     const report = await reconcileConnectionGrants(
       { admin: host.admin, actor: staff, declared: {} },
       t,
-      'egeryds-crm',
+      'acme-crm',
     );
     expect(report.granted).toEqual([]);
     expect(await held()).toEqual([RECORD]);

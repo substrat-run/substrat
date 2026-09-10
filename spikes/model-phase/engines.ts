@@ -25,7 +25,8 @@ export interface EngineContract {
 	readonly entityTypes: readonly string[];
 	/**
 	 * Sets of events that report the SAME fact by different routes. A consumer
-	 * that handles one must handle all — this is the shape of the Egeryds bug.
+	 * that handles one must handle all — this is the shape of the half-handled
+	 * completion-group bug (#696).
 	 */
 	readonly completionGroups?: Record<string, readonly string[]>;
 }

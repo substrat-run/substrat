@@ -69,8 +69,8 @@ describe('getRegistrableDomain', () => {
     ['example.com', 'example.com'],
     ['a.b.bbc.co.uk', 'bbc.co.uk'],
     ['app.acme.pages.dev', 'acme.pages.dev'],
-    ['egeryds.se', 'egeryds.se'],
-    ['crm.egeryds.se', 'egeryds.se'],
+    ['acme.se', 'acme.se'],
+    ['crm.acme.se', 'acme.se'],
   ])('%s → %s', (host, reg) => {
     expect(getRegistrableDomain(host)).toBe(reg);
   });

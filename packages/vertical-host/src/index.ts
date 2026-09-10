@@ -1,7 +1,7 @@
 /**
  * The platform's `/internal/*` surface, authored ONCE.
  *
- * Every sandbox-clean vertical (Meridian, Manyfold, Callout, egeryds-crm, …) has to
+ * Every sandbox-clean vertical (Meridian, Manyfold, Callout, every pushed install, …) has to
  * answer the same control-plane contract: provision a scope, reconcile a locked-out one,
  * introspect its tables, run the read-only SQL console, drain platform-requests, snapshot
  * / delete / export / restore / bookmark / rewind its storage, upsert its per-instance

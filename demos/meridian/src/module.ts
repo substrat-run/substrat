@@ -683,7 +683,7 @@ const payrollExportOp: OperationHandler<z.infer<typeof payrollExportInput>, Payr
     `SELECT * FROM hr_expenses WHERE status = 'approved' ORDER BY created_at`,
   );
   // Booked absence in the window, through the engine's window read — the same
-  // composition seam Egeryds' planner uses, pointed at payroll here.
+  // composition seam a scheduling vertical's planner uses, pointed at payroll here.
   const absenceRows = entriesInWindow(ctx, {
     from: input.fromDate,
     to: input.toDate,

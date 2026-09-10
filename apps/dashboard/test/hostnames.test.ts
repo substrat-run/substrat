@@ -45,13 +45,13 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
       tenantId: tenantId.parse(ulid()),
       scopeId: scopeId.parse(ulid()),
       owner: principalId.parse(ulid()),
-      slug: 'egeryds',
-      name: 'Egeryds',
+      slug: 'acme',
+      name: 'Acme',
     });
     const appScope = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: node.tenantId, scopeId: appScope, vertical: 'callout' });
     await host.admin.activateScope(staff, node.tenantId, appScope);
-    const appHostname = 'crm-egeryds.global.substrat.run';
+    const appHostname = 'crm-acme.global.substrat.run';
     await host.admin.bindHostname(staff, {
       hostname: appHostname,
       tenantId: node.tenantId,
@@ -69,14 +69,14 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     const bound = await addAppHostname(host, { node, appScopeId: appScope, surface: 'eka', appHostname });
     // The app's own label + the surface, on the same base — the K-26 acceptance shape.
     expect(bound).toMatchObject({
-      hostname: 'crm-egeryds-eka.global.substrat.run',
+      hostname: 'crm-acme-eka.global.substrat.run',
       surface: 'eka',
       status: 'active',
       canonical: true,
     });
     // The router resolves it to the SAME scope with the surface the vertical branches on,
     // while the original URL still serves the default surface unchanged.
-    expect(await host.admin.resolveHostname('crm-egeryds-eka.global.substrat.run')).toMatchObject({
+    expect(await host.admin.resolveHostname('crm-acme-eka.global.substrat.run')).toMatchObject({
       scopeId: appScope,
       surface: 'eka',
     });
@@ -85,20 +85,20 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
     const events = (await dash.invoke('dashboard/app-events', { appScopeId: appScope })) as Array<{ kind: string; detail: string | null }>;
     const boundEvent = events.find((e) => e.kind === 'hostname-bound');
-    expect(boundEvent?.detail).toContain('crm-egeryds-eka.global.substrat.run');
+    expect(boundEvent?.detail).toContain('crm-acme-eka.global.substrat.run');
   });
 
   it('records a custom domain as pending — the §4.2 lifecycle, never active by wishing', async () => {
     const { node, appScope, appHostname } = await makeTeamWithApp();
     const bound = await addAppHostname(host, {
-      node, appScopeId: appScope, surface: 'eka', customDomain: 'EKA.Egeryds.se', appHostname,
+      node, appScopeId: appScope, surface: 'eka', customDomain: 'EKA.Acme.se', appHostname,
     });
-    expect(bound).toMatchObject({ hostname: 'eka.egeryds.se', status: 'pending', canonical: true });
+    expect(bound).toMatchObject({ hostname: 'eka.acme.se', status: 'pending', canonical: true });
     // Pending does not serve.
-    expect(await host.admin.resolveHostname('eka.egeryds.se')).toBeUndefined();
+    expect(await host.admin.resolveHostname('eka.acme.se')).toBeUndefined();
     // A second binding for the SAME surface is an alias — it never demotes the first.
     const alias = await addAppHostname(host, {
-      node, appScopeId: appScope, surface: 'eka', customDomain: 'avstamning.egeryds.se', appHostname,
+      node, appScopeId: appScope, surface: 'eka', customDomain: 'reports.acme.se', appHostname,
     });
     expect(alias.canonical).toBe(false);
     // A custom-domain form must not squat platform names — that path is the mint.
@@ -116,8 +116,8 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
    */
   it('refuses a custom domain under a configured platform base — and configuring one never narrows the guard', async () => {
     const { node, appScope, appHostname } = await makeTeamWithApp();
-    const squat = 'someone-elses-app.eu.egeryds-platform.test';
-    const bases = ['egeryds-platform.test'];
+    const squat = 'someone-elses-app.eu.acme-platform.test';
+    const bases = ['acme-platform.test'];
 
     // Configured ⇒ refused.
     await expect(
@@ -148,13 +148,13 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
 
     const rows = await listAppHostnames(host, { node, appScopeId: appScope });
     expect(rows.map((h) => h.hostname).sort()).toEqual([
-      'crm-egeryds-eka.global.substrat.run', appHostname,
+      'crm-acme-eka.global.substrat.run', appHostname,
     ].sort());
 
     await removeAppHostname(host, {
-      node, appScopeId: appScope, hostname: 'crm-egeryds-eka.global.substrat.run', defaultHostname: appHostname,
+      node, appScopeId: appScope, hostname: 'crm-acme-eka.global.substrat.run', defaultHostname: appHostname,
     });
-    expect(await host.admin.resolveHostname('crm-egeryds-eka.global.substrat.run')).toBeUndefined();
+    expect(await host.admin.resolveHostname('crm-acme-eka.global.substrat.run')).toBeUndefined();
     const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
     const events = (await dash.invoke('dashboard/app-events', { appScopeId: appScope })) as Array<{ kind: string }>;
     expect(events.some((e) => e.kind === 'hostname-unbound')).toBe(true);
@@ -205,7 +205,7 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
 
     await reconcileSurfaceHostnames(host, { node, appScopeId: appScope, verticalSlug: 'callout', appHostname });
     // The newly-declared surface now serves on `<base>-<surface>`, same scope, its own surface.
-    expect(await host.admin.resolveHostname('crm-egeryds-eka.global.substrat.run')).toMatchObject({
+    expect(await host.admin.resolveHostname('crm-acme-eka.global.substrat.run')).toMatchObject({
       scopeId: appScope,
       surface: 'eka',
     });
@@ -216,8 +216,8 @@ describe('Dashboard surface hostnames — mint, custom domain, unbind', () => {
     await reconcileSurfaceHostnames(host, { node, appScopeId: appScope, verticalSlug: 'callout', appHostname });
     const active = (await listAppHostnames(host, { node, appScopeId: appScope })).filter((h) => h.status === 'active');
     expect(active.map((h) => `${h.surface}:${h.hostname}`).sort()).toEqual([
-      'app:crm-egeryds.global.substrat.run',
-      'eka:crm-egeryds-eka.global.substrat.run',
+      'app:crm-acme.global.substrat.run',
+      'eka:crm-acme-eka.global.substrat.run',
     ]);
   });
 

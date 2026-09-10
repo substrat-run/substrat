@@ -62,15 +62,15 @@ describe('printVersions — identity resolution (#399)', () => {
 
   it('a bare name resolves to the single workspace-prefixed registration, like hostnames does', async () => {
     stubFetch({
-      '/verticals/egeryds-substrat/versions': [],
-      '/verticals': [{ slug: 'callout' }, { slug: 't-0wv2/egeryds-substrat' }],
-      '/verticals/t-0wv2%2Fegeryds-substrat/versions': [version('01B', '0.1.43')],
-      '/verticals/t-0wv2%2Fegeryds-substrat/channels': [
+      '/verticals/acme-substrat/versions': [],
+      '/verticals': [{ slug: 'callout' }, { slug: 't-0wv2/acme-substrat' }],
+      '/verticals/t-0wv2%2Facme-substrat/versions': [version('01B', '0.1.43')],
+      '/verticals/t-0wv2%2Facme-substrat/channels': [
         { channel: 'prod', versionId: '01B', servingVersionId: '01B' },
       ],
     });
-    await printVersions(CP, {}, 'egeryds-substrat');
-    expect(output()).toContain("showing 't-0wv2/egeryds-substrat'");
+    await printVersions(CP, {}, 'acme-substrat');
+    expect(output()).toContain("showing 't-0wv2/acme-substrat'");
     expect(output()).toContain('0.1.43');
     expect(output()).toContain('prod');
     expect(output()).not.toContain('lineage fork');
@@ -91,16 +91,16 @@ describe('printVersions — identity resolution (#399)', () => {
 
   it('a true lineage fork still warns, naming the install-side identity', async () => {
     stubFetch({
-      '/verticals/egeryds-substrat/versions': [],
-      '/verticals': [{ slug: 'egeryds-crm' }], // tail does not match — not a prefix candidate
+      '/verticals/acme-substrat/versions': [],
+      '/verticals': [{ slug: 'acme-crm' }], // tail does not match — not a prefix candidate
       '/hostnames?tenantId=01TENANT': [
-        { hostname: 'crm.example', scopeId: '01S', verticalSlug: 't-0wv2/egeryds-substrat' },
+        { hostname: 'crm.example', scopeId: '01S', verticalSlug: 't-0wv2/acme-substrat' },
       ],
-      '/verticals/t-0wv2%2Fegeryds-substrat/versions': [],
+      '/verticals/t-0wv2%2Facme-substrat/versions': [],
     });
-    await printVersions(CP, {}, 'egeryds-substrat', '01TENANT');
+    await printVersions(CP, {}, 'acme-substrat', '01TENANT');
     expect(output()).toContain('lineage fork');
-    expect(output()).toContain("install identity: 't-0wv2/egeryds-substrat'");
+    expect(output()).toContain("install identity: 't-0wv2/acme-substrat'");
   });
 
   it('no versions and no installs stays a plain "is the slug correct?"', async () => {

@@ -44,8 +44,8 @@ const getAll = <T>(url: string, header: Record<string, string>): Promise<T[]> =>
  * applies (`verticalSlug.endsWith('/' + slug)`) — a workspace-prefixed registration of
  * the same product name. A staff push pinned to a tenant registers the vertical as
  * `<tenantSlug>/<name>` while everyone keeps SAYING the bare name, so before this the
- * two commands disagreed: `hostnames egeryds-substrat` listed the installs while
- * `versions egeryds-substrat` printed the (wrong, alarming) lineage-fork hint. Returns
+ * two commands disagreed: `hostnames acme-substrat` listed the installs while
+ * `versions acme-substrat` printed the (wrong, alarming) lineage-fork hint. Returns
  * which slug was read and a note when it differs from what was asked.
  */
 async function resolveVersionsSlug(

@@ -1,4 +1,4 @@
-/** A valid model — must typecheck clean. Shaped after the Egeryds slice. */
+/** A valid model — must typecheck clean. Shaped after a real adopter's slice. */
 import { z } from 'zod';
 import { defineEntities, defineEnv, defineModel, type Impl } from './model.js';
 
