@@ -398,18 +398,86 @@ export interface PermissionsInput {
   roles: readonly RoleDefinition[];
   /** Entity-narrowed grant shapes — keys reachable outside the role table (default none). */
   entityGrants?: readonly EntityGrantShape[];
+  /**
+   * The declared keys, as literals — the array `defineOperations` needs (#1208).
+   *
+   * `modules` already carries every key, but not as a type anything can read back:
+   * a manifest is a `moduleManifest.parse(…)` output, so each `key` is the branded
+   * `PermissionKey` and the literal is gone one step before this function sees it.
+   * `defineOperations(entities, KEYS)` needs the literal union to turn a mistyped
+   * `permission:` into a compile error naming the real keys, so a vertical writes
+   * the keys once as a `const` array and hands the SAME array to both.
+   *
+   * That is still a second description — but it is the only one, and it is no longer
+   * unchecked: given here, {@link definePermissions} throws at module load if it and
+   * the modules disagree in either direction. A vertical that used to carry its own
+   * "the keys still match the modules" test can delete it.
+   *
+   * Optional, so every existing vertical keeps compiling; a vertical that omits it
+   * gets `never` from {@link PermissionKeysOf}, never a silently-widened `string`.
+   */
+  keys?: readonly string[];
 }
 
 /**
- * Declare a vertical's permission surface, once, in TypeScript. An identity helper: it pins the
+ * The literal key union a {@link definePermissions} result carries — what `defineOperations`
+ * wants as its `Perms` argument, read off the declared surface instead of restated a third time.
+ *
+ * `never` when `keys` was omitted, and deliberately not `string`: widening to `string` would make
+ * `defineOperations` accept any `permission:` value at all, quietly deleting the check this exists
+ * to serve. An unusable type is the loud answer; a permissive one is the silent wrong answer.
+ */
+export type PermissionKeysOf<T extends PermissionsInput> = T['keys'] extends readonly string[]
+  ? T['keys'][number]
+  : never;
+
+/**
+ * Declare a vertical's permission surface, once, in TypeScript. A near-identity helper: it pins the
  * shape so a missing or mistyped field is a **compile error**, not a silently-skipped vertical,
  * and returns a plain, side-effect-free object safe to import in any Node context to read the
  * surface without running the vertical. A vertical exports the result and points at it from
  * `package.json` `substrat.permissions`; the checkpoint discovers it there rather than from a
  * by-name `seed.ts` re-export.
+ *
+ * `const T` rather than `PermissionsInput` so the input's literal types survive the call and
+ * {@link PermissionKeysOf} has something to read. The runtime value is unchanged — it returns
+ * exactly what it was given — and every existing call site keeps its old type by construction.
+ *
+ * The one thing it does beyond returning: if `keys` is given, it must be exactly the set the
+ * modules declare, or this throws at module load. Load time is the right place, for the same
+ * reason `defineOperations`' own assertions are there — it fires in every build, every test and
+ * every dev server, so no vertical has to remember to write the check.
  */
-export function definePermissions(input: PermissionsInput): PermissionsInput {
+export function definePermissions<const T extends PermissionsInput>(input: T): T {
+  if (input.keys) assertKeysMatchModules(input.keys, input.modules);
   return input;
+}
+
+/**
+ * `keys` and the modules describe the same set, or the vertical does not load.
+ *
+ * Both directions matter and they fail differently. A key the modules declare but `keys` omits
+ * makes `defineOperations` reject a permission that genuinely exists — a compile error on correct
+ * code. A key in `keys` that no module declares is worse: it type-checks an operation against a
+ * permission nothing ever grants, so the operation compiles and is unreachable at runtime.
+ */
+function assertKeysMatchModules(
+  keys: readonly string[],
+  modules: readonly { manifest: ModuleManifest }[],
+): void {
+  const declared = new Set<string>();
+  for (const m of modules) for (const p of m.manifest.permissions) declared.add(p.key);
+  const given = new Set<string>(keys);
+
+  const quote = (k: string) => `'${k}'`;
+  const missing = [...declared].filter((k) => !given.has(k)).sort().map(quote);
+  const extra = [...given].filter((k) => !declared.has(k)).sort().map(quote);
+  if (missing.length === 0 && extra.length === 0) return;
+
+  const parts: string[] = [];
+  if (missing.length > 0) parts.push(`declared by a module but absent from \`keys\`: ${missing.join(', ')}`);
+  if (extra.length > 0) parts.push(`in \`keys\` but declared by no module: ${extra.join(', ')}`);
+  throw new Error(`definePermissions: \`keys\` disagrees with the modules — ${parts.join('; ')}.`);
 }
 
 /**
