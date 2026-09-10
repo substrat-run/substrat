@@ -5084,7 +5084,32 @@ export class CloudflareScopeHost implements ScopeHost {
   private async fanOut(tenantId: TenantId): Promise<void> {
     if (!this.scopeLocalPermissions) return;
     const { roles, tuples, entitlements, identities } = await this.tenantProjection(tenantId);
-    const scopes = await this.cp.listScopes({ tenantId });
+    // Only scopes that can still EVALUATE a permission. Unfiltered, this projected
+    // into `archived` and `reaped` rows too — and a reaped scope's storage was
+    // deliberately `deleteAll()`d ("the bytes are gone, so there is no restore",
+    // tenancy.ts), so writing a projection into its DO recreated storage for a scope
+    // the platform believes dead. Silent, unbounded in the number of apps a tenant
+    // has ever archived, and paid for on every membership change.
+    //
+    // `provisioning` is included: a scope mid-provision pulls the projection itself
+    // at creation, and including it costs one idempotent write while excluding it
+    // could race that pull. `suspended` is included because suspension is reversible
+    // and a suspended scope must not come back with a stale projection.
+    // Only scopes that can still EVALUATE a permission. Unfiltered, this projected
+    // into `archived` and `reaped` rows too — and a reaped scope's storage was
+    // deliberately `deleteAll()`d ("the bytes are gone, so there is no restore",
+    // tenancy.ts), so writing a projection into its DO recreated storage for a scope
+    // the platform believes dead. Silent, unbounded in the number of apps a tenant
+    // has ever archived, and paid for on every membership change.
+    //
+    // `provisioning` is included: a scope mid-provision pulls the projection itself
+    // at creation, and including it costs one idempotent write while excluding it
+    // could race that pull. `suspended` is included because suspension is reversible
+    // and a suspended scope must not come back with a stale projection.
+    const scopes = await this.cp.listScopes({
+      tenantId,
+      status: ['provisioning', 'active', 'suspended'],
+    });
     // #687: connection keys are per (tenant, vertical), so they are resolved per scope
     // rather than once for the tenant — memoized, because a fan-out over twenty scopes
     // of one vertical must not mint or re-read twenty times.

@@ -327,6 +327,74 @@ describe('scope-local permissions — automatic fan-out on write (Phase 2)', () 
 
   afterAll(async () => host.close());
 
+  it('does not project into an archived scope', async () => {
+    // A tenant-level write fans out to every scope in the tenant. Unfiltered, that
+    // included `archived` and `reaped` rows — and a reaped scope's storage was
+    // deliberately `deleteAll()`d ("the bytes are gone, so there is no restore",
+    // tenancy.ts), so a projection write would recreate storage for a scope the
+    // platform believes dead: silently, on every membership change, and unboundedly
+    // in the number of apps a tenant has ever archived.
+    //
+    // Observed through the scope DO directly, because `getScope` fails closed on an
+    // archived scope either way — reading its own projected rows is the only way to
+    // tell "we did not write" from "we cannot look".
+    const dead = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: dead, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, dead);
+    await host.admin.archiveScope(staff, t, dead);
+
+    const dave = principalId.parse(ulid());
+    await host.admin.assignRole(staff, { principalId: dave, roleKey: 'admin', node: { tenantId: t, scopeId: null } });
+
+    // The live scopes converged…
+    expect(await probe(dave, s1, ADMIN)).toBe(true);
+    expect(await probe(dave, s2, ADMIN)).toBe(true);
+
+    const tuplesOf = async (scope: string): Promise<string> => {
+      const rpc = env.SCOPE.get(env.SCOPE.idFromName(scope)) as unknown as {
+        introspectTable(table: string, limit: number, offset: number): Promise<{ rows: unknown[] }>;
+      };
+      return JSON.stringify((await rpc.introspectTable('_substrat_tenant_tuples', 200, 0)).rows);
+    };
+    // …and the archived scope did not receive the new principal, while a live one did
+    // — the second assertion is what proves the first is about the FILTER rather than
+    // about the fan-out having failed everywhere.
+    expect(await tuplesOf(s1)).toContain(dave);
+    expect(await tuplesOf(dead)).not.toContain(dave);
+  });
+
+  it('refuses a projection that arrives AFTER the scope was reaped', async () => {
+    // The residual race the status filter alone cannot close: fan-out selects live
+    // scopes, then writes, and a reap can land between the two. The selected scope
+    // was legitimately live when chosen, so the projection is already in flight when
+    // its bytes are destroyed — and `destroyStorage` is `deleteAll()`, which leaves a
+    // DO indistinguishable from a fresh one. Without a fence the late write silently
+    // recreates storage for a scope the platform believes gone.
+    const doomed = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: doomed, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, doomed);
+
+    const rpc = env.SCOPE.get(env.SCOPE.idFromName(doomed)) as unknown as {
+      destroyStorage(): Promise<void>;
+      applyProjection(
+        tenantId: string,
+        roles: { role_key: string; permissions: string; source: string }[],
+        tuples: unknown[],
+      ): Promise<void>;
+      introspectTable(table: string, limit: number, offset: number): Promise<{ rows: unknown[] }>;
+    };
+
+    // The reap happens, then the in-flight projection lands.
+    await rpc.destroyStorage();
+    await rpc.applyProjection(t, [{ role_key: 'admin', permissions: '["perm:admin"]', source: 'vertical' }], []);
+
+    // Dropped, not applied — and the observation is stronger than an empty table:
+    // the table does not EXIST. `deleteAll()` took it, and the refused projection
+    // did not bring it back, so the scope's storage stays genuinely destroyed
+    // rather than resurrected holding the tenant's roles, tuples and identity links.
+    await expect(rpc.introspectTable('_substrat_roles', 200, 0)).rejects.toThrow(/unknown table/);
+  });
+
   it('a tenant role fans out to scopes that already existed when it was assigned', async () => {
     expect(await probe(alice, s1, ADMIN)).toBe(true);
     expect(await probe(alice, s2, ADMIN)).toBe(true);
