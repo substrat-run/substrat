@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type HistoryEntry, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText } from '../lib/history';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { renderModelHtml } from '@substrat-run/model-view';
@@ -2056,7 +2057,13 @@ function DataBrowser({ app }: { app: AppRow }) {
   // entity TYPE, and the table alone does not name it. Absent (no model.json, or
   // a version pushed before #1214) ⇒ no history affordance rather than a guess.
   const [tableEntity, setTableEntity] = useState<Record<string, string>>({});
-  const [history, setHistory] = useState<{ entityType: string; entityId: string } | null>(null);
+  // The record whose history is open, and the scope it was opened IN (#1235). The
+  // scope is part of the selection rather than read from `activeScope` at render:
+  // a row belongs to the database it was read from, and switching the scope
+  // switcher underneath an open timeline would otherwise re-ask the new scope for
+  // an id it has never held — answering "no events recorded", confidently and
+  // wrongly, about a record that has a history one scope over.
+  const [history, setHistory] = useState<{ scopeId: string; entityType: string; entityId: string } | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -2114,6 +2121,9 @@ function DataBrowser({ app }: { app: AppRow }) {
     setTables(null);
     setErr(null);
     setSelected(null);
+    // The open record belonged to the scope we just left, and its table selection
+    // is gone with it.
+    setHistory(null);
     api
       .appTables(activeScope)
       .then((ts) => {
@@ -2224,7 +2234,7 @@ function DataBrowser({ app }: { app: AppRow }) {
                 onPrev={() => setOffset((o) => Math.max(0, o - DATA_PAGE))}
                 onNext={() => setOffset((o) => o + DATA_PAGE)}
                 entityType={tableEntity[page.table]}
-                onOpenHistory={(entityType, entityId) => setHistory({ entityType, entityId })}
+                onOpenHistory={(entityType, entityId) => setHistory({ scopeId: activeScope, entityType, entityId })}
               />
             )}
           </div>
@@ -2232,7 +2242,7 @@ function DataBrowser({ app }: { app: AppRow }) {
       </div>
       {history && (
         <EntityTimeline
-          scopeId={activeScope}
+          scopeId={history.scopeId}
           entityType={history.entityType}
           entityId={history.entityId}
           onClose={() => setHistory(null)}
@@ -2381,6 +2391,11 @@ function TableGroup({ label, tables, selected, onPick }: { label: string; tables
  * One record's story (#1235) — `readHistory`'s answer rendered: what happened to
  * this entity, who did it, under what permission, as whom, and under which push.
  *
+ * The wording of every value here lives in `lib/history.ts`, where it is unit
+ * tested: an actor is a UNION whose `{ system }` and `{ connection }` members are
+ * objects — React throws on one, and this app has no error boundary to catch it —
+ * and the nullables below each need a sentence rather than a blank.
+ *
  * The three nullable fields are FACTS and the renderer says so rather than
  * showing a blank: a null payload means ERASED (a shred keeps the row and drops
  * the content), a null authorization means the row predates K-34 recording it —
@@ -2405,20 +2420,52 @@ function EntityTimeline({
   onClose: () => void;
 }) {
   const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Which walk the state below belongs to, so a page that arrives after the record
+  // changed is discarded rather than appended to another record's story.
+  const walk = useRef('');
 
   useEffect(() => {
     let live = true;
+    walk.current = `${scopeId}|${entityType}|${entityId}`;
     setEntries(null);
+    setCursor(null);
     setErr(null);
     api
       .appEntityHistory(scopeId, entityType, entityId)
-      .then((p) => live && setEntries(p.entries))
+      .then((p) => {
+        if (!live) return;
+        setEntries(p.entries);
+        setCursor(p.nextCursor);
+      })
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
   }, [scopeId, entityType, entityId]);
+
+  /**
+   * The rest of the story. The walk is `ORDER BY id ASC` and a page defaults to
+   * `LIST_PAGE_DEFAULT`, so a record touched more times than that has its RECENT
+   * events past the cursor — dropping it would end the story mid-sentence and say
+   * nothing about having done so.
+   */
+  const readMore = () => {
+    if (cursor === null || reading) return;
+    const at = walk.current;
+    setReading(true);
+    api
+      .appEntityHistory(scopeId, entityType, entityId, cursor)
+      .then((p) => {
+        if (walk.current !== at) return;
+        setEntries((prev) => [...(prev ?? []), ...p.entries]);
+        setCursor(p.nextCursor);
+      })
+      .catch((e) => walk.current === at && setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => walk.current === at && setReading(false));
+  };
 
   const when = (iso: string) => new Date(iso).toLocaleString();
 
@@ -2449,25 +2496,15 @@ function EntityTimeline({
           <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
             <MonoTag>{e.type}</MonoTag>
             <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>{when(e.occurredAt)}</span>
-            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.actor}</span>
-            {e.impersonation && (
-              <Pill kind="warning">
-                as {e.actor} · by {e.impersonation.staffActor}
-              </Pill>
-            )}
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{actorLabel(e.actor)}</span>
+            {e.impersonation && <Pill kind="warning">{impersonationLabel(e)}</Pill>}
             {e.piiClass !== 'none' && <Pill kind="info">{e.piiClass}</Pill>}
           </div>
           <div style={{ display: 'flex', gap: 12, fontSize: 11.5, color: 'var(--text-tertiary)', flexWrap: 'wrap', fontFamily: 'var(--font-mono)' }}>
-            <span>{e.operation ?? 'no operation — a consumer, or unrecorded'}</span>
+            <span>{operationLabel(e.operation)}</span>
             {e.version && <span>version {e.version}</span>}
             {/* Null and empty are different answers: unrecorded vs checked nothing. */}
-            <span>
-              {e.authorization === null
-                ? 'authorization unrecorded'
-                : e.authorization.length === 0
-                  ? 'no permission checked'
-                  : e.authorization.map((a) => a.permission).join(', ')}
-            </span>
+            <span>{authorizationLabel(e.authorization)}</span>
           </div>
           <pre
             style={{
@@ -2475,10 +2512,22 @@ function EntityTimeline({
               wordBreak: 'break-word', color: e.payload == null ? 'var(--text-tertiary)' : 'var(--text-secondary)',
             }}
           >
-            {e.payload == null ? 'payload erased' : JSON.stringify(e.payload)}
+            {payloadText(e.payload)}
           </pre>
         </div>
       ))}
+
+      {cursor !== null && (
+        <button
+          type="button"
+          onClick={readMore}
+          disabled={reading}
+          title="the walk runs oldest-first — this reads on towards the present"
+          style={{ ...pagerBtn(!reading), justifySelf: 'start' }}
+        >
+          {reading ? 'Reading…' : 'Later events →'}
+        </button>
+      )}
     </div>
   );
 }
