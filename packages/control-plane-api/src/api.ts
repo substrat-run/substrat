@@ -34,6 +34,7 @@ import {
   readScopeTableInput,
   entityHistoryInput,
   createOrgInput,
+  roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
   registerVerticalInput,
@@ -725,7 +726,7 @@ const issueStatusUpdate = z.object({
 const tenantRoleAssignmentBody = z
   .object({
     principalId: principalIdSchema,
-    roleKey: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+    roleKey: roleKeySchema,
   })
   .strict();
 
