@@ -199,6 +199,17 @@ function IdentityHeader({ user, me, onChanged }: { user: AdminUser; me: string; 
 const methodLabel = (m: AdminSignInMethod): string => (m.provider === 'credential' ? 'password' : m.provider);
 
 /**
+ * The accessible name of one Remove button, which needs more than the method's name: somebody
+ * CAN hold two accounts at the same provider, and telling those apart is the whole reason the
+ * table has an "Account at the provider" column. Two buttons both announcing "Remove their
+ * google" would drop exactly the distinction the screen exists to draw.
+ */
+const removeLabel = (m: AdminSignInMethod): string =>
+  m.provider === 'credential'
+    ? `Remove their ${methodLabel(m)}`
+    : `Remove their ${methodLabel(m)} account ${m.accountId}`;
+
+/**
  * What an operator is agreeing to, written from their side and naming the consequence rather
  * than the verb. Removing a password and disconnecting an upstream are different acts with
  * different aftermaths, so they get different sentences.
@@ -315,7 +326,7 @@ function SignInMethodsPanel({
                       className="btn tiny"
                       disabled={removing !== null || !removable(m)}
                       onClick={() => void remove(m)}
-                      aria-label={`Remove their ${methodLabel(m)}`}
+                      aria-label={removeLabel(m)}
                     >
                       {removing === m.id ? 'Removing…' : 'Remove'}
                     </button>
