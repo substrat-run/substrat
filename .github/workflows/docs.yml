@@ -12,6 +12,12 @@ name: Docs
 # pages print, and the two deploys are idempotent — both build the same main, the later
 # one wins. `concurrency` is per workflow, so a burst of docs merges collapses to the
 # latest rather than racing.
+#
+# The deploy publishes `llms-full.txt`; `refresh-kb` below tells the support desk to
+# re-read it. Those were two different events with only the first one driven, so the
+# site could be current within the minute while ticket0 went on answering out of
+# whatever it last ingested — and a stale docs page reaching a customer is a wrong
+# answer, not a stale page.
 on:
   push:
     branches: [main]
@@ -48,3 +54,87 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+  # ── The support desk's copy of the docs ────────────────────────────────────
+  #
+  # A SEPARATE job rather than a step on `deploy`, deliberately. By the time this runs
+  # the site is already published, and folding it in would mean a desk that failed to
+  # re-read reddens a deploy that in fact succeeded — and re-running it would re-run
+  # the deploy. Split, "the site shipped and the desk did not" is one red job saying
+  # exactly that, and `Re-run failed jobs` retries only the part that failed.
+  #
+  # It is allowed to go red. That is the whole point: this exists because a refresh
+  # nobody was watching is how the knowledge base went stale in the first place, and a
+  # step that swallowed its own failure would rebuild that.
+  refresh-kb:
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tell the support desk to re-read the docs
+        env:
+          DESK: https://ticket0.substrat.net
+          SOURCE_ID: ${{ vars.TICKET0_KB_SOURCE_ID }}
+          HOOK_TOKEN: ${{ secrets.TICKET0_KB_REFRESH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Named rather than left to fail as a confusing 403 further down: an absent
+          # secret and a wrong one are different problems and should not read alike.
+          if [ -z "${HOOK_TOKEN:-}" ]; then
+            echo "::error::TICKET0_KB_REFRESH_TOKEN is not set. Mint one in the desk's Settings → Knowledge base and add it as a repository secret."
+            exit 1
+          fi
+          if [ -z "${SOURCE_ID:-}" ]; then
+            echo "::error::TICKET0_KB_SOURCE_ID is not set. It is the source id from the curl the hook panel prints; add it as a repository variable."
+            exit 1
+          fi
+
+          url="$DESK/api/kb/sources/$SOURCE_ID/refresh"
+
+          # The desk throttles a hook to one read a minute and answers 429 with how long
+          # is left. Two docs merges landing close together is exactly that case, and the
+          # second one carries pages the first did not — so waiting it out is the correct
+          # behaviour, not a retry loop papering over an error. Once is enough: the
+          # window is 60s and `concurrency` above has already collapsed a burst.
+          for attempt in 1 2; do
+            # `|| true` so a connection failure reaches the annotation below instead of
+            # `set -e` killing the step with curl's bare message and no error line in the
+            # run summary. The read is a megabyte of somebody's docs site plus a few
+            # hundred hashes, so the ceiling is generous — but it IS a ceiling: without
+            # one a hung desk burns the whole job timeout to say nothing.
+            body=$(curl -sS -X POST "$url" \
+              -H "x-kb-refresh-token: $HOOK_TOKEN" \
+              --connect-timeout 10 --max-time 120 \
+              -w '\n%{http_code}') || true
+            code=$(printf '%s' "$body" | tail -n1)
+            payload=$(printf '%s' "$body" | sed '$d')
+
+            # `000` is what `-w` writes when curl never got an HTTP response at all —
+            # DNS, TLS, refused, timed out — and it is three digits, so it has to be
+            # named rather than caught by a shape check. The desk did not refuse us; we
+            # never reached it, and "HTTP 000" as an error message says neither.
+            if [ -z "$code" ] || [ "$code" = "000" ]; then
+              echo "::error::could not reach the desk at $DESK — the docs are published, its copy of them is not."
+              exit 1
+            fi
+
+            if [ "$code" = "200" ]; then
+              echo "the desk re-read the docs: $payload"
+              exit 0
+            fi
+
+            if [ "$code" = "429" ] && [ "$attempt" = "1" ]; then
+              wait=$(printf '%s' "$payload" | sed -n 's/.*"retryAfter":\([0-9]*\).*/\1/p')
+              wait=${wait:-60}
+              echo "the desk read this source too recently; waiting ${wait}s for its window and asking once more"
+              sleep "$((wait + 2))"
+              continue
+            fi
+
+            # 403 = the hook is wrong or was revoked. 503 = the desk has no ingest
+            # service yet, which means it has not reconciled onto a version that mints
+            # one. 502 = the desk reached substrat.net and substrat.net failed it.
+            echo "::error::the desk refused to re-read the docs (HTTP $code): $payload"
+            exit 1
+          done
