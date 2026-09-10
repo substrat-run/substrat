@@ -1,5 +1,49 @@
 # @substrat-run/oidc-rp
 
+## 0.8.0
+
+### Minor Changes
+
+- aab2e11: Carry the issuer's `email_verified` claim through to the session and the auth subject.
+
+  An address only says who someone is if the issuer stands behind it, and until now nothing
+  transported that answer: the claim was read nowhere, so a gate on it could not be written.
+  `SessionUser.emailVerified` and `AuthSubject.emailVerified` now hold what the issuer said —
+  `true`, `false`, or `undefined` when it said nothing, which is a different fact from
+  "unverified" and stays distinguishable end to end. The flag travels with the address it
+  qualifies, so a UserInfo response never vouches for an address the ID token signed.
+
+  Nothing authorizes differently: this is transport, and every existing session keeps working
+  with the field absent.
+
+- 0a8a3b0: Signing out no longer stops at a "Confirm logout" page.
+
+  A federated logout (`/api/auth/logout?federated`) has always sent the issuer a
+  `client_id` and a `post_logout_redirect_uri` and nothing else. That is the shape
+  of request an OP cannot tell apart from a link someone was tricked into
+  following, so OIDC RP-Initiated Logout §2 says it SHOULD stop and ask the person
+  to confirm — and a spec-faithful provider does, which puts an interstitial in the
+  middle of what the person already asked for.
+
+  The ID token from the login round-trip is now kept and handed back as
+  `id_token_hint`, which is the mechanism the spec provides for exactly this: the
+  OP verifies the request against the session the hint names and redirects
+  straight through. It rides its own cookie scoped to the logout path rather than
+  a claim in the session, so it travels on one request in the session's life
+  instead of every one.
+
+  Two limits the hint deliberately carries. Its cookie is `SameSite=Strict`, so a
+  cross-site navigation to the logout link cannot present it — that case still
+  meets the OP's confirmation page, which is what stands between a hostile link
+  and a forced sign-out. And it is never put on a plaintext redirect: an issuer
+  advertising an `http:` end-session endpoint gets the redirect without the hint,
+  loopback excepted so a local dev issuer keeps working.
+
+  Nothing changes for an issuer that advertises no `end_session_endpoint`, or for
+  a plain (non-federated) logout. A session minted before this version carries no
+  hint and still sees the confirmation page — correctly, since there is nothing to
+  verify it against — and the next sign-in puts the hint back.
+
 ## 0.7.0
 
 ### Minor Changes

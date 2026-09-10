@@ -1,5 +1,83 @@
 # @substrat-run/control-plane-api
 
+## 0.108.0
+
+### Minor Changes
+
+- 719f993: The shared control plane grows the runtime membership seam (#1343, step 2).
+  Service-only routes for assigning and revoking an already-defined role, and for
+  creating and listing a tenant's orgs, with the matching
+  `TenantNarrowedControlPlane` methods.
+
+  The line these sit on the far side of matters more than the routes. `defineRole`
+  says what a role MEANS — a permission change, and the permission diff is a human
+  checkpoint (D-22/D-29) — so it still gets no route, and `roleDefinition`'s own
+  contract already says role writes are deliberately absent from this surface.
+  ASSIGNING an already-defined role is a different act: per-principal, runtime, the
+  same shape control-plane.md §4.5 already treats as a console concern rather than
+  a checkpoint artifact, and `unassignRole`'s contract anticipates exactly this
+  caller ("the dashboard's manage-members check").
+
+  Service/staff only, absent from `BUILDER_ROUTES`: a builder must no more assign
+  itself a role than write the directory that authenticates builders. The whole
+  node comes from the PATH — assignments are TENANT-LEVEL, which is what a team
+  membership is, and a body naming a scope is refused rather than stripped.
+  Pinning only the tenant would pin nothing: a node carrying a scope is written to
+  that scope's Durable Object directly, with no tenant cross-check below it. A
+  scope-level surface, if ever needed, wants its own route under
+  `/tenants/:tenantId/scopes/:scopeId/role-assignments`, deriving the node from the
+  path after the K-3 cross-check every other scope-addressed route performs.
+
+  Nothing switches over yet — the dashboard still reads and writes its own
+  directory. This is the seam that has to exist before it can stop.
+
+- 44b53e4: One record's history is readable above the scope (#1235, the read path).
+  `readHistory` has been the sanctioned way to walk an entity's events since #800
+  — it pages the outbox, decodes the envelope, and keeps three nullable facts
+  distinct that a hand-rolled SELECT reads as missing data (an erased payload, an
+  unrecorded authorization chain, nobody impersonating). It was documented in the
+  scaffold template, the playbook and three changelogs, and called by nothing in
+  the repo, because nothing above the scope could reach it.
+
+  `HostAdmin.entityHistory` lands on both adapters, the vertical serves
+  `/internal/history` for a scope whose data it holds, and the control plane
+  delegates between them exactly as the table reads do. Cursor-paged rather than
+  offset-paged, unlike the table read: the outbox pages by id, so an event
+  arriving mid-walk cannot shift a page boundary and duplicate or skip an entry.
+  The co-located branch lands a K-24 access-log row naming the entity and the
+  count; the delegated branch leaves only the `getScopeRecord` entry the ladder
+  itself writes, which is what every delegated scope read on this surface does
+  today (#1357).
+
+### Patch Changes
+
+- 9ee7ed7: A masked scope pull no longer exports a person-ish role label verbatim (#1369).
+
+  The sweep behind `substrat scope pull --masked` was always table-agnostic — a vertical's
+  tables, an engine's tables and the `_substrat_*` spine are judged by one column-name
+  heuristic — but the heuristic had no pattern for the label an engine puts a human's name
+  in. So `party_label` and `signatory_label`, and the `parties[].label` a fat event payload
+  spells them as inside `_substrat_outbox.payload` or a platform-request intent, came back
+  as real production text in a dump whose whole promise is that it holds none.
+
+  `<role>_label` now reads as PII and is pseudonymized like every other person field: the
+  engine's own row and every payload that quoted it agree, and a label holding an email
+  address comes back as an address rather than as a name. Deliberately narrow — a bare
+  `label`, `status_label`, `size_label` and the `party_kind` / `party_ref` siblings a
+  consumer branches and joins on are untouched, because masking those breaks the copy
+  instead of protecting anyone.
+
+  `docs/architecture/preview-and-snapshots.md` §6 now also states what `--masked` reaches,
+  what a name-based heuristic cannot reach at all, and that the generator's salt is stable
+  across pulls only when the deployment sets `MASK_SALT` — absent, each export mints a
+  fresh one.
+
+- Updated dependencies [5e80e5f]
+- Updated dependencies [5cf7ae4]
+- Updated dependencies [44b53e4]
+  - @substrat-run/kernel@0.108.0
+  - @substrat-run/contracts@0.108.0
+
 ## 0.107.0
 
 ### Minor Changes
