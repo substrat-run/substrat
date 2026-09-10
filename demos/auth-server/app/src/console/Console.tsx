@@ -192,7 +192,13 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
           ) : userId ? (
             <UserDetailView userId={userId} me={session.sub} />
           ) : clientId ? (
-            <ApplicationDetailView clientId={clientId} />
+            // Keyed by the id, so going from one application to another is a remount and not a
+            // prop change. Everything that screen holds belongs to ONE client — the row itself,
+            // a secret it just rotated, the form's unsaved fields — and a prop change would
+            // leave all of it on screen above the next application's header while its read is
+            // still in flight. A late answer from the previous one lands on an instance that no
+            // longer exists, which is the point.
+            <ApplicationDetailView key={clientId} clientId={clientId} />
           ) : active.path === '/users' ? (
             <UsersView me={session.sub} />
           ) : active.path === '/applications' ? (

@@ -107,10 +107,9 @@ export function ApplicationDetailView({ clientId }: { clientId: string }) {
           <ApplicationHeader client={client} />
           <section className="panel">
             <div className="panel-head"><h2>Settings</h2></div>
+            {/* No key needed here: the whole view is keyed by `clientId` at its call site, so
+                one application's unsaved form cannot outlive a move to another. */}
             <ClientEditor
-              // Keyed by the row it edits: navigating from one application straight to another
-              // would otherwise keep the first one's form state and save it onto the second.
-              key={client.client_id}
               client={client}
               onSaved={async () => {
                 await reload();
@@ -483,7 +482,12 @@ export function ClientEditor({
       enable_end_session: endSession,
       post_logout_redirect_uris: logoutUris.split('\n').map((u) => u.trim()).filter(Boolean),
       disabled: client?.disabled ?? false,
-      ...(icon.trim() ? { logo_uri: icon.trim() } : {}),
+      // An EDIT always names `logo_uri`, empty included: the PATCH reads `''` as "clear it"
+      // and an absent key as "leave it alone", so omitting a field the operator just emptied
+      // is how a logo becomes unremovable — the box goes blank, the save succeeds, and the
+      // consent screen keeps the icon. Registration still omits it: the plugin's own
+      // registration body is the one that validates the URI, and `''` is not one.
+      ...(icon.trim() ? { logo_uri: icon.trim() } : client ? { logo_uri: '' } : {}),
     };
     setBusy(true);
     try {

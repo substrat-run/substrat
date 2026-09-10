@@ -88,6 +88,7 @@ const adminCall = (path: string, cookie: string, init?: RequestInit): Promise<Re
 interface WireClient {
   client_id: string;
   client_name?: string;
+  logo_uri?: string;
   redirect_uris: string[];
   disabled?: boolean;
   skip_consent?: boolean;
@@ -264,6 +265,35 @@ describe('the registry list', () => {
     const listed = (await listClients(admin)).find((c) => c.client_id === created.client_id);
     expect(listed?.redirect_uris).toEqual([RP_REDIRECT, 'http://localhost:9999/other']);
     expect(listed?.metadata).toEqual({ theme: 'dark' });
+  });
+
+  /**
+   * The two readings of a missing logo, which are NOT the same answer — and the form above this
+   * used to send the one that silently means "keep it". An emptied Logo URL field must reach
+   * the PATCH as `''`, or a logo becomes unremovable: the box goes blank, the save succeeds,
+   * and the consent screen keeps the icon.
+   */
+  it('clears a logo on an empty string and keeps it when the key is absent', async () => {
+    const admin = await signInAs(ADMIN);
+    const client = await register('Logotyped', admin, { logo_uri: 'https://example.test/logo.png' });
+    const stored = async () =>
+      (await listClients(admin)).find((c) => c.client_id === client.client_id)?.logo_uri;
+    expect(await stored()).toBe('https://example.test/logo.png');
+
+    // A patch about something else leaves it alone.
+    const unrelated = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ client_name: 'Still logotyped' }),
+    });
+    expect(unrelated.status).toBeLessThan(300);
+    expect(await stored()).toBe('https://example.test/logo.png');
+
+    const cleared = await adminCall(`/clients/${client.client_id}`, admin, {
+      method: 'PATCH',
+      body: JSON.stringify({ logo_uri: '' }),
+    });
+    expect(cleared.status).toBeLessThan(300);
+    expect(await stored()).toBeUndefined();
   });
 });
 
