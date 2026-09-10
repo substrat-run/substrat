@@ -453,11 +453,20 @@ describe('the refresh hook', () => {
       sourceId: source.id,
     })) as { token: string };
 
+    // Fire it once first, so the revoke has something to clear.
+    expect((await fire(app, source.id, minted.token)).status).toBe(200);
+    expect((await firstSource(admin)).token_last_used_at).not.toBeNull();
+
     const revoked = (await admin.invoke('ticket0/revoke-kb-refresh-token', {
       sourceId: source.id,
     })) as Hooked;
     expect(revoked.refresh_token_hint).toBeNull();
     expect(revoked.token_created_at).toBeNull();
+    // And when it last fired: that is the HOOK's column, so a row with no hook must
+    // not still be claiming one fired on Tuesday. The firing itself is in the history
+    // (`ticket0.kb-refresh-hook-redeemed`), which is where a fact about a credential
+    // that no longer exists belongs.
+    expect(revoked.token_last_used_at).toBeNull();
 
     expect((await fire(app, source.id, minted.token)).status).toBe(403);
 

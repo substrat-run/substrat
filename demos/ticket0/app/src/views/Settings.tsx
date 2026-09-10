@@ -158,6 +158,22 @@ async function copyToClipboard(text: string): Promise<boolean> {
 /** What a failed copy says. The text is still on the screen — this points at it. */
 const COPY_BY_HAND = 'Couldn’t reach the clipboard — select the text above and copy it by hand.';
 
+/**
+ * The two flags a copy sets, as ONE state, because they are one fact with three
+ * values: untried, copied, refused. Held apart, a refusal followed by a working
+ * retry left both on screen — a button reading "Copied" above a line telling the
+ * reader to copy it by hand.
+ */
+function useCopyState(): [boolean, boolean, (ok: boolean) => void, () => void] {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  return [
+    state === 'copied',
+    state === 'failed',
+    (ok: boolean) => setState(ok ? 'copied' : 'failed'),
+    () => setState('idle'),
+  ];
+}
+
 /* ── Team ───────────────────────────────────────────────────────────────── */
 
 /**
@@ -186,8 +202,7 @@ function Team({ session }: { session: Session }) {
   const [contactId, setContactId] = useState('');
   const [people, setPeople] = useState<Contact[]>([]);
   const [link, setLink] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
+  const [copied, copyFailed, setCopyState, resetCopy] = useCopyState();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -230,7 +245,7 @@ function Team({ session }: { session: Session }) {
     setBusy(true);
     setFailed(null);
     setLink(null);
-    setCopied(false);
+    resetCopy();
     try {
       const made = await invites.create({
         roleKey: role,
@@ -388,7 +403,7 @@ function Team({ session }: { session: Session }) {
                   <button
                     className="btn"
                     onClick={() => {
-                      void copyToClipboard(link).then((ok) => (ok ? setCopied(true) : setCopyFailed(true)));
+                      void copyToClipboard(link).then(setCopyState);
                     }}
                   >
                     {copied ? 'Copied' : 'Copy'}
@@ -757,8 +772,7 @@ function Desk() {
 
 function Identity() {
   const [secret, setSecret] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
+  const [copied, copyFailed, setCopyState, resetCopy] = useCopyState();
   const [rotating, setRotating] = useState(false);
 
   return (
@@ -881,7 +895,7 @@ function Identity() {
               className="btn"
               style={{ background: '#17181a', borderColor: '#17181a', color: '#fff' }}
               onClick={() => {
-                void copyToClipboard(secret).then((ok) => (ok ? setCopied(true) : setCopyFailed(true)));
+                void copyToClipboard(secret).then(setCopyState);
               }}
             >
               {copied ? 'Copied' : 'Copy'}
@@ -925,8 +939,7 @@ function Identity() {
               onClick={() => {
                 setSecret(null);
                 setRotating(false);
-                setCopied(false);
-                setCopyFailed(false);
+                resetCopy();
               }}
             >
               I've stored it — close
@@ -1000,8 +1013,7 @@ function Knowledge() {
   // re-read, which is the point of showing it once.
   const [openHook, setOpenHook] = useState<string | null>(null);
   const [minted, setMinted] = useState<{ sourceId: string; token: string } | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [copyFailed, setCopyFailed] = useState(false);
+  const [copied, copyFailed, setCopyState, resetCopy] = useCopyState();
   const [hookBusy, setHookBusy] = useState(false);
   const [hookFailed, setHookFailed] = useState<string | null>(null);
 
@@ -1066,8 +1078,7 @@ function Knowledge() {
     if (rotating && !confirm('Rotate this hook? The current token stops working immediately.')) return;
     setHookBusy(true);
     setHookFailed(null);
-    setCopied(false);
-    setCopyFailed(false);
+    resetCopy();
     try {
       const result = await api.mintKbRefreshToken({ sourceId: id });
       setMinted({ sourceId: id, token: result.token });
@@ -1290,9 +1301,7 @@ function Knowledge() {
                         className="btn"
                         style={{ background: '#17181a', borderColor: '#17181a', color: '#fff' }}
                         onClick={() => {
-                          void copyToClipboard(minted.token).then((ok) =>
-                            ok ? setCopied(true) : setCopyFailed(true),
-                          );
+                          void copyToClipboard(minted.token).then(setCopyState);
                         }}
                       >
                         {copied ? 'Copied' : 'Copy'}

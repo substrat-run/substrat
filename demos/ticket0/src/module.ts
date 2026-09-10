@@ -1568,9 +1568,15 @@ const operations = {
     // Idempotent on purpose: revoking a source that has no hook is a request to be in
     // a state it is already in, and answering that with an error would make the safe
     // reflex — revoke it again, just in case — look like a failure.
+    // `token_last_used_at` goes with them. It is the hook's column, not the source's:
+    // left behind, the row says a hook it does not have fired on Tuesday, and the next
+    // reader of that column has to know to check the hint first. When the old hook last
+    // fired is not lost — `ticket0.kb-refresh-hook-redeemed` is in the history, which is
+    // where a fact about a credential that no longer exists belongs.
     ctx.sql.exec(
       `UPDATE ticket0_kb_sources
-          SET refresh_token_hash = NULL, refresh_token_hint = NULL, token_created_at = NULL
+          SET refresh_token_hash = NULL, refresh_token_hint = NULL, token_created_at = NULL,
+              token_last_used_at = NULL
         WHERE id = ?`,
       [input.sourceId],
     );
