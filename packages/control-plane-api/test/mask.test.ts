@@ -363,6 +363,44 @@ describe('a masked dump of engine and spine tables', () => {
     expect(intents!.rows[0]![1]).toBe('connector:scrive');
   });
 
+  /**
+   * The column list and the container list are two spellings of ONE fact — a column
+   * says `requester_label`, the payload quoting it says `requester: { label }` — so a
+   * role in one and not the other is a leak in whichever half was forgotten. They are
+   * built from one constant now; this asserts the two readings agree, role by role, so
+   * a role added to only one of them cannot pass.
+   */
+  it('reads every role the column list knows, in its nested spelling too', async () => {
+    const roles = [
+      'party',
+      'parties',
+      'signatory',
+      'countersignatory',
+      'signer',
+      'counterparty',
+      'attendee',
+      'participant',
+      'recipient',
+      'sender',
+      'requester',
+      'assignee',
+      'contact',
+      'customer',
+      'person',
+    ];
+    const row = [...ROW];
+    row[9] = JSON.stringify(Object.fromEntries(roles.map((r) => [r, { label: 'Anna Ek' }])));
+    const out = JSON.parse((await masked('salt-a', [row]))[9] as string) as Record<
+      string,
+      { label: string }
+    >;
+    for (const role of roles) {
+      expect(kindOf(`${role}_label`)).toBe('label');
+      expect(out[role]!.label, `${role}: { label } was left verbatim`).not.toBe('Anna Ek');
+      expect(out[role]!.label).toMatch(/^[A-Z]\S+ [A-Z]\S+$/);
+    }
+  });
+
   it('contains none of the real text it was given', async () => {
     const emitted = JSON.stringify(await maskedEngineDump());
     for (const value of ['Anna Ek', 'bengt@example.se']) expect(emitted).not.toContain(value);

@@ -103,6 +103,15 @@ const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
  * Names arrive snake_case from SQL columns and camelCase from JSON payload keys, so
  * callers normalize before asking.
  */
+/**
+ * The roles a human's own name gets typed under (#1369) — read TWO ways below, from this
+ * one list, because a role in one spelling and not the other is a leak in whichever half
+ * was forgotten. A column says `party_label`; the fat event payload that quotes it says
+ * `parties: [{ label }]`. Same fact, same list.
+ */
+const PERSON_ROLE =
+  'part(y|ies)|signator(y|ies)|countersignator(y|ies)|signer|counterpart(y|ies)|attendee|participant|recipient|sender|requester|assignee|contact|customer|person';
+
 const KIND_PATTERNS: readonly [RegExp, PiiKind][] = [
   [/(^|_)(e?mail|e?mail_address)($|_)/i, 'email'],
   [/(^|_)(phone|mobile|tel)($|_)/i, 'phone'],
@@ -120,10 +129,7 @@ const KIND_PATTERNS: readonly [RegExp, PiiKind][] = [
   // `<role>_label` and never a bare `label`, so `status_label`, `size_label` and
   // `meter_label` stay readable, and `party_kind` / `signatory_kind` — enum values a
   // consumer branches on — are untouched.
-  [
-    /(^|_)(part(y|ies)|signator(y|ies)|countersignator(y|ies)|signer|counterpart(y|ies)|attendee|participant|recipient|sender|requester|assignee|contact|customer|person)s?_label($|_)/i,
-    'label',
-  ],
+  [new RegExp(`(^|_)(${PERSON_ROLE})s?_label($|_)`, 'i'), 'label'],
   // Free text and national identifiers: nothing honest to generate (see the header).
   [/(^|_)(ssn|personnummer|note|notes|comment|comments|message|subject|body|description)($|_)/i, 'redact'],
   [/(^|_)(name|full_name|contact)($|_)/i, 'person'],
@@ -138,9 +144,11 @@ const KIND_PATTERNS: readonly [RegExp, PiiKind][] = [
  * where the key carrying the name is just `label`. Only `label` is reclassified — the
  * siblings keep whatever the heuristic says about them on their own, so `ref` stays the
  * opaque id a join needs and `kind` stays the enum a consumer branches on.
+ *
+ * Built from `PERSON_ROLE`, the same list the `<role>_label` column pattern reads, so the
+ * two halves cannot drift apart.
  */
-const PERSON_CONTAINER =
-  /(^|_)(part(y|ies)|signator(y|ies)|countersignator(y|ies)|signer|counterpart(y|ies)|attendee|participant|recipient|contact)s?($|_)/i;
+const PERSON_CONTAINER = new RegExp(`(^|_)(${PERSON_ROLE})s?($|_)`, 'i');
 
 const snakeOf = (name: string): string => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
 
