@@ -1606,9 +1606,17 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
  * field differs. `model` is null for a version pushed by a pre-#1214 CLI or a vertical
  * with no model.json — the tab renders an empty state for both.
  *
- * Authorized in the caller's OWN dashboard scope like every app-scoped read: the app is
- * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s; the model
- * itself is read through the tenant-narrowed control plane.
+ * Answered for the ADDRESSED scope, not the app's default one. A version is bound per
+ * scope (`verticalVersionId` on the scope record), so a multi-scope vertical can have one
+ * site pinned a version behind another — and the Data tab reads this to decide which
+ * entity a table holds (#1235). Resolved through `resolveBrowsableScope` like the table
+ * reads it now feeds, which is also what lets a SECONDARY scope be addressed at all: this
+ * route used to match `app_scope_id` alone, so every non-default scope 404'd here.
+ * Unchanged for the Model tab, which addresses the app scope and direct-matches as before.
+ *
+ * Authorized in the caller's OWN dashboard scope like every app-scoped read: the scope is
+ * resolved from the tenant-scoped `list-apps` and the tenant's own vertical scopes, so a
+ * foreign scope id 404s; the model itself is read through the tenant-narrowed control plane.
  */
 app.get('/api/apps/:scopeId/model', async (c) => {
   const host = hostFor(c.env);
@@ -1616,10 +1624,8 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const scope = scopeId.parse(appRow.app_scope_id);
+  const { appRow, scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const slug = appRow.vertical_slug;
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
   const { runningId, runningLabel, updateId, updateLabel } = versionPair(deployment, boundVersionId);
@@ -1840,6 +1846,34 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
   // UI can show — not a silent empty response the client parses as "Unexpected end of JSON".
   if (tables == null) throw new HTTPException(502, { message: 'the platform returned no data for this scope' });
   return c.json(tables);
+});
+
+/**
+ * One record's story (#1235): its events with the payload, the K-34 authorization
+ * chain, the K-42 impersonation stamp, the PII class, the emitting operation and
+ * the version it ran as — `readHistory`'s answer, which nothing above the scope
+ * could reach until #1353.
+ *
+ * Authorized like the table reads it sits beside: the app must be one the caller
+ * can browse. The nulls it carries are FACTS the renderer must not flatten — an
+ * erased payload, an unrecorded authorization chain, nobody impersonating.
+ */
+app.get('/api/apps/:scopeId/history', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.entityHistory(scope, {
+      entityType: c.req.query('entityType') ?? '',
+      entityId: c.req.query('entityId') ?? '',
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+      cursor: c.req.query('cursor') ?? undefined,
+    }),
+  );
 });
 
 app.get('/api/apps/:scopeId/tables/:table', async (c) => {

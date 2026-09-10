@@ -1,4 +1,4 @@
-import type { EmittedModel, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EmittedModel, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -404,6 +404,24 @@ export interface AppliedMigration {
  * fault — while `migrations: []` with `available: true` is a fact about the app:
  * it genuinely has none, which a module registering `migrations: []` produces.
  */
+/**
+ * One event in a record's history (#1235) — the CONTRACT's type, not a copy of it.
+ *
+ * Re-declaring it here is what made the first cut render `by undefined` for every
+ * impersonated action: the stamp is `{ session, by }` and the copy said
+ * `{ staffActor }`, which no compiler could contradict. The same copy flattened
+ * `actor` — a union whose `{ system }` and `{ connection }` members are objects —
+ * to `string`. Importing the contract makes both of those a type error instead of
+ * a screen that is quietly wrong.
+ *
+ * Three nullables are FACTS, not gaps: `payload` null = erased (a shred keeps the
+ * row, drops the content); `authorization` null = the row predates K-34 recording
+ * it, which is different from an empty list (checked nothing); `impersonation`
+ * null = nobody was impersonating, the ordinary case. See `lib/history.ts`, which
+ * is where each one is turned into words.
+ */
+export type { HistoryEntry } from '@substrat-run/contracts';
+
 /** One declared field and whether anything declares it as output (#1321). */
 export interface FieldCoverageRow {
   field: string;
@@ -1394,6 +1412,19 @@ export const api = {
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>
     call<AppMigrationsView>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
+
+  /**
+   * One record's event history (#1235) — payload, authorization chain, impersonation, PII class.
+   *
+   * Cursor-paged, and the caller must walk it: the outbox is read `ORDER BY id ASC`
+   * a page at a time, so dropping `nextCursor` would show a long-lived record's
+   * OLDEST events and silently hide everything since.
+   */
+  appEntityHistory: (scopeId: string, entityType: string, entityId: string, cursor?: string) =>
+    call<Page<HistoryEntry>>(
+      `/apps/${encodeURIComponent(scopeId)}/history?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}` +
+        (cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`),
+    ),
 
   /** Field coverage for the running version (#1321) — declared vs returnable. */
   appFieldCoverage: (scopeId: string) =>
