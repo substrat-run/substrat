@@ -206,9 +206,15 @@ append-only once shipped, so this is the cheap moment to argue about them.
   `subject_key`, `dims_json`, `metrics_json`. The personal-data table, and the one the
   `read raw rows` permission guards. `subject_key` is the day-salted hash, never a raw
   identifier, and it is erasable — which also means no event may carry it.
-- **`tock_rollup`** — the counts. `period_ts`, `grain`, `dim_set`, `dim1`, `dim2`,
-  `run_id`, `events`, `measure`, `unit`. Keyed so that one grain, one grouping and a date
-  range is a single ordered scan. **Two dimension slots is a hard limit, and the schema
+- **`tock_rollup`** — the counts. `source_key`, `grain`, `dim_set`, `period_start`, `dim1`,
+  `dim2`, `run_id`, `events`, `measure`, `unit` — and **all seven of those are the key**, in
+  that order. Two of them are there for reasons worth stating. `source_key`, because without
+  it two sources sharing a grain, grouping, dimension pair and period would collide and one
+  would silently overwrite the other. And `run_id`, because without it a corrected run
+  overwrites the run it displaces — which would quietly delete the earlier number this whole
+  design promises stays readable. Ordered so that one source, one grain, one grouping and a
+  date range is a key prefix and therefore a single ordered scan; `run_id` sits last so that
+  prefix survives, and the report resolves which run is current before it filters. **Two dimension slots is a hard limit, and the schema
   editor enforces it**: a schema declaring a third grouping dimension is refused at save
   time with that reason, rather than accepted and silently unable to group by it. Two
   covers every grouping in section 8 and keeps the key a fixed shape; widening it later
