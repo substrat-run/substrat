@@ -248,11 +248,14 @@ function SignInMethodsPanel({
     };
   }, [userId, reloadKey]);
 
-  // The server refuses the last one and its refusal is the one that counts; this only keeps an
-  // operator from meeting that refusal as an error banner. It can be a row out of step with the
-  // server — a `credential` row with no hash is listed here and is not a way in there — which is
-  // why the button being enabled is never taken as permission.
-  const isOnlyMethod = (methods?.length ?? 0) < 2;
+  // The same question the server asks, over the same fact: does removing THIS row take away
+  // their last way in. Counting rows would answer differently — a `credential` row with no
+  // password is listed here and is not a way in — so the screen would disable a button the
+  // server would have allowed, and enable one it will refuse. `usable` is on the wire so that
+  // both ends read one predicate. The server's refusal is still the one that counts; this only
+  // keeps an operator from meeting it as an error banner.
+  const removable = (m: AdminSignInMethod): boolean =>
+    !m.usable || (methods ?? []).some((other) => other.id !== m.id && other.usable);
 
   const remove = async (m: AdminSignInMethod) => {
     if (!window.confirm(removalWarning(m, email))) return;
@@ -293,7 +296,13 @@ function SignInMethodsPanel({
             <tbody>
               {methods.map((m) => (
                 <tr key={m.id}>
-                  <td>{m.provider === 'credential' ? 'Password' : m.provider}</td>
+                  <td>
+                    {m.provider === 'credential' ? 'Password' : m.provider}{' '}
+                    {/* A row that is listed and is not a way in — today only a `credential` row
+                        whose password was cleared. Saying so is what makes the Remove button
+                        beside it make sense: it is enabled because there is nothing to lose. */}
+                    {!m.usable && <span className="tag warn">no password set</span>}
+                  </td>
                   {/* For a password row this is the person's own id, not an upstream subject —
                       saying nothing is more honest than repeating it as though it meant more. */}
                   <td>{m.provider === 'credential' ? '—' : <code>{m.accountId}</code>}</td>
@@ -301,10 +310,10 @@ function SignInMethodsPanel({
                   <td className="actions">
                     {/* Disabled rather than hidden, for the reason the Actions panel gives about
                         its own row: a missing button reads as "not possible here", and the true
-                        answer is "not while it is the only one". */}
+                        answer is "not while it is the only way in". */}
                     <button
                       className="btn tiny"
-                      disabled={removing !== null || isOnlyMethod}
+                      disabled={removing !== null || !removable(m)}
                       onClick={() => void remove(m)}
                       aria-label={`Remove their ${methodLabel(m)}`}
                     >
@@ -315,11 +324,11 @@ function SignInMethodsPanel({
               ))}
             </tbody>
           </table>
-          {isOnlyMethod && (
+          {methods.some((m) => !removable(m)) && (
             <p className="muted note">
-              This is their only way to sign in, so it cannot be removed. Set a password under
-              Actions, or have them connect a provider, and it becomes removable — to close the
-              account entirely, use Remove under Actions.
+              Their only way to sign in cannot be removed. Set a password under Actions, or have
+              them connect a provider, and it becomes removable — to close the account entirely,
+              use Remove under Actions.
             </p>
           )}
         </>

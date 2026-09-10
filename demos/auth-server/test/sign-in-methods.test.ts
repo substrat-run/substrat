@@ -97,6 +97,7 @@ interface WireMethod {
   accountId: string;
   issuer: string | null;
   createdAt: string | null;
+  usable: boolean;
 }
 
 const methodsFor = async (userId: string, cookie: string): Promise<WireMethod[]> =>
@@ -174,12 +175,39 @@ describe("an administrator's read of another person's sign-in methods", () => {
   /**
    * The assertion above is about the JSON, and the JSON is built field by field — so it would
    * go on passing over a `SELECT *`, and the very regression it warns about would ship. This
-   * one is about the statement: the read asks for five named columns, and a star, an added
+   * one is about the statement: the read asks for named columns, and a star, an added
    * `password`, or an added token column is a failure here before it is ever a leak there.
+   *
+   * `password` appears in the projection and it is deliberate — as a PREDICATE, which is what
+   * makes `usable` a fact the browser can be told. So the pin is exact rather than a "does not
+   * contain password" check: this spelling, in which the hash is compared and never selected,
+   * and no other.
    */
-  it('asks SQLite for five named columns, so a `SELECT *` fails rather than ships', async () => {
+  it('asks SQLite for named columns, so a `SELECT *` fails rather than ships', async () => {
     await methodsFor(memberId, await signInAs(ADMIN));
-    expect(accountReadColumns()).toEqual(['id', 'provider_id', 'account_id', 'issuer', 'created_at']);
+    expect(accountReadColumns()).toEqual([
+      'id',
+      'provider_id',
+      'account_id',
+      'issuer',
+      'created_at',
+      "(provider_id <> 'credential' OR (password IS NOT NULL AND password <> '')) AS usable",
+    ]);
+  });
+
+  /**
+   * `usable` is the whole reason the screen can agree with the unlink guard rather than count
+   * rows and disagree with it. A `credential` row whose password was cleared is still a row and
+   * is not a way in, and that is the one shape in which the two answers differ.
+   */
+  it('says whether a method is a way in, without the hash that decides it', async () => {
+    const admin = await signInAs(ADMIN);
+    expect((await methodsFor(memberId, admin))[0]!.usable).toBe(true);
+
+    db.prepare("UPDATE account SET password = NULL WHERE user_id = ? AND provider_id = 'credential'").run(memberId);
+    const [cleared] = await methodsFor(memberId, admin);
+    expect(cleared!.usable).toBe(false);
+    expect(Object.keys(cleared!)).not.toContain('password');
   });
 
   it('shows an upstream account by the subject the provider knows them by', async () => {
@@ -335,6 +363,24 @@ describe("an administrator's unlink of another person's sign-in method", () => {
     const res = await removeMethod(memberId, 'acct-google', admin);
     expect(res.status).toBe(409);
     expect(accountIdsOf(memberId)).toContain('acct-google');
+  });
+
+  /**
+   * The other side of that same predicate, and the reason the refusal is about what is LOST
+   * rather than how many rows are left: the dead password row itself CAN go, even as the only
+   * row. Removing it takes no way in away — there was none — and a guard that counted rows
+   * would refuse it, leaving a row on the screen that no verb in the console could reach.
+   */
+  it('lets a dead password row go, even when it is the only row', async () => {
+    db.prepare("UPDATE account SET password = '' WHERE user_id = ? AND provider_id = 'credential'").run(memberId);
+    const admin = await signInAs(ADMIN);
+    const [dead] = await methodsFor(memberId, admin);
+    expect(dead!.usable).toBe(false);
+
+    expect((await removeMethod(memberId, dead!.id, admin)).status).toBe(200);
+    // And what is left is the empty list the panel already had copy for — "no way to sign in",
+    // which was true before the removal too and is now visibly true.
+    expect(await methodsFor(memberId, admin)).toEqual([]);
   });
 
   /**

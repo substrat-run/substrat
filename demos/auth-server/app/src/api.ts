@@ -258,6 +258,13 @@ export interface AdminSignInMethod {
   accountId: string;
   issuer: string | null;
   createdAt: string | null;
+  /**
+   * Whether this row is actually a way in — the hash's existence, which is the only thing
+   * about it a browser may be told. False today means one thing: a `credential` row carrying
+   * no password. It is why "this cannot be removed" on screen can agree with the server
+   * instead of counting rows and disagreeing with it.
+   */
+  usable: boolean;
 }
 
 /** A live session of this person, as the admin plugin reports it. */
