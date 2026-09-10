@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import {
   identityProviders,
-  removeIdentityProvider,
   saveIdentityProvider,
   type ConfiguredProvider,
   type ProviderCatalogueEntry,
   type ProviderDraft,
 } from '../api';
 import { Field } from '../primitives';
+import { navigate } from '../console/router';
+import { PROVIDERS_PATH } from '../console/routes';
 
 /* ---- the upstream identity providers ---- */
 
@@ -19,17 +20,16 @@ import { Field } from '../primitives';
  * The catalogue is closed on purpose (`src/providers.ts`): each entry is a provider Better
  * Auth ships endpoints and a profile mapping for, so enabling one is a credential and two
  * decisions rather than a form full of URLs to get subtly wrong.
+ *
+ * A list, and almost only a list: every provider with an id — configured or merely offered by
+ * the catalogue — is a screen of its own at `/providers/<id>`, which is a place a link can
+ * point at. The one editor still here is the custom OIDC provider nobody has named yet: its id
+ * is the first field of the form, so until it is saved there is no URL for it to be at.
  */
-/**
- * The editor sentinel for "a custom provider being created". Not a valid provider id — the
- * server only accepts lowercase slugs — so it can never collide with a configured row.
- */
-const NEW_CUSTOM = '::custom';
-
 export function ProvidersPanel({ issuer }: { issuer: string | null }) {
   const [catalogue, setCatalogue] = useState<ProviderCatalogueEntry[] | null>(null);
   const [providers, setProviders] = useState<ConfiguredProvider[]>([]);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [addingCustom, setAddingCustom] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -67,7 +67,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
           {providers.length > 0 && (
             <table className="grid">
               <thead>
-                <tr><th>Provider</th><th>Client ID</th><th>Status</th><th></th></tr>
+                <tr><th>Provider</th><th>Client ID</th><th>Status</th></tr>
               </thead>
               <tbody>
                 {providers.map((provider) => {
@@ -76,7 +76,9 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
                     <tr key={provider.id}>
                       <td>
                         <div>
-                          {entry?.label ?? provider.label ?? provider.id}
+                          <ProviderLink id={provider.id}>
+                            {entry?.label ?? provider.label ?? provider.id}
+                          </ProviderLink>
                           {provider.issuer && !entry && <span className="tag">custom OIDC</span>}
                           {provider.allowSignup && <span className="tag">creates accounts</span>}
                           {provider.trustEmail && <span className="tag">trusted email</span>}
@@ -86,70 +88,71 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
                       </td>
                       <td><code>{provider.clientId}</code></td>
                       <td>{provider.disabled ? 'Disabled' : 'Enabled'}</td>
-                      <td className="actions">
-                        <button className="btn tiny" onClick={() => setEditing(provider.id)}>Edit</button>
-                        <button
-                          className="btn tiny danger"
-                          onClick={async () => {
-                            if (!window.confirm(`Remove ${entry?.label ?? provider.label ?? provider.id}? People who signed in with it will need another way in.`)) return;
-                            try {
-                              await removeIdentityProvider(provider.id);
-                              // Close the editor if it was showing THIS provider. The table
-                              // stays clickable while it is open, so Remove can be pressed on
-                              // the row being edited — and the key that fixes provider-to-
-                              // provider switching cannot help here, because the id has not
-                              // changed. Without this the form survives its own row, flips to
-                              // "Enable", and keeps the deleted client id and toggles.
-                              // Functional, so a newer editor opened meanwhile is left alone.
-                              setEditing((current) => (current === provider.id ? null : current));
-                              await reload();
-                            } catch (e) {
-                              setErr(e instanceof Error ? e.message : String(e));
-                            }
-                          }}
-                        >
-                          Remove
-                        </button>
-                      </td>
                     </tr>
                   );
                 })}
               </tbody>
             </table>
           )}
-          {!editing && (
+          {!addingCustom && (
             <div className="add-provider">
+              {/* A catalogue entry already HAS its id, so enabling it is the same screen as
+                  editing it — and therefore a link rather than a button that unfolds a form. */}
               {unconfigured.map((entry) => (
-                <button key={entry.id} className="btn" onClick={() => setEditing(entry.id)}>
+                <ProviderLink key={entry.id} id={entry.id} className="btn">
                   + {entry.label}
-                </button>
+                </ProviderLink>
               ))}
-              {/* NEW_CUSTOM is not a valid provider id (the server only accepts lowercase
-                  slugs), so it can never collide with a configured row. */}
-              <button className="btn" onClick={() => setEditing(NEW_CUSTOM)}>+ Custom (OIDC)</button>
+              <button className="btn" onClick={() => setAddingCustom(true)}>+ Custom (OIDC)</button>
             </div>
           )}
-          {editing && (
+          {addingCustom && (
             <ProviderEditor
-              // The table stays clickable while the editor is open, so Edit on a second
-              // provider changes `editing` without unmounting this. Same element type in the
-              // same position ⇒ React keeps the instance and its `useState` initialisers do
-              // not re-run, so the form would still hold the FIRST provider's credentials and
-              // save them onto the second one's row. The key is what makes it a remount.
-              key={editing}
               issuer={issuer}
-              entry={catalogue.find((e) => e.id === editing) ?? null}
-              provider={configured(editing) ?? null}
-              onCancel={() => setEditing(null)}
-              onSaved={async () => {
-                setEditing(null);
-                await reload();
+              entry={null}
+              provider={null}
+              onCancel={() => setAddingCustom(false)}
+              onSaved={(id) => {
+                setAddingCustom(false);
+                // Straight to the screen the new provider now has: it has an id, so from here
+                // on it is edited where a link can point, like every other row.
+                navigate(`${PROVIDERS_PATH}/${id}`);
               }}
             />
+          )}
+          {providers.length > 0 && (
+            <p className="muted small">
+              Open a provider to change its credentials, disable it or remove it. Removing one
+              leaves the people who signed in with it needing another way in.
+            </p>
           )}
         </>
       )}
     </section>
+  );
+}
+
+/**
+ * A real anchor to `/providers/<id>`, not a click handler on a cell: the row's whole point is
+ * that it is now a place, so it has to be copyable, middle-clickable and openable in a tab. The
+ * plain click stays same-document.
+ */
+function ProviderLink({
+  id, className, children,
+}: { id: string; className?: string; children: ReactNode }) {
+  const href = `${PROVIDERS_PATH}/${id}`;
+  return (
+    <a
+      href={href}
+      className={className}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+        e.preventDefault();
+        navigate(href);
+      }}
+    >
+      {children}
+    </a>
   );
 }
 
@@ -165,7 +168,7 @@ export function ProvidersPanel({ issuer }: { issuer: string | null }) {
  * names it (the id becomes the callback path segment, so it is asked once and then fixed),
  * labels its button, and pastes the upstream's issuer URL — discovery derives the endpoints.
  */
-function ProviderEditor({
+export function ProviderEditor({
   issuer, entry, provider, onCancel, onSaved,
 }: {
   /**
@@ -176,8 +179,10 @@ function ProviderEditor({
   issuer: string | null;
   entry: ProviderCatalogueEntry | null;
   provider: ConfiguredProvider | null;
-  onCancel: () => void;
-  onSaved: () => void | Promise<void>;
+  /** Absent on the detail screen: there is nothing to back out to, the screen IS the form. */
+  onCancel?: () => void;
+  /** Handed the id that was saved — the custom case is the only caller that did not know it. */
+  onSaved: (id: string) => void | Promise<void>;
 }) {
   const [customId, setCustomId] = useState(provider?.id ?? '');
   const [label, setLabel] = useState(provider?.label ?? '');
@@ -190,12 +195,14 @@ function ProviderEditor({
   const [disabled, setDisabled] = useState(provider?.disabled ?? false);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
 
   const providerId = entry?.id ?? provider?.id ?? customId.trim();
   const displayName = entry?.label ?? provider?.label ?? (label.trim() || 'custom provider');
 
   const save = async () => {
     setErr(null);
+    setSaved(false);
     // Refused here, not by the server: an empty id would make the PUT's path `/providers/`,
     // which matches no route and comes back as a 404 that names no field.
     if (!providerId) {
@@ -223,15 +230,23 @@ function ProviderEditor({
     setBusy(true);
     try {
       await saveIdentityProvider(providerId, draft);
-      await onSaved();
+      await onSaved(providerId);
+      // On the detail screen the form is the screen, so nothing closes to signal the save
+      // happened. Said out loud instead — and only after the await, so it is a report rather
+      // than a hope. Cleared by the next edit, below.
+      setSaved(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      // Reset either way: on the list this component unmounts and the write is a no-op, but on
+      // the detail screen it stays mounted, and a `busy` never cleared is a Save button that
+      // never comes back.
       setBusy(false);
     }
   };
 
   return (
-    <div className="editor">
+    <div className="editor" onInput={() => setSaved(false)}>
       <h3>{provider ? `Edit ${displayName}` : entry ? `Enable ${entry.label}` : 'Add a custom OIDC provider'}</h3>
       {!entry && (
         <>
@@ -331,7 +346,8 @@ function ProviderEditor({
         <button className="btn primary" disabled={busy} onClick={() => void save()}>
           {busy ? 'Saving…' : provider ? 'Save changes' : entry ? 'Enable' : 'Add provider'}
         </button>
-        <button className="btn" onClick={onCancel}>Cancel</button>
+        {onCancel && <button className="btn" onClick={onCancel}>Cancel</button>}
+        {saved && <span className="muted small">Saved.</span>}
       </div>
     </div>
   );
