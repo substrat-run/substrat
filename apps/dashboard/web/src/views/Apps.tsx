@@ -1,12 +1,90 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
-import type { AppRow, InstallStep } from '../lib/api';
+import { api, type AppHealthRow, type AppRow, type InstallStep } from '../lib/api';
 import { verticalMeta } from '../lib/demo';
 import { relativeTime } from '../lib/format';
 import { Ic } from '../lib/icons';
 import { AppCard, type AppCardData } from '../components/AppCard';
 import { Page } from '../components/layout';
 import { Pill, PageTitle, RowActions, card } from '../components/ui';
+
+/**
+ * The fleet rollup (#1238): what needs attention, before any drill-down.
+ *
+ * Shows only apps that are NOT ok, worst first — which is the right density for
+ * the motivating user, a firm running one vertical for thirty clients. A clean
+ * fleet gets one green line rather than thirty green cards to scan past.
+ *
+ * `silent` is listed as loudly as `failing`, because an app nothing has checked
+ * is not an app that is fine — rendering silence as success is the failure this
+ * whole view set exists to prevent.
+ */
+function FleetHealth({ onOpen }: { onOpen: (scopeId: string) => void }) {
+  const [rows, setRows] = useState<AppHealthRow[] | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api
+      .fleetHealth()
+      .then((r) => live && setRows(r.rows))
+      // A worker predating the route costs the panel, not the page.
+      .catch(() => live && setRows(null));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  if (!rows || rows.length === 0) return null;
+  const attention = rows.filter((r) => r.state !== 'ok');
+  const tone: Record<string, 'danger' | 'warning' | 'neutral'> = {
+    failing: 'danger',
+    stale: 'warning',
+    silent: 'warning',
+    unknown: 'neutral',
+  };
+
+  if (attention.length === 0) {
+    return (
+      <div style={{ ...card, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+        <Pill kind="success">All clear</Pill>
+        <span style={{ color: 'var(--text-tertiary)' }}>
+          {rows.length} {rows.length === 1 ? 'app' : 'apps'} swept, with nothing failing or overdue.
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 8 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Needs attention</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          {attention.length} of {rows.length} {rows.length === 1 ? 'app' : 'apps'}, worst first. Apps that
+          are swept and clean are not listed.
+        </p>
+      </div>
+      {attention.map((r) => (
+        <button
+          key={r.scopeId}
+          type="button"
+          onClick={() => onOpen(r.scopeId)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', width: '100%',
+            background: 'none', border: 0, borderTop: '1px solid var(--border-subtle)',
+            padding: '8px 0 0', font: 'inherit', cursor: 'pointer',
+          }}
+        >
+          <Pill kind={tone[r.state] ?? 'neutral'}>{r.state}</Pill>
+          <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{r.reason}</span>
+          <div style={{ flex: 1 }} />
+          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+            {r.scopeId.slice(-8)}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /** A normal install completes in seconds; past this, a `provisioning` row is STUCK (#424). */
 const STALL_AFTER_MS = 2 * 60 * 1000;
@@ -85,6 +163,8 @@ export function Apps({
         <div style={{ flex: 1 }} />
         <Button icon={<Ic name="plus" />} onClick={onCreate}>Create App</Button>
       </div>
+
+      <FleetHealth onOpen={onOpen} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <Input placeholder="Search apps…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260 }} />

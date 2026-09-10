@@ -422,6 +422,21 @@ export interface AppliedMigration {
  */
 export type { HistoryEntry } from '@substrat-run/contracts';
 
+/**
+ * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
+ * `silent` and `ok` are different answers: nothing having checked an app is not
+ * the same as nothing being wrong with it.
+ */
+export interface AppHealthRow {
+  scopeId: string;
+  state: 'failing' | 'stale' | 'silent' | 'ok' | 'unknown';
+  reason: string;
+  failures: number;
+  sweepFailures: number;
+  stale: number;
+  lastSweepAt: string | null;
+}
+
 /** One declared field and whether anything declares it as output (#1321). */
 export interface FieldCoverageRow {
   field: string;
@@ -1425,6 +1440,9 @@ export const api = {
       `/apps/${encodeURIComponent(scopeId)}/history?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}` +
         (cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`),
     ),
+
+  /** Every app's health, worst first (#1238) — the rollup, not a per-app read. */
+  fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),
 
   /** Field coverage for the running version (#1321) — declared vs returnable. */
   appFieldCoverage: (scopeId: string) =>

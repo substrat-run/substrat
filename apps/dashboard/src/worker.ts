@@ -34,6 +34,7 @@ import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './releases.js';
 import { deriveFieldCoverage } from './field-coverage.js';
+import { deriveFleetHealth } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
@@ -1858,6 +1859,47 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
  * can browse. The nulls it carries are FACTS the renderer must not flatten — an
  * erased payload, an unrecorded authorization chain, nobody impersonating.
  */
+/**
+ * The fleet rollup (#1238): one health verdict per app, worst first — "is this
+ * group healthy" answered before any drill-down, which is the question a
+ * multi-client operator opens the dashboard to ask.
+ *
+ * Composition, not new observation: failures come from the ops-failure record and
+ * sweep/freshness verdicts from the sweep record, both read ONCE for the tenant
+ * and grouped per scope here rather than fetched per app — the shape the account
+ * integrations page already uses, because N apps must not mean 2N reads.
+ *
+ * A read that fails answers `unknown` for every app rather than a cheerful `ok`.
+ */
+// Deliberately NOT `/api/apps/health`: no bare `/api/apps/:scopeId` route exists
+// today, but adding one later would silently capture `health` as a scope id.
+app.get('/api/fleet-health', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const scopeIds = apps.map((a) => a.app_scope_id);
+  if (scopeIds.length === 0) return c.json({ rows: [] });
+
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const since = new Date(Date.now() - 24 * 3_600_000).toISOString();
+  // `null` is "the read failed", which the derivation renders as unknown — distinct
+  // from an empty list, which honestly means "nothing recorded in the window".
+  const [failures, sweeps] = await Promise.all([
+    cp.listOpsFailures({ limit: 400 }).catch(() => null),
+    cp.listSweepRuns({ since, limit: 400 }).catch(() => null),
+  ]);
+  return c.json({
+    rows: deriveFleetHealth({
+      scopeIds,
+      failures: failures ?? [],
+      sweeps: sweeps ?? [],
+      available: failures !== null && sweeps !== null,
+    }),
+  });
+});
+
 app.get('/api/apps/:scopeId/history', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
