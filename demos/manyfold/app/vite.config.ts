@@ -10,6 +10,12 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: WEB_PORT,
-    proxy: { '/api': `http://localhost:${API_PORT}` },
+    proxy: {
+      // `changeOrigin: false`, written out. Vite's string shorthand expands to
+      // `{ target, changeOrigin: true }`, which rewrites Host — and the API derives
+      // its OIDC `redirect_uri` from the Host it is handed, so the login callback
+      // would come back to the API's port, where this app is not (#1388).
+      '/api': { target: `http://localhost:${API_PORT}`, changeOrigin: false },
+    },
   },
 });

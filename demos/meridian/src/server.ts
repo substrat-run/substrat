@@ -45,8 +45,10 @@ import { DOCS_HTML } from './docs.js';
  * (D-33), and a template is COPIED. A default that impersonates is one people carry into
  * production without noticing they opted into anything.
  *
- * The Vite proxy must not set `changeOrigin`: this server derives its OIDC `redirect_uri`
- * from the forwarded Host header, which is what lands the callback back on the SPA.
+ * The Vite proxy must set `changeOrigin: false`, written out: this server derives its OIDC
+ * `redirect_uri` from the forwarded Host header, which is what lands the callback back on
+ * the SPA. This comment used to say "must not set `changeOrigin`" and `app/vite.config.ts`
+ * used the shorthand anyway — which is Vite's spelling for `changeOrigin: true` (#1388).
  */
 
 const dataDir = join(dirname(fileURLToPath(import.meta.url)), '..', '.data');

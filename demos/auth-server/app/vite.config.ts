@@ -11,6 +11,13 @@ export default defineConfig({
   server: {
     port: WEB_PORT,
     proxy: {
+      // vite-proxy-allow: the issuer's origin comes from PORT, not from Host.
+      //
+      // The shorthand is deliberate here, and this is the one demo it is safe in: the
+      // issuer takes its own origin from `PORT` (`src/server.ts`), never from the Host
+      // it is handed, so the Host rewrite the shorthand performs changes nothing it
+      // says. Every demo whose API derives an OIDC `redirect_uri` from Host writes
+      // `changeOrigin: false` instead — see #1388 and tools/vite-proxy-host.mjs.
       '/api': `http://localhost:${API_PORT}`,
       '/.well-known': `http://localhost:${API_PORT}`,
     },

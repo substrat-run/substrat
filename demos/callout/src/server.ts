@@ -41,8 +41,9 @@ import type { DevCaller } from '@substrat-run/dev-issuer';
  * The one thing to know about the proxy: the SPA is served by Vite on WEB_PORT and forwards
  * `/api` here WITHOUT rewriting the Host header, so the origin this server derives — and
  * therefore the `redirect_uri` it registers with the issuer — is the browser's origin, not
- * this port. That is what lands the OIDC callback back on the SPA. Setting `changeOrigin` on
- * that proxy would break login.
+ * this port. That is what lands the OIDC callback back on the SPA. It takes `changeOrigin:
+ * false` written out to get that: Vite's string shorthand IS `changeOrigin: true`, which is
+ * how this config sat broken while this paragraph described the behaviour it wanted (#1388).
  *
  * The shared control plane rides the SAME SqliteScopeHost on its own port (co-located for
  * local dev): one process, one SQLite dir, so a suspend in the console fails this vertical's

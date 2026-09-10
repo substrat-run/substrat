@@ -13,6 +13,7 @@
     "lint:deps": "node tools/declared-deps.mjs",
     "lint:spine-ddl": "node tools/spine-ddl-drift.mjs",
     "lint:bound-fetch": "node tools/bound-fetch.mjs",
+    "lint:vite-proxy": "node tools/vite-proxy-host.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:model": "tsx tools/model-diff.mts",
     "lint:api": "tsx tools/api-diff.mts",
