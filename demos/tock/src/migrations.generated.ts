@@ -51,14 +51,14 @@ export const tockMigrations: SqlMigration[] = [
         source_key TEXT NOT NULL,
         grain TEXT NOT NULL,
         dim_set TEXT NOT NULL,
-        period_ts INTEGER NOT NULL,
+        period_start TEXT NOT NULL,
         dim1 TEXT NOT NULL,
         dim2 TEXT NOT NULL,
         run_id TEXT NOT NULL,
         events INTEGER NOT NULL,
         measure TEXT,
         unit TEXT,
-        PRIMARY KEY (source_key, grain, dim_set, period_ts, dim1, dim2)
+        PRIMARY KEY (source_key, grain, dim_set, period_start, dim1, dim2, run_id)
       );
 
       CREATE TABLE tock_rows (

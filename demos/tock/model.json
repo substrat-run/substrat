@@ -140,8 +140,8 @@
           "dim_set": {
             "type": "string"
           },
-          "period_ts": {
-            "type": "number"
+          "period_start": {
+            "type": "string"
           },
           "dim1": {
             "type": "string"
@@ -180,7 +180,7 @@
           "source_key",
           "grain",
           "dim_set",
-          "period_ts",
+          "period_start",
           "dim1",
           "dim2",
           "run_id",
@@ -194,9 +194,10 @@
         "source_key",
         "grain",
         "dim_set",
-        "period_ts",
+        "period_start",
         "dim1",
-        "dim2"
+        "dim2",
+        "run_id"
       ]
     },
     "row": {
