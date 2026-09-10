@@ -7,10 +7,29 @@
  * whose claim is "numbers you can stand behind" cannot take them from the client that
  * submitted them, so nothing here is ever sent as a fact.
  *
- * It deliberately reads only the first slice of a large file: the modelling conversation needs
- * a shape, not a census, and holding a month of logs in a tab to show six rows would make the
- * screen worse rather than better.
+ * It deliberately reads only the first SLICE OF BYTES of a large file — `readHead` below — and
+ * that is the whole point rather than an optimisation. Calling `file.text()` first would
+ * materialise a month of logs in the tab to show six rows of it, which is the opposite of what
+ * a bounded preview is for.
  */
+
+/** Enough bytes for a shape, not a census. A few hundred rows of log lines fit comfortably. */
+const HEAD_BYTES = 256 * 1024;
+
+/**
+ * The first `HEAD_BYTES` of a file, decoded, with the last line dropped when it was cut.
+ *
+ * A byte slice lands mid-record whenever the file is longer than the slice, and a half-line
+ * parsed as a whole one would show a column count that is simply wrong. Dropping it costs one
+ * sampled row and removes a class of confusing preview.
+ */
+export async function readHead(file: File): Promise<{ text: string; truncated: boolean }> {
+  const truncated = file.size > HEAD_BYTES;
+  const text = new TextDecoder().decode(await file.slice(0, HEAD_BYTES).arrayBuffer());
+  if (!truncated) return { text, truncated };
+  const cut = text.lastIndexOf('\n');
+  return { text: cut === -1 ? text : text.slice(0, cut), truncated };
+}
 
 export interface PreviewColumn {
   name: string;
@@ -64,7 +83,7 @@ function inferType(values: string[]): PreviewColumn['inferred'] {
   return 'text';
 }
 
-export function previewFile(text: string): Preview {
+export function previewFile(text: string, truncatedBytes = false): Preview {
   const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
   if (lines.length < 2) return { columns: [], rows: [], sampled: 0, truncated: false, problem: 'the file has no rows under its header' };
 
@@ -95,5 +114,7 @@ export function previewFile(text: string): Preview {
       empty: rows.filter((r) => (r[name] ?? '') === '').length,
     }));
 
-  return { columns, rows, sampled: rows.length, truncated: lines.length - 1 > body.length };
+  // Truncated when the sample ran out of ROWS or when the byte slice ran out of FILE — a
+  // reader only needs to know the preview is partial, not which limit stopped it.
+  return { columns, rows, sampled: rows.length, truncated: truncatedBytes || lines.length - 1 > body.length };
 }

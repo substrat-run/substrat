@@ -60,3 +60,23 @@ export const upload = (sourceKey: string, filename: string, file: File) =>
 /** Ask the server to read those bytes back and profile from them. */
 export const profile = (runId: string) =>
   bytesRoute(`/api/runs/${encodeURIComponent(runId)}/profile`, { method: 'POST' });
+
+/**
+ * Every page of a paged read, not just the first.
+ *
+ * A list read answers 20 entries and a `next` link; taking only the first page means the 21st
+ * source in a workspace becomes unreachable rather than merely unshown. These collections are
+ * small — sources, schema versions, a source's runs — so walking them whole is the honest
+ * shape. A read that could grow without bound (rows) is not walked this way and gets its own
+ * paging when it needs one.
+ */
+export async function all<T>(first: Promise<{ entries: T[]; next: string | null }>): Promise<T[]> {
+  let page = await first;
+  const out = [...page.entries];
+  // A guard rather than a limit: a `next` that never goes null would otherwise spin forever.
+  for (let hops = 0; page.next && hops < 50; hops += 1) {
+    page = await api.follow<T>(page.next);
+    out.push(...page.entries);
+  }
+  return out;
+}

@@ -1,5 +1,5 @@
 /**
- * Tock's one screen, in four panes.
+ * Tock's one screen, in five panes.
  *
  * The app filters nothing. Every list it renders is what the API answered, so a viewer seeing
  * fewer things than an analyst is the permission model on screen rather than a `if (role ===`
@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ApiError,
+  all,
   api,
   auth,
   me,
@@ -21,7 +22,7 @@ import {
   type Session,
   type Source,
 } from './api.js';
-import { previewFile, type Preview } from './preview.js';
+import { previewFile, readHead, type Preview } from './preview.js';
 
 type Pane = 'ingest' | 'schema' | 'runs' | 'findings' | 'report';
 type FieldRole = 'dimension' | 'measure' | 'ignored';
@@ -69,20 +70,18 @@ export function App() {
 
   useEffect(() => {
     if (!session) return;
-    void api
-      .listSources()
-      .then((page) => {
-        setSources(page.entries);
-        setSourceKey((k) => k || (page.entries[0]?.key ?? ''));
+    void all(api.listSources())
+      .then((entries) => {
+        setSources(entries);
+        setSourceKey((k) => k || (entries[0]?.key ?? ''));
       })
       .catch(() => setSources([]));
   }, [session, tick]);
 
   useEffect(() => {
     if (!session || !sourceKey) return;
-    void api
-      .listRuns({ sourceKey })
-      .then((page) => setRuns(page.entries))
+    void all(api.listRuns({ sourceKey }))
+      .then(setRuns)
       .catch(() => setRuns([]));
   }, [session, sourceKey, tick]);
 
@@ -138,13 +137,39 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
   const [preview, setPreview] = useState<Preview | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  /** An uploaded run whose profiling has not succeeded yet. */
+  const [pending, setPending] = useState<string | null>(null);
   const { error, busy, run } = useAction();
   const [newKey, setNewKey] = useState('');
 
   const take = async (f: File) => {
     setFile(f);
     setResult(null);
-    setPreview(previewFile(await f.text()));
+    setPending(null);
+    // A byte slice, never `f.text()`: the preview needs a shape, and reading a month of logs
+    // into the tab to show six rows of it would freeze the very screen it is meant to speed up.
+    const head = await readHead(f);
+    setPreview(previewFile(head.text, head.truncated));
+  };
+
+  /**
+   * Upload creates a run; profiling is a second call that can fail on its own.
+   *
+   * Losing the run id in between is what strands it: the Runs pane offers nothing for a
+   * `received` run, and pressing the button again would upload the same file and open a
+   * SECOND run over it. So the id is kept, and a failed profile retries the profile rather
+   * than re-uploading.
+   */
+  const profileRun = async (runId: string) => {
+    const done = await profile(runId);
+    setResult(
+      `Run ${runId.slice(-8)} · ${done.records} record${done.records === 1 ? '' : 's'} read by the server` +
+        (done.malformed > 0
+          ? ` · ${done.malformed} unreadable line${done.malformed === 1 ? '' : 's'} reported and left out of the run`
+          : ''),
+    );
+    setPending(null);
+    onDone();
   };
 
   if (sources.length === 0)
@@ -180,7 +205,14 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
           if (f) void take(f);
         }}
       >
-        <input type="file" accept=".csv,text/csv" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) void take(f); }} />
+        {/* Visually hidden rather than `hidden`: the attribute takes the input out of the tab
+            order, which leaves a keyboard-only user with no way to open the file chooser at all. */}
+        <input
+          type="file"
+          accept=".csv,text/csv"
+          className="sr-only"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void take(f); }}
+        />
         {file ? <strong>{file.name}</strong> : <span>Drop a CSV here, or click to choose one</span>}
       </label>
 
@@ -209,20 +241,28 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
             </tbody>
           </table>
 
-          <button
-            disabled={busy || !file}
-            onClick={() => run(async () => {
-              const up = await upload(sourceKey, file!.name, file!);
-              const done = await profile(up.run.id);
-              setResult(
-                `Run ${done.run.id.slice(-8)} · ${done.records} record${done.records === 1 ? '' : 's'} read by the server` +
-                  (done.malformed > 0 ? ` · ${done.malformed} malformed line${done.malformed === 1 ? '' : 's'} counted, not dropped` : ''),
-              );
-              onDone();
-            })}
-          >
-            {busy ? 'Sending…' : 'Send to the server and profile'}
-          </button>
+          {pending ? (
+            <>
+              <p className="warn">
+                Run {pending.slice(-8)} was uploaded but has not been profiled. Retry the profile —
+                sending the file again would open a second run over the same bytes.
+              </p>
+              <button disabled={busy} onClick={() => run(() => profileRun(pending))}>
+                {busy ? 'Profiling…' : 'Retry profiling'}
+              </button>
+            </>
+          ) : (
+            <button
+              disabled={busy || !file}
+              onClick={() => run(async () => {
+                const up = await upload(sourceKey, file!.name, file!);
+                setPending(up.run.id);
+                await profileRun(up.run.id);
+              })}
+            >
+              {busy ? 'Sending…' : 'Send to the server and profile'}
+            </button>
+          )}
         </>
       )}
 
@@ -242,13 +282,14 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
 
   useEffect(() => {
     if (!sourceKey) return;
-    void api.listSchemas({ sourceKey }).then((page) => {
-      const latest = page.entries[page.entries.length - 1];
-      if (latest) {
-        setVersion(latest.version);
-        setFields(JSON.parse(latest.fields_json) as Record<string, FieldDraft>);
-      }
-    }).catch(() => undefined);
+    // Cleared on BOTH branches. Leaving the previous source's draft in place when the new one
+    // has no schemas is not a cosmetic bug: the editor then shows fields that belong to another
+    // source and will happily save them as its v1.
+    void all(api.listSchemas({ sourceKey })).then((entries) => {
+      const latest = entries[entries.length - 1];
+      setVersion(latest ? latest.version : null);
+      setFields(latest ? (JSON.parse(latest.fields_json) as Record<string, FieldDraft>) : {});
+    }).catch(() => { setVersion(null); setFields({}); });
     // Fields that have arrived — so modelling starts from what the data actually contains.
     void api.fieldHistory({ sourceKey }).then((h) => {
       setSuggest([...new Set(h.entries.map((e) => e.field))]);
@@ -340,7 +381,7 @@ function Runs({ sourceKey, runs, onDone }: { sourceKey: string; runs: Run[]; onD
 
   useEffect(() => {
     if (!sourceKey) return;
-    void api.listSchemas({ sourceKey }).then((p) => setVersion(p.entries[p.entries.length - 1]?.version ?? 1)).catch(() => undefined);
+    void all(api.listSchemas({ sourceKey })).then((e) => setVersion(e[e.length - 1]?.version ?? 1)).catch(() => undefined);
   }, [sourceKey]);
 
   useEffect(() => {
@@ -470,16 +511,23 @@ function Report({ sourceKey }: { sourceKey: string }) {
   const [grain, setGrain] = useState<'hour' | 'day' | 'month'>('day');
   const [dimSet, setDimSet] = useState('total');
   const [unknown, setUnknown] = useState(false);
-  const [rows, setRows] = useState<{ periodStart: string; dim1: string; label1: string | null; events: number; measure: string | null; runId: string }[]>([]);
+  const [rows, setRows] = useState<{ periodStart: string; dim1: string; dim2: string; label1: string | null; label2: string | null; events: number; measure: string | null; runId: string }[]>([]);
   const [note, setNote] = useState<string | null>(null);
   const [choices, setChoices] = useState<string[]>(['total']);
 
   useEffect(() => {
     if (!sourceKey) return;
-    void api.listSchemas({ sourceKey }).then((p) => {
-      const latest = p.entries[p.entries.length - 1];
+    // Back to `total` whenever the source changes. A grouping carried over from another source
+    // is a request the server has no rows for, rendered as an empty report that looks like an
+    // answer — and the select would show no matching option while doing it.
+    setDimSet('total');
+    void all(api.listSchemas({ sourceKey })).then((entries) => {
+      const latest = entries[entries.length - 1];
       const fields = latest ? (JSON.parse(latest.fields_json) as Record<string, FieldDraft>) : {};
-      setChoices(['total', ...Object.entries(fields).filter(([, f]) => f.role === 'dimension').map(([n]) => n)]);
+      const dims = Object.entries(fields).filter(([, f]) => f.role === 'dimension').map(([n]) => n);
+      // Counting materialises the PAIR as well as each single dimension, in the order the
+      // schema declares them. Offering only the singles left rows nothing could ask for.
+      setChoices(['total', ...dims, ...(dims.length === 2 ? [dims.join('+')] : [])]);
     }).catch(() => undefined);
   }, [sourceKey]);
 
@@ -498,6 +546,9 @@ function Report({ sourceKey }: { sourceKey: string }) {
       .then((r) => setRows(r.rows))
       .catch((e) => { setRows([]); setNote(e instanceof ApiError && e.status === 403 ? 'Refused — your role does not hold report:read.' : (e as Error).message); });
   }, [sourceKey, grain, dimSet, unknown]);
+
+  /** Which slots this grouping uses — `total` uses none, a pair uses both. */
+  const dims = dimSet === 'total' ? [] : dimSet.split('+');
 
   return (
     <section>
@@ -522,14 +573,21 @@ function Report({ sourceKey }: { sourceKey: string }) {
       {note && <p className="error">{note}</p>}
       <table>
         <thead>
-          <tr><th>Period</th>{dimSet !== 'total' && <th>{dimSet}</th>}<th>Events</th><th>Measure</th><th>From run</th></tr>
+          <tr>
+            <th>Period</th>
+            {dims.map((d) => <th key={d}>{d}</th>)}
+            <th>Events</th><th>Measure</th><th>From run</th>
+          </tr>
         </thead>
         <tbody>
           {rows.map((r, i) => (
             <tr key={i}>
               <td>{r.periodStart.slice(0, 10)}</td>
-              {dimSet !== 'total' && (
+              {dims.length >= 1 && (
                 <td>{r.dim1 === '' ? <span className="warn">unknown</span> : (r.label1 ?? r.dim1)}</td>
+              )}
+              {dims.length >= 2 && (
+                <td>{r.dim2 === '' ? <span className="warn">unknown</span> : (r.label2 ?? r.dim2)}</td>
               )}
               <td>{r.events}</td>
               <td>{r.measure ?? <span className="muted">—</span>}</td>
