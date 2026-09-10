@@ -53,7 +53,19 @@ import {
   timelineInput,
 } from './schemas.js';
 
-/** The keys these operations check. Mirrors `MF_PERM` in manifest.ts. */
+/**
+ * Every permission key a Manyfold scope declares — all six of them Manyfold's own, since
+ * this vertical composes no engine (`MODULES` in provision.ts registers `manyfoldModule`
+ * alone). Mirrors `MF_PERM` in manifest.ts.
+ *
+ * One array, two readers, and that is what makes it checked (#1208). `defineOperations`
+ * takes it below as the union a mistyped `permission:` fails against; `definePermissions`
+ * in `provision.ts` takes the SAME array as `keys` and throws at module load if it and
+ * `MODULES` disagree in either direction. It has to be written out as literals — a
+ * manifest's keys are branded `PermissionKey`s by the time anything could read them back,
+ * so the union cannot be derived from `MODULES` — but "written once and checked" is a
+ * different thing from "hand-maintained".
+ */
 export const MANYFOLD_PERMISSIONS = [
   'content:read',
   'content:author',
