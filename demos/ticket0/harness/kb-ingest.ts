@@ -126,7 +126,7 @@ export function parseMarkdown(text: string, url: string): Article[] {
 export async function fetchArticles(
   kind: 'llms-txt' | 'sitemap' | 'markdown',
   url: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
 ): Promise<Article[]> {
   // A network failure is a bare `fetch failed` from the runtime; name the URL, since
   // the message ends up on the source's row and "fetch failed" alone says nothing.
@@ -160,7 +160,7 @@ export interface IngestTarget {
 export async function runIngest(
   admin: IngestTarget,
   source: { id: string; kind: 'llms-txt' | 'sitemap' | 'markdown'; url: string },
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
 ): Promise<{ added: number; updated: number; unchanged: number }> {
   const articles = await fetchArticles(source.kind, source.url, fetchImpl);
   // Batched: one operation per few hundred articles keeps a single transaction from

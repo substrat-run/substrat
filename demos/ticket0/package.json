@@ -98,6 +98,7 @@
       "contact:read",
       "kb:read",
       "kb:manage",
+      "kb:refresh",
       "desk:configure",
       "usage:read",
       "notification:read-own"

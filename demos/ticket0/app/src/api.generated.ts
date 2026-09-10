@@ -207,6 +207,10 @@ export interface KbSource {
   status: "idle" | "ingesting" | "failed";
   last_ingested_at: string | null;
   last_error: string | null;
+  refresh_token_hash: string | null;
+  refresh_token_hint: string | null;
+  token_created_at: string | null;
+  token_last_used_at: string | null;
   created_at: string;
 }
 
@@ -279,7 +283,7 @@ export interface Ticket0Client {
    *
    * `POST /kb/sources` — `ticket0/add-kb-source`
    */
-  addKbSource(input: { kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string }): Promise<KbSource>;
+  addKbSource(input: { kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
 
   /**
    * Assign a conversation to someone (or nobody)
@@ -392,7 +396,7 @@ export interface Ticket0Client {
    *
    * `POST /kb/sources/{sourceId}/ingest` — `ticket0/ingest-kb-source`
    */
-  ingestKbSource(input: { sourceId: string }): Promise<KbSource>;
+  ingestKbSource(input: { sourceId: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
 
   /**
    * Record a message that arrived from outside
@@ -451,7 +455,7 @@ export interface Ticket0Client {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listKbSources(): Promise<Paged<KbSource>>;
+  listKbSources(): Promise<Paged<({ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string })>>;
 
   /**
    * Every message on a conversation, notes included
@@ -509,6 +513,13 @@ export interface Ticket0Client {
    * `POST /conversations/{conversationId}/merge` — `ticket0/merge`
    */
   merge(input: { conversationId: string; intoConversationId: string }): Promise<Conversation>;
+
+  /**
+   * Mint a refresh hook for a documentation source
+   *
+   * `POST /kb/sources/{sourceId}/token` — `ticket0/mint-kb-refresh-token`
+   */
+  mintKbRefreshToken(input: { sourceId: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string; token: string }>;
 
   /**
    * Your own conversations
@@ -591,7 +602,14 @@ export interface Ticket0Client {
    *
    * `POST /kb/sources/{sourceId}/failure` — `ticket0/record-kb-ingest-failure`
    */
-  recordKbIngestFailure(input: { sourceId: string; error: string }): Promise<KbSource>;
+  recordKbIngestFailure(input: { sourceId: string; error: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
+
+  /**
+   * Verify a refresh hook and record that it was used
+   *
+   * `POST /kb/sources/{sourceId}/token/redeem` — `ticket0/redeem-kb-refresh-token`
+   */
+  redeemKbRefreshToken(input: { sourceId: string; token: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
 
   /**
    * A canned answer with this conversation’s facts filled in
@@ -613,6 +631,13 @@ export interface Ticket0Client {
    * `POST /conversations/{conversationId}/resolve` — `ticket0/resolve`
    */
   resolve(input: { conversationId: string }): Promise<Conversation>;
+
+  /**
+   * Revoke a documentation source’s refresh hook
+   *
+   * `DELETE /kb/sources/{sourceId}/token` — `ticket0/revoke-kb-refresh-token`
+   */
+  revokeKbRefreshToken(input: { sourceId: string }): Promise<{ id: string; kind: "llms-txt" | "sitemap" | "markdown"; url: string; label: string; status: "idle" | "ingesting" | "failed"; last_ingested_at: string | null; last_error: string | null; refresh_token_hint: string | null; token_created_at: string | null; token_last_used_at: string | null; created_at: string }>;
 
   /**
    * Issue a new identity-verification secret (shown once)
@@ -1004,6 +1029,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/me/notifications/${encodeURIComponent(String(input.notificationId))}/read`, "POST", omit(input, ["notificationId"]), undefined),
     merge: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/merge`, "POST", omit(input, ["conversationId"]), undefined),
+    mintKbRefreshToken: (input: Args) =>
+      send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token`, "POST", omit(input, ["sourceId"]), undefined),
     myConversations: () =>
       page("/me/conversations", "GET", undefined, undefined),
     myMessages: (input: Args) =>
@@ -1026,12 +1053,16 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/articles`, "POST", omit(input, ["sourceId"]), undefined),
     recordKbIngestFailure: (input: Args) =>
       send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/failure`, "POST", omit(input, ["sourceId"]), undefined),
+    redeemKbRefreshToken: (input: Args) =>
+      send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token/redeem`, "POST", omit(input, ["sourceId"]), undefined),
     renderSavedReply: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/saved-replies/${encodeURIComponent(String(input.savedReplyId))}/render`, "GET", undefined, omit(input, ["conversationId","savedReplyId"])),
     requestHuman: (input: Args) =>
       send(`/widget/sessions/${encodeURIComponent(String(input.sessionId))}/handoff`, "POST", omit(input, ["sessionId"]), undefined),
     resolve: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/resolve`, "POST", omit(input, ["conversationId"]), undefined),
+    revokeKbRefreshToken: (input: Args) =>
+      send(`/kb/sources/${encodeURIComponent(String(input.sourceId))}/token`, "DELETE", undefined, omit(input, ["sourceId"])),
     rotateVerificationSecret: () =>
       send("/desk/verification-secret", "POST", undefined, undefined),
     searchContacts: (input: Args) =>

@@ -15,7 +15,6 @@ import {
   type AgentProfile,
   type AssistantStatus,
   type Contact,
-  type KbSource,
   type PendingInvite,
   type Session,
 } from '../api.js';
@@ -138,6 +137,43 @@ function Field({ label, children, hint }: { label: string; children: React.React
 }
 
 
+/**
+ * Copy, and answer whether it actually happened.
+ *
+ * `navigator.clipboard` is absent on an insecure origin and `writeText` REJECTS when
+ * the document is not focused or the permission is refused — and every secret this
+ * screen copies is shown exactly once. A button that says "Copied" on the strength of
+ * having been clicked does not lose a click; it loses the secret.
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard?.writeText) return false;
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** What a failed copy says. The text is still on the screen — this points at it. */
+const COPY_BY_HAND = 'Couldn’t reach the clipboard — select the text above and copy it by hand.';
+
+/**
+ * The two flags a copy sets, as ONE state, because they are one fact with three
+ * values: untried, copied, refused. Held apart, a refusal followed by a working
+ * retry left both on screen — a button reading "Copied" above a line telling the
+ * reader to copy it by hand.
+ */
+function useCopyState(): [boolean, boolean, (ok: boolean) => void, () => void] {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  return [
+    state === 'copied',
+    state === 'failed',
+    (ok: boolean) => setState(ok ? 'copied' : 'failed'),
+    () => setState('idle'),
+  ];
+}
+
 /* ── Team ───────────────────────────────────────────────────────────────── */
 
 /**
@@ -166,7 +202,7 @@ function Team({ session }: { session: Session }) {
   const [contactId, setContactId] = useState('');
   const [people, setPeople] = useState<Contact[]>([]);
   const [link, setLink] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, copyFailed, setCopyState, resetCopy] = useCopyState();
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -209,7 +245,7 @@ function Team({ session }: { session: Session }) {
     setBusy(true);
     setFailed(null);
     setLink(null);
-    setCopied(false);
+    resetCopy();
     try {
       const made = await invites.create({
         roleKey: role,
@@ -367,13 +403,17 @@ function Team({ session }: { session: Session }) {
                   <button
                     className="btn"
                     onClick={() => {
-                      void navigator.clipboard?.writeText(link);
-                      setCopied(true);
+                      void copyToClipboard(link).then(setCopyState);
                     }}
                   >
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
+                {copyFailed ? (
+                  <div className="t-small" style={{ color: 'var(--danger)', marginTop: 6 }}>
+                    {COPY_BY_HAND}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </>
@@ -732,7 +772,7 @@ function Desk() {
 
 function Identity() {
   const [secret, setSecret] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, copyFailed, setCopyState, resetCopy] = useCopyState();
   const [rotating, setRotating] = useState(false);
 
   return (
@@ -855,13 +895,17 @@ function Identity() {
               className="btn"
               style={{ background: '#17181a', borderColor: '#17181a', color: '#fff' }}
               onClick={() => {
-                void navigator.clipboard?.writeText(secret);
-                setCopied(true);
+                void copyToClipboard(secret).then(setCopyState);
               }}
             >
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
+          {copyFailed ? (
+            <div className="t-small" style={{ margin: '0 14px 10px', color: 'var(--danger)' }}>
+              {COPY_BY_HAND} The close button below stays locked until it is out of here.
+            </div>
+          ) : null}
           <div
             style={{
               margin: '0 14px 14px',
@@ -895,7 +939,7 @@ function Identity() {
               onClick={() => {
                 setSecret(null);
                 setRotating(false);
-                setCopied(false);
+                resetCopy();
               }}
             >
               I've stored it — close
@@ -909,9 +953,32 @@ function Identity() {
 
 /* ── 11 Knowledge base ──────────────────────────────────────────────────── */
 
-const GRID = '190px 1.6fr 56px 118px 96px 56px';
+const GRID = '180px 1.3fr 52px 104px 88px 104px 56px';
 
-type Kind = KbSource['kind'];
+/** How a hook's last firing reads once it is older than a moment. */
+function firedAgo(at: string | null): string {
+  if (!at) return 'never fired';
+  const ms = Date.now() - Date.parse(at);
+  if (!Number.isFinite(ms) || ms < 0) return 'fired just now';
+  const mins = Math.floor(ms / 60_000);
+  if (mins < 1) return 'fired just now';
+  if (mins < 60) return `fired ${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `fired ${hours}h ago`;
+  return `fired ${Math.floor(hours / 24)}d ago`;
+}
+
+/**
+ * A source as the API actually hands one over — NOT the `KbSource` entity interface.
+ *
+ * The two differ by one field, deliberately: the entity describes the table, which has
+ * `refresh_token_hash` on it, and no operation returns that column. Typing the screen
+ * off the read is what keeps the difference honest, the same way the desk's own
+ * settings screen never sees `verification_secret`.
+ */
+type KbSourceRow = Awaited<ReturnType<typeof api.listKbSources>>['entries'][number];
+
+type Kind = KbSourceRow['kind'];
 
 /**
  * The kinds a person may add. `sitemap` is in the model but the fetcher does not
@@ -929,7 +996,7 @@ const KINDS: { value: Kind; label: string; hint: string }[] = [
 const EMPTY_DRAFT = { label: '', url: '', kind: 'llms-txt' as Kind };
 
 function Knowledge() {
-  const [sources, setSources] = useState<KbSource[] | null>(null);
+  const [sources, setSources] = useState<KbSourceRow[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   // Two failures, two states. The list not loading is a page-level problem that the
   // loading fallback must not hide; an ingest being refused is news about ONE source,
@@ -941,6 +1008,14 @@ function Knowledge() {
   const [draft, setDraft] = useState(EMPTY_DRAFT);
   const [adding, setAdding] = useState(false);
   const [addFailed, setAddFailed] = useState<string | null>(null);
+  // Which row's hook panel is open, and — separately — the one token this session has
+  // seen in the clear. `minted` is never re-read from the server; there is nothing to
+  // re-read, which is the point of showing it once.
+  const [openHook, setOpenHook] = useState<string | null>(null);
+  const [minted, setMinted] = useState<{ sourceId: string; token: string } | null>(null);
+  const [copied, copyFailed, setCopyState, resetCopy] = useCopyState();
+  const [hookBusy, setHookBusy] = useState(false);
+  const [hookFailed, setHookFailed] = useState<string | null>(null);
 
   // Returns the request, not `void`: the Re-read handler chains `.then(load)` and
   // clears `busy` in a `finally` — and a `load` that returned nothing would settle
@@ -994,6 +1069,42 @@ function Knowledge() {
     }
   };
 
+  /**
+   * Mint or rotate. Both are the same call: minting over a live hook replaces it, so
+   * the button says which one it is doing and the confirm is only on the destructive
+   * reading of it.
+   */
+  const mint = async (id: string, rotating: boolean) => {
+    if (rotating && !confirm('Rotate this hook? The current token stops working immediately.')) return;
+    setHookBusy(true);
+    setHookFailed(null);
+    resetCopy();
+    try {
+      const result = await api.mintKbRefreshToken({ sourceId: id });
+      setMinted({ sourceId: id, token: result.token });
+      await load();
+    } catch (e) {
+      setHookFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHookBusy(false);
+    }
+  };
+
+  const revoke = async (id: string) => {
+    if (!confirm('Revoke this hook? Anything using it stops being able to re-read this source.')) return;
+    setHookBusy(true);
+    setHookFailed(null);
+    try {
+      await api.revokeKbRefreshToken({ sourceId: id });
+      setMinted((m) => (m?.sourceId === id ? null : m));
+      await load();
+    } catch (e) {
+      setHookFailed(e instanceof Error ? e.message : String(e));
+    } finally {
+      setHookBusy(false);
+    }
+  };
+
   const failures = [loadFailed, ingestFailed].filter((f): f is string => f !== null);
   const failureCards = failures.map((f) => (
     <div key={f} className="card" style={{ padding: '10px 14px', marginBottom: 12, color: 'var(--danger)' }}>
@@ -1030,6 +1141,7 @@ function Knowledge() {
           <div>Kind</div>
           <div>Last read</div>
           <div>Status</div>
+          <div>Hook</div>
           <div />
         </div>
         {sources.length === 0 ? (
@@ -1067,6 +1179,31 @@ function Knowledge() {
               />
               <span className="t-small mono">{s.status}</span>
             </div>
+            {/* The hook, at a glance: whether one exists and whether it is still firing. */}
+            <div>
+              {s.refresh_token_hint ? (
+                <button
+                  className="btn btn-ghost"
+                  style={{ padding: '2px 7px' }}
+                  onClick={() => setOpenHook(openHook === s.id ? null : s.id)}
+                  title={firedAgo(s.token_last_used_at)}
+                >
+                  <span className="mono" style={{ fontSize: 11 }}>…{s.refresh_token_hint}</span>
+                </button>
+              ) : (
+                <button
+                  className="btn btn-ghost"
+                  style={{ padding: '2px 7px' }}
+                  disabled={hookBusy}
+                  onClick={() => {
+                    setOpenHook(s.id);
+                    void mint(s.id, false);
+                  }}
+                >
+                  <span className="t-small">Create</span>
+                </button>
+              )}
+            </div>
             <div style={{ textAlign: 'right' }}>
               <button
                 className="btn btn-ghost"
@@ -1076,6 +1213,176 @@ function Knowledge() {
                 {busy === s.id ? 'Reading…' : 'Re-read'}
               </button>
             </div>
+            {openHook === s.id ? (
+              <div
+                style={{
+                  gridColumn: '1 / -1',
+                  marginTop: 9,
+                  padding: '11px 13px',
+                  background: 'var(--app-bg)',
+                  border: '1px solid var(--hairline)',
+                  borderRadius: 6,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9 }}>
+                  <div className="t-strong">Refresh hook</div>
+                  <span className="t-small" style={{ color: 'var(--muted)' }}>
+                    {s.refresh_token_hint ? firedAgo(s.token_last_used_at) : 'not created yet'}
+                  </span>
+                  <button
+                    className="btn btn-ghost"
+                    style={{ marginLeft: 'auto', padding: '2px 7px' }}
+                    onClick={() => setOpenHook(null)}
+                  >
+                    <span className="t-small">Close</span>
+                  </button>
+                </div>
+
+                {hookFailed ? (
+                  <div className="t-small" style={{ color: 'var(--danger)', marginBottom: 9 }}>
+                    {hookFailed}
+                  </div>
+                ) : null}
+
+                {/* The one moment the token exists in readable form. */}
+                {minted?.sourceId === s.id ? (
+                  <div
+                    style={{
+                      border: '1px solid var(--danger-border-2)',
+                      borderRadius: 6,
+                      overflow: 'hidden',
+                      marginBottom: 10,
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 10,
+                        padding: '8px 11px',
+                        background: 'var(--danger-bg)',
+                        borderBottom: '1px solid var(--danger-border-2)',
+                      }}
+                    >
+                      <div className="t-strong" style={{ color: 'var(--danger-2)' }}>
+                        Copy it now
+                      </div>
+                      <span
+                        className="mono"
+                        style={{
+                          marginLeft: 'auto',
+                          font: "600 10px 'Geist Mono', monospace",
+                          letterSpacing: '.07em',
+                          color: 'var(--danger)',
+                          border: '1px solid var(--danger-border)',
+                          borderRadius: 4,
+                          padding: '2px 7px',
+                        }}
+                      >
+                        SHOWN ONCE
+                      </span>
+                    </div>
+                    <div style={{ padding: 11, display: 'flex', gap: 9, alignItems: 'center' }}>
+                      <code
+                        className="mono"
+                        style={{
+                          flex: 1,
+                          fontSize: 12,
+                          background: 'var(--surface)',
+                          border: '1px solid var(--hairline)',
+                          borderRadius: 6,
+                          padding: '8px 10px',
+                          wordBreak: 'break-all',
+                        }}
+                      >
+                        {minted.token}
+                      </code>
+                      <button
+                        className="btn"
+                        style={{ background: '#17181a', borderColor: '#17181a', color: '#fff' }}
+                        onClick={() => {
+                          void copyToClipboard(minted.token).then(setCopyState);
+                        }}
+                      >
+                        {copied ? 'Copied' : 'Copy'}
+                      </button>
+                    </div>
+                    {copyFailed ? (
+                      <div className="t-small" style={{ padding: '0 11px 11px', color: 'var(--danger)' }}>
+                        {COPY_BY_HAND}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {/*
+                  The whole point of the feature, as a line somebody pastes into their
+                  docs pipeline. The token goes in a HEADER, never the URL: a hook URL
+                  is nicer to paste and lands in access logs and referrers.
+                */}
+                <div className="t-small" style={{ color: 'var(--muted)', marginBottom: 5 }}>
+                  Call this when your documentation publishes:
+                </div>
+                {/*
+                  The command is only RUNNABLE while this session is holding the token.
+                  After a reload `minted` is gone and the row keeps six characters of
+                  tail — so a line ending in the hint would be a copyable-looking curl
+                  that is guaranteed to 403. It says PASTE-YOUR-TOKEN-HERE instead, and
+                  the hint is offered below as what it is: a way to tell which hook is
+                  live, not a credential.
+                */}
+                <code
+                  className="mono"
+                  style={{
+                    display: 'block',
+                    fontSize: 11,
+                    lineHeight: 1.7,
+                    background: 'var(--surface)',
+                    border: '1px solid var(--hairline)',
+                    borderRadius: 6,
+                    padding: '9px 11px',
+                    wordBreak: 'break-all',
+                  }}
+                >
+                  curl -X POST {window.location.origin}/api/kb/sources/{s.id}/refresh -H
+                  &apos;x-kb-refresh-token:{' '}
+                  {minted?.sourceId === s.id ? minted.token : 'PASTE-YOUR-TOKEN-HERE'}&apos;
+                </code>
+                <div className="t-small" style={{ color: 'var(--muted)', marginTop: 7 }}>
+                  It re-reads this source and writes what changed — nothing else. A hook may
+                  fire once a minute; an unchanged page writes nothing.
+                </div>
+                {minted?.sourceId === s.id ? null : s.refresh_token_hint ? (
+                  <div className="t-small" style={{ color: 'var(--muted)', marginTop: 5 }}>
+                    The live hook ends <span className="mono">…{s.refresh_token_hint}</span>. The token
+                    itself was shown once, at minting — if it is lost, Rotate mints a new one and this
+                    one stops working.
+                  </div>
+                ) : null}
+
+                <div style={{ display: 'flex', gap: 8, marginTop: 11 }}>
+                  {s.refresh_token_hint ? (
+                    <>
+                      <button className="btn btn-ghost" disabled={hookBusy} onClick={() => void mint(s.id, true)}>
+                        {hookBusy ? 'Working…' : 'Rotate'}
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ color: 'var(--danger)' }}
+                        disabled={hookBusy}
+                        onClick={() => void revoke(s.id)}
+                      >
+                        Revoke
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn btn-ghost" disabled={hookBusy} onClick={() => void mint(s.id, false)}>
+                      {hookBusy ? 'Working…' : 'Create a hook'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : null}
             {s.status === 'failed' || s.last_error ? (
               <div
                 style={{

@@ -273,4 +273,17 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_conversations ADD COLUMN follows TEXT;
     `,
   },
+  {
+    // add-ticket0_kb_sources-refresh_token_hash-and-3-more
+    version: '0008',
+    sql: `
+      ALTER TABLE ticket0_kb_sources ADD COLUMN refresh_token_hash TEXT;
+
+      ALTER TABLE ticket0_kb_sources ADD COLUMN refresh_token_hint TEXT;
+
+      ALTER TABLE ticket0_kb_sources ADD COLUMN token_created_at TEXT;
+
+      ALTER TABLE ticket0_kb_sources ADD COLUMN token_last_used_at TEXT;
+    `,
+  },
 ];

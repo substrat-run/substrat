@@ -200,6 +200,11 @@ On first boot the desk ingests `https://substrat.net/llms-full.txt` and turns it
 lands on the paragraph rather than a page to hunt through. Re-ingesting unchanged
 content writes nothing; the content hash sees to that. `TICKET0_SKIP_INGEST=1` skips it.
 
+Keeping that copy current is a **refresh hook** (below): the docs deploy calls one URL
+and the desk re-reads itself, because the published `llms-full.txt` moving and the
+desk's copy of it moving were two different events, and only the first had anything
+driving it.
+
 Kestrel's documentation URL is deliberately fake, so one source succeeds and one fails
 on every fresh boot. A desk whose knowledge base can only be seen working is a desk
 whose failure state nobody has looked at.
@@ -308,10 +313,33 @@ What a hosted desk does **not** get from a seed, and how it gets it instead:
   on that one contact and nothing else.
 - **A knowledge base.** A worker has no boot and a dispatch user-worker has no cron, so
   the ingest is a button: `POST /api/kb/sources/:sourceId/refresh`, running as the
-  caller and refused unless they hold `kb:manage`. Settings → Knowledge base adds a
+  caller and refused unless they hold `kb:refresh`. Settings → Knowledge base adds a
   source and reads it at once; a read that fails is recorded on the source
   (`ticket0/record-kb-ingest-failure`), so the row shows the reason rather than
   spinning at `ingesting`.
+- **A refresh hook, so the button is not the only thing that can press it.** The same
+  route takes an `x-kb-refresh-token` header, and then runs as the desk's `ingest`
+  service instead of as a person:
+
+  ```
+  curl -X POST https://<desk>/api/kb/sources/<id>/refresh \
+    -H 'x-kb-refresh-token: t0kb_…'
+  ```
+
+  Mint it in Settings → Knowledge base; it is shown once and stored as a hash, and the
+  row afterwards carries only the last six characters and when it last fired. That
+  last column is the point: a knowledge base goes stale when a hook quietly stops
+  firing, and this puts that on the screen instead of in a wrong answer.
+
+  **Two doors, and neither is a way around the other.** A request with a token is a
+  hook and a request without one is a person; a bad token is refused (403) rather than
+  falling back to asking for a login. The `ingest` principal holds `kb:refresh` alone —
+  it can re-read a source and write what it found, and cannot add one, re-point one, or
+  take a hook away, because a door reachable with one header must not be able to aim
+  this desk's answers somewhere else. Which source a token opens is the token's business,
+  checked in `ticket0/redeem-kb-refresh-token`, not the key's. Hooks are throttled to one
+  read a minute (429 with `retryAfter`); the button is not, because a signed-in person
+  can see what they are doing.
 
 The model credential is the **platform's** (`CLOUDFLARE_AI_*`, `ANTHROPIC_API_KEY`, … as
 deployment-wide bindings, #1054), and the desk's setting is only *which* model

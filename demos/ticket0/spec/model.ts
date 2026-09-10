@@ -453,7 +453,20 @@ export const ticket0Entities = defineEntities({
     }),
   },
 
-  /** Where knowledge-base articles come from. */
+  /**
+   * Where knowledge-base articles come from.
+   *
+   * `refresh_token_hash`, never the token. A source may carry ONE refresh hook — the
+   * credential a docs pipeline presents to say "I just published, re-read me" — and it
+   * is stored the way every other token in this desk is: hashed, shown once at mint,
+   * and omitted from every operation that returns this row. `refresh_token_hint` is the
+   * tail of the token, which is not a secret and is the only way a person looking at
+   * two desks can tell which hook they are holding.
+   *
+   * `token_last_used_at` is the column that earns its place: a hook that silently
+   * stopped firing is exactly how a knowledge base goes stale without anyone noticing,
+   * and this is what puts that on the screen instead of in a wrong answer.
+   */
   kbSource: {
     table: 'ticket0_kb_sources',
     fields: z.object({
@@ -464,6 +477,10 @@ export const ticket0Entities = defineEntities({
       status: z.enum(['idle', 'ingesting', 'failed']),
       last_ingested_at: z.string().nullable(),
       last_error: z.string().nullable(),
+      refresh_token_hash: z.string().nullable(),
+      refresh_token_hint: z.string().nullable(),
+      token_created_at: z.string().nullable(),
+      token_last_used_at: z.string().nullable(),
       created_at: z.string(),
     }),
     key: ['url'],
@@ -695,12 +712,33 @@ export const TICKET0_PERMISSIONS = [
   'contact:read',
   'kb:read',
   'kb:manage',
+  /**
+   * Re-read a source and write what it found — the mechanical half of `kb:manage`.
+   *
+   * Its own key so the refresh hook's service principal can hold ONE thing. `kb:manage`
+   * also adds and re-points sources, and a principal reachable from a public door
+   * holding THAT could aim the desk's knowledge base at a site of its own choosing —
+   * which is answer-poisoning, the failure this desk exists to avoid. Same argument as
+   * the two service accounts behind the widget and the signup form: each door holds
+   * exactly one key.
+   */
+  'kb:refresh',
   'desk:configure',
   'usage:read',
   'notification:read-own',
   'signup:submit',
   'signup:read',
 ] as const;
+
+/**
+ * A source as anyone may read it: everything except the hook's hash.
+ *
+ * Declared once rather than omitted per operation, because "every read of this table
+ * drops that column" is the property, and four independent `.omit()`s are four chances
+ * to forget the fifth. `refresh_token_hint` deliberately stays — it is the tail of the
+ * token, and a person holding two hooks needs to know which one this row is.
+ */
+const kbSourcePublic = ticket0Entities.kbSource.fields.omit({ refresh_token_hash: true });
 
 export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMISSIONS)({
   // ─── The desk ────────────────────────────────────────────────────────────────
@@ -846,7 +884,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       url: z.string().url(),
       label: z.string().min(1),
     }),
-    output: ticket0Entities.kbSource.fields,
+    output: kbSourcePublic,
     http: { method: 'POST', path: '/kb/sources' },
     emits: {
       entity: 'kbSource',
@@ -861,7 +899,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   'ticket0/list-kb-sources': {
     summary: 'The desk’s documentation sources',
     permission: 'kb:read',
-    output: ticket0Entities.kbSource.fields,
+    output: kbSourcePublic,
     paged: { over: { entity: 'kbSource', sortable: ['created_at', 'label'], filterable: ['status'] } },
     http: { method: 'GET', path: '/kb/sources' },
   },
@@ -875,9 +913,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    */
   'ticket0/ingest-kb-source': {
     summary: 'Re-read a documentation source',
-    permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
+    permission: { key: 'kb:refresh', entity: 'kbSource', idFrom: 'sourceId' },
     input: z.object({ sourceId: z.string() }),
-    output: ticket0Entities.kbSource.fields,
+    output: kbSourcePublic,
     http: { method: 'POST', path: '/kb/sources/{sourceId}/ingest' },
     emits: {
       entity: 'kbSource',
@@ -901,7 +939,7 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     // Not a tool: the harness writes its own result back here — a connector's return path, not a verb.
     mcp: false,
     summary: 'Record the articles an ingest produced',
-    permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
+    permission: { key: 'kb:refresh', entity: 'kbSource', idFrom: 'sourceId' },
     input: z.object({
       sourceId: z.string(),
       articles: z.array(
@@ -942,9 +980,9 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     // Not a tool: the harness writes its own result back here — a connector's return path, not a verb.
     mcp: false,
     summary: 'Record that a documentation source could not be read',
-    permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
+    permission: { key: 'kb:refresh', entity: 'kbSource', idFrom: 'sourceId' },
     input: z.object({ sourceId: z.string(), error: z.string().min(1) }),
-    output: ticket0Entities.kbSource.fields,
+    output: kbSourcePublic,
     http: { method: 'POST', path: '/kb/sources/{sourceId}/failure' },
     emits: {
       entity: 'kbSource',
@@ -953,6 +991,98 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       schemaVersion: 1,
       piiClass: 'none',
       payload: ['id', 'url', 'last_error'],
+    },
+  },
+
+  /**
+   * Mint this source's refresh hook, and hand back the token ONCE.
+   *
+   * The token is the whole authority — there is no id to go with it, because the URL
+   * already names the source — so this is the only moment it exists in readable form.
+   * The row keeps `sha256` of it and the last six characters; a caller who loses the
+   * token mints a new one, which is also how rotation works.
+   *
+   * One hook per source, deliberately. Two would need names, an expiry each and a UI
+   * to manage them, and the thing being authorised is a single mechanical verb — so a
+   * second hook is a second mint, and the first stops working the moment it happens.
+   */
+  'ticket0/mint-kb-refresh-token': {
+    summary: 'Mint a refresh hook for a documentation source',
+    permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
+    input: z.object({ sourceId: z.string() }),
+    /**
+     * The row with the token added — flat, like every other source-returning operation,
+     * so a caller that just minted one holds the same shape it already renders. It is
+     * still the public projection underneath: the hash never leaves, not even here.
+     */
+    output: kbSourcePublic.extend({ token: z.string() }),
+    http: { method: 'POST', path: '/kb/sources/{sourceId}/token' },
+    /**
+     * The event carries the HINT, never the token — an event is the one row in this
+     * system designed to be read later by someone who was not there.
+     */
+    emits: {
+      entity: 'kbSource',
+      entityIdFrom: 'id',
+      type: 'ticket0.kb-refresh-token-minted',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'url', 'refresh_token_hint'],
+    },
+  },
+
+  /**
+   * Take the hook back. Idempotent: a source with no hook is already in this state.
+   */
+  'ticket0/revoke-kb-refresh-token': {
+    summary: 'Revoke a documentation source’s refresh hook',
+    permission: { key: 'kb:manage', entity: 'kbSource', idFrom: 'sourceId' },
+    input: z.object({ sourceId: z.string() }),
+    output: kbSourcePublic,
+    http: { method: 'DELETE', path: '/kb/sources/{sourceId}/token' },
+    emits: {
+      entity: 'kbSource',
+      entityIdFrom: 'id',
+      type: 'ticket0.kb-refresh-token-revoked',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'url'],
+    },
+  },
+
+  /**
+   * Spend a refresh hook: is this token this source's, and may it read again yet.
+   *
+   * The host calls this FIRST, as the desk's `ingest` service, and only runs the read
+   * if it returns. So the token check is module code — inside the transaction, against
+   * the stored hash, with the throttle read off the same row — rather than a comparison
+   * in a route handler that each host would have had its own copy of.
+   *
+   * Not a tool, and not something a person invokes: the operation exists to be the
+   * verification step of one HTTP door.
+   */
+  'ticket0/redeem-kb-refresh-token': {
+    mcp: false,
+    summary: 'Verify a refresh hook and record that it was used',
+    permission: { key: 'kb:refresh', entity: 'kbSource', idFrom: 'sourceId' },
+    input: z.object({ sourceId: z.string(), token: z.string() }),
+    output: kbSourcePublic,
+    http: { method: 'POST', path: '/kb/sources/{sourceId}/token/redeem' },
+    /**
+     * A spent hook is an EVENT, like the mint and the revoke beside it. This one
+     * writes `token_last_used_at`, and a mutation that leaves no event leaves the
+     * one question a hook raises unanswerable from the history: who has been
+     * pushing on this door, and when did they stop. The hint identifies WHICH
+     * hook without being one — the token itself never enters an event, which is
+     * the row most likely to be read later by somebody who was not here.
+     */
+    emits: {
+      entity: 'kbSource',
+      entityIdFrom: 'id',
+      type: 'ticket0.kb-refresh-hook-redeemed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'url', 'refresh_token_hint', 'token_last_used_at'],
     },
   },
 
