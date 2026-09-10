@@ -2056,6 +2056,12 @@ function DataBrowser({ app }: { app: AppRow }) {
   // The model's table→entity mapping (#1235): a record's history is keyed by
   // entity TYPE, and the table alone does not name it. Absent (no model.json, or
   // a version pushed before #1214) ⇒ no history affordance rather than a guess.
+  //
+  // Read for the ACTIVE scope, not the app's default one: a version is bound per
+  // scope, so a multi-scope vertical can have the site you are browsing pinned a
+  // version behind the app — and a mapping from the wrong version names the wrong
+  // entity for a table, which reads as a record with no history rather than as a
+  // mistake.
   const [tableEntity, setTableEntity] = useState<Record<string, string>>({});
   // The record whose history is open, and the scope it was opened IN (#1235). The
   // scope is part of the selection rather than read from `activeScope` at render:
@@ -2069,7 +2075,7 @@ function DataBrowser({ app }: { app: AppRow }) {
     let live = true;
     setTableEntity({});
     api
-      .appModel(app.app_scope_id)
+      .appModel(activeScope)
       .then((v) => {
         const entities = v.running?.model?.entities;
         if (!live || !entities) return;
@@ -2085,7 +2091,7 @@ function DataBrowser({ app }: { app: AppRow }) {
     return () => {
       live = false;
     };
-  }, [app.app_scope_id]);
+  }, [activeScope]);
 
   // The scopes this app spans (M4). A multi-scope vertical (Manyfold: one site per scope) has
   // several; the switcher below picks which one's database to browse. On 404/empty — or a

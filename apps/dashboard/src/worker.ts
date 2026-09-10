@@ -1606,9 +1606,17 @@ app.get('/api/apps/:scopeId/permissions', async (c) => {
  * field differs. `model` is null for a version pushed by a pre-#1214 CLI or a vertical
  * with no model.json — the tab renders an empty state for both.
  *
- * Authorized in the caller's OWN dashboard scope like every app-scoped read: the app is
- * resolved from the tenant-scoped `list-apps`, so a foreign scope id 404s; the model
- * itself is read through the tenant-narrowed control plane.
+ * Answered for the ADDRESSED scope, not the app's default one. A version is bound per
+ * scope (`verticalVersionId` on the scope record), so a multi-scope vertical can have one
+ * site pinned a version behind another — and the Data tab reads this to decide which
+ * entity a table holds (#1235). Resolved through `resolveBrowsableScope` like the table
+ * reads it now feeds, which is also what lets a SECONDARY scope be addressed at all: this
+ * route used to match `app_scope_id` alone, so every non-default scope 404'd here.
+ * Unchanged for the Model tab, which addresses the app scope and direct-matches as before.
+ *
+ * Authorized in the caller's OWN dashboard scope like every app-scoped read: the scope is
+ * resolved from the tenant-scoped `list-apps` and the tenant's own vertical scopes, so a
+ * foreign scope id 404s; the model itself is read through the tenant-narrowed control plane.
  */
 app.get('/api/apps/:scopeId/model', async (c) => {
   const host = hostFor(c.env);
@@ -1616,10 +1624,8 @@ app.get('/api/apps/:scopeId/model', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
-  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const scope = scopeId.parse(appRow.app_scope_id);
+  const { appRow, scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
   const slug = appRow.vertical_slug;
   const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
   const { runningId, runningLabel, updateId, updateLabel } = versionPair(deployment, boundVersionId);
