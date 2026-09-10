@@ -214,8 +214,14 @@ and nothing changes for a vertical that passes no options:
 
 That last refusal is the planner declining to pick an execution order it cannot read off the
 model. It does not check the order you picked; naming the surface is you saying you picked
-it. A surface you are *starting* is still one of the vertical's journals — give it an empty
-one rather than leaving it out, so a typo in `surface` is loud.
+it. An `ALTER` makes no such choice and is never asked.
+
+The set has to be **whole**, and a partial one is refused rather than repaired: it must hold
+the journal you are appending to (pass the member — `journals.billing` — not a second parse of
+the same file), and a surface you are only now *starting* is one of them too, as an empty
+journal. The order you write the record in is the order the kernel runs it, so a planner that
+slotted a stray journal in somewhere would be choosing that order for you — and putting it
+last replays an `ALTER` from a later surface before the `CREATE` it depends on.
 
 `parseJournal` takes the same `surface`, and it relaxes exactly one thing. A shared counter
 puts gaps in every journal it feeds (`0043`, then `0055`, because the numbers between went to

@@ -72,7 +72,10 @@ export interface MigrationPlanOptions {
    *
    * `entities` is then the WHOLE model, not one surface's slice: parent edges
    * resolve against the full registry, and a slice would read every other
-   * surface's tables as dropped.
+   * surface's tables as dropped. The set must be whole too — including the
+   * journal being appended to, and including a surface you are only now
+   * starting (as an empty journal). A partial set is refused rather than
+   * repaired: the order is the caller's, not the planner's.
    */
   readonly journals?: Readonly<Record<string, Journal>>;
   /**
@@ -106,12 +109,27 @@ export function planMigration<T extends Record<string, EntityDef>>(
   journal: Journal,
   opts?: MigrationPlanOptions,
 ): MigrationPlan {
-  // The set actually read. With no `journals` that is the one journal handed in,
-  // which is every caller that exists today. With `journals` it is all of them —
-  // plus `journal` itself when the caller passed the others rather than the set,
-  // so either spelling gives the same answer.
+  // The set actually read, in the order the kernel runs it. With no `journals`
+  // that is the one journal handed in, which is every caller that exists today.
   const named = opts?.journals ? Object.values(opts.journals) : undefined;
-  const set = named ? [...named, ...(named.includes(journal) ? [] : [journal])] : [journal];
+  const set = named ?? [journal];
+
+  // `journals` IS the execution order, so the planner will not repair a partial
+  // one by putting the stray journal somewhere. Appending it to the end would
+  // replay an ALTER from a later surface before the CREATE it depends on, and
+  // the reader would report a table it cannot see. Refused before the diff runs,
+  // because a diff missing this journal's history proposes creating its tables.
+  if (named && !named.includes(journal)) {
+    return {
+      kind: 'refused',
+      reasons: [
+        'the journal being appended to is not one of `journals`, and the set is the execution ' +
+          'order — a planner that slotted it in somewhere would be picking that order for you. ' +
+          'Pass the member itself: `planMigration(entities, journals[surface], { journals, ' +
+          'surface })`',
+      ],
+    };
+  }
 
   const journalSql = set.flatMap((j) => j.entries.map((e) => e.sql)).join('\n');
   const applied = journalColumns(journalSql);
@@ -293,7 +311,10 @@ export function planMigration<T extends Record<string, EntityDef>>(
         "REFERENCES. State it: `planMigration(entities, journal, { journals, surface: '…' })`",
     );
   }
-  if (opts?.journals && opts.surface !== undefined && !(opts.surface in opts.journals)) {
+  // `hasOwn`, not `in`: `in` accepts every name on Object.prototype, so
+  // `surface: 'toString'` would pass a check whose whole job is to make a typo
+  // loud — and then name a journal `Object.keys` does not list.
+  if (opts?.journals && opts.surface !== undefined && !Object.hasOwn(opts.journals, opts.surface)) {
     refusals.push(
       `surface '${opts.surface}' is not one of this vertical's journals ` +
         `(${Object.keys(opts.journals).join(', ') || 'none'}) — a surface you are starting is ` +

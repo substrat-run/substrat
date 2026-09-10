@@ -281,11 +281,23 @@ describe('a vertical with more than one journal', () => {
     expect(plan.reasons.some((r) => /surface 'rutt' is not one of/.test(r))).toBe(true);
   });
 
-  it('answers the same whether the set includes the journal being appended to or not', () => {
-    const withoutSelf = planMigration(composed, core, { journals: { extra } });
-    const withSelf = planMigration(composed, core, { journals: { core, extra } });
-    expect(withoutSelf).toEqual(withSelf);
-    expect(withSelf.kind).toBe('up-to-date');
+  it('refuses a set that leaves out the journal being appended to', () => {
+    // Slotting the stray journal in somewhere would be the planner picking an
+    // execution order: put it last, and an ALTER from a later surface replays
+    // before the CREATE it depends on.
+    const plan = planMigration(composed, core, { journals: { extra } });
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons[0]).toMatch(/not one of `journals`/);
+  });
+
+  it('refuses a surface that only Object.prototype has heard of', () => {
+    // `'toString' in journals` is true, and `Object.keys(journals)` does not
+    // list it — so `in` would wave through the very typo this check exists for.
+    const plan = planMigration(composed, core, { journals: { core }, surface: 'toString' });
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons.some((r) => /surface 'toString' is not one of/.test(r))).toBe(true);
   });
 });
 
