@@ -5,11 +5,12 @@
  * wrong model perfectly and forever. Inputs and expectations are literals here for the same
  * reason — a test that builds its input from the emitted schema cannot disagree with it.
  */
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { ScopeHost } from '@substrat-run/kernel';
+import { frozenClock, type ScopeHost } from '@substrat-run/kernel';
 import { buildHost, seed, type World } from '../src/seed.js';
 
 let dir: string;
@@ -21,6 +22,21 @@ const as = (who: Who) => host.getScope(world[who].principal, world.tenant, world
 /** Petra, acting on the FIRST publisher's workspace — a legitimate admin of her own, elsewhere. */
 const asPetraHere = () => host.getScope(world.petra.principal, world.tenant, world.scope);
 const asPetraHome = () => host.getScope(world.petra.principal, world.otherTenant, world.otherScope);
+
+/**
+ * The events one entity has on the audit spine, oldest first.
+ *
+ * Read straight out of `_substrat_outbox` — the vertical has no operation over it and should
+ * not: this is a test asserting that a write left a trace, not a product surface.
+ */
+const outbox = (type: string, entityId: string) => {
+  const db = new Database(join(dir, `${world.tenant}__${world.scope}.sqlite`), { readonly: true });
+  const rows = db
+    .prepare('SELECT payload FROM _substrat_outbox WHERE type = ? AND entity_id = ? ORDER BY id')
+    .all(type, entityId) as { payload: string | null }[];
+  db.close();
+  return rows.map((r) => JSON.parse(r.payload ?? '{}') as { complete?: boolean; row_count?: number });
+};
 
 interface Run {
   id: string;
@@ -55,8 +71,10 @@ beforeAll(async () => {
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
+/** Day one's run. Two describes read it: the narrative, and the back-fill that must not move it. */
+let runOne: string;
+
 describe('a day of logs becomes a number', () => {
-  let runOne: string;
 
   it('1 — the workspace exists and has no sources yet', async () => {
     const wren = await as('wren');
@@ -152,7 +170,12 @@ describe('a day of logs becomes a number', () => {
     expect(mapped.status).toBe('mapped');
     expect(mapped.schema_version).toBe(1);
 
-    const counted = await tomas.invoke<Run>('tock/count-run', { runId: runOne });
+    const counted = await tomas.invoke<Run>('tock/count-run', {
+      runId: runOne,
+      // What was applied upstream before these records were handed over. Recorded now so the
+      // correction in step 11 has something to differ from.
+      rules: [{ kind: 'bot_list', identifier: 'crawlers-2026-03', contentHash: 'sha256:botlist-v1' }],
+    });
     expect(counted.status).toBe('counted');
   });
 
@@ -221,6 +244,104 @@ describe('a day of logs becomes a number', () => {
     const ep114 = byEpisode.rows.find((r) => r.dim1 === 'ep-114');
     expect(ep114?.label1).toBe('Harbour Lights');
   });
+
+  /**
+   * The grouping the two dimension slots exist FOR.
+   *
+   * `dimsOfSet` has always parsed `a+b` and the rollup has always held two slots, but nothing
+   * ever wrote the pair — so the one grouping the whole two-slot design is for came back
+   * empty, which reads exactly like a day with no data.
+   */
+  it('8b — a two-dimension grouping has rows, and both of its labels resolve', async () => {
+    const ines = await as('ines');
+    const pair = await ines.invoke<{
+      rows: { dim1: string; dim2: string; label1: string | null; events: number }[];
+    }>('tock/report', {
+      sourceKey: 'fjord-cdn',
+      grain: 'day',
+      dimSet: 'episode_id+country',
+      from: '2026-03-01T00:00:00.000Z',
+      to: '2026-04-01T00:00:00.000Z',
+    });
+    // ep-114/SE, ep-114/NO, ep-115/SE — and ep-114 with no country, hidden by default.
+    expect(pair.rows.map((r) => `${r.dim1}/${r.dim2}`).sort()).toEqual([
+      'ep-114/NO',
+      'ep-114/SE',
+      'ep-115/SE',
+    ]);
+    // The label is joined on the COMPONENT dimension. Joined on the set — `episode_id+country`
+    // — it matches no captured label at all and every one of these comes back null.
+    expect(pair.rows.find((r) => r.dim1 === 'ep-114')?.label1).toBe('Harbour Lights');
+
+    const all = await ines.invoke<{ rows: { events: number }[] }>('tock/report', {
+      sourceKey: 'fjord-cdn',
+      grain: 'day',
+      dimSet: 'episode_id+country',
+      from: '2026-03-01T00:00:00.000Z',
+      to: '2026-04-01T00:00:00.000Z',
+      includeUnknown: true,
+    });
+    // Every row is in exactly one bucket of this grouping, unknown included.
+    expect(all.rows.reduce((n, r) => n + r.events, 0)).toBe(4);
+  });
+
+  /**
+   * `hour` is one of three grains the report declares. Nothing wrote it, so asking for it
+   * returned nothing, forever, and said nothing about why.
+   */
+  it('8c — the hour grain is counted, not merely offered', async () => {
+    const ines = await as('ines');
+    const hourly = await ines.invoke<{ rows: { periodStart: string; events: number }[] }>('tock/report', {
+      sourceKey: 'fjord-cdn',
+      grain: 'hour',
+      dimSet: 'total',
+      from: '2026-03-14T00:00:00.000Z',
+      to: '2026-03-15T00:00:00.000Z',
+    });
+    // The four records of day one sit in four different hours.
+    expect(hourly.rows.map((r) => r.periodStart)).toEqual([
+      '2026-03-14T08:00:00.000Z',
+      '2026-03-14T09:00:00.000Z',
+      '2026-03-14T11:00:00.000Z',
+      '2026-03-14T12:00:00.000Z',
+    ]);
+    expect(hourly.rows.reduce((n, r) => n + r.events, 0)).toBe(4);
+
+    // And the month, which is computed from the rows rather than summed from the days.
+    const monthly = await ines.invoke<{ rows: { periodStart: string; events: number }[] }>('tock/report', {
+      sourceKey: 'fjord-cdn',
+      grain: 'month',
+      dimSet: 'total',
+      from: '2026-03-01T00:00:00.000Z',
+      to: '2026-04-01T00:00:00.000Z',
+    });
+    expect(monthly.rows[0]?.periodStart).toBe('2026-03-01T00:00:00.000Z');
+  });
+
+  /**
+   * `declared` is a filter `list-observations` publishes. Profiling writes 0 because no
+   * schema is chosen yet, and mapping is the moment the answer exists — nothing wrote it
+   * afterwards, so the filter said "undeclared" about every field forever.
+   */
+  it('8d — mapping records which observed fields the schema accounts for', async () => {
+    const tomas = await as('tomas');
+    const declared = await tomas.invoke<{ entries: { field: string }[] }>('tock/list-observations', {
+      runId: runOne,
+      declared: true,
+    });
+    expect(declared.entries.map((o) => o.field).sort()).toEqual([
+      'bytes',
+      'country',
+      'episode_id',
+      'episode_title',
+    ]);
+    // Day one carried no field outside schema v1, so nothing is left over.
+    const undeclared = await tomas.invoke<{ entries: { field: string }[] }>('tock/list-observations', {
+      runId: runOne,
+      declared: false,
+    });
+    expect(undeclared.entries).toEqual([]);
+  });
 });
 
 describe('a deviation is caught rather than dropped', () => {
@@ -276,10 +397,185 @@ describe('a deviation is caught rather than dropped', () => {
     });
     expect(older.entries.map((e) => e.day).sort()).toEqual(['2026-03-14', '2026-03-15']);
   });
+
+  /**
+   * Concept section 8 step 7, which the suite claimed and did not replay: it read history
+   * under v1 and stopped, so nothing here ever saw a second schema version at all.
+   *
+   * The affordance is a refusal to invent. Ines adds `client_hint` to v2; Tock does not ask
+   * her for a default, and the rows that predate the field stay empty rather than acquiring
+   * one. "Leave history as it stands" is the path taken here — so the assertion is that
+   * nothing about day one moved.
+   */
+  it('10b — a new schema version leaves the rows that predate the field empty', async () => {
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+
+    const before = await ines.invoke<{ rows: { events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: 'fjord-cdn',
+      grain: 'day',
+      dimSet: 'total',
+      from: '2026-03-14T00:00:00.000Z',
+      to: '2026-03-15T00:00:00.000Z',
+    });
+
+    const v2 = await ines.invoke<{ version: number }>('tock/save-schema', {
+      sourceKey: 'fjord-cdn',
+      fields: { ...SCHEMA_V1, client_hint: { type: 'text', role: 'ignored' } },
+    });
+    // Saving never edits a version: v1 is still there and still explains run one.
+    expect(v2.version).toBe(2);
+
+    // What the affordance is built on, and it answers without a re-run: the field has data
+    // from the second day and none before it.
+    const history = await ines.invoke<{ entries: { day: string }[] }>('tock/field-history', {
+      sourceKey: 'fjord-cdn',
+      field: 'client_hint',
+    });
+    expect(history.entries.map((e) => e.day)).toEqual(['2026-03-15']);
+
+    // And she leaves it. Day one's rows carry no `client_hint` — not an empty string, not a
+    // default, the key simply is not there.
+    const rows = await tomas.invoke<{ entries: { dims_json: string }[] }>('tock/list-rows', { runId: runOne });
+    for (const row of rows.entries) {
+      expect(Object.keys(JSON.parse(row.dims_json) as Record<string, unknown>)).not.toContain('client_hint');
+    }
+    // Nothing about the number moved either: a schema version is not a re-count.
+    const after = await ines.invoke<{ rows: { events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: 'fjord-cdn',
+      grain: 'day',
+      dimSet: 'total',
+      from: '2026-03-14T00:00:00.000Z',
+      to: '2026-03-15T00:00:00.000Z',
+    });
+    expect(after).toEqual(before);
+  });
+
+  /**
+   * The observed half is a SET, and a field is not obliged to be consistent.
+   *
+   * The column used to be written by whichever record reached the field first: a field whose
+   * first value was null stayed `unknown` however many integers followed, and one carrying
+   * two types reported one of them — so `deviations`, whose entire job is to notice that,
+   * could not.
+   */
+  it('10c — a field that arrives as two types is reported as both', async () => {
+    const tomas = await as('tomas');
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: 'fjord-cdn',
+      filename: '2026-03-17.log',
+      byteSize: 128,
+      contentHash: 'sha256:ddd',
+      storageKey: 'runs/2026-03-17.log',
+      periodFrom: '2026-03-17T00:00:00.000Z',
+      periodTo: '2026-03-18T00:00:00.000Z',
+    });
+    await tomas.invoke('tock/profile-run', {
+      runId: run.id,
+      final: true,
+      batch: [
+        // The first record carries nothing, which is what used to pin the type to `unknown`.
+        { occurredAt: '2026-03-17T08:00:00.000Z', subject: 'a', fields: { country: null } },
+        { occurredAt: '2026-03-17T09:00:00.000Z', subject: 'b', fields: { country: '123' } },
+        { occurredAt: '2026-03-17T10:00:00.000Z', subject: 'c', fields: { country: 'SE' } },
+      ],
+    });
+
+    const observed = await tomas.invoke<{ entries: { field: string; inferred_type: string }[] }>(
+      'tock/list-observations',
+      { runId: run.id },
+    );
+    expect(observed.entries.find((o) => o.field === 'country')?.inferred_type).toBe('int,text');
+
+    // And the disagreement reaches the screen it exists for. `country` is declared text.
+    const findings = await tomas.invoke<{ findings: { kind: string; field: string; detail: string }[] }>(
+      'tock/deviations',
+      { sourceKey: 'fjord-cdn', schemaVersion: 1 },
+    );
+    const mismatch = findings.findings.find((f) => f.kind === 'type_mismatch' && f.field === 'country');
+    expect(mismatch?.detail).toContain('int');
+  });
+
+  /**
+   * A file is not obliged to be sorted, and one record out of order used to drag `last_seen`
+   * backwards or leave `first_seen` late — the two facts a back-fill decision is made on.
+   */
+  it('10d — field history holds the true window even when a batch arrives out of order', async () => {
+    const tomas = await as('tomas');
+    const ines = await as('ines');
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: 'fjord-cdn',
+      filename: '2026-03-18.log',
+      byteSize: 128,
+      contentHash: 'sha256:eee',
+      storageKey: 'runs/2026-03-18.log',
+      periodFrom: '2026-03-18T00:00:00.000Z',
+      periodTo: '2026-03-19T00:00:00.000Z',
+    });
+    // Across TWO batches, which is where the merge actually happens: within one batch the
+    // window is folded in memory, but a resumed delivery meets a row that is already there —
+    // and that is the path where last-write-wins used to drag `last_seen` backwards.
+    await tomas.invoke('tock/profile-run', {
+      runId: run.id,
+      final: false,
+      batch: [
+        { occurredAt: '2026-03-18T18:00:00.000Z', subject: 'a', fields: { late_field: 'x' } },
+        { occurredAt: '2026-03-18T12:00:00.000Z', subject: 'c', fields: { late_field: 'z' } },
+      ],
+    });
+    await tomas.invoke('tock/profile-run', {
+      runId: run.id,
+      final: true,
+      // Earlier than everything the first batch carried, and delivered last.
+      batch: [{ occurredAt: '2026-03-18T06:00:00.000Z', subject: 'b', fields: { late_field: 'y' } }],
+    });
+
+    const history = await ines.invoke<{ entries: { field: string; day: string; first_seen: string; last_seen: string }[] }>(
+      'tock/field-history',
+      { sourceKey: 'fjord-cdn', field: 'late_field' },
+    );
+    const day = history.entries.find((e) => e.day === '2026-03-18');
+    // Earliest and latest, not first-delivered and last-delivered.
+    expect(day?.first_seen).toBe('2026-03-18T06:00:00.000Z');
+    expect(day?.last_seen).toBe('2026-03-18T18:00:00.000Z');
+
+    // And the resumed run counted every record once across the two batches.
+    const counted = await tomas.invoke<Run>('tock/get-run', { runId: run.id });
+    expect(counted.row_count).toBe(3);
+    expect(counted.status).toBe('profiled');
+
+    /**
+     * Both batches are on the spine, and the first one is the reason this assertion exists.
+     *
+     * A non-final batch writes rows, observations and field history and used to emit nothing
+     * at all — a mutation with no audit entry, which is the one thing the event rule is for.
+     * `complete` is what tells the two apart, and it is on the payload rather than inferred
+     * from `status` so a consumer never has to know this vertical's state names.
+     */
+    const emitted = outbox('tock.run-profiled', run.id);
+    expect(emitted.map((e) => e.complete)).toEqual([false, true]);
+    expect(emitted.map((e) => e.row_count)).toEqual([2, 3]);
+  });
 });
 
 describe('a correction supersedes without destroying', () => {
-  it('11 — the re-run becomes current and the first run keeps its own number', async () => {
+  /**
+   * Concept section 8 step 8, and the previous version of this test could not fail.
+   *
+   * It filtered the bot row out of the fixture before Tock ever saw it, so the corrected
+   * number was arithmetic done in the test file: it passed identically against an
+   * implementation with no notion of a bot list and no captured rule state, which is what
+   * the implementation in fact was.
+   *
+   * The rule now goes THROUGH the system. `count-run` records what list was applied, and the
+   * assertion that matters is the last one — the displaced run still names the version it
+   * used. That is the whole of section 1's complaint ("nobody can say six months later which
+   * bot list produced March's figure") and it is either answerable or it is not.
+   */
+  const BOT_LIST_V1 = { kind: 'bot_list' as const, identifier: 'crawlers-2026-03', contentHash: 'sha256:botlist-v1' };
+  const BOT_LIST_V2 = { kind: 'bot_list' as const, identifier: 'crawlers-2026-03', contentHash: 'sha256:botlist-v2' };
+
+  it('11 — the re-run becomes current and the first run keeps its own number and its own rules', async () => {
     const tomas = await as('tomas');
     const ines = await as('ines');
     const window = {
@@ -292,8 +588,11 @@ describe('a correction supersedes without destroying', () => {
     const before = await ines.invoke<{ rows: { events: number; runId: string }[] }>('tock/report', window);
     expect(before.rows[0]?.events).toBe(4);
     const firstRunId = before.rows[0]?.runId;
+    expect(firstRunId).toBe(runOne);
 
-    // Day one again, with the bot excluded this time — three records rather than four.
+    // Day one again, under an UPDATED bot list. Same file, same four records handed over —
+    // the correction is the rule, not a different delivery, which is what makes the two runs
+    // comparable at all.
     const rerun = await tomas.invoke<Run>('tock/receive-run', {
       sourceKey: 'fjord-cdn',
       filename: '2026-03-14.log',
@@ -306,20 +605,52 @@ describe('a correction supersedes without destroying', () => {
     await tomas.invoke('tock/profile-run', {
       runId: rerun.id,
       final: true,
+      // The bot list is applied upstream of Tock — section 10 keeps fetching the lists
+      // themselves out of scope — so what arrives is the records that survived it, and what
+      // Tock records is WHICH list did the surviving.
       batch: dayOne.filter((r) => !r.subject.includes('CrawlerBot')),
     });
     await tomas.invoke('tock/map-run', { runId: rerun.id, schemaVersion: 1 });
-    await tomas.invoke('tock/count-run', { runId: rerun.id });
+    await tomas.invoke('tock/count-run', { runId: rerun.id, rules: [BOT_LIST_V2] });
 
     const after = await ines.invoke<{ rows: { events: number; runId: string }[] }>('tock/report', window);
     expect(after.rows[0]?.events).toBe(3);
     expect(after.rows[0]?.runId).toBe(rerun.id);
     expect(after.rows[0]?.runId).not.toBe(firstRunId);
+    // Exactly one row: the displaced run's rollup is still on disk, and a report that
+    // returned both numbers for one day would be worse than one that returned neither.
+    expect(after.rows).toHaveLength(1);
 
     // And the displaced run is still there, still counted, still holding what it reported.
     const original = await ines.invoke<Run>('tock/get-run', { runId: firstRunId! });
     expect(original.status).toBe('counted');
     expect(original.row_count).toBe(4);
+
+    // The assertion the old test could not make. Each run names the list it was counted
+    // under, and they are different lists — so "which bot list produced this number" has an
+    // answer per run rather than one answer that moved.
+    const originalRules = await ines.invoke<{ entries: { rule_kind: string; content_hash: string }[] }>(
+      'tock/run-rules',
+      { runId: firstRunId! },
+    );
+    const rerunRules = await ines.invoke<{ entries: { rule_kind: string; content_hash: string }[] }>(
+      'tock/run-rules',
+      { runId: rerun.id },
+    );
+    const botListOf = (r: { entries: { rule_kind: string; content_hash: string }[] }) =>
+      r.entries.find((e) => e.rule_kind === 'bot_list')?.content_hash;
+    expect(botListOf(originalRules)).toBe(BOT_LIST_V1.contentHash);
+    expect(botListOf(rerunRules)).toBe(BOT_LIST_V2.contentHash);
+
+    // Both also name the daily salt their subject keys were hashed with — same day, same
+    // salt, so a re-run's de-duplication is comparable to the original's rather than merely
+    // looking like it. The hash used to be the SCHEMA's id, which answers a different
+    // question and would have been equal here for the wrong reason.
+    const saltOf = (r: { entries: { rule_kind: string; content_hash: string }[] }) =>
+      r.entries.find((e) => e.rule_kind === 'salt')?.content_hash;
+    expect(saltOf(originalRules)).toBeDefined();
+    expect(saltOf(originalRules)).toBe(saltOf(rerunRules));
+    expect(saltOf(originalRules)).not.toBe(botListOf(originalRules));
   });
 
   it('12 — the lifecycle cannot be skipped, and a counted run cannot be moved', async () => {
@@ -399,5 +730,99 @@ describe('the schema editor refuses what the rollup cannot hold', () => {
         fields: { episode_id: { type: 'text', role: 'dimension', labelField: 'nope' } },
       }),
     ).rejects.toThrow(/labelField/);
+  });
+
+  /**
+   * The same shape of refusal as the dimension cap, for the same reason.
+   *
+   * A rollup row holds one measure and one unit. Counting used to take the first declared
+   * measure and drop the rest without a word, so a schema naming two looked accepted and
+   * produced a number that was quietly about one of them.
+   */
+  it('17 — a second measure is refused at save time, naming the reason', async () => {
+    const ines = await as('ines');
+    await expect(
+      ines.invoke('tock/save-schema', {
+        sourceKey: 'fjord-cdn',
+        fields: {
+          episode_id: { type: 'text', role: 'dimension' },
+          bytes: { type: 'int', role: 'measure' },
+          requests: { type: 'int', role: 'measure' },
+        },
+      }),
+    ).rejects.toThrow(/at most 1 measure/);
+  });
+});
+
+/**
+ * Which run is current for a period, when two of them were counted in the same instant.
+ *
+ * Its own world and its own clock, because the question cannot be asked of the wall clock:
+ * "the latest counted run wins" was compared with `MAX(counted_at)`, which is not a unique
+ * ordering token, and two runs sharing an ISO millisecond were BOTH equal to the maximum. A
+ * frozen clock guarantees the tie every time; a fast machine produces it occasionally, which
+ * is the worse version of the same bug.
+ */
+describe('two runs counted in the same instant still yield one current run', () => {
+  let tied: ScopeHost;
+  let tiedDir: string;
+  let tiedWorld: World;
+
+  beforeAll(async () => {
+    tiedDir = mkdtempSync(join(tmpdir(), 'tock-tied-'));
+    tied = buildHost(tiedDir, frozenClock('2026-04-01T00:00:00.000Z'));
+    tiedWorld = await seed(tied);
+  });
+
+  afterAll(() => rmSync(tiedDir, { recursive: true, force: true }));
+
+  it('17b — the report returns exactly one row, and it is the later run', async () => {
+    const ines = await tied.getScope(tiedWorld.ines.principal, tiedWorld.tenant, tiedWorld.scope);
+    await ines.invoke('tock/declare-source', { key: 'tied', title: 'Tied', expectedCadence: 'daily' });
+    await ines.invoke('tock/save-schema', {
+      sourceKey: 'tied',
+      fields: { country: { type: 'text', role: 'dimension' } },
+    });
+
+    const count = async (batch: { occurredAt: string; subject: string; fields: Record<string, string> }[]) => {
+      const run = await ines.invoke<Run>('tock/receive-run', {
+        sourceKey: 'tied',
+        filename: 'tied.log',
+        byteSize: 1,
+        contentHash: 'sha256:tied',
+        storageKey: 'runs/tied.log',
+        periodFrom: '2026-03-14T00:00:00.000Z',
+        periodTo: '2026-03-15T00:00:00.000Z',
+      });
+      await ines.invoke('tock/profile-run', { runId: run.id, batch, final: true });
+      await ines.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+      await ines.invoke('tock/count-run', { runId: run.id });
+      return run.id;
+    };
+
+    const first = await count([
+      { occurredAt: '2026-03-14T08:00:00.000Z', subject: 'a', fields: { country: 'SE' } },
+      { occurredAt: '2026-03-14T09:00:00.000Z', subject: 'b', fields: { country: 'SE' } },
+    ]);
+    const second = await count([{ occurredAt: '2026-03-14T08:00:00.000Z', subject: 'a', fields: { country: 'SE' } }]);
+
+    // The clock did not move, so the two runs carry the same `counted_at` to the millisecond.
+    const both = await ines.invoke<Run>('tock/get-run', { runId: first });
+    const other = await ines.invoke<Run>('tock/get-run', { runId: second });
+    expect((both as unknown as { counted_at: string }).counted_at).toBe(
+      (other as unknown as { counted_at: string }).counted_at,
+    );
+
+    const report = await ines.invoke<{ rows: { events: number; runId: string }[] }>('tock/report', {
+      sourceKey: 'tied',
+      grain: 'day',
+      dimSet: 'total',
+      from: '2026-03-14T00:00:00.000Z',
+      to: '2026-03-15T00:00:00.000Z',
+    });
+    // One row, not two. Both runs' rollups are on disk and only one of them is current.
+    expect(report.rows).toHaveLength(1);
+    expect(report.rows[0]?.runId).toBe(second);
+    expect(report.rows[0]?.events).toBe(1);
   });
 });

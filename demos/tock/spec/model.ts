@@ -515,7 +515,11 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       type: 'tock.run-profiled',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'source_key', 'row_count', 'status'],
+      // Emitted for EVERY batch, not only the last: a non-final batch writes rows,
+      // observations and field history, and a mutation with no entry on the spine is the one
+      // thing the event rule exists to prevent. `complete` is how a consumer tells the batch
+      // that finished profiling from one that merely advanced it.
+      payload: ['id', 'source_key', 'row_count', 'status', 'complete'],
     },
   },
 
@@ -552,7 +556,32 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/count-run': {
     summary: 'Count a mapped run and freeze it',
     permission: { key: 'run:manage', entity: 'run', idFrom: 'runId' },
-    input: z.object({ runId: z.string() }),
+    input: z.object({
+      runId: z.string(),
+      /**
+       * The rules the caller applied before handing the records over, recorded as
+       * `tock_rule_state` rows beside the salt this run hashed with.
+       *
+       * A bot list is applied upstream — section 10 keeps fetching the lists themselves out
+       * of scope — so a run cannot derive which list it was and can only record what it was
+       * told. Without this the concept's promise that a superseded run "still names the bot
+       * list version it used" had nothing behind it: a correction was indistinguishable from
+       * a re-run of the same rules.
+       *
+       * Optional, and absent means the same as it always did: only the salt is captured.
+       */
+      rules: z
+        .array(
+          z.object({
+            kind: z.enum(RULE_KINDS),
+            /** Which list we MEANT — a name that can be edited upstream without changing. */
+            identifier: z.string().min(1),
+            /** Which rules we APPLIED. This is the half that actually holds. */
+            contentHash: z.string().min(1),
+          }),
+        )
+        .optional(),
+    }),
     output: tockEntities.run.fields.extend({ complete: z.boolean() }),
     http: { method: 'POST', path: '/runs/{runId}/count' },
     emits: {
@@ -595,10 +624,39 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     http: { method: 'GET', path: '/sources/{sourceKey}/runs' },
   },
 
+  /**
+   * The rules a run was counted under, read back.
+   *
+   * Section 1's whole complaint is that "nobody can say six months later which bot list
+   * produced March's figure". `tock_rule_state` was being written and had no read path at
+   * all, which answers that complaint on paper and not in the product — a superseded run
+   * could hold its rules and no one could ask it for them.
+   *
+   * Narrowed on the run like every other per-run read, and `report:read` rather than
+   * `row:read`: a rule state names a list and a hash, never a person.
+   */
+  'tock/run-rules': {
+    summary: 'The rules in force when a run was counted',
+    permission: { key: 'report:read', entity: 'run', idFrom: 'runId' },
+    input: z.object({ runId: z.string() }),
+    output: z.object({ entries: z.array(tockEntities.rule_state.fields) }),
+    http: { method: 'GET', path: '/runs/{runId}/rules' },
+  },
+
   'tock/list-observations': {
     summary: 'What arrived in one run, field by field',
     permission: { key: 'report:read', entity: 'run', idFrom: 'runId' },
-    input: z.object({ runId: z.string() }),
+    input: z.object({
+      runId: z.string(),
+      /**
+       * The modelling screen's own question: show me what this schema does not account for.
+       *
+       * `declared` was named `filterable` — so it is a documented query parameter — while no
+       * input field carried it and the handler forced the filter map to `run_id` alone. The
+       * parameter therefore did nothing at all: every ask came back with every field.
+       */
+      declared: z.boolean().optional(),
+    }),
     output: tockEntities.observation.fields,
     paged: { over: { entity: 'observation', sortable: ['field'], filterable: ['run_id', 'declared'] } },
     http: { method: 'GET', path: '/runs/{runId}/observations' },

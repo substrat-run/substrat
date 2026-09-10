@@ -11,45 +11,18 @@
  * entity-narrowed bootstrap grant to make: every permission in this vertical is held
  * workspace-wide or not at all, because a run belongs to the workspace rather than to the
  * person who uploaded it.
+ *
+ * `MODULES` and `ROLES` come FROM `provision.ts` and are re-exported here for the scenario's
+ * convenience. The direction is the point: this file imports an adapter, so declaring them
+ * here would put one behind the permission checkpoint's import.
  */
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
-import { platformActorId, principalId, scopeId, tenantId, type RoleDefinition } from '@substrat-run/contracts';
-import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { TOCK_PERM, tockManifest } from './manifest.js';
-import { tockModule } from './module.js';
+import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import { ulid, type Clock, type ScopeHost } from '@substrat-run/kernel';
+import { tockManifest } from './manifest.js';
+import { MODULES, ROLES } from './provision.js';
 
-export const MODULES = [tockModule];
-
-/**
- * Four roles, cumulative, and the cut that matters is between the first two.
- *
- * A viewer reads the counts and never the rows, because the rows carry a pseudonymous subject
- * key and the stored source file carries the addresses it was derived from. Everything above
- * that line differs only in what it may CHANGE.
- */
-export const ROLES: RoleDefinition[] = [
-  { key: 'viewer', permissions: [TOCK_PERM.reportRead], source: 'vertical' },
-  { key: 'analyst', permissions: [TOCK_PERM.reportRead, TOCK_PERM.rowRead, TOCK_PERM.runManage], source: 'vertical' },
-  {
-    key: 'modeller',
-    permissions: [TOCK_PERM.reportRead, TOCK_PERM.rowRead, TOCK_PERM.runManage, TOCK_PERM.schemaManage],
-    source: 'vertical',
-  },
-  /**
-   * `admin` holds exactly what `modeller` holds, and the permission artifact says so.
-   *
-   * Not an oversight and not a role waiting to be collapsed: what separates an admin in the
-   * approved concept is managing people, and membership is the platform's invite surface
-   * rather than an operation of this vertical. So the distinction is real to a human and
-   * invisible to the permission table, which is the honest state of it — merging the two
-   * would contradict the design, and inventing a key nobody checks would be worse.
-   */
-  {
-    key: 'admin',
-    permissions: [TOCK_PERM.reportRead, TOCK_PERM.rowRead, TOCK_PERM.runManage, TOCK_PERM.schemaManage],
-    source: 'vertical',
-  },
-];
+export { MODULES, ROLES };
 
 export interface Person {
   readonly name: string;
@@ -73,8 +46,15 @@ export interface World {
   readonly petra: Person;
 }
 
-export function buildHost(dir: string): ScopeHost {
-  const host = new SqliteScopeHost({ dir });
+/**
+ * `clock` is what lets a scenario put two runs inside one instant.
+ *
+ * Not a convenience: "the latest counted run wins" is a claim about ordering, and the only
+ * honest way to test what happens when two of them tie is to hand the host a clock that ties
+ * them. Defaulted to the wall clock, so every other caller is unaffected.
+ */
+export function buildHost(dir: string, clock?: Clock): ScopeHost {
+  const host = new SqliteScopeHost({ dir, ...(clock ? { clock } : {}) });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

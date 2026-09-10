@@ -1,11 +1,24 @@
 /**
  * Tock's entity-check claim, in the one place both the test and the trust page read it.
  *
- * Seven operations here take an entity-narrowed permission (`run`, by `runId`) and the kit can
- * exercise every one of them. The rest are scope-wide reads and writes: there is no entity to
- * narrow to when the caller is declaring a source, saving a schema, opening a run or asking
- * for a report over a whole source, so those are out of scope for this suite rather than
- * uncovered by it.
+ * Seven operations take an entity-narrowed permission (`run`, by `runId`) and the kit
+ * exercises every one of them, in `test/entity-checks.test.ts`. Until that suite existed this
+ * file was a claim about coverage with nothing executing it, and the package's green run was
+ * the scenario alone.
+ *
+ * ## `uncovered` is empty, and it is not the list a reader expects
+ *
+ * The other nine operations — `declare-source`, `list-sources`, `save-schema`,
+ * `list-schemas`, `receive-run`, `list-runs`, `deviations`, `field-history` and `report` —
+ * take a **scope-wide** permission and declare no entity check at all. There is no entity to
+ * narrow to when the caller is opening a run that does not exist yet, or asking for a report
+ * over a whole source.
+ *
+ * They were written into `uncovered` here, which reads right and means something narrower:
+ * the kit fills that map with operations that DO declare an entity check and that it cannot
+ * drive — a stale `idFrom`, a co-entity naming a field the schema lacks. An operation with no
+ * entity check is in neither bucket, so the map has to be empty, and running the suite is what
+ * said so.
  */
 import { declareEntityChecks } from '@substrat-run/contract-tests/conformance';
 import { tockOperations } from '../spec/model.js';
@@ -24,15 +37,5 @@ export const conformance = declareEntityChecks({
     'tock/profile-run': { batch: [], final: false },
     'tock/map-run': { schemaVersion: 1 },
   },
-  uncovered: {
-    'tock/declare-source': 'scope-wide — a source is what would be the entity, and it does not exist yet',
-    'tock/list-sources': 'scope-wide read over every source in the workspace',
-    'tock/save-schema': 'scope-wide — narrowing modelling to one source is a design this vertical does not have',
-    'tock/list-schemas': 'scope-wide read; the source is a filter, not a permission boundary',
-    'tock/receive-run': 'scope-wide — the run is created BY this operation, so there is no entity to check first',
-    'tock/list-runs': 'scope-wide read over a source rather than over one run',
-    'tock/deviations': "scope-wide read over a source's whole observation history",
-    'tock/field-history': 'scope-wide read over a source, deliberately outliving the runs it came from',
-    'tock/report': 'scope-wide read over a source; a report that needed a run id would not be a report',
-  },
+  uncovered: {},
 });

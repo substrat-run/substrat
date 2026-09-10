@@ -51,6 +51,7 @@ type SourceFileRow = EntityRow<typeof tockEntities, 'source_file'>;
 type ObservationRow = EntityRow<typeof tockEntities, 'observation'>;
 type FieldHistoryRow = EntityRow<typeof tockEntities, 'field_history'>;
 type RowRow = EntityRow<typeof tockEntities, 'row'>;
+type RuleStateRow = EntityRow<typeof tockEntities, 'rule_state'>;
 
 const runRef = (id: string) => ({ entityType: 'run', entityId: id });
 const sourceRef = (key: string) => ({ entityType: 'source', entityId: key });
@@ -102,6 +103,19 @@ const monthOf = (instant: string) => instant.slice(0, 7);
 /** A grain bucket's start, as the ISO instant the rollup key stores. */
 const dayStart = (instant: string) => `${dayOf(instant)}T00:00:00.000Z`;
 const monthStart = (instant: string) => `${monthOf(instant)}-01T00:00:00.000Z`;
+const hourStart = (instant: string) => `${instant.slice(0, 13)}:00:00.000Z`;
+
+/**
+ * The three grains the report declares, and therefore the three counting writes.
+ *
+ * All three, because a grain a caller may ask for and nothing ever writes is a report that
+ * is empty forever and says nothing about why. `hour` was exactly that.
+ */
+const GRAINS = [
+  ['hour', hourStart],
+  ['day', dayStart],
+  ['month', monthStart],
+] as const;
 
 const hex = (bytes: ArrayBuffer) =>
   Array.from(new Uint8Array(bytes))
@@ -144,6 +158,21 @@ async function subjectKey(secret: string, subject: string): Promise<string> {
   const bytes = new TextEncoder().encode(`${secret}:${subject}`);
   return hex(await globalThis.crypto.subtle.digest('SHA-256', bytes));
 }
+
+/** No non-null value has been seen yet, so nothing is known about the type. */
+const TYPE_UNKNOWN = 'unknown';
+
+/**
+ * The observed types of one field, as the column stores them: a comma-separated set.
+ *
+ * A SET rather than one value, because a field is not obliged to be consistent and the
+ * inconsistency is the finding. `unknown` means only "no non-null value yet", so it is never
+ * a member beside a real type — it is what an empty set renders as.
+ */
+const typeSet = (types: Iterable<string>): string => {
+  const real = [...new Set(types)].filter((t) => t && t !== TYPE_UNKNOWN).sort();
+  return real.length === 0 ? TYPE_UNKNOWN : real.join(',');
+};
 
 /** What a value looks like, for the observed half of declared-versus-observed. */
 function inferType(value: string): string {
@@ -206,6 +235,20 @@ const saveSchemaOp: OperationHandler<
     throw substratError(
       'validation_failed',
       `a schema may declare at most ${MAX_GROUPING_DIMENSIONS} grouping dimensions; this one declares ${dimensions.length} (${dimensions.map(([n]) => n).join(', ')}). The rollup holds two dimension slots, so a third could be stored and never grouped by.`,
+    );
+  /**
+   * One measure, refused at save time for exactly the reason the dimension cap is.
+   *
+   * A rollup row holds a single `measure` and a single `unit`. Counting used to take
+   * `.find()` over the declared fields and silently drop every measure after the first — a
+   * schema that looked accepted, and a number that was quietly about one column while the
+   * schema named two.
+   */
+  const measures = Object.entries(input.fields).filter(([, f]) => f.role === 'measure');
+  if (measures.length > 1)
+    throw substratError(
+      'validation_failed',
+      `a schema may declare at most 1 measure; this one declares ${measures.length} (${measures.map(([n]) => n).join(', ')}). A rollup row holds one measure and one unit, so a second could be declared and never counted.`,
     );
   for (const [name, f] of Object.entries(input.fields)) {
     if (f.labelField && !input.fields[f.labelField])
@@ -302,14 +345,37 @@ const profileRunOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/profile-run']>,
   HandlerOutput<(typeof tockOperations)['tock/profile-run']>
 > = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.runManage, runRef(input.runId)));
   const run = runOrThrow(ctx, input.runId);
-  assertAllowed(await ctx.check(TOCK_PERM.runManage, runRef(run.id)));
   if (run.status !== 'received' && run.status !== 'profiled')
     throw substratError('conflict', `a ${run.status} run cannot be profiled`, { reason: 'wrong_state' });
   if (run.status === 'profiled')
     throw substratError('conflict', 'this run has already finished profiling', { reason: 'already_profiled' });
 
   let written = 0;
+
+  /**
+   * Accumulated for the whole batch and written once per field, rather than once per record.
+   *
+   * `types` is a SET, and that is the correction. The column used to be assigned by whichever
+   * record reached the field first and never revisited: a field whose first value was null
+   * stayed `unknown` however many integers followed it, and a field carrying both integers
+   * and text reported only one of them — so `deviations`, whose entire job is to notice
+   * exactly that disagreement, could not see it.
+   */
+  interface Observed {
+    present: number;
+    nulls: number;
+    readonly types: Set<string>;
+  }
+  const observed = new Map<string, Observed>();
+  /** Per field per day: the window it was seen in, and how many of those carried a value. */
+  interface Seen {
+    first: string;
+    last: string;
+    n: number;
+  }
+  const history = new Map<string, Seen>();
 
   for (const record of input.batch) {
     const day = dayOf(record.occurredAt);
@@ -322,24 +388,29 @@ const profileRunOp: OperationHandler<
       // The observed half. Counted per field whether or not any schema declares it — a field
       // nobody modelled is the finding, so refusing it here would destroy the evidence.
       const present = value === null ? 0 : 1;
-      ctx.sql.exec(
-        `INSERT INTO tock_observations (id, run_id, field, present_count, null_count, inferred_type, distinct_estimate, declared)
-           VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-         ON CONFLICT(run_id, field) DO UPDATE SET
-           present_count = present_count + excluded.present_count,
-           null_count    = null_count + excluded.null_count`,
-        [ulid(), run.id, field, present, 1 - present, value === null ? 'unknown' : inferType(value)],
-      );
+      const o = observed.get(field) ?? { present: 0, nulls: 0, types: new Set<string>() };
+      o.present += present;
+      o.nulls += 1 - present;
+      if (value !== null) o.types.add(inferType(value));
+      observed.set(field, o);
+
       // Kept longer than the rows it came from — that is the whole job, so it is written per
       // day rather than per run and never pruned with them.
-      ctx.sql.exec(
-        `INSERT INTO tock_field_history (source_key, field, day, first_seen, last_seen, n)
-           VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(source_key, field, day) DO UPDATE SET
-           last_seen = excluded.last_seen,
-           n = n + excluded.n`,
-        [run.source_key, field, day, record.occurredAt, record.occurredAt, present],
-      );
+      //
+      // A tuple key through JSON rather than a joined string: a field name is a producer's
+      // text and may contain anything at all, and `JSON.stringify` of an array of strings is
+      // the one cheap encoding with no delimiter to collide with.
+      const hkey = JSON.stringify([field, day]);
+      const h = history.get(hkey);
+      if (h === undefined) {
+        history.set(hkey, { first: record.occurredAt, last: record.occurredAt, n: present });
+      } else {
+        // MIN/MAX rather than last-write-wins: a file is not obliged to be sorted, and one
+        // record out of order used to drag `last_seen` backwards or leave `first_seen` late.
+        if (record.occurredAt < h.first) h.first = record.occurredAt;
+        if (record.occurredAt > h.last) h.last = record.occurredAt;
+        h.n += present;
+      }
     }
 
     ctx.sql.exec(
@@ -347,6 +418,39 @@ const profileRunOp: OperationHandler<
       [ulid(), run.id, record.occurredAt, key, JSON.stringify(dims), '{}'],
     );
     written += 1;
+  }
+
+  for (const [field, o] of observed) {
+    // Merged with whatever an earlier batch of this run recorded: a resumed delivery adds to
+    // the counts and UNIONS the types. `declared` is left alone — it is nil until a schema is
+    // chosen, and `map-run` is what decides it.
+    const prior = ctx.sql.query<{ inferred_type: string }>(
+      'SELECT inferred_type FROM tock_observations WHERE run_id = ? AND field = ?',
+      [run.id, field],
+    )[0];
+    const merged = typeSet([...o.types, ...(prior?.inferred_type ?? '').split(',')]);
+    ctx.sql.exec(
+      `INSERT INTO tock_observations (id, run_id, field, present_count, null_count, inferred_type, distinct_estimate, declared)
+           VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+         ON CONFLICT(run_id, field) DO UPDATE SET
+           present_count = present_count + excluded.present_count,
+           null_count    = null_count + excluded.null_count,
+           inferred_type = excluded.inferred_type`,
+      [ulid(), run.id, field, o.present, o.nulls, merged],
+    );
+  }
+
+  for (const [hkey, h] of history) {
+    const [field, day] = JSON.parse(hkey) as [string, string];
+    ctx.sql.exec(
+      `INSERT INTO tock_field_history (source_key, field, day, first_seen, last_seen, n)
+           VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(source_key, field, day) DO UPDATE SET
+           first_seen = MIN(first_seen, excluded.first_seen),
+           last_seen  = MAX(last_seen, excluded.last_seen),
+           n = n + excluded.n`,
+      [run.source_key, field, day, h.first, h.last, h.n],
+    );
   }
 
   const total = (run.row_count ?? 0) + written;
@@ -357,31 +461,63 @@ const profileRunOp: OperationHandler<
   ]);
 
   const after = runOrThrow(ctx, run.id);
-  if (input.final) {
-    ctx.emit({
-      type: 'tock.run-profiled',
-      schemaVersion: 1,
-      entity: runRef(after.id),
-      piiClass: 'none',
-      payload: { id: after.id, source_key: after.source_key, row_count: after.row_count, status: after.status },
-    });
-  }
-  return { ...after, complete: Boolean(input.final) };
+  const complete = Boolean(input.final);
+  /**
+   * EVERY batch, not only the last one.
+   *
+   * A non-final batch writes rows, observations, field history and the run's own count, and
+   * it used to emit nothing — a mutation with no entry on the spine, which is the one thing
+   * the event rule exists to prevent. `complete` is what a consumer reads to tell a batch
+   * that finished profiling from one that merely advanced it; `status` says the same thing in
+   * the run's own vocabulary.
+   */
+  ctx.emit({
+    type: 'tock.run-profiled',
+    schemaVersion: 1,
+    entity: runRef(after.id),
+    piiClass: 'none',
+    payload: {
+      id: after.id,
+      source_key: after.source_key,
+      row_count: after.row_count,
+      status: after.status,
+      complete,
+    },
+  });
+  return { ...after, complete };
 };
 
 const mapRunOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/map-run']>,
   HandlerOutput<(typeof tockOperations)['tock/map-run']>
 > = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.runManage, runRef(input.runId)));
   const run = runOrThrow(ctx, input.runId);
-  assertAllowed(await ctx.check(TOCK_PERM.runManage, runRef(run.id)));
   if (run.status !== 'profiled')
     throw substratError(
       'conflict',
       `a ${run.status} run cannot be mapped — profiling is what puts the evidence on the table that mapping is a decision about`,
       { reason: 'wrong_state' },
     );
-  schemaOrThrow(ctx, run.source_key, input.schemaVersion);
+  const schema = schemaOrThrow(ctx, run.source_key, input.schemaVersion);
+
+  /**
+   * Which observed fields this schema accounts for.
+   *
+   * Profiling cannot know — no schema is chosen yet — so it writes every observation with
+   * `declared = 0`, and mapping is the moment the answer exists. Nothing used to write it
+   * afterwards, so the flag `list-observations` filters on said "undeclared" about every
+   * field forever, including the ones the modeller had just declared. Set both ways rather
+   * than only to 1: re-mapping onto a different version has to be able to take it back.
+   */
+  const declared = Object.keys(JSON.parse(schema.fields_json) as FieldDefs);
+  ctx.sql.exec('UPDATE tock_observations SET declared = 0 WHERE run_id = ?', [run.id]);
+  if (declared.length > 0)
+    ctx.sql.exec(
+      `UPDATE tock_observations SET declared = 1
+        WHERE run_id = ? AND field IN (${declared.map(() => '?').join(', ')})`,
+      [run.id, ...declared],
+    );
 
   ctx.sql.exec('UPDATE tock_runs SET schema_version = ?, status = ? WHERE id = ?', [
     input.schemaVersion,
@@ -416,8 +552,8 @@ const countRunOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/count-run']>,
   HandlerOutput<(typeof tockOperations)['tock/count-run']>
 > = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.runManage, runRef(input.runId)));
   const run = runOrThrow(ctx, input.runId);
-  assertAllowed(await ctx.check(TOCK_PERM.runManage, runRef(run.id)));
   if (run.status !== 'mapped')
     throw substratError('conflict', `a ${run.status} run cannot be counted`, { reason: 'wrong_state' });
 
@@ -428,17 +564,48 @@ const countRunOp: OperationHandler<
 
   const rows = ctx.sql.query<RowRow>('SELECT * FROM tock_rows WHERE run_id = ? ORDER BY id', [run.id]);
 
-  // The grouping sets the report serves — the total plus each single dimension. Not the
-  // cartesian product: row count is the sum over each grouping of its distinct tuples, and
-  // the difference between those two models is larger than any storage decision here.
+  /**
+   * The grouping sets the report serves: the total, each single dimension, and — when a
+   * schema declares two — the pair.
+   *
+   * The pair used to be missing while `dimsOfSet` parsed `a+b` and the rollup held two slots
+   * for it, so the one grouping those two slots exist FOR reported empty. Not the cartesian
+   * product of grouping sets, which is a different and much larger idea: row count is the sum
+   * over each grouping of its distinct tuples.
+   *
+   * A pair names its dimensions in the order the SCHEMA declares them. There is one such set
+   * rather than two, so `country+episode_id` is not the same string as `episode_id+country`
+   * and only the declared order has rows.
+   */
   const groupings: { dimSet: string; dims: string[] }[] = [
     { dimSet: 'total', dims: [] },
     ...dimensions.map((d) => ({ dimSet: d, dims: [d] })),
+    ...(dimensions.length === MAX_GROUPING_DIMENSIONS
+      ? [{ dimSet: dimensions.join('+'), dims: dimensions }]
+      : []),
   ];
 
-  interface Cell { events: number; measure: string | null }
+  /**
+   * The tuple travels ON the value, and the key is only a lookup token.
+   *
+   * It used to be joined with NUL and split apart again, which the PR that introduced it
+   * claimed to have stopped doing. Two reasons that is wrong, and the second survives the
+   * first: a parsed field value is a producer's text and may contain the delimiter, moving
+   * the tuple boundary and merging two cells into one — and SQLite terminates a TEXT value at
+   * a NUL, so the delimiter could not even survive being stored. `JSON.stringify` of an array
+   * of strings has no such boundary to move.
+   */
+  interface Cell {
+    readonly grain: string;
+    readonly dimSet: string;
+    readonly periodStart: string;
+    readonly dim1: string;
+    readonly dim2: string;
+    events: number;
+    measure: string | null;
+  }
   const cells = new Map<string, Cell>();
-  const labels = new Map<string, string>();
+  const labels = new Map<string, { dim: string; value: string; label: string }>();
   let rejected = 0;
 
   for (const row of rows) {
@@ -450,7 +617,7 @@ const countRunOp: OperationHandler<
         const label = values[f.labelField];
         // Captured per run, which is what makes "the title as it was" true a year later.
         if (value !== null && value !== undefined && label !== null && label !== undefined)
-          labels.set(`${name}\u0000${value}`, label);
+          labels.set(JSON.stringify([name, value]), { dim: name, value, label });
       }
     }
     const amount = measure === undefined ? null : (values[measure] ?? null);
@@ -461,9 +628,18 @@ const countRunOp: OperationHandler<
       // two absences this is — no such slot, or no value in it — is read off `dim_set`.
       const dim1 = grouping.dims[0] === undefined ? DIM_NONE : (values[grouping.dims[0]] ?? DIM_NONE);
       const dim2 = grouping.dims[1] === undefined ? DIM_NONE : (values[grouping.dims[1]] ?? DIM_NONE);
-      for (const [grain, start] of [['day', dayStart(row.occurred_at)], ['month', monthStart(row.occurred_at)]] as const) {
-        const key = [grain, grouping.dimSet, start, dim1, dim2].join('\u0000');
-        const cell = cells.get(key) ?? { events: 0, measure: null };
+      for (const [grain, startOf] of GRAINS) {
+        const periodStart = startOf(row.occurred_at);
+        const key = JSON.stringify([grain, grouping.dimSet, periodStart, dim1, dim2]);
+        const cell = cells.get(key) ?? {
+          grain,
+          dimSet: grouping.dimSet,
+          periodStart,
+          dim1,
+          dim2,
+          events: 0,
+          measure: null,
+        };
         cell.events += 1;
         // A missing amount stays null and is skipped, because a measure defaulted to zero is
         // invisible in a total and silently wrong.
@@ -473,36 +649,86 @@ const countRunOp: OperationHandler<
     }
   }
 
-  for (const [key, cell] of cells) {
-    const [grain, dimSet, periodStart, dim1, dim2] = key.split('\u0000') as [string, string, string, string, string];
+  /**
+   * `events` counts ROWS, and that is a request count rather than a listener count.
+   *
+   * Two records with the same `subject_key` inside a day are two events here, deliberately:
+   * the rollup declares one count column, and the concept's ten-column shape has nowhere to
+   * put a second. `subject_key` and the `dedup_window` rule kind are what a distinct-listener
+   * measure would be built FROM, and building it means adding a column to an approved table
+   * — a concept decision, not something counting should start doing quietly.
+   */
+  for (const cell of cells.values()) {
     ctx.sql.exec(
       `INSERT INTO tock_rollups
          (source_key, grain, dim_set, period_start, dim1, dim2, run_id, events, measure, unit)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_key, grain, dim_set, period_start, dim1, dim2, run_id) DO UPDATE SET
          events = excluded.events, measure = excluded.measure`,
-      [run.source_key, grain, dimSet, periodStart, dim1, dim2, run.id, cell.events, cell.measure, measure ?? null],
+      [run.source_key, cell.grain, cell.dimSet, cell.periodStart, cell.dim1, cell.dim2, run.id, cell.events, cell.measure, measure ?? null],
     );
   }
 
-  for (const [key, label] of labels) {
-    const [dim, value] = key.split('\u0000') as [string, string];
+  for (const l of labels.values()) {
     ctx.sql.exec(
       `INSERT INTO tock_labels (run_id, dim, value, label, captured_at) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(run_id, dim, value) DO UPDATE SET label = excluded.label`,
-      [run.id, dim, value, label, ctx.now()],
+      [run.id, l.dim, l.value, l.label, ctx.now()],
     );
   }
 
-  // What produced these numbers, by content identity rather than by name. A list called
-  // "2026-03" can be edited upstream without its name changing, so the hash is the part a
-  // re-run can be held to.
+  /**
+   * What produced these numbers, by content identity rather than by name.
+   *
+   * The `salt` row names the daily salts the subject keys were actually hashed with — which
+   * is the question section 7 asks it: a re-run of an old day can then say whether its
+   * de-duplication is comparable to the original or merely looks like it. It used to record
+   * the SCHEMA's id as the content hash, which answers a different question nobody asked, and
+   * the salt ids profiling had in its hand were thrown away.
+   *
+   * A run may span days and the row is one per kind, so `identifier` names the days and the
+   * hash covers their salt ids in order — a run using the same salts reproduces the hash, one
+   * that had to mint a new salt for any day does not.
+   */
+  const days = ctx.sql.query<{ day: string }>(
+    'SELECT DISTINCT substr(occurred_at, 1, 10) AS day FROM tock_rows WHERE run_id = ? ORDER BY day',
+    [run.id],
+  ).map((d) => d.day);
+  const saltIds = days.map(
+    (day) =>
+      ctx.sql.query<{ salt_id: string }>('SELECT salt_id FROM tock_salts WHERE day = ?', [day])[0]?.salt_id ??
+      // The salt was destroyed after this run was profiled: the subject keys stand, and what
+      // is gone is the ability to reproduce them. Recorded as that rather than as a gap.
+      `destroyed:${day}`,
+  );
+  const saltHash = hex(
+    await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(saltIds.join(','))),
+  );
   ctx.sql.exec(
     `INSERT INTO tock_rule_states (id, run_id, rule_kind, identifier, content_hash, captured_at)
        VALUES (?, ?, 'salt', ?, ?, ?)
-     ON CONFLICT(run_id, rule_kind) DO UPDATE SET identifier = excluded.identifier`,
-    [ulid(), run.id, `days:${dayOf(run.period_from)}..${dayOf(run.period_to)}`, schema.id, ctx.now()],
+     ON CONFLICT(run_id, rule_kind) DO UPDATE SET
+       identifier = excluded.identifier, content_hash = excluded.content_hash`,
+    [ulid(), run.id, days.length === 0 ? 'days:none' : `days:${days[0]}..${days[days.length - 1]}`, saltHash, ctx.now()],
   );
+
+  /**
+   * And the rules the caller applied before handing the records over.
+   *
+   * A bot list is applied upstream of Tock — section 10 keeps fetching and updating the lists
+   * themselves out — so the run cannot derive which list it was. It can record what it was
+   * told, which is what makes the concept's promise that a superseded run "still names the bot
+   * list version it used" true rather than merely written down.
+   */
+  for (const rule of input.rules ?? []) {
+    ctx.sql.exec(
+      `INSERT INTO tock_rule_states (id, run_id, rule_kind, identifier, content_hash, captured_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(run_id, rule_kind) DO UPDATE SET
+         identifier = excluded.identifier, content_hash = excluded.content_hash`,
+      [ulid(), run.id, rule.kind, rule.identifier, rule.contentHash, ctx.now()],
+    );
+  }
 
   ctx.sql.exec('UPDATE tock_runs SET status = ?, rejected_count = ?, counted_at = ? WHERE id = ?', [
     'counted',
@@ -536,9 +762,8 @@ const getRunOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/get-run']>,
   HandlerOutput<(typeof tockOperations)['tock/get-run']>
 > = async (ctx, input) => {
-  const run = runOrThrow(ctx, input.runId);
-  assertAllowed(await ctx.check(TOCK_PERM.reportRead, runRef(run.id)));
-  return run;
+  assertAllowed(await ctx.check(TOCK_PERM.reportRead, runRef(input.runId)));
+  return runOrThrow(ctx, input.runId);
 };
 
 const listRunsOp: OperationHandler<
@@ -555,13 +780,39 @@ const listRunsOp: OperationHandler<
   }) as CountedPage<RunRow>;
 };
 
+const runRulesOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/run-rules']>,
+  HandlerOutput<(typeof tockOperations)['tock/run-rules']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.reportRead, runRef(input.runId)));
+  const run = runOrThrow(ctx, input.runId);
+  // Ordered by kind so two runs' rule sets can be read side by side without sorting first,
+  // which is the comparison this read exists for.
+  return {
+    entries: ctx.sql.query<RuleStateRow>(
+      'SELECT * FROM tock_rule_states WHERE run_id = ? ORDER BY rule_kind',
+      [run.id],
+    ),
+  };
+};
+
 const listObservationsOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/list-observations']>,
   HandlerOutput<(typeof tockOperations)['tock/list-observations']>
 > = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.reportRead, runRef(input.runId)));
   const run = runOrThrow(ctx, input.runId);
-  assertAllowed(await ctx.check(TOCK_PERM.reportRead, runRef(run.id)));
-  return ctx.page<ObservationRow>('observation', { ...input, filters: { run_id: run.id } });
+  // `run_id` is supplied rather than read off the input, so a caller cannot widen the read to
+  // another run — and it is spread LAST for that reason. The declared filter travels beside
+  // it, stored as 0/1: only when asked for, since an absent one must not become a
+  // `WHERE declared IS NULL` that quietly returns nothing.
+  return ctx.page<ObservationRow>('observation', {
+    ...input,
+    filters: {
+      ...(input.declared === undefined ? {} : { declared: input.declared ? 1 : 0 }),
+      run_id: run.id,
+    },
+  });
 };
 
 /**
@@ -620,7 +871,9 @@ const deviationsOp: OperationHandler<
       });
       continue;
     }
-    const types = (o.types ?? '').split(',').filter((t) => t && t !== 'unknown');
+    // Each observation's `inferred_type` is itself a comma-separated set, so GROUP_CONCAT
+    // over runs can repeat a type. Deduped here rather than reported twice in one message.
+    const types = [...new Set((o.types ?? '').split(','))].filter((t) => t && t !== TYPE_UNKNOWN);
     const wrong = types.filter((t) => t !== def.type);
     if (wrong.length > 0)
       findings.push({
@@ -690,8 +943,8 @@ const listRowsOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/list-rows']>,
   HandlerOutput<(typeof tockOperations)['tock/list-rows']>
 > = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.rowRead, runRef(input.runId)));
   const run = runOrThrow(ctx, input.runId);
-  assertAllowed(await ctx.check(TOCK_PERM.rowRead, runRef(run.id)));
   return ctx.page<RowRow>('row', { ...input, filters: { run_id: run.id } });
 };
 
@@ -699,10 +952,10 @@ const readSourceFileOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/read-source-file']>,
   HandlerOutput<(typeof tockOperations)['tock/read-source-file']>
 > = async (ctx, input) => {
-  const run = runOrThrow(ctx, input.runId);
   // `row:read`, not `report:read` — the file IS raw rows, so guarding it with the reporting
   // permission would be a way around the whole permission table.
-  assertAllowed(await ctx.check(TOCK_PERM.rowRead, runRef(run.id)));
+  assertAllowed(await ctx.check(TOCK_PERM.rowRead, runRef(input.runId)));
+  const run = runOrThrow(ctx, input.runId);
   const row = ctx.sql.query<SourceFileRow>('SELECT * FROM tock_source_files WHERE run_id = ?', [run.id])[0];
   if (!row) throw substratError('not_found', `no stored file for run ${run.id}`);
   return row;
@@ -722,6 +975,14 @@ const reportOp: OperationHandler<
   assertAllowed(await ctx.check(TOCK_PERM.reportRead));
   sourceOrThrow(ctx, input.sourceKey);
 
+  /**
+   * The dimensions this grouping names, in slot order — `episode_id+country` is `dim1` then
+   * `dim2`. The label join has to use THESE and not `dim_set` itself: on a pair the set is
+   * `episode_id+country`, which is nothing any label row was captured under, so every label
+   * on a two-dimension report came back null.
+   */
+  const dims = dimsOfSet(input.dimSet);
+
   const rows = ctx.sql.query<{
     period_start: string;
     dim1: string;
@@ -736,24 +997,33 @@ const reportOp: OperationHandler<
     `SELECT ro.period_start, ro.dim1, ro.dim2, ro.events, ro.measure, ro.unit, ro.run_id,
             l1.label AS label1, l2.label AS label2
        FROM tock_rollups ro
-       JOIN tock_runs r ON r.id = ro.run_id
-       LEFT JOIN tock_labels l1 ON l1.run_id = ro.run_id AND l1.dim = ro.dim_set AND l1.value = ro.dim1
-       LEFT JOIN tock_labels l2 ON l2.run_id = ro.run_id AND l2.dim = ro.dim_set AND l2.value = ro.dim2
+       LEFT JOIN tock_labels l1 ON l1.run_id = ro.run_id AND l1.dim = ? AND l1.value = ro.dim1
+       LEFT JOIN tock_labels l2 ON l2.run_id = ro.run_id AND l2.dim = ? AND l2.value = ro.dim2
       WHERE ro.source_key = ? AND ro.grain = ? AND ro.dim_set = ?
         AND ro.period_start >= ? AND ro.period_start < ?
-        AND r.counted_at = (
-              SELECT MAX(r2.counted_at) FROM tock_rollups ro2
+        AND ro.run_id = (
+              -- The run that is CURRENT for this bucket, as exactly one row.
+              --
+              -- This used to compare against MAX(counted_at), which is not a unique ordering
+              -- token: two runs counted inside the same millisecond — which a frozen test
+              -- clock guarantees, and a fast machine can produce for real — were both equal
+              -- to the maximum, and the report returned the superseded number alongside the
+              -- current one. Ordering and taking one row cannot tie. The id breaks a
+              -- same-instant tie by receive order, ULIDs being chronological.
+              SELECT ro2.run_id FROM tock_rollups ro2
                 JOIN tock_runs r2 ON r2.id = ro2.run_id
                WHERE ro2.source_key = ro.source_key AND ro2.grain = ro.grain
                  AND ro2.dim_set = ro.dim_set AND ro2.period_start = ro.period_start
+               ORDER BY r2.counted_at DESC, r2.id DESC
+               LIMIT 1
             )
       ORDER BY ro.period_start, ro.dim1, ro.dim2`,
-    [input.sourceKey, input.grain, input.dimSet, input.from, input.to],
+    [dims[0] ?? '', dims[1] ?? '', input.sourceKey, input.grain, input.dimSet, input.from, input.to],
   );
 
   // Unknown is an empty value in a slot the grouping USES; an empty value in a slot it does
   // not use is simply that slot being absent, and hiding those would hide every total.
-  const used = dimsOfSet(input.dimSet).length;
+  const used = dims.length;
   const unknown = (r: { dim1: string; dim2: string }) =>
     (used >= 1 && r.dim1 === DIM_NONE) || (used >= 2 && r.dim2 === DIM_NONE);
   const visible = input.includeUnknown ? rows : rows.filter((r) => !unknown(r));
@@ -785,6 +1055,7 @@ const operations = {
   'tock/count-run': countRunOp,
   'tock/get-run': getRunOp,
   'tock/list-runs': listRunsOp,
+  'tock/run-rules': runRulesOp,
   'tock/list-observations': listObservationsOp,
   'tock/deviations': deviationsOp,
   'tock/field-history': fieldHistoryOp,

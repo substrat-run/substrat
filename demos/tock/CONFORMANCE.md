@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-tock
 
-16 operations · 7 narrowed checks · 7 conformance pairs driven
+17 operations · 8 narrowed checks · 8 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**7 pairs driven** across 7 of this package's 7 narrowed checks.
+**8 pairs driven** across 8 of this package's 8 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
@@ -48,6 +48,7 @@ against B, and requires a permission denial specifically.
 | `tock/map-run` | `run:manage` | `run`, id from `runId` | `run` |
 | `tock/profile-run` | `run:manage` | `run`, id from `runId` | `run` |
 | `tock/read-source-file` | `row:read` | `run`, id from `runId` | `run` |
+| `tock/run-rules` | `report:read` | `run`, id from `runId` | `run` |
 
 ## 3. Not driven, by name
 

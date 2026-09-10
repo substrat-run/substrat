@@ -2,7 +2,7 @@
   "name": "@substrat-run/demo-tock",
   "version": "0.0.0",
   "private": true,
-  "description": "Turning delivered files into numbers you can stand behind — declared schemas, observed arrivals, runs that supersede",
+  "description": "Turning delivered files into numbers you can stand behind \u2014 declared schemas, observed arrivals, runs that supersede",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
@@ -17,13 +17,15 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "catalog:",
+    "better-sqlite3": "^13.0.3",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
-    "@substrat-run/adapter-sqlite": "workspace:^",
-    "vitest": "catalog:",
-    "@substrat-run/contract-tests": "workspace:^"
+    "vitest": "catalog:"
   },
   "substrat": {
     "slug": "tock",
