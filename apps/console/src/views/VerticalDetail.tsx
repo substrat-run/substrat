@@ -96,6 +96,13 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   const [bulkRetire, setBulkRetire] = useState<{ scopes: Scope[]; hostnames: Map<ScopeId, string[]> } | null>(null);
   const [bulkArmed, setBulkArmed] = useState('');
 
+  // What every mutation control on the page is disabled by. Both halves matter: a bulk
+  // run holds `bulkBusy` with no `busy` key of its own, so gating on `busy` alone left
+  // Admit, Vouch, List/Unlist, the capability grants, Promote, Delete and single-scope
+  // retire live while the selection was still being rebound or reaped — a second write
+  // landing over rows the pending re-walk is about to replace.
+  const pageBusy = busy !== null || bulkBusy;
+
   const loadDetail = useCallback(
     async (slug: string) => {
       try {
@@ -405,7 +412,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           size="sm"
           variant="danger"
           loading={busy === `open-retire:${s.id}`}
-          disabled={busy !== null}
+          disabled={pageBusy}
           onClick={() => void openRetire(s)}
         >
           Retire…
@@ -514,7 +521,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             <Button
               size="sm"
               loading={busy === `admit:${v.id}`}
-              disabled={busy !== null}
+              disabled={pageBusy}
               onClick={() =>
                 run(`admit:${v.id}`, () => api.admitVersion(vertical.slug, v.id), 'Version admitted', v.version)
               }
@@ -525,7 +532,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
               size="sm"
               variant="danger"
               loading={busy === `reject:${v.id}`}
-              disabled={busy !== null}
+              disabled={pageBusy}
               onClick={() =>
                 run(
                   `reject:${v.id}`,
@@ -548,7 +555,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           <Button
             size="sm"
             loading={busy === `vouch:${v.id}`}
-            disabled={busy !== null}
+            disabled={pageBusy}
             onClick={() =>
               run(`vouch:${v.id}`, () => api.admitVersion(vertical.slug, v.id), 'Version vouched for', v.version)
             }
@@ -592,7 +599,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             <Button
               variant={vertical.listed ? 'danger' : 'primary'}
               loading={busy === 'listed'}
-              disabled={busy !== null}
+              disabled={pageBusy}
               onClick={() =>
                 run(
                   'listed',
@@ -607,7 +614,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             <Button
               variant="secondary"
               loading={busy === 'installs'}
-              disabled={busy !== null}
+              disabled={pageBusy}
               onClick={() =>
                 run(
                   'installs',
@@ -627,7 +634,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             <Button
               variant="secondary"
               loading={busy === 'provisioner'}
-              disabled={busy !== null}
+              disabled={pageBusy}
               onClick={() =>
                 run(
                   'provisioner',
@@ -649,7 +656,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             <Button
               variant="secondary"
               loading={busy === 'emailSender'}
-              disabled={busy !== null}
+              disabled={pageBusy}
               onClick={() =>
                 run(
                   'emailSender',
@@ -665,7 +672,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                   ? 'Approve email sender'
                   : 'Grant email sender'}
             </Button>
-            <Button variant="danger" disabled={busy !== null} onClick={() => setDeleteInput('')}>
+            <Button variant="danger" disabled={pageBusy} onClick={() => setDeleteInput('')}>
               Delete…
             </Button>
             <Button variant="secondary" onClick={onBack}>
@@ -767,7 +774,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={busy !== null || versions.every((x) => x.admission !== 'admitted')}
+                  disabled={pageBusy || versions.every((x) => x.admission !== 'admitted')}
                   onClick={() => {
                     setAck({});
                     // The NEWEST admitted version, matching the order the picker lists
@@ -884,7 +891,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                     size="sm"
                     variant="secondary"
                     loading={busy === 'open-move'}
-                    disabled={bulkBusy || busy !== null}
+                    disabled={pageBusy}
                     onClick={() => void openMove()}
                   >
                     Move to vertical… ({movableScopes.length})
@@ -894,7 +901,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                   size="sm"
                   variant="danger"
                   loading={busy === 'open-bulk-retire'}
-                  disabled={bulkBusy || busy !== null}
+                  disabled={pageBusy}
                   onClick={() => void openBulkRetire()}
                 >
                   Retire… ({selectedScopes.length})
