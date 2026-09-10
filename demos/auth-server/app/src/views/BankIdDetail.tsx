@@ -91,7 +91,10 @@ export function BankIdDetailView() {
 function BankIdFacts({ settings }: { settings: BankIdSettings }) {
   return (
     <section className="panel">
-      <div className="panel-head"><h2>BankID</h2></div>
+      {/* Not "BankID": the topbar already says that, because a detail screen keeps its
+          section's label up there. This panel is the stored row, the form below it is what
+          replaces the row, and the heading is what tells the two apart. */}
+      <div className="panel-head"><h2>Stored configuration</h2></div>
       <dl className="kv">
         <dt>Environment</dt>
         {/* Which BankID this issuer calls, and therefore which app a person needs: a test-mode
@@ -113,16 +116,22 @@ function BankIdFacts({ settings }: { settings: BankIdSettings }) {
           {settings.allowSignup && <span className="tag">creates accounts</span>}
         </dd>
         <dt>Certificate</dt>
-        {/* Stored or not is the whole fact available. The PEM went into this issuer's own
+        {/* Stored or not is the whole fact available: the PEM went into this issuer's own
             database and is never read back out to a browser, which is why the form below asks
-            to REPLACE it rather than showing it. */}
+            to REPLACE it rather than showing it. There is no "missing" to report — the issuer
+            refuses to store a configuration without a certificate (`putBankIdConfig` throws)
+            and one that somehow lacked it would not parse, so a configuration existing IS a
+            certificate existing. The flag is on the wire so this screen never has to assume
+            that, not because the other value happens here. */}
         <dd>
-          {settings.certSet ? 'stored' : <span className="tag warn">missing</span>}
+          {settings.certSet ? 'stored' : '—'}
           {settings.caSet && <span className="tag">custom CA</span>}
         </dd>
         <dt>Last changed</dt>
-        {/* `updatedAt` is epoch milliseconds, and 0 for a row that predates the column. */}
-        <dd>{settings.updatedAt ? new Date(settings.updatedAt).toLocaleString() : '—'}</dd>
+        {/* `updatedAt` is epoch milliseconds, stamped on every save and required by the stored
+            schema — a row without one reads as no configuration at all rather than as an
+            unknown date, so there is no missing case to render here. */}
+        <dd>{new Date(settings.updatedAt).toLocaleString()}</dd>
       </dl>
     </section>
   );
@@ -154,6 +163,11 @@ function BankIdActions({ onRemoved }: { onRemoved: () => Promise<void> }) {
                 // again — which is what an operator who removed the wrong certificate wants
                 // in front of them.
                 await onRemoved();
+                // Usually unreachable in effect: a successful re-read has no configuration, so
+                // this panel is gone by now and the setState is a no-op. It is here for the
+                // path where the re-read itself fails — the removal happened, the panel is
+                // still on screen showing that error, and a latched-disabled button would be
+                // the only thing left to look at.
                 setBusy(false);
               } catch (e) {
                 setErr(e instanceof Error ? e.message : String(e));
