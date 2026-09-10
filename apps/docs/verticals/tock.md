@@ -5,9 +5,8 @@ file is supposed to contain, Tock reports what actually arrived, and a correctio
 new run beside the old one rather than on top of it.
 
 ::: warning In progress
-Only the **declared model** exists today — entities, operations and permissions in
-`spec/model.ts`, with `model.json` emitted from it. There are no handlers, no migrations, no
-seed and no app yet, so nothing on this page can be run. The approved design is
+The API runs and the scenario passes; there is **no browser app yet**, so everything below is
+driven over HTTP. The approved design is
 [`demos/tock/spec/concept.md`](https://github.com/substrat-run/substrat/blob/main/demos/tock/spec/concept.md).
 :::
 
@@ -54,7 +53,8 @@ What it proves:
 | **Own tables** | `tock_sources` · `tock_schemas` · `tock_runs` · `tock_source_files` · `tock_rule_states` · `tock_salts` · `tock_observations` · `tock_field_history` · `tock_rows` · `tock_rollups` · `tock_labels` |
 | **Permission surface** | 4 keys — `report:read` · `row:read` · `run:manage` · `schema:manage` |
 | **Auth** | [OIDC only](/concepts/identity), like every other demo here |
-| **Status** | Model declared; handlers, seed and app not yet built |
+| **Apps** | API (`:8880`) only — no browser app yet |
+| **Status** | Runs headlessly: 16 operations, a seeded world, a passing scenario |
 
 ## The lifecycle
 
@@ -90,6 +90,31 @@ permission would be a way around the whole table.
 Counts are readable by everyone, including a viewer, because a report nobody can open is not a
 report. What separates the roles is who can *change* a number: only a modeller writes a schema
 version, and mapping a run merely *selects* one.
+
+## Run it
+
+```bash
+pnpm --filter @substrat-run/demo-tock dev
+# issuer  http://localhost:8879   (sign in by picking Ines, Tomas, Wren or Petra)
+# api     http://localhost:8880
+```
+
+Two routes are **not** operations, because they touch bytes and module code cannot:
+
+```
+POST /api/sources/:key/upload      the file itself; the server hashes it, stores it,
+                                   reads the period out of it, and opens the run
+POST /api/runs/:runId/profile      reads those bytes back, re-checks the hash, parses,
+                                   and profiles in batches
+```
+
+That split is the whole trust boundary. `tock/profile-run` declares no HTTP route, so nothing
+mounts it and a browser cannot hand records in — the parsing happens on the server, over bytes
+the server stored. `demos/tock/sample/2026-03-14.csv` is a day of logs to drive it with.
+
+`test/scenario.test.ts` replays the concept's section 8 headlessly, and
+`test/entity-checks.test.ts` generates, from the declared model, the behavioural pair that
+proves each entity-scoped handler honours its permission.
 
 ## Deliberately out of scope
 
