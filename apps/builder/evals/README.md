@@ -16,6 +16,18 @@ enough that a competent build needs no questions. Frozen means frozen: editing a
 concept invalidates every historical result against it; add a new fixture instead.
 This measures how faithfully a fully specified design gets built.
 
+**Frozen and superseded are different states, and both are visible.** A frozen fixture
+is one nobody may edit. A **superseded** one is a frozen fixture a later fixture was
+written to replace — because the concept turned out to be unbuildable as written, so
+every run against it graded a judgement call rather than the build (#723: `paveworks`
+requires three recorded assumptions, two of them outright contradictions, and
+`paveworks2` closes them). Superseding does not unfreeze anything: the old fixture's
+`concept.md` stays byte-identical so its historical results keep meaning what they
+meant, and the successor says in its own header which fixture it supersedes and why.
+Both keep running in the default sweep — dropping a fixture from the default set is the
+irreversible half of the choice, and it costs a corpus decision rather than a file edit,
+so it is made deliberately and not as a side effect of adding a successor.
+
 **Start at the prompt** (`prompt.md` + `answers.md`, #740) — the brief a customer
 would actually give, and everything the builder answered. The run begins in the
 interview phase and writes its own `spec/concept.md`, so the interview → concept link
