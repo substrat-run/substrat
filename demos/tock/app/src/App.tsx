@@ -346,7 +346,23 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
                 ) : <span className="muted">—</span>}
               </td>
               <td>
-                <button className="link" onClick={() => { const { [name]: _drop, ...rest } = fields; setFields(rest); }}>remove</button>
+                {/* Removing a field also clears any labelField pointing at it. The server refuses a
+                    schema whose label names a field it does not contain, so leaving the dangling
+                    reference makes the schema unsavable — with the error arriving at Save, about a
+                    field the person removed several clicks ago. */}
+                <button
+                  className="link"
+                  onClick={() => {
+                    const { [name]: _drop, ...rest } = fields;
+                    setFields(
+                      Object.fromEntries(
+                        Object.entries(rest).map(([n, f]) => [n, f.labelField === name ? { ...f, labelField: undefined } : f]),
+                      ),
+                    );
+                  }}
+                >
+                  remove
+                </button>
               </td>
             </tr>
           ))}

@@ -9,7 +9,7 @@
  * host routes precisely because module code cannot touch a blob, so no generated method could
  * exist for them: they are not operations.
  */
-import { createClient } from './api.generated.js';
+import { ApiError, createClient } from './api.generated.js';
 
 export { ApiError } from './api.generated.js';
 export type {
@@ -43,10 +43,18 @@ export interface IngestResult {
   malformed: number;
 }
 
+/**
+ * These two routes are not operations, but a caller cannot tell and should not have to.
+ *
+ * `ApiError`, not a plain `Error`: the app decides what a refusal READS like by branching on
+ * the error type and its status, so a plain throw here meant a 403 from upload rendered the
+ * server's raw text while a 403 from any generated method rendered the sentence about roles.
+ * Same failure, two voices, decided by whether the endpoint happened to be an operation.
+ */
 async function bytesRoute(url: string, init: RequestInit): Promise<IngestResult> {
   const res = await fetch(url, { credentials: 'same-origin', ...init });
   const body = (await res.json().catch(() => ({}))) as Partial<IngestResult> & { error?: string };
-  if (!res.ok) throw new Error(body.error ?? `${res.status}`);
+  if (!res.ok) throw new ApiError(res.status, body.error ?? res.statusText ?? `${res.status}`, body);
   return body as IngestResult;
 }
 
