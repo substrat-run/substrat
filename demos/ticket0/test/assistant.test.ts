@@ -27,6 +27,7 @@ import {
   spreadAcrossDocuments,
   wantsHuman,
   type Model,
+  type PriorMessage,
   type RetrievedArticle,
   type ModelDescription,
 } from '../harness/assistant.js';
@@ -1648,5 +1649,280 @@ describe('the widget surface routes a request for a person away from the model',
     expect(res.status).toBe(200);
     expect(((await res.json()) as { notified: number }).notified).toBeGreaterThan(0);
     expect(answered).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The conversation, as a thing the assistant is part of rather than a sequence of
+ * unrelated questions.
+ *
+ * Reported from the live desk on substrat.net: *"Is there a changelog?"* answered well,
+ * and then *"Ok, and last week? Any big releases?"* answered about something else. Both
+ * halves of that are exercised here, and the retrieval half is the one worth reading —
+ * a prompt that carries the transcript still answers from whatever the index handed it,
+ * so a follow-up that retrieves the wrong page keeps its context perfectly and is still
+ * wrong.
+ */
+describe('a follow-up is a follow-up', () => {
+  /**
+   * A changelog page and a release-process page, arranged so the two are genuinely
+   * confusable — which is the corpus property the bug needs. `last` appears on neither,
+   * so the follow-up's own most specific query misses; `release` appears on both, so
+   * its next-best query hits the WRONG one.
+   */
+  const CORPUS = [
+    '# Changelog',
+    '',
+    'Source: https://docs.kestrel.example/changelog.md',
+    '',
+    '## What this is',
+    '',
+    'The changelog is a weekly record of what shipped. Each entry names its week and',
+    'lists every package released in it, with the version span the package moved',
+    'across, so a reader can see how big a week was without reading the commits.',
+    '',
+    '## What this is not',
+    '',
+    'The changelog is not a roadmap and not a status page. It says only what already',
+    'went out, which is why an entry is written once its week has ended.',
+    '',
+    '# Release process',
+    '',
+    'Source: https://docs.kestrel.example/releases.md',
+    '',
+    '## Cutting a release',
+    '',
+    'A release is cut from main by a changeset, and CI pushes the tag once the version',
+    'bump has merged. A release happens when the changesets say it does.',
+  ].join('\n');
+
+  const fakeFetch = (async () => new Response(CORPUS)) as unknown as typeof fetch;
+
+  const FIRST = 'Is there a changelog?';
+  const FOLLOW_UP = 'Ok, and last week? Any big releases?';
+
+  /** Remembers everything it was handed, so the test can assert on the prompt's inputs. */
+  const capturing = (): Model & {
+    context: RetrievedArticle[];
+    history: readonly PriorMessage[];
+  } => {
+    const model = {
+      label: 'test/capturing',
+      context: [] as RetrievedArticle[],
+      history: [] as readonly PriorMessage[],
+      async answer(input: {
+        question: string;
+        context: RetrievedArticle[];
+        history: readonly PriorMessage[];
+      }) {
+        model.context = input.context;
+        model.history = input.history;
+        return { text: 'Week 35 was a quiet one.', inputTokens: 10, outputTokens: 5, confidence: 0.9 };
+      },
+    };
+    return model;
+  };
+
+  /** Its own world: this one ingests a different corpus into the desk it uses. */
+  async function ownDesk() {
+    const ownDir = mkdtempSync(join(tmpdir(), 'ticket0-follow-up-'));
+    const ownHost = buildHost(ownDir);
+    const ownWorld = await seed(ownHost);
+    // Substrat's desk answers customers directly, so the assistant's own replies are
+    // PUBLIC — which is what puts them in the next message's history.
+    const desk = ownWorld.substrat;
+    const stub = (role: 'admin' | 'agent' | 'assistantAutonomous' | 'widget') =>
+      ownHost.getScope(desk[role].principal, desk.tenant, desk.scope);
+
+    const admin = await stub('admin');
+    const sources = (await admin.invoke('ticket0/list-kb-sources', {})) as Page<{
+      id: string;
+      kind: 'llms-txt';
+      url: string;
+    }>;
+    await runIngest(asTarget(admin), sources.entries[0]!, fakeFetch);
+
+    const widget = await stub('widget');
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: desk.origin,
+      identity: {
+        externalId: desk.customer.email,
+        signature: await signIdentity(desk.verificationSecret, desk.customer.email),
+      },
+    })) as { sessionId: string; token: string };
+
+    const say = (body: string) =>
+      widget.invoke('ticket0/widget-post', {
+        sessionId: started.sessionId,
+        token: started.token,
+        body,
+      }) as Promise<{ id: string; conversation_id: string }>;
+
+    return { dispose: () => rmSync(ownDir, { recursive: true, force: true }), desk, stub, say };
+  }
+
+  it('carries what the customer said and was told, and nothing they never saw', async () => {
+    const { dispose, stub, say } = await ownDesk();
+    try {
+      const assistant = asTarget(await stub('assistantAutonomous'));
+
+      const first = await say(FIRST);
+      const opening = capturing();
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: first.id, question: FIRST },
+        opening,
+      );
+      // The first message of a conversation has no history, and the prompt it produces
+      // is the one this file has always produced.
+      expect(opening.history).toEqual([]);
+
+      // An agent's private read of the customer, which is exactly the sentence that
+      // must never reach a prompt whose output is posted publicly.
+      const agent = await stub('agent');
+      await agent.invoke('ticket0/post-note', {
+        conversationId: first.conversation_id,
+        body: 'This one asks a lot of questions — keep the answers short.',
+      });
+
+      const second = await say(FOLLOW_UP);
+      const following = capturing();
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: second.id, question: FOLLOW_UP },
+        following,
+      );
+
+      // Oldest first, and exactly the two turns the customer lived through: what they
+      // asked, and the answer they read.
+      expect(following.history).toEqual([
+        { role: 'customer', text: FIRST },
+        { role: 'support', text: 'Week 35 was a quiet one.' },
+      ]);
+      // The note is the assertion this test exists for.
+      expect(JSON.stringify(following.history)).not.toContain('asks a lot of questions');
+      // And the message being answered is not context for itself.
+      expect(following.history.map((m) => m.text)).not.toContain(FOLLOW_UP);
+    } finally {
+      dispose();
+    }
+  });
+
+  /**
+   * The half a prompt cannot fix.
+   *
+   * `last` is on neither page, so the follow-up's most specific query misses and the
+   * walk drops to single words — where `release` matches the release-process page and
+   * the changelog the customer was actually reading about never enters the ranking.
+   */
+  it('retrieves the page the conversation was already about', async () => {
+    const { dispose, stub, say } = await ownDesk();
+    try {
+      const assistant = asTarget(await stub('assistantAutonomous'));
+
+      const first = await say(FIRST);
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: first.id, question: FIRST },
+        capturing(),
+      );
+
+      const second = await say(FOLLOW_UP);
+      const following = capturing();
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: second.id, question: FOLLOW_UP },
+        following,
+      );
+
+      const urls = following.context.map((c) => c.url);
+      expect(urls.some((u) => u.includes('changelog'))).toBe(true);
+      // The assertion that discriminates. `release` is on both pages, so the singles
+      // rung retrieves both and the changelog page is merely PRESENT — mixed in with
+      // the process page the customer never asked about, which is how the live desk
+      // came to answer about cutting releases. The bridge query names the topic, so
+      // the process page cannot match it at all.
+      expect(urls.some((u) => u.includes('releases'))).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
+  /**
+   * History is what makes a follow-up readable, not what makes an answer possible.
+   *
+   * A desk whose message read refuses still answers the message in front of it — the
+   * alternative is a conversation that stops dead because a list call went wrong.
+   */
+  it('still answers when the conversation cannot be read', async () => {
+    const { dispose, stub, say } = await ownDesk();
+    try {
+      const stub_ = await stub('assistantAutonomous');
+      const blind = {
+        invoke: <T,>(op: string, input: unknown, options?: { idempotencyKey?: string }) =>
+          op === 'ticket0/list-messages'
+            ? Promise.reject(new Error('the message list is unavailable'))
+            : (stub_.invoke(op, input, options) as Promise<T>),
+      };
+
+      const first = await say(FIRST);
+      const model = capturing();
+      const outcome = await answerConversation(
+        blind,
+        { conversationId: first.conversation_id, messageId: first.id, question: FIRST },
+        model,
+      );
+
+      expect(outcome.outcome).toBe('answered');
+      expect(model.history).toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('the ladder a follow-up climbs', () => {
+  const FOLLOW_UP_Q = 'Ok, and last week? Any big releases?';
+
+  it('bridges to the previous question, below the specific query and above the singles', () => {
+    const ladder = searchQueriesOf(FOLLOW_UP_Q, 'Is there a changelog?');
+    // The specific query still leads: a self-contained message must not be dragged
+    // backwards, and this rung is what lets it stand alone when it can.
+    expect(ladder[0]).toBe('releas last');
+    // Then the bridge — before any single word, because a single word is what quietly
+    // succeeds with the wrong page and stops the walk.
+    expect(ladder[1]).toBe('releas changelog');
+    expect(ladder.indexOf('releas changelog')).toBeLessThan(ladder.indexOf('releas'));
+  });
+
+  it('leaves a self-contained question exactly as it was', () => {
+    const alone = searchQueriesOf('How do I rotate an API key?');
+    // The prior question contributes a rung and changes nothing else — and when the
+    // specific query hits, as it does for a question like this, the walk never reaches
+    // it at all.
+    expect(searchQueriesOf('How do I rotate an API key?', 'Is there a changelog?')[0]).toBe(alone[0]);
+    expect(alone[0]).toBe('rotat api');
+  });
+
+  it('answers a message that is nothing but grammar from the question before it', () => {
+    // "and what about that one?" is every stop word and no content — today it searches
+    // for `help`, which is a page about nothing in particular.
+    expect(searchQueriesOf('And what about that one?')).toEqual(['help']);
+    expect(searchQueriesOf('And what about that one?', 'How do I rotate an API key?')).toEqual([
+      'rotat',
+      'api',
+      'key',
+    ]);
+  });
+
+  it('never carries a word the follow-up already had', () => {
+    // The bridge exists to WIDEN. Pairing a term with itself narrows to the query that
+    // already ran.
+    const ladder = searchQueriesOf('What about release notes?', 'How is a release cut?');
+    expect(ladder).not.toContain('releas releas');
   });
 });

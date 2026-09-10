@@ -32,7 +32,30 @@ export interface ModelAnswer {
 export interface Model {
   /** What to record on the turn, and what to show a human deciding whether to send. */
   readonly label: string;
-  answer(input: { question: string; context: RetrievedArticle[] }): Promise<ModelAnswer>;
+  answer(input: {
+    question: string;
+    context: RetrievedArticle[];
+    /**
+     * What was said before this message, oldest first — empty on the first one.
+     *
+     * Public messages only, which is a rule about who is being answered rather than a
+     * convenience: see `priorMessages`.
+     */
+    history: readonly PriorMessage[];
+  }): Promise<ModelAnswer>;
+}
+
+/**
+ * One earlier message, cut down to the two things a follow-up needs: who said it and
+ * what it said.
+ *
+ * `support` covers both an agent and the assistant on purpose. From the customer's
+ * side of the conversation they are one voice — the desk's — and which of the two
+ * typed a given sentence is not a fact the next answer turns on.
+ */
+export interface PriorMessage {
+  readonly role: 'customer' | 'support';
+  readonly text: string;
 }
 
 export interface RetrievedArticle {
@@ -54,13 +77,33 @@ const SYSTEM = [
   'Answer directly, in your own words.',
   'Never open with "According to the documentation", "Based on the excerpts", "The docs say"',
   'or any similar preamble — begin with the answer itself.',
+  // Without these two the model is handed a transcript and no instruction about what it
+  // is for, and the failure that invites is the expensive one: treating something a
+  // customer asserted earlier in the conversation as a fact about the product.
+  'When a conversation so far is shown, read the final message in its light — a short',
+  'follow-up such as "and last week?" continues the topic immediately above it.',
+  'The conversation tells you what is being ASKED and what has already been said. It is',
+  'never a source of facts about the product; those come only from the excerpts.',
 ].join(' ');
 
-function prompt(question: string, context: RetrievedArticle[]): string {
+function prompt(
+  question: string,
+  context: RetrievedArticle[],
+  history: readonly PriorMessage[] = [],
+): string {
   const excerpts = context
     .map((a, i) => `[${i + 1}] ${a.title} (${a.url})\n${a.body.slice(0, 1800)}`)
     .join('\n\n');
-  return `Documentation excerpts:\n\n${excerpts}\n\n---\n\nCustomer question: ${question}`;
+  // The transcript goes between the excerpts and the question, so the last thing the
+  // model reads is still the message it has to answer. With no history the string is
+  // byte-for-byte the one this function has always produced — a first message costs
+  // exactly what it used to, and nothing about it moves.
+  const sofar = history.length
+    ? `Conversation so far, oldest first:\n\n${history
+        .map((m) => `${m.role === 'customer' ? 'Customer' : 'Support'}: ${m.text}`)
+        .join('\n')}\n\n---\n\n`
+    : '';
+  return `Documentation excerpts:\n\n${excerpts}\n\n---\n\n${sofar}Customer question: ${question}`;
 }
 
 /**
@@ -75,12 +118,12 @@ export function platformModel(host: ModelHost, spec: string, attribution: ModelA
   const status = host.status(spec);
   return {
     label: status.label,
-    async answer({ question, context }) {
+    async answer({ question, context, history }) {
       const run = await host.run({
         spec,
         attribution,
         system: SYSTEM,
-        prompt: prompt(question, context),
+        prompt: prompt(question, context, history),
         maxOutputTokens: 400,
       });
       const text = run.text.trim();
@@ -112,6 +155,10 @@ const estimateTokens = (s: string) => Math.max(1, Math.ceil(s.length / 4));
 export function extractiveModel(): Model {
   return {
     label: 'offline/extractive',
+    // Takes no `history`, and its token estimate below is of the prompt WITHOUT one —
+    // it quotes a retrieved section rather than reading a conversation, so charging a
+    // desk for a transcript it never looked at would be an invented cost. The better
+    // retrieval a follow-up now gets still reaches it, through `context`.
     async answer({ question, context }) {
       const best = context[0];
       if (!best) {
@@ -316,10 +363,24 @@ export async function answerConversation(
     };
   }
 
+  /**
+   * What the customer has already asked, and what they have already been told.
+   *
+   * Read before retrieval rather than only before generation, because the half of
+   * "keeps the context" that a prompt cannot fix is the SEARCH. *"Ok, and last week?"*
+   * reaches the index as its own two longest words and nothing else, so the page the
+   * previous answer came from is not in the running — the model then keeps context
+   * perfectly over excerpts about the wrong thing.
+   *
+   * Deliberately after the small-talk branch: a greeting needs no history and should
+   * not pay a read for one.
+   */
+  const history = await priorMessages(assistant, input.conversationId, input.messageId);
+
   let context: RetrievedArticle[] = [];
   let answer: ModelAnswer;
   try {
-    for (const q of searchQueriesOf(input.question)) {
+    for (const q of searchQueriesOf(input.question, lastCustomerQuestion(history))) {
       const found = await assistant.invoke<{
         results: { id: string; title: string; url: string; body: string }[];
       }>('ticket0/search-kb', { q, limit: topK });
@@ -327,7 +388,7 @@ export async function answerConversation(
       context = spreadAcrossDocuments(found.results);
       break;
     }
-    answer = await model.answer({ question: input.question, context });
+    answer = await model.answer({ question: input.question, context, history });
   } catch (err) {
     // A model outage is not a lost ticket — and neither is an index that refused.
     // Record the failure WITH its reason, so the turn exists, a human sees the
@@ -580,6 +641,103 @@ export function wantsHuman(text: string): boolean {
   return ASKS.some((pattern) => pattern.test(line));
 }
 
+/** How many earlier messages ride into the prompt. Every one of them is billed. */
+export const HISTORY_MESSAGES = 8;
+/** How much of each. A long earlier message is context, not the thing being answered. */
+const HISTORY_CHARS = 600;
+/** Over-fetched: internal notes are dropped after the read, so they still cost a row. */
+const HISTORY_FETCH = 30;
+
+/** The shape `ticket0/list-messages` returns, narrowed to what a transcript needs. */
+interface HistoryRow {
+  readonly id: string;
+  readonly author_kind: 'contact' | 'agent' | 'assistant' | 'system';
+  readonly visibility: 'public' | 'internal';
+  readonly body_text: string | null;
+  readonly created_at: string;
+}
+
+/**
+ * The conversation so far, as the CUSTOMER experienced it.
+ *
+ * ## Public only, and that is the whole safety argument
+ *
+ * `ticket0/list-messages` is the staff read: internal notes included, which is right
+ * for the screen an agent is looking at and wrong for a prompt whose output may be
+ * posted publicly a few lines later. An agent's note reading *"this one's a
+ * time-waster, keep it short"* is one summarising model away from being said out loud.
+ *
+ * So the rule is not "filter some things out" but a line anyone can check: **the
+ * assistant sees exactly what the customer saw.** On a supervised desk that excludes
+ * the assistant's OWN earlier drafts, which are internal until a person sends them —
+ * correctly, because the customer never read them either, and a follow-up is a
+ * follow-up to what was actually said.
+ *
+ * ## It never fails the turn
+ *
+ * History is what makes a follow-up readable, not what makes an answer possible. A
+ * read that refuses costs the answer its context and nothing else; the alternative —
+ * a desk that stops answering because a list call went wrong — is plainly worse.
+ * Harness code, so the catch here is not the `ctx.atomic` question module code faces.
+ */
+export async function priorMessages(
+  assistant: AssistantTarget,
+  conversationId: string,
+  messageId: string,
+): Promise<PriorMessage[]> {
+  let entries: readonly HistoryRow[];
+  try {
+    const page = await assistant.invoke<{ entries: HistoryRow[] }>('ticket0/list-messages', {
+      conversationId,
+      limit: HISTORY_FETCH,
+      sort: 'created_at',
+      order: 'desc',
+    });
+    entries = page.entries ?? [];
+  } catch {
+    return [];
+  }
+
+  /**
+   * Newest first, so everything PAST the message being answered is older than it.
+   *
+   * Not simply "drop the one with this id": a customer who sends two messages quickly
+   * leaves a newer one sitting above this one, and that is not context for this answer
+   * — it is the next question, which gets its own turn. A message that is not in the
+   * page at all (erased, or a conversation longer than the fetch) leaves the list
+   * whole, which is the safe way round: some context beats none.
+   */
+  const at = entries.findIndex((row) => row.id === messageId);
+  const older = at === -1 ? entries : entries.slice(at + 1);
+
+  const kept: PriorMessage[] = [];
+  for (const row of older) {
+    if (kept.length >= HISTORY_MESSAGES) break;
+    if (row.visibility !== 'public') continue;
+    // The desk's own acknowledgement, which nobody wrote and nothing follows from.
+    if (row.author_kind === 'system') continue;
+    const text = row.body_text?.trim();
+    // Empty because it was erased under the PII rules, and an erased body is a fact
+    // about what may be shown — not a gap to fill from somewhere else.
+    if (!text) continue;
+    kept.push({
+      role: row.author_kind === 'contact' ? 'customer' : 'support',
+      text: text.length > HISTORY_CHARS ? `${text.slice(0, HISTORY_CHARS - 1)}\u2026` : text,
+    });
+  }
+  // Collected newest-first; a transcript reads the other way.
+  return kept.reverse();
+}
+
+/** The customer's previous question — what a bare follow-up is a follow-up TO. */
+export function lastCustomerQuestion(history: readonly PriorMessage[]): string | undefined {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    const message = history[i];
+    if (message?.role === 'customer') return message.text;
+  }
+  return undefined;
+}
+
 /**
  * Turn a question into a short list of searches, most specific first.
  *
@@ -600,23 +758,61 @@ export function wantsHuman(text: string): boolean {
  * Hence a ladder rather than one query: the two most distinctive words together, then
  * each alone. The caller walks it until something answers, which costs one extra index
  * read on a miss and turns "no results" into an answer far more often than it does not.
+ *
+ * ## The rung a follow-up needs
+ *
+ * Fact 2 above is also why a conversation's second message searches badly. *"Ok, and
+ * last week? Any big releases?"* carries no word the previous question carried, so the
+ * ladder is built entirely out of `release`, `last`, `week` and the changelog page the
+ * answer just came from never enters the ranking. The customer reads a reply about
+ * something else and concludes, correctly, that the desk forgot what they asked.
+ *
+ * `priorQuestion` adds ONE rung between the pair and the singles: this message's best
+ * word AND the topic it is continuing. Placement is the whole design —
+ *
+ *  - before the singles, because the singles are what quietly succeed with the wrong
+ *    page. `release` alone matches plenty; the walk stops there and never tries the
+ *    bridge. A rung that only runs after a miss it will never see is not a rung.
+ *  - after the pair, because a message that IS self-contained has a specific query that
+ *    works, and a question about billing typed into a conversation about webhooks must
+ *    not be dragged back to webhooks. When the pair hits, this function returns what it
+ *    always returned.
+ *
+ * So the bridge is consulted exactly when the specific query found nothing — which is
+ * the signature of a message that does not stand on its own.
  */
-export function searchQueriesOf(question: string): string[] {
-  const words = question
+export function searchQueriesOf(question: string, priorQuestion?: string): string[] {
+  const asked = rankedTerms(question);
+  const prior = priorQuestion ? rankedTerms(priorQuestion) : [];
+
+  // Nothing but grammar — "and what about that one?" — is answerable only as a
+  // continuation, so the previous question's terms are not a hint here, they are the
+  // query. Without a previous question this is the `help` fallback it has always been.
+  if (asked.length === 0) return prior.length === 0 ? ['help'] : prior.slice(0, 3);
+
+  const pair = asked.length >= 2 ? [asked.slice(0, 2).join(' ')] : [];
+  // Only a term this message did NOT already carry can widen anything; one is enough,
+  // and a second would AND the query back down to nothing.
+  const carried = prior.find((word) => !asked.includes(word));
+  const bridge = carried ? [`${asked[0]} ${carried}`] : [];
+
+  return [...new Set([...pair, ...bridge, ...asked.slice(0, 3)])];
+}
+
+/**
+ * A text's content words, most distinctive first.
+ *
+ * Longer words are the more distinctive ones once the stop-list has taken the grammar
+ * out. Crude, and good enough to pick two.
+ */
+function rankedTerms(text: string): string[] {
+  const words = text
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter((w) => w.length >= 3 && !STOP.has(w))
     .map(deSuffix);
-
-  const unique = [...new Set(words)];
-  if (unique.length === 0) return ['help'];
-
-  // Longer content words are the more distinctive ones once the stop-list has taken
-  // the grammar out. Crude, and good enough to pick two.
-  const ranked = [...unique].sort((a, b) => b.length - a.length);
-  const ladder = ranked.length >= 2 ? [ranked.slice(0, 2).join(' ')] : [];
-  return [...new Set([...ladder, ...ranked.slice(0, 3)])];
+  return [...new Set(words)].sort((a, b) => b.length - a.length);
 }
 
 /**
