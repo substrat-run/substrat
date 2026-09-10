@@ -68,9 +68,12 @@ export function BankIdDetailView() {
                 button.
               </p>
             )}
-            {/* Keyed by whether a configuration exists, so the fields that mean "keep the
-                stored PEM" are mounted with the right labels the moment there IS one: the
-                first save turns "Enable" into an edit, and the placeholders change with it. */}
+            {/* Keyed by whether a configuration exists, which is the only transition that has
+                to reach fields the editor does NOT reset itself. It resets the certificate and
+                key after every save; the environment and the two toggles it does not, because
+                they are what the operator just chose. Enabling and removing are the two moments
+                where that is the wrong answer — a removal must not leave the gone row's
+                environment selected — and both cross this key. */}
             <BankIdEditor
               key={settings ? 'configured' : 'new'}
               settings={settings}
