@@ -68,6 +68,13 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // The delete dialog's type-to-confirm guard. Null when closed.
   const [deleteInput, setDeleteInput] = useState<string | null>(null);
 
+  // Which action is in flight, as the key the clicked control passes to `run`. Every
+  // action here is a round trip plus a full re-walk of the detail — a second or more of
+  // nothing, which is how an operator ends up clicking Admit twice and reading the
+  // second refusal as the first one failing. One key, not a boolean: the spinner has to
+  // land on the button that was pressed, and everything else merely goes flat.
+  const [busy, setBusy] = useState<string | null>(null);
+
   // Scopes (installs) still bound to this vertical — what the delete refusal counts, and
   // what the retire panel below lets an operator clear. Excludes `reaped` tombstones
   // (terminal, they never block the delete). The retire dialog target + its hostnames,
@@ -141,7 +148,16 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     void loadDetail(vertical.slug);
   }, [vertical.slug, loadDetail]);
 
-  async function run(fn: () => Promise<unknown>, title: string, detail?: string) {
+  /**
+   * One mutation, with the whole visible cycle around it: the pressed control spins and
+   * every other one goes inert until the request AND the re-walk that follows it have
+   * landed, so the page never sits there looking as if the click missed.
+   *
+   * `key` is what the spinner is pinned to — a per-row string (`admit:<id>`) where the
+   * action repeats down a table, a plain name where it does not.
+   */
+  async function run(key: string, fn: () => Promise<unknown>, title: string, detail?: string) {
+    setBusy(key);
     try {
       await fn();
       onChanged();
@@ -149,6 +165,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       onToast(title, detail);
     } catch (e) {
       onToast('Refused', (e as Error).message, 'danger');
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -156,12 +174,15 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // release so the dialog can name exactly what goes offline (the visibility the
   // incident lacked — a reap that named nothing).
   async function openRetire(s: Scope) {
+    setBusy(`open-retire:${s.id}`);
     try {
       const hs = await walkAll((p) => api.listHostnames({ scopeId: s.id, ...p }));
       setRetireInput('');
       setRetire({ scope: s, hostnames: hs.map((h) => h.hostname) });
     } catch (e) {
       onToast('Failed to load hostnames', (e as Error).message, 'danger');
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -172,6 +193,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     if (!retire) return;
     const s = retire.scope;
     await run(
+      'retire',
       async () => {
         for (const h of retire.hostnames) await api.unbindHostname(h);
         if (s.forkedFrom) {
@@ -204,6 +226,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // Open the move dialog: the target list is the registry minus this vertical, loaded
   // fresh so a just-created lineage (the exact migration use case) is offerable.
   async function openMove() {
+    setBusy('open-move');
     try {
       const registry = await walkAll((p) => api.listVerticals(p));
       const targets = registry
@@ -216,6 +239,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       setMove({ targets, choice: targets[0]!.slug, ack: false });
     } catch (e) {
       onToast('Failed to load verticals', (e as Error).message, 'danger');
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -237,7 +262,6 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         break;
       }
     }
-    setBulkBusy(false);
     // On a refusal the dialog stays open WITH the selection, so the operator can read
     // the message, tick the acknowledgement, and retry the remainder — scopes that did
     // move drop out of the selection naturally when the reload removes them from the
@@ -248,6 +272,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
     }
     onChanged();
     await loadDetail(vertical.slug);
+    // Busy is released only once the re-walk has landed: a dialog that frees its confirm
+    // while the page behind it is still the old one invites a second run over stale rows.
+    setBulkBusy(false);
     onToast(
       `${ok} scope${ok === 1 ? '' : 's'} moved to ${move.choice}`,
       refusal ?? undefined,
@@ -258,6 +285,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
   // Open the bulk retire confirm: pre-load every selected scope's hostnames so the
   // dialog can name exactly what goes offline (the reap-safety lesson, at bulk scale).
   async function openBulkRetire() {
+    setBusy('open-bulk-retire');
     try {
       const hostnames = new Map<ScopeId, string[]>();
       for (const s of selectedScopes) {
@@ -268,6 +296,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       setBulkRetire({ scopes: selectedScopes, hostnames });
     } catch (e) {
       onToast('Failed to load hostnames', (e as Error).message, 'danger');
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -293,11 +323,11 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         failed++;
       }
     }
-    setBulkBusy(false);
     setBulkRetire(null);
     setSelectedIds(new Set());
     onChanged();
     await loadDetail(vertical.slug);
+    setBulkBusy(false);
     onToast(
       `${ok} scope${ok === 1 ? '' : 's'} retired`,
       failed > 0 ? `${failed} failed` : undefined,
@@ -371,7 +401,13 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       header: '',
       align: 'right',
       render: (s) => (
-        <Button size="sm" variant="danger" onClick={() => void openRetire(s)}>
+        <Button
+          size="sm"
+          variant="danger"
+          loading={busy === `open-retire:${s.id}`}
+          disabled={busy !== null}
+          onClick={() => void openRetire(s)}
+        >
           Retire…
         </Button>
       ),
@@ -477,15 +513,26 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 8 }}>
             <Button
               size="sm"
-              onClick={() => run(() => api.admitVersion(vertical.slug, v.id), 'Version admitted', v.version)}
+              loading={busy === `admit:${v.id}`}
+              disabled={busy !== null}
+              onClick={() =>
+                run(`admit:${v.id}`, () => api.admitVersion(vertical.slug, v.id), 'Version admitted', v.version)
+              }
             >
               Admit
             </Button>
             <Button
               size="sm"
               variant="danger"
+              loading={busy === `reject:${v.id}`}
+              disabled={busy !== null}
               onClick={() =>
-                run(() => api.rejectVersion(vertical.slug, v.id, 'rejected from console'), 'Version rejected', v.version)
+                run(
+                  `reject:${v.id}`,
+                  () => api.rejectVersion(vertical.slug, v.id, 'rejected from console'),
+                  'Version rejected',
+                  v.version,
+                )
               }
             >
               Reject
@@ -500,7 +547,11 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
           // the version is already admitted; what is missing is a human behind it.
           <Button
             size="sm"
-            onClick={() => run(() => api.admitVersion(vertical.slug, v.id), 'Version vouched for', v.version)}
+            loading={busy === `vouch:${v.id}`}
+            disabled={busy !== null}
+            onClick={() =>
+              run(`vouch:${v.id}`, () => api.admitVersion(vertical.slug, v.id), 'Version vouched for', v.version)
+            }
           >
             Vouch
           </Button>
@@ -515,6 +566,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
       return;
     }
     await run(
+      'promote',
       () => api.promoteVersion(vertical.slug, promote.channel, promote.versionId, ack),
       `Promoted ${promote.channel}`,
       versionById(promote.versionId)?.version,
@@ -539,8 +591,11 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 not pre-checked here: the server owns the rule. */}
             <Button
               variant={vertical.listed ? 'danger' : 'primary'}
+              loading={busy === 'listed'}
+              disabled={busy !== null}
               onClick={() =>
                 run(
+                  'listed',
                   () => api.setVerticalListed(vertical.slug, !vertical.listed),
                   vertical.listed ? 'Vertical unlisted' : 'Vertical listed',
                   vertical.slug,
@@ -551,8 +606,11 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
             </Button>
             <Button
               variant="secondary"
+              loading={busy === 'installs'}
+              disabled={busy !== null}
               onClick={() =>
                 run(
+                  'installs',
                   () => api.setInstallsBlocked(vertical.slug, !vertical.installsBlocked),
                   vertical.installsBlocked ? 'Installs allowed' : 'Installs blocked',
                   vertical.slug,
@@ -568,8 +626,11 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 approval it is. */}
             <Button
               variant="secondary"
+              loading={busy === 'provisioner'}
+              disabled={busy !== null}
               onClick={() =>
                 run(
+                  'provisioner',
                   () => api.setTenantProvisioner(vertical.slug, !vertical.tenantProvisioner),
                   vertical.tenantProvisioner ? 'Provisioner capability revoked' : 'Provisioner capability granted',
                   vertical.slug,
@@ -587,8 +648,11 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 a manifest-declared `sendsEmail` request reads the grant as the approval it is. */}
             <Button
               variant="secondary"
+              loading={busy === 'emailSender'}
+              disabled={busy !== null}
               onClick={() =>
                 run(
+                  'emailSender',
                   () => api.setEmailSender(vertical.slug, !vertical.emailSender),
                   vertical.emailSender ? 'Email-sender capability revoked' : 'Email-sender capability granted',
                   vertical.slug,
@@ -601,7 +665,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                   ? 'Approve email sender'
                   : 'Grant email sender'}
             </Button>
-            <Button variant="danger" onClick={() => setDeleteInput('')}>
+            <Button variant="danger" disabled={busy !== null} onClick={() => setDeleteInput('')}>
               Delete…
             </Button>
             <Button variant="secondary" onClick={onBack}>
@@ -703,7 +767,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 <Button
                   size="sm"
                   variant="ghost"
-                  disabled={versions.every((x) => x.admission !== 'admitted')}
+                  disabled={busy !== null || versions.every((x) => x.admission !== 'admitted')}
                   onClick={() => {
                     setAck({});
                     // The NEWEST admitted version, matching the order the picker lists
@@ -816,11 +880,23 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
                 </span>
                 <span style={{ flex: 1 }} />
                 {movableScopes.length > 0 && (
-                  <Button size="sm" variant="secondary" disabled={bulkBusy} onClick={() => void openMove()}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={busy === 'open-move'}
+                    disabled={bulkBusy || busy !== null}
+                    onClick={() => void openMove()}
+                  >
                     Move to vertical… ({movableScopes.length})
                   </Button>
                 )}
-                <Button size="sm" variant="danger" disabled={bulkBusy} onClick={() => void openBulkRetire()}>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  loading={busy === 'open-bulk-retire'}
+                  disabled={bulkBusy || busy !== null}
+                  onClick={() => void openBulkRetire()}
+                >
                   Retire… ({selectedScopes.length})
                 </Button>
               </div>
@@ -839,8 +915,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         description="Removes the vertical, its versions, and its channels from the registry. Refused while any scope is still bound to it. Deployed scripts are left for orphan cleanup."
         confirmLabel="Delete vertical"
         confirmDisabled={deleteInput !== vertical.slug || boundScopes.length > 0}
+        busy={busy === 'delete'}
         onConfirm={() => {
-          void run(() => api.deleteVertical(vertical.slug), 'Vertical deleted', vertical.slug).then(() => {
+          void run('delete', () => api.deleteVertical(vertical.slug), 'Vertical deleted', vertical.slug).then(() => {
             setDeleteInput(null);
             onBack();
           });
@@ -875,6 +952,7 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         }
         confirmLabel={retire?.scope.forkedFrom ? 'Delete snapshot' : 'Retire scope'}
         confirmDisabled={retireInput !== retire?.scope.slug}
+        busy={busy === 'retire'}
         onConfirm={() => void confirmRetire()}
         onCancel={() => setRetire(null)}
       >
@@ -915,8 +993,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         open={move !== null}
         title={`Move ${movableScopes.length} scope${movableScopes.length === 1 ? '' : 's'} to another vertical`}
         description="Rebinds each scope onto the target lineage's serving script, data first. The source script is kept as the backout. Refused per scope when the migration digests differ, unless acknowledged."
-        confirmLabel={bulkBusy ? 'Moving…' : 'Move scopes'}
-        confirmDisabled={bulkBusy || !move?.choice || movableScopes.length === 0}
+        confirmLabel="Move scopes"
+        confirmDisabled={!move?.choice || movableScopes.length === 0}
+        busy={bulkBusy}
         onConfirm={() => void confirmMove()}
         onCancel={() => setMove(null)}
       >
@@ -959,8 +1038,9 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         danger
         title={bulkRetire ? `Retire ${bulkRetire.scopes.length} scope${bulkRetire.scopes.length === 1 ? '' : 's'}` : ''}
         description="For each scope: unbinds its hostnames, then archives and reaps it (a snapshot fork is hard-deleted). Storage is wiped. Irreversible; there is no restore."
-        confirmLabel={bulkBusy ? 'Retiring…' : 'Retire scopes'}
-        confirmDisabled={bulkBusy || bulkArmed !== String(bulkRetire?.scopes.length ?? 0)}
+        confirmLabel="Retire scopes"
+        confirmDisabled={bulkArmed !== String(bulkRetire?.scopes.length ?? 0)}
+        busy={bulkBusy}
         onConfirm={() => void confirmBulkRetire()}
         onCancel={() => setBulkRetire(null)}
       >
@@ -1003,6 +1083,8 @@ export function VerticalDetail({ api, vertical, onBack, onChanged, onOpenFailure
         title={promote ? `Promote ${promote.channel}` : ''}
         description="Point a channel at an admitted version."
         confirmLabel="Promote"
+        confirmDisabled={!ackSatisfied}
+        busy={busy === 'promote'}
         onConfirm={() => void confirmPromote()}
         onCancel={() => {
           setPromote(null);
