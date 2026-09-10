@@ -11,5 +11,7 @@ decides which buttons that screen draws and nothing else — a console sign-in n
 through `/oauth2/authorize`, where a relying party's policy is enforced — and three things
 keep an operator from stranding themselves: a save that would leave no method this issuer
 currently offers is refused, disabling the row falls back to the plain screen, and
-`/login?builtin=0` skips it entirely. The row cannot be deleted. Both packages are private,
-so nothing publishes.
+`/login?builtin=0` skips it entirely. The row cannot be deleted, and it cannot be given an OAuth surface: the edit route
+refuses redirect URIs, application type, end-session and consent-skipping on this row, so the
+issuer's own screen cannot be turned into a relying party by editing it. Both packages are
+private, so nothing publishes.

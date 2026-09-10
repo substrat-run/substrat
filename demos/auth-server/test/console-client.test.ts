@@ -11,6 +11,7 @@ import { clientBranding } from '../src/branding.js';
 import { clientSignIn, readSignInPolicy } from '../src/sign-in-policy.js';
 import {
   CONSOLE_CLIENT_ID,
+  CONSOLE_LOCKED_FIELDS,
   clientIdOrConsole,
   ensureConsoleClient,
   isConsoleClient,
@@ -236,6 +237,108 @@ describe('narrowing the console', () => {
     expect((await patchConsole(cookie, { metadata: { signIn: { providers: ['microsoft'], password: false } } })).status).toBe(200);
     expect((await patchConsole(cookie, { metadata: {} })).status).toBe(200);
     expect(readSignInPolicy(sql, CONSOLE_CLIENT_ID)).toBeUndefined();
+  });
+});
+
+describe('the row keeps no OAuth surface', () => {
+  /**
+   * The header's fail-closed claim, held where it can be broken.
+   *
+   * "It holds no redirect URI" is only true of the row as SEEDED, and the edit route is
+   * the one place that could change that. The stakes are not theoretical: this row is
+   * `token_endpoint_auth_method: 'none'` with `skip_consent: 1`, so one callback would
+   * make it a public client that skips the consent screen — the strongest client this
+   * issuer can hold, registered by nobody.
+   */
+  it('refuses to give the console a callback, and the row is untouched', async () => {
+    const cookie = await adminCookie();
+    const res = await patchConsole(cookie, { redirect_uris: ['https://evil.test/cb'] });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not a relying party/i);
+    const row = db
+      .prepare('SELECT redirect_uris FROM oauth_client WHERE client_id = ?')
+      .get(CONSOLE_CLIENT_ID) as { redirect_uris: string };
+    expect(JSON.parse(row.redirect_uris)).toEqual([]);
+  });
+
+  it('refuses every OAuth field, one at a time', async () => {
+    const cookie = await adminCookie();
+    const value: Record<string, unknown> = {
+      redirect_uris: ['https://evil.test/cb'],
+      post_logout_redirect_uris: ['https://evil.test/bye'],
+      application_type: 'native',
+      enable_end_session: true,
+      skip_consent: false,
+    };
+    for (const field of CONSOLE_LOCKED_FIELDS) {
+      const res = await patchConsole(cookie, { [field]: value[field] });
+      expect(res.status, field).toBe(400);
+      expect(((await res.json()) as { error: string }).error, field).toContain(field);
+    }
+    // And smuggled in beside an edit that IS allowed: the whole patch is refused, so the
+    // name does not land while the callback is quietly dropped.
+    const mixed = await patchConsole(cookie, { client_name: 'Renamed', redirect_uris: ['https://evil.test/cb'] });
+    expect(mixed.status).toBe(400);
+    const row = db.prepare('SELECT name FROM oauth_client WHERE client_id = ?').get(CONSOLE_CLIENT_ID) as {
+      name: string;
+    };
+    expect(row.name).not.toBe('Renamed');
+  });
+
+  it('still accepts what the row exists for', async () => {
+    // The lock is five named fields, not the route: name, icon, theme and policy are the
+    // point of the row, and `disabled` is escape hatch 2 and must never be locked.
+    const cookie = await adminCookie();
+    expect((await patchConsole(cookie, { client_name: 'Acme Admin' })).status).toBe(200);
+    expect((await patchConsole(cookie, { metadata: { theme: { title: 'Acme' } } })).status).toBe(200);
+    expect((await patchConsole(cookie, { disabled: true })).status).toBe(200);
+    expect((await patchConsole(cookie, { disabled: false })).status).toBe(200);
+  });
+
+  it('does not lock any OTHER client — the rule is about this row', async () => {
+    const cookie = await adminCookie();
+    const created = await api.request('http://localhost/clients', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ client_name: 'A real RP', redirect_uris: ['https://rp.test/cb'] }),
+    });
+    expect(created.status).toBe(201);
+    const { client_id } = (await created.json()) as { client_id: string };
+    expect(isConsoleClient(client_id)).toBe(false);
+    const patched = await api.request(`http://localhost/clients/${client_id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ redirect_uris: ['https://rp.test/second'] }),
+    });
+    expect(patched.status).toBe(200);
+  });
+
+  it('cannot be driven through authorize, with or without the attempted edit', async () => {
+    const cookie = await adminCookie();
+    await patchConsole(cookie, { redirect_uris: ['https://evil.test/cb'] });
+    const authorize = await auth.handler(
+      new Request(
+        `${ORIGIN}/api/auth/oauth2/authorize?${new URLSearchParams({
+          response_type: 'code',
+          client_id: CONSOLE_CLIENT_ID,
+          redirect_uri: 'https://evil.test/cb',
+          scope: 'openid',
+          state: 'st-console',
+          code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+          code_challenge_method: 'S256',
+        })}`,
+        { headers: { 'sec-fetch-mode': 'navigate', cookie } },
+      ) as never,
+    );
+    // It dies at the plugin's redirect match, on the ISSUER's own error page — the
+    // request never reaches the origin it named. Without the guard above it does: the
+    // edit lands, the callback matches, and the issuer redirects to `evil.test` with
+    // only the empty `scopes` column left standing between it and a code, on a row that
+    // is `token_endpoint_auth_method: 'none'` with `skip_consent: 1`.
+    const location = authorize.headers.get('location') ?? '';
+    expect(location).toContain('error=invalid_redirect');
+    expect(location).not.toContain('evil.test');
+    expect(location).not.toContain('code=');
   });
 });
 

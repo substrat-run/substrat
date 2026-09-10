@@ -5,7 +5,13 @@ import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
 import { assertSignInPolicy, isReservedMethodId, sanitizeSignInPolicy } from './sign-in-policy.js';
-import { CONSOLE_CLIENT_ID, CONSOLE_CLIENT_NAME, assertConsolePolicy, isConsoleClient } from './console-client.js';
+import {
+  CONSOLE_CLIENT_ID,
+  CONSOLE_CLIENT_NAME,
+  assertConsoleClientPatch,
+  assertConsolePolicy,
+  isConsoleClient,
+} from './console-client.js';
 import {
   GENERIC_ID_PATTERN,
   LOOPBACK_HOSTS,
@@ -585,6 +591,9 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.patch('/clients/:clientId', async (c) => {
     const clientId = c.req.param('clientId');
     const patch = parsedBody(clientPatch, await c.req.json().catch(() => null));
+    // Before anything is read or written: the console's row has no OAuth surface, and
+    // this is the one route that could give it one (`CONSOLE_LOCKED_FIELDS`).
+    if (isConsoleClient(clientId)) assertConsoleClientPatch(patch);
     const exists = deps.sql
       .exec(
         `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris

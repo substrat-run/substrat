@@ -24,6 +24,11 @@ import { effectiveSignIn, type SignInPolicy } from './sign-in-policy.js';
  * `client_id=console` therefore fails at the plugin's own redirect-URI match, which is the
  * fail-closed direction: nothing can be talked into using it as a relying party.
  *
+ * "Stays empty" is ENFORCED, not merely seeded: the edit route refuses the OAuth half of
+ * the row (`CONSOLE_LOCKED_FIELDS` below). Left open, one PATCH would have made this a
+ * public client — `token_endpoint_auth_method: 'none'`, `skip_consent: 1` — with a
+ * callback of the writer's choosing, which is the strongest client this issuer can hold.
+ *
  * The consequence has to be said plainly, because it decides how much this feature is worth:
  * **the console's sign-in policy is not enforced.** Enforcement lives in the before-hook on
  * `/oauth2/authorize` (`src/auth.ts`), and a console sign-in never passes through there. So a
@@ -102,6 +107,46 @@ export function ensureConsoleClient(sql: SqlExec): boolean {
     CONSOLE_CLIENT_ID,
   );
   return true;
+}
+
+/**
+ * The OAuth half of a client row, which the console's row does not have and must not get.
+ *
+ * The seeded row is `redirect_uris: []`, `token_endpoint_auth_method: 'none'` and
+ * `skip_consent: 1` — harmless together ONLY because the first is empty: an authorize
+ * naming `client_id=console` dies at the plugin's redirect match. Write one callback
+ * into it through the ordinary edit route and the same row becomes a public client that
+ * skips consent, which is the strongest client this issuer can hold and nobody
+ * registered it.
+ *
+ * So the fail-closed claim in this file's header is enforced where it can be broken,
+ * rather than being a property of how the row happened to be seeded. What stays
+ * editable is what the row exists FOR — its name, its icon, its theme and policy — plus
+ * `disabled`, which is escape hatch 2 and must never be locked.
+ */
+export const CONSOLE_LOCKED_FIELDS = [
+  'redirect_uris',
+  'post_logout_redirect_uris',
+  'application_type',
+  'enable_end_session',
+  'skip_consent',
+] as const;
+
+export type ConsoleLockedField = (typeof CONSOLE_LOCKED_FIELDS)[number];
+
+/**
+ * Refuse an edit that would give the console's row an OAuth surface. Named fields only:
+ * a patch that mentions none of them is an ordinary edit and passes through.
+ */
+export function assertConsoleClientPatch(patch: Partial<Record<ConsoleLockedField, unknown>>): void {
+  const named = CONSOLE_LOCKED_FIELDS.filter((field) => patch[field] !== undefined);
+  if (named.length === 0) return;
+  throw new HTTPException(400, {
+    message:
+      `the ${CONSOLE_CLIENT_NAME.toLowerCase()} is this issuer's own screen, not a relying party — ` +
+      `${named.join(', ')} cannot be set on it. Its sign-in is a session on this origin, and giving ` +
+      'it a callback would turn it into a consent-skipping public client nobody registered',
+  });
 }
 
 /**
