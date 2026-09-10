@@ -18,6 +18,11 @@ jobs:
       # The same signal the prod-deploy steps below gate on, exported so the scaffold
       # checkpoint can be its own job rather than another `if:` on every step.
       release: ${{ steps.gate.outputs.release }}
+      # Whether the docs deploy below actually shipped: `success`, or `skipped` on a
+      # run that was not a release. The support desk's re-read gates on this and not on
+      # the job's own result, because the builder deploy that follows the docs one is
+      # deliberately allowed to fail without taking docs with it.
+      docs: ${{ steps.docs.outcome }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -117,6 +122,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       - name: Deploy docs
+        id: docs
         if: steps.gate.outputs.release == 'true'
         run: pnpm --filter @substrat-run/docs cf:deploy
         env:
@@ -131,6 +137,20 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+  # This deploy publishes `llms-full.txt` too — the reference pages print the version
+  # numbers this release just moved — so the support desk has to re-read it here as
+  # well as after a docs-only push. One reusable workflow, called from both deploy
+  # paths; see .github/workflows/kb-refresh.yml.
+  #
+  # `always()` rather than the default: the builder deploy runs AFTER the docs one
+  # precisely so its failures never block docs, and gating on the job's result would
+  # hand it that power back. The gate is the docs step's own outcome.
+  refresh-kb:
+    needs: release
+    if: always() && needs.release.outputs.docs == 'success'
+    uses: ./.github/workflows/kb-refresh.yml
+    secrets: inherit
 
   # The scaffold checkpoint (#797). A release is the first moment the artifact a user
   # actually receives exists, so this is the first moment it can honestly be tested:
