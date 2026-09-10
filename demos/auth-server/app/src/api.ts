@@ -234,6 +234,21 @@ export async function adminSignInMethods(userId: string): Promise<AdminSignInMet
   return ((await res.json()) as { methods: AdminSignInMethod[] }).methods;
 }
 
+/**
+ * Take one of their sign-in methods away. Better Auth's `unlinkAccount` is the same
+ * caller-scoped shape as `listAccounts`, so this is the issuer's own too.
+ *
+ * The server refuses their last way in with a 409, and that refusal is the interesting
+ * answer rather than an edge case — the screen disables the button for the same reason, but
+ * only the server knows whether a password row actually carries a hash.
+ */
+export async function adminRemoveSignInMethod(userId: string, accountId: string): Promise<void> {
+  await admin<{ removed: string }>(
+    `/users/${encodeURIComponent(userId)}/sign-in-methods/${encodeURIComponent(accountId)}`,
+    { method: 'DELETE' },
+  );
+}
+
 /** One row of `account`, minus everything that is a credential. */
 export interface AdminSignInMethod {
   id: string;

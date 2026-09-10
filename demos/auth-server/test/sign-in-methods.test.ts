@@ -74,8 +74,22 @@ async function signInAs(who: { email: string; password: string }): Promise<strin
     .join('; ');
 }
 
-const adminCall = (path: string, cookie: string): Promise<Response> =>
-  Promise.resolve(api.request(`http://localhost${path}`, { headers: { cookie } }));
+const adminCall = (path: string, cookie: string, init?: RequestInit): Promise<Response> =>
+  Promise.resolve(api.request(`http://localhost${path}`, { ...init, headers: { cookie } }));
+
+const removeMethod = (userId: string, accountId: string, cookie: string): Promise<Response> =>
+  adminCall(`/users/${userId}/sign-in-methods/${accountId}`, cookie, { method: 'DELETE' });
+
+/** Write a connected upstream straight into `account` — no real provider round trip in a unit test. */
+function linkUpstream(userId: string, id: string, provider: string, subject: string): void {
+  db.prepare(
+    `INSERT INTO account (id, issuer, account_id, provider_id, user_id, access_token, refresh_token, id_token, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, `https://${provider}.test`, subject, provider, userId, 'at-secret', 'rt-secret', 'idt-secret', Date.now());
+}
+
+const accountIdsOf = (userId: string): string[] =>
+  (db.prepare('SELECT id FROM account WHERE user_id = ?').all(userId) as { id: string }[]).map((r) => r.id);
 
 interface WireMethod {
   id: string;
@@ -256,5 +270,101 @@ describe("an administrator's read of another person's sign-in methods", () => {
     expect((await adminCall(`/users/${memberId}/sign-in-methods`, member)).status).toBe(403);
     // And with no session at all.
     expect((await adminCall(`/users/${memberId}/sign-in-methods`, '')).status).toBe(401);
+  });
+});
+
+/**
+ * The write half: an administrator taking ONE method away.
+ *
+ * Better Auth's `unlink-account` is caller-scoped like `list-accounts`, so an operator holding
+ * "this Google account is not theirs any more" had no lever. What has to be proven here is not
+ * that a row can be deleted — it is the two refusals, because each one is a way to strand a
+ * person that a plain `DELETE FROM account WHERE id = ?` would wave through: unlinking their
+ * last way in, and unlinking somebody ELSE's method through a URL naming this person.
+ */
+describe("an administrator's unlink of another person's sign-in method", () => {
+  it('disconnects an upstream and leaves the password behind', async () => {
+    linkUpstream(memberId, 'acct-google', 'google', 'google-subject-42');
+    const admin = await signInAs(ADMIN);
+
+    const res = await removeMethod(memberId, 'acct-google', admin);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ removed: 'acct-google' });
+
+    const left = await methodsFor(memberId, admin);
+    expect(left.map((m) => m.provider)).toEqual(['credential']);
+    expect(accountIdsOf(memberId)).not.toContain('acct-google');
+  });
+
+  it('removes the password when another way in exists, and the row is really gone', async () => {
+    linkUpstream(memberId, 'acct-google', 'google', 'google-subject-42');
+    const admin = await signInAs(ADMIN);
+    const credential = (await methodsFor(memberId, admin)).find((m) => m.provider === 'credential')!;
+
+    expect((await removeMethod(memberId, credential.id, admin)).status).toBe(200);
+    expect((await methodsFor(memberId, admin)).map((m) => m.provider)).toEqual(['google']);
+    // And it is a delete, not a blanked hash left behind for the next reader to interpret.
+    expect(accountIdsOf(memberId)).toEqual(['acct-google']);
+  });
+
+  it('refuses their last way in, and the method survives the refusal', async () => {
+    const admin = await signInAs(ADMIN);
+    const [only] = await methodsFor(memberId, admin);
+
+    const res = await removeMethod(memberId, only!.id, admin);
+    expect(res.status).toBe(409);
+    // The message has to tell an operator what to do instead — a bare "conflict" would send
+    // them to remove the account, which is the outcome the refusal exists to prevent.
+    expect(((await res.json()) as { error: string }).error).toMatch(/only way to sign in/i);
+    expect(accountIdsOf(memberId)).toEqual([only!.id]);
+  });
+
+  /**
+   * A `credential` row is listed as a method and is only a way in when it carries a hash — the
+   * distinction the browser cannot make, because the hash never reaches it. So the LAST-way-in
+   * refusal is the server's to make: a person whose password row was emptied and who signs in
+   * with Google only has exactly one way in, however many rows they have.
+   */
+  it('does not count a password row with no hash as a way in', async () => {
+    linkUpstream(memberId, 'acct-google', 'google', 'google-subject-42');
+    db.prepare("UPDATE account SET password = NULL WHERE user_id = ? AND provider_id = 'credential'").run(memberId);
+    const admin = await signInAs(ADMIN);
+
+    // Two rows on the screen, one way in — so Google cannot go.
+    expect(await methodsFor(memberId, admin)).toHaveLength(2);
+    const res = await removeMethod(memberId, 'acct-google', admin);
+    expect(res.status).toBe(409);
+    expect(accountIdsOf(memberId)).toContain('acct-google');
+  });
+
+  /**
+   * `account.id` is globally unique, so a delete keyed on it alone would work through ANY user
+   * id in the path — an operator looking at one person, unlinking another. The path names both
+   * and both have to agree.
+   */
+  it("refuses an account id belonging to somebody else, under the person's own url", async () => {
+    const adminId = (db.prepare('SELECT id FROM user WHERE email = ?').get(ADMIN.email) as { id: string }).id;
+    linkUpstream(adminId, 'acct-admin-google', 'google', 'google-subject-admin');
+    linkUpstream(memberId, 'acct-member-google', 'google', 'google-subject-42');
+    const admin = await signInAs(ADMIN);
+
+    const res = await removeMethod(memberId, 'acct-admin-google', admin);
+    expect(res.status).toBe(404);
+    expect(accountIdsOf(adminId)).toContain('acct-admin-google');
+  });
+
+  it('answers 404 for a user who is nobody', async () => {
+    expect((await removeMethod('nobody-at-all', 'acct-google', await signInAs(ADMIN))).status).toBe(404);
+  });
+
+  it('refuses a non-administrator and an anonymous caller, and the method survives both', async () => {
+    linkUpstream(memberId, 'acct-google', 'google', 'google-subject-42');
+    const member = await signInAs(MEMBER);
+
+    // Their own account is not the exception: this is the ADMIN surface, and a person removing
+    // their own method does it through Better Auth's `unlink-account` on the Your-account screen.
+    expect((await removeMethod(memberId, 'acct-google', member)).status).toBe(403);
+    expect((await removeMethod(memberId, 'acct-google', '')).status).toBe(401);
+    expect(accountIdsOf(memberId)).toContain('acct-google');
   });
 });

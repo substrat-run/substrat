@@ -746,6 +746,62 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     });
   });
 
+  /**
+   * Take one sign-in method away — the write half of the read above, and the other thing
+   * Better Auth's `unlink-account` will not do for somebody else: it too is scoped to the
+   * caller's own session, so an operator holding "this person's old Google account is not
+   * theirs any more" had no lever at all.
+   *
+   * Two refusals, and both are the point of the endpoint rather than validation around it:
+   *
+   *  - The row must belong to the user in the path. `account.id` is globally unique, so a
+   *    delete keyed on it alone would happily unlink somebody else's method through a URL
+   *    naming the person an operator thought they were looking at.
+   *  - It must not be their LAST way in. An account with no method is not a lesser account,
+   *    it is one nobody can sign into — recoverable here only by an administrator setting a
+   *    password, and not at all by the person themselves. `credential` counts only when it
+   *    actually carries a hash: a password row without one is a row, not a way in.
+   *
+   * Sessions are deliberately untouched. Removing a method decides how they sign in NEXT
+   * time; ending what they are in the middle of is `revoke-user-sessions`, a separate verb an
+   * operator may or may not mean — and doing both from one button would take the choice away.
+   */
+  app.delete('/users/:userId/sign-in-methods/:accountId', (c) => {
+    const userId = c.req.param('userId');
+    const accountId = c.req.param('accountId');
+    const rows = deps.sql
+      .exec(
+        /**
+         * `password` appears here as a PREDICATE and never as a value: the answer this needs
+         * is "is there a hash", and selecting the column itself would put a bcrypt hash in a
+         * variable one careless `c.json(row)` away from the wire.
+         */
+        `SELECT id, provider_id, (password IS NOT NULL AND password <> '') AS has_password
+           FROM account WHERE user_id = ?`,
+        userId,
+      )
+      .toArray() as unknown as { id: string; provider_id: string; has_password: number }[];
+    // Same distinction the read makes: an unknown person and a person with nothing to remove
+    // are different answers, and only the first is a 404 on the user.
+    if (rows.length === 0) {
+      const user = deps.sql.exec('SELECT id FROM user WHERE id = ?', userId).toArray();
+      if (user.length === 0) throw new HTTPException(404, { message: `unknown user '${userId}'` });
+    }
+    const target = rows.find((row) => row.id === accountId);
+    if (!target) throw new HTTPException(404, { message: `'${userId}' has no sign-in method '${accountId}'` });
+    const remaining = rows.filter(
+      (row) => row.id !== accountId && (row.provider_id !== 'credential' || Boolean(row.has_password)),
+    );
+    if (remaining.length === 0) {
+      throw new HTTPException(409, {
+        message:
+          'this is their only way to sign in — set a password or connect another provider first, or remove the account itself',
+      });
+    }
+    deps.sql.exec('DELETE FROM account WHERE id = ? AND user_id = ?', accountId, userId);
+    return c.json({ removed: accountId });
+  });
+
   app.onError((err, c) => {
     const status = err instanceof HTTPException ? err.status : 400;
     return c.json({ error: err instanceof Error ? err.message : String(err) }, status);
