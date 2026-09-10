@@ -52,20 +52,27 @@ describe('the fixtures under apps/builder/evals/', () => {
 		// role pinned in expect.json but absent from that document grades the
 		// generator on a name it was never given — which is unwinnable, and reads
 		// as a build failure rather than as the fixture bug it is.
+		//
+		// Matched as the WHOLE backticked token, not as a substring: a concept
+		// freezes a key by writing it as inline code, and prose is full of near
+		// misses. A pinned `account` role passes a substring check against the
+		// word "accounting", and `crew` survives in the narrative long after its
+		// role declaration is deleted — so the loose check would go on passing
+		// for a key the fixture no longer freezes.
 		for (const name of await fixtureDirs()) {
 			const fixture = await load(name);
 			if (fixture.concept === undefined) continue;
 			for (const op of fixture.expect.operations ?? []) {
-				expect(fixture.concept, `${name}: operation ${op}`).toContain(op);
+				expect(fixture.concept, `${name}: operation ${op}`).toContain(`\`${op}\``);
 			}
 			for (const role of Object.keys(fixture.expect.roles ?? {})) {
-				expect(fixture.concept, `${name}: role ${role}`).toContain(role);
+				expect(fixture.concept, `${name}: role ${role}`).toContain(`\`${role}\``);
 			}
 		}
 	});
 
 	it('keeps the superseded paving fixture frozen beside its successor', async () => {
-		// #723: paveworks2 closes three gaps paveworks could not be built through.
+		// #723: paveworks2 closes four gaps paveworks could not be built through.
 		// Both stay in the default sweep, and the older concept stays untouched —
 		// editing it would invalidate every historical result against it.
 		const names = await fixtureDirs();
@@ -76,7 +83,13 @@ describe('the fixtures under apps/builder/evals/', () => {
 		expect(old.concept).not.toContain('paveworks2');
 		expect(next.concept).toContain('Supersedes the `paveworks` fixture');
 		// The successor's mutation surface is its own, so a run report never has
-		// to guess which paving fixture an operation name came from.
-		for (const op of next.expect.operations ?? []) expect(op.startsWith('paveworks2/')).toBe(true);
+		// to guess which paving fixture an operation name came from. An engine
+		// operation the vertical only mounts (`invoicing/export`) is pinned under
+		// the engine's name, which is unambiguous already — what must never appear
+		// is the older fixture's namespace.
+		for (const op of next.expect.operations ?? []) {
+			expect(op.startsWith('paveworks/'), op).toBe(false);
+			if (op.startsWith('paveworks')) expect(op.startsWith('paveworks2/'), op).toBe(true);
+		}
 	});
 });

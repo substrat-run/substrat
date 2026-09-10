@@ -1,9 +1,9 @@
 {
-	"operations": ["paveworks2/open-job", "paveworks2/complete-job", "paveworks2/issue-invoice"],
+	"operations": ["paveworks2/open-job", "paveworks2/complete-job", "invoicing/export"],
 	"roles": {
 		"foreman": ["job:manage", "job:read"],
 		"crew": ["job:read"],
-		"accounting": ["job:read", "invoice:issue"]
+		"accounting": ["job:read", "invoicing:export"]
 	},
 	"files": ["spec/model.ts", "src/module.ts", "src/seed.ts", "test"]
 }
