@@ -19,6 +19,12 @@ and redirects straight through. This is what `mountOidcRoutes` already did for t
 apps; the two now share one implementation of the rule, `federatedLogoutUrl` in
 `@substrat-run/oidc-rp`, rather than a copy each.
 
+Discovery no longer caches a failure. It is cached per issuer for the life of an isolate,
+and a rejection stayed there too — so one lookup against an issuer that happened to be
+down took every later login in that isolate with it, after the issuer had recovered.
+Federated logout is what made that reachable: it degrades to a local sign-out, so the
+request that poisoned the cache is the one that looked like it worked.
+
 Unchanged: a plain `/api/auth/logout` stays local, and the local sign-out still happens
 first, so an issuer that is down or advertises no end-session endpoint can only leave its
 own session standing. A session minted before this version has no hint and still sees the

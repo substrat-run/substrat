@@ -105,16 +105,26 @@ async function pkceChallenge(verifier: string): Promise<string> {
 const discoveryCache = new Map<string, Promise<Discovery>>();
 function discover(issuer: string): Promise<Discovery> {
   const key = issuer.replace(/\/$/, '');
-  let p = discoveryCache.get(key);
-  if (!p) {
-    const url = `${key}/.well-known/openid-configuration`;
-    p = fetch(url).then(async (r) => {
+  const cached = discoveryCache.get(key);
+  if (cached) return cached;
+  const url = `${key}/.well-known/openid-configuration`;
+  // A FAILURE IS NOT CACHED. Concurrent callers still share the one in-flight fetch, but
+  // the entry is evicted the moment it rejects — otherwise one lookup against an issuer
+  // that happened to be down poisons the isolate for its whole life, and every later
+  // login replays that rejection after the issuer has recovered. Federated logout makes
+  // that reachable in a way it was not before: it degrades to a local sign-out, so the
+  // request that poisoned the cache is the one that looked like it worked.
+  const pending: Promise<Discovery> = fetch(url)
+    .then(async (r) => {
       if (!r.ok) throw new Error(`OIDC discovery failed (${r.status}) at ${url}`);
       return (await r.json()) as Discovery;
+    })
+    .catch((err: unknown) => {
+      if (discoveryCache.get(key) === pending) discoveryCache.delete(key);
+      throw err;
     });
-    discoveryCache.set(key, p);
-  }
-  return p;
+  discoveryCache.set(key, pending);
+  return pending;
 }
 
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
