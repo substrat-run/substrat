@@ -57,6 +57,12 @@ export interface Desk {
    * in `provision.ts` claims: one key, opening conversations and nothing else.
    */
   readonly signup: Person;
+  /**
+   * The principal a refresh hook runs as — a THIRD service, for the same reason the
+   * second exists. It holds `kb:refresh` and not `kb:manage`, so a docs pipeline
+   * pushing on this desk's door can re-read a source and cannot re-point one.
+   */
+  readonly ingest: Person;
   /** The identity-verification secret, so the harness can sign like a host page. */
   readonly verificationSecret: string;
   /** The customer's contact row, once they have appeared. */
@@ -142,6 +148,7 @@ interface DeskSpec {
   readonly relay: Person;
   readonly widget: Person;
   readonly signup: Person;
+  readonly ingest: Person;
   readonly articles: { url: string; title: string; headingPath: string; body: string }[];
   readonly inbox: InboxSeed[];
   readonly savedReplies?: { title: string; body: string }[];
@@ -284,6 +291,7 @@ async function seedDesk(
   await assign(spec.relay, 'relay');
   await assign(spec.widget, 'widget');
   await assign(spec.signup, 'signup');
+  await assign(spec.ingest, 'ingest');
 
   // --- The desk, set up through its own operations ---------------------------
   const adminStub = await host.getScope(spec.admin.principal, tenant, scope);
@@ -435,6 +443,7 @@ async function seedDesk(
     relay: spec.relay,
     widget: spec.widget,
     signup: spec.signup,
+    ingest: spec.ingest,
     verificationSecret: rotated.secret,
     customerContactId: contact.id,
     origin: spec.origin,
@@ -664,6 +673,7 @@ export async function seed(host: ScopeHost): Promise<World> {
     relay: person('Email relay', 'relay@substrat.example'),
     widget: person('Widget service', 'widget@substrat.example'),
     signup: person('Signup service', 'signup@substrat.example'),
+    ingest: person('Ingest service', 'ingest@substrat.example'),
     articles: SUBSTRAT_ARTICLES,
     inbox: SUBSTRAT_INBOX,
     savedReplies: SUBSTRAT_SAVED_REPLIES,
@@ -690,6 +700,7 @@ export async function seed(host: ScopeHost): Promise<World> {
     relay: person('Email relay', 'relay@kestrel.example'),
     widget: person('Widget service', 'widget@kestrel.example'),
     signup: person('Signup service', 'signup@kestrel.example'),
+    ingest: person('Ingest service', 'ingest@kestrel.example'),
     articles: KESTREL_ARTICLES,
     inbox: KESTREL_INBOX,
   });

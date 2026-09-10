@@ -162,6 +162,60 @@ function sourceOrThrow(ctx: OperationContext, id: string): KbSourceRow {
   return row;
 }
 
+/** A source as it may leave this module: the hook's hash dropped, its hint kept. */
+type PublicKbSource = Omit<KbSourceRow, 'refresh_token_hash'>;
+
+/**
+ * Strip the hook's hash off a row on its way out.
+ *
+ * Every operation that returns a source goes through here, including the paged list —
+ * `ctx.page` reads the columns the MODEL declares, so a nullable hash on the entity is
+ * a hash on every page of the settings screen unless something takes it off. The
+ * model's `kbSourcePublic` says the same thing in the types; this is the half that is
+ * true at runtime.
+ */
+function publicSource<T extends KbSourceRow>(row: T): Omit<T, 'refresh_token_hash'> {
+  const { refresh_token_hash: _hash, ...rest } = row;
+  return rest;
+}
+
+/**
+ * The token, and the only shape of it that exists.
+ *
+ * Two ULIDs is the desk's own idiom for "a token nobody can guess" (`widget-start`
+ * mints the same thing), which is 160 bits of randomness in Crockford base32. The
+ * prefix is not security — it is so that a token pasted somewhere it should not be is
+ * recognisable as one, by a person or by a secret scanner, instead of reading as an id.
+ */
+function mintRefreshToken(): string {
+  return `t0kb_${ulid()}${ulid()}`;
+}
+
+/**
+ * How much of the token the desk may show afterwards.
+ *
+ * The tail, not the head: the prefix is the same on every token this desk mints, so a
+ * hint taken off the front would distinguish nothing. Six characters of base32 is one
+ * in a billion — enough to tell two hooks apart, far too little to help guess either.
+ */
+function tokenHint(token: string): string {
+  return token.slice(-6);
+}
+
+/**
+ * The floor between two hook-driven reads of one source, in milliseconds.
+ *
+ * A read is somebody else's 1 MB fetch plus a few hundred hashes and four write
+ * transactions, behind a door whose whole credential is one header — so an exposed hook
+ * is cheap amplification against the docs site AND this scope. A minute is far below
+ * any real publishing cadence and far above what makes a useful hammer.
+ *
+ * Only the hook path is throttled. The Re-read button is an authenticated person who
+ * can already see what they are doing, and making them wait would be pretending they
+ * are the risk.
+ */
+const REFRESH_HOOK_MIN_INTERVAL_MS = 60_000;
+
 /**
  * Every value a saved reply may substitute, and nothing else.
  *
@@ -1343,7 +1397,7 @@ const operations = {
     const existing = ctx.sql.query<KbSourceRow>('SELECT * FROM ticket0_kb_sources WHERE url = ?', [
       input.url,
     ])[0];
-    if (existing) return existing;
+    if (existing) return publicSource(existing);
     const id = ulid();
     ctx.sql.exec(
       `INSERT INTO ticket0_kb_sources (id, kind, url, label, status, last_ingested_at, last_error, created_at)
@@ -1358,16 +1412,17 @@ const operations = {
       piiClass: 'none',
       payload: { id: row.id, kind: row.kind, url: row.url, label: row.label },
     });
-    return row;
+    return publicSource(row);
   },
 
   'ticket0/list-kb-sources': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.kbRead));
-    return ctx.page<KbSourceRow>('kbSource', input);
+    const page = await ctx.page<KbSourceRow>('kbSource', input);
+    return { ...page, entries: page.entries.map(publicSource) };
   },
 
   'ticket0/ingest-kb-source': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    assertAllowed(await ctx.check(T0_PERM.kbRefresh, sourceRef(input.sourceId)));
     const row = sourceOrThrow(ctx, input.sourceId);
     ctx.sql.exec('UPDATE ticket0_kb_sources SET status = ?, last_error = NULL WHERE id = ?', [
       'ingesting',
@@ -1384,11 +1439,11 @@ const operations = {
       piiClass: 'none',
       payload: { id: updated.id, kind: updated.kind, url: updated.url },
     });
-    return updated;
+    return publicSource(updated);
   },
 
   'ticket0/record-kb-articles': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    assertAllowed(await ctx.check(T0_PERM.kbRefresh, sourceRef(input.sourceId)));
     sourceOrThrow(ctx, input.sourceId);
     let added = 0;
     let updated = 0;
@@ -1452,7 +1507,7 @@ const operations = {
   },
 
   'ticket0/record-kb-ingest-failure': async (ctx, input) => {
-    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    assertAllowed(await ctx.check(T0_PERM.kbRefresh, sourceRef(input.sourceId)));
     sourceOrThrow(ctx, input.sourceId);
     // `last_ingested_at` is left alone on purpose: it is when the last GOOD read
     // happened, which is exactly what the desk wants to know once a read has failed —
@@ -1470,7 +1525,95 @@ const operations = {
       piiClass: 'none',
       payload: { id: row.id, url: row.url, last_error: row.last_error },
     });
-    return row;
+    return publicSource(row);
+  },
+
+  'ticket0/mint-kb-refresh-token': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    sourceOrThrow(ctx, input.sourceId);
+    const token = mintRefreshToken();
+    // Minting over an existing hook REPLACES it: the old token stops working here, in
+    // the same statement that makes the new one work. That is what rotation is, and
+    // doing it in one write is what stops a window where both are live.
+    ctx.sql.exec(
+      `UPDATE ticket0_kb_sources
+          SET refresh_token_hash = ?, refresh_token_hint = ?, token_created_at = ?, token_last_used_at = NULL
+        WHERE id = ?`,
+      [await sha256(token), tokenHint(token), ctx.now(), input.sourceId],
+    );
+    const row = sourceOrThrow(ctx, input.sourceId);
+    ctx.emit({
+      type: 'ticket0.kb-refresh-token-minted',
+      schemaVersion: 1,
+      entity: sourceRef(row.id),
+      piiClass: 'none',
+      // The hint, never the token: an event is read later, by people who were not here.
+      payload: { id: row.id, url: row.url, refresh_token_hint: row.refresh_token_hint },
+    });
+    return { ...publicSource(row), token };
+  },
+
+  'ticket0/revoke-kb-refresh-token': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbManage, sourceRef(input.sourceId)));
+    sourceOrThrow(ctx, input.sourceId);
+    // Idempotent on purpose: revoking a source that has no hook is a request to be in
+    // a state it is already in, and answering that with an error would make the safe
+    // reflex — revoke it again, just in case — look like a failure.
+    ctx.sql.exec(
+      `UPDATE ticket0_kb_sources
+          SET refresh_token_hash = NULL, refresh_token_hint = NULL, token_created_at = NULL
+        WHERE id = ?`,
+      [input.sourceId],
+    );
+    const row = sourceOrThrow(ctx, input.sourceId);
+    ctx.emit({
+      type: 'ticket0.kb-refresh-token-revoked',
+      schemaVersion: 1,
+      entity: sourceRef(row.id),
+      piiClass: 'none',
+      payload: { id: row.id, url: row.url },
+    });
+    return publicSource(row);
+  },
+
+  /**
+   * Spend a hook. Three ways to fail, and they are deliberately one answer.
+   *
+   * No hook minted, the wrong token, a token for a different source — all `forbidden`,
+   * with one message. A caller holding a bad token learns that it is bad and nothing
+   * else: telling them "this source has no hook" separates a source that exists from
+   * one that does not, and telling them "wrong token" confirms the source has one worth
+   * guessing. The desk's own screen is where a person finds out which it was.
+   */
+  'ticket0/redeem-kb-refresh-token': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.kbRefresh, sourceRef(input.sourceId)));
+    const row = sourceOrThrow(ctx, input.sourceId);
+    const presented = await sha256(input.token);
+    // Both sides are hex of a fixed length. This leaks nothing but equality: the hash
+    // is of a 160-bit random token, so a timing oracle on it has nothing to walk.
+    if (!row.refresh_token_hash || row.refresh_token_hash !== presented) {
+      throw substratError('forbidden', 'this refresh hook is not valid for this source');
+    }
+    if (row.token_last_used_at) {
+      const since = Date.parse(ctx.now()) - Date.parse(row.token_last_used_at);
+      if (Number.isFinite(since) && since < REFRESH_HOOK_MIN_INTERVAL_MS) {
+        // With `retryAfter`, so a pipeline that fires twice on one merge can wait the
+        // remainder instead of guessing or giving up.
+        throw substratError(
+          'rate_limited',
+          `this source was read ${Math.round(since / 1000)}s ago; hooks may read once a minute`,
+          { retryAfter: Math.ceil((REFRESH_HOOK_MIN_INTERVAL_MS - since) / 1000) },
+        );
+      }
+    }
+    // Recorded BEFORE the read rather than after it, and that is the point: a hook that
+    // fires and then fails to fetch has still been used, and the throttle has to know.
+    // It is also what puts "last fired" on the screen for a hook whose reads are failing.
+    ctx.sql.exec('UPDATE ticket0_kb_sources SET token_last_used_at = ? WHERE id = ?', [
+      ctx.now(),
+      row.id,
+    ]);
+    return publicSource(sourceOrThrow(ctx, row.id));
   },
 
   'ticket0/search-kb': async (ctx, input) => {

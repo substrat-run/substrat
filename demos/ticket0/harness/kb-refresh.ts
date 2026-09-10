@@ -11,7 +11,7 @@
  * site is not one. It runs as the CALLER — `kb:manage` is what authorises it, the
  * operations either end refuse anyone else, and nothing here can widen that.
  */
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import type { ResolveStub } from '@substrat-run/vertical-host';
 import { runIngest, type IngestTarget } from './kb-ingest.js';
@@ -58,24 +58,77 @@ export async function readSource(
 }
 
 /**
+ * The header a refresh hook presents.
+ *
+ * Its own header rather than `Authorization: Bearer`, and that is deliberate: the same
+ * route also serves a signed-in person pressing Re-read, whose bearer token is an OIDC
+ * one. Two credentials that mean entirely different things must not arrive in the same
+ * envelope and be told apart by sniffing a prefix — the header IS the statement about
+ * which door this request is knocking on.
+ */
+export const KB_REFRESH_TOKEN_HEADER = 'x-kb-refresh-token';
+
+/** Resolve the desk's `ingest` service, or null before this desk has been reconciled. */
+export type ResolveHookTarget = (
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  c: Context<any, any, any>,
+) => Promise<IngestTarget | null>;
+
+/**
  * `POST /api/kb/sources/:sourceId/refresh` → `{ added, updated, unchanged }`.
+ *
+ * TWO doors, one route, and which one a request took is decided by whether it carries
+ * `KB_REFRESH_TOKEN_HEADER` — never by falling back from one to the other. A request
+ * with a token that is wrong is refused as a hook; it does not then get to try being a
+ * person, which would turn a bad token into a 401 asking for a login.
+ *
+ *   - **No token** — the Re-read button. Runs as the caller, who holds `kb:refresh`
+ *     because they are a desk-admin, and 401s if nobody.
+ *   - **A token** — a docs pipeline. Runs as the desk's `ingest` service, which holds
+ *     `kb:refresh` and nothing else, and only after `redeem-kb-refresh-token` has said
+ *     this token belongs to THIS source and has not read too recently.
  *
  * A read that fails answers **502** with the reason — the source's site failed, not
  * this request — and the row already says the same, so a client that re-reads the
- * list after either answer shows the truth. `fetchImpl` is for tests; nothing else
- * should pass it.
+ * list after either answer shows the truth. A refusal from the redeem step keeps its
+ * own status (403 for a bad token, 429 for one firing too fast), because those are
+ * facts about the REQUEST rather than about the docs site.
+ *
+ * `fetchImpl` is for tests; nothing else should pass it.
  */
 export function mountKbRefresh(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: Hono<any, any, any>,
   resolveStub: ResolveStub,
   fetchImpl: typeof fetch = fetch,
+  resolveHookTarget?: ResolveHookTarget,
 ): void {
   app.post('/api/kb/sources/:sourceId/refresh', async (c) => {
-    const scope = await resolveStub(c);
-    const target: IngestTarget = { invoke: (op, input) => scope.invoke(op, input) as Promise<never> };
+    const sourceId = c.req.param('sourceId');
+    const token = c.req.header(KB_REFRESH_TOKEN_HEADER);
+
+    let target: IngestTarget;
+    if (token === undefined) {
+      const scope = await resolveStub(c);
+      target = { invoke: (op, input) => scope.invoke(op, input) as Promise<never> };
+    } else {
+      // Null means this desk has not been reconciled onto a version that mints the
+      // ingest principal (#1172). Refused with a reason rather than served by borrowing
+      // a principal that holds more than a hook is allowed to.
+      const hook = resolveHookTarget ? await resolveHookTarget(c) : null;
+      if (!hook) {
+        throw new HTTPException(503, {
+          message: 'this desk has no refresh-hook service yet — re-read it from Settings, or push again',
+        });
+      }
+      // Outside the try below on purpose: a refused hook is not a failed READ, and
+      // recording it on the source row would blame the docs site for a bad token.
+      await hook.invoke('ticket0/redeem-kb-refresh-token', { sourceId, token });
+      target = hook;
+    }
+
     try {
-      return c.json(await readSource(target, c.req.param('sourceId'), fetchImpl));
+      return c.json(await readSource(target, sourceId, fetchImpl));
     } catch (err) {
       if (err instanceof KbReadError) throw new HTTPException(502, { message: err.message, cause: err });
       throw err;

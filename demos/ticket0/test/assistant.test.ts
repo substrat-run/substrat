@@ -36,7 +36,7 @@ import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { ASSISTANT_ERROR_MAX } from '../spec/model.js';
 import { Hono } from 'hono';
 import { fetchArticles, parseLlmsFull, parseLlmsIndex, runIngest } from '../harness/kb-ingest.js';
-import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
+import { KB_REFRESH_TOKEN_HEADER, mountKbRefresh, readSource } from '../harness/kb-refresh.js';
 import { mountApi } from '../src/routes.js';
 import { HANDED_TO_A_PERSON } from '../src/module.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
@@ -48,7 +48,7 @@ let world: World;
 
 const at = (
   desk: Desk,
-  role: 'admin' | 'agent' | 'assistant' | 'assistantAutonomous' | 'widget',
+  role: 'admin' | 'agent' | 'assistant' | 'assistantAutonomous' | 'widget' | 'ingest',
 ): Promise<ScopeStub> =>
   host.getScope(desk[role].principal, desk.tenant, desk.scope);
 
@@ -307,6 +307,247 @@ describe('ingesting into a desk', () => {
     expect(await good.json()).toEqual({ added: 0, updated: 0, unchanged: 1 });
     expect((await sourceRow(admin, source.id)).status).toBe('idle');
   });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The refresh hook — the door a docs pipeline pushes on.
+ *
+ * The gap this closes: `llms-full.txt` is current on the site the moment the docs
+ * deploy, and the desk's COPY of it only moves when someone presses Re-read. Nothing
+ * drove that, so a published change reached customers as a stale answer. A hook is what
+ * lets the deploy drive it.
+ *
+ * What these cases are actually about is the second door not being a way around the
+ * first: the token authorises ONE source, as a principal holding one key, and a bad one
+ * is refused rather than quietly falling back to asking for a login.
+ */
+describe('the refresh hook', () => {
+  const CORPUS = [
+    '# Rotating an API key',
+    '',
+    'Source: https://docs.kestrel.example/api-keys.md',
+    '',
+    'Rotating a key issues a new secret and keeps the old one valid for twenty-four',
+    'hours, so a deploy can pick up the new value without any downtime at all.',
+  ].join('\n');
+  const fakeFetch = (async () => new Response(CORPUS)) as unknown as typeof fetch;
+
+  type Hooked = {
+    id: string;
+    status: string;
+    refresh_token_hint: string | null;
+    token_created_at: string | null;
+    token_last_used_at: string | null;
+  };
+
+  const firstSource = async (admin: ScopeStub): Promise<Hooked> =>
+    ((await admin.invoke('ticket0/list-kb-sources', {})) as Page<Hooked>).entries[0]!;
+
+  /** The route as a hosted desk mounts it: caller door + hook door, over one app. */
+  const hookedApp = async (desk: Desk, fetchImpl = fakeFetch) => {
+    const admin = await at(desk, 'admin');
+    const ingest = await at(desk, 'ingest');
+    const app = new Hono();
+    mountApi(app, async () => admin);
+    mountKbRefresh(app, async () => admin, fetchImpl, async () => asTarget(ingest));
+    return { app, admin };
+  };
+
+  const fire = (app: Hono, sourceId: string, token: string) =>
+    app.request(`/api/kb/sources/${sourceId}/refresh`, {
+      method: 'POST',
+      headers: { [KB_REFRESH_TOKEN_HEADER]: token },
+    });
+
+  it('a minted token reads the source, and the row records that it fired', async () => {
+    const { app, admin } = await hookedApp(world.kestrel);
+    const source = await firstSource(admin);
+    const minted = (await admin.invoke('ticket0/mint-kb-refresh-token', {
+      sourceId: source.id,
+    })) as { token: string; refresh_token_hint: string; token_last_used_at: string | null };
+
+    // The hint is the tail of the token, which is the only part a person may see again.
+    expect(minted.token).toMatch(/^t0kb_/);
+    expect(minted.refresh_token_hint).toBe(minted.token.slice(-6));
+    expect(minted.token_last_used_at).toBeNull();
+
+    const res = await fire(app, source.id, minted.token);
+    expect(res.status).toBe(200);
+    // One article accounted for, however it lands: whether this corpus reads as added,
+    // updated or unchanged depends on what the cases above left behind, and the
+    // bookkeeping is theirs to assert. What is THIS case's is that the hook read it.
+    const counts = (await res.json()) as { added: number; updated: number; unchanged: number };
+    expect(counts.added + counts.updated + counts.unchanged).toBe(1);
+
+    // The column the whole feature is for: a hook that stopped firing is visible here
+    // instead of in a wrong answer to a customer.
+    const after = await firstSource(admin);
+    expect(after.token_last_used_at).not.toBeNull();
+    expect(after.status).toBe('idle');
+  });
+
+  it('the hash never leaves the desk, on any read of the row', async () => {
+    const admin = await at(world.kestrel, 'admin');
+    const page = (await admin.invoke('ticket0/list-kb-sources', {})) as Page<
+      Record<string, unknown>
+    >;
+    for (const row of page.entries) expect(row).not.toHaveProperty('refresh_token_hash');
+    // And not on the way out of the operations that return one row either.
+    const source = await firstSource(admin);
+    const minted = (await admin.invoke('ticket0/mint-kb-refresh-token', {
+      sourceId: source.id,
+    })) as Record<string, unknown>;
+    expect(minted).not.toHaveProperty('refresh_token_hash');
+    const ingested = (await admin.invoke('ticket0/ingest-kb-source', {
+      sourceId: source.id,
+    })) as Record<string, unknown>;
+    expect(ingested).not.toHaveProperty('refresh_token_hash');
+  });
+
+  /**
+   * The case the two-door design exists for.
+   *
+   * A wrong token must be REFUSED, not fall through to the caller door — which here is
+   * a working admin stub. If it fell through, a bad token would read as a successful
+   * refresh, and the hook would be authorising nothing at all.
+   */
+  it('a wrong token is refused even when the caller door would have opened', async () => {
+    const { app, admin } = await hookedApp(world.kestrel);
+    const source = await firstSource(admin);
+    await admin.invoke('ticket0/mint-kb-refresh-token', { sourceId: source.id });
+
+    const res = await fire(app, source.id, 't0kb_not-the-token');
+    expect(res.status).toBe(403);
+    // The hook was not spent: a refused token must not move the row it failed against,
+    // or a wrong guess would cost the real hook its next minute.
+    expect((await firstSource(admin)).token_last_used_at).toBeNull();
+
+    // Same request with no token at all IS the caller door, and it opens.
+    const asPerson = await app.request(`/api/kb/sources/${source.id}/refresh`, { method: 'POST' });
+    expect(asPerson.status).toBe(200);
+  });
+
+  it('a token minted for another source does not open this one', async () => {
+    const { app, admin } = await hookedApp(world.kestrel);
+    const source = await firstSource(admin);
+    const other = (await admin.invoke('ticket0/add-kb-source', {
+      kind: 'markdown',
+      url: 'https://docs.kestrel.example/other-page',
+      label: 'Another page',
+    })) as { id: string };
+    const minted = (await admin.invoke('ticket0/mint-kb-refresh-token', {
+      sourceId: other.id,
+    })) as { token: string };
+
+    const res = await fire(app, source.id, minted.token);
+    expect(res.status).toBe(403);
+  });
+
+  it('revoking takes the hook back, and the row stops claiming to have one', async () => {
+    const { app, admin } = await hookedApp(world.kestrel);
+    const source = await firstSource(admin);
+    const minted = (await admin.invoke('ticket0/mint-kb-refresh-token', {
+      sourceId: source.id,
+    })) as { token: string };
+
+    const revoked = (await admin.invoke('ticket0/revoke-kb-refresh-token', {
+      sourceId: source.id,
+    })) as Hooked;
+    expect(revoked.refresh_token_hint).toBeNull();
+    expect(revoked.token_created_at).toBeNull();
+
+    expect((await fire(app, source.id, minted.token)).status).toBe(403);
+
+    // Idempotent: revoking a source that has no hook is a request to be in the state it
+    // is already in, and the safe reflex should not read as a failure.
+    await expect(
+      admin.invoke('ticket0/revoke-kb-refresh-token', { sourceId: source.id }),
+    ).resolves.toBeDefined();
+  });
+
+  /**
+   * A desk that has not been reconciled onto the version that mints the `ingest`
+   * principal has no hook service. That is a 503 naming the fix, never a fallback onto
+   * a principal that holds more than a hook is allowed to (#1172 is the lesson).
+   */
+  it('a desk with no ingest service refuses the hook rather than borrowing a principal', async () => {
+    const admin = await at(world.kestrel, 'admin');
+    const source = await firstSource(admin);
+    const app = new Hono();
+    mountApi(app, async () => admin);
+    mountKbRefresh(app, async () => admin, fakeFetch, async () => null);
+
+    const res = await fire(app, source.id, 't0kb_anything');
+    expect(res.status).toBe(503);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The throttle, on its own world and its own clock.
+ *
+ * `manualClock` rather than a sleep: the rule is a minute between hook-driven reads,
+ * and a test that waited one would be a minute of CI for one assertion. The button is
+ * deliberately not throttled, and that is asserted here too — making an authenticated
+ * person wait would be pretending they are the risk.
+ */
+describe('the refresh hook throttle', () => {
+  const CORPUS = [
+    '# Rotating an API key',
+    '',
+    'Source: https://docs.kestrel.example/api-keys.md',
+    '',
+    'Rotating a key issues a new secret and keeps the old one valid for twenty-four hours.',
+  ].join('\n');
+  const fakeFetch = (async () => new Response(CORPUS)) as unknown as typeof fetch;
+
+  it('a second read inside the minute is 429 with how long to wait', async () => {
+    const ownDir = mkdtempSync(join(tmpdir(), 'ticket0-hook-throttle-'));
+    try {
+      const clock = manualClock('2026-03-02T09:00:00.000Z');
+      const ownHost = buildHost(ownDir, clock.read);
+      const ownWorld = await seed(ownHost);
+      const desk = ownWorld.kestrel;
+      const admin = await ownHost.getScope(desk.admin.principal, desk.tenant, desk.scope);
+      const ingest = await ownHost.getScope(desk.ingest.principal, desk.tenant, desk.scope);
+
+      const app = new Hono();
+      mountApi(app, async () => admin);
+      mountKbRefresh(app, async () => admin, fakeFetch, async () => asTarget(ingest));
+
+      const source = ((await admin.invoke('ticket0/list-kb-sources', {})) as Page<{ id: string }>)
+        .entries[0]!;
+      const minted = (await admin.invoke('ticket0/mint-kb-refresh-token', {
+        sourceId: source.id,
+      })) as { token: string };
+      const fire = () =>
+        app.request(`/api/kb/sources/${source.id}/refresh`, {
+          method: 'POST',
+          headers: { [KB_REFRESH_TOKEN_HEADER]: minted.token },
+        });
+
+      expect((await fire()).status).toBe(200);
+
+      clock.advance(20_000);
+      const tooSoon = await fire();
+      expect(tooSoon.status).toBe(429);
+      // With the remainder, so a pipeline that fires twice on one merge can wait it out
+      // instead of guessing.
+      expect((await tooSoon.json()) as { retryAfter?: number }).toMatchObject({ retryAfter: 40 });
+
+      // The button is a person who can see what they are doing, and is not throttled.
+      const asPerson = await app.request(`/api/kb/sources/${source.id}/refresh`, { method: 'POST' });
+      expect(asPerson.status).toBe(200);
+
+      clock.advance(60_000);
+      expect((await fire()).status).toBe(200);
+    } finally {
+      rmSync(ownDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,13 @@ export const conformance = declareEntityChecks({
   // itself and asks for nothing else it can work out.
   inputs: {
     'ticket0/record-kb-articles': { articles: [] },
+    /**
+     * A token that is deliberately not one. The check this pair proves is the ENTITY
+     * check — that the operation refuses a principal who was not granted on THIS
+     * source — and it is reached before the hash comparison, which is what the hook
+     * cases in `test/assistant.test.ts` drive.
+     */
+    'ticket0/redeem-kb-refresh-token': { token: 't0kb_conformance-not-a-real-hook' },
     'ticket0/record-kb-ingest-failure': { error: 'The conformance kit could not read it' },
     'ticket0/post-note': { body: 'A note from the conformance kit' },
     'ticket0/post-public-reply': { body: 'A reply from the conformance kit' },

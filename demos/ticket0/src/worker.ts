@@ -241,6 +241,15 @@ const servicePrincipals = z.object({
    * the next reconcile, which a version change now triggers.
    */
   signup: principalId.optional(),
+  /**
+   * OPTIONAL, third time — and here the absence has a job rather than only a
+   * compatibility story. Every desk provisioned before the refresh hook existed has
+   * five keys, so this must not be required for the same reason `signup` must not be.
+   * What it additionally means: a desk that has not reconciled onto this version yet
+   * has no ingest principal, and a hook presented to it is REFUSED with a reason, not
+   * served by borrowing a principal that holds more than this one does.
+   */
+  ingest: principalId.optional(),
 });
 type ServicePrincipals = z.infer<typeof servicePrincipals>;
 
@@ -564,7 +573,18 @@ mountInvites(app, {
  * `POST /api/kb/sources/:id/refresh`, shared with the dev server in
  * `harness/kb-refresh.ts` so the two cannot drift.
  */
-mountKbRefresh(app, stub);
+/**
+ * Both doors. The caller's stub for the Re-read button; the desk's `ingest` service for
+ * a request that presents a hook token — resolved the same way every other service door
+ * here resolves one, and null before this desk has been reconciled onto a version that
+ * mints it.
+ */
+mountKbRefresh(app, stub, fetch, async (c) => {
+  const env = c.env as Env;
+  const ingest = await serviceStub(env, nodeFor(c.req.raw, env), 'ingest');
+  if (!ingest) return null;
+  return { invoke: <T,>(op: string, input: unknown) => ingest.invoke(op, input) as Promise<T> };
+});
 
 /**
  * The platform's model host (#1054), over this worker's own bindings. One per request

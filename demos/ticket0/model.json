@@ -586,6 +586,46 @@
               }
             ]
           },
+          "refresh_token_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "refresh_token_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token_created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "token_last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           }
@@ -598,6 +638,10 @@
           "status",
           "last_ingested_at",
           "last_error",
+          "refresh_token_hash",
+          "refresh_token_hint",
+          "token_created_at",
+          "token_last_used_at",
           "created_at"
         ],
         "additionalProperties": false

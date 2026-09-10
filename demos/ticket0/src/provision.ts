@@ -45,6 +45,10 @@ export const ROLES: RoleDefinition[] = [
       ...AGENT_PERMISSIONS,
       T0_PERM.conversationMerge,
       T0_PERM.kbManage,
+      // Both halves, because the Re-read button in Settings is this same path: a
+      // desk-admin who could add a source but not read it would be holding half a
+      // knowledge base.
+      T0_PERM.kbRefresh,
       T0_PERM.deskConfigure,
       // The money. Held here and in no other role.
       T0_PERM.usageRead,
@@ -133,6 +137,20 @@ export const ROLES: RoleDefinition[] = [
    * the Scrive connector records a signature back into a scope.
    */
   { key: 'relay', permissions: [T0_PERM.conversationRelay], source: 'vertical' },
+  /**
+   * The desk's ingest service — the principal a refresh hook runs as.
+   *
+   * A FOURTH service account for the same reason there is a third: it holds `kb:refresh`
+   * and not `kb:manage`, so the door a docs pipeline pushes on can re-read a source and
+   * write what it found, and cannot add a source, re-point one, or take a hook away. The
+   * distinction is the whole point — a principal on a token-gated door that could aim
+   * this desk's knowledge base somewhere else would be poisoning the answers rather than
+   * reading them.
+   *
+   * WHICH source it may read is not this key either: the token decides that, and
+   * `redeem-kb-refresh-token` is where it is checked.
+   */
+  { key: 'ingest', permissions: [T0_PERM.kbRefresh], source: 'vertical' },
 ];
 
 /**
@@ -197,6 +215,14 @@ export const SERVICE_ROLES = [
    * live widget goes dark until somebody notices.
    */
   'signup',
+  /**
+   * Added later still, and safe for the same two reasons the note above gives: an
+   * existing desk gets this principal when the platform reconciles it onto the version
+   * that declares it, and `servicePrincipals` parses the key as OPTIONAL so a desk that
+   * has not reconciled yet reads as "no hook service" rather than as unprovisioned.
+   * A refresh hook presented to a desk in that state is refused, not crashed on.
+   */
+  'ingest',
 ] as const;
 export type ServiceRole = (typeof SERVICE_ROLES)[number];
 

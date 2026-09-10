@@ -120,8 +120,28 @@ async function boot() {
   // one pointed home. An MCP client cannot discover where to authenticate from silence,
   // which made the one surface a developer exercises the one that could not be driven.
   mountApi(app, staffStub, () => Promise.resolve([login.issuer]));
-  // "Re-read" and "Add a source" in the desk — the same route the worker mounts.
-  mountKbRefresh(app, staffStub);
+  /**
+   * "Re-read" and "Add a source" in the desk — the same route the worker mounts, and
+   * the same two doors: the caller's own stub for the button, this desk's `ingest`
+   * service for a request carrying a hook token.
+   *
+   * WHICH desk, on a dev host that serves several off one port and has no caller to
+   * ask: the first one, which is Substrat's own — the desk whose knowledge base this
+   * demo is actually about. The hosted worker has a hostname per desk and picks the
+   * right one from the routed node, so this is the one place the two hosts differ, and
+   * it differs in the direction of "local can only refresh the demo desk".
+   *
+   * Not origin, which is how every other public door here picks: those are called by a
+   * browser on an embedding page, and a hook is called by a build server with no origin
+   * to match. The token still has to be that source's — this only decides whose
+   * knowledge base is being asked about.
+   */
+  mountKbRefresh(app, staffStub, fetch, async () => {
+    const desk = desks[0];
+    if (!desk) return null;
+    const stub = await host.getScope(desk.ingest.principal, desk.tenant, desk.scope);
+    return { invoke: <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T> };
+  });
 
   /**
    * Settings → Team, and the link an invitee follows — the same surface the worker

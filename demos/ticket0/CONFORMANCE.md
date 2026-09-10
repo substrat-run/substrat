@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-68 operations · 25 narrowed checks · 25 conformance pairs driven
+71 operations · 28 narrowed checks · 28 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,7 +37,7 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**25 pairs driven** across 25 of this package's 25 narrowed checks.
+**28 pairs driven** across 28 of this package's 28 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
@@ -45,20 +45,23 @@ against B, and requires a permission denial specifically.
 | `ticket0/close` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-conversation` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-csat` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
-| `ticket0/ingest-kb-source` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
+| `ticket0/ingest-kb-source` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/list-conversation-tags` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-messages` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/list-turns` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/merge` | `conversation:merge` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/mint-kb-refresh-token` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/my-messages` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-note` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/post-public-reply` | `conversation:reply-public` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/record-answer` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/record-assistant-failure` | `conversation:widget` | `conversation`, id from `conversationId` | `conversation` |
-| `ticket0/record-kb-articles` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
-| `ticket0/record-kb-ingest-failure` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
+| `ticket0/record-kb-articles` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
+| `ticket0/record-kb-ingest-failure` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
+| `ticket0/redeem-kb-refresh-token` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/render-saved-reply` | `conversation:draft` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/resolve` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/revoke-kb-refresh-token` | `kb:manage` | `kbSource`, id from `sourceId` | `kbSource` |
 | `ticket0/set-priority` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/snooze` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/submit-csat` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
