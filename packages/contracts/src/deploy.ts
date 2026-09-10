@@ -426,9 +426,16 @@ export interface PermissionsInput {
  * `never` when `keys` was omitted, and deliberately not `string`: widening to `string` would make
  * `defineOperations` accept any `permission:` value at all, quietly deleting the check this exists
  * to serve. An unusable type is the loud answer; a permissive one is the silent wrong answer.
+ *
+ * Same answer when the array was written without `as const`, which is the likelier mistake — its
+ * element type is already `string`, so passing it straight through would be that silent widening
+ * arriving by a different road. `string extends …` is the test for "this is the widened type
+ * rather than a union that happens to include it".
  */
 export type PermissionKeysOf<T extends PermissionsInput> = T['keys'] extends readonly string[]
-  ? T['keys'][number]
+  ? string extends T['keys'][number]
+    ? never
+    : T['keys'][number]
   : never;
 
 /**

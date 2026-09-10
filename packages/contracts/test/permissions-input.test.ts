@@ -99,4 +99,17 @@ describe('PermissionKeysOf — the union `defineOperations` wants', () => {
     // why reading `permissions.keys` here would be a compile error rather than a `null` check.
     expect('keys' in permissions).toBe(false);
   });
+
+  /**
+   * The likelier mistake than omission: `keys` written without `as const`. Its element type is
+   * `string` already, so passing it through would be the same silent widening by another road —
+   * the runtime check still fires, but `defineOperations` would stop rejecting anything.
+   */
+  it('is `never` when the array was written without `as const`', () => {
+    const widened: string[] = ['a:read', 'a:write'];
+    const permissions = definePermissions({ modules: MODULES, roles: ROLES, keys: widened });
+    exact<Exact<PermissionKeysOf<typeof permissions>, never>>(true);
+    // The runtime half is unaffected — a drifted list still throws, `as const` or not.
+    expect(() => definePermissions({ modules: MODULES, roles: ROLES, keys: ['a:read'] })).toThrow();
+  });
 });
