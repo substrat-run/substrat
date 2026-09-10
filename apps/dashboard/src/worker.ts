@@ -1842,6 +1842,34 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
   return c.json(tables);
 });
 
+/**
+ * One record's story (#1235): its events with the payload, the K-34 authorization
+ * chain, the K-42 impersonation stamp, the PII class, the emitting operation and
+ * the version it ran as — `readHistory`'s answer, which nothing above the scope
+ * could reach until #1353.
+ *
+ * Authorized like the table reads it sits beside: the app must be one the caller
+ * can browse. The nulls it carries are FACTS the renderer must not flatten — an
+ * erased payload, an unrecorded authorization chain, nobody impersonating.
+ */
+app.get('/api/apps/:scopeId/history', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.entityHistory(scope, {
+      entityType: c.req.query('entityType') ?? '',
+      entityId: c.req.query('entityId') ?? '',
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+      cursor: c.req.query('cursor') ?? undefined,
+    }),
+  );
+});
+
 app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

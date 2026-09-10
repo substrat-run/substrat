@@ -15,6 +15,7 @@ import type {
   OpsFailureEntry,
   SweepRunEntry,
   Page,
+  HistoryEntry,
   PermissionRegistry,
   PlatformRequest,
   PrincipalId,
@@ -1389,6 +1390,22 @@ export class TenantNarrowedControlPlane {
   /** Every table in the scope's own database, with row counts. */
   listScopeTables(scopeId: ScopeId): Promise<ScopeTable[]> {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/tables`);
+  }
+
+  /**
+   * One record's event history (#1235) — `readHistory`'s answer, through the
+   * platform. Cursor-paged rather than offset-paged, unlike the table read below:
+   * the outbox pages by id, so an event arriving mid-walk cannot shift a page
+   * boundary and duplicate or skip an entry.
+   */
+  entityHistory(
+    scopeId: ScopeId,
+    input: { entityType: string; entityId: string; limit?: number; cursor?: string },
+  ): Promise<Page<HistoryEntry>> {
+    const q = new URLSearchParams({ entityType: input.entityType, entityId: input.entityId });
+    if (input.limit !== undefined) q.set('limit', String(input.limit));
+    if (input.cursor !== undefined) q.set('cursor', input.cursor);
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/history?${q}`);
   }
 
   /** A bounded page of one table of the scope's database. */

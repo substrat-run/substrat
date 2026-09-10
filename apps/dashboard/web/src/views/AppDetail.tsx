@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { renderModelHtml } from '@substrat-run/model-view';
@@ -2052,6 +2052,33 @@ function DataBrowser({ app }: { app: AppRow }) {
   const [page, setPage] = useState<ScopeTablePage | null>(null);
   const [offset, setOffset] = useState(0);
   const [pageErr, setPageErr] = useState<string | null>(null);
+  // The model's table→entity mapping (#1235): a record's history is keyed by
+  // entity TYPE, and the table alone does not name it. Absent (no model.json, or
+  // a version pushed before #1214) ⇒ no history affordance rather than a guess.
+  const [tableEntity, setTableEntity] = useState<Record<string, string>>({});
+  const [history, setHistory] = useState<{ entityType: string; entityId: string } | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setTableEntity({});
+    api
+      .appModel(app.app_scope_id)
+      .then((v) => {
+        const entities = v.running?.model?.entities;
+        if (!live || !entities) return;
+        const byTable: Record<string, string> = {};
+        for (const [entity, def] of Object.entries(entities)) {
+          const table = (def as { table?: string }).table;
+          if (table) byTable[table] = entity;
+        }
+        setTableEntity(byTable);
+      })
+      // No model is a fine state — the id column simply stays plain text.
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
 
   // The scopes this app spans (M4). A multi-scope vertical (Manyfold: one site per scope) has
   // several; the switcher below picks which one's database to browse. On 404/empty — or a
@@ -2192,11 +2219,25 @@ function DataBrowser({ app }: { app: AppRow }) {
             ) : !page ? (
               <div style={{ padding: 20, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading {selected}…</div>
             ) : (
-              <TablePage page={page} onPrev={() => setOffset((o) => Math.max(0, o - DATA_PAGE))} onNext={() => setOffset((o) => o + DATA_PAGE)} />
+              <TablePage
+                page={page}
+                onPrev={() => setOffset((o) => Math.max(0, o - DATA_PAGE))}
+                onNext={() => setOffset((o) => o + DATA_PAGE)}
+                entityType={tableEntity[page.table]}
+                onOpenHistory={(entityType, entityId) => setHistory({ entityType, entityId })}
+              />
             )}
           </div>
         </div>
       </div>
+      {history && (
+        <EntityTimeline
+          scopeId={activeScope}
+          entityType={history.entityType}
+          entityId={history.entityId}
+          onClose={() => setHistory(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2336,7 +2377,126 @@ function TableGroup({ label, tables, selected, onPick }: { label: string; tables
   );
 }
 
-function TablePage({ page, onPrev, onNext }: { page: ScopeTablePage; onPrev: () => void; onNext: () => void }) {
+/**
+ * One record's story (#1235) — `readHistory`'s answer rendered: what happened to
+ * this entity, who did it, under what permission, as whom, and under which push.
+ *
+ * The three nullable fields are FACTS and the renderer says so rather than
+ * showing a blank: a null payload means ERASED (a shred keeps the row and drops
+ * the content), a null authorization means the row predates K-34 recording it —
+ * which is different from "checked nothing" — and a null impersonation means
+ * nobody was impersonating, the ordinary case. Flattening any of them to "—"
+ * would throw away the reason `readHistory` exists.
+ *
+ * The entity type is DERIVED from the model's table mapping, so an empty result
+ * is shown against the key it looked under. A vertical that emits a different
+ * `entityType` than its model's entity name would otherwise render as "nothing
+ * ever happened to this record", which is the confident-and-wrong answer.
+ */
+function EntityTimeline({
+  scopeId,
+  entityType,
+  entityId,
+  onClose,
+}: {
+  scopeId: string;
+  entityType: string;
+  entityId: string;
+  onClose: () => void;
+}) {
+  const [entries, setEntries] = useState<HistoryEntry[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setEntries(null);
+    setErr(null);
+    api
+      .appEntityHistory(scopeId, entityType, entityId)
+      .then((p) => live && setEntries(p.entries))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [scopeId, entityType, entityId]);
+
+  const when = (iso: string) => new Date(iso).toLocaleString();
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>History</h3>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text-tertiary)' }}>
+          {entityType} · {entityId}
+        </span>
+        <div style={{ flex: 1 }} />
+        <button type="button" onClick={onClose} style={pagerBtn(true)}>Close</button>
+      </div>
+
+      {err && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
+      {!err && entries === null && (
+        <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Reading…</div>
+      )}
+      {entries !== null && entries.length === 0 && (
+        <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          No events recorded for <code>{entityType}</code> · <code>{entityId}</code>. If this record
+          has a history, its events name a different entity type than the model&rsquo;s.
+        </div>
+      )}
+
+      {entries?.map((e) => (
+        <div key={e.id} style={{ display: 'grid', gap: 4, paddingTop: 8, borderTop: '1px solid var(--border-subtle)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
+            <MonoTag>{e.type}</MonoTag>
+            <span style={{ fontSize: 12, color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>{when(e.occurredAt)}</span>
+            <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.actor}</span>
+            {e.impersonation && (
+              <Pill kind="warning">
+                as {e.actor} · by {e.impersonation.staffActor}
+              </Pill>
+            )}
+            {e.piiClass !== 'none' && <Pill kind="info">{e.piiClass}</Pill>}
+          </div>
+          <div style={{ display: 'flex', gap: 12, fontSize: 11.5, color: 'var(--text-tertiary)', flexWrap: 'wrap', fontFamily: 'var(--font-mono)' }}>
+            <span>{e.operation ?? 'no operation — a consumer, or unrecorded'}</span>
+            {e.version && <span>version {e.version}</span>}
+            {/* Null and empty are different answers: unrecorded vs checked nothing. */}
+            <span>
+              {e.authorization === null
+                ? 'authorization unrecorded'
+                : e.authorization.length === 0
+                  ? 'no permission checked'
+                  : e.authorization.map((a) => a.permission).join(', ')}
+            </span>
+          </div>
+          <pre
+            style={{
+              margin: 0, fontSize: 11.5, fontFamily: 'var(--font-mono)', whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word', color: e.payload == null ? 'var(--text-tertiary)' : 'var(--text-secondary)',
+            }}
+          >
+            {e.payload == null ? 'payload erased' : JSON.stringify(e.payload)}
+          </pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TablePage({
+  page,
+  onPrev,
+  onNext,
+  entityType,
+  onOpenHistory,
+}: {
+  page: ScopeTablePage;
+  onPrev: () => void;
+  onNext: () => void;
+  /** The model entity this table holds, when one maps to it — see `entityOfTable`. */
+  entityType?: string;
+  onOpenHistory?: (entityType: string, entityId: string) => void;
+}) {
   const from = page.rowCount === 0 ? 0 : page.offset + 1;
   const to = page.offset + page.rows.length;
   const hasPrev = page.offset > 0;
@@ -2365,11 +2525,34 @@ function TablePage({ page, onPrev, onNext }: { page: ScopeTablePage; onPrev: () 
             <tbody>
               {page.rows.map((row, i) => (
                 <tr key={i}>
-                  {row.map((cell, j) => (
-                    <td key={j} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', color: cell == null ? 'var(--text-tertiary)' : 'var(--text-primary)', whiteSpace: 'nowrap', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={cell == null ? 'null' : String(cell)}>
-                      {cell == null ? 'null' : String(cell)}
-                    </td>
-                  ))}
+                  {row.map((cell, j) => {
+                    // The `id` column is the way into a record's story (#1235), and only
+                    // when the model says which entity this table holds — guessing the
+                    // entity type would render "nothing ever happened" for a wrong guess.
+                    const opens =
+                      onOpenHistory !== undefined &&
+                      entityType !== undefined &&
+                      page.columns[j] === 'id' &&
+                      cell != null;
+                    return (
+                      <td key={j} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', color: cell == null ? 'var(--text-tertiary)' : 'var(--text-primary)', whiteSpace: 'nowrap', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={cell == null ? 'null' : String(cell)}>
+                        {opens ? (
+                          <button
+                            type="button"
+                            onClick={() => onOpenHistory!(entityType!, String(cell))}
+                            title="show this record's history"
+                            style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--text-brand)', cursor: 'pointer', textDecoration: 'underline' }}
+                          >
+                            {String(cell)}
+                          </button>
+                        ) : cell == null ? (
+                          'null'
+                        ) : (
+                          String(cell)
+                        )}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>

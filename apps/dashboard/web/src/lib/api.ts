@@ -404,6 +404,27 @@ export interface AppliedMigration {
  * fault — while `migrations: []` with `available: true` is a fact about the app:
  * it genuinely has none, which a module registering `migrations: []` produces.
  */
+/**
+ * One event in a record's history (#1235). Three nullables are FACTS, not gaps:
+ * `payload` null = erased (a shred keeps the row, drops the content);
+ * `authorization` null = the row predates K-34 recording it, which is different
+ * from an empty list (checked nothing); `impersonation` null = nobody was
+ * impersonating, the ordinary case.
+ */
+export interface HistoryEntry {
+  id: string;
+  type: string;
+  occurredAt: string;
+  actor: string;
+  payload: unknown;
+  authorization: Array<{ permission: string }> | null;
+  impersonation: { staffActor: string } | null;
+  piiClass: string;
+  subjectId: string | null;
+  operation: string | null;
+  version: string | null;
+}
+
 /** One declared field and whether anything declares it as output (#1321). */
 export interface FieldCoverageRow {
   field: string;
@@ -1394,6 +1415,12 @@ export const api = {
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>
     call<AppMigrationsView>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
+
+  /** One record's event history (#1235) — payload, authorization chain, impersonation, PII class. */
+  appEntityHistory: (scopeId: string, entityType: string, entityId: string) =>
+    call<{ entries: HistoryEntry[]; nextCursor: string | null }>(
+      `/apps/${encodeURIComponent(scopeId)}/history?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}`,
+    ),
 
   /** Field coverage for the running version (#1321) — declared vs returnable. */
   appFieldCoverage: (scopeId: string) =>
