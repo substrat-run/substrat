@@ -3,7 +3,13 @@
   "compilerOptions": {
     "noEmit": true,
     "rootDir": ".",
-    "types": ["node"]
+    "types": [
+      "node"
+    ]
   },
-  "include": ["spec"]
+  "include": [
+    "spec",
+    "src",
+    "tools"
+  ]
 }

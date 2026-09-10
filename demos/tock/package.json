@@ -6,7 +6,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "emit:migrations": "tsx tools/emit-migrations.mts"
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
@@ -14,7 +16,9 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@substrat-run/model-emit": "workspace:*",
     "@types/node": "catalog:",
+    "tsx": "^4.19.0",
     "typescript": "catalog:"
   },
   "substrat": {

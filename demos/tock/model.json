@@ -131,20 +131,23 @@
       "fields": {
         "type": "object",
         "properties": {
+          "source_key": {
+            "type": "string"
+          },
           "grain": {
             "type": "string"
           },
           "dim_set": {
             "type": "string"
           },
+          "period_ts": {
+            "type": "number"
+          },
           "dim1": {
             "type": "string"
           },
           "dim2": {
             "type": "string"
-          },
-          "period_ts": {
-            "type": "number"
           },
           "run_id": {
             "type": "string"
@@ -174,11 +177,12 @@
           }
         },
         "required": [
+          "source_key",
           "grain",
           "dim_set",
+          "period_ts",
           "dim1",
           "dim2",
-          "period_ts",
           "run_id",
           "events",
           "measure",
@@ -187,11 +191,12 @@
         "additionalProperties": false
       },
       "primaryKey": [
+        "source_key",
         "grain",
         "dim_set",
+        "period_ts",
         "dim1",
-        "dim2",
-        "period_ts"
+        "dim2"
       ]
     },
     "row": {
