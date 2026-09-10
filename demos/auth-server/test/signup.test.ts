@@ -12,6 +12,7 @@ import { createAdminApi } from '../src/admin-api.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, deliveredConfig, isTruthy } from '../src/settings.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
+import { publicProvidersFrom, readProviders } from '../src/providers.js';
 
 /**
  * Self-service sign-up: the setting, the endpoint it controls, and the OIDC flow it has to
@@ -106,7 +107,7 @@ function adminApi() {
         const u = s?.user as { id: string; email?: string; name?: string; role?: string } | undefined;
         return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
       });
-  return createAdminApi({ sql, session, effectiveCfg: config, auth: () => authFor().api as never });
+  return createAdminApi({ sql, session, effectiveCfg: config, auth: () => authFor().api as never, offeredProviders: () => publicProvidersFrom(readProviders(sql)) });
 }
 
 async function adminCookie(): Promise<string> {

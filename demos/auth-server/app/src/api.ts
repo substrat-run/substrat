@@ -649,14 +649,24 @@ export interface ClientOptions {
  * this read decides what is drawn, never what is accepted. The policy itself is enforced at
  * `/oauth2/authorize`, where no browser gets a vote — so the worst a failed read can do is
  * offer a button that the issuer then refuses to honour.
+ *
+ * The CONSOLE's own policy is the exception, and it is not a hole in that argument so much as
+ * a smaller claim: a console sign-in never reaches `/oauth2/authorize`, so nothing enforces
+ * it and the buttons ARE the whole feature (`src/console-client.ts` says so at length). The
+ * permissive fallback is what an operator gets back when this read fails, which is the same
+ * thing `/login?builtin=0` hands them deliberately.
  */
-export async function clientOptions(clientId: string, issuerProviders: PublicProvider[]): Promise<ClientOptions> {
+export async function clientOptions(clientId: string | null, issuerProviders: PublicProvider[]): Promise<ClientOptions> {
   const fallback: ClientOptions = {
     theme: {},
     signIn: { providers: issuerProviders, password: true, restricted: false },
   };
   try {
-    const res = await fetch(`/api/client-options?client_id=${encodeURIComponent(clientId)}`);
+    // No client id is the console asking about ITSELF, and the server resolves that to the
+    // built-in console application (`src/console-client.ts`). The browser never spells that
+    // id out, so there is one place the default lives and it is not this one.
+    const query = clientId === null ? '' : `?client_id=${encodeURIComponent(clientId)}`;
+    const res = await fetch(`/api/client-options${query}`);
     if (!res.ok) return fallback;
     const body = (await res.json()) as Partial<ClientOptions>;
     return { theme: body.theme ?? {}, signIn: body.signIn ?? fallback.signIn };
@@ -777,6 +787,12 @@ export interface RegisteredClient {
   client_id_issued_at?: number;
   metadata?: Record<string, unknown>;
   client_secret_set?: boolean;
+  /**
+   * The issuer's own admin console (`src/console-client.ts`), rather than an application
+   * somebody registered. It has no redirect URIs, no secret and no Remove button — what it
+   * has is the theme and the sign-in methods THIS screen is drawn with.
+   */
+  builtin?: boolean;
 }
 
 /** The editable half of a client — what the new/edit form collects. */

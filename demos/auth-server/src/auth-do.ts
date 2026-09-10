@@ -17,6 +17,7 @@ import { buildAuth } from './auth.js';
 import { fetchClientMetadataResource } from './cimd-fetch.js';
 import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
+import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
@@ -87,6 +88,11 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
         console.log('auth-server: schema upgraded', JSON.stringify(upgrade));
       }
       for (const stmt of SCHEMA_STATEMENTS) ctx.storage.sql.exec(stmt);
+      // The issuer's own console, as a row in its own registry (`console-client.ts`).
+      // Seeded here rather than at provisioning time because a STANDALONE deploy is never
+      // provisioned, and both shapes need it — waking the DO is the one thing every install
+      // does. Idempotent, and it never overwrites what an operator has put on the row.
+      if (ensureConsoleClient(ctx.storage.sql)) console.log('auth-server: seeded the admin console client');
       const row = [...ctx.storage.sql.exec("SELECT value FROM config WHERE key = 'auth_secret'")][0] as
         | { value: string }
         | undefined;
@@ -377,7 +383,10 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       });
     if (url.pathname === '/__session') return Response.json(await session(request.headers));
     if (url.pathname === '/__client-options') {
-      const clientId = url.searchParams.get('client_id');
+      // No `client_id` is the console asking about ITSELF — the one caller with no relying
+      // party to name. `clientIdOrConsole` is where that resolution lives, so this route and
+      // the dev server's cannot come to disagree.
+      const clientId = clientIdOrConsole(url.searchParams.get('client_id'));
       return Response.json({
         ...clientBranding(this.ctx.storage.sql, clientId),
         signIn: clientSignIn(this.ctx.storage.sql, clientId, this.offeredProviders()),
@@ -391,6 +400,10 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
           session,
           effectiveCfg: () => this.effectiveCfg(),
           auth: () => auth.api as never,
+          // The same list the login screen is drawn from, so the console's lock-out guard
+          // (`console-client.ts`) judges a policy against what this runtime can actually
+          // offer — BankID's mTLS binding included, which no SQL read could know about.
+          offeredProviders: () => this.offeredProviders(),
         }),
       );
       return api.fetch(request);

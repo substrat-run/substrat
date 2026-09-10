@@ -10,6 +10,7 @@ import { createAdminApi } from '../src/admin-api.js';
 import { clientBranding, sanitizeTheme } from '../src/branding.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
+import { publicProvidersFrom, readProviders } from '../src/providers.js';
 
 /**
  * Per-client theming for the hosted OIDC pages (`src/branding.ts`).
@@ -108,7 +109,15 @@ beforeEach(async () => {
       const u = s?.user as { id: string; email?: string; name?: string; role?: string } | undefined;
       return u ? { sub: u.id, email: u.email ?? null, name: u.name ?? null, role: u.role ?? null } : null;
     });
-  api = createAdminApi({ sql, session, effectiveCfg: () => ({}), auth: () => auth.api as never });
+  api = createAdminApi({
+    sql,
+    session,
+    effectiveCfg: () => ({}),
+    auth: () => auth.api as never,
+    // Only the console's lock-out guard reads this (`src/console-client.ts`), which no
+    // case here exercises — so the issuer's own enabled upstreams are the honest answer.
+    offeredProviders: () => publicProvidersFrom(readProviders(sql)),
+  });
 });
 
 const THEME = {

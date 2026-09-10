@@ -28,6 +28,7 @@ import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isT
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } from './bankid.js';
 import { clientBranding } from './branding.js';
+import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
 
@@ -87,6 +88,10 @@ const sql: SqlExec = {
 // because `CREATE TABLE IF NOT EXISTS` cannot fix a table whose shape changed.
 const upgraded = upgradeLegacySchema(sql);
 for (const stmt of SCHEMA_STATEMENTS) sqlite.exec(stmt);
+// The issuer's own console, as a row in its own registry (`console-client.ts`) — the same
+// call the Durable Object's constructor makes, in the same place, so the dev database and a
+// deployed issuer hold the same row. Idempotent; an operator's edits to it survive a restart.
+const seededConsole = ensureConsoleClient(sql);
 
 /**
  * The declared config, resolved the same way the DO resolves it: manifest env-spec over
@@ -240,7 +245,8 @@ app.get('/api/session', async (c) => c.json(await sessionOf(c.req.raw.headers)))
 // the worker's DO serves at `/__client-options`, and public and ungated for the reason
 // `branding.ts` gives: an unknown and an unconfigured client answer alike.
 app.get('/api/client-options', (c) => {
-  const clientId = c.req.query('client_id');
+  // Absent `client_id` is the console asking about itself — see `clientIdOrConsole`.
+  const clientId = clientIdOrConsole(c.req.query('client_id'));
   return c.json({ ...clientBranding(sql, clientId), signIn: clientSignIn(sql, clientId, offeredProviders()) });
 });
 
@@ -248,7 +254,13 @@ app.get('/api/client-options', (c) => {
 // worker's DO mounts, over this dev database, so the dashboard is exercised identically here.
 app.route(
   '/api/admin',
-  createAdminApi({ sql, session: sessionOf, effectiveCfg: config, auth: () => authFor().api as never }),
+  createAdminApi({
+    sql,
+    session: sessionOf,
+    effectiveCfg: config,
+    auth: () => authFor().api as never,
+    offeredProviders,
+  }),
 );
 
 // Root-level OIDC discovery + RFC 8414 metadata — `oauthProvider` serves these paths itself
@@ -286,6 +298,9 @@ console.log(`  seeded admin                      ${ADMIN_EMAIL} / ${ADMIN_PASSWO
 console.log(`  demo relying party                client_id=${demo.clientId}`);
 console.log(`                                    client_secret=${demo.clientSecret}  (fresh each boot — stored hashed)`);
 console.log(`                                    redirect ${DEMO_CLIENT.redirectUris[0]}`);
+if (seededConsole) {
+  console.log(`  admin console application         client_id=${CONSOLE_CLIENT_ID}  (theme + sign-in methods for THIS screen)`);
+}
 if (upgraded.renamed.length || upgraded.added.length) {
   console.log(`  schema upgraded                   ${JSON.stringify(upgraded)}`);
 }
