@@ -1,0 +1,4 @@
+{"id":"o-1","placed_at":"2026-03-14T08:10:00Z","customer":{"id":"c-9","country":"SE","billing":{"city":"Stockholm"}},"total":{"amount":"420.00","currency":"SEK"},"tags":["web","first"]}
+{"id":"o-2","placed_at":"2026-03-14T10:20:00Z","customer":{"id":"c-4","country":"NO","billing":{"city":"Oslo"}},"total":{"amount":"180.50","currency":"NOK"},"tags":[]}
+{"id":"o-3","placed_at":"2026-03-14T15:05:00Z","customer":{"id":"c-9","country":"SE","billing":{"city":null}},"total":{"amount":"95.00","currency":"SEK"},"tags":["app"]}
+{"id":"o-4","placed_at":"2026-03-15T09:00:00Z","customer":{"id":"c-7","country":"DK","billing":{"city":"Aarhus"}},"total":{"amount":"310.25","currency":"DKK"},"tags":["web"]}

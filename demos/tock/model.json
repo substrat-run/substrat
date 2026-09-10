@@ -319,6 +319,50 @@
           "content_hash": {
             "type": "string"
           },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "csv",
+                  "jsonl"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "delimiter": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "time_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subject_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "type": "string",
             "enum": [
@@ -379,6 +423,10 @@
           "filename",
           "byte_size",
           "content_hash",
+          "format",
+          "delimiter",
+          "time_field",
+          "subject_field",
           "status",
           "period_from",
           "period_to",

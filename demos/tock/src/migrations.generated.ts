@@ -132,4 +132,17 @@ export const tockMigrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // add-tock_runs-format-and-3-more
+    version: '0002',
+    sql: `
+      ALTER TABLE tock_runs ADD COLUMN format TEXT CHECK (format IN ('csv','jsonl'));
+
+      ALTER TABLE tock_runs ADD COLUMN delimiter TEXT;
+
+      ALTER TABLE tock_runs ADD COLUMN time_field TEXT;
+
+      ALTER TABLE tock_runs ADD COLUMN subject_field TEXT;
+    `,
+  },
 ];

@@ -59,11 +59,17 @@ async function bytesRoute(url: string, init: RequestInit): Promise<IngestResult>
 }
 
 /** Hand the file over. The server hashes it, stores it and reads the period out of it. */
-export const upload = (sourceKey: string, filename: string, file: File) =>
-  bytesRoute(`/api/sources/${encodeURIComponent(sourceKey)}/upload?filename=${encodeURIComponent(filename)}`, {
-    method: 'POST',
-    body: file,
-  });
+export const upload = (
+  sourceKey: string,
+  filename: string,
+  file: File,
+  /** Which column carries the instant, and which the subject — the run's structural mapping. */
+  mapping: { timeField: string; subjectField: string | null },
+) => {
+  const q = new URLSearchParams({ filename, timeField: mapping.timeField });
+  if (mapping.subjectField) q.set('subjectField', mapping.subjectField);
+  return bytesRoute(`/api/sources/${encodeURIComponent(sourceKey)}/upload?${q}`, { method: 'POST', body: file });
+};
 
 /** Ask the server to read those bytes back and profile from them. */
 export const profile = (runId: string) =>

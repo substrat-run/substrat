@@ -124,6 +124,34 @@ export const tockEntities = defineEntities({
       filename: z.string(),
       byte_size: z.number(),
       content_hash: z.string(),
+      /**
+       * How this file was read, and which of its columns carry the two structural facts.
+       *
+       * They are on the RUN rather than in the schema, and the lifecycle is why. Profiling
+       * comes before mapping — mapping an unread file is guessing with the evidence unread —
+       * and profiling already needs the instant, to derive the period and to reach the day's
+       * salt. A time column declared in the schema would therefore have to be read before the
+       * schema was chosen, which inverts the order the whole design rests on.
+       *
+       * So: structural mapping travels with the file, decided when it is sent and informed by
+       * the preview. Meaning-mapping — dimension, measure, ignored — stays in the schema.
+       *
+       * `subject_field` is nullable and that is a real option, not an omission: a file with
+       * nothing to de-duplicate on is legitimate, and the honest consequence is that every
+       * row counts once. A run says which it was rather than leaving a reader to infer it.
+       *
+       * **A null `format` is the older fact: this run predates the mapping being recorded.**
+       * SQLite cannot add a required column to a table that may hold rows, and the choice
+       * offered — nullable, or a default — is not a tie. A default would make every earlier
+       * run claim a mapping nobody chose, indistinguishable from one that was. Null says what
+       * is true, exactly as a null `authorization` does on the spine, and it disambiguates the
+       * whole group: the host reads a null `format` as the plan the old code hardcoded, so
+       * `subject_field` null keeps meaning "no subject" for every run that recorded one.
+       */
+      format: z.enum(['csv', 'jsonl']).nullable(),
+      delimiter: z.string().nullable(),
+      time_field: z.string().nullable(),
+      subject_field: z.string().nullable(),
       status: z.enum(RUN_STATUSES),
       period_from: z.string(),
       period_to: z.string(),
@@ -398,7 +426,25 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     input: z.object({
       sourceKey: z.string(),
       fields: z.record(
-        z.string().regex(/^[a-z][a-zA-Z0-9_]*$/, 'field names are lower-camel or snake'),
+        /**
+         * A field name is whatever the FILE called the column, and almost nothing is refused.
+         *
+         * This used to demand lower-camel or snake, which is a shape only a file written for
+         * this app would have. A real export arrives with `Joined on`, and a flattened JSON
+         * path arrives as `customer.billing.city` — both were rejected, so a schema could not
+         * be written for either. Constraining the name was the same assumption the reader used
+         * to make about `occurred_at`: that the file would be shaped to suit us.
+         *
+         * What is still refused is a name that could not have come from a column — empty,
+         * absurdly long, or carrying control characters that would make a rendered table lie
+         * about what it contains.
+         */
+        z
+          .string()
+          .min(1)
+          .max(200)
+          // eslint-disable-next-line no-control-regex
+          .refine((n) => !/[\u0000-\u001f\u007f]/.test(n), 'a field name may not contain control characters'),
         z.object({
           type: z.enum(['text', 'int', 'decimal', 'timestamp', 'bool']),
           role: z.enum(['dimension', 'measure', 'ignored']),
@@ -449,6 +495,12 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       sourceKey: z.string(),
       filename: z.string().min(1),
       byteSize: z.number().int().positive(),
+      /** How the host read it, and which columns carry the instant and the subject. */
+      format: z.enum(['csv', 'jsonl']),
+      /** The character between CSV cells. Null for `jsonl`, which has none. */
+      delimiter: z.string().min(1).max(1).nullable(),
+      timeField: z.string().min(1),
+      subjectField: z.string().min(1).nullable(),
       /**
        * Both are shape-constrained, and it is a security boundary rather than tidiness.
        *
@@ -501,7 +553,10 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       type: 'tock.run-received',
       schemaVersion: 1,
       piiClass: 'none',
-      payload: ['id', 'source_key', 'filename', 'byte_size', 'content_hash', 'period_from', 'period_to'],
+      payload: [
+        'id', 'source_key', 'filename', 'byte_size', 'content_hash',
+        'period_from', 'period_to', 'format', 'time_field', 'subject_field',
+      ],
     },
   },
 

@@ -299,10 +299,15 @@ const receiveRunOp: OperationHandler<
   const now = ctx.now();
   ctx.sql.exec(
     `INSERT INTO tock_runs
-       (id, source_key, schema_version, filename, byte_size, content_hash, status,
-        period_from, period_to, row_count, rejected_count, received_at, received_by, counted_at)
-     VALUES (?, ?, NULL, ?, ?, ?, 'received', ?, ?, NULL, NULL, ?, ?, NULL)`,
-    [id, input.sourceKey, input.filename, input.byteSize, input.contentHash, input.periodFrom, input.periodTo, now, ctx.principal],
+       (id, source_key, schema_version, filename, byte_size, content_hash, format, delimiter,
+        time_field, subject_field, status, period_from, period_to, row_count, rejected_count,
+        received_at, received_by, counted_at)
+     VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'received', ?, ?, NULL, NULL, ?, ?, NULL)`,
+    [
+      id, input.sourceKey, input.filename, input.byteSize, input.contentHash,
+      input.format, input.delimiter, input.timeField, input.subjectField,
+      input.periodFrom, input.periodTo, now, ctx.principal,
+    ],
   );
   // The bytes' identity, and when they stop being kept. `purge_after` is written now rather
   // than computed at read time so the retention promise is a fact on the row a person can see.
@@ -327,6 +332,9 @@ const receiveRunOp: OperationHandler<
       content_hash: row.content_hash,
       period_from: row.period_from,
       period_to: row.period_to,
+      format: row.format,
+      time_field: row.time_field,
+      subject_field: row.subject_field,
     },
   });
   return row;
