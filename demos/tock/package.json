@@ -8,7 +8,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "emit:migrations": "tsx tools/emit-migrations.mts"
+    "emit:migrations": "tsx tools/emit-migrations.mts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
@@ -19,10 +20,15 @@
     "@substrat-run/model-emit": "workspace:*",
     "@types/node": "catalog:",
     "tsx": "^4.19.0",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "vitest": "catalog:",
+    "@substrat-run/contract-tests": "workspace:^"
   },
   "substrat": {
     "slug": "tock",
-    "name": "Tock"
+    "name": "Tock",
+    "permissions": "src/provision.ts",
+    "conformance": "test/conformance.ts"
   }
 }
