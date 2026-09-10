@@ -54,6 +54,15 @@ interface Discovery {
 
 export const SESSION_COOKIE = 'sb_session';
 export const FLOW_COOKIE = 'sb_oidc_flow';
+/**
+ * The ID token from the login round-trip, kept ONLY to be handed back to the issuer as
+ * `id_token_hint` on a federated logout (below). Its own cookie rather than a claim in
+ * the session, and scoped to the logout path, so it rides exactly one request in the
+ * session's life instead of every one — a hint is not a credential this app ever reads.
+ */
+export const LOGOUT_HINT_COOKIE = 'sb_oidc_idt';
+/** Path the hint cookie is scoped to — must match wherever the logout route is mounted. */
+const LOGOUT_PATH = '/api/auth/logout';
 /** Session lifetime; the flow (login round-trip) is deliberately short. */
 export const SESSION_MAXAGE = 60 * 60 * 24 * 7; // 7 days
 export const FLOW_MAXAGE = 60 * 10; // 10 minutes
@@ -162,7 +171,7 @@ export async function completeLogin(
   origin: string,
   url: URL,
   flowCookie: string | undefined,
-): Promise<{ user: SessionUser; session: string; returnTo?: string }> {
+): Promise<{ user: SessionUser; session: string; returnTo?: string; idToken: string }> {
   const oauthError = url.searchParams.get('error');
   if (oauthError) throw new Error(`authorization error: ${oauthError}`);
   const code = url.searchParams.get('code');
@@ -209,7 +218,15 @@ export async function completeLogin(
 
   const user = await withUserInfo(d, userFromClaims(payload), tokens.access_token);
   const session = await mintSession(env, user);
-  return { user, session, returnTo: typeof flow.rt === 'string' ? flow.rt : undefined };
+  // The verified ID token travels back out so the caller can keep it for logout. It is
+  // returned rather than stored here because this function is stateless — the CLI login
+  // broker calls it too, and holds no cookies.
+  return {
+    user,
+    session,
+    returnTo: typeof flow.rt === 'string' ? flow.rt : undefined,
+    idToken: tokens.id_token,
+  };
 }
 
 /**
@@ -405,13 +422,29 @@ export async function signVisitorIdentity(secret: string, subject: string): Prom
     .join('');
 }
 
-const cookieOpts = (origin: string, maxAge: number) => ({
+const cookieOpts = (
+  origin: string,
+  maxAge: number,
+  path = '/',
+  sameSite: 'Lax' | 'Strict' = 'Lax',
+) => ({
   httpOnly: true,
   secure: origin.startsWith('https:'),
-  sameSite: 'Lax' as const,
-  path: '/',
+  sameSite,
+  path,
   maxAge,
 });
+
+/**
+ * Loopback hosts, where OAuth 2.1 still permits plain HTTP for local development —
+ * `packages/dev-issuer` is exactly that, and every demo's dev login runs through it.
+ */
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+
+/** HTTPS, or HTTP on a loopback host. The same rule the issuer applies to its own upstreams. */
+function isHttpsOrLoopback(url: URL): boolean {
+  return url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK_HOSTS.has(url.hostname));
+}
 
 export interface MountOptions {
   /** Where to send the browser after a successful login (default '/'). */
@@ -465,8 +498,25 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     const flow = getCookie(c, FLOW_COOKIE);
     deleteCookie(c, FLOW_COOKIE, { path: '/' });
     try {
-      const { session, returnTo } = await completeLogin(c.env, origin, new URL(c.req.url), flow);
+      const { session, returnTo, idToken } = await completeLogin(c.env, origin, new URL(c.req.url), flow);
       setCookie(c, SESSION_COOKIE, session, cookieOpts(origin, SESSION_MAXAGE));
+      // Kept for `id_token_hint` at logout — see the logout route. Same lifetime as the
+      // session, so the two expire together and a stale hint is never the thing left over.
+      //
+      // `SameSite=Strict`, unlike the session cookie's `Lax`: a top-level GET navigation
+      // IS sent with a Lax cookie, so a hostile page linking to `?federated` would hand
+      // the OP a valid hint and get the very confirmation page this feature removes
+      // skipped — logout CSRF against the IdP session. Strict withholds the hint from
+      // any cross-site navigation, which downgrades that case to the confirmation page
+      // and leaves the in-app sign-out (same-site) redirecting straight through. The
+      // session cookie stays Lax because the login callback is itself a cross-site
+      // navigation back from the issuer and must arrive carrying it.
+      setCookie(
+        c,
+        LOGOUT_HINT_COOKIE,
+        idToken,
+        cookieOpts(origin, SESSION_MAXAGE, LOGOUT_PATH, 'Strict'),
+      );
       return c.redirect(safePath(returnTo) ?? onSuccess);
     } catch (err) {
       // Never swallow silently: a failing login round-trip is undiagnosable in prod
@@ -478,8 +528,10 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     }
   });
 
-  app.get('/api/auth/logout', async (c) => {
+  app.get(LOGOUT_PATH, async (c) => {
+    const idTokenHint = getCookie(c, LOGOUT_HINT_COOKIE);
     deleteCookie(c, SESSION_COOKIE, { path: '/' });
+    deleteCookie(c, LOGOUT_HINT_COOKIE, { path: LOGOUT_PATH });
     // A same-origin `returnTo` lets a "sign out and use another account" flow land
     // back where it started (e.g. an invite link) so the next login is scoped to it.
     const local = safePath(c.req.query('returnTo')) ?? onSuccess;
@@ -495,6 +547,27 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
           const u = new URL(d.end_session_endpoint);
           u.searchParams.set('client_id', c.env.OIDC_CLIENT_ID);
           u.searchParams.set('post_logout_redirect_uri', `${new URL(c.req.url).origin}${local}`);
+          // The ID token from this login, handed back per OIDC RP-Initiated Logout §2.
+          // Without it the OP cannot tell a real sign-out from a link someone was
+          // tricked into following, so it SHOULD (and Better Auth's provider does)
+          // interrupt with a "Confirm logout" page — an interstitial in the middle of
+          // what the person already asked for. With it the OP verifies the request
+          // against the session the hint names and redirects straight through.
+          // Absent for a session minted before this version: the confirmation page is
+          // then still correct, and the next login puts the hint back.
+          //
+          // And absent over plaintext. The hint is a signed assertion about who is
+          // signed in, travelling in a URL the browser will also put in history and
+          // `Referer`; an issuer advertising an `http:` end-session endpoint would have
+          // it read off the wire. Loopback is exempt because that is `dev-issuer`, which
+          // every demo's local login uses. The redirect itself still happens — it
+          // carries no secret, and refusing it would change what a plaintext issuer did
+          // before this feature existed — so the person is signed out either way and the
+          // OP falls back to asking them to confirm.
+          if (idTokenHint) {
+            if (isHttpsOrLoopback(u)) u.searchParams.set('id_token_hint', idTokenHint);
+            else console.warn('oidc.logout.hint_withheld', { reason: 'end_session_endpoint is not https' });
+          }
           return c.redirect(u.toString());
         }
       } catch (err) {
