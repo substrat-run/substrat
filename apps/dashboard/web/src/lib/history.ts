@@ -1,4 +1,4 @@
-import type { Actor, HistoryEntry } from '@substrat-run/contracts';
+import type { Actor, EmittedEntity, HistoryEntry } from '@substrat-run/contracts';
 
 /**
  * How a record's history reads on screen (#1235) — the presentation decisions of
@@ -48,11 +48,20 @@ export function impersonationLabel(entry: Pick<HistoryEntry, 'actor' | 'imperson
  * operation that genuinely checked nothing, and entries are the permissions it
  * checked and passed. Keeping the first two apart is why the column is nullable
  * in the DDL at all.
+ *
+ * An entry is `{ permission, grant? }`, and the optional half is a fourth
+ * distinction inside the third answer (#1398): `grant` is present exactly when
+ * the allow resolved through a `granted:<perm>` tuple rather than a role bundle,
+ * and it names WHICH grant (`workorder:01J…`, `scope:01J…`). Dropping it makes a
+ * check that passed because somebody shared one record read identically to one
+ * that passed because the actor holds a role — on the screen whose whole pitch is
+ * "under what authority". Absent `grant` already means "by a role", so the
+ * wording for that case is unchanged and the distinction costs nothing.
  */
 export function authorizationLabel(authorization: HistoryEntry['authorization']): string {
   if (authorization === null) return 'authorization unrecorded';
   if (authorization.length === 0) return 'no permission checked';
-  return authorization.map((a) => a.permission).join(', ');
+  return authorization.map((a) => (a.grant ? `${a.permission} via grant ${a.grant}` : a.permission)).join(', ');
 }
 
 /**
@@ -73,4 +82,43 @@ export function payloadText(payload: unknown): string {
  */
 export function operationLabel(operation: string | null): string {
   return operation ?? 'no operation — a consumer, or unrecorded';
+}
+
+/** Which cell in a browsed table opens that record's story. */
+export interface TimelineTarget {
+  /** The entity type a history read is keyed by — the model's own name for it. */
+  readonly entityType: string;
+  /** The column holding the id to read it with. */
+  readonly idColumn: string;
+}
+
+/**
+ * The way INTO a record's story (#1398), read off the emitted model rather than
+ * guessed from column names.
+ *
+ * The first cut made a cell clickable when the column was literally called `id`,
+ * which is the default identity and not the declared one: `primaryKey` is right
+ * there in the same `entities` map the table→entity mapping already comes from,
+ * and an entity keyed on anything else silently got no way into its own history.
+ * Absence of `primaryKey` in the artifact is not missing data — `emitModel` omits
+ * it exactly when it is the `['id']` default — so it resolves to `id` here for
+ * the same reason `primaryKeyOf` does.
+ *
+ * A **composite** key yields no target at all. A history read addresses one
+ * `EntityRef`, so a multi-column identity has no single cell that names the
+ * record — which is the same fact `PointableName` encodes in the type system.
+ * Offering the affordance on one of its columns would answer "nothing ever
+ * happened" about a record that has a history, and a missing link is the better
+ * failure of the two.
+ */
+export function timelineTargets(entities: Record<string, EmittedEntity>): Record<string, TimelineTarget> {
+  const byTable: Record<string, TimelineTarget> = {};
+  for (const [entityType, def] of Object.entries(entities)) {
+    const table = (def as { table?: string }).table;
+    if (!table) continue;
+    const key = def.primaryKey?.length ? def.primaryKey : ['id'];
+    if (key.length !== 1) continue;
+    byTable[table] = { entityType, idColumn: key[0]! };
+  }
+  return byTable;
 }

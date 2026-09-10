@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type HistoryEntry, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
-import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText } from '../lib/history';
+import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { renderModelHtml } from '@substrat-run/model-view';
@@ -2053,16 +2053,17 @@ function DataBrowser({ app }: { app: AppRow }) {
   const [page, setPage] = useState<ScopeTablePage | null>(null);
   const [offset, setOffset] = useState(0);
   const [pageErr, setPageErr] = useState<string | null>(null);
-  // The model's table→entity mapping (#1235): a record's history is keyed by
-  // entity TYPE, and the table alone does not name it. Absent (no model.json, or
-  // a version pushed before #1214) ⇒ no history affordance rather than a guess.
+  // The model's table→(entity, id column) mapping (#1235, #1398): a record's
+  // history is keyed by entity TYPE, and the table alone names neither that nor
+  // which of its columns identifies a row. Absent (no model.json, or a version
+  // pushed before #1214) ⇒ no history affordance rather than a guess.
   //
   // Read for the ACTIVE scope, not the app's default one: a version is bound per
   // scope, so a multi-scope vertical can have the site you are browsing pinned a
   // version behind the app — and a mapping from the wrong version names the wrong
   // entity for a table, which reads as a record with no history rather than as a
   // mistake.
-  const [tableEntity, setTableEntity] = useState<Record<string, string>>({});
+  const [tableEntity, setTableEntity] = useState<Record<string, TimelineTarget>>({});
   // The record whose history is open, and the scope it was opened IN (#1235). The
   // scope is part of the selection rather than read from `activeScope` at render:
   // a row belongs to the database it was read from, and switching the scope
@@ -2079,14 +2080,9 @@ function DataBrowser({ app }: { app: AppRow }) {
       .then((v) => {
         const entities = v.running?.model?.entities;
         if (!live || !entities) return;
-        const byTable: Record<string, string> = {};
-        for (const [entity, def] of Object.entries(entities)) {
-          const table = (def as { table?: string }).table;
-          if (table) byTable[table] = entity;
-        }
-        setTableEntity(byTable);
+        setTableEntity(timelineTargets(entities));
       })
-      // No model is a fine state — the id column simply stays plain text.
+      // No model is a fine state — the key column simply stays plain text.
       .catch(() => undefined);
     return () => {
       live = false;
@@ -2239,7 +2235,7 @@ function DataBrowser({ app }: { app: AppRow }) {
                 page={page}
                 onPrev={() => setOffset((o) => Math.max(0, o - DATA_PAGE))}
                 onNext={() => setOffset((o) => o + DATA_PAGE)}
-                entityType={tableEntity[page.table]}
+                target={tableEntity[page.table]}
                 onOpenHistory={(entityType, entityId) => setHistory({ scopeId: activeScope, entityType, entityId })}
               />
             )}
@@ -2542,14 +2538,14 @@ function TablePage({
   page,
   onPrev,
   onNext,
-  entityType,
+  target,
   onOpenHistory,
 }: {
   page: ScopeTablePage;
   onPrev: () => void;
   onNext: () => void;
-  /** The model entity this table holds, when one maps to it — see `entityOfTable`. */
-  entityType?: string;
+  /** The model entity this table holds and the column identifying a row — see `timelineTargets`. */
+  target?: TimelineTarget;
   onOpenHistory?: (entityType: string, entityId: string) => void;
 }) {
   const from = page.rowCount === 0 ? 0 : page.offset + 1;
@@ -2581,20 +2577,22 @@ function TablePage({
               {page.rows.map((row, i) => (
                 <tr key={i}>
                   {row.map((cell, j) => {
-                    // The `id` column is the way into a record's story (#1235), and only
-                    // when the model says which entity this table holds — guessing the
-                    // entity type would render "nothing ever happened" for a wrong guess.
+                    // The record's declared key column is the way into its story (#1235,
+                    // #1398), and only when the model says which entity this table holds —
+                    // guessing either would render "nothing ever happened" for a wrong
+                    // guess. Which column that is comes from `primaryKey`, not from the
+                    // name `id`: an entity keyed on anything else has a history too.
                     const opens =
                       onOpenHistory !== undefined &&
-                      entityType !== undefined &&
-                      page.columns[j] === 'id' &&
+                      target !== undefined &&
+                      page.columns[j] === target.idColumn &&
                       cell != null;
                     return (
                       <td key={j} style={{ padding: '7px 12px', borderBottom: '1px solid var(--border-subtle)', fontFamily: 'var(--font-mono)', color: cell == null ? 'var(--text-tertiary)' : 'var(--text-primary)', whiteSpace: 'nowrap', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis' }} title={cell == null ? 'null' : String(cell)}>
                         {opens ? (
                           <button
                             type="button"
-                            onClick={() => onOpenHistory!(entityType!, String(cell))}
+                            onClick={() => onOpenHistory!(target!.entityType, String(cell))}
                             title="show this record's history"
                             style={{ background: 'none', border: 0, padding: 0, font: 'inherit', color: 'var(--text-brand)', cursor: 'pointer', textDecoration: 'underline' }}
                           >

@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import type { HistoryEntry } from '@substrat-run/contracts';
+import type { EmittedEntity, HistoryEntry } from '@substrat-run/contracts';
 import {
   actorLabel,
   authorizationLabel,
   impersonationLabel,
   operationLabel,
   payloadText,
+  timelineTargets,
 } from '../web/src/lib/history.js';
 
 /**
@@ -19,6 +20,7 @@ import {
 /** Permission keys are branded; a test writing one still writes a string. */
 type Authorization = NonNullable<HistoryEntry['authorization']>;
 const auth = (...keys: string[]): Authorization => keys.map((permission) => ({ permission })) as Authorization;
+const granted = (permission: string, grant: string): Authorization => [{ permission, grant }] as Authorization;
 
 const entry = (over: Partial<HistoryEntry>): HistoryEntry =>
   ({
@@ -86,6 +88,76 @@ describe('authorizationLabel', () => {
     expect(authorizationLabel([])).toBe('no permission checked');
     expect(authorizationLabel(auth('workorder:complete'))).toBe('workorder:complete');
     expect(authorizationLabel(auth('a:b', 'c:d'))).toBe('a:b, c:d');
+  });
+
+  // #1398. `grant` is present exactly when the allow came through a `granted:<perm>`
+  // tuple, and it names WHICH grant. Dropped, "somebody shared this one record with
+  // me" and "I hold the role" render identically — on the screen whose pitch is
+  // "under what authority".
+  it('names which grant authorized a check, so a share does not read as a role', () => {
+    const shared = authorizationLabel(granted('list:read', 'list:01J0000000000000000000000B'));
+    expect(shared).toBe('list:read via grant list:01J0000000000000000000000B');
+    expect(shared).not.toBe(authorizationLabel(auth('list:read')));
+  });
+
+  // Absence is not missing data — it already means "by a role" — so that case's
+  // wording is unchanged and must stay free of grant vocabulary.
+  it('says nothing about a grant when a role is what allowed it', () => {
+    expect(authorizationLabel(auth('list:read'))).toBe('list:read');
+  });
+
+  it('keeps the two apart entry by entry, not per label', () => {
+    const mixed = [{ permission: 'a:b' }, { permission: 'c:d', grant: 'c:01J0000000000000000000000C' }] as Authorization;
+    expect(authorizationLabel(mixed)).toBe('a:b, c:d via grant c:01J0000000000000000000000C');
+  });
+});
+
+/**
+ * The way INTO a record's story (#1398). The first cut keyed the affordance off a
+ * column literally named `id`, so an entity keyed on anything else silently had no
+ * way into its own history — while the model declares `primaryKey` in the very map
+ * the table→entity mapping is read from.
+ */
+describe('timelineTargets', () => {
+  const entity = (over: Partial<EmittedEntity> & { table: string }): EmittedEntity =>
+    ({ fields: {}, ...over }) as EmittedEntity;
+
+  // An emitted model omits `primaryKey` exactly when it is the `['id']` default, so
+  // absence resolves rather than disqualifies — every id-keyed table keeps working.
+  it('resolves an omitted primaryKey to id, which is what the omission means', () => {
+    expect(timelineTargets({ item: entity({ table: 'todo_item' }) })).toEqual({
+      todo_item: { entityType: 'item', idColumn: 'id' },
+    });
+  });
+
+  // The bug. A side table keyed by an engine's id has a history like any other
+  // record, and got no link because its key column is not spelled `id`.
+  it('opens on the declared key column, whatever it is called', () => {
+    expect(timelineTargets({ extra: entity({ table: 'wo_extra', primaryKey: ['workorder_id'] }) })).toEqual({
+      wo_extra: { entityType: 'extra', idColumn: 'workorder_id' },
+    });
+  });
+
+  // A history read addresses one EntityRef, so a multi-column identity has no single
+  // cell that names the record — the same fact `PointableName` encodes in the types.
+  // A missing link is the better failure; a link that answers "nothing ever happened"
+  // about a record with a history is the worse one.
+  it('offers nothing for a composite key rather than a cell that cannot name the row', () => {
+    expect(
+      timelineTargets({ day: entity({ table: 'tock_field_history', primaryKey: ['source_key', 'field', 'day'] }) }),
+    ).toEqual({});
+  });
+
+  // An empty array is not a declaration; `primaryKeyOf` falls through it to `id` and
+  // so does this, or a table whose model says nothing loses a link it should keep.
+  it('reads an empty primaryKey as no declaration, not as a keyless table', () => {
+    expect(timelineTargets({ item: entity({ table: 'todo_item', primaryKey: [] }) })).toEqual({
+      todo_item: { entityType: 'item', idColumn: 'id' },
+    });
+  });
+
+  it('skips an entity the model gives no table — nothing to browse, nothing to open', () => {
+    expect(timelineTargets({ ghost: { fields: {} } as unknown as EmittedEntity })).toEqual({});
   });
 });
 
