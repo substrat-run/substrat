@@ -82,8 +82,8 @@ import {
 } from './schemas.js';
 
 /**
- * Every key these operations check — Meridian's own, plus the engine keys it
- * enforces on the engines' behalf.
+ * Every permission key a Meridian scope declares — Meridian's own, plus every key the
+ * two engines it composes bring with them.
  *
  * `absence:*` belongs to engine-absence and `protocol:*` to engine-protocol
  * (both are aliased at their reference sites in `manifest.ts` so the ownership is
@@ -92,8 +92,17 @@ import {
  * does not carry should not compile. The MANIFEST still declares only the eight
  * keys Meridian owns — a vertical restating another module's permissions is the
  * two-descriptions defect `checksDeclaredElsewhere` exists to prevent.
+ *
+ * One array, two readers, and that is what makes it checked (#1208).
+ * `definePermissions` in `provision.ts` takes the SAME array as `keys` and throws at
+ * module load if it and `MODULES` disagree in either direction — so the list is now the
+ * full declared vocabulary rather than the subset today's operations happen to check,
+ * and adding a `protocol:sign` call site costs nothing. It has to be written out as
+ * literals: a manifest's keys are branded `PermissionKey`s by the time anything could
+ * read them back, so the union cannot be derived from `MODULES`.
  */
 export const MERIDIAN_PERMISSIONS = [
+  // Meridian's own — `HR_PERM` in manifest.ts.
   'employee:manage',
   'time:report',
   'time:read',
@@ -102,14 +111,22 @@ export const MERIDIAN_PERMISSIONS = [
   'expense:approve',
   'expense:read',
   'payroll:export',
+  // @substrat-run/engine-absence
   'absence:configure',
   'absence:request',
   'absence:approve',
   'absence:read',
+  // @substrat-run/engine-protocol
   'protocol:create',
-  'protocol:bind',
-  'protocol:request-signature',
+  'protocol:fill',
+  'protocol:sign',
+  'protocol:countersign',
   'protocol:read',
+  'protocol:void',
+  'protocol:bind',
+  'protocol:attach',
+  'protocol:request-signature',
+  'protocol:record-signature',
 ] as const;
 
 /** The narrowed check seven employee-facing operations share. */

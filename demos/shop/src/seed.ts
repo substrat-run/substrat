@@ -16,6 +16,7 @@ import { ulid, type Clock } from '@substrat-run/kernel';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { shopModule, SHOP_PERM } from './module.js';
+import { SHOP_PERMISSIONS } from './operations.js';
 import { PERSONA_PRINCIPALS } from './personas.js';
 
 /**
@@ -102,8 +103,22 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
  * The single typed source for this vertical's permission surface — what the permission
  * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
  * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ *
+ * `keys` is the SAME array `operations.ts` hands `defineOperations` (#1208).
+ *
+ * It has to be written somewhere as literals — a manifest's keys are branded by the time
+ * anything can read them back, so the union that turns a mistyped `permission:` into a
+ * compile error cannot be derived from `MODULES`. Passing it here is what makes the
+ * restatement checked: `definePermissions` throws at load if this vertical ever declares a
+ * key the array does not name, or the other way round. `invoicing:*` is in it because a
+ * Shop scope declares it — `MODULES` registers the invoicing engine.
  */
-export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
+export const permissions = definePermissions({
+  modules: MODULES,
+  roles: ROLES,
+  entityGrants: ENTITY_GRANTS,
+  keys: SHOP_PERMISSIONS,
+});
 
 /**
  * `clock` is the #812 seam: absent, the host reads the wall clock, which is every

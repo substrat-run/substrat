@@ -2,9 +2,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/contracts';
+import {
+  platformActorId, principalId, scopeId, tenantId, type PermissionKeysOf,
+} from '@substrat-run/contracts';
 import { ulid } from '@substrat-run/kernel';
 import { buildDemoHost, provisionCallout } from '../src/index.js';
+import { CALLOUT_PERMISSIONS } from '../src/operations.js';
+import { permissions } from '../src/provision.js';
 
 /**
  * What a customer receives (#31 blockers 3 and 4).
@@ -74,5 +78,22 @@ describe('provisioning one Callout instance', () => {
       await host.close();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * The declared key list reaches `definePermissions` as `keys` (#1208).
+ *
+ * Its runtime half needs no test of its own: `definePermissions` throws at module load
+ * when `keys` and `MODULES` disagree, so every suite in this package that imports the
+ * seed is already the check. What nothing else would notice is `keys` being dropped, or
+ * the `as const` being lost — the assertion just stops running, and the union
+ * `defineOperations` type-checks a `permission:` against silently becomes `never`. Both
+ * mistakes are a compile error on the line below.
+ */
+describe("Callout's declared permission keys", () => {
+  it('survive as a literal union rather than collapsing to `never`', () => {
+    const key: PermissionKeysOf<typeof permissions> = 'customer:manage';
+    expect(CALLOUT_PERMISSIONS).toContain(key);
   });
 });

@@ -6,17 +6,50 @@ import { z } from 'zod';
 import { calloutEntities } from './entities.js';
 
 /**
- * The permission keys operations may require.
+ * Every permission key a Callout scope declares — Callout's own two, plus every key
+ * the three engines it composes bring with them.
  *
- * `customer:manage` and `facility:manage` mirror `SC_PERM` in manifest.ts — the
- * keys Callout itself declares. `workorder:read` is an ENGINE key, and it is here
- * for the same reason Handlebar's list carries five of them: this is the
- * vocabulary an operation's `permission` may name, not a second declaration of
- * who owns the key. A vertical operation gated by an engine's key had no way to
- * say so while the list held only Callout's own, and `callout/timeline` spent
- * that whole time declaring `customer:manage` while checking `workorder:read`.
+ * This is the vocabulary an operation's `permission` may name, not a second
+ * declaration of who owns the key: the MANIFEST still declares only `customer:manage`
+ * and `facility:manage`, and the engine keys are owned by the engines. A vertical
+ * operation gated by an engine's key had no way to say so while the list held only
+ * Callout's own, and `callout/timeline` spent that whole time declaring
+ * `customer:manage` while checking `workorder:read`.
+ *
+ * One array, two readers, and that is what makes it checked (#1208). `defineOperations`
+ * takes it below as the union a mistyped `permission:` fails against;
+ * `definePermissions` in `provision.ts` takes the SAME array as `keys` and throws at
+ * module load if it and `MODULES` disagree in either direction. It has to be written
+ * out as literals — a manifest's keys are branded `PermissionKey`s by the time
+ * anything could read them back, so the union cannot be derived from `MODULES` — but
+ * "written once and checked" is a different thing from "hand-maintained".
  */
-export const CALLOUT_PERMISSIONS = ['customer:manage', 'facility:manage', 'workorder:read'] as const;
+export const CALLOUT_PERMISSIONS = [
+  // Callout's own — `SC_PERM` in manifest.ts.
+  'customer:manage',
+  'facility:manage',
+  // @substrat-run/engine-workorder
+  'workorder:create',
+  'workorder:read',
+  'workorder:assign',
+  'workorder:report',
+  'workorder:complete',
+  'workorder:close',
+  // @substrat-run/engine-invoicing
+  'invoicing:read',
+  'invoicing:export',
+  // @substrat-run/engine-protocol
+  'protocol:create',
+  'protocol:fill',
+  'protocol:sign',
+  'protocol:countersign',
+  'protocol:read',
+  'protocol:void',
+  'protocol:bind',
+  'protocol:attach',
+  'protocol:request-signature',
+  'protocol:record-signature',
+] as const;
 
 /**
  * Callout policy: protocols live on work orders. Declared here and parsed by the
