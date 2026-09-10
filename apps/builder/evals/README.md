@@ -16,18 +16,6 @@ enough that a competent build needs no questions. Frozen means frozen: editing a
 concept invalidates every historical result against it; add a new fixture instead.
 This measures how faithfully a fully specified design gets built.
 
-**Frozen and superseded are different states, and both are visible.** A frozen fixture
-is one nobody may edit. A **superseded** one is a frozen fixture a later fixture was
-written to replace — because the concept turned out to be unbuildable as written, so
-every run against it graded a judgement call rather than the build (#723: `paveworks`
-requires three recorded assumptions, two of them outright contradictions, and
-`paveworks2` closes them). Superseding does not unfreeze anything: the old fixture's
-`concept.md` stays byte-identical so its historical results keep meaning what they
-meant, and the successor says in its own header which fixture it supersedes and why.
-Both keep running in the default sweep — dropping a fixture from the default set is the
-irreversible half of the choice, and it costs a corpus decision rather than a file edit,
-so it is made deliberately and not as a side effect of adding a successor.
-
 **Start at the prompt** (`prompt.md` + `answers.md`, #740) — the brief a customer
 would actually give, and everything the builder answered. The run begins in the
 interview phase and writes its own `spec/concept.md`, so the interview → concept link
@@ -62,6 +50,24 @@ vocabulary is the model's freedom: a run that names the vertical `tasks` rather 
 Scoring the assumptions themselves — every assumption mapped to a fork, measured as
 *forks correct at a given question count* so that asking more questions is not itself
 rewarded — is the other half of #740.
+
+## Frozen, and superseded
+
+Two different states, and the difference is visible on purpose. A **frozen** fixture is
+one nobody may edit. A **superseded** one is a frozen fixture that a later fixture was
+written to replace — because the concept turned out not to be buildable as written, so
+every run against it graded a judgement call rather than the build (#723: `paveworks`
+needs three recorded assumptions, two of them outright contradictions; `paveworks2`
+closes them).
+
+Superseding does not unfreeze anything. The old fixture's `concept.md` stays
+byte-identical, so its historical results keep meaning what they meant, and the successor
+says in its own header which fixture it supersedes and why — which is where a reader of
+either one finds the other.
+
+Both keep running in the default sweep. Dropping a fixture from the default set is the
+irreversible half of the choice and it costs sweep budget either way, so it is a corpus
+decision made deliberately, never a side effect of adding a successor.
 
 ## Running the sweep
 
