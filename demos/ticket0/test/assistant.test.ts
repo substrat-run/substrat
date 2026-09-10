@@ -9,6 +9,7 @@
  * model, the same question, and one desk sends while the other does not.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -465,6 +466,70 @@ describe('the refresh hook', () => {
     await expect(
       admin.invoke('ticket0/revoke-kb-refresh-token', { sourceId: source.id }),
     ).resolves.toBeDefined();
+  });
+
+  /**
+   * The three ways to fail are ONE answer, and an unknown source is the third.
+   *
+   * A refusal that separates "no such source" from "wrong token" hands an
+   * unauthenticated caller a source-id oracle: fire at an id, read the status, learn
+   * whether this desk holds it. The message is the same too, because a caller reading
+   * two different sentences has been told the same thing.
+   */
+  it('an unknown source is refused exactly as a bad token is', async () => {
+    const { app, admin } = await hookedApp(world.kestrel);
+    const source = await firstSource(admin);
+    await admin.invoke('ticket0/mint-kb-refresh-token', { sourceId: source.id });
+
+    const unknown = await fire(app, '01ARZ3NDEKTSV4RRFFQ69G5FAV', 't0kb_anything');
+    const wrongToken = await fire(app, source.id, 't0kb_not-the-token');
+    expect(unknown.status).toBe(403);
+    expect(wrongToken.status).toBe(403);
+    // The same refusal, word for word — a difference in wording is the same leak as a
+    // difference in status. Everything but `instance`, which is the request's own path
+    // and says nothing the caller did not already type.
+    const body = async (r: Response) => {
+      const { instance: _instance, ...rest } = (await r.json()) as Record<string, unknown>;
+      return rest;
+    };
+    expect(await body(unknown)).toEqual(await body(wrongToken));
+  });
+
+  /**
+   * Spending a hook is a MUTATION, so it announces itself like the mint and the revoke
+   * beside it. Without the event, the only writes a hook can cause are the ones nothing
+   * records, and "has this pipeline been firing, and when did it stop" — the question a
+   * stale knowledge base actually raises — has no answer in the history.
+   */
+  it('a spent hook leaves an event carrying the hint and never the token', async () => {
+    const { app, admin } = await hookedApp(world.kestrel);
+    const source = await firstSource(admin);
+    const minted = (await admin.invoke('ticket0/mint-kb-refresh-token', {
+      sourceId: source.id,
+    })) as { token: string; refresh_token_hint: string };
+
+    expect((await fire(app, source.id, minted.token)).status).toBe(200);
+
+    const db = new Database(join(dir, `${world.kestrel.tenant}__${world.kestrel.scope}.sqlite`), {
+      readonly: true,
+    });
+    const row = db
+      .prepare(
+        `SELECT * FROM _substrat_outbox WHERE type = 'ticket0.kb-refresh-hook-redeemed' ORDER BY id DESC LIMIT 1`,
+      )
+      .get() as { entity_type: string; entity_id: string; pii_class: string; payload: string } | undefined;
+    db.close();
+    expect(row).toBeDefined();
+    expect(row!.entity_type).toBe('kbSource');
+    expect(row!.entity_id).toBe(source.id);
+    expect(row!.pii_class).toBe('none');
+    const payload = JSON.parse(row!.payload) as Record<string, unknown>;
+    expect(payload.id).toBe(source.id);
+    expect(payload.refresh_token_hint).toBe(minted.refresh_token_hint);
+    expect(payload.token_last_used_at).toEqual(expect.any(String));
+    // The one thing an event must never carry: an event is read later, by people who
+    // were not here, and this one names a live credential's owner.
+    expect(JSON.stringify(payload)).not.toContain(minted.token);
   });
 
   /**

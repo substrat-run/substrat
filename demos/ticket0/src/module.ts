@@ -156,8 +156,17 @@ function messageOrThrow(ctx: OperationContext, id: string): MessageRow {
   return row;
 }
 
+/**
+ * The row, or nothing — for the ONE caller that must not answer 404: a refusal that
+ * distinguishes "no such source" from "wrong token" tells an unauthenticated caller
+ * which source ids this desk holds.
+ */
+function sourceOrNull(ctx: OperationContext, id: string): KbSourceRow | undefined {
+  return ctx.sql.query<KbSourceRow>('SELECT * FROM ticket0_kb_sources WHERE id = ?', [id])[0];
+}
+
 function sourceOrThrow(ctx: OperationContext, id: string): KbSourceRow {
-  const row = ctx.sql.query<KbSourceRow>('SELECT * FROM ticket0_kb_sources WHERE id = ?', [id])[0];
+  const row = sourceOrNull(ctx, id);
   if (!row) throw substratError('not_found', `documentation source not found: ${id}`);
   return row;
 }
@@ -1587,11 +1596,16 @@ const operations = {
    */
   'ticket0/redeem-kb-refresh-token': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.kbRefresh, sourceRef(input.sourceId)));
-    const row = sourceOrThrow(ctx, input.sourceId);
+    // Looked up WITHOUT throwing, unlike every other operation here: `sourceOrThrow`
+    // answers 404, and a 404 beside the 403 below is the separation this refusal is
+    // written to avoid — a caller holding a token would learn which source ids exist
+    // on this desk by watching the status change. A missing row folds into the same
+    // one answer.
+    const row = sourceOrNull(ctx, input.sourceId);
     const presented = await sha256(input.token);
     // Both sides are hex of a fixed length. This leaks nothing but equality: the hash
     // is of a 160-bit random token, so a timing oracle on it has nothing to walk.
-    if (!row.refresh_token_hash || row.refresh_token_hash !== presented) {
+    if (!row || !row.refresh_token_hash || row.refresh_token_hash !== presented) {
       throw substratError('forbidden', 'this refresh hook is not valid for this source');
     }
     if (row.token_last_used_at) {
@@ -1613,7 +1627,24 @@ const operations = {
       ctx.now(),
       row.id,
     ]);
-    return publicSource(sourceOrThrow(ctx, row.id));
+    const spent = sourceOrThrow(ctx, row.id);
+    // The mint and the revoke each leave an event; so does spending one. Without it
+    // the only mutation a HOOK can cause is the one nothing records, and "has this
+    // pipeline been firing?" — the question a knowledge base going stale actually
+    // raises — has no answer in the history. The hint, never the token.
+    ctx.emit({
+      type: 'ticket0.kb-refresh-hook-redeemed',
+      schemaVersion: 1,
+      entity: sourceRef(spent.id),
+      piiClass: 'none',
+      payload: {
+        id: spent.id,
+        url: spent.url,
+        refresh_token_hint: spent.refresh_token_hint,
+        token_last_used_at: spent.token_last_used_at,
+      },
+    });
+    return publicSource(spent);
   },
 
   'ticket0/search-kb': async (ctx, input) => {

@@ -136,9 +136,15 @@ async function boot() {
    * to match. The token still has to be that source's — this only decides whose
    * knowledge base is being asked about.
    */
-  mountKbRefresh(app, staffStub, fetch, async () => {
+  mountKbRefresh(app, staffStub, globalThis.fetch.bind(globalThis), async () => {
     const desk = desks[0];
-    if (!desk) return null;
+    // `desk.ingest` may be ABSENT rather than merely unreconciled: `.data/cast.json` is
+    // written once and read verbatim on every later boot, so a cast from before this
+    // service existed has no `ingest` at all. Read defensively and the answer is the
+    // 503 the hosted path gives for the same state — a hook presented to a desk with no
+    // hook service — instead of a TypeError dressed up as a 500. Delete `.data/` to
+    // re-seed; the message on the 503 says so.
+    if (!desk?.ingest) return null;
     const stub = await host.getScope(desk.ingest.principal, desk.tenant, desk.scope);
     return { invoke: <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T> };
   });

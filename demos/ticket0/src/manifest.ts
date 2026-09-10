@@ -128,7 +128,7 @@ export const ticket0Manifest = moduleManifest.parse({
       'contact:read': 'See the people who have asked something',
       'kb:read': 'Read and search the knowledge base',
       'kb:manage': 'Add a documentation source, and mint or revoke its refresh hook',
-      'kb:refresh': 'Re-read a source and record what it found — held by the desk’s ingest service alone; which source is decided by the hook token, not by this key',
+      'kb:refresh': 'Re-read a source and record what it found — held by desk-admins, who press Re-read, and by the desk’s ingest service, which holds this and nothing else; a request carrying a hook token is narrowed to the source that token names, a signed-in admin is not',
       'desk:configure': 'Change the desk’s settings and rotate its verification secret',
       'usage:read': 'See token usage, prices and what the desk has spent',
       'notification:read-own': 'See and dismiss your own notifications',

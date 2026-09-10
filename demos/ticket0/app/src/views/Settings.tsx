@@ -137,6 +137,27 @@ function Field({ label, children, hint }: { label: string; children: React.React
 }
 
 
+/**
+ * Copy, and answer whether it actually happened.
+ *
+ * `navigator.clipboard` is absent on an insecure origin and `writeText` REJECTS when
+ * the document is not focused or the permission is refused — and every secret this
+ * screen copies is shown exactly once. A button that says "Copied" on the strength of
+ * having been clicked does not lose a click; it loses the secret.
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  try {
+    if (!navigator.clipboard?.writeText) return false;
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** What a failed copy says. The text is still on the screen — this points at it. */
+const COPY_BY_HAND = 'Couldn’t reach the clipboard — select the text above and copy it by hand.';
+
 /* ── Team ───────────────────────────────────────────────────────────────── */
 
 /**
@@ -166,6 +187,7 @@ function Team({ session }: { session: Session }) {
   const [people, setPeople] = useState<Contact[]>([]);
   const [link, setLink] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -366,13 +388,17 @@ function Team({ session }: { session: Session }) {
                   <button
                     className="btn"
                     onClick={() => {
-                      void navigator.clipboard?.writeText(link);
-                      setCopied(true);
+                      void copyToClipboard(link).then((ok) => (ok ? setCopied(true) : setCopyFailed(true)));
                     }}
                   >
                     {copied ? 'Copied' : 'Copy'}
                   </button>
                 </div>
+                {copyFailed ? (
+                  <div className="t-small" style={{ color: 'var(--danger)', marginTop: 6 }}>
+                    {COPY_BY_HAND}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </>
@@ -732,6 +758,7 @@ function Desk() {
 function Identity() {
   const [secret, setSecret] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [rotating, setRotating] = useState(false);
 
   return (
@@ -854,13 +881,17 @@ function Identity() {
               className="btn"
               style={{ background: '#17181a', borderColor: '#17181a', color: '#fff' }}
               onClick={() => {
-                void navigator.clipboard?.writeText(secret);
-                setCopied(true);
+                void copyToClipboard(secret).then((ok) => (ok ? setCopied(true) : setCopyFailed(true)));
               }}
             >
               {copied ? 'Copied' : 'Copy'}
             </button>
           </div>
+          {copyFailed ? (
+            <div className="t-small" style={{ margin: '0 14px 10px', color: 'var(--danger)' }}>
+              {COPY_BY_HAND} The close button below stays locked until it is out of here.
+            </div>
+          ) : null}
           <div
             style={{
               margin: '0 14px 14px',
@@ -895,6 +926,7 @@ function Identity() {
                 setSecret(null);
                 setRotating(false);
                 setCopied(false);
+                setCopyFailed(false);
               }}
             >
               I've stored it — close
@@ -969,6 +1001,7 @@ function Knowledge() {
   const [openHook, setOpenHook] = useState<string | null>(null);
   const [minted, setMinted] = useState<{ sourceId: string; token: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
   const [hookBusy, setHookBusy] = useState(false);
   const [hookFailed, setHookFailed] = useState<string | null>(null);
 
@@ -1034,6 +1067,7 @@ function Knowledge() {
     setHookBusy(true);
     setHookFailed(null);
     setCopied(false);
+    setCopyFailed(false);
     try {
       const result = await api.mintKbRefreshToken({ sourceId: id });
       setMinted({ sourceId: id, token: result.token });
@@ -1256,13 +1290,19 @@ function Knowledge() {
                         className="btn"
                         style={{ background: '#17181a', borderColor: '#17181a', color: '#fff' }}
                         onClick={() => {
-                          void navigator.clipboard?.writeText(minted.token);
-                          setCopied(true);
+                          void copyToClipboard(minted.token).then((ok) =>
+                            ok ? setCopied(true) : setCopyFailed(true),
+                          );
                         }}
                       >
                         {copied ? 'Copied' : 'Copy'}
                       </button>
                     </div>
+                    {copyFailed ? (
+                      <div className="t-small" style={{ padding: '0 11px 11px', color: 'var(--danger)' }}>
+                        {COPY_BY_HAND}
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
 
@@ -1274,6 +1314,14 @@ function Knowledge() {
                 <div className="t-small" style={{ color: 'var(--muted)', marginBottom: 5 }}>
                   Call this when your documentation publishes:
                 </div>
+                {/*
+                  The command is only RUNNABLE while this session is holding the token.
+                  After a reload `minted` is gone and the row keeps six characters of
+                  tail — so a line ending in the hint would be a copyable-looking curl
+                  that is guaranteed to 403. It says PASTE-YOUR-TOKEN-HERE instead, and
+                  the hint is offered below as what it is: a way to tell which hook is
+                  live, not a credential.
+                */}
                 <code
                   className="mono"
                   style={{
@@ -1288,12 +1336,20 @@ function Knowledge() {
                   }}
                 >
                   curl -X POST {window.location.origin}/api/kb/sources/{s.id}/refresh -H
-                  &apos;x-kb-refresh-token: {minted?.sourceId === s.id ? minted.token : `…${s.refresh_token_hint ?? ''}`}&apos;
+                  &apos;x-kb-refresh-token:{' '}
+                  {minted?.sourceId === s.id ? minted.token : 'PASTE-YOUR-TOKEN-HERE'}&apos;
                 </code>
                 <div className="t-small" style={{ color: 'var(--muted)', marginTop: 7 }}>
                   It re-reads this source and writes what changed — nothing else. A hook may
                   fire once a minute; an unchanged page writes nothing.
                 </div>
+                {minted?.sourceId === s.id ? null : s.refresh_token_hint ? (
+                  <div className="t-small" style={{ color: 'var(--muted)', marginTop: 5 }}>
+                    The live hook ends <span className="mono">…{s.refresh_token_hint}</span>. The token
+                    itself was shown once, at minting — if it is lost, Rotate mints a new one and this
+                    one stops working.
+                  </div>
+                ) : null}
 
                 <div style={{ display: 'flex', gap: 8, marginTop: 11 }}>
                   {s.refresh_token_hint ? (

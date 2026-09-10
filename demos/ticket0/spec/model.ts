@@ -1068,6 +1068,22 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     input: z.object({ sourceId: z.string(), token: z.string() }),
     output: kbSourcePublic,
     http: { method: 'POST', path: '/kb/sources/{sourceId}/token/redeem' },
+    /**
+     * A spent hook is an EVENT, like the mint and the revoke beside it. This one
+     * writes `token_last_used_at`, and a mutation that leaves no event leaves the
+     * one question a hook raises unanswerable from the history: who has been
+     * pushing on this door, and when did they stop. The hint identifies WHICH
+     * hook without being one — the token itself never enters an event, which is
+     * the row most likely to be read later by somebody who was not here.
+     */
+    emits: {
+      entity: 'kbSource',
+      entityIdFrom: 'id',
+      type: 'ticket0.kb-refresh-hook-redeemed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['id', 'url', 'refresh_token_hint', 'token_last_used_at'],
+    },
   },
 
   /**

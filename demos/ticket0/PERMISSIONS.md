@@ -24,7 +24,7 @@
 | `desk:configure` | Change the desk’s settings and rotate its verification secret | `@substrat-run/demo-ticket0` |
 | `kb:manage` | Add a documentation source, and mint or revoke its refresh hook | `@substrat-run/demo-ticket0` |
 | `kb:read` | Read and search the knowledge base | `@substrat-run/demo-ticket0` |
-| `kb:refresh` | Re-read a source and record what it found — held by the desk’s ingest service alone; which source is decided by the hook token, not by this key | `@substrat-run/demo-ticket0` |
+| `kb:refresh` | Re-read a source and record what it found — held by desk-admins, who press Re-read, and by the desk’s ingest service, which holds this and nothing else; a request carrying a hook token is narrowed to the source that token names, a signed-in admin is not | `@substrat-run/demo-ticket0` |
 | `metering:close` | Close a billing period, freezing its aggregates | `@substrat-run/engine-metering` |
 | `metering:configure` | Configure meters (register keys; kind/unit are frozen after creation) | `@substrat-run/engine-metering` |
 | `metering:read` | Read meters, usage entries, totals and closed periods | `@substrat-run/engine-metering` |

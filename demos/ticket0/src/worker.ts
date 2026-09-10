@@ -579,7 +579,12 @@ mountInvites(app, {
  * here resolves one, and null before this desk has been reconciled onto a version that
  * mints it.
  */
-mountKbRefresh(app, stub, fetch, async (c) => {
+// The runtime's fetch is never handed on BARE (`lint:bound-fetch`): workerd checks
+// the receiver, and a callee is free to call what it was given as `options.fetch(…)`.
+// Bound rather than `globalFetch` from the kernel because this seam is typed against
+// the DOM `fetch` — the ingester reads a `Response` — which is the one case the
+// kernel's own note says wants `globalThis.fetch.bind(globalThis)` and no cast.
+mountKbRefresh(app, stub, globalThis.fetch.bind(globalThis), async (c) => {
   const env = c.env as Env;
   const ingest = await serviceStub(env, nodeFor(c.req.raw, env), 'ingest');
   if (!ingest) return null;

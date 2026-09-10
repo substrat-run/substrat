@@ -42,7 +42,7 @@ export class KbReadError extends Error {
 export async function readSource(
   admin: IngestTarget,
   sourceId: string,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
 ): Promise<{ added: number; updated: number; unchanged: number }> {
   const source = await admin.invoke<{ id: string; kind: 'llms-txt' | 'sitemap' | 'markdown'; url: string }>(
     'ticket0/ingest-kb-source',
@@ -100,7 +100,7 @@ export function mountKbRefresh(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   app: Hono<any, any, any>,
   resolveStub: ResolveStub,
-  fetchImpl: typeof fetch = fetch,
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
   resolveHookTarget?: ResolveHookTarget,
 ): void {
   app.post('/api/kb/sources/:sourceId/refresh', async (c) => {
@@ -117,8 +117,14 @@ export function mountKbRefresh(
       // a principal that holds more than a hook is allowed to.
       const hook = resolveHookTarget ? await resolveHookTarget(c) : null;
       if (!hook) {
+        // The remedy has to be one that MINTS the principal, and pressing Re-read is
+        // not: that path runs as the caller's own stub and provisions nothing. Only
+        // reconciliation fills a missing service (`mintServices`, #1172), and what
+        // triggers it is the scope's serving version changing — a push. Locally, the
+        // cast file is the state to clear.
         throw new HTTPException(503, {
-          message: 'this desk has no refresh-hook service yet — re-read it from Settings, or push again',
+          message:
+            'this desk has no refresh-hook service yet — push a new version so the platform reconciles the scope and mints it (locally: delete .data/ and restart to re-seed)',
         });
       }
       // Outside the try below on purpose: a refused hook is not a failed READ, and
