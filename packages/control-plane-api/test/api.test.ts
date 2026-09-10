@@ -4161,6 +4161,23 @@ describe('control-plane API — builder authz', () => {
         .status,
     ).toBe(204);
 
+    // A body naming a SCOPE is refused, not silently downgraded. `assignRole`
+    // addresses a scope DO directly when the node carries one — writeScopeTuple →
+    // scopeStub(scopeId), no tenant cross-check below — so accepting a body
+    // scopeId while pinning only the path's tenant would have written a role
+    // tuple into another tenant's scope. Stripping it would be nearly as bad: a
+    // caller who believes they scoped an assignment must not silently get a
+    // tenant-wide one.
+    expect(
+      (
+        await staffReq(`/tenants/${acme}/role-assignments`, 'POST', {
+          principalId: principal,
+          roleKey: 'member',
+          scopeId: ulid(),
+        })
+      ).status,
+    ).toBe(400);
+
     // Service/staff only. A builder assigning itself a role is the same class of
     // hole as a builder writing the directory that authenticates builders.
     expect(

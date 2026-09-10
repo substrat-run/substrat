@@ -705,15 +705,29 @@ const issueStatusUpdate = z.object({
 });
 
 /**
- * A role ASSIGNMENT under an addressed tenant (#1343). No `tenantId` in the body:
- * the node is pinned from the path, so a payload cannot name another tenant's node.
- * `scopeId` absent = a tenant-level assignment, which is what a team membership is.
+ * A TENANT-LEVEL role assignment under an addressed tenant (#1343) — which is
+ * what a team membership is, and all this surface does.
+ *
+ * `scopeId` is deliberately absent, and `.strict()` REFUSES one rather than
+ * stripping it. An earlier draft accepted a body `scopeId` and pinned only the
+ * tenant from the path, which pins nothing: `assignRole` addresses a scope DO
+ * directly when the node carries a scope (`writeScopeTuple` → `scopeStub(scopeId)`,
+ * no tenant cross-check anywhere below it), so a body naming another tenant's
+ * scope would have written a role tuple into it. Silently stripping the field
+ * would be almost as bad — a caller who believes they scoped an assignment and
+ * silently got a tenant-wide one is worse off than one who got a 400.
+ *
+ * If scope-level assignment is ever needed it wants its own route under
+ * `/tenants/:tenantId/scopes/:scopeId/role-assignments`, deriving the node from
+ * the PATH after `getScopeRecord(actor, tenantId, scopeId)` returns — the K-3
+ * cross-check every other scope-addressed route here already performs.
  */
-const tenantRoleAssignmentBody = z.object({
-  principalId: principalIdSchema,
-  roleKey: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
-  scopeId: scopeIdSchema.nullish(),
-});
+const tenantRoleAssignmentBody = z
+  .object({
+    principalId: principalIdSchema,
+    roleKey: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+  })
+  .strict();
 
 /** A new org under an addressed tenant (#1343) — `tenantId` comes from the path. */
 const tenantOrgBody = createOrgInput.omit({ tenantId: true });
@@ -4990,18 +5004,19 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   //
   // Service/staff only, absent from BUILDER_ROUTES: a builder must no more be able
   // to assign itself a role than to write the directory that authenticates it.
-  // Fail-closed, same law as the identity mirror.
+  // Fail-closed, same law as the identity mirror. TENANT-LEVEL only — see the
+  // body schema for why a scope cannot be named here.
 
   app.post('/tenants/:tenantId/role-assignments', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const body = tenantRoleAssignmentBody.parse(await c.req.json());
-    // The node is pinned to the addressed tenant rather than read from the body:
-    // a payload naming another tenant's node would be a cross-tenant assignment
-    // dressed as a path-scoped one (K-3, and rule 1 above about bodies).
+    // The whole node comes from the path. Pinning only the tenant would pin
+    // nothing — see the schema's note: a node carrying a scope is written to that
+    // scope's DO directly, with no tenant cross-check below.
     await admin.assignRole(c.get('actor'), {
       principalId: body.principalId,
       roleKey: body.roleKey,
-      node: { tenantId, scopeId: body.scopeId ?? null },
+      node: { tenantId, scopeId: null },
     });
     return c.body(null, 204);
   });
@@ -5010,11 +5025,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const body = tenantRoleAssignmentBody.parse(await c.req.json());
     // Tombstones rather than deletes (K-21) and is idempotent — unassigning what
-    // was never assigned is a silent no-op, so a retry is safe.
+    // was never assigned is a silent no-op, so a retry is safe. Node from the
+    // path, for the same reason as the assign above.
     await admin.unassignRole(c.get('actor'), {
       principalId: body.principalId,
       roleKey: body.roleKey,
-      node: { tenantId, scopeId: body.scopeId ?? null },
+      node: { tenantId, scopeId: null },
     });
     return c.body(null, 204);
   });

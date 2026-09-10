@@ -1101,20 +1101,21 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
-   * Assign an already-DEFINED role to a principal in the shared directory (#1343).
-   * The node is pinned tenant-side by the route, so this cannot reach another
-   * tenant's node even if asked to. `scopeId` omitted = a tenant-level assignment,
-   * which is what a team membership is.
+   * Assign an already-DEFINED role to a principal in the shared directory (#1343),
+   * at the TENANT node — which is what a team membership is, and all the route
+   * offers. There is no `scopeId`: the whole node comes from the path, because a
+   * node carrying a scope is written to that scope's DO with no tenant
+   * cross-check below it, so accepting one here would be a cross-tenant write.
    *
    * Defining what a role MEANS stays off this seam deliberately — that is a
    * permission change, and the permission diff is a human checkpoint (D-22/D-29).
    */
-  assignRole(input: { principalId: PrincipalId; roleKey: string; scopeId?: ScopeId }): Promise<void> {
+  assignRole(input: { principalId: PrincipalId; roleKey: string }): Promise<void> {
     return this.post(`/tenants/${this.tenantId}/role-assignments`, input);
   }
 
   /** Revoke an assignment — tombstoned (K-21), idempotent, so a retry is safe. */
-  unassignRole(input: { principalId: PrincipalId; roleKey: string; scopeId?: ScopeId }): Promise<void> {
+  unassignRole(input: { principalId: PrincipalId; roleKey: string }): Promise<void> {
     return this.call(`/tenants/${this.tenantId}/role-assignments`, {
       method: 'DELETE',
       body: JSON.stringify(input),
