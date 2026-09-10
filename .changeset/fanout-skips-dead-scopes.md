@@ -17,6 +17,14 @@ a scope mid-provision pulls the projection itself and one idempotent write beats
 racing that pull, and suspension is reversible, so a suspended scope must not
 come back with a stale projection.
 
+A reaped scope now also FENCES itself. `destroyStorage` writes its tombstone
+after `deleteAll()` — before would take it with everything else — so a
+projection already in flight when the reap lands is dropped rather than
+recreating the storage. The status filter alone cannot close that window: the
+scope was legitimately live when it was selected. The marker is permanent
+because `reaped` is terminal, which makes it a fence rather than a lock: any
+later write is refused whenever it arrives, with no lifecycle coordination.
+
 Found while sizing the fan-out for #1343, which the scope-local-permissions
 design named as its open question 1 — "the dashboard's own many-scope tenant is
 the case to size".
