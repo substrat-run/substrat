@@ -186,6 +186,50 @@ decisions — expand/contract, a backfill, a
 guessing with somebody's data. A refusal names each reason in the vocabulary of your model,
 not in raw table names.
 
+### A vertical composed of surfaces has more than one journal
+
+A vertical assembled from surfaces ships one concatenated migration list built from several
+journals, and the kernel runs it in the order it is handed — it never sorts by version. So
+**which journal an entry goes into is the execution order**, and the counter belongs to the
+vertical rather than to any one journal. Say so:
+
+```ts
+const journals = {
+  core: parseJournal(read('core'), { surface: 'core' }),
+  billing: parseJournal(read('billing'), { surface: 'billing' }),
+};
+
+const plan = planMigration(entities, journals.billing, { journals, surface: 'billing' });
+```
+
+`entities` stays the **whole** model — parent edges resolve against the full registry, and a
+one-surface slice would read every other surface's tables as dropped. Three things change,
+and nothing changes for a vertical that passes no options:
+
+| | one journal | a set |
+|---|---|---|
+| applied schema | that journal | **every** journal, so a table another surface created is not diffed as missing |
+| next version | position in the journal | **the highest version seen anywhere, plus one** — the count is not the number, and a version another surface already holds is a boot failure |
+| a new table | numbered and appended | **refused unless `surface` names one of the journals** — a `parents` edge emits a `REFERENCES`, and SQLite will create a child before its parent without complaining |
+
+That last refusal is the planner declining to pick an execution order it cannot read off the
+model. It does not check the order you picked; naming the surface is you saying you picked
+it. An `ALTER` makes no such choice and is never asked.
+
+The set has to be **whole**, and a partial one is refused rather than repaired: it must hold
+the journal you are appending to (pass the member — `journals.billing` — not a second parse of
+the same file), and a surface you are only now *starting* is one of them too, as an empty
+journal. The order you write the record in is the order the kernel runs it, so a planner that
+slotted a stray journal in somewhere would be choosing that order for you — and putting it
+last replays an `ALTER` from a later surface before the `CREATE` it depends on.
+
+`parseJournal` takes the same `surface`, and it relaxes exactly one thing. A shared counter
+puts gaps in every journal it feeds (`0043`, then `0055`, because the numbers between went to
+other surfaces), so position can no longer derive the counter; what a surface's journal must
+still do is **climb, and never repeat**. Two entries numbered `0010` in one surface is the bad
+merge it always was. `0010` in two different surfaces is history, from when they numbered
+independently, and parses.
+
 ## It reads the TypeScript, never `model.json`
 
 `z.toJSONSchema` keeps the declarative constraints (`.min`, `.regex`, `.enum`, `.nullable`,

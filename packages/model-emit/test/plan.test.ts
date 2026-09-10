@@ -12,6 +12,7 @@ import {
   planMigration,
   parseJournal,
   type Journal,
+  type JournalEntry,
 } from '../src/index.js';
 
 const base = defineEntities({
@@ -174,6 +175,154 @@ describe('parseJournal', () => {
         ],
       }),
     ).toThrow(/bad merge/);
+  });
+});
+
+/**
+ * A vertical composed of surfaces runs one concatenated migration list built
+ * from several journals, and the kernel never sorts it. Everything above this
+ * block passes unchanged, which is the point: a one-surface vertical passes no
+ * options and gets today's answer.
+ */
+describe('a vertical with more than one journal', () => {
+  const composed = defineEntities({
+    ...base,
+    tag: {
+      table: 'app_tags',
+      fields: z.object({ id: z.string(), list_id: z.string(), label: z.string() }),
+      parents: ['list'],
+    },
+  });
+
+  const core = first(base);
+  // A surface being started is still one of the vertical's journals — it is just
+  // empty, and saying so is what makes a typo in `surface` loud.
+  const extra: Journal = (() => {
+    const plan = planMigration(composed, core, {
+      journals: { core, extra: { entries: [] } },
+      surface: 'extra',
+    });
+    if (plan.kind !== 'append') throw new Error(`expected an append, got ${plan.kind}`);
+    return { entries: [plan.entry] };
+  })();
+
+  /** Entries that carry no schema, only a number — for testing the counter. */
+  const padding = (...versions: string[]): readonly JournalEntry[] =>
+    versions.map((version) => ({ version, slug: 'padding', sql: `-- ${version}` }));
+
+  it('reads the applied schema across the whole set, not just the one being appended to', () => {
+    // Diffed against `extra` alone, every table `core` created reads as missing
+    // and the plan re-creates it — a CREATE TABLE that fails on the first run.
+    expect(planMigration(composed, extra, { journals: { core, extra } }).kind).toBe('up-to-date');
+  });
+
+  it('numbers from the highest version anywhere, because the count is not the number', () => {
+    const withNote = defineEntities({
+      ...composed,
+      list: {
+        table: 'app_lists',
+        fields: z.object({
+          id: z.string(),
+          owner_id: z.string(),
+          name: z.string(),
+          note: z.string().nullable(),
+        }),
+        parents: ['owner'],
+      },
+    });
+    // Three entries in `core`, one in `extra`, highest prefix 0004. Numbering
+    // `core` from its own length would propose 0004 — which `extra` already
+    // holds, and a duplicate version is a boot failure, not a renumbering.
+    const long: Journal = { entries: [...core.entries, ...padding('0002', '0003')] };
+    const later: Journal = { entries: [...extra.entries.map((e) => ({ ...e, version: '0004' }))] };
+    const plan = planMigration(withNote, long, { journals: { core: long, extra: later } });
+    expect(plan.kind).toBe('append');
+    if (plan.kind !== 'append') return;
+    expect(plan.entry.version).toBe('0005');
+  });
+
+  it('refuses to create a table without being told which journal it goes into', () => {
+    const plan = planMigration(composed, core, { journals: { core } });
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons[0]).toMatch(/'app_tags' would be created/);
+    expect(plan.reasons[0]).toMatch(/IS the execution order/);
+  });
+
+  it('...and appends once the surface is named — the caller decided, the planner did not', () => {
+    const plan = planMigration(composed, core, { journals: { core }, surface: 'core' });
+    expect(plan.kind).toBe('append');
+    if (plan.kind !== 'append') return;
+    expect(plan.entry.sql).toContain('CREATE TABLE app_tags');
+    expect(plan.entry.sql).toContain('REFERENCES app_lists(id)');
+  });
+
+  it('does not ask for a surface on an ALTER — only a CREATE picks an order', () => {
+    const withNote = defineEntities({
+      ...composed,
+      list: {
+        table: 'app_lists',
+        fields: z.object({
+          id: z.string(),
+          owner_id: z.string(),
+          name: z.string(),
+          note: z.string().nullable(),
+        }),
+        parents: ['owner'],
+      },
+    });
+    expect(planMigration(withNote, core, { journals: { core, extra } }).kind).toBe('append');
+  });
+
+  it('refuses a surface that names no journal in the set', () => {
+    const plan = planMigration(composed, core, { journals: { core, extra }, surface: 'rutt' });
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons.some((r) => /surface 'rutt' is not one of/.test(r))).toBe(true);
+  });
+
+  it('refuses a set that leaves out the journal being appended to', () => {
+    // Slotting the stray journal in somewhere would be the planner picking an
+    // execution order: put it last, and an ALTER from a later surface replays
+    // before the CREATE it depends on.
+    const plan = planMigration(composed, core, { journals: { extra } });
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons[0]).toMatch(/not one of `journals`/);
+  });
+
+  it('refuses a surface that only Object.prototype has heard of', () => {
+    // `'toString' in journals` is true, and `Object.keys(journals)` does not
+    // list it — so `in` would wave through the very typo this check exists for.
+    const plan = planMigration(composed, core, { journals: { core }, surface: 'toString' });
+    expect(plan.kind).toBe('refused');
+    if (plan.kind !== 'refused') return;
+    expect(plan.reasons.some((r) => /surface 'toString' is not one of/.test(r))).toBe(true);
+  });
+});
+
+describe('parseJournal reads one surface differently from one vertical', () => {
+  const entries = (...versions: string[]) => ({
+    entries: versions.map((version) => ({ version, slug: 's', sql: `-- ${version}` })),
+  });
+
+  it('a gap is a bad merge in a lone journal, and data in a surface of a set', () => {
+    expect(() => parseJournal(entries('0001', '0003'))).toThrow(/bad merge/);
+    // Six surfaces numbering from one counter leave gaps in every one of them:
+    // 0002 went to another surface, and this journal never held it.
+    expect(parseJournal(entries('0001', '0003'), { surface: 'rutt' }).entries).toHaveLength(2);
+  });
+
+  it('keeps the duplicate detector inside a surface', () => {
+    expect(() => parseJournal(entries('0010', '0010'), { surface: 'crm' })).toThrow(
+      /journal 'crm'.*bad merge/s,
+    );
+    expect(() => parseJournal(entries('0011', '0010'), { surface: 'crm' })).toThrow(/bad merge/);
+  });
+
+  it('lets two surfaces both hold 0010, which is what independent numbering left behind', () => {
+    expect(parseJournal(entries('0010'), { surface: 'crm' }).entries).toHaveLength(1);
+    expect(parseJournal(entries('0010'), { surface: 'rutt' }).entries).toHaveLength(1);
   });
 });
 

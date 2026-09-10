@@ -14,6 +14,8 @@ export {
   type Journal,
   type JournalEntry,
   type MigrationPlan,
+  type MigrationPlanOptions,
+  type ParseJournalOptions,
 } from './plan.js';
 export {
   renderClient,
