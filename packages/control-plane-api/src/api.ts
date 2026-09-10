@@ -33,6 +33,8 @@ import {
   queryScopeInput,
   readScopeTableInput,
   entityHistoryInput,
+  createOrgInput,
+  roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
   registerVerticalInput,
@@ -702,6 +704,34 @@ const issueStatusUpdate = z.object({
   fingerprint: z.string().min(1),
   status: issueStatusInput,
 });
+
+/**
+ * A TENANT-LEVEL role assignment under an addressed tenant (#1343) — which is
+ * what a team membership is, and all this surface does.
+ *
+ * `scopeId` is deliberately absent, and `.strict()` REFUSES one rather than
+ * stripping it. An earlier draft accepted a body `scopeId` and pinned only the
+ * tenant from the path, which pins nothing: `assignRole` addresses a scope DO
+ * directly when the node carries a scope (`writeScopeTuple` → `scopeStub(scopeId)`,
+ * no tenant cross-check anywhere below it), so a body naming another tenant's
+ * scope would have written a role tuple into it. Silently stripping the field
+ * would be almost as bad — a caller who believes they scoped an assignment and
+ * silently got a tenant-wide one is worse off than one who got a 400.
+ *
+ * If scope-level assignment is ever needed it wants its own route under
+ * `/tenants/:tenantId/scopes/:scopeId/role-assignments`, deriving the node from
+ * the PATH after `getScopeRecord(actor, tenantId, scopeId)` returns — the K-3
+ * cross-check every other scope-addressed route here already performs.
+ */
+const tenantRoleAssignmentBody = z
+  .object({
+    principalId: principalIdSchema,
+    roleKey: roleKeySchema,
+  })
+  .strict();
+
+/** A new org under an addressed tenant (#1343) — `tenantId` comes from the path. */
+const tenantOrgBody = createOrgInput.omit({ tenantId: true });
 
 const sweepRunsQuery = z.object({
   kind: sweepRunKind.optional(),
@@ -4960,6 +4990,64 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Composite sort key (tenant_id, role_key) — the `|` join is the documented
     // cursor shape (scope-host.ts listRoles).
     return c.json(pageOf(entries, page.limit, (r) => `${r.tenantId}|${r.key}`));
+  });
+
+  // -- role ASSIGNMENTS, and orgs (#1343) ------------------------------------
+  //
+  // The line these sit on the far side of, and why. `defineRole` says what a role
+  // MEANS — a permission change, and the permission diff is a human checkpoint
+  // (D-22/D-29). It still gets no route, for the reason stated above the read.
+  // ASSIGNING an already-defined role is a different act: per-principal, runtime,
+  // and the same shape as the entity grants control-plane.md §4.5 already calls a
+  // runtime console concern rather than a checkpoint artifact. `unassignRole`'s own
+  // contract anticipates this caller — "decided above the kernel (e.g. the
+  // dashboard's manage-members check)".
+  //
+  // Service/staff only, absent from BUILDER_ROUTES: a builder must no more be able
+  // to assign itself a role than to write the directory that authenticates it.
+  // Fail-closed, same law as the identity mirror. TENANT-LEVEL only — see the
+  // body schema for why a scope cannot be named here.
+
+  app.post('/tenants/:tenantId/role-assignments', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const body = tenantRoleAssignmentBody.parse(await c.req.json());
+    // The whole node comes from the path. Pinning only the tenant would pin
+    // nothing — see the schema's note: a node carrying a scope is written to that
+    // scope's DO directly, with no tenant cross-check below.
+    await admin.assignRole(c.get('actor'), {
+      principalId: body.principalId,
+      roleKey: body.roleKey,
+      node: { tenantId, scopeId: null },
+    });
+    return c.body(null, 204);
+  });
+
+  app.delete('/tenants/:tenantId/role-assignments', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const body = tenantRoleAssignmentBody.parse(await c.req.json());
+    // Tombstones rather than deletes (K-21) and is idempotent — unassigning what
+    // was never assigned is a silent no-op, so a retry is safe. Node from the
+    // path, for the same reason as the assign above.
+    await admin.unassignRole(c.get('actor'), {
+      principalId: body.principalId,
+      roleKey: body.roleKey,
+      node: { tenantId, scopeId: null },
+    });
+    return c.body(null, 204);
+  });
+
+  // Orgs: the portal-customer grouping (§4.1). Creating one mints no permission —
+  // members reach what the org was GRANTED, and granting stays off this surface.
+  app.post('/tenants/:tenantId/orgs', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const body = tenantOrgBody.parse(await c.req.json());
+    await admin.createOrg(c.get('actor'), { ...body, tenantId });
+    return c.body(null, 201);
+  });
+
+  app.get('/tenants/:tenantId/orgs', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    return c.json(await admin.listOrgs(c.get('actor'), tenantId));
   });
 
   // -- the admin log (§4.4/§4.5) ---------------------------------------------

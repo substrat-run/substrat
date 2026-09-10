@@ -4129,6 +4129,85 @@ describe('control-plane API — builder authz', () => {
     expect(byConn[0]).toMatchObject({ outcome: 'failed', error: 'provider 500' });
   });
 
+  it('assigns and revokes an already-defined role, and refuses a builder (#1343)', async () => {
+    // The seam #1343 needs so the dashboard can stop keeping its own directory.
+    // Defining what a role MEANS is deliberately NOT here — that is a permission
+    // change and the permission diff is a human checkpoint; assigning an existing
+    // one is per-principal runtime state, the shape §4.5 already treats that way.
+    const principal = principalId.parse(ulid());
+    await host.admin.defineRole(staff, acme, {
+      key: 'member',
+      permissions: ['dashboard:read'],
+      source: 'vertical',
+    } as unknown as Parameters<typeof host.admin.defineRole>[2]);
+
+    expect(
+      (await staffReq(`/tenants/${acme}/role-assignments`, 'POST', { principalId: principal, roleKey: 'member' }))
+        .status,
+    ).toBe(204);
+
+    // Idempotent both ways: a retried assign and a revoke of nothing are no-ops,
+    // which is what makes the dashboard's at-least-once call sites safe.
+    expect(
+      (await staffReq(`/tenants/${acme}/role-assignments`, 'POST', { principalId: principal, roleKey: 'member' }))
+        .status,
+    ).toBe(204);
+    expect(
+      (await staffReq(`/tenants/${acme}/role-assignments`, 'DELETE', { principalId: principal, roleKey: 'member' }))
+        .status,
+    ).toBe(204);
+    expect(
+      (await staffReq(`/tenants/${acme}/role-assignments`, 'DELETE', { principalId: principal, roleKey: 'member' }))
+        .status,
+    ).toBe(204);
+
+    // A body naming a SCOPE is refused, not silently downgraded. `assignRole`
+    // addresses a scope DO directly when the node carries one — writeScopeTuple →
+    // scopeStub(scopeId), no tenant cross-check below — so accepting a body
+    // scopeId while pinning only the path's tenant would have written a role
+    // tuple into another tenant's scope. Stripping it would be nearly as bad: a
+    // caller who believes they scoped an assignment must not silently get a
+    // tenant-wide one.
+    expect(
+      (
+        await staffReq(`/tenants/${acme}/role-assignments`, 'POST', {
+          principalId: principal,
+          roleKey: 'member',
+          scopeId: ulid(),
+        })
+      ).status,
+    ).toBe(400);
+
+    // Service/staff only. A builder assigning itself a role is the same class of
+    // hole as a builder writing the directory that authenticates builders.
+    expect(
+      (await acmeReq(`/tenants/${acme}/role-assignments`, 'POST', { principalId: principal, roleKey: 'member' }))
+        .status,
+    ).toBe(403);
+    expect((await acmeReq(`/tenants/${acme}/orgs`)).status).toBe(403);
+  });
+
+  it('creates and lists orgs under the addressed tenant, never the body\u2019s (#1343)', async () => {
+    const orgId = ulid();
+    expect((await staffReq(`/tenants/${acme}/orgs`, 'POST', { id: orgId, slug: 'acme-portal', name: 'Portal' })).status).toBe(
+      201,
+    );
+    const orgs = (await (await staffReq(`/tenants/${acme}/orgs`)).json()) as Array<{ id: string; slug: string }>;
+    expect(orgs.map((o) => o.slug)).toContain('acme-portal');
+
+    // The tenant comes from the PATH: a body naming another tenant cannot smuggle
+    // an org into it (rule 1 — the actor and the address are never body-supplied).
+    const other2 = ulid();
+    await staffReq(`/tenants/${acme}/orgs`, 'POST', {
+      id: other2,
+      slug: 'smuggled',
+      name: 'Smuggled',
+      tenantId: other,
+    });
+    const theirs = (await (await staffReq(`/tenants/${other}/orgs`)).json()) as Array<{ slug: string }>;
+    expect(theirs.map((o) => o.slug)).not.toContain('smuggled');
+  });
+
   it('serves the issues read and lifecycle to staff, and refuses a builder (#1233)', async () => {
     // Two failures of one shape, one of another — grouped server-side at ingest.
     for (const message of ['provider said no', 'provider said no again']) {
