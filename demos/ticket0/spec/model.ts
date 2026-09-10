@@ -2447,11 +2447,18 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
      * No `conversationId`, and that is the point: opening the widget opens nothing.
      * The conversation exists from the first `widget-post`, and the widget reaches it
      * through the session token alone, so it never needed the id.
+     *
+     * `businessHours` is the desk's stored line, verbatim: free text a person typed
+     * in Settings, never parsed here and never parsed in the widget. Nothing in the
+     * desk decides anything by it — it exists so a visitor can read when somebody
+     * will be there, which is the question they are actually asking. `null` when the
+     * desk has not said, and the widget then says nothing rather than guessing.
      */
     output: z.object({
       sessionId: z.string(),
       token: z.string(),
       greeting: z.string(),
+      businessHours: z.string().nullable(),
       verified: z.boolean(),
       origin: z.string(),
       startedAt: z.string(),

@@ -3267,6 +3267,11 @@ const operations = {
       sessionId: id,
       token,
       greeting: settings.greeting,
+      // Verbatim, and nothing here reads it. The desk stores whatever a person typed
+      // in Settings — "Mon–Fri · 09:00–18:00 · Europe/Stockholm", or a sentence — so
+      // parsing it would be inventing a grammar nobody was offered. It travels to the
+      // widget as text and is displayed as text; `null` means the desk has not said.
+      businessHours: settings.business_hours,
       verified,
       origin: input.origin,
       startedAt: now,

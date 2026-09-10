@@ -799,7 +799,7 @@ export interface Ticket0Client {
    *
    * `POST /widget/sessions` — `ticket0/widget-start`
    */
-  widgetStart(input: { origin: string; client?: { userAgent: string | null; language: string | null; device: { browser: string | null; browserVersion: string | null; os: string | null; osVersion: string | null; kind: "desktop" | "mobile" | "tablet" | "bot" | "unknown" }; geo: { country: string | null; region: string | null; city: string | null; timezone: string | null; continent: string | null } }; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; greeting: string; verified: boolean; origin: string; startedAt: string }>;
+  widgetStart(input: { origin: string; client?: { userAgent: string | null; language: string | null; device: { browser: string | null; browserVersion: string | null; os: string | null; osVersion: string | null; kind: "desktop" | "mobile" | "tablet" | "bot" | "unknown" }; geo: { country: string | null; region: string | null; city: string | null; timezone: string | null; continent: string | null } }; identity?: { externalId: string; email?: string | null; displayName?: string | null; signature: string } | null }): Promise<{ sessionId: string; token: string; greeting: string; businessHours: string | null; verified: boolean; origin: string; startedAt: string }>;
 
   /**
    * The public messages in this session’s conversation

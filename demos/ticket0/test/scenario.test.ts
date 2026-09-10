@@ -1417,6 +1417,42 @@ describe('a stranger in a chat bubble', () => {
       await anna.invoke('ticket0/widget-session', { conversationId: mailed.conversation_id }),
     ).toEqual({ session: null });
   });
+
+  /**
+   * The desk's business hours reach the person who is deciding whether to type.
+   *
+   * They used to reach nobody: the column existed, Settings wrote it, and the only
+   * hours a visitor ever saw were `09:00–18:00 CET` hardcoded in `widget.js` — one
+   * desk's, shown by every desk, changeable by none. What travels now is the stored
+   * line verbatim; nothing here parses it, because it is free text and always was.
+   */
+  it('carries the desk’s business hours to the visitor, and says nothing when unset', async () => {
+    const admin = await at(world.substrat, 'admin');
+    const widget = await at(world.substrat, 'widget');
+
+    // The seeded desk has not said, and the honest answer is a null rather than a guess.
+    const unset = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+    })) as { businessHours: string | null };
+    expect(unset.businessHours).toBeNull();
+
+    // Free text, and deliberately not a schedule: a session opened after this reads
+    // back exactly what was typed, separator, timezone name and all.
+    const hours = 'Mon–Fri · 09:00–18:00 · Europe/Stockholm (closed 24 Dec)';
+    await admin.invoke('ticket0/configure-desk', { businessHours: hours });
+    const said = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+    })) as { businessHours: string | null };
+    expect(said.businessHours).toBe(hours);
+
+    // Clearing it goes back to silence — an empty desk must not leave the last line
+    // standing on the widget of a desk that has since stopped promising it.
+    await admin.invoke('ticket0/configure-desk', { businessHours: null });
+    const cleared = (await widget.invoke('ticket0/widget-start', {
+      origin: world.substrat.origin,
+    })) as { businessHours: string | null };
+    expect(cleared.businessHours).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

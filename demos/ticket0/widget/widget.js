@@ -161,6 +161,10 @@
     'align-self:flex-start;border-radius:10px 10px 10px 3px}' +
     '.me{background:var(--visitor);color:var(--visitor-t);align-self:flex-end;' +
     'border-radius:10px 10px 3px 10px}' +
+    // Quiet, and it wraps: the desk's hours are free text, and a sentence chopped to
+    // one line reads as a truncated promise. Aligned with the greeting it sits under.
+    '.hours{align-self:flex-start;max-width:84%;margin:-5px 0 0 3px;' +
+    'font:400 11px/1.5 Geist,sans-serif;color:var(--muted);overflow-wrap:anywhere}' +
     // Wraps rather than truncating: a documentation title chopped mid-word is an
     // orange smear, not a citation. UI font, not mono — mono is for ids and URLs, and
     // these are sentences.
@@ -461,7 +465,11 @@
       };
     // Anonymous says nothing. Explaining that a conversation lives in this browser is
     // a fact about our storage, not an answer to the question they arrived with.
-    return { verified: false, sub: 'Replies in a few minutes · 09:00–18:00 CET', foot: '' };
+    //
+    // This line used to end `· 09:00–18:00 CET`, hardcoded — every desk's widget
+    // promised one desk's hours, and no desk's Settings could change it. The real
+    // hours now sit under the greeting; here we only claim what is true everywhere.
+    return { verified: false, sub: 'Replies in a few minutes', foot: '' };
   }
 
   /**
@@ -576,6 +584,7 @@
       gaveUp,
       helpDone,
       session && session.greeting,
+      session && session.businessHours,
     ]);
     if (signature === drawn) return;
     drawn = signature;
@@ -589,6 +598,13 @@
     if (session && session.greeting && messages.length === 0) {
       body +=
         '<div class="by">Assistant</div><div class="m them">' + esc(session.greeting) + '</div>';
+      // The desk's own line, verbatim — free text a person typed in Settings, so it is
+      // escaped and never parsed. Absent when the desk has not said, which is the
+      // honest answer; an older session in localStorage has no field at all and reads
+      // the same way. It sits with the greeting because "when will somebody be here"
+      // is a question asked before typing, not after.
+      if (session.businessHours)
+        body += '<div class="hours">' + esc(session.businessHours) + '</div>';
     }
     messages.forEach(function (m) {
       var l = label(m);
