@@ -1101,6 +1101,38 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * Assign an already-DEFINED role to a principal in the shared directory (#1343).
+   * The node is pinned tenant-side by the route, so this cannot reach another
+   * tenant's node even if asked to. `scopeId` omitted = a tenant-level assignment,
+   * which is what a team membership is.
+   *
+   * Defining what a role MEANS stays off this seam deliberately — that is a
+   * permission change, and the permission diff is a human checkpoint (D-22/D-29).
+   */
+  assignRole(input: { principalId: PrincipalId; roleKey: string; scopeId?: ScopeId }): Promise<void> {
+    return this.post(`/tenants/${this.tenantId}/role-assignments`, input);
+  }
+
+  /** Revoke an assignment — tombstoned (K-21), idempotent, so a retry is safe. */
+  unassignRole(input: { principalId: PrincipalId; roleKey: string; scopeId?: ScopeId }): Promise<void> {
+    return this.call(`/tenants/${this.tenantId}/role-assignments`, {
+      method: 'DELETE',
+      body: JSON.stringify(input),
+      idempotent: true,
+    });
+  }
+
+  /** Create an org under this tenant — the portal-customer grouping (§4.1). */
+  createOrg(input: { id: string; slug: string; name: string }): Promise<void> {
+    return this.post(`/tenants/${this.tenantId}/orgs`, input);
+  }
+
+  /** The tenant's orgs, as the shared directory holds them. */
+  listOrgs(): Promise<Array<{ id: string; slug: string; name: string }>> {
+    return this.call(`/tenants/${this.tenantId}/orgs`);
+  }
+
+  /**
    * What the SHARED directory currently links for this tenant (#1343) — the read
    * half of a seam that only ever had a write half. Without it the mirror's
    * completeness was unknowable from the dashboard: it wrote and never looked,

@@ -33,6 +33,7 @@ import {
   queryScopeInput,
   readScopeTableInput,
   entityHistoryInput,
+  createOrgInput,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
   registerVerticalInput,
@@ -702,6 +703,20 @@ const issueStatusUpdate = z.object({
   fingerprint: z.string().min(1),
   status: issueStatusInput,
 });
+
+/**
+ * A role ASSIGNMENT under an addressed tenant (#1343). No `tenantId` in the body:
+ * the node is pinned from the path, so a payload cannot name another tenant's node.
+ * `scopeId` absent = a tenant-level assignment, which is what a team membership is.
+ */
+const tenantRoleAssignmentBody = z.object({
+  principalId: principalIdSchema,
+  roleKey: z.string().regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+  scopeId: scopeIdSchema.nullish(),
+});
+
+/** A new org under an addressed tenant (#1343) — `tenantId` comes from the path. */
+const tenantOrgBody = createOrgInput.omit({ tenantId: true });
 
 const sweepRunsQuery = z.object({
   kind: sweepRunKind.optional(),
@@ -4960,6 +4975,62 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // Composite sort key (tenant_id, role_key) — the `|` join is the documented
     // cursor shape (scope-host.ts listRoles).
     return c.json(pageOf(entries, page.limit, (r) => `${r.tenantId}|${r.key}`));
+  });
+
+  // -- role ASSIGNMENTS, and orgs (#1343) ------------------------------------
+  //
+  // The line these sit on the far side of, and why. `defineRole` says what a role
+  // MEANS — a permission change, and the permission diff is a human checkpoint
+  // (D-22/D-29). It still gets no route, for the reason stated above the read.
+  // ASSIGNING an already-defined role is a different act: per-principal, runtime,
+  // and the same shape as the entity grants control-plane.md §4.5 already calls a
+  // runtime console concern rather than a checkpoint artifact. `unassignRole`'s own
+  // contract anticipates this caller — "decided above the kernel (e.g. the
+  // dashboard's manage-members check)".
+  //
+  // Service/staff only, absent from BUILDER_ROUTES: a builder must no more be able
+  // to assign itself a role than to write the directory that authenticates it.
+  // Fail-closed, same law as the identity mirror.
+
+  app.post('/tenants/:tenantId/role-assignments', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const body = tenantRoleAssignmentBody.parse(await c.req.json());
+    // The node is pinned to the addressed tenant rather than read from the body:
+    // a payload naming another tenant's node would be a cross-tenant assignment
+    // dressed as a path-scoped one (K-3, and rule 1 above about bodies).
+    await admin.assignRole(c.get('actor'), {
+      principalId: body.principalId,
+      roleKey: body.roleKey,
+      node: { tenantId, scopeId: body.scopeId ?? null },
+    });
+    return c.body(null, 204);
+  });
+
+  app.delete('/tenants/:tenantId/role-assignments', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const body = tenantRoleAssignmentBody.parse(await c.req.json());
+    // Tombstones rather than deletes (K-21) and is idempotent — unassigning what
+    // was never assigned is a silent no-op, so a retry is safe.
+    await admin.unassignRole(c.get('actor'), {
+      principalId: body.principalId,
+      roleKey: body.roleKey,
+      node: { tenantId, scopeId: body.scopeId ?? null },
+    });
+    return c.body(null, 204);
+  });
+
+  // Orgs: the portal-customer grouping (§4.1). Creating one mints no permission —
+  // members reach what the org was GRANTED, and granting stays off this surface.
+  app.post('/tenants/:tenantId/orgs', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const body = tenantOrgBody.parse(await c.req.json());
+    await admin.createOrg(c.get('actor'), { ...body, tenantId });
+    return c.body(null, 201);
+  });
+
+  app.get('/tenants/:tenantId/orgs', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    return c.json(await admin.listOrgs(c.get('actor'), tenantId));
   });
 
   // -- the admin log (§4.4/§4.5) ---------------------------------------------
