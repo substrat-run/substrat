@@ -53,6 +53,11 @@ responsibility, stated here because nothing downstream can fix a wrong choice.
 ## Versioning
 
 Every event is emitted at `schemaVersion: 1`. Payload fields are **frozen once shipped**:
-additions are fine, renames/removals/retypes mean a `schemaVersion` bump with a dual-emit
-deprecation window — the platform-wide rule, restated because ledger events are exactly
-the kind downstream payroll and reporting consumers quietly grow to depend on.
+additions are fine, renames/removals/retypes mean a `schemaVersion` bump — the platform-wide
+rule, restated because ledger events are exactly the kind downstream payroll and reporting
+consumers quietly grow to depend on.
+
+A bump is a **replace, not a dual-emit**: consumer dispatch keys on the event type alone, so
+two versions in flight would deliver *both* to every consumer of that type. Read
+[the invoicing engine's `underlag-exported` v2 note](/engines/invoicing/events#versioning)
+before bumping anything here.

@@ -40,7 +40,12 @@ engine's events.
 ## Versioning
 
 Every event is emitted at `schemaVersion: 1`. Payload fields are **frozen once
-shipped**: additions are fine, renames/removals/retypes mean a `schemaVersion` bump with
-a dual-emit deprecation window — the platform-wide rule, restated because billing
-events are exactly the kind external consumers (a warehouse drain, a Stripe usage
-connector) quietly grow to depend on.
+shipped**: additions are fine, renames/removals/retypes mean a `schemaVersion` bump — the
+platform-wide rule, restated because billing events are exactly the kind external consumers
+(a warehouse drain, a Stripe usage connector) quietly grow to depend on.
+
+A bump is a **replace, not a dual-emit**: consumer dispatch keys on the event type alone, so
+two versions in flight would deliver *both* to every consumer of that type — on a billing
+event, the same usage counted twice. Read
+[the invoicing engine's `underlag-exported` v2 note](/engines/invoicing/events#versioning)
+before bumping anything here.
