@@ -10,6 +10,7 @@ import type {
   DeployManifest,
   DeclaredOperationOutput,
   EmittedModel,
+  IdentityLink,
   ListPage,
   OpsFailureEntry,
   SweepRunEntry,
@@ -1097,6 +1098,17 @@ export class TenantNarrowedControlPlane {
       body: JSON.stringify(input),
       idempotent: true,
     });
+  }
+
+  /**
+   * What the SHARED directory currently links for this tenant (#1343) — the read
+   * half of a seam that only ever had a write half. Without it the mirror's
+   * completeness was unknowable from the dashboard: it wrote and never looked,
+   * and its `catch` swallowed the failures. Retiring the local directory is a
+   * live-data move, and a move cannot be planned against a belief.
+   */
+  listIdentityLinks(): Promise<IdentityLink[]> {
+    return this.call(`/tenants/${this.tenantId}/identities`);
   }
 
   /** Sever the mirrored link (leave/remove/delete-team) — the inverse of `linkIdentity`. */
