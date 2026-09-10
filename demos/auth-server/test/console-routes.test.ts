@@ -4,8 +4,10 @@ import { describe, expect, it } from 'vitest';
 // `routes.ts` on purpose: the latter pulls in `@substrat-run/ui`, a bundler-resolved TSX package
 // this program cannot compile, and the routing that matters here is deliberately not in it.
 import {
+  BANKID_SETTINGS_PATH,
   applicationDetailId,
   detailTarget,
+  isBankIdSettingsPath,
   providerDetailId,
   userDetailId,
 } from '../app/src/console/paths.js';
@@ -37,6 +39,14 @@ describe('console routes', () => {
     expect(detailTarget('/providers/acme-sso')).toBe('/providers/acme-sso');
   });
 
+  it('keeps BankID’s configuration screen, which is a path rather than an id', () => {
+    // The one detail screen with nothing to identify — there is a single BankID configuration
+    // per issuer, no client id and no registered redirect URI. It is still the link an operator
+    // pastes, and still what a stale session's sign-in must not throw away.
+    expect(detailTarget('/bankid/settings')).toBe(BANKID_SETTINGS_PATH);
+    expect(isBankIdSettingsPath('/bankid/settings')).toBe(true);
+  });
+
   it('claims nothing about a path that is not a detail screen', () => {
     // A section path is `returnTarget`'s own business — the literal table it checks first. The
     // four OIDC hand-off paths are in neither: they are where the browser already is.
@@ -44,6 +54,9 @@ describe('console routes', () => {
       '/applications',
       '/users',
       '/providers',
+      // BankID's own section path included: it is in the table, so `detailTarget` must not
+      // claim it as well — the two halves of `returnTarget` answer for different paths.
+      '/bankid',
       '/login',
       '/signup',
       '/consent',
@@ -51,6 +64,7 @@ describe('console routes', () => {
       '/nope',
     ]) {
       expect(detailTarget(path)).toBeNull();
+      expect(isBankIdSettingsPath(path)).toBe(false);
     }
   });
 
@@ -68,6 +82,16 @@ describe('console routes', () => {
       '/providers//evil.example',
       '/providers/a%2f%2fevil.example',
       '/providers/a\\evil.example',
+      // BankID's segment is a literal, so anything that is not exactly it is not it — a tail,
+      // a doubled slash, a different case, or a query somebody put in a `pathname`.
+      '/bankid/settings/x',
+      '/bankid/settings/',
+      '/bankid//settings',
+      '/bankid/https://evil.example',
+      '/bankid/settings?next=https://evil.example',
+      '/BankID/settings',
+      '//bankid/settings',
+      '/bankid/settings#x',
     ]) {
       expect(detailTarget(hostile)).toBeNull();
     }
@@ -106,5 +130,15 @@ describe('console routes', () => {
     // A section path is not a detail path — `/applications` has no trailing id.
     expect(applicationDetailId('/applications')).toBeNull();
     expect(applicationDetailId('/applications/')).toBeNull();
+    // BankID crosses in both directions: its own path is nobody else's detail, and `bankid`
+    // read as an id belongs to whichever section it appears under.
+    expect(userDetailId('/bankid/settings')).toBeNull();
+    expect(applicationDetailId('/bankid/settings')).toBeNull();
+    expect(providerDetailId('/bankid/settings')).toBeNull();
+    expect(isBankIdSettingsPath('/providers/bankid')).toBe(false);
+    expect(isBankIdSettingsPath('/users/bankid')).toBe(false);
+    // `bankid` IS a legitimate provider id — it is a catalogue-shaped slug — and that screen
+    // is the providers one, not this one.
+    expect(providerDetailId('/providers/bankid')).toBe('bankid');
   });
 });

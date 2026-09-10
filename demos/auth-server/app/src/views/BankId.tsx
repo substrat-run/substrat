@@ -1,99 +1,95 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   bankidSettings,
-  removeBankid,
   saveBankidSettings,
   type BankIdSettings,
 } from '../api';
+import { navigate } from '../console/router';
+import { BANKID_SETTINGS_PATH } from '../console/routes';
 
 /* ---- BankID ---- */
 
 /**
+ * `/bankid` — whether this issuer offers Swedish e-ID sign-in, and on what terms.
+ *
  * BankID sits beside the OAuth providers but is configured on its own terms: an environment,
  * an mTLS client certificate, and one decision (may it create accounts). No redirect URI to
  * register and no client id — the issuer CALLS BankID, presenting the certificate.
+ *
+ * The status is here and the configuration is at `/bankid/settings`, the same split the other
+ * three sections got: the certificate form used to unfold under this table with no URL of its
+ * own, so an operator halfway through pasting a PEM lost it to a reload, and the screen could
+ * not be linked to in a support conversation. Three states, all of them stated: loading, no
+ * BankID configured, and one configured.
  */
 export function BankIdPanel() {
   const [settings, setSettings] = useState<BankIdSettings | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [editing, setEditing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setErr(null);
-    try {
-      setSettings(await bankidSettings());
-      setLoaded(true);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
-  }, []);
-
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    void (async () => {
+      try {
+        setSettings(await bankidSettings());
+        setLoaded(true);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    })();
+  }, []);
 
   return (
     <section className="panel">
       <div className="panel-head">
         <h2>BankID</h2>
-        {loaded && !settings && !editing && (
-          <button className="btn" onClick={() => setEditing(true)}>+ Enable BankID</button>
+        {/* A link, not a button that unfolds a form: enabling BankID and editing it are the
+            same screen, and that screen is a place. */}
+        {loaded && !settings && (
+          <BankIdSettingsLink className="btn">+ Enable BankID</BankIdSettingsLink>
         )}
       </div>
       {err && <p className="error">{err}</p>}
+      {/* A failed read is an error state, not a pending one — no "Loading…" underneath it
+          telling an operator to keep waiting for a request that already came back. */}
       {!loaded ? (
-        <p className="muted">Loading…</p>
+        !err && <p className="muted">Loading…</p>
       ) : (
         <>
           <p className="muted">
             Swedish e-ID sign-in. People approve in the BankID app — by scanning an animated QR
             code, or on the same device — and their verified personal number is the account key.
           </p>
-          {settings && (
-            <table className="grid">
-              <thead>
-                <tr><th>Environment</th><th>Certificate</th><th>Status</th><th></th></tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    {settings.environment === 'production' ? 'Production' : 'Test'}
-                    {settings.allowSignup && <span className="tag">creates accounts</span>}
-                  </td>
-                  <td>{settings.certSet ? 'stored' : '—'}{settings.caSet && <span className="tag">custom CA</span>}</td>
-                  <td>{settings.disabled ? 'Disabled' : 'Enabled'}</td>
-                  <td className="actions">
-                    <button className="btn tiny" onClick={() => setEditing(true)}>Edit</button>
-                    <button
-                      className="btn tiny danger"
-                      onClick={async () => {
-                        if (!window.confirm('Remove BankID? The stored certificate is deleted and the button leaves the login screen. Accounts people created with it remain.')) return;
-                        try {
-                          await removeBankid();
-                          setEditing(false);
-                          await reload();
-                        } catch (e) {
-                          setErr(e instanceof Error ? e.message : String(e));
-                        }
-                      }}
-                    >
-                      Remove
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          )}
-          {editing && (
-            <BankIdEditor
-              settings={settings}
-              onCancel={() => setEditing(false)}
-              onSaved={async () => {
-                setEditing(false);
-                await reload();
-              }}
-            />
+          {settings ? (
+            <>
+              <table className="grid">
+                <thead>
+                  <tr><th>Environment</th><th>Certificate</th><th>Status</th><th></th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      {settings.environment === 'production' ? 'Production' : 'Test'}
+                      {settings.allowSignup && <span className="tag">creates accounts</span>}
+                    </td>
+                    <td>{settings.certSet ? 'stored' : '—'}{settings.caSet && <span className="tag">custom CA</span>}</td>
+                    <td>{settings.disabled ? 'Disabled' : 'Enabled'}</td>
+                    <td className="actions">
+                      <BankIdSettingsLink className="btn tiny">Open</BankIdSettingsLink>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p className="muted small">
+                Open BankID to replace the certificate, switch environment, or remove it. Removing
+                it takes the button off the login screen; accounts people created with it remain.
+              </p>
+            </>
+          ) : (
+            <p className="muted small">
+              No certificate stored, so the login screen offers no BankID button. Enabling it
+              needs an mTLS certificate — the shared test one from the BankID developer portal,
+              or the one your bank issued to your organisation.
+            </p>
           )}
         </>
       )}
@@ -101,9 +97,38 @@ export function BankIdPanel() {
   );
 }
 
-function BankIdEditor({
-  settings, onCancel, onSaved,
-}: { settings: BankIdSettings | null; onCancel: () => void; onSaved: () => void | Promise<void> }) {
+/**
+ * A real anchor to `/bankid/settings`, not a click handler: the screen is a place, so it has to
+ * be copyable, middle-clickable and openable in a tab. The plain click stays same-document.
+ * Same shape as `ProviderLink` in `Providers.tsx`, and deliberately not shared with it — that
+ * one interpolates an id, this one has a constant path and nothing to interpolate.
+ */
+function BankIdSettingsLink({ className, children }: { className?: string; children: ReactNode }) {
+  return (
+    <a
+      href={BANKID_SETTINGS_PATH}
+      className={className}
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+        e.preventDefault();
+        navigate(BANKID_SETTINGS_PATH);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+/**
+ * The certificate, the environment, and the two decisions that come with them.
+ *
+ * Exported for `BankIdDetail.tsx`, which is the only screen that renders it — the same
+ * arrangement `ProviderEditor` has with `ProviderDetail.tsx`. It stays in this file because
+ * the read it is edited against (`bankidSettings`) is the one the status table above shows.
+ */
+export function BankIdEditor({
+  settings, onSaved,
+}: { settings: BankIdSettings | null; onSaved: () => void | Promise<void> }) {
   const [environment, setEnvironment] = useState<'test' | 'production'>(settings?.environment ?? 'test');
   const [cert, setCert] = useState('');
   const [key, setKey] = useState('');
@@ -130,6 +155,12 @@ function BankIdEditor({
         allowSignup,
         disabled,
       });
+      // Whatever was pasted is now stored, and the fields go back to meaning "keep it". Left
+      // as they were, a second Save would re-send a credential the operator can no longer see
+      // in full — and the labels beside them would be lying about what blank means.
+      setCert('');
+      setKey('');
+      setBusy(false);
       await onSaved();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
@@ -139,7 +170,6 @@ function BankIdEditor({
 
   return (
     <div className="editor">
-      <h3>{settings ? 'Edit BankID' : 'Enable BankID'}</h3>
       <label className="field">
         <span>Environment</span>
         <select value={environment} onChange={(e) => setEnvironment(e.target.value as 'test' | 'production')}>
@@ -191,7 +221,6 @@ function BankIdEditor({
         <button className="btn primary" disabled={busy} onClick={() => void save()}>
           {busy ? 'Saving…' : settings ? 'Save changes' : 'Enable'}
         </button>
-        <button className="btn" onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
