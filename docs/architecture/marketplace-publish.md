@@ -98,13 +98,13 @@ surface (§4).
 
 `installEntitlements` grants the **declared** set when there is one, else derives from the
 slug's bare last segment. That default is only right when the vertical follows the convention
-`manifest.entitlementKey === <bare slug>`. When they diverge — Egeryds ships slug `crm-eff`
-with `entitlementKey: 'egeryds'` — no derivation can bridge the gap, because **the manifest
+`manifest.entitlementKey === <bare slug>`. When they diverge — a vertical ships slug `crm-eff`
+with `entitlementKey: 'field-ops'` — no derivation can bridge the gap, because **the manifest
 never reaches the control plane**: `push` sends what the CLI reads from `package.json`, and
 the CP never evaluates module code. The vertical must therefore declare it:
 
 ```json
-{ "substrat": { "entitlements": ["egeryds", "absence"] } }
+{ "substrat": { "entitlements": ["field-ops", "absence"] } }
 ```
 
 The set is every key the install should grant — the vertical's own plus each composed

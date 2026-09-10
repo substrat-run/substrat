@@ -1072,12 +1072,12 @@ describe('control-plane API', () => {
   });
 
   it('diagnoses a lineage fork on the config-delivery 501 (#399)', async () => {
-    // The egeryds shape: a scope installed under one slug while every version was pushed
+    // The shape a hosted install hit: a scope installed under one slug while every version was pushed
     // under another (the push slug comes from package.json `name`), so no version resolves
     // and delivery 501s. The body must NAME the fork and the slug, not just say
     // "no deployment is bound" — that generic message cost a multi-hour hunt.
     const sF = scopeId.parse(ulid());
-    await host.provisionScope(staff, { tenantId: t1, scopeId: sF, vertical: 'egeryds-substrat' });
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sF, vertical: 'acme-substrat' });
     await host.admin.activateScope(staff, t1, sF);
     const res = await json(`/tenants/${t1}/scopes/${sF}/configure`, 'POST', {
       entries: [{ key: 'SUPABASE_URL', value: 'https://x.supabase.co' }],
@@ -1085,7 +1085,7 @@ describe('control-plane API', () => {
     expect(res.status).toBe(501);
     const { error } = (await res.json()) as { error: string };
     expect(error).toMatch(/lineage fork/i);
-    expect(error).toContain('egeryds-substrat');
+    expect(error).toContain('acme-substrat');
     expect(error).toMatch(/substrat\.slug/);
   });
 
@@ -1500,7 +1500,7 @@ describe('control-plane API', () => {
     // workflow retries `preview create` on a transient — and the retry used to match that row
     // by (kind, slug) alone and take the REUSE branch, which rebinds the version and the
     // hostname but never copies data. The PR then went green on a preview with an empty
-    // database. Observed live on egeryds/crm-eff PR #21: attempt 1 → `400: internal error`,
+    // database. Observed live on a hosted install: attempt 1 → `400: internal error`,
     // attempt 2 → `✓ preview 'pr-21' updated … against a fork of prod`, zero rows in it.
     const tR = tenantId.parse(ulid());
     await host.admin.createTenant(staff, { id: tR, slug: 'retry-co', name: 'Retry Co' });
@@ -3580,7 +3580,7 @@ describe('control-plane API — deploy', () => {
     // First push declares both surfaces — the registry carries them (K-26; the
     // dashboard's hostname-binding picker), like envSpec: metadata, never behavior.
     const surfaces = [
-      { name: 'app', label: 'Egeryds CRM' },
+      { name: 'app', label: 'Acme CRM' },
       { name: 'eka', label: 'EKA — ekonomernas avstämning' },
     ];
     const first = await push('surfy', form(manifest({ surfaces })));

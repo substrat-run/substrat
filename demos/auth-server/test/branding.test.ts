@@ -115,7 +115,7 @@ const THEME = {
   colorPrimary: '#0a6847',
   colorPrimaryForeground: '#ffffff',
   colorBackground: '#f6f1e9',
-  title: 'Egeryds Portal',
+  title: 'Acme Portal',
   logoUrl: 'https://cdn.example.com/logo.svg',
 };
 

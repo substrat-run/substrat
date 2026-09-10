@@ -321,8 +321,8 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
     expect(installEntitlements('acme/helpdesk', undefined, [])).toEqual(['helpdesk']);
     // A DECLARED set is authoritative and passes through untouched — that is the escape
     // hatch for a vertical whose entitlementKey diverges from its slug.
-    expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['egeryds', 'absence'])).toEqual([
-      'egeryds',
+    expect(installEntitlements('t-0wv2mwk4j5/crm-eff', ['acme', 'absence'])).toEqual([
+      'acme',
       'absence',
     ]);
     // Degenerate slugs never yield an empty key — an empty grant is the #443 failure.
@@ -1046,20 +1046,20 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
       node: acme,
       appScopeId,
       verticalSlug: 'meridian',
-      name: 'Egeryds',
+      name: 'Acme',
       appEntitlements: ['meridian', 'protocol'],
       appOwnerGrants: [HR_PERM.employeeManage] as PermissionKey[],
     });
     expect(app.status).toBe('active');
     // The clean hostname fronts the primary `app` surface, exactly as before.
-    expect(app.hostname).toBe('egeryds.global.substrat.run');
-    expect(await host.admin.resolveHostname('egeryds.global.substrat.run')).toMatchObject({
+    expect(app.hostname).toBe('acme.global.substrat.run');
+    expect(await host.admin.resolveHostname('acme.global.substrat.run')).toMatchObject({
       scopeId: appScopeId,
       surface: 'app',
     });
     // ...and the SECOND surface arrived with its own `<base>-<surface>` URL, live, on the
     // same scope — the previously-missing binding that left multi-surface apps single-URL.
-    expect(await host.admin.resolveHostname('egeryds-eka.global.substrat.run')).toMatchObject({
+    expect(await host.admin.resolveHostname('acme-eka.global.substrat.run')).toMatchObject({
       scopeId: appScopeId,
       surface: 'eka',
     });
@@ -1070,7 +1070,7 @@ describe('Dashboard — tenant-narrowed self-service provisioning', () => {
         .filter((h) => h.status === 'active' && h.canonical)
         .map((h) => `${h.surface}:${h.hostname}`)
         .sort(),
-    ).toEqual(['app:egeryds.global.substrat.run', 'eka:egeryds-eka.global.substrat.run']);
+    ).toEqual(['app:acme.global.substrat.run', 'eka:acme-eka.global.substrat.run']);
   });
 
   it('records a per-app audit trail — created + active on success, created + failed(reason) on failure', async () => {

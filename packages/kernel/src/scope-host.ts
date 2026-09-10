@@ -2398,8 +2398,8 @@ export interface HostAdmin {
    *
    * **Mints on first ask, idempotently.** Not a separate "create key" verb,
    * because the alternative is a fleet where connections made before this
-   * existed can never receive a sealed value: Egeryds' Scrive credential is
-   * years of real contracts old, and re-connecting it to acquire a keypair is
+   * existed can never receive a sealed value: a live Scrive credential in the
+   * fleet is years of real contracts old, and re-connecting it to acquire a keypair is
    * not a migration anyone should have to run. Asking is the back-fill.
    *
    * The private half is sealed under the host's `SecretBox` and stored beside
@@ -2842,7 +2842,7 @@ export function attachmentBlobKey(scopeId: string, attachmentId: string): string
  * adapter against its directory.
  *
  * It names BOTH sides (#691). The required key alone reads as "buy the SKU", which sent
- * the 2026-08-15 Egeryds lockout down the wrong path for half a day: the tenant held four
+ * the 2026-08-15 production lockout down the wrong path for half a day: the tenant held four
  * keys, just under a workspace-prefixed name the manifest could never match. Required-vs-held
  * IS the diagnosis, so the message that reports the denial should carry it — a key that is
  * *nearly* right (prefixed, misspelled, expired) is invisible until you can see both lists.

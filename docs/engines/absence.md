@@ -14,7 +14,7 @@ Status: **built** — the engine ships on npm
 > seeding vertical and the invariant surface, quoted throughout),
 > [master-plan.md §3](../master-plan.md) (engines are *extracted, not designed*), and
 > issue [#634](https://github.com/substrat-run/substrat/issues/634) (consumer #2:
-> Egeryds resource planning over the Rutt surface). The extraction template is
+> resource planning on a live route-planning surface). The extraction template is
 > `engine-protocol` out of Callout — including the one-time R5 data-handoff migration
 > (`demos/callout/src/migrations.ts`, `0003-protocols-to-engine`).
 >
@@ -60,7 +60,7 @@ subject: {
 ```
 
 - **Meridian** supplies `{ entityType: 'employee', entityId }` from `hr_employees`.
-- **Egeryds** supplies `{ entityType: 'resource', entityId }` from `vertical_resource` —
+- **The route-planning consumer** supplies `{ entityType: 'resource', entityId }` from `vertical_resource` —
   a *plannable unit, not an identity* (one human is two resources; some resources have
   no login). The resource stays the planning noun; the principal stays the human; the
   absence hangs on the ref the vertical hands the engine.
@@ -268,14 +268,17 @@ divergence #634 was filed to prevent. The Callout `0003-protocols-to-engine` pla
 4. The old `hr_absence_ledger`/`hr_leave_requests` tables are dropped in the same
    migration series once the scenario test passes against the engine.
 
-### Egeryds (the consumer that forced this)
+### Consumer #2 — the route-planning vertical (the consumer that forced this)
 
-Subject = `vertical_resource` ids (D-B). The planning slice is read-heavy —
-`availability` per resource over the route window, composed with the vertical's red-day
-calendar — plus one approval flow so a fältarbetare books leave in the same app they
-report work-order time (the §5.1 sentence, discharged). Their repo should record the
-customer module list (sick/vacation/VAB/red days) that triggered this, so the
-extraction's justifying consumer is on the record — it is currently only in #634.
+The second consumer is a live pushed vertical that plans routed field work; it is the
+reason this engine exists at all, rather than staying Meridian's `hr_*` tables. Subject =
+`vertical_resource` ids (D-B). The planning slice is read-heavy — `availability` per
+resource over the route window, composed with the vertical's red-day calendar — plus one
+approval flow so a field worker books leave in the same app they report work-order time
+(the §5.1 sentence, discharged). The leave-type module list that triggered the extraction
+(sick / vacation / VAB / red days) is on the record in
+[#634](https://github.com/substrat-run/substrat/issues/634), which is the only place it
+lives; anything more specific about that install belongs in its own repo, not this one.
 
 ## 8. Open questions
 

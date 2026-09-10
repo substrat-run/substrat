@@ -4638,7 +4638,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       );
     }
     // Mint under `<label>.<jurisdiction>.<baseDomain>`, exactly as provisioning does
-    // (provision.ts `bindDefaultHostname` → `egeryds.global.substrat.run`). A clean-room
+    // (provision.ts `bindDefaultHostname` → `acme.global.substrat.run`). A clean-room
     // preview scope is provisioned `global` by construction (see the caller), and the
     // wildcard DNS/cert lives on `*.global.substrat.run` — NOT the certless apex
     // `*.substrat.run`. `platformBaseDomains` lists every platform suffix for custom-hostname

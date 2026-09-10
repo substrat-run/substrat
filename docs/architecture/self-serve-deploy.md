@@ -206,7 +206,7 @@ written, and would never pass it again: declaring a store in version N+1 gave it
 and adoption was an ops step — "promote, then re-provision each pre-existing tenant once" — that
 someone had to remember, per tenant, for a need the code had already started depending on. They
 don't remember. The vertical then fails at first use, in production, arbitrarily long after the
-deploy that introduced it (the Egeryds attachment outage: contract signing renders the PDF and
+deploy that introduced it (the attachment outage a live install hit: contract signing renders the PDF and
 uploads it *before* the operation that freezes it, so a refusing `attachments()` meant no
 contract could be sent for signature at all).
 

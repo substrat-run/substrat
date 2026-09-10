@@ -4930,8 +4930,8 @@ export class CloudflareScopeHost implements ScopeHost {
    * The connection's CURRENT public sealing key, minted on first ask (#687).
    *
    * Mint-on-read rather than mint-only-at-connect, because the fleet already holds
-   * live connections older than this feature — Egeryds' Scrive credential carries
-   * years of real contracts, and "reconnect to acquire a keypair" is not a
+   * live connections older than this feature — a Scrive credential in the fleet
+   * carries years of real contracts, and "reconnect to acquire a keypair" is not a
    * migration anyone should have to run against production. Asking IS the
    * back-fill, and it is idempotent: the DO's insert loses silently against the
    * partial-unique index and re-reads the winner, so a race yields one key.

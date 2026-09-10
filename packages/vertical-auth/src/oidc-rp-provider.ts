@@ -38,7 +38,7 @@ export interface OidcRpConfig {
   /** Expected `aud` for PRESENTED bearer tokens (the API-client path), if the issuer sets one. */
   audience?: string;
   /**
-   * Share the login across every surface under this parent domain (`egeryds.se` covers
+   * Share the login across every surface under this parent domain (`acme.se` covers
    * `crm.` and `eka.` alike) — the session cookie is set with `Domain=…` instead of
    * host-only. Delivered per scope (`substrat:auth`), validated against the request host
    * where the cookie is set (cookie-domain.ts); invalid ⇒ host-only, never broken sign-in.

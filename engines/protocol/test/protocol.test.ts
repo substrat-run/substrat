@@ -438,7 +438,7 @@ describe('engine-protocol', () => {
           instanceId: inst.id,
           method: 'scrive',
           parties: [
-            { label: 'Egeryds', kind: 'principal', signatureKind: 'primary' },
+            { label: 'Acme', kind: 'principal', signatureKind: 'primary' },
             { label: 'Beställare', kind: 'external', contact: { email: 'kund@example.se' } },
           ],
         });

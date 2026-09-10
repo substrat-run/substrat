@@ -472,7 +472,7 @@ const { parties } = await scope.invoke('protocol/resolve-party-contacts', {
 
 but the caller differs by path, and that asymmetry is the open decision:
 
-- **Platform-run (hosted, Egeryds).** The drain calls `host.dispatchConnector` from the
+- **Platform-run (hosted).** The drain calls `host.dispatchConnector` from the
   control plane ([`platform-drain.ts:582-618`](../../packages/control-plane-api/src/platform-drain.ts#L582-L618)),
   outside any scope actor. Resolving here and handing the result to the handler is
   deadlock-free, and the CP already holds an authenticated channel into the vertical.
@@ -572,7 +572,7 @@ level. Neither combination is worse than the status quo, which is that nothing w
 
 **But "additive" is not "no risk", and four things are worth naming.**
 
-1. **A live migration on production data.** Egeryds is running real contracts. `0004` is a
+1. **A live migration on production data.** A hosted install is running real contracts. `0004` is a
    schema change against that, and it is a human checkpoint for a reason.
 
 2. **A deploy-order dependency.** The connection's public key must be projected into the

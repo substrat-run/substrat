@@ -281,7 +281,7 @@ describe('reconcilePendingHostnames', () => {
     const admin = adminOver(
       [
         binding({ hostname: 'crm-h0qds9.global.substrat.run', status: 'active', customHostnameId: null, scopeId: 'dead' as HostnameBinding['scopeId'] }),
-        binding({ hostname: 'crm.egeryds.se', status: 'verifying', customHostnameId: 'ch_dead', scopeId: 'dead' as HostnameBinding['scopeId'] }),
+        binding({ hostname: 'crm.acme.se', status: 'verifying', customHostnameId: 'ch_dead', scopeId: 'dead' as HostnameBinding['scopeId'] }),
         binding({ hostname: 'live-app.global.substrat.run', status: 'active', customHostnameId: null }),
       ],
       {
@@ -311,7 +311,7 @@ describe('reconcilePendingHostnames', () => {
     });
     expect(out).toMatchObject({ orphaned: 2, healed: 0, polled: 0, created: 0 });
     // Both dead-scope rows go — whatever their status — and the CF object is released first.
-    expect(unbound.sort()).toEqual(['crm-h0qds9.global.substrat.run', 'crm.egeryds.se']);
+    expect(unbound.sort()).toEqual(['crm-h0qds9.global.substrat.run', 'crm.acme.se']);
     expect(removed).toEqual(['ch_dead']);
     // The live scope's active row is untouched; nothing was polled or re-issued.
     expect(issuanceWrites).not.toHaveBeenCalled();

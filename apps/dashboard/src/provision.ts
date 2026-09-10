@@ -1116,7 +1116,7 @@ async function provisionOnSharedPlane(
       // stranded the dashboard's record — a null column — while the app ran fine).
       await cp.setHostnameStatus(hostname, 'active').catch(() => {});
       // Bind the remaining surfaces off the SAME base that won the collision ladder, so they
-      // share the app's chosen label (`egeryds` → `egeryds-eka`).
+      // share the app's chosen label (`acme` → `acme-eka`).
       await bindDeclaredSurfaces({
         base: label,
         suffix: `global.${domain}`,
@@ -1266,7 +1266,7 @@ export async function reconcileSurfaceHostnames(
     node: DashboardNode;
     appScopeId: ScopeId;
     verticalSlug: string;
-    /** The app's default hostname (`egeryds.global.substrat.run`) — the base for surface mints. */
+    /** The app's default hostname (`acme.global.substrat.run`) — the base for surface mints. */
     appHostname: string | null;
     controlPlane?: TenantNarrowedControlPlane;
   },

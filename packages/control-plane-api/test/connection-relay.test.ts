@@ -34,8 +34,8 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
       dir,
       secretBox: webCryptoSecretBox('k1', new Uint8Array(32).fill(7)),
     });
-    await host.admin.createTenant(staff, { id: t1, slug: 'egeryds', name: 'Egeryds' });
-    await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'egeryds-crm' });
+    await host.admin.createTenant(staff, { id: t1, slug: 'acme', name: 'Acme' });
+    await host.provisionScope(staff, { tenantId: t1, scopeId: s1, vertical: 'acme-crm' });
     await host.provisionScope(staff, { tenantId: t1, scopeId: bare });
     await host.admin.createTenant(staff, { id: t2, slug: 'other', name: 'Other' });
     await host.provisionScope(staff, { tenantId: t2, scopeId: s2, vertical: 'other-vert' });
@@ -50,7 +50,7 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     tenantId: t1,
     scopeId: s1,
     provider: 'scrive',
-    label: 'Egeryds Scrive (prod)',
+    label: 'Acme Scrive (prod)',
     secret: { apiToken: 'oauth1-token-SECRET', apiSecret: 'oauth1-secret-SECRET' },
     grants: ['protocol:record-signature'],
     createdBy: admin,
@@ -66,8 +66,8 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     expect(conn).toMatchObject({
       id: result.connectionId,
       // Re-derived from the scope record — the request never named it.
-      vertical: 'egeryds-crm',
-      label: 'Egeryds Scrive (prod)',
+      vertical: 'acme-crm',
+      label: 'Acme Scrive (prod)',
       status: 'active',
       // §3.5.1 — the tenant admin who authorized the connect, never the platform actor.
       createdBy: admin,
@@ -149,7 +149,7 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     expect(grants.length).toBeGreaterThan(0);
     for (const g of grants) {
       expect(g.tenantId).toBe(t1);
-      expect(g.vertical).toBe('egeryds-crm');
+      expect(g.vertical).toBe('acme-crm');
     }
   });
   // -- the connect-time gate (#605) -----------------------------------------
@@ -181,9 +181,9 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     const tR = tenantId.parse(ulid());
     const sR = scopeId.parse(ulid());
     await host.admin.createTenant(staff, { id: tR, slug: 'rotate', name: 'Rotate' });
-    await host.provisionScope(staff, { tenantId: tR, scopeId: sR, vertical: 'egeryds-crm' });
+    await host.provisionScope(staff, { tenantId: tR, scopeId: sR, vertical: 'acme-crm' });
     const created = await relayConnectionUpsert(host, relayActor, request({ tenantId: tR, scopeId: sR }));
-    const before = await host.admin.openConnection(tR, 'egeryds-crm', 'scrive');
+    const before = await host.admin.openConnection(tR, 'acme-crm', 'scrive');
 
     await expect(
       relayConnectionUpsert(
@@ -205,7 +205,7 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
 
     // Writing first would have replaced a working credential with a broken one — the
     // reason the probe runs BEFORE the store, not after.
-    const after = await host.admin.openConnection(tR, 'egeryds-crm', 'scrive');
+    const after = await host.admin.openConnection(tR, 'acme-crm', 'scrive');
     expect(after?.secret).toEqual(before?.secret);
     expect(after?.id).toBe(created.connectionId);
   });
@@ -214,7 +214,7 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     const t3 = tenantId.parse(ulid());
     const s3 = scopeId.parse(ulid());
     await host.admin.createTenant(staff, { id: t3, slug: 'outage', name: 'Outage' });
-    await host.provisionScope(staff, { tenantId: t3, scopeId: s3, vertical: 'egeryds-crm' });
+    await host.provisionScope(staff, { tenantId: t3, scopeId: s3, vertical: 'acme-crm' });
 
     const result = await relayConnectionUpsert(host, relayActor, request({ tenantId: t3, scopeId: s3 }), {
       // A timeout says nothing about the credential. Rejecting here would make a provider
@@ -241,20 +241,20 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     const t4 = tenantId.parse(ulid());
     const s4 = scopeId.parse(ulid());
     await host.admin.createTenant(staff, { id: t4, slug: 'verified', name: 'Verified' });
-    await host.provisionScope(staff, { tenantId: t4, scopeId: s4, vertical: 'egeryds-crm' });
+    await host.provisionScope(staff, { tenantId: t4, scopeId: s4, vertical: 'acme-crm' });
 
     const result = await relayConnectionUpsert(host, relayActor, request({ tenantId: t4, scopeId: s4 }), {
       probeCandidate: async () => ({
         ok: true,
         refused: false,
         accountRef: '30338661',
-        accountLabel: 'Egeryds AB',
+        accountLabel: 'Acme AB',
         facts: [],
         error: null,
       }),
     });
 
-    expect(result.probe?.accountLabel).toBe('Egeryds AB');
+    expect(result.probe?.accountLabel).toBe('Acme AB');
     const [row] = await host.admin.listConnections(staff, { tenantId: t4, provider: 'scrive' });
     // A real successful call happened with this credential moments before the row existed.
     expect(row?.lastOkAt).not.toBeNull();
@@ -271,7 +271,7 @@ describe('relayConnectionUpsert — /internal/connections/upsert logic', () => {
     const tn = tenantId.parse(ulid());
     const sn = scopeId.parse(ulid());
     await noBox.admin.createTenant(staff, { id: tn, slug: 'nobox', name: 'No box' });
-    await noBox.provisionScope(staff, { tenantId: tn, scopeId: sn, vertical: 'egeryds-crm' });
+    await noBox.provisionScope(staff, { tenantId: tn, scopeId: sn, vertical: 'acme-crm' });
 
     let probed = false;
     const err = await relayConnectionUpsert(

@@ -7,25 +7,25 @@ import { resolveCookieDomain } from '../src/cookie-domain.js';
  * to a cookie broader than the configured parent.
  */
 describe('resolveCookieDomain', () => {
-  const HOST = 'crm.egeryds.se';
+  const HOST = 'crm.acme.se';
 
   it('accepts the parent domain of the request host (the multi-surface case)', () => {
-    expect(resolveCookieDomain('egeryds.se', HOST)).toBe('egeryds.se');
-    expect(resolveCookieDomain('egeryds.se', 'eka.egeryds.se')).toBe('egeryds.se');
+    expect(resolveCookieDomain('acme.se', HOST)).toBe('acme.se');
+    expect(resolveCookieDomain('acme.se', 'eka.acme.se')).toBe('acme.se');
   });
 
   it('accepts the host itself (an apex serving its own surface)', () => {
-    expect(resolveCookieDomain('egeryds.se', 'egeryds.se')).toBe('egeryds.se');
+    expect(resolveCookieDomain('acme.se', 'acme.se')).toBe('acme.se');
   });
 
   it('normalizes a leading dot and case (both appear in hand-typed configs)', () => {
-    expect(resolveCookieDomain('.Egeryds.SE', HOST)).toBe('egeryds.se');
+    expect(resolveCookieDomain('.Acme.SE', HOST)).toBe('acme.se');
   });
 
   it('rejects a domain the host is not under — a cookie the browser would drop anyway', () => {
     expect(resolveCookieDomain('other.se', HOST)).toBeNull();
-    // A partial-label match is NOT a suffix: `rydes.se` must not cover `egeryds.se`.
-    expect(resolveCookieDomain('ryds.se', HOST)).toBeNull();
+    // A partial-label match is NOT a suffix: `me.se` must not cover `acme.se`.
+    expect(resolveCookieDomain('me.se', HOST)).toBeNull();
   });
 
   it('rejects a bare TLD — never a session boundary', () => {

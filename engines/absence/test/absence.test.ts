@@ -21,8 +21,8 @@ import {
  * The absence engine, tested directly.
  *
  * Subjects are OPAQUE: the harness hands the engine refs it can never
- * dereference — an 'employee' (Meridian's noun) and a 'resource' (Egeryds'
- * plannable unit) — and the ledger must never conflate them.
+ * dereference — an 'employee' (Meridian's noun) and a 'resource' (a scheduling
+ * vertical's plannable unit) — and the ledger must never conflate them.
  */
 
 /** ULID-shaped DataSubjectId (Crockford base32 — no I, L, O, U). */
