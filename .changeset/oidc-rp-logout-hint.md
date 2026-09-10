@@ -18,6 +18,13 @@ straight through. It rides its own cookie scoped to the logout path rather than
 a claim in the session, so it travels on one request in the session's life
 instead of every one.
 
+Two limits the hint deliberately carries. Its cookie is `SameSite=Strict`, so a
+cross-site navigation to the logout link cannot present it — that case still
+meets the OP's confirmation page, which is what stands between a hostile link
+and a forced sign-out. And it is never put on a plaintext redirect: an issuer
+advertising an `http:` end-session endpoint gets the redirect without the hint,
+loopback excepted so a local dev issuer keeps working.
+
 Nothing changes for an issuer that advertises no `end_session_endpoint`, or for
 a plain (non-federated) logout. A session minted before this version carries no
 hint and still sees the confirmation page — correctly, since there is nothing to

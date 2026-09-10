@@ -24,8 +24,11 @@ let env: OidcEnv;
 
 let privateKey: CryptoKey;
 let jwks: { keys: object[] };
-/** Whether this test's issuer advertises RP-initiated logout at all. */
-let advertiseEndSession: boolean;
+/**
+ * What this test's issuer advertises as its `end_session_endpoint` — `null` for an issuer
+ * that offers RP-initiated logout at all, and a URL of any scheme for the ones that do.
+ */
+let endSessionEndpoint: string | null;
 
 beforeAll(async () => {
   const pair = await generateKeyPair('RS256');
@@ -43,7 +46,7 @@ beforeEach(() => {
     OIDC_CLIENT_SECRET: 'client-secret-1',
     SESSION_SECRET: 'session-secret-000000000000000000000001',
   };
-  advertiseEndSession = true;
+  endSessionEndpoint = `${ISSUER}/api/auth/oauth2/end-session`;
 
   vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
@@ -53,9 +56,7 @@ beforeEach(() => {
         authorization_endpoint: `${ISSUER}/authorize`,
         token_endpoint: `${ISSUER}/token`,
         jwks_uri: `${ISSUER}/jwks`,
-        ...(advertiseEndSession
-          ? { end_session_endpoint: `${ISSUER}/api/auth/oauth2/end-session` }
-          : {}),
+        ...(endSessionEndpoint ? { end_session_endpoint: endSessionEndpoint } : {}),
       });
     }
     if (url === `${ISSUER}/jwks`) return Response.json(jwks);
@@ -183,8 +184,15 @@ describe('federated logout', () => {
     const header = setCookieFor(back, LOGOUT_HINT_COOKIE)!;
     expect(header).toContain('Path=/api/auth/logout');
     expect(header).toContain('HttpOnly');
-    // The session cookie is the one that must reach every route; the hint must not.
-    expect(setCookieFor(back, SESSION_COOKIE)).toContain('Path=/');
+    // Strict, not Lax: a Lax cookie IS sent on a top-level cross-site GET, which is
+    // exactly the navigation a hostile page would use to skip the OP's confirmation.
+    // Enforcement is the browser's; the attribute is what this can assert.
+    expect(header).toContain('SameSite=Strict');
+    // The session cookie is the one that must reach every route, and it stays Lax —
+    // the login callback is a cross-site navigation back from the issuer.
+    const session = setCookieFor(back, SESSION_COOKIE)!;
+    expect(session).toContain('Path=/');
+    expect(session).toContain('SameSite=Lax');
   });
 
   it('clears the hint on the way out, on the path it was set with', async () => {
@@ -223,7 +231,7 @@ describe('federated logout', () => {
   });
 
   it('stays local when the issuer advertises no end-session endpoint', async () => {
-    advertiseEndSession = false;
+    endSessionEndpoint = null;
     const a = app();
     const jar = await signIn(a);
 
@@ -234,6 +242,41 @@ describe('federated logout', () => {
     );
 
     expect(res.headers.get('location')).toBe('/bye');
+  });
+
+  it('withholds the hint from a plaintext end-session endpoint, but still signs out', async () => {
+    endSessionEndpoint = 'http://logout.test/end-session';
+    const a = app();
+    const jar = await signIn(a);
+
+    const res = await a.request(
+      `${APP}/api/auth/logout?federated`,
+      { headers: { cookie: `${LOGOUT_HINT_COOKIE}=${jar.get(LOGOUT_HINT_COOKIE)}` } },
+      env,
+    );
+
+    // The redirect still happens — it carries no secret, and the person is signed out
+    // either way. What must not travel over plaintext is the signed assertion about who
+    // they are, in a URL that also lands in history and `Referer`.
+    const to = new URL(res.headers.get('location')!);
+    expect(to.origin + to.pathname).toBe('http://logout.test/end-session');
+    expect(to.searchParams.has('id_token_hint')).toBe(false);
+    expect(to.searchParams.get('client_id')).toBe('client-1');
+  });
+
+  it('still sends the hint to a loopback endpoint — the dev issuer', async () => {
+    endSessionEndpoint = 'http://localhost:8879/logout';
+    const a = app();
+    const jar = await signIn(a);
+
+    const res = await a.request(
+      `${APP}/api/auth/logout?federated`,
+      { headers: { cookie: `${LOGOUT_HINT_COOKIE}=${jar.get(LOGOUT_HINT_COOKIE)}` } },
+      env,
+    );
+
+    const to = new URL(res.headers.get('location')!);
+    expect(to.searchParams.get('id_token_hint')).toBe(jar.get(LOGOUT_HINT_COOKIE));
   });
 
   it('does not reach the issuer without ?federated', async () => {
