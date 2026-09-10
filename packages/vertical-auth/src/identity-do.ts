@@ -361,7 +361,15 @@ export class IdentityDO extends DurableObject<IdentityDoEnv> {
     if (url.pathname === '/__session') {
       const session = await auth.api.getSession({ headers: request.headers });
       const subject: AuthSubject | null = session?.user
-        ? { sub: session.user.id, email: session.user.email ?? null, name: session.user.name ?? null }
+        ? {
+            sub: session.user.id,
+            email: session.user.email ?? null,
+            name: session.user.name ?? null,
+            // Better Auth owns the address here — it is the thing that sent the
+            // verification mail — so unlike an OIDC issuer's optional claim, this one is
+            // always an assertion, never silence.
+            emailVerified: session.user.emailVerified,
+          }
         : null;
       return Response.json(subject);
     }

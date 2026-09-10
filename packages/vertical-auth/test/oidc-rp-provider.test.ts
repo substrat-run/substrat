@@ -149,6 +149,36 @@ describe('oidcRpAuthProvider', () => {
     expect(subject).toBeNull();
   });
 
+  /**
+   * `email_verified` reaches `AuthSubject` unchanged, absence included (#1359).
+   *
+   * An invite is addressed to a person by address, and this field is what a gate on that
+   * would eventually read — so what matters is that the provider transports the issuer's
+   * three states rather than flattening them. Nothing here decides anything: `false` and
+   * "the issuer said nothing" arrive distinguishable, and stay that way.
+   */
+  for (const [label, emailVerified] of [
+    ['asserted true', true],
+    ['asserted false', false],
+    // A session minted before the field existed is byte-identical to this one, so this is
+    // also the seven-day rollout window every live session is in.
+    ['not asserted at all', undefined],
+  ] as const) {
+    it(`resolve surfaces email_verified ${label}`, async () => {
+      const session = await mintSession(
+        { OIDC_ISSUER: ISSUER, OIDC_CLIENT_ID: cfg.clientId, OIDC_CLIENT_SECRET: cfg.clientSecret, SESSION_SECRET: cfg.sessionSecret },
+        { id: 'user-77', email: 'pat@acme.test', name: 'Pat', emailVerified },
+      );
+      const subject = await oidcRpAuthProvider(cfg).resolve(
+        new Headers({ cookie: `${SESSION_COOKIE}=${encodeURIComponent(session)}` }),
+      );
+      expect(subject?.emailVerified).toBe(emailVerified);
+      // The address is unaffected either way — an unverified address is still a valid
+      // authentication, it is only not proof of being someone by address.
+      expect(subject?.email).toBe('pat@acme.test');
+    });
+  }
+
   it('logout clears the session cookie and honors a same-origin returnTo only', async () => {
     const provider = oidcRpAuthProvider(cfg);
     const out = await provider.handle(new Request(`${APP}/api/auth/logout?returnTo=/bye`));

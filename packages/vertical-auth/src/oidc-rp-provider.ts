@@ -157,7 +157,16 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
 
   async function resolve(headers: Headers): Promise<AuthSubject | null> {
     const session = await verifySession(env, readCookie(headers.get('cookie'), SESSION_COOKIE));
-    if (session) return { sub: session.id, email: session.email ?? null, name: session.name ?? null };
+    if (session) {
+      return {
+        sub: session.id,
+        email: session.email ?? null,
+        name: session.name ?? null,
+        // Passed through as-is, `undefined` included: the session says what the issuer
+        // said, and an absent claim is a fact about the issuer, not a missing value.
+        emailVerified: session.emailVerified,
+      };
+    }
     // No cookie session — an API client presenting the issuer's own token directly.
     return bearerVerifier(cfg).resolve(headers);
   }
