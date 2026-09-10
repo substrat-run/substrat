@@ -23,6 +23,7 @@ import {
   modelFor,
   platformModel,
   recordAssistantFailure,
+  priorMessages,
   searchQueriesOf,
   spreadAcrossDocuments,
   wantsHuman,
@@ -1924,5 +1925,169 @@ describe('the ladder a follow-up climbs', () => {
     // already ran.
     const ladder = searchQueriesOf('What about release notes?', 'How is a release cut?');
     expect(ladder).not.toContain('releas releas');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the transcript STOPS.
+ *
+ * The safety argument for history has two halves. The first — public messages only,
+ * never an agent's internal note — is exercised against a real desk above. This is the
+ * second: nothing at or after the message being answered, which is a claim about
+ * chronology and so is provable only where the chronology can be arranged. Hence a
+ * scripted message list rather than a live conversation: 120 messages with the answered
+ * one anywhere in them is a fixture here and a minute of seeding there.
+ */
+describe('the conversation so far ends at the message being answered', () => {
+  /** Newest first, as `order: 'desc'` returns them. `m0` is the newest. */
+  const conversation = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `m${i}`,
+      author_kind: i % 2 === 0 ? ('contact' as const) : ('agent' as const),
+      visibility: 'public' as const,
+      body_text: `message ${i}`,
+      created_at: `2026-09-10T00:${String(count - i).padStart(2, '0')}:00.000Z`,
+    }));
+
+  /** A desk whose message list pages exactly as `ctx.page` does: cursor exclusive. */
+  const paging = (rows: ReturnType<typeof conversation>) => {
+    const reads: (string | undefined)[] = [];
+    return {
+      reads,
+      invoke: (async (op: string, input: { limit: number; cursor?: string }) => {
+        if (op !== 'ticket0/list-messages') throw new Error(`unexpected ${op}`);
+        reads.push(input.cursor);
+        const from = input.cursor ? rows.findIndex((r) => r.id === input.cursor) + 1 : 0;
+        const entries = rows.slice(from, from + input.limit);
+        const last = from + input.limit;
+        return { entries, nextCursor: last < rows.length ? (entries.at(-1)?.id ?? null) : null };
+      }) as <T>(op: string, input: unknown) => Promise<T>,
+    };
+  };
+
+  it('reads the messages below it, and none of the ones above', async () => {
+    // Answering m2 with m1 and m0 sitting above it — a customer who sent two more
+    // messages while the turn was being taken. Those are the next questions, not
+    // context for this one.
+    const desk = paging(conversation(12));
+    const history = await priorMessages(desk, 'c1', 'm2');
+
+    expect(history.map((m) => m.text)).toEqual([
+      'message 10',
+      'message 9',
+      'message 8',
+      'message 7',
+      'message 6',
+      'message 5',
+      'message 4',
+      'message 3',
+    ]);
+    expect(history.map((m) => m.text)).not.toContain('message 2');
+    expect(history.map((m) => m.text)).not.toContain('message 1');
+    expect(history.map((m) => m.text)).not.toContain('message 0');
+  });
+
+  it('follows the walk onto the next page rather than losing the context there', async () => {
+    // The answered message is the last row of the first page, so every word of its
+    // conversation is on the second one. Nothing about the guarantee says the history
+    // has to be cheap — it says it has to be older.
+    const desk = paging(conversation(60));
+    const history = await priorMessages(desk, 'c1', 'm29');
+
+    expect(history).toHaveLength(8);
+    expect(history.at(-1)?.text).toBe('message 30');
+    expect(desk.reads).toHaveLength(2);
+  });
+
+  /**
+   * The finding this test was written for.
+   *
+   * A message that is not on the page read is not thereby OLD. On a newest-first walk
+   * it is the other way round: every row read was newer than it, so treating the page
+   * as "the conversation so far" feeds later customer messages and the desk's own later
+   * replies into a turn about an earlier one — and the desk then quotes the future back
+   * at the customer. Chronology unknown is answered with no history, not with a guess.
+   */
+  it('carries no history at all when the message cannot be found', async () => {
+    // Far enough down that the bounded walk gives up before reaching it: a burst of
+    // traffic, or a turn retried long after the message arrived.
+    const desk = paging(conversation(200));
+    const history = await priorMessages(desk, 'c1', 'm150');
+
+    expect(history).toEqual([]);
+    // And it gave up rather than walking a conversation of any length.
+    expect(desk.reads).toHaveLength(3);
+  });
+
+  it('carries no history when the message was erased from the list', async () => {
+    const desk = paging(conversation(10));
+    expect(await priorMessages(desk, 'c1', 'gone')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('what a first message pays for', () => {
+  /** A host that answers blandly and keeps every system string it was handed. */
+  const listening = () => {
+    const systems: (string | undefined)[] = [];
+    const mock = new MockLanguageModelV3({
+      doGenerate: async (options: { prompt: { role: string; content: unknown }[] }) => {
+        const system = options.prompt.find((m) => m.role === 'system');
+        systems.push(typeof system?.content === 'string' ? system.content : undefined);
+        return {
+          content: [{ type: 'text', text: 'A shipped migration is never edited.' }],
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: {
+            inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 5, text: 5, reasoning: undefined },
+          },
+          warnings: [],
+        } as never;
+      },
+    });
+    const host = createModelHost({
+      env: { ANTHROPIC_API_KEY: 'k' },
+      factories: { anthropic: () => () => mock as never },
+      sent: 'Customer messages and the knowledge-base excerpts they match',
+    });
+    return { systems, host };
+  };
+
+  const excerpt: RetrievedArticle = {
+    id: 'a1',
+    title: 'Migrations',
+    url: 'https://docs.example/migrations',
+    body: 'Append a new migration; a shipped one is never edited.',
+  };
+  const earlier: PriorMessage[] = [{ role: 'customer', text: 'Is there a changelog?' }];
+
+  /**
+   * The system string is metered like every other token of input, so instructions
+   * about a conversation that is not there are a bill for being told to ignore
+   * something. A conversation costs what it carries; a first message costs what it
+   * always did.
+   */
+  it('says nothing about a conversation until there is one', async () => {
+    const { systems, host } = listening();
+    const model = platformModel(host, 'anthropic:claude-sonnet-5', attributionFor(world.substrat));
+
+    await model.answer({ question: 'Can I edit a shipped migration?', context: [excerpt], history: [] });
+    await model.answer({
+      question: 'And last week?',
+      context: [excerpt],
+      history: earlier,
+    });
+
+    const [first, following] = systems;
+    expect(first).toBeDefined();
+    expect(first?.toLowerCase()).not.toContain('conversation');
+    // What it does say is unchanged, and the conversation instructions are added to it
+    // rather than woven through — so the two turns cannot drift apart.
+    expect(following?.startsWith(first!)).toBe(true);
+    expect(following).toContain('never a source of facts about the product');
+    expect(following!.length).toBeGreaterThan(first!.length);
   });
 });

@@ -77,14 +77,29 @@ const SYSTEM = [
   'Answer directly, in your own words.',
   'Never open with "According to the documentation", "Based on the excerpts", "The docs say"',
   'or any similar preamble — begin with the answer itself.',
-  // Without these two the model is handed a transcript and no instruction about what it
-  // is for, and the failure that invites is the expensive one: treating something a
-  // customer asserted earlier in the conversation as a fact about the product.
-  'When a conversation so far is shown, read the final message in its light — a short',
-  'follow-up such as "and last week?" continues the topic immediately above it.',
+].join(' ');
+
+// Said only when there IS a transcript, and appended rather than folded into SYSTEM for
+// a reason that is about the bill and not about tidiness: the host meters the provider's
+// whole input, `system` included, so instructions about a conversation that is not there
+// are tokens a first message pays for to be told to ignore something. A first turn sends
+// the string above, byte for byte, and costs what it did before any of this.
+//
+// Without these the model is handed a transcript and no instruction about what it is
+// for, and the failure that invites is the expensive one: treating something a customer
+// asserted earlier in the conversation as a fact about the product.
+const SYSTEM_WITH_HISTORY = [
+  SYSTEM,
+  'A conversation so far is shown below the excerpts; read the final message in its',
+  'light — a short follow-up such as "and last week?" continues the topic immediately',
+  'above it.',
   'The conversation tells you what is being ASKED and what has already been said. It is',
   'never a source of facts about the product; those come only from the excerpts.',
 ].join(' ');
+
+/** The instructions this turn actually needs — see SYSTEM_WITH_HISTORY. */
+const systemFor = (history: readonly PriorMessage[] = []): string =>
+  history.length ? SYSTEM_WITH_HISTORY : SYSTEM;
 
 function prompt(
   question: string,
@@ -122,7 +137,7 @@ export function platformModel(host: ModelHost, spec: string, attribution: ModelA
       const run = await host.run({
         spec,
         attribution,
-        system: SYSTEM,
+        system: systemFor(history),
         prompt: prompt(question, context, history),
         maxOutputTokens: 400,
       });
@@ -647,6 +662,15 @@ export const HISTORY_MESSAGES = 8;
 const HISTORY_CHARS = 600;
 /** Over-fetched: internal notes are dropped after the read, so they still cost a row. */
 const HISTORY_FETCH = 30;
+/**
+ * How many of those pages the walk will read looking for the message being answered.
+ *
+ * The live case finds it in the first row of the first page and never asks for a
+ * second. The budget is for the case below — a turn taken on a message that a burst of
+ * traffic has already pushed off the newest page — where the choice is a couple of
+ * extra reads or no history at all.
+ */
+const HISTORY_PAGES = 3;
 
 /** The shape `ticket0/list-messages` returns, narrowed to what a transcript needs. */
 interface HistoryRow {
@@ -673,6 +697,14 @@ interface HistoryRow {
  * correctly, because the customer never read them either, and a follow-up is a
  * follow-up to what was actually said.
  *
+ * ## Nothing at or after the message being answered
+ *
+ * The other half of the same line. The walk is newest-first and collects only what it
+ * reads AFTER passing the message in hand, so a later customer message and the desk's
+ * own later replies are outside it by construction rather than by arithmetic — and
+ * when the message cannot be found at all, chronology is unknown and the answer is no
+ * history rather than a guess. See the walk below.
+ *
  * ## It never fails the turn
  *
  * History is what makes a follow-up readable, not what makes an answer possible. A
@@ -685,46 +717,88 @@ export async function priorMessages(
   conversationId: string,
   messageId: string,
 ): Promise<PriorMessage[]> {
-  let entries: readonly HistoryRow[];
-  try {
-    const page = await assistant.invoke<{ entries: HistoryRow[] }>('ticket0/list-messages', {
-      conversationId,
-      limit: HISTORY_FETCH,
-      sort: 'created_at',
-      order: 'desc',
-    });
-    entries = page.entries ?? [];
-  } catch {
-    return [];
+  const kept: PriorMessage[] = [];
+  let cursor: string | undefined;
+  /**
+   * Whether the message being answered has been passed.
+   *
+   * The walk is newest-first, so this flag is the whole chronology: until it is set,
+   * every row is at or NEWER than the message in hand and belongs to no part of this
+   * turn; after it, every row is older and is the conversation so far.
+   *
+   * Nothing is collected before it is set — not even provisionally — which is what
+   * makes the guarantee checkable rather than argued. Position in the page cannot
+   * stand in for it: a message that is not on the page it was assumed to be on takes
+   * "everything below it" with it.
+   */
+  let passed = false;
+
+  for (let page = 0; page < HISTORY_PAGES; page += 1) {
+    let rows: readonly HistoryRow[];
+    let next: string | undefined;
+    try {
+      const got = await assistant.invoke<{ entries: HistoryRow[]; nextCursor?: string | null }>(
+        'ticket0/list-messages',
+        {
+          conversationId,
+          limit: HISTORY_FETCH,
+          sort: 'created_at',
+          order: 'desc',
+          ...(cursor ? { cursor } : {}),
+        },
+      );
+      rows = got.entries ?? [];
+      next = got.nextCursor ?? undefined;
+    } catch {
+      return [];
+    }
+
+    for (const row of rows) {
+      if (!passed) {
+        /**
+         * Not simply "drop the one with this id": a customer who sends two messages
+         * quickly leaves a newer one sitting above this one, and that is not context
+         * for this answer — it is the next question, which gets its own turn.
+         */
+        if (row.id === messageId) passed = true;
+        continue;
+      }
+      if (kept.length >= HISTORY_MESSAGES) break;
+      if (row.visibility !== 'public') continue;
+      // The desk's own acknowledgement, which nobody wrote and nothing follows from.
+      if (row.author_kind === 'system') continue;
+      const text = row.body_text?.trim();
+      // Empty because it was erased under the PII rules, and an erased body is a fact
+      // about what may be shown — not a gap to fill from somewhere else.
+      if (!text) continue;
+      kept.push({
+        role: row.author_kind === 'contact' ? 'customer' : 'support',
+        text: text.length > HISTORY_CHARS ? `${text.slice(0, HISTORY_CHARS - 1)}\u2026` : text,
+      });
+    }
+
+    if (passed && kept.length >= HISTORY_MESSAGES) break;
+    if (!next || rows.length === 0) break;
+    cursor = next;
   }
 
   /**
-   * Newest first, so everything PAST the message being answered is older than it.
+   * The message was never found, so nothing is known about what came before it.
    *
-   * Not simply "drop the one with this id": a customer who sends two messages quickly
-   * leaves a newer one sitting above this one, and that is not context for this answer
-   * — it is the next question, which gets its own turn. A message that is not in the
-   * page at all (erased, or a conversation longer than the fetch) leaves the list
-   * whole, which is the safe way round: some context beats none.
+   * Two ways to get here, and neither can be told from the other from inside this
+   * function: the conversation grew past the budget above between the message arriving
+   * and this turn running (concurrent widget requests, a retried turn), or the row is
+   * simply gone. In the first, every row read was NEWER than the message being
+   * answered — later customer messages, and the desk's own later replies — and
+   * treating them as the conversation so far would put the future into a prompt about
+   * the past, then quote it back to the customer.
+   *
+   * So: no history. The turn still answers — history is what makes a follow-up
+   * readable, not what makes an answer possible — and it answers from the message in
+   * front of it alone, which is what the desk did before any of this existed.
    */
-  const at = entries.findIndex((row) => row.id === messageId);
-  const older = at === -1 ? entries : entries.slice(at + 1);
+  if (!passed) return [];
 
-  const kept: PriorMessage[] = [];
-  for (const row of older) {
-    if (kept.length >= HISTORY_MESSAGES) break;
-    if (row.visibility !== 'public') continue;
-    // The desk's own acknowledgement, which nobody wrote and nothing follows from.
-    if (row.author_kind === 'system') continue;
-    const text = row.body_text?.trim();
-    // Empty because it was erased under the PII rules, and an erased body is a fact
-    // about what may be shown — not a gap to fill from somewhere else.
-    if (!text) continue;
-    kept.push({
-      role: row.author_kind === 'contact' ? 'customer' : 'support',
-      text: text.length > HISTORY_CHARS ? `${text.slice(0, HISTORY_CHARS - 1)}\u2026` : text,
-    });
-  }
   // Collected newest-first; a transcript reads the other way.
   return kept.reverse();
 }
