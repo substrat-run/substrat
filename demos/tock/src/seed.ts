@@ -21,6 +21,7 @@ import { platformActorId, principalId, scopeId, tenantId } from '@substrat-run/c
 import { ulid, type Clock, type ScopeHost } from '@substrat-run/kernel';
 import { tockManifest } from './manifest.js';
 import { MODULES, ROLES } from './provision.js';
+import { DEV_PROVIDER, PERSONAS } from './personas.js';
 
 export { MODULES, ROLES };
 
@@ -103,4 +104,36 @@ export async function seed(host: ScopeHost): Promise<World> {
   }
 
   return world;
+}
+
+/**
+ * Bind each dev persona's OIDC `sub` to its principal — the ordinary identity-directory seam.
+ *
+ * Run on every boot rather than only on a fresh seed, because the world is cached in
+ * `cast.json` and `seed()` does not run again once it exists. `linkIdentity` is idempotent for
+ * an unchanged binding, so re-running costs nothing and a wiped `.data` heals itself.
+ *
+ * Petra's home is the OTHER workspace, and that is the whole of what makes her a nobody at
+ * Fjord: the directory decides which tenant a login lands in, so nothing in the API layer has
+ * to know she is special.
+ */
+export async function linkDevPersonas(host: ScopeHost, world: World): Promise<void> {
+  await host.admin.registerIdentityPool(world.staff, { provider: DEV_PROVIDER, topology: 'central', tenantId: null });
+  const homes: Record<string, { person: Person; tenant: typeof world.tenant; scope: typeof world.scope }> = {
+    'dev|ines': { person: world.ines, tenant: world.tenant, scope: world.scope },
+    'dev|tomas': { person: world.tomas, tenant: world.tenant, scope: world.scope },
+    'dev|wren': { person: world.wren, tenant: world.tenant, scope: world.scope },
+    'dev|petra': { person: world.petra, tenant: world.otherTenant, scope: world.otherScope },
+  };
+  for (const persona of PERSONAS) {
+    const home = homes[persona.sub];
+    if (!home) continue;
+    await host.admin.linkIdentity(world.staff, {
+      provider: DEV_PROVIDER,
+      externalId: persona.sub,
+      principal: home.person.principal,
+      tenantId: home.tenant,
+      scopeId: home.scope,
+    });
+  }
 }

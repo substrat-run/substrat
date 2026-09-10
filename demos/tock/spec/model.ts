@@ -449,8 +449,47 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       sourceKey: z.string(),
       filename: z.string().min(1),
       byteSize: z.number().int().positive(),
+      /**
+       * Both are shape-constrained, and it is a security boundary rather than tidiness.
+       *
+       * A caller supplies these and the host later turns one of them into a FILE PATH. Left
+       * as free strings, a caller holding `run:manage` could record `../../../etc/passwd`
+       * and have the profile route read it. The host checks containment too — defence at the
+       * point of use — but refusing the shape here means the bad value never reaches a row.
+       */
+      /**
+       * Deliberately NOT format-constrained, unlike `storageKey` below.
+       *
+       * It is compared and never resolved — nothing turns it into a path or a query — so a
+       * regex here would defend against nothing while making test fixtures unreadable and
+       * pinning the module to one digest algorithm it has no reason to care about. The
+       * module never sees the bytes, so it could not verify the digest anyway; what it can
+       * do is refuse a value that would be DANGEROUS, and this one cannot be.
+       */
       contentHash: z.string().min(1),
-      storageKey: z.string().min(1),
+      /**
+       * A RELATIVE path with no way out of wherever the host keeps its files.
+       *
+       * A caller supplies this and the host later joins it to a directory, so left free a
+       * caller holding `run:manage` could record `../../../etc/passwd` and have the profile
+       * route read it. What is refused here is the dangerous SHAPE — an absolute path, an
+       * empty segment, a `..` — and not a particular layout: the module has no business
+       * knowing whether the host names blobs `files/sha256-…` or an R2 object key, and a
+       * regex encoding one host's scheme would be this layer asserting a fact about another.
+       *
+       * The host checks containment again at the point of use. Neither check makes the other
+       * redundant: this one keeps a bad value out of the row, that one assumes the row may
+       * already hold one.
+       */
+      storageKey: z
+        .string()
+        .min(1)
+        .max(512)
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._/-]*$/, 'a storage key is a relative path')
+        .refine(
+          (k) => !k.split('/').some((seg) => seg === '..' || seg === ''),
+          'a storage key may not contain an empty or ".." segment',
+        ),
       periodFrom: z.string(),
       periodTo: z.string(),
     }),

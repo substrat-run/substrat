@@ -9,15 +9,23 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "emit:migrations": "tsx tools/emit-migrations.mts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dev": "concurrently -n issuer,api -c magenta,blue \"pnpm run issuer\" \"tsx src/server.ts\"",
+    "server": "tsx src/server.ts",
+    "demo": "pnpm run dev",
+    "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts"
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
     "@substrat-run/kernel": "workspace:^",
-    "zod": "catalog:"
+    "zod": "catalog:",
+    "@hono/node-server": "^1.13.0",
+    "@substrat-run/adapter-sqlite": "workspace:^",
+    "@substrat-run/dev-issuer": "workspace:^",
+    "@substrat-run/vertical-host": "workspace:^",
+    "hono": "^4.6.0"
   },
   "devDependencies": {
-    "@substrat-run/adapter-sqlite": "workspace:^",
     "@substrat-run/contract-tests": "workspace:^",
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
@@ -25,12 +33,27 @@
     "better-sqlite3": "^13.0.3",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "concurrently": "^9.0.0"
   },
   "substrat": {
     "slug": "tock",
     "name": "Tock",
     "permissions": "src/provision.ts",
-    "conformance": "test/conformance.ts"
+    "conformance": "test/conformance.ts",
+    "devServers": [
+      {
+        "name": "issuer",
+        "run": "issuer",
+        "portEnv": "ISSUER_PORT",
+        "portFrom": "../../packages/dev-issuer/src/cli.ts"
+      },
+      {
+        "name": "api",
+        "run": "server",
+        "portEnv": "PORT",
+        "portFrom": "src/server.ts"
+      }
+    ]
   }
 }

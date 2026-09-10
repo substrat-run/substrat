@@ -1301,19 +1301,31 @@ importers:
 
   demos/tock:
     dependencies:
+      '@hono/node-server':
+        specifier: ^1.13.0
+        version: 1.19.14(hono@4.12.30)
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:^
+        version: link:../../packages/adapter-sqlite
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
+      '@substrat-run/dev-issuer':
+        specifier: workspace:^
+        version: link:../../packages/dev-issuer
       '@substrat-run/kernel':
         specifier: workspace:^
         version: link:../../packages/kernel
+      '@substrat-run/vertical-host':
+        specifier: workspace:^
+        version: link:../../packages/vertical-host
+      hono:
+        specifier: 4.12.30
+        version: 4.12.30
       zod:
         specifier: 'catalog:'
         version: 4.4.3
     devDependencies:
-      '@substrat-run/adapter-sqlite':
-        specifier: workspace:^
-        version: link:../../packages/adapter-sqlite
       '@substrat-run/contract-tests':
         specifier: workspace:^
         version: link:../../packages/contract-tests
@@ -1329,6 +1341,9 @@ importers:
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
+      concurrently:
+        specifier: ^9.0.0
+        version: 9.2.4
       tsx:
         specifier: ^4.19.0
         version: 4.23.1
