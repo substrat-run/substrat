@@ -130,6 +130,44 @@ slots straight in, alongside `forked_from`, `forked_at`, and a read-only flag fo
 - **Preview URLs are not public** — they run unadmitted code against real-shaped data, so they
   are gated to builder/tenant/staff and marked non-canonical.
 
+### What `--masked` reaches, and what it cannot (#1369)
+
+Worth stating plainly, because the sentence a team wants to say after a masked pull is
+*"this dump is safe to have on a laptop"*, and the answer has an edge:
+
+- **Every table, not just the vertical's own.** Both sweep rules judge a COLUMN NAME and
+  nothing else, so a vertical's tables, an **engine's** tables (`protocol_*`, `booking_*`,
+  …) and the `_substrat_*` spine are masked by exactly the same rule. #1369 read the
+  opposite off one export — `vertical_*` clean, `protocol_signature_requests.party_label`
+  and `protocol_signatures.signatory_label` verbatim — and the cause was not a table the
+  sweep skipped but a column NAME it did not recognise. A person-ish role label
+  (`<role>_label`) now reads as PII, on the engine's own row and wherever a fat event
+  payload quotes it as `parties[].label` inside `_substrat_outbox.payload` or a
+  `_substrat_platform_requests` intent.
+- **An engine's documented intent is not a guarantee.** engine-protocol calls a party
+  label "a display name for the role, never PII"; a human types into the box, nothing
+  enforces the docstring, and the masker must therefore read the box. Any engine adding
+  a free-typed human-facing field should assume the same.
+- **The limit is names.** A heuristic sweep only knows column and key names, so a column
+  called `x7` holding a person's name comes out verbatim — from a vertical's table as
+  readily as from an engine's. That is why §6 gates the pull rather than trusting the
+  mask, and why open question 2 below still wants per-vertical declarative rules driven
+  by `erasable` rather than by a regex.
+- **Deliberately left readable**, because masking them would break the copy rather than
+  protect anyone: ids and `EntityRef`s (`party_ref`), enum-ish siblings a consumer
+  branches on (`party_kind`, `signature_kind`), non-person labels (`status_label`,
+  `size_label`), numbers, and timestamps. Amounts and dates are also what keep the output
+  **pseudonymized rather than anonymized** — a rare combination still re-identifies.
+- **Is the salt stable across pulls?** It depends on one deployment secret, and the honest
+  answer is *not by default*. `createControlPlaneApi` takes a `maskSalt`, wired from
+  `MASK_SALT` on the control-plane worker; **absent, every export mints a fresh random
+  salt**. So a masked dump is deterministic *within* one response — the same real value
+  reads the same in its own row, in every payload that quoted it, and in the directory
+  half — and two pulls of the same scope disagree unless the environment sets `MASK_SALT`.
+  Setting it buys reproducibility (a masked world you can check something against over
+  time) and costs correlatability (two dumps can be lined up); the salt is never written
+  into the dump either way, and no mapping is stored anywhere.
+
 ## 7. Recovery: PITR complements the fork
 
 Durable-Object SQLite has built-in **point-in-time recovery, ~30 days**, via the storage
@@ -273,8 +311,12 @@ over verticals, but reads/writes domain data across the boundary only through §
    pseudonymized, imported into a fresh scope and read back through the vertical's own
    operations, so a fake that breaks `importScope`, throws at an engine seam, or leaves a
    derived search index pointing at the real name is a red build rather than a discovery
-   on someone's laptop. Still open underneath: per-vertical declarative rules, driven by
-   `erasable` on `defineEntities` rather than by a column-name regex.
+   on someone's laptop. **Widened (#1369):** a person-ish role label — `party_label`,
+   `signatory_label`, and the `parties[].label` a fat payload spells them as — now reads
+   as PII, which is what a masked pull was missing on the engine tables and the spine;
+   §6 states the coverage and the salt's per-export default. Still open underneath:
+   per-vertical declarative rules, driven by `erasable` on `defineEntities` rather than
+   by a column-name regex — the standing answer to "the heuristic only knows names".
 3. Does a same-scope **code-only canary** (§2, top row) earn a `hostnames.vertical_version_id`
    override, or do we always fork? (Override reintroduces the "code B on data A" hazard unless
    guarded on `migration_digest` equality — leaning: always fork.)
