@@ -17,6 +17,13 @@
  * right signal on an ordered append-only list. Resolution is mechanical: merge
  * the model, re-run, it renumbers.
  *
+ * **One journal, or several.** A vertical composed of surfaces runs one
+ * concatenated migration list built from several journals, and the kernel never
+ * sorts it — so which journal an entry goes into IS the execution order, and the
+ * counter is shared across all of them rather than derived from any one's
+ * length. `MigrationPlanOptions.journals` is how that is stated; passing nothing
+ * is the single-surface vertical, unchanged.
+ *
  * **What this refuses.** Anything that would rewrite history or lose data: a
  * dropped table or column, a retyped column, a moved primary key, or a required
  * column added to a table that may already hold rows. Those are real decisions
@@ -45,12 +52,48 @@ export interface Journal {
   readonly entries: readonly JournalEntry[];
 }
 
+/**
+ * A vertical composed of surfaces does not have one journal, and the difference
+ * is not cosmetic: the kernel runs `mod.migrations` in the order it is handed
+ * them and never sorts by version, so **which journal an entry goes into is the
+ * execution order**.
+ *
+ * Both options are optional, and a vertical with one journal passes neither —
+ * that is the same call it makes today, answered the same way.
+ */
+export interface MigrationPlanOptions {
+  /**
+   * Every journal this vertical runs, by surface name, in the order the kernel
+   * runs them. Given this, the planner reads the applied schema across ALL of
+   * them (so a table another surface created is not diffed as missing) and
+   * derives the next version from the highest prefix it can see anywhere (so a
+   * six-journal vertical cannot mint a version one of the other five already
+   * holds — a duplicate is a boot failure, not a renumbering).
+   *
+   * `entities` is then the WHOLE model, not one surface's slice: parent edges
+   * resolve against the full registry, and a slice would read every other
+   * surface's tables as dropped.
+   */
+  readonly journals?: Readonly<Record<string, Journal>>;
+  /**
+   * Which journal in that set the new entry lands in. Required once a plan
+   * creates a table, and refused rather than guessed — see `journals`.
+   */
+  readonly surface?: string;
+}
+
 export type MigrationPlan =
   | { readonly kind: 'up-to-date' }
   | { readonly kind: 'append'; readonly entry: JournalEntry }
   | { readonly kind: 'refused'; readonly reasons: readonly string[] };
 
 const pad = (n: number) => String(n).padStart(4, '0');
+
+/** The counter a version states, or `undefined` for something that is not one. */
+const counterOf = (version: string): number | undefined => {
+  if (!/^\d+$/.test(version)) return undefined;
+  return Number.parseInt(version, 10);
+};
 
 /**
  * What one entry would have to say to bring the journal up to the model.
@@ -61,8 +104,16 @@ const pad = (n: number) => String(n).padStart(4, '0');
 export function planMigration<T extends Record<string, EntityDef>>(
   entities: T,
   journal: Journal,
+  opts?: MigrationPlanOptions,
 ): MigrationPlan {
-  const journalSql = journal.entries.map((e) => e.sql).join('\n');
+  // The set actually read. With no `journals` that is the one journal handed in,
+  // which is every caller that exists today. With `journals` it is all of them —
+  // plus `journal` itself when the caller passed the others rather than the set,
+  // so either spelling gives the same answer.
+  const named = opts?.journals ? Object.values(opts.journals) : undefined;
+  const set = named ? [...named, ...(named.includes(journal) ? [] : [journal])] : [journal];
+
+  const journalSql = set.flatMap((j) => j.entries.map((e) => e.sql)).join('\n');
   const applied = journalColumns(journalSql);
   const desired = journalColumns(emitTables(entities));
   const appliedUniques = journalUniques(journalSql);
@@ -75,6 +126,7 @@ export function planMigration<T extends Record<string, EntityDef>>(
 
   const statements: string[] = [];
   const changes: string[] = [];
+  const created: string[] = [];
   const refusals: string[] = [];
 
   // -- gone from the model, still in the journal ------------------------------
@@ -103,6 +155,7 @@ export function planMigration<T extends Record<string, EntityDef>>(
       ];
       statements.push(`CREATE TABLE ${table} (\n${cols.join(',\n')}\n);`);
       changes.push(`add-${table}`);
+      created.push(table);
       continue;
     }
 
@@ -222,17 +275,69 @@ export function planMigration<T extends Record<string, EntityDef>>(
     }
   }
 
+  // -- a new table in a composed vertical, with no surface named ---------------
+  // A `parents` edge emits a REFERENCES, and SQLite will happily create a child
+  // before its parent: the migration passes and the first insert fails. Which
+  // journal the CREATE lands in decides that, and it is not something a diff can
+  // read off the model — so it is refused rather than guessed, the same way a
+  // dropped column is. An ALTER needs no such choice, which is why only a
+  // CREATE asks. Naming the surface is the caller saying they decided; the
+  // planner does not check the decision (that would need the concatenation
+  // order, which is the vertical's, not the model's).
+  if (opts?.journals && created.length > 0 && opts.surface === undefined) {
+    const names = Object.keys(opts.journals);
+    refusals.push(
+      `${created.map((t) => `'${t}'`).join(', ')} would be created, and this vertical runs ` +
+        `${names.length} journals (${names.join(', ')}) — which one an entry goes into IS the ` +
+        'execution order, and a generator that guessed could put a table before the parent it ' +
+        "REFERENCES. State it: `planMigration(entities, journal, { journals, surface: '…' })`",
+    );
+  }
+  if (opts?.journals && opts.surface !== undefined && !(opts.surface in opts.journals)) {
+    refusals.push(
+      `surface '${opts.surface}' is not one of this vertical's journals ` +
+        `(${Object.keys(opts.journals).join(', ') || 'none'}) — a surface you are starting is ` +
+        'still one of them, so give it an empty journal rather than leaving it out: the set has ' +
+        'to name every journal for a typo to be loud',
+    );
+  }
+
   if (refusals.length > 0) return { kind: 'refused', reasons: refusals };
   if (statements.length === 0) return { kind: 'up-to-date' };
 
-  const version = pad(journal.entries.length + 1);
+  // The count is not the number. Six surfaces numbering from one shared counter
+  // leave gaps in each journal, and a position-derived version would re-mint one
+  // another surface already holds — which the adapter rejects at boot. Highest
+  // seen anywhere, plus one. For a single contiguous journal that is the count,
+  // so nothing about a one-surface vertical changes.
+  const highest = set.reduce(
+    (max, j) => j.entries.reduce((m, e) => Math.max(m, counterOf(e.version) ?? 0), max),
+    0,
+  );
+  const version = pad(highest + 1);
   // One change names itself; several get a count, so the slug stays readable.
   const slug = changes.length === 1 ? (changes[0] as string) : `${changes[0]}-and-${changes.length - 1}-more`;
   return { kind: 'append', entry: { version, slug, sql: statements.join('\n\n') } };
 }
 
+export interface ParseJournalOptions {
+  /**
+   * The name of the surface this journal belongs to — say it, and the journal is
+   * read as ONE of several sharing a counter rather than as the whole vertical's.
+   *
+   * That is the only thing it relaxes. A shared counter puts gaps in every
+   * journal it feeds (`0043` then `0055`, because the numbers between went to
+   * other surfaces), so position cannot derive the counter any more. What stays
+   * is the detector that matters: **strictly increasing, never repeating**. Two
+   * entries numbered `0010` in one surface is still the bad merge it always was;
+   * `0010` in two different surfaces is history, from when they numbered
+   * independently, and parses.
+   */
+  readonly surface?: string;
+}
+
 /** Parsed hostilely: it is our file, and it is also somebody's merge resolution. */
-export function parseJournal(raw: unknown): Journal {
+export function parseJournal(raw: unknown, opts?: ParseJournalOptions): Journal {
   const entry = z.object({
     version: z.string().regex(/^\d{4}$/, 'version is a derived four-digit counter'),
     slug: z.string().min(1),
@@ -241,13 +346,28 @@ export function parseJournal(raw: unknown): Journal {
   });
   const parsed = z.object({ entries: z.array(entry) }).parse(raw);
 
+  const where = opts?.surface === undefined ? 'journal' : `journal '${opts.surface}'`;
+  let previous = 0;
   parsed.entries.forEach((e, i) => {
-    if (e.version !== pad(i + 1)) {
+    if (opts?.surface === undefined) {
+      if (e.version !== pad(i + 1)) {
+        throw new Error(
+          `${where}: entry ${i + 1} is numbered '${e.version}' — the counter is derived from ` +
+            'position, so a gap or a duplicate means a bad merge, not a renumbering',
+        );
+      }
+      return;
+    }
+    const counter = counterOf(e.version) ?? 0;
+    if (counter <= previous) {
       throw new Error(
-        `journal: entry ${i + 1} is numbered '${e.version}' — the counter is derived from ` +
-          'position, so a gap or a duplicate means a bad merge, not a renumbering',
+        `${where}: entry ${i + 1} is numbered '${e.version}'` +
+          (previous === 0 ? '' : `, after '${pad(previous)}'`) +
+          ' — a surface shares its counter with the other surfaces, so it may skip, but it ' +
+          'must still climb from 0001: a repeat or a step backwards means a bad merge',
       );
     }
+    previous = counter;
   });
   return parsed;
 }
