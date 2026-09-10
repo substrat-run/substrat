@@ -23,10 +23,12 @@ import {
   modelFor,
   platformModel,
   recordAssistantFailure,
+  priorMessages,
   searchQueriesOf,
   spreadAcrossDocuments,
   wantsHuman,
   type Model,
+  type PriorMessage,
   type RetrievedArticle,
   type ModelDescription,
 } from '../harness/assistant.js';
@@ -1648,5 +1650,444 @@ describe('the widget surface routes a request for a person away from the model',
     expect(res.status).toBe(200);
     expect(((await res.json()) as { notified: number }).notified).toBeGreaterThan(0);
     expect(answered).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * The conversation, as a thing the assistant is part of rather than a sequence of
+ * unrelated questions.
+ *
+ * Reported from the live desk on substrat.net: *"Is there a changelog?"* answered well,
+ * and then *"Ok, and last week? Any big releases?"* answered about something else. Both
+ * halves of that are exercised here, and the retrieval half is the one worth reading —
+ * a prompt that carries the transcript still answers from whatever the index handed it,
+ * so a follow-up that retrieves the wrong page keeps its context perfectly and is still
+ * wrong.
+ */
+describe('a follow-up is a follow-up', () => {
+  /**
+   * A changelog page and a release-process page, arranged so the two are genuinely
+   * confusable — which is the corpus property the bug needs. `last` appears on neither,
+   * so the follow-up's own most specific query misses; `release` appears on both, so
+   * its next-best query hits the WRONG one.
+   */
+  const CORPUS = [
+    '# Changelog',
+    '',
+    'Source: https://docs.kestrel.example/changelog.md',
+    '',
+    '## What this is',
+    '',
+    'The changelog is a weekly record of what shipped. Each entry names its week and',
+    'lists every package released in it, with the version span the package moved',
+    'across, so a reader can see how big a week was without reading the commits.',
+    '',
+    '## What this is not',
+    '',
+    'The changelog is not a roadmap and not a status page. It says only what already',
+    'went out, which is why an entry is written once its week has ended.',
+    '',
+    '# Release process',
+    '',
+    'Source: https://docs.kestrel.example/releases.md',
+    '',
+    '## Cutting a release',
+    '',
+    'A release is cut from main by a changeset, and CI pushes the tag once the version',
+    'bump has merged. A release happens when the changesets say it does.',
+  ].join('\n');
+
+  const fakeFetch = (async () => new Response(CORPUS)) as unknown as typeof fetch;
+
+  const FIRST = 'Is there a changelog?';
+  const FOLLOW_UP = 'Ok, and last week? Any big releases?';
+
+  /** Remembers everything it was handed, so the test can assert on the prompt's inputs. */
+  const capturing = (): Model & {
+    context: RetrievedArticle[];
+    history: readonly PriorMessage[];
+  } => {
+    const model = {
+      label: 'test/capturing',
+      context: [] as RetrievedArticle[],
+      history: [] as readonly PriorMessage[],
+      async answer(input: {
+        question: string;
+        context: RetrievedArticle[];
+        history: readonly PriorMessage[];
+      }) {
+        model.context = input.context;
+        model.history = input.history;
+        return { text: 'Week 35 was a quiet one.', inputTokens: 10, outputTokens: 5, confidence: 0.9 };
+      },
+    };
+    return model;
+  };
+
+  /** Its own world: this one ingests a different corpus into the desk it uses. */
+  async function ownDesk() {
+    const ownDir = mkdtempSync(join(tmpdir(), 'ticket0-follow-up-'));
+    const ownHost = buildHost(ownDir);
+    const ownWorld = await seed(ownHost);
+    // Substrat's desk answers customers directly, so the assistant's own replies are
+    // PUBLIC — which is what puts them in the next message's history.
+    const desk = ownWorld.substrat;
+    const stub = (role: 'admin' | 'agent' | 'assistantAutonomous' | 'widget') =>
+      ownHost.getScope(desk[role].principal, desk.tenant, desk.scope);
+
+    const admin = await stub('admin');
+    const sources = (await admin.invoke('ticket0/list-kb-sources', {})) as Page<{
+      id: string;
+      kind: 'llms-txt';
+      url: string;
+    }>;
+    await runIngest(asTarget(admin), sources.entries[0]!, fakeFetch);
+
+    const widget = await stub('widget');
+    const started = (await widget.invoke('ticket0/widget-start', {
+      origin: desk.origin,
+      identity: {
+        externalId: desk.customer.email,
+        signature: await signIdentity(desk.verificationSecret, desk.customer.email),
+      },
+    })) as { sessionId: string; token: string };
+
+    const say = (body: string) =>
+      widget.invoke('ticket0/widget-post', {
+        sessionId: started.sessionId,
+        token: started.token,
+        body,
+      }) as Promise<{ id: string; conversation_id: string }>;
+
+    return { dispose: () => rmSync(ownDir, { recursive: true, force: true }), desk, stub, say };
+  }
+
+  it('carries what the customer said and was told, and nothing they never saw', async () => {
+    const { dispose, stub, say } = await ownDesk();
+    try {
+      const assistant = asTarget(await stub('assistantAutonomous'));
+
+      const first = await say(FIRST);
+      const opening = capturing();
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: first.id, question: FIRST },
+        opening,
+      );
+      // The first message of a conversation has no history, and the prompt it produces
+      // is the one this file has always produced.
+      expect(opening.history).toEqual([]);
+
+      // An agent's private read of the customer, which is exactly the sentence that
+      // must never reach a prompt whose output is posted publicly.
+      const agent = await stub('agent');
+      await agent.invoke('ticket0/post-note', {
+        conversationId: first.conversation_id,
+        body: 'This one asks a lot of questions — keep the answers short.',
+      });
+
+      const second = await say(FOLLOW_UP);
+      const following = capturing();
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: second.id, question: FOLLOW_UP },
+        following,
+      );
+
+      // Oldest first, and exactly the two turns the customer lived through: what they
+      // asked, and the answer they read.
+      expect(following.history).toEqual([
+        { role: 'customer', text: FIRST },
+        { role: 'support', text: 'Week 35 was a quiet one.' },
+      ]);
+      // The note is the assertion this test exists for.
+      expect(JSON.stringify(following.history)).not.toContain('asks a lot of questions');
+      // And the message being answered is not context for itself.
+      expect(following.history.map((m) => m.text)).not.toContain(FOLLOW_UP);
+    } finally {
+      dispose();
+    }
+  });
+
+  /**
+   * The half a prompt cannot fix.
+   *
+   * `last` is on neither page, so the follow-up's most specific query misses and the
+   * walk drops to single words — where `release` matches the release-process page and
+   * the changelog the customer was actually reading about never enters the ranking.
+   */
+  it('retrieves the page the conversation was already about', async () => {
+    const { dispose, stub, say } = await ownDesk();
+    try {
+      const assistant = asTarget(await stub('assistantAutonomous'));
+
+      const first = await say(FIRST);
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: first.id, question: FIRST },
+        capturing(),
+      );
+
+      const second = await say(FOLLOW_UP);
+      const following = capturing();
+      await answerConversation(
+        assistant,
+        { conversationId: first.conversation_id, messageId: second.id, question: FOLLOW_UP },
+        following,
+      );
+
+      const urls = following.context.map((c) => c.url);
+      expect(urls.some((u) => u.includes('changelog'))).toBe(true);
+      // The assertion that discriminates. `release` is on both pages, so the singles
+      // rung retrieves both and the changelog page is merely PRESENT — mixed in with
+      // the process page the customer never asked about, which is how the live desk
+      // came to answer about cutting releases. The bridge query names the topic, so
+      // the process page cannot match it at all.
+      expect(urls.some((u) => u.includes('releases'))).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+
+  /**
+   * History is what makes a follow-up readable, not what makes an answer possible.
+   *
+   * A desk whose message read refuses still answers the message in front of it — the
+   * alternative is a conversation that stops dead because a list call went wrong.
+   */
+  it('still answers when the conversation cannot be read', async () => {
+    const { dispose, stub, say } = await ownDesk();
+    try {
+      const stub_ = await stub('assistantAutonomous');
+      const blind = {
+        invoke: <T,>(op: string, input: unknown, options?: { idempotencyKey?: string }) =>
+          op === 'ticket0/list-messages'
+            ? Promise.reject(new Error('the message list is unavailable'))
+            : (stub_.invoke(op, input, options) as Promise<T>),
+      };
+
+      const first = await say(FIRST);
+      const model = capturing();
+      const outcome = await answerConversation(
+        blind,
+        { conversationId: first.conversation_id, messageId: first.id, question: FIRST },
+        model,
+      );
+
+      expect(outcome.outcome).toBe('answered');
+      expect(model.history).toEqual([]);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('the ladder a follow-up climbs', () => {
+  const FOLLOW_UP_Q = 'Ok, and last week? Any big releases?';
+
+  it('bridges to the previous question, below the specific query and above the singles', () => {
+    const ladder = searchQueriesOf(FOLLOW_UP_Q, 'Is there a changelog?');
+    // The specific query still leads: a self-contained message must not be dragged
+    // backwards, and this rung is what lets it stand alone when it can.
+    expect(ladder[0]).toBe('releas last');
+    // Then the bridge — before any single word, because a single word is what quietly
+    // succeeds with the wrong page and stops the walk.
+    expect(ladder[1]).toBe('releas changelog');
+    expect(ladder.indexOf('releas changelog')).toBeLessThan(ladder.indexOf('releas'));
+  });
+
+  it('leaves a self-contained question exactly as it was', () => {
+    const alone = searchQueriesOf('How do I rotate an API key?');
+    // The prior question contributes a rung and changes nothing else — and when the
+    // specific query hits, as it does for a question like this, the walk never reaches
+    // it at all.
+    expect(searchQueriesOf('How do I rotate an API key?', 'Is there a changelog?')[0]).toBe(alone[0]);
+    expect(alone[0]).toBe('rotat api');
+  });
+
+  it('answers a message that is nothing but grammar from the question before it', () => {
+    // "and what about that one?" is every stop word and no content — today it searches
+    // for `help`, which is a page about nothing in particular.
+    expect(searchQueriesOf('And what about that one?')).toEqual(['help']);
+    expect(searchQueriesOf('And what about that one?', 'How do I rotate an API key?')).toEqual([
+      'rotat',
+      'api',
+      'key',
+    ]);
+  });
+
+  it('never carries a word the follow-up already had', () => {
+    // The bridge exists to WIDEN. Pairing a term with itself narrows to the query that
+    // already ran.
+    const ladder = searchQueriesOf('What about release notes?', 'How is a release cut?');
+    expect(ladder).not.toContain('releas releas');
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the transcript STOPS.
+ *
+ * The safety argument for history has two halves. The first — public messages only,
+ * never an agent's internal note — is exercised against a real desk above. This is the
+ * second: nothing at or after the message being answered, which is a claim about
+ * chronology and so is provable only where the chronology can be arranged. Hence a
+ * scripted message list rather than a live conversation: 120 messages with the answered
+ * one anywhere in them is a fixture here and a minute of seeding there.
+ */
+describe('the conversation so far ends at the message being answered', () => {
+  /** Newest first, as `order: 'desc'` returns them. `m0` is the newest. */
+  const conversation = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `m${i}`,
+      author_kind: i % 2 === 0 ? ('contact' as const) : ('agent' as const),
+      visibility: 'public' as const,
+      body_text: `message ${i}`,
+      created_at: `2026-09-10T00:${String(count - i).padStart(2, '0')}:00.000Z`,
+    }));
+
+  /** A desk whose message list pages exactly as `ctx.page` does: cursor exclusive. */
+  const paging = (rows: ReturnType<typeof conversation>) => {
+    const reads: (string | undefined)[] = [];
+    return {
+      reads,
+      invoke: (async (op: string, input: { limit: number; cursor?: string }) => {
+        if (op !== 'ticket0/list-messages') throw new Error(`unexpected ${op}`);
+        reads.push(input.cursor);
+        const from = input.cursor ? rows.findIndex((r) => r.id === input.cursor) + 1 : 0;
+        const entries = rows.slice(from, from + input.limit);
+        const last = from + input.limit;
+        return { entries, nextCursor: last < rows.length ? (entries.at(-1)?.id ?? null) : null };
+      }) as <T>(op: string, input: unknown) => Promise<T>,
+    };
+  };
+
+  it('reads the messages below it, and none of the ones above', async () => {
+    // Answering m2 with m1 and m0 sitting above it — a customer who sent two more
+    // messages while the turn was being taken. Those are the next questions, not
+    // context for this one.
+    const desk = paging(conversation(12));
+    const history = await priorMessages(desk, 'c1', 'm2');
+
+    expect(history.map((m) => m.text)).toEqual([
+      'message 10',
+      'message 9',
+      'message 8',
+      'message 7',
+      'message 6',
+      'message 5',
+      'message 4',
+      'message 3',
+    ]);
+    expect(history.map((m) => m.text)).not.toContain('message 2');
+    expect(history.map((m) => m.text)).not.toContain('message 1');
+    expect(history.map((m) => m.text)).not.toContain('message 0');
+  });
+
+  it('follows the walk onto the next page rather than losing the context there', async () => {
+    // The answered message is the last row of the first page, so every word of its
+    // conversation is on the second one. Nothing about the guarantee says the history
+    // has to be cheap — it says it has to be older.
+    const desk = paging(conversation(60));
+    const history = await priorMessages(desk, 'c1', 'm29');
+
+    expect(history).toHaveLength(8);
+    expect(history.at(-1)?.text).toBe('message 30');
+    expect(desk.reads).toHaveLength(2);
+  });
+
+  /**
+   * The finding this test was written for.
+   *
+   * A message that is not on the page read is not thereby OLD. On a newest-first walk
+   * it is the other way round: every row read was newer than it, so treating the page
+   * as "the conversation so far" feeds later customer messages and the desk's own later
+   * replies into a turn about an earlier one — and the desk then quotes the future back
+   * at the customer. Chronology unknown is answered with no history, not with a guess.
+   */
+  it('carries no history at all when the message cannot be found', async () => {
+    // Far enough down that the bounded walk gives up before reaching it: a burst of
+    // traffic, or a turn retried long after the message arrived.
+    const desk = paging(conversation(200));
+    const history = await priorMessages(desk, 'c1', 'm150');
+
+    expect(history).toEqual([]);
+    // And it gave up rather than walking a conversation of any length.
+    expect(desk.reads).toHaveLength(3);
+  });
+
+  it('carries no history when the message was erased from the list', async () => {
+    const desk = paging(conversation(10));
+    expect(await priorMessages(desk, 'c1', 'gone')).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe('what a first message pays for', () => {
+  /** A host that answers blandly and keeps every system string it was handed. */
+  const listening = () => {
+    const systems: (string | undefined)[] = [];
+    const mock = new MockLanguageModelV3({
+      doGenerate: async (options: { prompt: { role: string; content: unknown }[] }) => {
+        const system = options.prompt.find((m) => m.role === 'system');
+        systems.push(typeof system?.content === 'string' ? system.content : undefined);
+        return {
+          content: [{ type: 'text', text: 'A shipped migration is never edited.' }],
+          finishReason: { unified: 'stop', raw: 'stop' },
+          usage: {
+            inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 5, text: 5, reasoning: undefined },
+          },
+          warnings: [],
+        } as never;
+      },
+    });
+    const host = createModelHost({
+      env: { ANTHROPIC_API_KEY: 'k' },
+      factories: { anthropic: () => () => mock as never },
+      sent: 'Customer messages and the knowledge-base excerpts they match',
+    });
+    return { systems, host };
+  };
+
+  const excerpt: RetrievedArticle = {
+    id: 'a1',
+    title: 'Migrations',
+    url: 'https://docs.example/migrations',
+    body: 'Append a new migration; a shipped one is never edited.',
+  };
+  const earlier: PriorMessage[] = [{ role: 'customer', text: 'Is there a changelog?' }];
+
+  /**
+   * The system string is metered like every other token of input, so instructions
+   * about a conversation that is not there are a bill for being told to ignore
+   * something. A conversation costs what it carries; a first message costs what it
+   * always did.
+   */
+  it('says nothing about a conversation until there is one', async () => {
+    const { systems, host } = listening();
+    const model = platformModel(host, 'anthropic:claude-sonnet-5', attributionFor(world.substrat));
+
+    await model.answer({ question: 'Can I edit a shipped migration?', context: [excerpt], history: [] });
+    await model.answer({
+      question: 'And last week?',
+      context: [excerpt],
+      history: earlier,
+    });
+
+    const [first, following] = systems;
+    expect(first).toBeDefined();
+    expect(first?.toLowerCase()).not.toContain('conversation');
+    // What it does say is unchanged, and the conversation instructions are added to it
+    // rather than woven through — so the two turns cannot drift apart.
+    expect(following?.startsWith(first!)).toBe(true);
+    expect(following).toContain('never a source of facts about the product');
+    expect(following!.length).toBeGreaterThan(first!.length);
   });
 });
