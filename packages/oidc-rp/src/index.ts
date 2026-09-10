@@ -76,7 +76,7 @@ export const FLOW_COOKIE = 'sb_oidc_flow';
  */
 export const LOGOUT_HINT_COOKIE = 'sb_oidc_idt';
 /** Path the hint cookie is scoped to — must match wherever the logout route is mounted. */
-const LOGOUT_PATH = '/api/auth/logout';
+export const LOGOUT_PATH = '/api/auth/logout';
 /** Session lifetime; the flow (login round-trip) is deliberately short. */
 export const SESSION_MAXAGE = 60 * 60 * 24 * 7; // 7 days
 export const FLOW_MAXAGE = 60 * 10; // 10 minutes
@@ -604,39 +604,58 @@ export function mountOidcRoutes<B extends OidcEnv>(app: Hono<{ Bindings: B }>, o
     // the shared IdP session keep theirs). Requires the origin to be registered as an
     // allowed logout URL on the IdP client; discovery failure falls back to local.
     if (c.req.query('federated') !== undefined) {
-      try {
-        const d = await discover(c.env.OIDC_ISSUER);
-        if (d.end_session_endpoint) {
-          const u = new URL(d.end_session_endpoint);
-          u.searchParams.set('client_id', c.env.OIDC_CLIENT_ID);
-          u.searchParams.set('post_logout_redirect_uri', `${new URL(c.req.url).origin}${local}`);
-          // The ID token from this login, handed back per OIDC RP-Initiated Logout §2.
-          // Without it the OP cannot tell a real sign-out from a link someone was
-          // tricked into following, so it SHOULD (and Better Auth's provider does)
-          // interrupt with a "Confirm logout" page — an interstitial in the middle of
-          // what the person already asked for. With it the OP verifies the request
-          // against the session the hint names and redirects straight through.
-          // Absent for a session minted before this version: the confirmation page is
-          // then still correct, and the next login puts the hint back.
-          //
-          // And absent over plaintext. The hint is a signed assertion about who is
-          // signed in, travelling in a URL the browser will also put in history and
-          // `Referer`; an issuer advertising an `http:` end-session endpoint would have
-          // it read off the wire. Loopback is exempt because that is `dev-issuer`, which
-          // every demo's local login uses. The redirect itself still happens — it
-          // carries no secret, and refusing it would change what a plaintext issuer did
-          // before this feature existed — so the person is signed out either way and the
-          // OP falls back to asking them to confirm.
-          if (idTokenHint) {
-            if (isHttpsOrLoopback(u)) u.searchParams.set('id_token_hint', idTokenHint);
-            else console.warn('oidc.logout.hint_withheld', { reason: 'end_session_endpoint is not https' });
-          }
-          return c.redirect(u.toString());
-        }
-      } catch (err) {
-        console.error('oidc.logout.discovery_failed', { reason: err instanceof Error ? err.message : String(err) });
-      }
+      const away = await federatedLogoutUrl(c.env, new URL(c.req.url).origin, local, idTokenHint);
+      if (away) return c.redirect(away);
     }
     return c.redirect(local);
   });
+}
+
+/**
+ * Where to send the browser so the ISSUER's own session ends too (OIDC RP-Initiated
+ * Logout 1.0) — or `null` when this issuer advertises no such endpoint, or discovery
+ * fails. A `null` is not an error the caller has to handle beyond completing the local
+ * sign-out it has already done: the person is signed out here either way, and only the
+ * issuer's cookie is left standing.
+ *
+ * ORDER IS THE WHOLE SAFETY PROPERTY. Clear the session cookie FIRST and call this
+ * afterwards, never the reverse — an issuer that is down, advertises nothing, or refuses
+ * the `post_logout_redirect_uri` must not be able to keep somebody signed in here.
+ *
+ * `idTokenHint` is the ID token from this login, handed back per §2. Without it the OP
+ * cannot tell a real sign-out from a link someone was tricked into following, so it
+ * SHOULD (and Better Auth's provider does) interrupt with a "Confirm logout" page — an
+ * interstitial in the middle of what the person already asked for. With it the OP
+ * verifies the request against the session the hint names and redirects straight
+ * through. Absent for a session minted before the caller began keeping it: the
+ * confirmation page is then still correct, and the next login puts the hint back.
+ *
+ * And absent over plaintext. The hint is a signed assertion about who is signed in,
+ * travelling in a URL the browser will also put in history and `Referer`; an issuer
+ * advertising an `http:` end-session endpoint would have it read off the wire. Loopback
+ * is exempt because that is `dev-issuer`, which every demo's local login uses. The
+ * redirect itself still happens — it carries no secret — so the person is signed out
+ * either way and the OP falls back to asking them to confirm.
+ */
+export async function federatedLogoutUrl(
+  env: OidcEnv,
+  origin: string,
+  postLogoutPath: string,
+  idTokenHint?: string,
+): Promise<string | null> {
+  try {
+    const d = await discover(env.OIDC_ISSUER);
+    if (!d.end_session_endpoint) return null;
+    const u = new URL(d.end_session_endpoint);
+    u.searchParams.set('client_id', env.OIDC_CLIENT_ID);
+    u.searchParams.set('post_logout_redirect_uri', `${origin}${postLogoutPath}`);
+    if (idTokenHint) {
+      if (isHttpsOrLoopback(u)) u.searchParams.set('id_token_hint', idTokenHint);
+      else console.warn('oidc.logout.hint_withheld', { reason: 'end_session_endpoint is not https' });
+    }
+    return u.toString();
+  } catch (err) {
+    console.error('oidc.logout.discovery_failed', { reason: err instanceof Error ? err.message : String(err) });
+    return null;
+  }
 }

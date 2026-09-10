@@ -110,6 +110,30 @@ With neither — no usable delivered OIDC choice, and no `AUTH_PROVIDER=oidc` wi
 `OIDC_ISSUER` — the composition fails closed: `provider()` throws `AuthConfigError` with a
 `503`. A delivered choice missing its `issuer` or `clientId` is the same `503`.
 
+## Signing out, and the issuer's own session
+
+`GET /api/auth/logout` clears this app's session cookie and sends the browser to a
+same-origin `returnTo`. That is not the whole sign-out: the **issuer** holds a session on
+its own domain, so the next "Sign in" is a silent re-authentication as the same person, and
+"use another account" never works.
+
+`GET /api/auth/logout?federated` ends that one too, through OIDC RP-Initiated Logout — the
+issuer's `end_session_endpoint`, with the ID token from this login as `id_token_hint`. The
+hint is what makes it a straight redirect: without it the issuer cannot tell a real sign-out
+from a link somebody was tricked into following, so it interrupts with a *Confirm logout*
+page. The provider keeps that token in its own cookie, scoped to the logout path and
+`SameSite=Strict`, and hands it back exactly once.
+
+Two conditions live at the **issuer**, not here — at an Auth Server app they are the two
+fields on the application: RP-initiated logout must be enabled for the client, and the
+app's origin must be registered as a post-logout redirect URI. The first sign-out after
+turning them on can still show the confirmation page: the ID token minted before then
+carries no session id for the issuer to match, and the next sign-in puts one there.
+
+Local sign-out happens **first, always**. An issuer that is down, advertises no end-session
+endpoint, or refuses the redirect URI can only leave its own session standing — never keep
+somebody signed in here.
+
 ## The identity directory
 
 `IdentityDO` is one Durable Object **per tenant**, running its own SQLite. A tenant's users,
