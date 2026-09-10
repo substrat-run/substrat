@@ -191,6 +191,16 @@ still be mandatory on your machine, where no such delivery exists.
   by another project, or a stray `pnpm dev:connected` — the entry dies on `EADDRINUSE` for a
   port Claude is not watching, which reads as a server that simply never came up. `CP_PORT=…`
   moves it.
+- **An entry declares a port, not a URL.** The Browser pane opens that server's bare
+  origin, and nothing in the file can deep-link a path or a query under it — so a page
+  that is not the app's root is somewhere Claude navigates *after* the preview comes up.
+  The one worth navigating to by default is **`/api/docs`**, which
+  [`demos/meridian`](https://github.com/substrat-run/substrat/blob/main/demos/meridian/src/docs.ts)
+  and `demos/manyfold` serve: Scalar's API reference over that vertical's own
+  `/openapi.json`, from that vertical's own origin. No CDN — the renderer is a pinned
+  bundle served as a local asset — and no proxy, so a try-it request is same-origin, the
+  browser attaches the session cookie you logged in with, and every call executes as the
+  principal you actually are. A 403 there is the permission system working.
 - **No secrets in `launch.json`** — it is committed. Desktop also does not inherit your full
   shell environment, and `env` in `~/.claude/settings.json` reaches *sessions* but not dev
   servers. Put values in **`.dev.vars`** in the project directory instead: it is gitignored,
