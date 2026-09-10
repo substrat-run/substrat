@@ -1,5 +1,30 @@
 # @substrat-run/vertical-auth
 
+## 0.13.0
+
+### Minor Changes
+
+- aab2e11: Carry the issuer's `email_verified` claim through to the session and the auth subject.
+
+  An address only says who someone is if the issuer stands behind it, and until now nothing
+  transported that answer: the claim was read nowhere, so a gate on it could not be written.
+  `SessionUser.emailVerified` and `AuthSubject.emailVerified` now hold what the issuer said —
+  `true`, `false`, or `undefined` when it said nothing, which is a different fact from
+  "unverified" and stays distinguishable end to end. The flag travels with the address it
+  qualifies, so a UserInfo response never vouches for an address the ID token signed.
+
+  Nothing authorizes differently: this is transport, and every existing session keeps working
+  with the field absent.
+
+### Patch Changes
+
+- Updated dependencies [aab2e11]
+- Updated dependencies [0a8a3b0]
+- Updated dependencies [5cf7ae4]
+- Updated dependencies [44b53e4]
+  - @substrat-run/oidc-rp@0.8.0
+  - @substrat-run/contracts@0.108.0
+
 ## 0.12.10
 
 ### Patch Changes

@@ -1,4 +1,0 @@
----
----
-
-ticket0's assistant now reads the conversation it is in. Until now every customer message was answered on its own: the prompt carried the latest sentence and the retrieved documentation and nothing else, so a follow-up like "Ok, and last week?" arrived with no idea what had just been discussed. It now sees the public messages that came before — what the customer asked, and the answers they actually read — and searches the knowledge base with the topic in hand, so a follow-up finds the page the conversation was already about instead of whichever page happens to share a word with it. Internal notes are never included, and neither is anything said at or after the message being answered: the assistant sees exactly what the customer saw at the moment they asked, so an agent's private note cannot end up paraphrased in a public reply and a later message cannot be answered before its turn. Demo-only (`demos/ticket0`), so nothing published changes.

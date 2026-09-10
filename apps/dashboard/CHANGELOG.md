@@ -1,5 +1,79 @@
 # @substrat-run/dashboard
 
+## 0.34.1
+
+### Patch Changes
+
+- 719f993: The shared control plane grows the runtime membership seam (#1343, step 2).
+  Service-only routes for assigning and revoking an already-defined role, and for
+  creating and listing a tenant's orgs, with the matching
+  `TenantNarrowedControlPlane` methods.
+
+  The line these sit on the far side of matters more than the routes. `defineRole`
+  says what a role MEANS — a permission change, and the permission diff is a human
+  checkpoint (D-22/D-29) — so it still gets no route, and `roleDefinition`'s own
+  contract already says role writes are deliberately absent from this surface.
+  ASSIGNING an already-defined role is a different act: per-principal, runtime, the
+  same shape control-plane.md §4.5 already treats as a console concern rather than
+  a checkpoint artifact, and `unassignRole`'s contract anticipates exactly this
+  caller ("the dashboard's manage-members check").
+
+  Service/staff only, absent from `BUILDER_ROUTES`: a builder must no more assign
+  itself a role than write the directory that authenticates builders. The whole
+  node comes from the PATH — assignments are TENANT-LEVEL, which is what a team
+  membership is, and a body naming a scope is refused rather than stripped.
+  Pinning only the tenant would pin nothing: a node carrying a scope is written to
+  that scope's Durable Object directly, with no tenant cross-check below it. A
+  scope-level surface, if ever needed, wants its own route under
+  `/tenants/:tenantId/scopes/:scopeId/role-assignments`, deriving the node from the
+  path after the K-3 cross-check every other scope-addressed route performs.
+
+  Nothing switches over yet — the dashboard still reads and writes its own
+  directory. This is the seam that has to exist before it can stop.
+
+- 5bbac31: The identity mirror stops being unobservable (#1343, step 1). The dashboard
+  keeps its own identity directory and best-effort mirrors links into the shared
+  one on every `/api/me` (#265) — two sources of truth healed by polling, where
+  the healing could not be checked: the mirror wrote and never read back, and its
+  `catch` swallowed every failure, including the 503 a missing `CONTROL_PLANE`
+  binding throws.
+
+  `GET /api/identity-mirror` is the answer, for the caller's own team: both
+  directories read and compared, with the links the mirror never landed, the
+  links a local unlink left behind, and the case a count cannot see — the same
+  user present in both, resolving to DIFFERENT principals. The comparison is
+  keyed on `(provider, externalId)`, the pair a login actually resolves by, and
+  that key is encoded structurally, because both halves accept any string and a
+  delimiter is only a convention the data can break.
+
+  The mirror's own failure path now leaves one structured line behind — still
+  best-effort, still never failing the request it rides on, and no longer
+  swallowing the missing-binding 503, which used to be thrown before the `catch`
+  could see it. That line is for a platform operator: the tenant-facing
+  Observability tab answers only for services the tenant owns, and this one comes
+  from the shared dashboard worker. The endpoint above is the tenant's own view of
+  the same fact.
+
+  No data moves, and no screen reads the endpoint yet. Retiring the local
+  directory stays a human's move, with the checkpoint — but it can now be planned
+  against a reading instead of a belief.
+
+- Updated dependencies [5e80e5f]
+- Updated dependencies [aab2e11]
+- Updated dependencies [0a8a3b0]
+- Updated dependencies [5cf7ae4]
+- Updated dependencies [44b53e4]
+  - @substrat-run/kernel@0.108.0
+  - @substrat-run/adapter-cloudflare@0.108.0
+  - @substrat-run/oidc-rp@0.8.0
+  - @substrat-run/contracts@0.108.0
+  - @substrat-run/connector-fortnox@0.4.10
+  - @substrat-run/demo-callout@0.3.26
+  - @substrat-run/engine-invites@0.7.7
+  - @substrat-run/engine-invoicing@0.9.24
+  - @substrat-run/engine-protocol@0.12.13
+  - @substrat-run/engine-workorder@0.11.7
+
 ## 0.34.0
 
 ### Minor Changes
