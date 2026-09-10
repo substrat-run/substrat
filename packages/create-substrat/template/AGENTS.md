@@ -307,6 +307,15 @@ vertical done, boot the server and drive the real flow over HTTP as two personas
 should succeed and one who should be denied — and confirm the denial arrives as a denial
 (not a generic error).
 
+`.claude/launch.json` is what starts those servers for an agent with a browser pane, and it
+declares a **port** — never a path or a query. So the pane opens each server's bare origin,
+and no entry can deep-link a page underneath it: reaching one is a navigation you perform
+once the preview is up, not something configuration expresses. Do that without being asked.
+The page worth opening first on a vertical that serves the Scalar API reference is
+**`/api/docs`** — every operation, rendered from that vertical's own `/openapi.json`, on the
+vertical's own origin, so a try-it request carries the session cookie you already have and
+a 403 in the playground is the permission system working rather than a broken page.
+
 ## When it breaks — symptom → fix
 
 Six failures that have each cost someone a day. What makes them expensive is that none of
