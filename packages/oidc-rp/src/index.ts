@@ -352,6 +352,13 @@ export async function mintSession(
     .sign(signingKey(env));
 }
 
+/**
+ * The claims a token carries, as a `SessionUser` — and the one decoder for BOTH tokens
+ * this package holds: the issuer's ID token on the way in, and our own session JWT on
+ * every request after. That is why `mintSession` signs `email_verified` under its OIDC
+ * spelling rather than a local one; the mint and the read stay a single shape, and a
+ * claim added here is carried across the session without a second place to update.
+ */
 function userFromClaims(payload: {
   sub?: unknown;
   email?: unknown;
