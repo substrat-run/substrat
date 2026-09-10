@@ -78,9 +78,11 @@ function flatten(value: unknown, prefix = '', depth = 0, out: Record<string, str
   if (value === null || value === undefined) { out[prefix || 'value'] = ''; return out; }
   if (depth > MAX_DEPTH || Array.isArray(value)) { out[prefix || 'value'] = JSON.stringify(value); return out; }
   if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>);
-    if (entries.length === 0) out[prefix || 'value'] = '{}';
-    for (const [k, v] of entries) flatten(v, prefix ? `${prefix}.${k}` : k, depth + 1, out);
+    // An empty object contributes nothing — see `src/ingest.ts`: a `{}` leaf would make a path
+    // a leaf on one record and a branch on the next, which no schema can declare once.
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      flatten(v, prefix ? `${prefix}.${k}` : k, depth + 1, out);
+    }
     return out;
   }
   out[prefix || 'value'] = String(value);

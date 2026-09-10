@@ -121,7 +121,15 @@ const MAX_DEPTH = 8;
  * still ignore it.
  *
  * `null` stays null rather than becoming `"null"`: an absent value is the whole of the unknown
- * bucket, and a reader that stringifies it puts it beyond recovery downstream.
+ * bucket, and a reader that stringifies it puts it beyond recovery downstream. An empty STRING
+ * is left alone for the opposite reason — JSON has a null and this producer did not use it, so
+ * turning `""` into absent would be the reader inventing a meaning the file did not carry. (The
+ * CSV path does convert an empty cell, because CSV has no way to say null at all.)
+ *
+ * **An empty object contributes nothing.** Emitting a `"{}"` leaf for it reads as faithful and
+ * creates a path that is a LEAF on one record and a BRANCH on the next — `details.request.qs`
+ * beside `details.request.qs.client_id` — which no schema can declare once. An object
+ * contributes its leaves; an object with no leaves contributes none.
  */
 export function flatten(value: unknown, prefix = '', depth = 0, out: Record<string, string | null> = {}): Record<string, string | null> {
   if (depth > MAX_DEPTH) {
@@ -137,10 +145,9 @@ export function flatten(value: unknown, prefix = '', depth = 0, out: Record<stri
     return out;
   }
   if (typeof value === 'object') {
-    const entries = Object.entries(value as Record<string, unknown>);
-    // An object with no keys is a value, not an absence of one.
-    if (entries.length === 0) out[prefix || 'value'] = '{}';
-    for (const [k, v] of entries) flatten(v, prefix ? `${prefix}.${k}` : k, depth + 1, out);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      flatten(v, prefix ? `${prefix}.${k}` : k, depth + 1, out);
+    }
     return out;
   }
   out[prefix || 'value'] = String(value);
