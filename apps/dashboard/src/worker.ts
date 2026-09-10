@@ -397,8 +397,20 @@ async function mirrorBuilderIdentity(env: Env, host: ScopeHost, userId: string, 
       principal: mapped.principal,
       ...(mapped.scopeId ? { scopeId: mapped.scopeId } : {}),
     });
-  } catch {
-    // best-effort: re-mirrored on the next /api/me
+  } catch (e) {
+    // Still best-effort — a failed mirror must never fail the request it rides on,
+    // and the next /api/me retries. But it is no longer SILENT (#1343): this catch
+    // swallowed everything, including the 503 a missing CONTROL_PLANE binding
+    // throws, so "the mirror is complete" was a belief with no way to check it.
+    // One structured line, in the logs the observability tab already reads.
+    console.error(
+      JSON.stringify({
+        event: 'dashboard.identity-mirror.failed',
+        tenantId: t,
+        provider: PROVIDER,
+        detail: e instanceof Error ? e.message : String(e),
+      }),
+    );
   }
 }
 
