@@ -10,6 +10,7 @@
   "include": [
     "spec",
     "src",
+    "test",
     "tools"
   ]
 }
