@@ -97,40 +97,87 @@ const braced = (src, from) => {
 };
 
 /**
- * Every proxy entry whose Host would be rewritten, as `path: why`. An entry is judged on
- * its VALUE: the object form must carry `changeOrigin: false`, and anything else — the
- * string shorthand, a variable, a spread — is refused, because only the object form can
- * carry the flag at all.
+ * A body with its nested `{…}` groups removed, so only the object's OWN properties remain.
+ * `changeOrigin` is judged on those alone: a `false` buried in a nested option must not
+ * answer for a `true` written on the entry itself.
  */
-const rewritesHost = (source) => {
-  const src = flatten(source);
-  const at = src.search(/\bproxy\s*:/);
-  if (at === -1) {
-    // No `proxy:` at all is the honest answer for a config that has no proxy. `{ proxy }`
-    // — the shorthand property, pointing at an object built elsewhere — is not: this check
-    // cannot follow it, and passing something it did not read is the failure mode it
-    // exists to avoid. So it says so instead.
-    return /\bproxy\b/.test(src) ? ['proxy: named but not written here — this check cannot read it'] : [];
+const ownProperties = (body) => {
+  let out = '';
+  let depth = 0;
+  for (const c of body) {
+    if (c === '{') depth++;
+    else if (c === '}') depth--;
+    else if (depth === 0) out += c;
   }
-  const region = braced(src, at);
-  if (region === null) return [];
+  return out;
+};
 
+/** Every proxy entry in one `proxy: { … }` object, judged on its value. */
+const judgeEntries = (body) => {
   const offenders = [];
   const key = /(['"`])(\/[^'"`]*)\1\s*:/g;
   let m;
-  while ((m = key.exec(region.body)) !== null) {
-    const rest = region.body.slice(m.index + m[0].length);
+  while ((m = key.exec(body)) !== null) {
+    const rest = body.slice(m.index + m[0].length);
     if (!/^\s*\{/.test(rest)) {
       offenders.push(`${m[2]}: the string shorthand — Vite expands it to changeOrigin: true`);
       continue;
     }
     const entry = braced(rest, 0);
-    if (entry === null || !/\bchangeOrigin\s*:\s*false\b/.test(entry.body)) {
-      offenders.push(`${m[2]}: the object form without changeOrigin: false`);
+    const own = entry === null ? '' : ownProperties(entry.body);
+    if (!/\bchangeOrigin\s*:\s*false\b/.test(own)) {
+      offenders.push(
+        /\bchangeOrigin\s*:\s*true\b/.test(own)
+          ? `${m[2]}: changeOrigin: true`
+          : `${m[2]}: the object form without changeOrigin: false`,
+      );
     }
     // Entries do not nest, so resuming after this one's brace keeps a nested
     // `rewrite: (p) => …` from being read as another key.
     key.lastIndex = m.index + m[0].length + (entry?.end ?? 0) + 1;
+  }
+  return offenders;
+};
+
+/**
+ * Every proxy entry whose Host would be rewritten, as `path: why`. An entry is judged on
+ * its VALUE: the object form must carry `changeOrigin: false` as its own property, and
+ * anything else — the string shorthand, a variable, a spread — is refused, because only
+ * the object form can carry the flag at all.
+ *
+ * EVERY `proxy:` in the file is judged, not the first: a config that declares one under a
+ * condition and another as a fallback would otherwise be passed on the strength of the
+ * branch that happens to be written first. And a `proxy:` whose value is not a plain
+ * object literal — a ternary, a call, a spread — is refused rather than skipped, for the
+ * same reason `{ proxy }` is: passing something this check did not read is the failure
+ * mode it exists to avoid.
+ */
+const rewritesHost = (source) => {
+  const src = flatten(source);
+  const offenders = [];
+  const decl = /\bproxy\s*:/g;
+  let found = 0;
+  let d;
+  while ((d = decl.exec(src)) !== null) {
+    found++;
+    const after = src.slice(d.index + d[0].length);
+    const open = after.indexOf('{');
+    if (open === -1 || after.slice(0, open).trim() !== '') {
+      offenders.push('proxy: not a plain object literal — this check cannot read it');
+      continue;
+    }
+    const region = braced(after, 0);
+    if (region === null) {
+      offenders.push('proxy: the object never closes — this check cannot read it');
+      continue;
+    }
+    offenders.push(...judgeEntries(region.body));
+    decl.lastIndex = d.index + d[0].length + region.end + 1;
+  }
+  // No `proxy:` at all is the honest answer for a config that has no proxy. `{ proxy }` —
+  // the shorthand property, pointing at an object built elsewhere — is not.
+  if (found === 0 && /\bproxy\b/.test(src)) {
+    return ['proxy: named but not written here — this check cannot read it'];
   }
   return offenders;
 };
@@ -163,6 +210,14 @@ const SELF_CHECK = [
   ["server: { proxy: { '/api': { target: `http://x:${P}`, changeOrigin: false }, '/.well-known': { target: T, changeOrigin: false } } }", 0],
   ['server: { port: 5271 }', 0],
   ['const proxy = mkProxy(P);\nexport default defineConfig({ server: { port: 5271, proxy } });', 1],
+  // A `false` nested inside another option does not answer for the entry's own `true`.
+  ["server: { proxy: { '/api': { target: T, changeOrigin: true, ws: { changeOrigin: false } } } }", 1],
+  ["server: { proxy: { '/api': { target: T, headers: { 'x-a': 'b' }, changeOrigin: false } } }", 0],
+  // Not a plain object literal: refused rather than read as far as the first branch.
+  ["server: { proxy: dev ? { '/api': { target: T, changeOrigin: false } } : PROD }", 1],
+  ['server: { proxy: mkProxy(P) }', 1],
+  // The SECOND declaration is judged too, not just the first.
+  ["server: { proxy: { '/api': { target: T, changeOrigin: false } } },\npreview: { proxy: { '/api': T } }", 1],
 ];
 const drift = SELF_CHECK.filter(([src, want]) => rewritesHost(src).length !== want);
 if (drift.length > 0) {
