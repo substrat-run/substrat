@@ -1398,7 +1398,9 @@
                   },
                   "storageKey": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]*$"
                   },
                   "periodFrom": {
                     "type": "string"
@@ -2009,203 +2011,6 @@
         }
       }
     },
-    "/api/op/tock/profile-run": {
-      "post": {
-        "operationId": "tock-profile-run",
-        "summary": "Record what a batch of the delivered file contained",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "runId": {
-                    "type": "string"
-                  },
-                  "batch": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "occurredAt": {
-                          "type": "string"
-                        },
-                        "subject": {
-                          "type": "string"
-                        },
-                        "fields": {
-                          "type": "object",
-                          "propertyNames": {
-                            "type": "string"
-                          },
-                          "additionalProperties": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ]
-                          }
-                        }
-                      },
-                      "required": [
-                        "occurredAt",
-                        "subject",
-                        "fields"
-                      ]
-                    }
-                  },
-                  "final": {
-                    "default": false,
-                    "type": "boolean"
-                  }
-                },
-                "required": [
-                  "runId",
-                  "batch"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "The operation result.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "source_key": {
-                      "type": "string"
-                    },
-                    "schema_version": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "filename": {
-                      "type": "string"
-                    },
-                    "byte_size": {
-                      "type": "number"
-                    },
-                    "content_hash": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "received",
-                        "profiled",
-                        "mapped",
-                        "counted",
-                        "failed"
-                      ]
-                    },
-                    "period_from": {
-                      "type": "string"
-                    },
-                    "period_to": {
-                      "type": "string"
-                    },
-                    "row_count": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "rejected_count": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "received_at": {
-                      "type": "string"
-                    },
-                    "received_by": {
-                      "type": "string"
-                    },
-                    "counted_at": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "complete": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "source_key",
-                    "schema_version",
-                    "filename",
-                    "byte_size",
-                    "content_hash",
-                    "status",
-                    "period_from",
-                    "period_to",
-                    "row_count",
-                    "rejected_count",
-                    "received_at",
-                    "received_by",
-                    "counted_at",
-                    "complete"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/ValidationFailed"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthenticated"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          },
-          "404": {
-            "$ref": "#/components/responses/NotFound"
-          },
-          "409": {
-            "$ref": "#/components/responses/Conflict"
-          },
-          "500": {
-            "$ref": "#/components/responses/InternalError"
-          },
-          "503": {
-            "$ref": "#/components/responses/Unavailable"
-          }
-        }
-      }
-    },
     "/api/runs/{runId}/file": {
       "get": {
         "operationId": "tock-read-source-file",
@@ -2494,6 +2299,10 @@
               "type": "string"
             }
           }
+        ],
+        "description": "What a run was counted under, by content hash rather than by name.",
+        "tags": [
+          "Runs"
         ],
         "responses": {
           "200": {

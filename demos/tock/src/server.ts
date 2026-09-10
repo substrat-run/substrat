@@ -16,7 +16,7 @@
  */
 import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
@@ -133,12 +133,31 @@ async function boot() {
     // `read-source-file` is `row:read`, and deliberately so: the bytes ARE raw rows. A caller
     // who may not read the rows may not drive this either.
     const stored = await scope.invoke<{ storage_key: string; content_hash: string }>('tock/read-source-file', { runId });
-    const bytes = new Uint8Array(readFileSync(join(DATA, stored.storage_key)));
+
+    /**
+     * The stored key becomes a PATH, so it is checked before it is used.
+     *
+     * `receive-run` takes `storageKey` from its caller, and a caller holding `run:manage`
+     * could record `../../../etc/passwd`. The declared input now refuses that shape at the
+     * boundary, and this refuses it again at the point of use — the row could predate the
+     * constraint, or a future writer could reach the table another way, and a path check is
+     * cheap next to reading an arbitrary file off the host.
+     */
+    const filePath = resolve(DATA, stored.storage_key);
+    const filesRoot = resolve(FILES);
+    if (filePath === filesRoot || !filePath.startsWith(`${filesRoot}${sep}`))
+      return c.json({ error: 'the run names a stored file outside this workspace' }, 400);
+
+    const bytes = new Uint8Array(readFileSync(filePath));
     const seen = await contentHashOf(bytes);
     if (seen !== stored.content_hash)
       // The stored bytes are not the bytes the run was opened over. Counting them would put a
       // number under a provenance that does not describe it.
-      return c.json({ error: `stored file does not match the run's content hash (${stored.content_hash} vs ${seen})` }, 409);
+      //
+      // Neither digest is echoed: this response is reachable by a caller who chose the path,
+      // so printing what was found there would turn a mismatch into a way to fingerprint a
+      // file the caller cannot otherwise read.
+      return c.json({ error: "the stored file does not match this run's content hash" }, 409);
 
     const parsed = parseDeliveredFile(new TextDecoder().decode(bytes));
     let run: Run | undefined;

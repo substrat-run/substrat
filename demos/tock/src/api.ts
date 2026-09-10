@@ -7,15 +7,22 @@
  * `pnpm lint:api --check` holds against drift — the file is the reviewable artifact, never
  * what a caller reads.
  *
- * `tock/profile-run` is absent from the document because it is absent from the HTTP surface:
- * it declares no route, so nothing mounts it and nothing can call it from outside. That is
- * the trust boundary rather than an omission — the host reads the file and invokes it.
+ * `tock/profile-run` is EXCLUDED below, by hand, and the exclusion is load-bearing.
+ *
+ * `apiCatalogFrom` documents an operation with no `http` at `/api/op/{name}` — so leaving it
+ * in would publish a path `mountOperations` never mounts, and the document would both promise
+ * a 404 and advertise the one call the trust boundary exists to refuse. A client reading the
+ * document would be told to POST parsed records at it. The comment here used to claim the
+ * absence was automatic; it is not, which is why it is done explicitly.
  */
 import { apiCatalogFrom, buildOpenApiDocument } from '@substrat-run/contracts';
 import { tockOperations } from '../spec/model.js';
 import { tockManifest } from './manifest.js';
 
-export const API = apiCatalogFrom(tockOperations, {
+/** Every operation except the one that is deliberately unreachable from outside. */
+const { 'tock/profile-run': _hostOnly, ...documented } = tockOperations;
+
+export const API = apiCatalogFrom(documented, {
   'tock/declare-source': { tag: 'Sources' },
   'tock/list-sources': { tag: 'Sources' },
   'tock/save-schema': { tag: 'Schemas', description: 'Never edits a version; writes the next one.' },
@@ -25,6 +32,7 @@ export const API = apiCatalogFrom(tockOperations, {
   'tock/count-run': { tag: 'Runs', description: 'Counts a mapped run and freezes it. Which run is current is derived, never stamped.' },
   'tock/get-run': { tag: 'Runs' },
   'tock/list-runs': { tag: 'Runs' },
+  'tock/run-rules': { tag: 'Runs', description: 'What a run was counted under, by content hash rather than by name.' },
   'tock/list-observations': { tag: 'Findings', description: 'What arrived in one run, field by field.' },
   'tock/deviations': { tag: 'Findings', description: 'Where the declared shape and the data disagree.' },
   'tock/field-history': { tag: 'Findings', description: 'Kept longer than the runs it came from.' },

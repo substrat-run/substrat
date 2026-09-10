@@ -35,6 +35,10 @@ export const conformance = declareEntityChecks({
     // before a single record is looked at, so a batch that would write nothing still proves
     // the caller was let in or turned away.
     'tock/profile-run': { batch: [], final: false },
+    // `storageKey` is shape-refined (no absolute paths, no `..`), and the kit cannot invent a
+    // value that satisfies a refinement — so the fixture is supplied here rather than the
+    // constraint being loosened to keep a generator happy.
+    'tock/receive-run': { storageKey: 'files/conformance-fixture' },
     'tock/map-run': { schemaVersion: 1 },
   },
   uncovered: {},

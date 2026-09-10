@@ -104,10 +104,22 @@ export function parseDeliveredFile(text: string): ParsedFile {
       // of the unknown bucket, and collapsing it here would put it beyond recovery.
       fields[name] = value === '' ? null : value;
     });
-    records.push({ occurredAt: cells[at]!, subject: cells[who]!, fields });
+    // A line whose instant does not parse is MALFORMED, not a record with a bad timestamp.
+    // The period is derived from these values, so one unparseable cell would poison the whole
+    // run rather than the single line it came from — `dayAfter` would build a NaN date and
+    // throw, and the throw would land in the profile route where nothing catches it, long
+    // after the run was opened. Normalised to ISO here so the sort below is chronological as
+    // well as lexicographic; mixed input formats would otherwise pick the wrong bounds.
+    const at_ms = Date.parse(cells[at]!);
+    if (Number.isNaN(at_ms)) {
+      malformed += 1;
+      continue;
+    }
+    records.push({ occurredAt: new Date(at_ms).toISOString(), subject: cells[who]!, fields });
   }
   if (records.length === 0) throw new Error(`no readable records (${malformed} malformed line(s))`);
 
+  // Every instant is normalised ISO by the loop above, so lexicographic order IS chronological.
   const instants = records.map((r) => r.occurredAt).sort();
   return {
     records,
