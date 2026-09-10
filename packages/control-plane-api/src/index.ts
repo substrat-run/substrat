@@ -140,5 +140,5 @@ export type { DirectoryBackupOptions, DirectoryBackupResult } from './directory-
 // generator, an adapter and a vertical in one process, and the only place all three meet
 // is a vertical's own suite — `demos/callout/test/masked-round-trip.test.ts`.
 export { maskDump, maskRecords, MASKED } from './mask.js';
-export { createPseudonymizer, kindOf } from './pseudonymize.js';
+export { createPseudonymizer, kindOf, kindUnder } from './pseudonymize.js';
 export type { PiiKind, Pseudonymizer } from './pseudonymize.js';

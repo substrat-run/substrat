@@ -76,6 +76,40 @@ describe('kindOf', () => {
       expect(kindOf(col)).toBe('redact');
     }
   });
+
+  /**
+   * #1369: an engine documents a party label as "a display name for the role, never
+   * PII", a human types their actual name into it, and nothing enforces the documented
+   * intent — so the masker reads the box, not the docstring.
+   */
+  it('reads a person-ish role label, on the engine tables and in a payload', () => {
+    for (const col of [
+      'party_label',
+      'signatory_label',
+      'countersignatory_label',
+      'partyLabel',
+      'sender_party_label',
+      'recipient_label',
+      'signer_label',
+      'counterparty_label',
+    ]) {
+      expect(kindOf(col)).toBe('label');
+    }
+  });
+
+  /**
+   * The narrowness is the point: a bare `label` is overwhelmingly a UI string, and the
+   * `_kind` siblings are enum values a consumer branches on. Masking either turns a
+   * usable copy into a broken one, which is the failure mode `[masked]` already had.
+   */
+  it('claims no label that is not a person', () => {
+    for (const col of ['label', 'labels', 'status_label', 'size_label', 'meter_label', 'rule_label']) {
+      expect(kindOf(col)).toBeUndefined();
+    }
+    for (const col of ['party_kind', 'signatory_kind', 'party_ref', 'signature_kind']) {
+      expect(kindOf(col)).toBeUndefined();
+    }
+  });
 });
 
 describe('a masked dump', () => {
@@ -216,6 +250,167 @@ describe('a masked dump', () => {
     const tables = dumpOf([[...ROW]]);
     await maskDump(tables, await createPseudonymizer('salt-a'));
     expect(tables[0]!.rows[0]![1]).toBe('anna@example.com');
+  });
+});
+
+/**
+ * #1369: the sweep is table-agnostic and always was, but the column heuristic had no
+ * pattern for the label an engine puts a human's name in — so a masked pull came back
+ * with the vertical's own tables pseudonymized and `protocol_*` plus the `_substrat_*`
+ * spine holding verbatim production text. These are shaped like the tables that report
+ * measured, so a regression is a red build rather than a discovery on a laptop.
+ */
+describe('a masked dump of engine and spine tables', () => {
+  const PARTY_PAYLOAD = JSON.stringify({
+    instanceId: 'p1',
+    templateKey: 'avtal',
+    parties: [
+      { requestId: 'r1', label: 'Anna Ek', kind: 'principal', ref: 'pr_01', signatureKind: 'primary' },
+      { requestId: 'r2', label: 'bengt@example.se', kind: 'external', ref: null, signatureKind: 'counter' },
+    ],
+    signatory: { kind: 'principal', ref: 'pr_01', label: 'Anna Ek' },
+  });
+
+  const engineDump = (): ScopeDumpTable[] => [
+    {
+      name: 'protocol_signature_requests',
+      ddl: 'CREATE TABLE protocol_signature_requests (id TEXT, party_label TEXT, party_kind TEXT, party_ref TEXT)',
+      columns: ['id', 'party_label', 'party_kind', 'party_ref'],
+      rows: [['r1', 'Anna Ek', 'principal', 'pr_01']],
+    } as ScopeDumpTable,
+    {
+      name: 'protocol_signatures',
+      ddl: 'CREATE TABLE protocol_signatures (id TEXT, signatory_label TEXT, signed_by TEXT)',
+      columns: ['id', 'signatory_label', 'signed_by'],
+      rows: [['s1', 'Anna Ek', 'pr_01']],
+    } as ScopeDumpTable,
+    {
+      name: '_substrat_outbox',
+      ddl: 'CREATE TABLE _substrat_outbox (id TEXT, type TEXT, payload TEXT)',
+      columns: ['id', 'type', 'payload'],
+      rows: [['e1', 'protocol.signatures-requested', PARTY_PAYLOAD]],
+    } as ScopeDumpTable,
+    {
+      name: '_substrat_platform_requests',
+      ddl: 'CREATE TABLE _substrat_platform_requests (id TEXT, kind TEXT, payload TEXT)',
+      columns: ['id', 'kind', 'payload'],
+      rows: [
+        [
+          'i1',
+          'connector:scrive',
+          // The intent the connector reads, which quotes the same labels one level in
+          // and under a differently-spelled container.
+          JSON.stringify({ senderParty: { label: 'Anna Ek' }, parties: [{ label: 'Anna Ek' }] }),
+        ],
+      ],
+    } as ScopeDumpTable,
+  ];
+
+  const maskedEngineDump = async (salt = 'salt-a'): Promise<ScopeDumpTable[]> =>
+    maskDump(engineDump(), await createPseudonymizer(salt));
+
+  it('pseudonymizes an engine label column, and leaves its enum and ref siblings alone', async () => {
+    const [requests, signatures] = await maskedEngineDump();
+    const [, partyLabel, partyKind, partyRef] = requests!.rows[0]! as string[];
+    expect(partyLabel).not.toBe('Anna Ek');
+    expect(partyLabel).toMatch(/^[A-Z]\S+ [A-Z]\S+$/);
+    // A masked copy is only worth pulling if it still joins: the ref and the enum the
+    // consumer branches on are facts about the row, not about the person.
+    expect(partyKind).toBe('principal');
+    expect(partyRef).toBe('pr_01');
+    expect(signatures!.rows[0]![1]).toBe(partyLabel);
+  });
+
+  it('pseudonymizes the same label where the spine payload quotes it', async () => {
+    const [requests, , outbox] = await maskedEngineDump();
+    const payload = JSON.parse(outbox!.rows[0]![2] as string) as {
+      parties: { label: string; kind: string; ref: string | null; requestId: string }[];
+      signatory: { label: string; kind: string; ref: string };
+      instanceId: string;
+    };
+    const partyLabel = requests!.rows[0]![1] as string;
+    // The headline property, now across the seam: the engine's row and the event that
+    // quoted it agree, so a timeline still reads as one person.
+    expect(payload.parties[0]!.label).toBe(partyLabel);
+    expect(payload.signatory.label).toBe(partyLabel);
+    // Only `label` is reclassified by its container; its siblings keep their own verdict.
+    expect(payload.parties[0]!.kind).toBe('principal');
+    expect(payload.parties[0]!.ref).toBe('pr_01');
+    expect(payload.parties[0]!.requestId).toBe('r1');
+    expect(payload.instanceId).toBe('p1');
+  });
+
+  /**
+   * Whoever filled the box in reached for the address instead of the name, which is
+   * exactly what the report observed. Rendering a full name there would hand a consumer
+   * that parses the label as a contact something it cannot parse.
+   */
+  it('renders a label that holds an address back as an address', async () => {
+    const [, , outbox] = await maskedEngineDump();
+    const { parties } = JSON.parse(outbox!.rows[0]![2] as string) as { parties: { label: string }[] };
+    expect(parties[1]!.label).toMatch(/^[a-z0-9.]+@example\.(com|org|net|edu)$/);
+  });
+
+  it('reaches a platform-intent payload the same way, container spelling and all', async () => {
+    const [requests, , , intents] = await maskedEngineDump();
+    const intent = JSON.parse(intents!.rows[0]![2] as string) as {
+      senderParty: { label: string };
+      parties: { label: string }[];
+    };
+    const partyLabel = requests!.rows[0]![1] as string;
+    expect(intent.senderParty.label).toBe(partyLabel);
+    expect(intent.parties[0]!.label).toBe(partyLabel);
+    expect(intents!.rows[0]![1]).toBe('connector:scrive');
+  });
+
+  /**
+   * The column list and the container list are two spellings of ONE fact — a column
+   * says `requester_label`, the payload quoting it says `requester: { label }` — so a
+   * role in one and not the other is a leak in whichever half was forgotten. They are
+   * built from one constant now; this asserts the two readings agree, role by role, so
+   * a role added to only one of them cannot pass.
+   */
+  it('reads every role the column list knows, in its nested spelling too', async () => {
+    const roles = [
+      'party',
+      'parties',
+      'signatory',
+      'countersignatory',
+      'signer',
+      'counterparty',
+      'attendee',
+      'participant',
+      'recipient',
+      'sender',
+      'requester',
+      'assignee',
+      'contact',
+      'customer',
+      'person',
+    ];
+    const row = [...ROW];
+    row[9] = JSON.stringify(Object.fromEntries(roles.map((r) => [r, { label: 'Anna Ek' }])));
+    const out = JSON.parse((await masked('salt-a', [row]))[9] as string) as Record<
+      string,
+      { label: string }
+    >;
+    for (const role of roles) {
+      expect(kindOf(`${role}_label`)).toBe('label');
+      expect(out[role]!.label, `${role}: { label } was left verbatim`).not.toBe('Anna Ek');
+      expect(out[role]!.label).toMatch(/^[A-Z]\S+ [A-Z]\S+$/);
+    }
+  });
+
+  it('contains none of the real text it was given', async () => {
+    const emitted = JSON.stringify(await maskedEngineDump());
+    for (const value of ['Anna Ek', 'bengt@example.se']) expect(emitted).not.toContain(value);
+  });
+
+  it('is stable across two passes with the same salt, and diverges under another', async () => {
+    expect(await maskedEngineDump()).toEqual(await maskedEngineDump());
+    const a = (await maskedEngineDump())[0]!.rows[0]![1];
+    const b = (await maskedEngineDump('salt-b'))[0]!.rows[0]![1];
+    expect(a).not.toBe(b);
   });
 });
 

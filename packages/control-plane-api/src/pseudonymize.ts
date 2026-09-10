@@ -58,6 +58,7 @@ export type PiiKind =
   | 'person'
   | 'given'
   | 'family'
+  | 'label'
   | 'external_id'
   | 'redact';
 
@@ -102,6 +103,15 @@ const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
  * Names arrive snake_case from SQL columns and camelCase from JSON payload keys, so
  * callers normalize before asking.
  */
+/**
+ * The roles a human's own name gets typed under (#1369) — read TWO ways below, from this
+ * one list, because a role in one spelling and not the other is a leak in whichever half
+ * was forgotten. A column says `party_label`; the fat event payload that quotes it says
+ * `parties: [{ label }]`. Same fact, same list.
+ */
+const PERSON_ROLE =
+  'part(y|ies)|signator(y|ies)|countersignator(y|ies)|signer|counterpart(y|ies)|attendee|participant|recipient|sender|requester|assignee|contact|customer|person';
+
 const KIND_PATTERNS: readonly [RegExp, PiiKind][] = [
   [/(^|_)(e?mail|e?mail_address)($|_)/i, 'email'],
   [/(^|_)(phone|mobile|tel)($|_)/i, 'phone'],
@@ -111,15 +121,55 @@ const KIND_PATTERNS: readonly [RegExp, PiiKind][] = [
   [/(^|_)(first_name|given_name)($|_)/i, 'given'],
   [/(^|_)(last_name|family_name|surname)($|_)/i, 'family'],
   [/(^|_)external_id($|_)/i, 'external_id'],
+  // A person-ish role's DISPLAY LABEL (#1369). An engine documents these as role
+  // names — "a display name for the role, never PII" — but a human types into the
+  // box, so in practice they hold full names and, when whoever filled it in reached
+  // for the address instead, email addresses. The documented intent is enforced
+  // nowhere, so the masker cannot lean on it. Deliberately narrow: it is
+  // `<role>_label` and never a bare `label`, so `status_label`, `size_label` and
+  // `meter_label` stay readable, and `party_kind` / `signatory_kind` — enum values a
+  // consumer branches on — are untouched.
+  [new RegExp(`(^|_)(${PERSON_ROLE})s?_label($|_)`, 'i'), 'label'],
   // Free text and national identifiers: nothing honest to generate (see the header).
   [/(^|_)(ssn|personnummer|note|notes|comment|comments|message|subject|body|description)($|_)/i, 'redact'],
   [/(^|_)(name|full_name|contact)($|_)/i, 'person'],
 ];
 
+/**
+ * Keys whose value describes ONE person, so a bare `label` directly inside reads as
+ * that person's display name rather than as a UI string (#1369).
+ *
+ * The columns above catch `party_label` on the engine's own table; a fat event payload
+ * spells the same fact `parties: [{ label, kind, ref }]` or `signatory: { label }`,
+ * where the key carrying the name is just `label`. Only `label` is reclassified — the
+ * siblings keep whatever the heuristic says about them on their own, so `ref` stays the
+ * opaque id a join needs and `kind` stays the enum a consumer branches on.
+ *
+ * Built from `PERSON_ROLE`, the same list the `<role>_label` column pattern reads, so the
+ * two halves cannot drift apart.
+ */
+const PERSON_CONTAINER = new RegExp(`(^|_)(${PERSON_ROLE})s?($|_)`, 'i');
+
+const snakeOf = (name: string): string => name.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+
 /** Which kind a column or JSON key is, or `undefined` when it is not PII at all. */
 export function kindOf(name: string): PiiKind | undefined {
-  const snake = name.replace(/([a-z0-9])([A-Z])/g, '$1_$2');
+  const snake = snakeOf(name);
   for (const [pattern, kind] of KIND_PATTERNS) if (pattern.test(snake)) return kind;
+  return undefined;
+}
+
+/**
+ * Which kind a JSON key is, given the key of the object it sits directly inside.
+ *
+ * `kindOf` is the whole answer for a SQL column, which has no enclosing key. Inside a
+ * payload a key can also be read by its neighbourhood, and exactly one is: `label`
+ * under a person-ish container (#1369). Everything else defers to `kindOf`.
+ */
+export function kindUnder(name: string, container: string | undefined): PiiKind | undefined {
+  const own = kindOf(name);
+  if (own) return own;
+  if (container && /^label$/i.test(name) && PERSON_CONTAINER.test(snakeOf(container))) return 'label';
   return undefined;
 }
 
@@ -206,6 +256,12 @@ function render(kind: PiiKind, original: string, seed: Seed): string {
       return family;
     case 'person':
       return `${given} ${family}`;
+    case 'label':
+      // A free-typed role label holds a name, or an address when whoever filled it in
+      // reached for one — so render what it looks like rather than what it was called.
+      // Same reasoning as `external_id` below, and the same `looksLikeEmail` test, so a
+      // connector that parses the label as a contact still meets a parseable address.
+      return looksLikeEmail(original) ? render('email', original, seed) : `${given} ${family}`;
     case 'external_id':
       // An identity link's external id is usually the provider's subject, which in
       // practice is very often an email — so render it as one when it looks like one,

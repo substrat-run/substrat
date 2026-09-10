@@ -1,5 +1,5 @@
 import type { ScopeDumpTable } from '@substrat-run/contracts';
-import { MASKED, kindOf, type PiiKind, type Pseudonymizer } from './pseudonymize.js';
+import { MASKED, kindOf, kindUnder, type PiiKind, type Pseudonymizer } from './pseudonymize.js';
 
 /**
  * The default masking pass over a scope dump (preview-and-snapshots.md §6/§8).
@@ -19,6 +19,16 @@ import { MASKED, kindOf, type PiiKind, type Pseudonymizer } from './pseudonymize
  *    same heuristic, then re-serialized — fat event payloads keep their shape
  *    (consumers and timelines stay debuggable) while the PII fields inside them
  *    are pseudonymized.
+ *
+ * **Which tables the sweep reaches, since it is easy to read the wrong answer off a
+ * dump.** Both rules are table-agnostic: they judge a COLUMN NAME, so a vertical's own
+ * tables, an engine's tables and the `_substrat_*` spine are all swept by exactly the
+ * same rule. The gap #1369 measured was never a table the sweep skipped — it was a
+ * column NAME the heuristic did not recognise (`party_label`, `signatory_label`, and the
+ * `parties[].label` those become inside an outbox payload), which now reads as `label`.
+ * What is still true, and is the honest limit: a heuristic sweep only knows names, so a
+ * column called `x7` holding a person's name comes out verbatim from any table at all.
+ * That is why §6 gates the pull rather than trusting the mask.
  *
  * What changed with #1034 is only what the masked branch WRITES. It used to be the
  * literal `[masked]` in every cell, which made a pulled scope structurally valid and
@@ -40,18 +50,27 @@ const JSON_COLUMN = /(^|_)(payload|detail|details|data|before|after)($|_)/i;
 /** What a sweep does with one PII string: collect it, or replace it. */
 type Visit = (kind: PiiKind, original: string) => string;
 
-function sweepJson(value: unknown, kind: PiiKind | undefined, visit: Visit): unknown {
+function sweepJson(
+  value: unknown,
+  kind: PiiKind | undefined,
+  visit: Visit,
+  container?: string,
+): unknown {
   if (typeof value === 'string') return kind && value ? visit(kind, value) : value;
-  if (Array.isArray(value)) return value.map((v) => sweepJson(v, kind, visit));
+  // An array element has no key of its own, so it keeps BOTH the inherited kind (so
+  // `{ email: [a, b] }` sweeps both) and the enclosing key (so `parties: [{ label }]`
+  // still sees `parties` as the container `label` sits in).
+  if (Array.isArray(value)) return value.map((v) => sweepJson(v, kind, visit, container));
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       // The child's OWN key wins when it is recognised: in `{ contact: { email } }`,
       // `contact` reads as `person`, and inheriting that would render a full name into
       // a field a consumer parses as an email. The inherited kind is the fallback for
-      // keys the heuristic does not classify — and for array elements, which have no
-      // key of their own, so `{ email: [a, b] }` still sweeps both.
-      out[k] = sweepJson(v, kindOf(k) ?? kind, visit);
+      // keys the heuristic does not classify. `kindUnder` adds the one key that is read
+      // by its neighbourhood rather than by itself — `label` inside a person-ish
+      // container (#1369).
+      out[k] = sweepJson(v, kindUnder(k, container) ?? kind, visit, k);
     }
     return out;
   }
