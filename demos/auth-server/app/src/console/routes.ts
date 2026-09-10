@@ -5,10 +5,13 @@ import { detailTarget } from './paths';
 // split in `paths.ts` is about what a test can reach, not about where a caller should look.
 export {
   APPLICATIONS_PATH,
+  BANKID_PATH,
+  BANKID_SETTINGS_PATH,
   PROVIDERS_PATH,
   USERS_PATH,
   applicationDetailId,
   detailTarget,
+  isBankIdSettingsPath,
   providerDetailId,
   userDetailId,
 } from './paths';
@@ -68,10 +71,10 @@ export const ROUTES: Route[] = [
  * that; keeping it as an **allowlist** is what keeps the fix from becoming a hole. This value is
  * handed to an upstream provider as `callbackURL` and comes back through a redirect, so
  * "whatever was in the address bar" would be an open-redirect parameter with a round trip
- * through Google attached. Only a path this table names, or a detail URL `paths.ts` could parse
- * an id out of, survives — and the four OIDC hand-off paths (`/login`, `/signup`, `/consent`,
- * `/reset-password`) are neither: they are where the browser already is, never where it should
- * be sent next.
+ * through Google attached. Only a path this table names, or a detail URL `paths.ts` recognised —
+ * by parsing an id out of it, or by matching BankID's literal second segment — survives, and the
+ * four OIDC hand-off paths (`/login`, `/signup`, `/consent`, `/reset-password`) are neither: they
+ * are where the browser already is, never where it should be sent next.
  */
 export function returnTarget(pathname: string): string {
   if (ROUTES.some((r) => r.path === pathname)) return pathname;
