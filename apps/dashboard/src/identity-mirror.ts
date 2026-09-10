@@ -26,7 +26,17 @@ export interface IdentityDivergence {
   inSync: boolean;
 }
 
-const keyOf = (l: { provider: string; externalId: string }): string => `${l.provider}${l.externalId}`;
+/**
+ * The comparison key, encoded STRUCTURALLY rather than by concatenation.
+ *
+ * Both halves accept any non-empty string, so a delimiter is only a convention
+ * the data can break: with a `US` byte between them, `('a', '\u001fb')` and
+ * `('a\u001f', 'b')` are different pairs and were the same key. A collision
+ * here does not merely mis-count — it reports a landed link as `missing`, or
+ * hides the principal conflict this comparison exists to catch. `JSON.stringify`
+ * of the pair is injective: the quote that would forge a boundary is escaped.
+ */
+const keyOf = (l: { provider: string; externalId: string }): string => JSON.stringify([l.provider, l.externalId]);
 
 /**
  * Compare one tenant's local links against the shared directory's. Pure, so the
@@ -60,4 +70,76 @@ export function deriveIdentityDivergence(
     conflicting,
     inSync: missing.length === 0 && extra.length === 0 && conflicting.length === 0,
   };
+}
+
+
+// ── the mirror step itself, with its dependencies injected ───────────────────
+
+/** What the mirror needs from the SHARED plane — the write half of the seam (#265). */
+export interface MirrorPlane {
+  ensureTenant(slug: string, name: string): Promise<unknown>;
+  getTenant(): Promise<{ name: string } | null | undefined>;
+  setTenantName(name: string): Promise<unknown>;
+  linkIdentity(link: { provider: string; externalId: string; principal: string; scopeId?: string }): Promise<unknown>;
+}
+
+/**
+ * Everything one mirror attempt reaches for, as functions, so its failure paths
+ * can be driven from a test. `plane()` is a FACTORY on purpose: constructing the
+ * tenant-narrowed plane is itself a throwing step — a deployment with no
+ * `CONTROL_PLANE_SVC` binding 503s there (#978) — and that throw is exactly the
+ * one that used to happen OUTSIDE the mirror's try, escaping into the sign-up,
+ * invite-accept or `/api/me` the mirror was riding on.
+ */
+export interface MirrorDeps {
+  readonly provider: string;
+  readonly externalId: string;
+  readonly tenantId: string;
+  team(): Promise<{ slug: string; name: string; status: string } | null | undefined>;
+  /** `scopeId` is nullable, not merely absent: a tenant-level home has none. */
+  resolve(): Promise<{ principal: string; scopeId?: string | null } | null | undefined>;
+  plane(): MirrorPlane;
+  log(line: Record<string, unknown>): void;
+}
+
+/** What one attempt did. `skipped` is a healthy answer: nothing to mirror yet. */
+export type MirrorOutcome = 'mirrored' | 'skipped' | 'failed';
+
+/**
+ * Mirror one login's link for one tenant into the shared directory. Best-effort
+ * by design: the local link stays authoritative, a plane outage must never fail
+ * the request this rides on, and the next `/api/me` retries. Best-effort is not
+ * the same as SILENT, which is what #1343 fixes — every failure leaves one
+ * structured line behind, the missing-binding 503 included.
+ */
+export async function mirrorIdentityLink(deps: MirrorDeps): Promise<MirrorOutcome> {
+  try {
+    const team = await deps.team();
+    if (!team || team.status !== 'active') return 'skipped';
+    const mapped = await deps.resolve();
+    if (!mapped) return 'skipped';
+    const plane = deps.plane();
+    await plane.ensureTenant(team.slug, team.name);
+    // `ensureTenant` is a no-op for an existing row, so a tenant first mirrored at
+    // app-provision time keeps its placeholder name (historically the login's email)
+    // forever — sync the display name so the CLI's workspace picker shows the team.
+    // Read-then-patch to keep the quiet path writeless (this runs on every /api/me).
+    const shared = await plane.getTenant();
+    if (shared && shared.name !== team.name) await plane.setTenantName(team.name);
+    await plane.linkIdentity({
+      provider: deps.provider,
+      externalId: deps.externalId,
+      principal: mapped.principal,
+      ...(mapped.scopeId ? { scopeId: mapped.scopeId } : {}),
+    });
+    return 'mirrored';
+  } catch (e) {
+    deps.log({
+      event: 'dashboard.identity-mirror.failed',
+      tenantId: deps.tenantId,
+      provider: deps.provider,
+      detail: e instanceof Error ? e.message : String(e),
+    });
+    return 'failed';
+  }
 }

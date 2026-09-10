@@ -34,6 +34,7 @@ import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './releases.js';
 import { deriveFieldCoverage } from './field-coverage.js';
+import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
@@ -378,40 +379,24 @@ function repoLinkStub(env: Env, repoFullName: string): RepoLinkStub {
  * backfill for teams created before this mirror existed.
  */
 async function mirrorBuilderIdentity(env: Env, host: ScopeHost, userId: string, t: TenantId): Promise<void> {
-  const cp = controlPlaneFor(env, t);
-  try {
-    const team = await host.admin.getTenant(STAFF, t);
-    if (!team || team.status !== 'active') return;
-    const mapped = await host.admin.resolveIdentity(t, PROVIDER, userId);
-    if (!mapped) return;
-    await cp.ensureTenant(team.slug, team.name);
-    // `ensureTenant` is a no-op for an existing row, so a tenant first mirrored at
-    // app-provision time keeps its placeholder name (historically the login's email)
-    // forever — sync the display name so the CLI's workspace picker shows the team.
-    // Read-then-patch to keep the quiet path writeless (this runs on every /api/me).
-    const shared = await cp.getTenant();
-    if (shared && shared.name !== team.name) await cp.setTenantName(team.name);
-    await cp.linkIdentity({
-      provider: PROVIDER,
-      externalId: userId,
-      principal: mapped.principal,
-      ...(mapped.scopeId ? { scopeId: mapped.scopeId } : {}),
-    });
-  } catch (e) {
-    // Still best-effort — a failed mirror must never fail the request it rides on,
-    // and the next /api/me retries. But it is no longer SILENT (#1343): this catch
-    // swallowed everything, including the 503 a missing CONTROL_PLANE binding
-    // throws, so "the mirror is complete" was a belief with no way to check it.
-    // One structured line, in the logs the observability tab already reads.
-    console.error(
-      JSON.stringify({
-        event: 'dashboard.identity-mirror.failed',
-        tenantId: t,
-        provider: PROVIDER,
-        detail: e instanceof Error ? e.message : String(e),
-      }),
-    );
-  }
+  await mirrorIdentityLink({
+    provider: PROVIDER,
+    externalId: userId,
+    tenantId: t,
+    team: () => host.admin.getTenant(STAFF, t),
+    resolve: () => host.admin.resolveIdentity(t, PROVIDER, userId),
+    // Inside the attempt, never before it: `controlPlaneFor` throws the 503 a
+    // missing CONTROL_PLANE binding deserves, and constructing the plane eagerly
+    // sent that throw straight into the sign-up or /api/me this rides on — the
+    // one failure the mirror most needed to report rather than propagate.
+    plane: () => controlPlaneFor(env, t),
+    // The logs a PLATFORM operator reads (`wrangler tail`, the Workers dashboard),
+    // not the tenant-facing Observability tab: that tab answers only for services
+    // the tenant owns (`ownedServiceRefs`), and this line comes from the shared
+    // dashboard worker, so it is filtered out before any query runs. The tenant's
+    // own view of the same fact is `GET /api/identity-mirror`.
+    log: (line) => console.error(JSON.stringify(line)),
+  });
 }
 
 function secretBoxFor(env: Env): SecretBox | undefined {
@@ -961,6 +946,43 @@ const pageParams = (c: { req: { query(key: string): string | undefined } }) =>
  * first (`{ entries, nextCursor }`, keyset on the roster row id). Org-bounded small,
  * but the envelope is the ONE list-read shape (contracts pagination.ts).
  */
+/**
+ * Is this team's identity mirror complete, right now (#1343)? The dashboard keeps
+ * its own directory and best-effort mirrors links into the shared one (#265) —
+ * two sources of truth healed by polling, and retiring the local one is a
+ * live-data move that cannot be planned against a belief.
+ *
+ * Both directories, for the CALLER'S OWN tenant only: the local read is the
+ * staff-actor projection read (access-logged, K-24) narrowed to the tenant their
+ * session resolved to, and the shared read is the tenant-narrowed plane's, so
+ * neither side can be aimed at somebody else's team by a request argument.
+ *
+ * A 503 here is the answer, not a bug: an unbound control plane means the mirror
+ * has not been landing at all, which is exactly what a readiness check should say.
+ */
+app.get('/api/identity-mirror', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const local = await host.admin.listIdentityLinks(STAFF, node.tenantId);
+  const shared = await controlPlaneFor(c.env, node.tenantId).listIdentityLinks();
+  const divergence = deriveIdentityDivergence(local, shared);
+  return c.json({
+    tenant: node.tenantId,
+    inSync: divergence.inSync,
+    counts: {
+      local: local.length,
+      shared: shared.length,
+      missing: divergence.missing.length,
+      extra: divergence.extra.length,
+      conflicting: divergence.conflicting.length,
+    },
+    missing: divergence.missing,
+    extra: divergence.extra,
+    conflicting: divergence.conflicting,
+  });
+});
+
 app.get('/api/members', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
