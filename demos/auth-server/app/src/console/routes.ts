@@ -1,4 +1,9 @@
 import { SubIcons } from '@substrat-run/ui';
+import { detailTarget } from './paths';
+
+// Re-exported so the console's routing is still one import for the screens that read it — the
+// split in `paths.ts` is about what a test can reach, not about where a caller should look.
+export { APPLICATIONS_PATH, USERS_PATH, applicationDetailId, detailTarget, userDetailId } from './paths';
 
 /**
  * Lucide `circle-user`. `@substrat-run/ui` has `users` (a group) but no single-person icon,
@@ -52,35 +57,18 @@ export const ROUTES: Route[] = [
  *
  * A pasted `/applications` used to be thrown away by the sign-in it triggered, and the person
  * landed on Users wondering what happened to the link they were sent. Keeping it is what fixes
- * that; keeping it as an **allowlist of literal paths** is what keeps the fix from becoming a
- * hole. This value is handed to an upstream provider as `callbackURL` and comes back through a
- * redirect, so "whatever was in the address bar" would be an open-redirect parameter with a
- * round trip through Google attached. Only a path this table names survives, and the four OIDC
- * hand-off paths (`/login`, `/signup`, `/consent`, `/reset-password`) are not in it — they are
- * where the browser already is, never where it should be sent next.
+ * that; keeping it as an **allowlist** is what keeps the fix from becoming a hole. This value is
+ * handed to an upstream provider as `callbackURL` and comes back through a redirect, so
+ * "whatever was in the address bar" would be an open-redirect parameter with a round trip
+ * through Google attached. Only a path this table names, or a detail URL `paths.ts` could parse
+ * an id out of, survives — and the four OIDC hand-off paths (`/login`, `/signup`, `/consent`,
+ * `/reset-password`) are neither: they are where the browser already is, never where it should
+ * be sent next.
  */
 export function returnTarget(pathname: string): string {
   if (ROUTES.some((r) => r.path === pathname)) return pathname;
-  // A user detail URL is the one path outside the table worth surviving a sign-in: it is the
+  // A detail URL is the kind of path outside the table worth surviving a sign-in: it is the
   // link an operator pastes into a support conversation, and it is exactly where the person
-  // opening it meant to land. It is still not "whatever was in the address bar" — the id has
-  // to look like an id, so nothing with a slash, a scheme or a `//` can ride this back out of
-  // a provider redirect.
-  const id = userDetailId(pathname);
-  return id ? `/users/${id}` : '/';
-}
-
-/** The section a path belongs to, so `/users/<id>` keeps Users lit in the nav. */
-export const USERS_PATH = '/users';
-
-/**
- * The id in `/users/<id>`, or null for anything else — the whole of the console's dynamic
- * routing. Deliberately strict about the shape rather than accepting any tail: this value is
- * interpolated into an API path AND is an open-redirect parameter by way of `returnTarget`,
- * so "url-safe id characters only" is the property both callers need. Better Auth mints
- * 32-character ids from that alphabet.
- */
-export function userDetailId(pathname: string): string | null {
-  const match = /^\/users\/([A-Za-z0-9_-]{1,64})$/.exec(pathname);
-  return match?.[1] ?? null;
+  // opening it meant to land.
+  return detailTarget(pathname) ?? '/';
 }
