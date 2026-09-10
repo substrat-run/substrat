@@ -5,7 +5,8 @@
  *
  * It authenticates against the platform's AuthHero instance (the Auth0-compatible
  * OIDC authority). The kernel keeps authorization (roles/grants/tenancy); this
- * package only proves *who* the caller is — the `sub` (and `email`), taken from the
+ * package only proves *who* the caller is — the `sub` (and `email`, and whatever the
+ * issuer asserts about that address being verified), taken from the
  * ID token and, for the claims OIDC Core §5.4 routes to UserInfo instead, from there.
  *
  * Standard Authorization-Code + PKCE, discovery-driven so nothing but the issuer
@@ -41,6 +42,19 @@ export interface SessionUser {
   id: string;
   email?: string;
   name?: string;
+  /**
+   * The issuer's `email_verified` claim about `email`, carried through the session
+   * unchanged — **three states, not two**. `true` and `false` are the issuer asserting
+   * something; `undefined` is the issuer saying nothing, which is what an IdP that never
+   * emits the claim looks like, and what every session minted before this field existed
+   * looks like for the rest of its seven days.
+   *
+   * Nothing in the platform reads it yet. It is here because an address is an identifier
+   * in at least two places — the staff roster and vertical invite flows — and a gate
+   * there cannot be written against a claim that was never carried (#1359). Whoever
+   * writes that gate decides what `undefined` means; this package deliberately does not.
+   */
+  emailVerified?: boolean;
 }
 
 interface Discovery {
@@ -247,16 +261,24 @@ export async function completeLogin(
  * instead, and the person lands authenticated and unrecognised — a working login with
  * no access, and no error anywhere to explain it.
  *
- * Four things this is careful about:
+ * Five things this is careful about:
  *
  *  - **Only when something is missing.** A provider that already puts the claims in the
- *    ID token costs no extra round trip, and its behaviour is unchanged.
+ *    ID token costs no extra round trip, and its behaviour is unchanged. Note what that
+ *    means for `email_verified`: a missing *flag* does not trigger the call, only a
+ *    missing address or name does. Fetching to look for a claim most issuers never emit
+ *    would put a round trip inside every login to learn nothing, and `undefined` is
+ *    already the honest answer for an issuer that does not assert it.
  *  - **The ID token still wins.** UserInfo fills gaps; it never overwrites a claim that
  *    was signed into the token we already verified.
  *  - **`sub` is verified (OIDC Core §5.3.2).** A UserInfo response whose subject differs
  *    from the ID token's is exactly the substitution the check exists to catch, so it
  *    throws rather than being ignored — every other integrity failure in this flow
  *    (state, nonce, signature) throws too, and the caller renders them all the same way.
+ *  - **The flag travels with the address it qualifies.** Whichever response supplied
+ *    `email` supplies its `email_verified` too; the two are never taken from opposite
+ *    sides, since an unsigned "verified" must not end up vouching for a signed address
+ *    it was never about.
  *  - **Transport problems degrade, they do not fail.** No endpoint advertised, no access
  *    token, a non-2xx, unreadable JSON, an endpoint that accepts the connection and then
  *    says nothing: the login stands with what the ID token gave. The ID token is the
@@ -274,7 +296,7 @@ async function withUserInfo(
   if (user.email !== undefined && user.name !== undefined) return user;
   if (!d.userinfo_endpoint || !accessToken) return user;
 
-  let claims: { sub?: unknown; email?: unknown; name?: unknown };
+  let claims: { sub?: unknown; email?: unknown; name?: unknown; email_verified?: unknown };
   try {
     const res = await fetch(d.userinfo_endpoint, {
       headers: { authorization: `Bearer ${accessToken}`, accept: 'application/json' },
@@ -294,10 +316,16 @@ async function withUserInfo(
     throw new Error('userinfo sub does not match the id_token sub');
   }
 
+  // `email_verified` qualifies an address, so it comes from whichever response the
+  // address itself came from — never paired across the two. Taking UserInfo's flag while
+  // keeping the ID token's address would let an unsigned "verified" vouch for a different
+  // signed address, which is precisely the claim's job to prevent.
+  const emailFromUserInfo = user.email === undefined && typeof claims.email === 'string';
   return {
     id: user.id,
     email: user.email ?? (typeof claims.email === 'string' ? claims.email : undefined),
     name: user.name ?? (typeof claims.name === 'string' ? claims.name : undefined),
+    emailVerified: emailFromUserInfo ? booleanClaim(claims.email_verified) : user.emailVerified,
   };
 }
 
@@ -312,7 +340,11 @@ export async function mintSession(
   user: SessionUser,
   maxAgeSec: number = SESSION_MAXAGE,
 ): Promise<string> {
-  return new SignJWT({ email: user.email, name: user.name })
+  // `email_verified` keeps its OIDC spelling in the token so the mint and the read are
+  // one function (`userFromClaims` decodes an ID token and a session alike). It is simply
+  // absent when the issuer asserted nothing, which is also how every session minted
+  // before this field existed reads — indistinguishable, and correctly so.
+  return new SignJWT({ email: user.email, name: user.name, email_verified: user.emailVerified })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
     .setIssuedAt()
@@ -320,12 +352,43 @@ export async function mintSession(
     .sign(signingKey(env));
 }
 
-function userFromClaims(payload: { sub?: unknown; email?: unknown; name?: unknown }): SessionUser {
+/**
+ * The claims a token carries, as a `SessionUser` — and the one decoder for BOTH tokens
+ * this package holds: the issuer's ID token on the way in, and our own session JWT on
+ * every request after. That is why `mintSession` signs `email_verified` under its OIDC
+ * spelling rather than a local one; the mint and the read stay a single shape, and a
+ * claim added here is carried across the session without a second place to update.
+ */
+function userFromClaims(payload: {
+  sub?: unknown;
+  email?: unknown;
+  name?: unknown;
+  email_verified?: unknown;
+}): SessionUser {
   return {
     id: String(payload.sub),
     email: typeof payload.email === 'string' ? payload.email : undefined,
     name: typeof payload.name === 'string' ? payload.name : undefined,
+    emailVerified: booleanClaim(payload.email_verified),
   };
+}
+
+/**
+ * `email_verified` as the three-state value `SessionUser` documents: a boolean when the
+ * issuer asserted one, `undefined` when it said nothing.
+ *
+ * The string forms are read too, and deliberately. OIDC Core types the claim as a boolean,
+ * but issuers in the Auth0 lineage have emitted `"true"`/`"false"` — and the difference
+ * matters in one direction only: dropping `"false"` would turn an issuer's *negative*
+ * assertion into "said nothing", which is the one misreading a later gate would wave
+ * through. Anything else (a number, an object, a `"yes"`) stays `undefined`, because a
+ * value we cannot read is not an assertion.
+ */
+function booleanClaim(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
 }
 
 /**

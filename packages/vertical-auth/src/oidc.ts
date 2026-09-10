@@ -66,9 +66,24 @@ export function oidcAuthProvider(cfg: OidcConfig): AuthProvider {
       });
       if (!payload.sub) return null;
       const meta = payload as Record<string, unknown>;
+      // `email_verified`, read exactly as `@substrat-run/oidc-rp` reads it on the
+      // browser-login path: a boolean when the issuer asserts one, and the `"true"` /
+      // `"false"` strings some issuers in the Auth0 lineage emit instead — anything else,
+      // the claim's absence included, stays `undefined` rather than becoming a guess.
+      // Written out here rather than imported so this subpath keeps its two-module
+      // dependency (jose + this file) and a bearer-only consumer needs no hono.
+      const verified = meta['email_verified'];
       return {
         sub: String(payload.sub),
         email: typeof meta['email'] === 'string' ? (meta['email'] as string) : null,
+        emailVerified:
+          typeof verified === 'boolean'
+            ? verified
+            : verified === 'true'
+              ? true
+              : verified === 'false'
+                ? false
+                : undefined,
         name:
           typeof meta['name'] === 'string'
             ? (meta['name'] as string)

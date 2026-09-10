@@ -16,6 +16,19 @@ export interface AuthSubject {
   sub: string;
   email: string | null;
   name: string | null;
+  /**
+   * Whether the provider says `email` has been verified — **three states, not two**.
+   * `true` and `false` are the provider asserting something; `undefined` is it saying
+   * nothing, which is what an OIDC issuer that never emits `email_verified` looks like,
+   * and what a session minted before this field existed looks like for the rest of its
+   * life. Optional so a provider that cannot answer stays honest rather than guessing.
+   *
+   * Nothing resolves authorization from it yet. It is carried because an address becomes
+   * an identifier in invite flows and on the staff roster, and a gate there cannot be
+   * written against a claim nobody transported (#1359) — the caller that eventually
+   * gates on it decides what `undefined` means.
+   */
+  emailVerified?: boolean;
 }
 
 export interface AuthProvider {

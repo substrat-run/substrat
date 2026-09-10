@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
-import { beginLogin, completeLogin, USERINFO_TIMEOUT_MS, type OidcEnv } from '../src/index.js';
+import {
+  beginLogin,
+  completeLogin,
+  mintSession,
+  verifySession,
+  USERINFO_TIMEOUT_MS,
+  type OidcEnv,
+} from '../src/index.js';
 
 /**
  * The callback's code→token exchange, against a STUBBED issuer, focused on where the
@@ -218,4 +225,102 @@ describe('what it refuses, and what it merely shrugs at', () => {
     },
     USERINFO_TIMEOUT_MS + 5_000,
   );
+});
+
+/**
+ * `email_verified` — carried from wherever the address came from, all the way through the
+ * session, and decided by nobody here (#1359).
+ *
+ * The claim is three-state and these tests are written around that: `true` and `false` are
+ * the issuer asserting something, absent is the issuer saying nothing. Collapsing the third
+ * into `false` is what would lock out every user of an IdP that never emits it, so the
+ * distinction has to survive the mint/verify round trip as well as the login.
+ */
+describe('email_verified, carried and not decided', () => {
+  /** A session cookie, verified straight back — the shape a later request would see. */
+  const roundTrip = async (user: Awaited<ReturnType<typeof login>>['user']) =>
+    verifySession(env, await mintSession(env, user));
+
+  for (const [claim, expected] of [
+    [true, true],
+    [false, false],
+    // Auth0's lineage has emitted the strings. `"false"` mattering is the point: dropping
+    // it would turn a negative assertion into silence.
+    ['true', true],
+    ['false', false],
+    // Neither a boolean nor one of those two strings — unreadable is not an assertion.
+    [1, undefined],
+    [{ verified: true }, undefined],
+  ] as const) {
+    it(`reads ${JSON.stringify(claim)} from the ID token as ${String(expected)}, and the session keeps it`, async () => {
+      idTokenClaims = { sub: 'u-1', email: 'a@example.test', name: 'A Person', email_verified: claim };
+
+      const { user } = await login();
+
+      expect(user.emailVerified).toBe(expected);
+      expect((await roundTrip(user))?.emailVerified).toBe(expected);
+    });
+  }
+
+  it('leaves it undefined when the issuer asserts nothing — including across the session', async () => {
+    idTokenClaims = { sub: 'u-1', email: 'a@example.test', name: 'A Person' };
+
+    const { user } = await login();
+
+    // An issuer that never emits the claim is not an issuer saying "unverified", and a
+    // session minted from one is indistinguishable from a session minted before this
+    // field existed — which is what every live session is for the rest of its seven days.
+    expect(user.emailVerified).toBeUndefined();
+    expect(await roundTrip(user)).toEqual({
+      id: 'u-1',
+      email: 'a@example.test',
+      name: 'A Person',
+      emailVerified: undefined,
+    });
+  });
+
+  it('takes it from UserInfo when UserInfo is where the address came from', async () => {
+    idTokenClaims = { sub: 'u-1' };
+    userInfo = {
+      status: 200,
+      body: { sub: 'u-1', email: 'a@example.test', name: 'A Person', email_verified: true },
+    };
+
+    const { user } = await login();
+
+    expect(user).toEqual({
+      id: 'u-1',
+      email: 'a@example.test',
+      name: 'A Person',
+      emailVerified: true,
+    });
+  });
+
+  it('ignores a UserInfo flag when the address was signed into the ID token', async () => {
+    idTokenClaims = { sub: 'u-1', email: 'signed@example.test' };
+    userInfo = {
+      status: 200,
+      body: { sub: 'u-1', email: 'other@example.test', name: 'A Person', email_verified: true },
+    };
+
+    const { user } = await login();
+
+    // The name is filled from UserInfo, as always. The flag is not: it would be an
+    // unsigned "verified" vouching for an address it was never about — UserInfo's own
+    // address having already lost to the ID token's on the line above.
+    expect(user.name).toBe('A Person');
+    expect(user.email).toBe('signed@example.test');
+    expect(user.emailVerified).toBeUndefined();
+  });
+
+  it('does not spend a UserInfo round trip merely looking for the flag', async () => {
+    idTokenClaims = { sub: 'u-1', email: 'a@example.test', name: 'A Person' };
+
+    const { user } = await login();
+
+    // Nothing is staged at the endpoint, so a call here would throw rather than degrade.
+    // Most issuers never emit the claim, and `undefined` is already the honest answer.
+    expect(userInfoRequests).toEqual([]);
+    expect(user.emailVerified).toBeUndefined();
+  });
 });
