@@ -682,7 +682,10 @@ function Desk() {
           onChange={(e) => setDesk({ ...desk, greeting: e.target.value })}
         />
       </Field>
-      <Field label="Business hours">
+      <Field
+        label="Business hours"
+        hint="Shown to a visitor under the greeting, exactly as written. Nothing schedules on it — leave it empty and the widget says nothing."
+      >
         <input
           className="input"
           placeholder="Mon–Fri · 09:00–18:00 · Europe/Stockholm"

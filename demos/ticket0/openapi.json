@@ -11453,6 +11453,16 @@
                     "greeting": {
                       "type": "string"
                     },
+                    "businessHours": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "verified": {
                       "type": "boolean"
                     },
@@ -11467,6 +11477,7 @@
                     "sessionId",
                     "token",
                     "greeting",
+                    "businessHours",
                     "verified",
                     "origin",
                     "startedAt"
