@@ -49,12 +49,14 @@ export function SignIn({
    *  - `!socialError`: this screen is where a refused sign-in comes back to. Redirecting
    *    again from here would send the person round the same failing loop with the reason
    *    flashing past unread — the ONE case where the automatic thing must not happen.
-   *
-   * There is no `oauthQuery` clause and there does not need to be: `restricted` cannot be
-   * true without a client id, and the console's own sign-in has no client.
+   *  - `forOidc`: a relying party is waiting on an answer, so leaving is what the person came
+   *    here to do. The CONSOLE can be restricted too now (`src/console-client.ts`), and there
+   *    the same redirect would bounce an operator off their own dashboard before they could
+   *    reach `?builtin=0` — an auto-navigation is a bad place to have to interrupt. One click
+   *    is the whole cost of not doing that.
    */
   const only = providers.length === 1 && !passwordEnabled ? providers[0] : undefined;
-  const straightThrough = signIn.restricted && only !== undefined && !socialError;
+  const straightThrough = forOidc && signIn.restricted && only !== undefined && !socialError;
   const [redirecting, setRedirecting] = useState(straightThrough);
   /** Fired once per mount, whatever React does with the effect. Without this, StrictMode's
    *  double-invoke starts two sign-ins, each minting its own OAuth state — the last
@@ -108,6 +110,15 @@ export function SignIn({
             This application accepts no sign-in method this issuer currently offers. Its
             administrator has to enable one before anyone can sign in to it.
           </p>
+          {/* The console can reach this state the slow way — restricted to an upstream that
+              was deleted or broke afterwards — and it is the one case where the person
+              reading has the power to fix it, if they can get to a screen. */}
+          {!forOidc && (
+            <p className="muted">
+              Administrator? <a href="/login?builtin=0">Sign in with this issuer’s own defaults</a> to
+              change it.
+            </p>
+          )}
         </Card>
       </Centered>
     );

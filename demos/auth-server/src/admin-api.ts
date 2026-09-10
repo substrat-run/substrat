@@ -4,7 +4,14 @@ import { z } from 'zod';
 import type { SqlExec } from './introspect.js';
 import type { SessionSubject } from './do-contract.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, boolValue, isTruthy, putDeliveredConfig } from './settings.js';
-import { assertSignInPolicy, isReservedMethodId } from './sign-in-policy.js';
+import { assertSignInPolicy, isReservedMethodId, sanitizeSignInPolicy } from './sign-in-policy.js';
+import {
+  CONSOLE_CLIENT_ID,
+  CONSOLE_CLIENT_NAME,
+  assertConsoleClientPatch,
+  assertConsolePolicy,
+  isConsoleClient,
+} from './console-client.js';
 import {
   GENERIC_ID_PATTERN,
   LOOPBACK_HOSTS,
@@ -86,6 +93,17 @@ export interface AdminApiDeps {
   effectiveCfg(): Record<string, string | undefined>;
   /** Better Auth for THIS request — used only for the server-only client verbs. */
   auth(): OAuthClientAdminApi;
+  /**
+   * Every sign-in button this issuer could draw right now — the enabled upstream rows plus
+   * BankID when this runtime can actually present its certificate.
+   *
+   * A dep rather than a read off `sql`, because the second half of that sentence is not in
+   * the database: BankID is offered only where an mTLS binding exists, which the Durable
+   * Object knows and the dev server knows differently. It is used for ONE thing — the
+   * console's lock-out guard (`console-client.ts`) — and guessing there would either block a
+   * legitimate policy or wave through the one that strands its author.
+   */
+  offeredProviders(): { id: string; label: string }[];
 }
 
 const CLIENT_COLUMNS = `client_id, name, icon, metadata, redirect_uris, disabled, skip_consent,
@@ -157,6 +175,13 @@ function toWireClient(row: ClientRow) {
     post_logout_redirect_uris: jsonColumn<string[]>(row.post_logout_redirect_uris, []),
     /** Whether a secret exists — never the secret, which is stored hashed. */
     client_secret_set: Boolean(row.client_secret),
+    /**
+     * The issuer's OWN console (`console-client.ts`), rather than an application somebody
+     * registered. On the wire because the dashboard has to draw it differently — it has no
+     * redirect URIs, no secret to rotate and no Remove button — and deriving that from a
+     * hardcoded id in the browser would put the same fact in two places.
+     */
+    builtin: isConsoleClient(row.client_id),
   };
 }
 
@@ -566,6 +591,9 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.patch('/clients/:clientId', async (c) => {
     const clientId = c.req.param('clientId');
     const patch = parsedBody(clientPatch, await c.req.json().catch(() => null));
+    // Before anything is read or written: the console's row has no OAuth surface, and
+    // this is the one route that could give it one (`CONSOLE_LOCKED_FIELDS`).
+    if (isConsoleClient(clientId)) assertConsoleClientPatch(patch);
     const exists = deps.sql
       .exec(
         `SELECT client_id, application_type, redirect_uris, post_logout_redirect_uris
@@ -587,6 +615,19 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     if (patch.logo_uri !== undefined) set('icon', patch.logo_uri || null);
     if (patch.metadata !== undefined) {
       assertClientMetadata(patch.metadata);
+      /**
+       * The console gets a second, stricter reading of the same policy: not "is this a
+       * policy" but "does it leave a way in HERE". `assertClientMetadata` above passes
+       * `{ password: false, providers: ['microsoft'] }` for every client and should — the
+       * screen says so when the provider is missing. On this row saying so is not good
+       * enough, because the person who would read it is the one who can no longer sign in.
+       */
+      if (isConsoleClient(clientId)) {
+        assertConsolePolicy(
+          sanitizeSignInPolicy((patch.metadata as Record<string, unknown>).signIn),
+          deps.offeredProviders(),
+        );
+      }
       set('metadata', JSON.stringify(patch.metadata));
     }
     if (patch.skip_consent !== undefined) set('skip_consent', patch.skip_consent ? 1 : 0);
@@ -640,6 +681,17 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
   app.delete('/clients/:clientId', (c) => {
     const clientId = c.req.param('clientId');
     if (!readClientRow(deps.sql, clientId)) throw new HTTPException(404, { message: `unknown client '${clientId}'` });
+    /**
+     * The console's row is the issuer's own, not an application anybody registered — and
+     * removing it would take the theme and policy an operator put on it while the next boot
+     * silently seeded a blank one back. Disabling it is the verb that means what a delete
+     * here would be reaching for, and it is reversible.
+     */
+    if (isConsoleClient(clientId)) {
+      throw new HTTPException(409, {
+        message: `'${CONSOLE_CLIENT_ID}' is the ${CONSOLE_CLIENT_NAME.toLowerCase()}, not a registered application — disable it instead, which restores this issuer's plain sign-in screen`,
+      });
+    }
     for (const table of ['oauth_access_token', 'oauth_refresh_token', 'oauth_consent']) {
       deps.sql.exec(`DELETE FROM "${table}" WHERE client_id = ?`, clientId);
     }

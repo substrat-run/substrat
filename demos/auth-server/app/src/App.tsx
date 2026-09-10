@@ -111,15 +111,29 @@ export default function App() {
     const oauthQuery = pendingOAuthQuery(url);
     const forOidc = oauthQuery !== null;
 
-    // The application that sent this person here decides how these screens look AND which
-    // sign-in methods they offer — its operator's `metadata.theme` and `metadata.signIn`, read
-    // per client id. Only inside an authorize hand-off: the console's own sign-in is never
-    // themed and never narrowed, which is also the operator's way back in when a client is
-    // restricted to an upstream that has broken.
+    /**
+     * The application these screens are being drawn FOR decides how they look and which
+     * sign-in methods they offer — its operator's `metadata.theme` and `metadata.signIn`,
+     * read per client id.
+     *
+     * Mid-authorize that is the relying party that sent this person here. Otherwise it is the
+     * console itself, which now has a row of its own in the registry
+     * (`src/console-client.ts`): passing NO client id is how this asks for it, so the id
+     * lives on the server and not in a constant here.
+     *
+     * `?builtin=0` skips that and takes the unthemed, unnarrowed defaults below — the way
+     * back in when the console has been narrowed to an upstream that has since broken. It
+     * costs nothing to allow, because a console sign-in never reaches `/oauth2/authorize` and
+     * so its policy was never enforced against anything; a relying party's is, and this
+     * escape hatch cannot touch that one.
+     */
+    const plainDefaults = { theme: {}, signIn: { providers, password: true, restricted: false } };
+    // The relying party mid-authorize; `null` is the console asking about itself.
     const clientId = forOidc ? url.searchParams.get('client_id') : null;
-    const options = clientId
-      ? await clientOptions(clientId, providers)
-      : { theme: {}, signIn: { providers, password: true, restricted: false } };
+    // Two ways to end up on the plain screen: the operator asked for it, or an authorize
+    // query arrived naming no client at all (which is malformed, and was never themed).
+    const plain = forOidc ? !clientId : url.searchParams.get('builtin') === '0';
+    const options = plain ? plainDefaults : await clientOptions(clientId, providers);
     applyClientTheme(options.theme);
     setTheme(options.theme);
     const signIn = options.signIn;

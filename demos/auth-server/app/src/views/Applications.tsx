@@ -109,19 +109,27 @@ export function ClientsPanel() {
                 <td>
                   <div>
                     {client.client_name ?? 'Unnamed application'}
-                    <span className="tag">{client.application_type ?? 'web'}</span>
-                    {client.skip_consent && <span className="tag">no consent screen</span>}
-                    {client.enable_end_session && <span className="tag">can sign out</span>}
-                    {!client.user_id && <span className="tag">self-registered</span>}
+                    {client.builtin ? (
+                      <span className="tag">this issuer</span>
+                    ) : (
+                      <span className="tag">{client.application_type ?? 'web'}</span>
+                    )}
+                    {!client.builtin && client.skip_consent && <span className="tag">no consent screen</span>}
+                    {!client.builtin && client.enable_end_session && <span className="tag">can sign out</span>}
+                    {!client.builtin && !client.user_id && <span className="tag">self-registered</span>}
                   </div>
                   <code className="client-id">{client.client_id}</code>
                 </td>
                 <td className="uris">
-                  {client.redirect_uris.map((uri) => <div key={uri}><code>{uri}</code></div>)}
+                  {client.builtin ? (
+                    <span className="muted">the admin console — signs in here, never redirects</span>
+                  ) : (
+                    client.redirect_uris.map((uri) => <div key={uri}><code>{uri}</code></div>)
+                  )}
                 </td>
                 <td>
                   {client.disabled ? <span className="tag warn">disabled</span> : 'active'}
-                  {!client.client_secret_set && <span className="tag">public</span>}
+                  {!client.builtin && !client.client_secret_set && <span className="tag">public</span>}
                 </td>
                 <td className="actions">
                   <button className="btn tiny" onClick={() => setEditing(client)}>Edit</button>
@@ -153,6 +161,11 @@ export function ClientsPanel() {
                       Rotate secret
                     </button>
                   )}
+                  {/* The console's row is this issuer's own and the API refuses to delete it
+                      (a blank one would be seeded back on the next boot, minus the theme and
+                      policy an operator put on it). Disable, above, is the reversible verb
+                      that means what a delete here would be reaching for. */}
+                  {!client.builtin && (
                   <button
                     className="btn tiny danger"
                     onClick={() =>
@@ -170,6 +183,7 @@ export function ClientsPanel() {
                   >
                     Remove
                   </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -179,7 +193,8 @@ export function ClientsPanel() {
       <p className="muted small">
         Each application connects with its own client ID, so the login and consent screens can
         tell them apart — the name and icon here are what a person sees when that application
-        asks them to sign in.
+        asks them to sign in. <code>console</code> is this issuer&apos;s own admin screen rather
+        than a registered application; edit it to theme or narrow the sign-in you are looking at.
       </p>
     </section>
   );
@@ -231,6 +246,14 @@ function ClientEditor({
   onCancel: () => void;
   onSaved: (secret: { clientId: string; clientSecret: string } | null) => void | Promise<void>;
 }) {
+  /**
+   * The issuer's own console (`src/console-client.ts`). Everything OAuth-shaped is absent
+   * from this row on purpose — it holds no redirect URI, no secret and no consent decision,
+   * because the console signs in over its own session and never redirects. So the fields
+   * that describe a redirect flow are hidden rather than shown empty, and the save below
+   * names only the keys that mean something here.
+   */
+  const builtin = Boolean(client?.builtin);
   const [name, setName] = useState(client?.client_name ?? '');
   const [type, setType] = useState<ApplicationType>(
     (client?.application_type as ApplicationType | undefined) ?? EMPTY_DRAFT.application_type,
@@ -379,7 +402,13 @@ function ClientEditor({
     };
     setBusy(true);
     try {
-      if (client) {
+      if (builtin && client) {
+        // The two keys the console's form owns. Naming the rest would not merely be noise:
+        // its `redirect_uris` is empty and the PATCH schema refuses an empty list — rightly,
+        // for every row that rule was written for.
+        await updateOAuthClient(client.client_id, { client_name: draft.client_name, metadata: draft.metadata });
+        await onSaved(null);
+      } else if (client) {
         await updateOAuthClient(client.client_id, draft);
         await onSaved(null);
       } else {
@@ -395,59 +424,77 @@ function ClientEditor({
   return (
     <div className="editor">
       <h3>{client ? `Edit ${client.client_name ?? client.client_id}` : 'Register an application'}</h3>
-      <Field label="Name" value={name} onChange={setName} hint="Shown on the consent screen — this is what people read." />
-      <label className="field">
-        <span>Application type</span>
-        <select value={type} onChange={(e) => setType(e.target.value as ApplicationType)}>
-          {APPLICATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <em className="hint">
-          A <code>web</code> client keeps its secret on a server. A <code>native</code> one is public — PKCE, and
-          loopback or private-scheme redirect URIs are allowed.
-        </em>
-      </label>
-      <label className="field">
-        <span>Redirect URIs</span>
-        <textarea rows={3} value={uris} onChange={(e) => setUris(e.target.value)} />
-        <em className="hint">One per line, matched exactly. A `web` client needs HTTPS unless it is on loopback.</em>
-      </label>
-      <Field label="Logo URL" value={icon} onChange={setIcon} hint="Optional. Shown beside the name on the consent screen." />
-      <label className="toggle">
-        <input type="checkbox" checked={skipConsent} onChange={(e) => setSkipConsent(e.target.checked)} />
-        <span>
-          <strong>Skip the consent screen</strong>
-          <em className="hint">
-            For a first-party application you already trust. Nobody will be asked to approve the scopes it requests.
-          </em>
-        </span>
-      </label>
-      <label className="toggle">
-        <input type="checkbox" checked={endSession} onChange={(e) => setEndSession(e.target.checked)} />
-        <span>
-          <strong>Let this application sign people out</strong>
-          <em className="hint">
-            Allows RP-initiated logout at <code>/oauth2/end-session</code>. Off by default, and
-            without it the issuer answers <em>“The client is not allowed to initiate logout”</em>.
-          </em>
-        </span>
-      </label>
-      {endSession && (
-        <label className="field">
-          <span>Post-logout redirect URIs</span>
-          <textarea rows={2} value={logoutUris} onChange={(e) => setLogoutUris(e.target.value)} />
-          <em className="hint">
-            One per line, matched exactly — and a SEPARATE list from the redirect URIs above. A
-            <code>post_logout_redirect_uri</code> that is not here is ignored: the person is signed out
-            and left on the issuer&apos;s own page. Leave blank if the application never asks to be
-            sent back.
-          </em>
-        </label>
+      {builtin && (
+        <p className="muted small">
+          This is this issuer&apos;s own admin console — the screen you signed in on. It is not a
+          registered application: it has no redirect URIs and no secret, and the settings below
+          decide how <em>this</em> sign-in screen looks and which methods it offers. Narrowing it
+          only changes the buttons drawn: unlike a relying party&apos;s policy, nothing enforces
+          this one at the authorize endpoint. If you lock yourself out, sign in at{' '}
+          <code>/login?builtin=0</code> or disable this row to get the plain screen back.
+        </p>
+      )}
+      <Field label="Name" value={name} onChange={setName} hint={builtin ? 'What this row is called on this screen.' : 'Shown on the consent screen — this is what people read.'} />
+      {/* Everything below describes a redirect flow, and the console has none: no
+          application type, no redirect URIs, no consent decision, no logout targets. Hidden
+          rather than shown empty — an empty field invites someone to fill it in, and the
+          PATCH would refuse the result. */}
+      {!builtin && (
+        <>
+          <label className="field">
+            <span>Application type</span>
+            <select value={type} onChange={(e) => setType(e.target.value as ApplicationType)}>
+              {APPLICATION_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <em className="hint">
+              A <code>web</code> client keeps its secret on a server. A <code>native</code> one is public — PKCE, and
+              loopback or private-scheme redirect URIs are allowed.
+            </em>
+          </label>
+          <label className="field">
+            <span>Redirect URIs</span>
+            <textarea rows={3} value={uris} onChange={(e) => setUris(e.target.value)} />
+            <em className="hint">One per line, matched exactly. A `web` client needs HTTPS unless it is on loopback.</em>
+          </label>
+          <Field label="Logo URL" value={icon} onChange={setIcon} hint="Optional. Shown beside the name on the consent screen." />
+          <label className="toggle">
+            <input type="checkbox" checked={skipConsent} onChange={(e) => setSkipConsent(e.target.checked)} />
+            <span>
+              <strong>Skip the consent screen</strong>
+              <em className="hint">
+                For a first-party application you already trust. Nobody will be asked to approve the scopes it requests.
+              </em>
+            </span>
+          </label>
+          <label className="toggle">
+            <input type="checkbox" checked={endSession} onChange={(e) => setEndSession(e.target.checked)} />
+            <span>
+              <strong>Let this application sign people out</strong>
+              <em className="hint">
+                Allows RP-initiated logout at <code>/oauth2/end-session</code>. Off by default, and
+                without it the issuer answers <em>&ldquo;The client is not allowed to initiate logout&rdquo;</em>.
+              </em>
+            </span>
+          </label>
+          {endSession && (
+            <label className="field">
+              <span>Post-logout redirect URIs</span>
+              <textarea rows={2} value={logoutUris} onChange={(e) => setLogoutUris(e.target.value)} />
+              <em className="hint">
+                One per line, matched exactly — and a SEPARATE list from the redirect URIs above. A
+                <code>post_logout_redirect_uri</code> that is not here is ignored: the person is signed out
+                and left on the issuer&apos;s own page. Leave blank if the application never asks to be
+                sent back.
+              </em>
+            </label>
+          )}
+        </>
       )}
       <h3>Sign-in methods</h3>
       <p className="muted small">
-        Which ways people may sign in when this application sends them here. This is enforced
-        at the authorize endpoint, not merely on the screen: a session established another way
-        is asked to sign in again rather than handed a code.
+        {builtin
+          ? 'Which buttons this console’s own sign-in screen draws. It is drawn, not enforced: a console sign-in never passes through the authorize endpoint, so this narrows the screen and nothing else.'
+          : 'Which ways people may sign in when this application sends them here. This is enforced at the authorize endpoint, not merely on the screen: a session established another way is asked to sign in again rather than handed a code.'}
       </p>
       <label className="toggle">
         <input type="checkbox" checked={!restrict} onChange={(e) => setRestrict(!e.target.checked)} />
@@ -493,16 +540,20 @@ function ClientEditor({
               providers, and it can be chosen here.
             </em>
           ) : null}
-          <em className="hint">
-            Exactly one method ticked and no password: people are sent straight to it, with no
-            sign-in screen in between.
-          </em>
+          {!builtin && (
+            <em className="hint">
+              Exactly one method ticked and no password: people are sent straight to it, with no
+              sign-in screen in between.
+            </em>
+          )}
         </div>
       )}
       <h3>Appearance</h3>
       <p className="muted small">
-        How the sign-in, sign-up and consent screens look when this application sends someone
-        here. Colors are hex (<code>#0a6847</code>); blank means the issuer&apos;s default.
+        {builtin
+          ? 'How this console’s own sign-in screen looks. '
+          : 'How the sign-in, sign-up and consent screens look when this application sends someone here. '}
+        Colors are hex (<code>#0a6847</code>); blank means the issuer&apos;s default.
       </p>
       <Field label="Sign-in title" value={themeTitle} onChange={setThemeTitle} hint="Replaces “Substrat Auth” as the sign-in heading." />
       <Field label="Logo URL" value={themeLogo} onChange={setThemeLogo} hint="https:// or data:image/ — shown above the heading." />
