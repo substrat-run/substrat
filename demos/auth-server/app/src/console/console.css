@@ -108,6 +108,11 @@
 .console-root .editor,
 .console-root .new-user { background: var(--surface-inset); border-color: var(--border-default); }
 .console-root .btn { border-color: var(--border-strong); background: var(--surface-raised); color: var(--text-primary); }
+/* An "+ Enable Google" is a LINK — the provider's screen is a place, so it has to be
+   middle-clickable — and it should still read as the button it replaced. Only the two things an
+   anchor brings that a button does not: an underline, and an inline box that would drop the
+   vertical padding on the floor. */
+.console-root a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 .console-root .btn:hover:not(:disabled) { border-color: var(--border-brand); }
 .console-root .btn.primary {
   background: var(--action-primary-bg);

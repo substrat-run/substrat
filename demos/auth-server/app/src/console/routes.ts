@@ -3,7 +3,15 @@ import { detailTarget } from './paths';
 
 // Re-exported so the console's routing is still one import for the screens that read it — the
 // split in `paths.ts` is about what a test can reach, not about where a caller should look.
-export { APPLICATIONS_PATH, USERS_PATH, applicationDetailId, detailTarget, userDetailId } from './paths';
+export {
+  APPLICATIONS_PATH,
+  PROVIDERS_PATH,
+  USERS_PATH,
+  applicationDetailId,
+  detailTarget,
+  providerDetailId,
+  userDetailId,
+} from './paths';
 
 /**
  * Lucide `circle-user`. `@substrat-run/ui` has `users` (a group) but no single-person icon,

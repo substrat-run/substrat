@@ -15,6 +15,9 @@ export const USERS_PATH = '/users';
 /** Likewise for `/applications/<client id>` and Applications. */
 export const APPLICATIONS_PATH = '/applications';
 
+/** And for `/providers/<provider id>` and Sign-in providers. */
+export const PROVIDERS_PATH = '/providers';
+
 /**
  * The id in `/users/<id>`, or null for anything else. Deliberately strict about the shape
  * rather than accepting any tail: this value is interpolated into an API path AND is an
@@ -44,6 +47,22 @@ export function applicationDetailId(pathname: string): string | null {
 }
 
 /**
+ * The provider id in `/providers/<provider id>`, or null. The same two duties again, and the
+ * NARROWEST alphabet of the three because the server's is narrow: a provider id is either a
+ * catalogue slug (`google`, `microsoft`, `github`, `supabase`) or one an operator named for a
+ * generic OIDC upstream, and `src/providers.ts`'s `GENERIC_ID_PATTERN` accepts only lowercase
+ * letters, digits and interior hyphens up to 40 characters — because the id becomes the
+ * callback path segment an upstream has registered. Restated here rather than imported: this
+ * file is browser code and that one is the issuer's server half, so the two are kept apart on
+ * purpose. Restating it can only ever be too strict, never too loose, and too strict shows up
+ * as a "no such provider" screen rather than as a redirect that leaves the issuer.
+ */
+export function providerDetailId(pathname: string): string | null {
+  const match = /^\/providers\/([a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?)$/.exec(pathname);
+  return match?.[1] ?? null;
+}
+
+/**
  * The detail screen this path is, re-composed from the id it parsed — or null if it is not one.
  *
  * Re-built rather than returned as given, deliberately: what leaves here is a string this file
@@ -55,5 +74,7 @@ export function detailTarget(pathname: string): string | null {
   if (userId) return `${USERS_PATH}/${userId}`;
   const clientId = applicationDetailId(pathname);
   if (clientId) return `${APPLICATIONS_PATH}/${clientId}`;
+  const providerId = providerDetailId(pathname);
+  if (providerId) return `${PROVIDERS_PATH}/${providerId}`;
   return null;
 }

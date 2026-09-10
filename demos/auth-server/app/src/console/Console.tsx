@@ -8,11 +8,20 @@ import { ApplicationDetailView } from '../views/ApplicationDetail';
 import { ClientsPanel } from '../views/Applications';
 import { BankIdPanel } from '../views/BankId';
 import { IssuerPanel } from '../views/Issuer';
+import { ProviderDetailView } from '../views/ProviderDetail';
 import { ProvidersPanel } from '../views/Providers';
 import { UserDetailView } from '../views/UserDetail';
 import { UsersView } from '../views/Users';
 import { navigate, usePathname } from './router';
-import { APPLICATIONS_PATH, ROUTES, USERS_PATH, applicationDetailId, userDetailId } from './routes';
+import {
+  APPLICATIONS_PATH,
+  PROVIDERS_PATH,
+  ROUTES,
+  USERS_PATH,
+  applicationDetailId,
+  providerDetailId,
+  userDetailId,
+} from './routes';
 // (`console.css` is imported from main.tsx, not here: its load ORDER relative to tokens.css
 //  decides which set wins the property they share, and only main.tsx can guarantee it.)
 
@@ -91,16 +100,19 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
   // `/` is where signing in leaves you, and it is not a screen. Resolved here rather than
   // only in the effect below, so the first frame is the section rather than a "no such page"
   // that corrects itself.
-  // `/users/<id>` and `/applications/<client id>` are screens under their section rather than
-  // sections of their own: the nav keeps the section lit, and only an administrator can be on
-  // either — both ids are read after the permission filter, so a non-administrator pasting one
-  // gets the "no such page" answer the nav's own courtesy already implies.
+  // `/users/<id>`, `/applications/<client id>` and `/providers/<provider id>` are screens under
+  // their section rather than sections of their own: the nav keeps the section lit, and only an
+  // administrator can be on any of them — every id is read after the permission filter, so a
+  // non-administrator pasting one gets the "no such page" answer the nav's own courtesy already
+  // implies.
   const userId = visible.some((r) => r.path === USERS_PATH) ? userDetailId(pathname) : null;
   const clientId = visible.some((r) => r.path === APPLICATIONS_PATH) ? applicationDetailId(pathname) : null;
+  const providerId = visible.some((r) => r.path === PROVIDERS_PATH) ? providerDetailId(pathname) : null;
   const active =
     visible.find((r) => r.path === pathname) ??
     (userId ? visible.find((r) => r.path === USERS_PATH)! : null) ??
     (clientId ? visible.find((r) => r.path === APPLICATIONS_PATH)! : null) ??
+    (providerId ? visible.find((r) => r.path === PROVIDERS_PATH)! : null) ??
     (pathname === '/' ? home : null);
 
   useEffect(() => {
@@ -199,6 +211,12 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
             // still in flight. A late answer from the previous one lands on an instance that no
             // longer exists, which is the point.
             <ApplicationDetailView key={clientId} clientId={clientId} />
+          ) : providerId ? (
+            // Keyed for the same reason: a provider's screen holds ONE upstream's client id,
+            // secret field and three toggles, and a prop change would leave them on screen
+            // above the next provider's header — with a Save button that would write them to
+            // the wrong row.
+            <ProviderDetailView key={providerId} providerId={providerId} issuer={disc?.issuer ?? null} />
           ) : active.path === '/users' ? (
             <UsersView me={session.sub} />
           ) : active.path === '/applications' ? (
