@@ -12,6 +12,12 @@ name: Docs
 # pages print, and the two deploys are idempotent — both build the same main, the later
 # one wins. `concurrency` is per workflow, so a burst of docs merges collapses to the
 # latest rather than racing.
+#
+# The deploy publishes `llms-full.txt`; `refresh-kb` below tells the support desk to
+# re-read it. Those were two different events with only the first one driven, so the
+# site could be current within the minute while ticket0 went on answering out of
+# whatever it last ingested — and a stale docs page reaching a customer is a wrong
+# answer, not a stale page.
 on:
   push:
     branches: [main]
@@ -48,3 +54,13 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+
+  # ── The support desk's copy of the docs ────────────────────────────────────
+  #
+  # Shared with release.yml's docs deploy, which publishes the same `llms-full.txt`
+  # — see .github/workflows/kb-refresh.yml for why it is a job of its own and why
+  # both deploy paths have to call it.
+  refresh-kb:
+    needs: deploy
+    uses: ./.github/workflows/kb-refresh.yml
+    secrets: inherit
