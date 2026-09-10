@@ -1082,10 +1082,11 @@ export interface CloudflareScopeHostOptions {
    * **There is deliberately no `clock` here** (#956), and the absence is the fact.
    *
    * The pure adapter takes one (`SqliteScopeHostOptions.clock`): it is what
-   * `ctx.now()` reads AND what the host judges elapsed time against — tuple
-   * expiry, session expiry, entitlement expiry, schedule cadence. This host
-   * cannot offer the same option, and the reason is that the elapsed-time reads
-   * split across a boundary an options bag cannot cross:
+   * `ctx.now()` reads AND, since #1160, what the host judges elapsed time
+   * against — tuple expiry, session expiry, entitlement expiry, schedule
+   * cadence, a migration's `applied_at`. This host cannot offer the same option,
+   * and the reason is that the elapsed-time reads split across a boundary an
+   * options bag cannot cross:
    *
    *   - **Coordinator-side, and therefore reachable.** `resolveImpersonation`
    *     (`assertSessionUsable(record, new Date()…)`) and `runDueSchedules`
