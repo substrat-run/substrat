@@ -89,7 +89,7 @@ export function ProviderDetailView({ providerId, issuer }: { providerId: string;
         !err && <p className="muted">Loading this provider…</p>
       ) : (
         <>
-          {state.provider && <ProviderHeader entry={state.entry} provider={state.provider} issuer={issuer} />}
+          {state.provider && <ProviderHeader entry={state.entry} provider={state.provider} />}
           <section className="panel">
             <div className="panel-head">
               <h2>{state.provider ? 'Credentials' : 'Enable this provider'}</h2>
@@ -115,11 +115,10 @@ export function ProviderDetailView({ providerId, issuer }: { providerId: string;
 /* ---- what this provider is ---- */
 
 function ProviderHeader({
-  entry, provider, issuer,
+  entry, provider,
 }: {
   entry: ProviderCatalogueEntry | null;
   provider: ConfiguredProvider;
-  issuer: string | null;
 }) {
   return (
     <section className="panel">
@@ -155,13 +154,9 @@ function ProviderHeader({
             <dd><code>{provider.tenantId}</code></dd>
           </>
         )}
-        <dt>Redirect URI</dt>
-        <dd>
-          <code>
-            {(issuer ?? window.location.origin).replace(/\/$/, '')}
-            {provider.callbackPath}
-          </code>
-        </dd>
+        {/* No redirect URI here: the editor below already prints it, with the sentence that
+            makes it useful ("register this exactly, matched character for character"). Saying
+            it twice on one screen invites a reader to check whether the two agree. */}
         <dt>Last changed</dt>
         {/* `updatedAt` is epoch milliseconds, and null for a row that predates the column. */}
         <dd>{provider.updatedAt ? new Date(provider.updatedAt).toLocaleString() : '—'}</dd>
