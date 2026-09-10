@@ -123,10 +123,18 @@ policy, so it returns `null`.
 `subject()` returns the issuer's answer *before* any directory lookup, for verticals whose
 tenant is not the directory's to choose — a multi-venue app knows which tenant to ask about.
 
-::: tip A proxy in front of the API must not rewrite Host
+::: tip A proxy in front of the API must set `changeOrigin: false`
 A dev server derives its OIDC `redirect_uri` from the request origin, which under a Vite
-proxy is the *browser's* origin — that is what lands the callback back on your app. Setting
-`changeOrigin` on that proxy sends it to the API port instead, and login breaks.
+proxy is the *browser's* origin — that is what lands the callback back on your app. A proxy
+that rewrites Host sends it to the API port instead, and login breaks.
+
+Write the flag out; leaving it unset is not the same thing. Vite's string shorthand
+(`proxy: { '/api': 'http://localhost:8871' }`) expands to `{ target, changeOrigin: true }`,
+so the *only* spelling that keeps Host is the object form:
+
+```ts
+proxy: { '/api': { target: `http://localhost:${API_PORT}`, changeOrigin: false } }
+```
 :::
 
 ## Without a browser

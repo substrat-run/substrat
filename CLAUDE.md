@@ -148,8 +148,11 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 - `pnpm callout-demo dev` — run the Callout demo (issuer :8879 + API :8871 + web :5271).
   Demo dev ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. The Vite
-  proxy must NOT set `changeOrigin`: the API derives its OIDC `redirect_uri` from the
-  forwarded Host header, and rewriting it sends the login callback to the wrong port.
+  proxy must set **`changeOrigin: false`, written out**: the API derives its OIDC
+  `redirect_uri` from the forwarded Host header, and rewriting it sends the login callback
+  to the wrong port. Writing nothing is not the same as writing `false` — Vite's string
+  shorthand (`proxy: { '/api': 'http://…' }`) expands to `{ target, changeOrigin: true }`,
+  so the object form is the only spelling that keeps Host (#1388, `pnpm lint:vite-proxy`).
   **That block is for demos only.** A project `npm create substrat` hands out is not a demo
   and gets no claim on it: the template's API default is `8891` (#983 — it used to be
   `8873`, shop's, so a scaffold would not boot beside the demo it was read from). Its
@@ -162,8 +165,11 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   cast lives in its own `src/personas.ts`, read both by the issuer and by its seed, which
   links each `sub` to a principal in the identity directory. Impersonation for scripts is
   `POST {issuer}/dev/token {sub}` — in the issuer, never in the vertical. The Vite proxy in
-  front of a demo must NOT set `changeOrigin`: the API derives its OIDC `redirect_uri` from
-  the forwarded Host header, and rewriting it sends the callback to the wrong port.
+  front of a demo must set **`changeOrigin: false`, written out**: the API derives its OIDC
+  `redirect_uri` from the forwarded Host header, and rewriting it sends the callback to the
+  wrong port. The shorthand does not mean what it looks like — `proxy: { '/api': 'http://…' }`
+  expands to `{ target, changeOrigin: true }`, which is why nine demo configs had this bug
+  while the rule read as "leave it alone" (#1388). `pnpm lint:vite-proxy` now refuses it.
   `ALLOW_DEV_NODE` still exists in the workers and is a different thing — it addresses an
   un-routed local instance and authenticates nobody.
 - **Every demo vertical is OIDC-only** (`docs/architecture/oidc-only-demos.md`):
@@ -411,6 +417,13 @@ place the `FetchLike` cast lives — never as the bare global, in any spelling. 
 throws `Illegal invocation` when a connector calls the bare global as `input.fetch(…)`,
 and neither Node nor the workers vitest pool does, so no suite can catch it; the Fortnox
 consent callback shipped green and failed every hosted round that way, #1291),
+`lint:vite-proxy` (`tools/vite-proxy-host.mjs`: a demo's dev proxy passes Host through, in
+the object form with `changeOrigin: false` written out — the string shorthand expands to
+`changeOrigin: true`, and the API builds its OIDC `redirect_uri` from the Host it is handed,
+so the shorthand puts the login callback on the API's port. Nine of eleven demo configs
+carried it and every suite stayed green, because a scenario drives the module and never
+reaches `server.ts`, #1388. A whole file opts out with `vite-proxy-allow: <reason>` —
+`demos/auth-server` does, taking its origin from `PORT` instead),
 `lint:tests`, `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule

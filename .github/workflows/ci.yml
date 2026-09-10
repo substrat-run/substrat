@@ -54,6 +54,13 @@ jobs:
       # Fortnox consent callback shipped green and failed every hosted round (#1291).
       # A source check is the only kind that can hold this rule.
       - run: pnpm lint:bound-fetch
+      # A demo's Vite proxy passes Host through, because the API builds its OIDC
+      # `redirect_uri` from the Host it is handed. The trap is that leaving
+      # `changeOrigin` unset is the thing that breaks it — Vite's string shorthand
+      # expands to `changeOrigin: true` — so nine of eleven demo configs had a dead
+      # sign-in and every suite was green: a scenario drives the module and never
+      # reaches `server.ts` (#1388). Only a source check can see this.
+      - run: pnpm lint:vite-proxy
       # The permission-diff human checkpoint (CLAUDE.md). Re-emit every vertical's
       # snapshot and fail if it drifts from what is checked in — an agent that
       # widened a role must show it in the PR diff, not in a console nobody opens.
