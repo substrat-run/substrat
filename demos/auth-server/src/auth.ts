@@ -349,7 +349,12 @@ export function buildAuth(deps: AuthDeps) {
            * no context of their own. A path the vocabulary does not name stamps `null`, which
            * every policy then refuses; see `signInMethodOfPath` for why that direction.
            */
-          before: async (_session, ctx) => ({ data: { signInProvider: signInMethodOfPath(ctx?.path) } }),
+          before: async (_session, ctx) => ({
+            // `ctx.params` as well as `ctx.path`: the social callback's route is the literal
+            // `/callback/:id` and the provider is the bound parameter, so the path alone
+            // stamps nothing (see `signInMethodOfPath`).
+            data: { signInProvider: signInMethodOfPath(ctx?.path, ctx?.params) },
+          }),
         },
       },
     },

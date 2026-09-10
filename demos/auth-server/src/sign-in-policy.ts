@@ -232,17 +232,31 @@ export function clientSignIn(
  * vocabulary of the `session.signInProvider` stamp, in one place, read by
  * `databaseHooks.session.create.before`.
  *
- * `…/callback/{id}` covers every upstream at once, catalogue and generic alike, because
+ * `…/callback/:id` covers every upstream at once, catalogue and generic alike, because
  * `genericOAuth` registers its providers as first-class social providers and they all land on
  * Better Auth's one callback route (the same fact `callbackPath()` in `providers.ts` states
  * for the redirect URI an operator registers). So a provider added tomorrow is stamped
  * correctly with no change here.
  *
+ * **The `path` a hook is handed is the ROUTE, not the URL** — Better Auth registers that
+ * endpoint as the literal `/callback/:id` and hands the hook exactly that string, with the
+ * provider in `params.id` beside it. Reading the id out of the path alone therefore stamped
+ * `null` on EVERY provider sign-in, and a null is refused by every policy: a client
+ * restricted to one upstream sent the person to that upstream, took their session, refused
+ * it at `/oauth2/authorize`, and sent them back to the login screen that redirects — an
+ * infinite loop through a working directory, and one no unit test over a hand-written
+ * `/callback/microsoft` could see (#1381). So the pattern is matched as a pattern, and the
+ * literal spelling is kept beside it because nothing guarantees a future route is
+ * parameterized.
+ *
  * Everything not named answers `null`, which `policyAdmits` refuses under any policy. Adding
  * a sign-in path to this issuer therefore means adding it here too — an omission costs a
  * re-login rather than an unenforced restriction, which is the right way round.
  */
-export function signInMethodOfPath(path: string | undefined): string | null {
+export function signInMethodOfPath(
+  path: string | undefined,
+  params?: Record<string, string | undefined> | undefined,
+): string | null {
   if (!path) return null;
   if (path === '/sign-in/email' || path === '/sign-up/email') return PASSWORD_METHOD;
   // BankID's session is minted in `/bankid/collect` (`bankid-plugin.ts`), the poll that sees
@@ -251,11 +265,20 @@ export function signInMethodOfPath(path: string | undefined): string | null {
   // The legacy-secret bridge (`supabase-plugin.ts`). Its sessions are Supabase's, so they
   // answer to the same id the catalogue's redirect-flow Supabase provider carries.
   if (path === '/supabase/session') return 'supabase';
-  const callback = /^(?:\/oauth2)?\/callback\/([a-z0-9-]+)$/.exec(path);
-  const provider = callback?.[1];
+  // The parameter NAME is the router's, not ours (`:id`, `:providerId`), so the segment is
+  // matched loosely and the value that comes back is what gets parsed strictly, below.
+  const callback = /^(?:\/oauth2)?\/callback\/(:?[A-Za-z0-9_-]+)$/.exec(path);
+  const segment = callback?.[1];
+  if (!segment) return null;
+  // `:id` ⇒ the route pattern, so the provider is the bound parameter. A pattern whose
+  // parameter is absent stamps nothing rather than the word after the colon.
+  const provider = segment.startsWith(':') ? params?.[segment.slice(1)] : segment;
+  // Parsed with the same rule `providers.ts` constrains a provider id by: `params` is
+  // whatever the router matched, and only an id-shaped value may become a stamp.
+  if (!provider || !methodId.safeParse(provider).success) return null;
   // A row predating `RESERVED_METHOD_IDS` could still be named `password` or `bankid`. Its
   // callback stamps nothing rather than the stamp it collides with, and an unstamped session
   // is refused under every policy — the same answer, for the same reason, as an impersonation.
-  if (!provider || isReservedMethodId(provider)) return null;
+  if (isReservedMethodId(provider)) return null;
   return provider;
 }

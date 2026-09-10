@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
@@ -16,9 +16,15 @@ import {
   sanitizeSignInPolicy,
   signInMethodOfPath,
 } from '../src/sign-in-policy.js';
+import {
+  genericProvidersFrom,
+  publicProvidersFrom,
+  readProviders,
+  socialProvidersFrom,
+  trustedProvidersFrom,
+} from '../src/providers.js';
 import type { SqlExec } from '../src/introspect.js';
 import type { SessionSubject } from '../src/do-contract.js';
-import { publicProvidersFrom, readProviders } from '../src/providers.js';
 
 /**
  * Per-client sign-in policy (`src/sign-in-policy.ts`) — "this application accepts Microsoft
@@ -142,11 +148,13 @@ function landedOn(res: Response): string {
   return location.split('?')[0] ?? '';
 }
 
-beforeEach(async () => {
-  db = new Database(':memory:');
-  for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
-  sql = sqlExecOf(db);
-  auth = buildAuth({
+/**
+ * Better Auth over the CURRENT provider rows, as both runtimes rebuild it per request — so a
+ * test that saves an upstream mid-way gets an issuer that offers it.
+ */
+function rebuild(): Auth {
+  const rows = readProviders(sql);
+  return buildAuth({
     database: drizzleAdapter(drizzle(db, { schema }), { provider: 'sqlite', schema }),
     secret: 'test-secret-000000000000000000000000',
     baseURL: ORIGIN,
@@ -154,10 +162,20 @@ beforeEach(async () => {
     transport: new MockEmailTransport(),
     sender: { email: 'no-reply@send.substrat.test', name: 'Substrat Auth' },
     allowSignup: true,
+    socialProviders: socialProvidersFrom(rows),
+    genericProviders: genericProvidersFrom(rows),
+    trustedProviders: trustedProvidersFrom(rows),
     // The wiring both runtimes do (`auth-do.ts`, `server.ts`): the policy is read from the
     // registry per request, so a client narrowed a moment ago decides the next authorize.
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
   });
+}
+
+beforeEach(async () => {
+  db = new Database(':memory:');
+  for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+  sql = sqlExecOf(db);
+  auth = rebuild();
   const created = await auth.api.signUpEmail({ body: ADMIN });
   db.prepare("UPDATE user SET role = 'admin', email_verified = 1 WHERE id = ?").run(created.user.id);
   const session = (headers: Headers): Promise<SessionSubject | null> =>
@@ -192,6 +210,17 @@ describe('the session records HOW it was established', () => {
   it('names every path a session can be minted on, and nothing else', () => {
     expect(signInMethodOfPath('/sign-in/email')).toBe('password');
     expect(signInMethodOfPath('/sign-up/email')).toBe('password');
+    // THE SHAPE A HOOK IS ACTUALLY HANDED: Better Auth registers one parameterized route for
+    // every upstream, so the path is the pattern and the provider is in `params`. The cases
+    // below this one are the literal spelling, kept because a route need not be a pattern —
+    // but it was the only shape asserted here, and the shape that occurs stamped `null`.
+    expect(signInMethodOfPath('/callback/:id', { id: 'microsoft' })).toBe('microsoft');
+    expect(signInMethodOfPath('/oauth2/callback/:providerId', { providerId: 'okta' })).toBe('okta');
+    // A pattern is not its own answer: no parameter, or one that is not id-shaped, stamps
+    // nothing rather than the word after the colon.
+    expect(signInMethodOfPath('/callback/:id')).toBe(null);
+    expect(signInMethodOfPath('/callback/:id', { id: '../elsewhere' })).toBe(null);
+    expect(signInMethodOfPath('/callback/:id', { id: 'password' })).toBe(null);
     // Every upstream at once: catalogue providers and `genericOAuth` ones share this route.
     expect(signInMethodOfPath('/callback/microsoft')).toBe('microsoft');
     expect(signInMethodOfPath('/callback/keycloak-eu')).toBe('keycloak-eu');
@@ -301,6 +330,123 @@ describe('a restricted client refuses a session established another way', () => 
     // No policy, so nothing to fail closed about — an unstamped session is only a problem
     // for a client that asked for something specific.
     expect(landedOn(await authorize(unpoliced, cookie))).toBe('/consent');
+  });
+});
+
+/**
+ * THE ROUND TRIP THE POLICY EXISTS FOR — and the one this file used to skip.
+ *
+ * Every case above establishes its session with a password, because that is what a test can
+ * do without an upstream, and each proves a REFUSAL. What none of them proved is the pass:
+ * a person who signs in through the very provider the client names, and is let through. That
+ * is not a symmetric restatement of the refusal, because the two read different halves of
+ * the same mechanism — the refusal only needs the stamp to be absent, and an implementation
+ * that stamped `null` on every provider sign-in satisfies all of it while the feature is
+ * unusable. Which is precisely what shipped (#1381): the callback's route is the literal
+ * `/callback/:id`, the stamp read the id out of the path, and so a client restricted to one
+ * directory sent the person to that directory, refused the session it got back, and returned
+ * them to a login screen whose only button starts the same trip — a loop with no way out but
+ * the address bar.
+ *
+ * So this drives the real callback, and it asserts the two things a hand-written path cannot
+ * reach: what the stamp actually says, and that the authorize the person came for completes.
+ */
+describe('a session established through the provider the client names', () => {
+  const ACME_DISCOVERY = {
+    issuer: 'https://id.acme.test',
+    authorization_endpoint: 'https://id.acme.test/oauth/authorize',
+    token_endpoint: 'https://id.acme.test/oauth/token',
+    userinfo_endpoint: 'https://id.acme.test/oauth/userinfo',
+    jwks_uri: 'https://id.acme.test/.well-known/jwks.json',
+  };
+  /** Somebody who has never been here before, arriving through the upstream. */
+  const UPSTREAM_PROFILE = {
+    sub: 'acme-subject-1',
+    email: 'staff@acme.test',
+    email_verified: true,
+    name: 'Acme Staff',
+  };
+
+  const realFetch = globalThis.fetch;
+  beforeEach(() => {
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const target = String(input instanceof Request ? input.url : input);
+      if (target === `${ACME_DISCOVERY.issuer}/.well-known/openid-configuration`) return Response.json(ACME_DISCOVERY);
+      if (target === ACME_DISCOVERY.token_endpoint) {
+        return Response.json({ access_token: 'an-upstream-access-token', token_type: 'Bearer', expires_in: 3600 });
+      }
+      if (target === ACME_DISCOVERY.userinfo_endpoint) return Response.json(UPSTREAM_PROFILE);
+      return realFetch(input as never, init);
+    }) as typeof fetch;
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  /** Save the upstream as the providers panel saves one, and rebuild the issuer over it. */
+  function saveAcme(): void {
+    db.prepare(
+      `INSERT INTO identity_provider
+         (provider_id, client_id, client_secret, tenant_id, issuer, label, endpoints, allow_signup, trust_email, disabled, updated_at)
+       VALUES ('acme', 'acme-client-id', 'acme-secret', NULL, ?, 'Acme SSO', ?, 1, 1, 0, 1)`,
+    ).run(ACME_DISCOVERY.issuer, JSON.stringify(ACME_DISCOVERY));
+    auth = rebuild();
+  }
+
+  /** Start the redirect flow and come back through the REAL callback, carrying its state
+   *  cookie — the only way to reach the hook that writes the stamp. */
+  async function signInThroughAcme(): Promise<string> {
+    const started = await call('/api/auth/sign-in/social', {
+      method: 'POST',
+      headers: FROM_FETCH,
+      body: JSON.stringify({ provider: 'acme', callbackURL: '/' }),
+    });
+    expect(started.status).toBe(200);
+    const { url } = (await started.json()) as { url: string };
+    const state = new URL(url).searchParams.get('state');
+    const back = await call(`/api/auth/callback/acme?code=an-authorization-code&state=${state}`, {
+      headers: { cookie: cookiesFrom(started) },
+    });
+    expect(back.status).toBe(302);
+    return cookiesFrom(back);
+  }
+
+  const stamps = (): (string | null)[] =>
+    (db.prepare('SELECT sign_in_provider FROM session ORDER BY created_at').all() as {
+      sign_in_provider: string | null;
+    }[]).map((r) => r.sign_in_provider);
+
+  it('stamps the provider it was actually made with', async () => {
+    saveAcme();
+    await signInThroughAcme();
+    // The admin's sign-up session from `beforeEach`, then this one. `null` here is the bug:
+    // it is what a policy naming `acme` refuses, having just sent the person to acme.
+    expect(stamps()).toEqual(['password', 'acme']);
+  });
+
+  it('is handed straight on to consent, instead of back to the login screen it came from', async () => {
+    const adminCookie = await signInAs(ADMIN);
+    const acmeOnly = await register('Directory RP', adminCookie, {
+      signIn: { providers: ['acme'], password: false },
+    });
+    saveAcme();
+
+    const cookie = await signInThroughAcme();
+    // The loop, if this regresses: `/login` — whose one button is the trip just taken.
+    expect(landedOn(await authorize(acmeOnly, cookie))).toBe('/consent');
+  });
+
+  it('still refuses the same session at a client that names a DIFFERENT provider', async () => {
+    const adminCookie = await signInAs(ADMIN);
+    const microsoftOnly = await register('Other Directory RP', adminCookie, {
+      signIn: { providers: ['microsoft'], password: false },
+    });
+    saveAcme();
+
+    const cookie = await signInThroughAcme();
+    // The stamp is a real id now, so this refusal is the policy doing its job rather than
+    // the fail-closed answer an unstamped session gets — the distinction the pass above buys.
+    expect(landedOn(await authorize(microsoftOnly, cookie))).toBe('/login');
   });
 });
 
