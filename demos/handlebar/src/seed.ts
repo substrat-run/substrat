@@ -19,6 +19,7 @@ import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { bikeShopModule, CS_PERM } from './module.js';
+import { HANDLEBAR_PERMISSIONS } from './operations.js';
 import { DEV_PROVIDER, PERSONAS, PERSONA_PRINCIPALS } from './personas.js';
 
 /**
@@ -108,8 +109,22 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
  * The single typed source for this vertical's permission surface — what the permission
  * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
  * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ *
+ * `keys` is the SAME array `operations.ts` hands `defineOperations` (#1208).
+ *
+ * It has to be written somewhere as literals — a manifest's keys are branded by the time
+ * anything can read them back, so the union that turns a mistyped `permission:` into a
+ * compile error cannot be derived from `MODULES`. Passing it here is what makes the
+ * restatement checked: `definePermissions` throws at load if this vertical ever declares a
+ * key the array does not name, or the other way round. Engine keys are in it because they
+ * are keys a Handlebar scope declares — `MODULES` registers all three engines.
  */
-export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
+export const permissions = definePermissions({
+  modules: MODULES,
+  roles: ROLES,
+  entityGrants: ENTITY_GRANTS,
+  keys: HANDLEBAR_PERMISSIONS,
+});
 
 export function buildBikeShopHost(dir: string): SqliteScopeHost {
   const host = new SqliteScopeHost({ dir }); // default checker: the tuple engine

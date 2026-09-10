@@ -5,15 +5,46 @@ import { billableLine, workOrder, workorderEntities, workorderOperations } from 
 import { z } from 'zod';
 import { handlebarEntities } from './entities.js';
 
-/** The permission keys operations may require. */
+/**
+ * Every permission key a Handlebar scope declares — the workshop's own two, plus every
+ * key the three engines it composes bring with them.
+ *
+ * This is the vocabulary an operation's `permission` may name, not a second declaration
+ * of who owns the key: the MANIFEST still declares only `customer:manage` and
+ * `bike:manage`.
+ *
+ * One array, two readers, and that is what makes it checked (#1208). `defineOperations`
+ * takes it below as the union a mistyped `permission:` fails against; `definePermissions`
+ * in `seed.ts` takes the SAME array as `keys` and throws at module load if it and
+ * `MODULES` disagree in either direction. It has to be written out as literals — a
+ * manifest's keys are branded `PermissionKey`s by the time anything could read them back,
+ * so the union cannot be derived from `MODULES`.
+ */
 export const HANDLEBAR_PERMISSIONS = [
+  // Handlebar's own — `CS_PERM` in module.ts.
   'customer:manage',
   'bike:manage',
+  // @substrat-run/engine-workorder
   'workorder:create',
+  'workorder:read',
+  'workorder:assign',
+  'workorder:report',
   'workorder:complete',
   'workorder:close',
-  'workorder:read',
+  // @substrat-run/engine-invoicing
+  'invoicing:read',
+  'invoicing:export',
+  // @substrat-run/engine-protocol
   'protocol:create',
+  'protocol:fill',
+  'protocol:sign',
+  'protocol:countersign',
+  'protocol:read',
+  'protocol:void',
+  'protocol:bind',
+  'protocol:attach',
+  'protocol:request-signature',
+  'protocol:record-signature',
 ] as const;
 
 /** A price-list row. A table, not an entity — no id, never an `EntityRef`. */

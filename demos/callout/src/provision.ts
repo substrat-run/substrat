@@ -13,6 +13,7 @@ import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-inv
 import { protocolModule, PROTOCOL_PERM as PROTO } from '@substrat-run/engine-protocol';
 import { calloutModule } from './module.js';
 import { SC_PERM } from './manifest.js';
+import { CALLOUT_PERMISSIONS } from './operations.js';
 
 // The manifest's config surface rides the same import `substrat push` already makes for
 // `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
@@ -101,8 +102,22 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
  * The single typed source for this vertical's permission surface — what the permission
  * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
  * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ *
+ * `keys` is the SAME array `operations.ts` hands `defineOperations` (#1208).
+ *
+ * It has to be written somewhere as literals — a manifest's keys are branded by the time
+ * anything can read them back, so the union that turns a mistyped `permission:` into a
+ * compile error cannot be derived from `MODULES`. Passing it here is what makes the
+ * restatement checked: `definePermissions` throws at load if this vertical ever declares a
+ * key the array does not name, or the other way round. Engine keys are in it because they
+ * are keys a Callout scope declares — `MODULES` registers all three engines.
  */
-export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
+export const permissions = definePermissions({
+  modules: MODULES,
+  roles: ROLES,
+  entityGrants: ENTITY_GRANTS,
+  keys: CALLOUT_PERMISSIONS,
+});
 
 
 /** Idempotent: safe on every server start; demo data seeds only once. */

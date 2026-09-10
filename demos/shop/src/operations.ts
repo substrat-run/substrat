@@ -71,8 +71,22 @@ import {
   variantRow,
 } from './schemas.js';
 
-/** The keys these operations check. Mirrors `SHOP_PERM` in module.ts. */
+/**
+ * Every permission key a Shop scope declares — Shop's own eight (`SHOP_PERM` in
+ * module.ts), plus the two the invoicing engine it composes brings with it.
+ *
+ * This is the vocabulary an operation's `permission` may name, not a second declaration
+ * of who owns the key: the MANIFEST still declares only Shop's own.
+ *
+ * One array, two readers, and that is what makes it checked (#1208). `defineOperations`
+ * takes it below as the union a mistyped `permission:` fails against; `definePermissions`
+ * in `seed.ts` takes the SAME array as `keys` and throws at module load if it and
+ * `MODULES` disagree in either direction. It has to be written out as literals — a
+ * manifest's keys are branded `PermissionKey`s by the time anything could read them back,
+ * so the union cannot be derived from `MODULES`.
+ */
 export const SHOP_PERMISSIONS = [
+  // Shop's own — `SHOP_PERM` in module.ts.
   'catalog:manage',
   'stock:manage',
   'discount:manage',
@@ -81,6 +95,9 @@ export const SHOP_PERMISSIONS = [
   'order:fulfil',
   'shop:browse',
   'cart:checkout',
+  // @substrat-run/engine-invoicing
+  'invoicing:read',
+  'invoicing:export',
 ] as const;
 
 const orderDetail = z.object({ order: orderRow, lines: z.array(orderLineRow) });
