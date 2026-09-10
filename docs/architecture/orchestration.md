@@ -274,8 +274,9 @@ Two migration layers, and this layer must keep them distinct:
   what the admit checkpoint reviews before any of this runs.
 
 The upgrade contract from CLAUDE.md holds unchanged: migrations are append-only; emitted
-event fields freeze; a rename is a `schemaVersion` bump with a dual-emit window. This layer
-does not relax it — it makes the digest that proves it a promotion gate.
+event fields freeze; a rename is a `schemaVersion` bump, which today is a replace rather
+than a dual-emit window (K-39 — dispatch keys on event type alone). This layer does not
+relax it — it makes the digest that proves it a promotion gate.
 
 ## 8. Open decisions
 

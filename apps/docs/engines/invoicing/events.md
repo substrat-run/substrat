@@ -51,8 +51,8 @@ v1 carried `total` as a bare amount string with no currency — an amount that i
 on the one event an accounting connector consumes. v2 makes it `Money`. If you consume this
 event, read `total.amount` and `total.currency` rather than the old string.
 
-This is a deliberate exception to the usual deprecation-window rule, and the reason
-generalises to **every** engine here:
+This is not an exception — it is the rule, and the reason generalises to **every** engine
+here:
 
 **Consumer dispatch keys on event `type` alone.** The `schemaVersion` in a manifest's
 `consumes` is discarded at registration; the dispatch query is `WHERE o.type = ?`. So
@@ -63,7 +63,8 @@ A clean replace fails **loudly** instead: a v1 consumer's strict parse rejects v
 dead-letters, which is visible. Loud beats silent when the alternative is double-billing.
 :::
 
-The general rule still holds elsewhere: payload fields are frozen once shipped, new fields
-are optional and additive, and rename/remove/retype means a version bump. Just know that
-"dual-emit through a deprecation window" isn't actually available until version routing
-exists — it's a live open question in the kernel design, not a solved problem.
+The rest of the rule holds unchanged everywhere: payload fields are frozen once shipped, new
+fields are optional and additive, and rename/remove/retype means a version bump. Only the
+deprecation window is gone — a bump is a replace on every engine, not just this one, until
+dispatch routes on `(type, schemaVersion)`. That is wanted and postponed, not abandoned:
+[#128](https://github.com/substrat-run/substrat/issues/128) holds the scope.

@@ -69,7 +69,10 @@ wanting match vocabulary emits its own.
 ## Evolution rules
 
 - Payload fields are **frozen once shipped**. Rename, remove or retype means a
-  `schemaVersion` bump and dual-emit through a deprecation window.
+  `schemaVersion` bump — a **replace, not a dual-emit**. Consumer dispatch keys on the event
+  type alone, so two versions in flight deliver *both* to every consumer of that type; read
+  [the invoicing engine's `underlag-exported` v2 note](/engines/invoicing/events#versioning)
+  before bumping anything here.
 - New operation inputs are optional with behaviour-preserving defaults.
 - Permission keys are never renamed.
 - Consumers parse payloads with their own Zod schema, never the producer's types.

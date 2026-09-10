@@ -292,8 +292,18 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   unprotected.
 - Engine surfaces evolve **additively only**: new operation inputs are optional with
   behavior-preserving defaults; emitted event payload fields are frozen once shipped —
-  rename/remove/retype means a `schemaVersion` bump (dual-emit through a deprecation
-  window); permission keys are never renamed.
+  rename/remove/retype means a `schemaVersion` bump; permission keys are never renamed.
+  A bump is a **replace, and dual-emit is not an available option** — K-39, amending D-28.
+  Consumer dispatch selects on event *type* alone (`WHERE o.type = ?`, and the
+  `schemaVersion` a manifest's `consumes` entry carries is discarded at registration), so
+  emitting v1 and v2 side by side delivers **both** to the same consumer: for
+  `invoicing.underlag-exported`, whose consumer is by design an accounting connector, a
+  double invoice in production, silently. A replace fails loudly instead — a v1 consumer's
+  strict parse rejects v2 and the event dead-letters, where somebody sees it — so no plan
+  should promise a deprecation window that nothing can deliver. `engines/invoicing` is the
+  precedent (`src/index.ts`, and `test/underlag.test.ts` pins it at exactly one emission).
+  Routable dual-emit wants `(type, schemaVersion)` in the dispatch predicate plus a version
+  dimension on the consumer registry: that is #128, postponed rather than abandoned.
   That rule now has a **runtime half** (#771): a value crossing the engine seam is
   `.parse`d by the schema the engine publishes, on the way OUT as well as in, and a read
   names its columns rather than `SELECT *` — which pins the published shape to whatever

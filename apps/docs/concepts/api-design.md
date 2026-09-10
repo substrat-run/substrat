@@ -451,7 +451,9 @@ Once shipped, an operation's surface evolves **additively**:
 
 - new inputs are optional, with behavior-preserving defaults;
 - emitted event payload fields are frozen — renaming, removing or retyping one means a
-  `schemaVersion` bump and a dual-emit deprecation window;
+  `schemaVersion` bump, which today is a **replace**: consumer dispatch keys on the event
+  type alone, so a dual-emit deprecation window is not available. See
+  [the invoicing engine's `underlag-exported` v2 note](/engines/invoicing/events#versioning);
 - permission keys are never renamed.
 
 This is the rule that makes a fleet of independently-deployed verticals survivable. It is
