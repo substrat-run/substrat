@@ -3,7 +3,7 @@
 	"roles": {
 		"foreman": ["job:manage", "job:read"],
 		"crew": ["job:read"],
-		"accounting": ["job:read", "invoicing:export"]
+		"accounting": ["job:read", "invoicing:read", "invoicing:export"]
 	},
 	"files": ["spec/model.ts", "src/module.ts", "src/seed.ts", "test"]
 }

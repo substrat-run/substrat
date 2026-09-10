@@ -65,8 +65,14 @@ describe('the fixtures under apps/builder/evals/', () => {
 			for (const op of fixture.expect.operations ?? []) {
 				expect(fixture.concept, `${name}: operation ${op}`).toContain(`\`${op}\``);
 			}
-			for (const role of Object.keys(fixture.expect.roles ?? {})) {
+			for (const [role, perms] of Object.entries(fixture.expect.roles ?? {})) {
 				expect(fixture.concept, `${name}: role ${role}`).toContain(`\`${role}\``);
+				// The permissions too, not just the role key: a pinned permission the
+				// concept never states grades the generator on a requirement it was
+				// never given, exactly as a pinned operation would.
+				for (const perm of perms) {
+					expect(fixture.concept, `${name}: ${role} holds ${perm}`).toContain(`\`${perm}\``);
+				}
 			}
 		}
 	});
