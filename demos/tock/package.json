@@ -10,7 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "emit:migrations": "tsx tools/emit-migrations.mts",
     "test": "vitest run",
-    "dev": "concurrently -n issuer,api -c magenta,blue \"pnpm run issuer\" \"tsx src/server.ts\"",
+    "dev": "concurrently -n issuer,api,web -c magenta,blue,green \"pnpm run issuer\" \"tsx src/server.ts\" \"pnpm --dir app dev\"",
     "server": "tsx src/server.ts",
     "demo": "pnpm run dev",
     "issuer": "tsx ../../packages/dev-issuer/src/cli.ts --personas src/personas.ts"
@@ -53,7 +53,21 @@
         "run": "server",
         "portEnv": "PORT",
         "portFrom": "src/server.ts"
+      },
+      {
+        "name": "web",
+        "run": "dev",
+        "dir": "app",
+        "portEnv": "WEB_PORT",
+        "portFrom": "app/vite.config.ts"
       }
-    ]
+    ],
+    "client": {
+      "model": "spec/model.ts",
+      "entities": "tockEntities",
+      "operations": "tockOperations",
+      "out": "app/src/api.generated.ts",
+      "name": "Tock"
+    }
   }
 }

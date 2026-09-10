@@ -20,6 +20,17 @@
       ],
       "port": 8880,
       "autoPort": false
+    },
+    {
+      "name": "web",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": [
+        "--dir",
+        "app",
+        "dev"
+      ],
+      "port": 5280,
+      "autoPort": false
     }
   ]
 }

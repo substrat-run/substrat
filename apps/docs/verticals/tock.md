@@ -5,8 +5,9 @@ file is supposed to contain, Tock reports what actually arrived, and a correctio
 new run beside the old one rather than on top of it.
 
 ::: warning In progress
-The API runs and the scenario passes; there is **no browser app yet**, so everything below is
-driven over HTTP. The approved design is
+Runs locally end to end — drop a file, model it, count it, read the report. Not deployed, and
+the concept's later slices (object storage, the lake, a query gateway) are not built. The
+approved design is
 [`demos/tock/spec/concept.md`](https://github.com/substrat-run/substrat/blob/main/demos/tock/spec/concept.md).
 :::
 
@@ -53,8 +54,8 @@ What it proves:
 | **Own tables** | `tock_sources` · `tock_schemas` · `tock_runs` · `tock_source_files` · `tock_rule_states` · `tock_salts` · `tock_observations` · `tock_field_history` · `tock_rows` · `tock_rollups` · `tock_labels` |
 | **Permission surface** | 4 keys — `report:read` · `row:read` · `run:manage` · `schema:manage` |
 | **Auth** | [OIDC only](/concepts/identity), like every other demo here |
-| **Apps** | API (`:8880`) only — no browser app yet |
-| **Status** | Runs headlessly: 16 operations, a seeded world, a passing scenario |
+| **Apps** | API (`:8880`) + one React app (`:5280`) — five panes over one API |
+| **Status** | Working — demo seed |
 
 ## The lifecycle
 
@@ -97,7 +98,13 @@ version, and mapping a run merely *selects* one.
 pnpm --filter @substrat-run/demo-tock dev
 # issuer  http://localhost:8879   (sign in by picking Ines, Tomas, Wren or Petra)
 # api     http://localhost:8880
+# web     http://localhost:5280
 ```
+
+Sign in as **Ines** to model a schema, **Tomas** to run the lifecycle but not write one, and
+**Wren** to see the counts and be refused the rows. The app filters nothing — a viewer seeing
+less is the permission model on screen, and a 403 is rendered as a 403 rather than hidden
+behind a missing button.
 
 Two routes are **not** operations, because they touch bytes and module code cannot:
 
