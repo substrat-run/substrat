@@ -162,6 +162,32 @@ handler, and a new operation cannot forget to.
 
 Omit `input` entirely for an operation that takes no body.
 
+### Where `PERMISSIONS` comes from
+
+That array is the one thing in the model written twice: the keys are also declared, with their
+prose descriptions, in each module's manifest. It cannot be derived from there — a manifest is
+`moduleManifest.parse(…)` output, so every `key` is the branded `PermissionKey` by then and the
+literal union `defineOperations` needs is gone.
+
+Hand the **same array** to `definePermissions` as `keys` and the second description stops being
+unchecked:
+
+```ts
+export const permissions = definePermissions({
+  modules: MODULES,
+  roles: ROLES,
+  entityGrants: ENTITY_GRANTS,
+  keys: PERMISSIONS,
+});
+```
+
+It throws when the module loads if the array and the modules disagree in either direction,
+naming the extra and missing keys — a key the modules declare but the array omits makes
+`defineOperations` reject a permission that really exists, and a key in the array that no
+module declares type-checks an operation against a permission nothing can ever grant.
+`PermissionKeysOf<typeof permissions>` reads the union back off the result for anywhere else
+that wants it.
+
 ### Narrowed permissions
 
 A bare `permission: 'customer:manage'` is a **node** check — anyone holding the key anywhere
