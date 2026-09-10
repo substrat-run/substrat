@@ -197,6 +197,14 @@ interface OutboxRow {
   payload: string | null;
 }
 
+/**
+ * The key marking a scope DO whose storage was destroyed (`destroyStorage`).
+ * Written after `deleteAll()` so it survives the wipe, and never cleared: `reaped`
+ * is terminal, so this is the DO's own permanent answer to "am I dead", available
+ * without asking the directory.
+ */
+const REAPED_MARKER = '_substrat_reaped';
+
 const KERNEL_DDL = `
   -- The ';' in this comment is a deliberate tripwire; the DDL must go through
   -- splitSqlStatements, and a naive split(';') fails every scope at construction.
@@ -2584,6 +2592,22 @@ export function defineScopeDO(
     async destroyStorage(): Promise<void> {
       await this.ctx.storage.deleteAll();
       this.applied.clear();
+      // The tombstone is written AFTER the wipe, on purpose: `deleteAll()` takes
+      // everything, so a marker written before would go with it and a reaped DO
+      // would be indistinguishable from a fresh one. Which is exactly how a
+      // projection write that was already in flight could recreate storage for a
+      // scope whose bytes the platform had just deleted — the fan-out selects live
+      // scopes, then writes, and a reap can land between the two.
+      //
+      // Terminal by contract (`reaped` is not reversible, tenancy.ts), so this is a
+      // permanent fence rather than a lock: any later write to this DO is refused
+      // whenever it arrives, without coordinating with the lifecycle that killed it.
+      await this.ctx.storage.put(REAPED_MARKER, true);
+    }
+
+    /** Whether this scope's storage was destroyed — see `destroyStorage`. */
+    private async isReaped(): Promise<boolean> {
+      return (await this.ctx.storage.get<boolean>(REAPED_MARKER)) === true;
     }
 
     /**
@@ -3264,6 +3288,12 @@ export function defineScopeDO(
        *  revoked connection stops being sealable to. */
       connectionKeys?: { connection_id: string; provider: string; key_id: string; public_key: string }[],
     ): Promise<void> {
+      if (await this.isReaped()) return;
+      // A projection that arrives after this scope was reaped is dropped, not
+      // applied: writing it would recreate storage the platform deliberately
+      // destroyed. Silent rather than throwing — the fan-out is a best-effort
+      // convergence over many scopes and one dead sibling must not fail the others,
+      // and a reaped scope converging to "nothing" IS convergence.
       await this.queue.enqueue(() => {
         this.sql.exec(`DELETE FROM _substrat_roles WHERE tenant_id = ?`, tenantId);
         for (const r of roles) {

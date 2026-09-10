@@ -7,6 +7,7 @@ import { AccountView } from '../views/Account';
 import { ApplicationDetailView } from '../views/ApplicationDetail';
 import { ClientsPanel } from '../views/Applications';
 import { BankIdPanel } from '../views/BankId';
+import { BankIdDetailView } from '../views/BankIdDetail';
 import { IssuerPanel } from '../views/Issuer';
 import { ProviderDetailView } from '../views/ProviderDetail';
 import { ProvidersPanel } from '../views/Providers';
@@ -15,10 +16,12 @@ import { UsersView } from '../views/Users';
 import { navigate, usePathname } from './router';
 import {
   APPLICATIONS_PATH,
+  BANKID_PATH,
   PROVIDERS_PATH,
   ROUTES,
   USERS_PATH,
   applicationDetailId,
+  isBankIdSettingsPath,
   providerDetailId,
   userDetailId,
 } from './routes';
@@ -100,19 +103,23 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
   // `/` is where signing in leaves you, and it is not a screen. Resolved here rather than
   // only in the effect below, so the first frame is the section rather than a "no such page"
   // that corrects itself.
-  // `/users/<id>`, `/applications/<client id>` and `/providers/<provider id>` are screens under
-  // their section rather than sections of their own: the nav keeps the section lit, and only an
-  // administrator can be on any of them — every id is read after the permission filter, so a
-  // non-administrator pasting one gets the "no such page" answer the nav's own courtesy already
-  // implies.
+  // `/users/<id>`, `/applications/<client id>`, `/providers/<provider id>` and
+  // `/bankid/settings` are screens under their section rather than sections of their own: the
+  // nav keeps the section lit, and only an administrator can be on any of them — every one is
+  // read after the permission filter, so a non-administrator pasting one gets the "no such page"
+  // answer the nav's own courtesy already implies.
   const userId = visible.some((r) => r.path === USERS_PATH) ? userDetailId(pathname) : null;
   const clientId = visible.some((r) => r.path === APPLICATIONS_PATH) ? applicationDetailId(pathname) : null;
   const providerId = visible.some((r) => r.path === PROVIDERS_PATH) ? providerDetailId(pathname) : null;
+  // BankID's second screen carries no id — there is one configuration per issuer — so this is
+  // the only one of the four that is a path rather than something parsed out of one.
+  const bankIdSettings = visible.some((r) => r.path === BANKID_PATH) && isBankIdSettingsPath(pathname);
   const active =
     visible.find((r) => r.path === pathname) ??
     (userId ? visible.find((r) => r.path === USERS_PATH)! : null) ??
     (clientId ? visible.find((r) => r.path === APPLICATIONS_PATH)! : null) ??
     (providerId ? visible.find((r) => r.path === PROVIDERS_PATH)! : null) ??
+    (bankIdSettings ? visible.find((r) => r.path === BANKID_PATH)! : null) ??
     (pathname === '/' ? home : null);
 
   useEffect(() => {
@@ -217,6 +224,10 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
             // above the next provider's header — with a Save button that would write them to
             // the wrong row.
             <ProviderDetailView key={providerId} providerId={providerId} issuer={disc?.issuer ?? null} />
+          ) : bankIdSettings ? (
+            // No key: there is exactly one BankID configuration, so there is no other one to
+            // move to and nothing a prop change could carry across.
+            <BankIdDetailView />
           ) : active.path === '/users' ? (
             <UsersView me={session.sub} />
           ) : active.path === '/applications' ? (

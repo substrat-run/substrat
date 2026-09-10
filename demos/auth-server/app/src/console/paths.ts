@@ -18,6 +18,18 @@ export const APPLICATIONS_PATH = '/applications';
 /** And for `/providers/<provider id>` and Sign-in providers. */
 export const PROVIDERS_PATH = '/providers';
 
+/** BankID's section — one status screen, and the configuration screen below it. */
+export const BANKID_PATH = '/bankid';
+
+/**
+ * BankID's configuration screen. A fixed segment rather than an id, because there is exactly
+ * one BankID configuration per issuer: no client id, no registered redirect URI, one mTLS
+ * certificate. It is still a second screen for the same reason the other three are — the
+ * certificate form used to unfold under the status table with no URL of its own, so what an
+ * operator was reading survived neither a reload nor the sign-in a stale session triggered.
+ */
+export const BANKID_SETTINGS_PATH = `${BANKID_PATH}/settings`;
+
 /**
  * The id in `/users/<id>`, or null for anything else. Deliberately strict about the shape
  * rather than accepting any tail: this value is interpolated into an API path AND is an
@@ -63,6 +75,17 @@ export function providerDetailId(pathname: string): string | null {
 }
 
 /**
+ * Whether this path is BankID's configuration screen. There is no id to parse — the segment is
+ * a literal — so this is an equality rather than a pattern, and the same duty applies: a `true`
+ * here is what lets `returnTarget` hand `/bankid/settings` to an upstream provider as
+ * `callbackURL`. Nothing of the caller's string can leave, because the caller's string is only
+ * ever compared, never carried.
+ */
+export function isBankIdSettingsPath(pathname: string): boolean {
+  return pathname === BANKID_SETTINGS_PATH;
+}
+
+/**
  * The detail screen this path is, re-composed from the id it parsed — or null if it is not one.
  *
  * Re-built rather than returned as given, deliberately: what leaves here is a string this file
@@ -76,5 +99,7 @@ export function detailTarget(pathname: string): string | null {
   if (clientId) return `${APPLICATIONS_PATH}/${clientId}`;
   const providerId = providerDetailId(pathname);
   if (providerId) return `${PROVIDERS_PATH}/${providerId}`;
+  // The constant, not the argument, for the same reason the three above are re-composed.
+  if (isBankIdSettingsPath(pathname)) return BANKID_SETTINGS_PATH;
   return null;
 }

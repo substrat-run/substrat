@@ -1,11 +1,14 @@
 import {
   beginLogin,
   completeLogin,
+  federatedLogoutUrl,
   verifySession,
   readCookie,
   safePath,
   SESSION_COOKIE,
   FLOW_COOKIE,
+  LOGOUT_HINT_COOKIE,
+  LOGOUT_PATH,
   SESSION_MAXAGE,
   FLOW_MAXAGE,
   type OidcEnv,
@@ -53,14 +56,22 @@ const envOf = (cfg: OidcRpConfig): OidcEnv => ({
   SESSION_SECRET: cfg.sessionSecret,
 });
 
-/** Serialize one Set-Cookie value — HttpOnly, Lax, path=/ (the oidc-rp mount's flags). */
-function cookie(name: string, value: string, origin: string, maxAge: number, domain?: string | null): string {
+/** Serialize one Set-Cookie value — HttpOnly, and by default Lax on path=/ (the oidc-rp mount's flags). */
+function cookie(
+  name: string,
+  value: string,
+  origin: string,
+  maxAge: number,
+  domain?: string | null,
+  path = '/',
+  sameSite: 'Lax' | 'Strict' = 'Lax',
+): string {
   const parts = [
     `${name}=${encodeURIComponent(value)}`,
-    'Path=/',
+    `Path=${path}`,
     `Max-Age=${maxAge}`,
     'HttpOnly',
-    'SameSite=Lax',
+    `SameSite=${sameSite}`,
   ];
   if (domain) parts.push(`Domain=${domain}`);
   if (origin.startsWith('https:')) parts.push('Secure');
@@ -77,6 +88,36 @@ function cookie(name: string, value: string, origin: string, maxAge: number, dom
 function sessionCookies(value: string, origin: string, maxAge: number, domain: string | null): string[] {
   if (!domain) return [cookie(SESSION_COOKIE, value, origin, maxAge)];
   return [cookie(SESSION_COOKIE, value, origin, maxAge, domain), cookie(SESSION_COOKIE, '', origin, 0)];
+}
+
+/**
+ * The login's ID token, kept ONLY to be handed back to the issuer as `id_token_hint`
+ * when this session is signed out federated — see `federatedLogoutUrl`, and the same
+ * cookie `mountOidcRoutes` sets.
+ *
+ * Two attributes differ from the session cookie, both deliberately:
+ *
+ *  - **`Path=/api/auth/logout`**, so the hint rides exactly one request in the session's
+ *    life instead of every one. It is not a credential this app ever reads.
+ *  - **`SameSite=Strict`**, where the session is Lax. A Lax cookie IS sent on a
+ *    top-level cross-site GET, so a hostile page linking to `?federated` would hand the
+ *    OP a valid hint and get the very confirmation page this removes skipped — logout
+ *    CSRF against the issuer session. Strict withholds the hint from any cross-site
+ *    navigation, which downgrades that case to the confirmation page and leaves the
+ *    in-app sign-out (same-site) redirecting straight through. The session cookie stays
+ *    Lax because the login callback is itself a cross-site navigation back from the
+ *    issuer and must arrive carrying it.
+ *
+ * The `cookieDomain` treatment follows the session's, for the same reason: on a
+ * multi-surface install (K-26) the sign-in is shared, so the sign-out has to work from
+ * whichever surface the person is on rather than only the one they logged in through.
+ */
+function hintCookies(value: string, origin: string, maxAge: number, domain: string | null): string[] {
+  if (!domain) return [cookie(LOGOUT_HINT_COOKIE, value, origin, maxAge, null, LOGOUT_PATH, 'Strict')];
+  return [
+    cookie(LOGOUT_HINT_COOKIE, value, origin, maxAge, domain, LOGOUT_PATH, 'Strict'),
+    cookie(LOGOUT_HINT_COOKIE, '', origin, 0, null, LOGOUT_PATH, 'Strict'),
+  ];
 }
 
 function redirectWith(location: string, cookies: string[]): Response {
@@ -129,10 +170,13 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
       const flow = readCookie(request.headers.get('cookie'), FLOW_COOKIE);
       const clearFlow = cookie(FLOW_COOKIE, '', origin, 0);
       try {
-        const { session, returnTo } = await completeLogin(env, origin, url, flow);
+        const { session, returnTo, idToken } = await completeLogin(env, origin, url, flow);
         return redirectWith(safePath(returnTo) ?? '/', [
           clearFlow,
           ...sessionCookies(session, origin, SESSION_MAXAGE, domain),
+          // Same lifetime as the session, so the two expire together and a stale hint is
+          // never the thing left over.
+          ...hintCookies(idToken, origin, SESSION_MAXAGE, domain),
         ]);
       } catch (err) {
         // Loud in the logs, opaque to the browser — same stance as the oidc-rp mount.
@@ -141,10 +185,28 @@ export function oidcRpAuthProvider(cfg: OidcRpConfig): AuthProvider {
       }
     }
 
-    if (url.pathname === '/api/auth/logout') {
-      return redirectWith(safePath(url.searchParams.get('returnTo')) ?? '/', [
-        ...sessionCookies('', origin, 0, domain),
-      ]);
+    if (url.pathname === LOGOUT_PATH) {
+      const local = safePath(url.searchParams.get('returnTo')) ?? '/';
+      const cleared = [...sessionCookies('', origin, 0, domain), ...hintCookies('', origin, 0, domain)];
+      /**
+       * `?federated` ALSO ends the issuer's own session (OIDC RP-Initiated Logout 1.0).
+       * Without it the issuer's cookie silently signs the same person straight back in on
+       * the next "Sign in", so the sign-out looks like it never happened — and "use
+       * another account" can never work. Opt-in per link, as in `mountOidcRoutes`: a plain
+       * logout stays local, which is what a surface sharing an issuer session with others
+       * wants.
+       *
+       * The cookies above are on THIS response, whatever happens next: an issuer that is
+       * down, advertises no end-session endpoint, or refuses our
+       * `post_logout_redirect_uri` can only leave its own session standing — never keep
+       * somebody signed in here.
+       */
+      if (url.searchParams.has('federated')) {
+        const hint = readCookie(request.headers.get('cookie'), LOGOUT_HINT_COOKIE);
+        const away = await federatedLogoutUrl(env, origin, local, hint);
+        if (away) return redirectWith(away, cleared);
+      }
+      return redirectWith(local, cleared);
     }
 
     // Anything else under /api/auth/* (sign-up, password endpoints, …) has no server

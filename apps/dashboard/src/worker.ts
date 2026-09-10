@@ -95,6 +95,19 @@ interface Env extends OidcEnv {
    */
   PLATFORM_BASE_DOMAINS?: string;
   /**
+   * Scope-local permissions (#1343, scope-local-permissions.md Phase 2). `'1'` makes
+   * this host PROJECT the tenant's roles/tuples/entitlements/identity links into its
+   * scopes on every tenant-level write, and those scopes evaluate permissions from
+   * their own storage instead of reading the control-plane DO per request.
+   *
+   * A flag rather than a constant because flipping it changes how a live app answers
+   * `ctx.check` — TEST earns it before production does. Off is exactly today's
+   * behaviour, and ON is still incremental: a scope keeps using the RPC path until a
+   * projection actually reaches it, and the projection it receives is a complete
+   * tenant snapshot, so there is no window where a scope is flipped but unprojected.
+   */
+  SCOPE_LOCAL_PERMISSIONS?: string;
+  /**
    * REQUIRED: a service binding to `substrat-control-plane` — the shared directory
    * the router reads. Apps are provisioned there through the tenant-narrowed seam
    * (§4) so they are REACHABLE. There is no fallback: a deployment missing this
@@ -408,7 +421,16 @@ function secretBoxFor(env: Env): SecretBox | undefined {
 
 /** The coordinator is stateless — rebuilt per request; durable state lives in the DOs + D1. */
 function hostFor(env: Env): CloudflareScopeHost {
-  const host = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE, secretBox: secretBoxFor(env) });
+  const host = new CloudflareScopeHost({
+    scope: env.SCOPE,
+    controlPlane: env.CONTROL_PLANE,
+    secretBox: secretBoxFor(env),
+    // See the Env field: off is today's behaviour exactly, and on takes every
+    // permission check off the single shared control-plane DO as each scope is
+    // projected. New scopes project at provision; existing ones convert on their
+    // tenant's next tenant-level write, or on a deliberate back-fill.
+    scopeLocalPermissions: env.SCOPE_LOCAL_PERMISSIONS === '1',
+  });
   for (const m of MODULES) host.registerModule(m);
   return host;
 }

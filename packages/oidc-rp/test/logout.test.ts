@@ -29,6 +29,8 @@ let jwks: { keys: object[] };
  * that offers RP-initiated logout at all, and a URL of any scheme for the ones that do.
  */
 let endSessionEndpoint: string | null;
+/** Whether this test's issuer is reachable at all — its discovery document 503s when not. */
+let discoveryDown: boolean;
 
 beforeAll(async () => {
   const pair = await generateKeyPair('RS256');
@@ -47,10 +49,12 @@ beforeEach(() => {
     SESSION_SECRET: 'session-secret-000000000000000000000001',
   };
   endSessionEndpoint = `${ISSUER}/api/auth/oauth2/end-session`;
+  discoveryDown = false;
 
   vi.stubGlobal('fetch', (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url === `${ISSUER}/.well-known/openid-configuration`) {
+      if (discoveryDown) return new Response('upstream is down', { status: 503 });
       return Response.json({
         issuer: ISSUER,
         authorization_endpoint: `${ISSUER}/authorize`,
@@ -277,6 +281,22 @@ describe('federated logout', () => {
 
     const to = new URL(res.headers.get('location')!);
     expect(to.searchParams.get('id_token_hint')).toBe(jar.get(LOGOUT_HINT_COOKIE));
+  });
+
+  it('does not poison later logins when discovery fails during the logout', async () => {
+    // Discovery is cached per issuer for the life of the isolate, and a federated logout
+    // is the one lookup that fails QUIETLY — it degrades to a local sign-out. If the
+    // rejection stayed in the cache, this one request would take every later login in
+    // the isolate down with it, long after the issuer came back.
+    discoveryDown = true;
+    const a = app();
+
+    const out = await a.request(`${APP}/api/auth/logout?federated&returnTo=/bye`, {}, env);
+    expect(out.headers.get('location')).toBe('/bye');
+
+    discoveryDown = false;
+    const jar = await signIn(a);
+    expect(jar.get(SESSION_COOKIE)).toBeTruthy();
   });
 
   it('does not reach the issuer without ?federated', async () => {
