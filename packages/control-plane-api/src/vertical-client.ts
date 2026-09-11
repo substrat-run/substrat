@@ -35,23 +35,26 @@ import type {
   TenantStoreHandle,
   Visibility,
 } from '@substrat-run/contracts';
-import { attachmentRecord, ownerSeat, ownerClaimLink } from '@substrat-run/contracts';
+import {
+  attachmentRecord,
+  denialFilterParams,
+  ownerSeat,
+  ownerClaimLink,
+} from '@substrat-run/contracts';
 import type { OpenedAttachment } from '@substrat-run/kernel';
 import { CONNECTOR_ATTACHMENT_RECORD_HEADER, PLATFORM_SECRET_HEADER } from '@substrat-run/kernel';
 import { ControlPlaneError } from './client.js';
 
 /**
- * The shared query string for both denial reads — same fields, same spelling, so the
- * two routes cannot drift on what a filter means.
+ * The query string for both internal denial reads. The filter's own fields come from
+ * the ONE encoder in contracts (#971) — this branch answers the same two routes as
+ * `ControlPlaneClient`, for a HOSTED scope, so a filter field it dropped would be a
+ * silently wider read on exactly the scopes that are not co-located. `scopeId` is the
+ * one thing added here: the internal route is not scope-addressed in its path.
  */
 function denialParams(scopeId: ScopeId, filter?: DenialFilter): URLSearchParams {
-  const q = new URLSearchParams({ scopeId });
-  if (filter?.actor) q.set('actor', filter.actor);
-  if (filter?.permission) q.set('permission', filter.permission);
-  if (filter?.operation) q.set('operation', filter.operation);
-  if (filter?.since) q.set('since', filter.since);
-  if (filter?.until) q.set('until', filter.until);
-  if (filter?.limit) q.set('limit', String(filter.limit));
+  const q = denialFilterParams(filter);
+  q.set('scopeId', scopeId);
   return q;
 }
 

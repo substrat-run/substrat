@@ -83,6 +83,33 @@ describe('ControlPlaneClient — the connect seam', () => {
     expect(seen[1]!.get(DEV_ACTOR_HEADER)).toBeNull();
   });
 
+  it('narrows both denial reads through the shared encoder (#971)', async () => {
+    // The URL the client builds is the whole of what this method contributes, and it
+    // had no test — which is how its copy of the filter encoder could have drifted
+    // from the route's decoder without anything going red.
+    const seen: string[] = [];
+    const capture = (input: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(input, init).url);
+      return Promise.resolve(new Response('[]', { headers: { 'content-type': 'application/json' } }));
+    };
+    const client = new ControlPlaneClient({
+      baseUrl: 'http://cp.local',
+      actor: platformActorId.parse(ulid()),
+      fetch: capture,
+    });
+    const T = tenantId.parse(ulid());
+    const S = scopeId.parse(ulid());
+
+    await client.listDenials(T, S, { permission: 'perm:use', limit: 5 });
+    expect(seen[0]).toBe(`http://cp.local/tenants/${T}/scopes/${S}/denials?permission=perm%3Ause&limit=5`);
+
+    // No filter → no query string at all. The `?` the client used to append
+    // unconditionally was harmless but meant the unnarrowed URL was never the one
+    // the route tests exercise.
+    await client.summarizeDenials(T, S);
+    expect(seen[1]).toBe(`http://cp.local/tenants/${T}/scopes/${S}/denials/summary`);
+  });
+
   it('fails closed when the control plane is unreachable', async () => {
     const client = new ControlPlaneClient({
       baseUrl: 'http://cp.local',

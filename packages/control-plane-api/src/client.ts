@@ -1,3 +1,4 @@
+import { denialQuery } from '@substrat-run/contracts';
 import type {
   EntitlementGrant,
   EntitlementGrantInput,
@@ -15,17 +16,6 @@ import type {
   TenantId,
 } from '@substrat-run/contracts';
 
-/** Both denial reads take the same filter; one spelling of it, so they cannot drift. */
-function denialQuery(filter?: DenialFilter): URLSearchParams {
-  const q = new URLSearchParams();
-  if (filter?.actor) q.set('actor', filter.actor);
-  if (filter?.permission) q.set('permission', filter.permission);
-  if (filter?.operation) q.set('operation', filter.operation);
-  if (filter?.since) q.set('since', filter.since);
-  if (filter?.until) q.set('until', filter.until);
-  if (filter?.limit) q.set('limit', String(filter.limit));
-  return q;
-}
 import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from './auth.js';
 
 /**
@@ -237,7 +227,7 @@ export class ControlPlaneClient {
     scopeId: ScopeId,
     filter?: DenialFilter,
   ): Promise<DenialSummary> {
-    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials/summary?${denialQuery(filter)}`);
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials/summary${denialQuery(filter)}`);
   }
 
   /** The raw rows behind a bucket, newest first. */
@@ -246,7 +236,7 @@ export class ControlPlaneClient {
     scopeId: ScopeId,
     filter?: DenialFilter,
   ): Promise<PermissionDenial[]> {
-    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials?${denialQuery(filter)}`);
+    return this.call(`/tenants/${tenantId}/scopes/${scopeId}/denials${denialQuery(filter)}`);
   }
 
   /**
