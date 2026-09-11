@@ -81,9 +81,21 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 ## Commands
 
 - `pnpm install` · `pnpm build` · `pnpm typecheck` · `pnpm test` (builds first) — the root
-  scripts, not `pnpm -r …` directly: they exclude `.builder/projects/**`, the gitignored
-  builder-studio scratch projects that are also workspace members. A half-built one
-  otherwise reddens repo-wide gates and blocks every push (#769).
+  scripts, not `pnpm -r …` directly, **in a local checkout**: they exclude
+  `.builder/projects/**`, the gitignored builder-studio scratch projects that are also
+  workspace members. A half-built one otherwise reddens repo-wide gates and blocks every
+  push (#769), which is why `.githooks/pre-push` calls the script rather than the sweep.
+  **CI runs `pnpm -r` instead, and that is deliberate, not a violation of this bullet**:
+  both reasons the root scripts exist are absent there. A CI checkout has no
+  `.builder/projects/**` to exclude — the directory is gitignored, so it is never cloned —
+  and a PR wants a filter the root script cannot carry.
+  `.github/workflows/ci.yml:31` builds everything (`pnpm -r build`, as `:295` does again
+  for the test deploy), while `:249` and `:257` run typecheck and test as
+  `pnpm -r --filter=...[origin/<base>]` — the packages the diff touched plus everything
+  that depends on them, decided by the `scope` step at `:212`, which widens back to
+  everything when the change lands outside every package. That scoping is what #878's
+  template gate rides on, so neither side is the other's mistake: don't "fix" the workflow
+  into the root scripts, and don't teach a local agent to run the unfiltered sweep.
 - `node tools/boundary-lint.mjs` — the layer rules below, enforced mechanically (runs in CI)
 - `pnpm lint:cycles` — the declared workspace graph, checked for dependency cycles (the
   package edges, not source-level imports). Runs BEFORE
