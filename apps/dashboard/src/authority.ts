@@ -1011,6 +1011,107 @@ export class TenantNarrowedControlPlane {
   }
 
   /**
+   * MY traffic through ONE of my installed apps — the tenant grain (observability.md §3
+   * view 4), and the answer for an app whose vertical somebody else publishes.
+   *
+   * Everything above this is owner-narrowed: `ownedServiceRefs` maps the scripts this
+   * tenant PUBLISHED, so an installed vertical resolves to nothing and the tab reads
+   * empty. That is right for the script grain — one script serves every installer, and
+   * showing it to one of them leaks the rest — but it is not an answer to "how is my app
+   * doing", which is a question about the installation rather than about the code.
+   *
+   * So this shares none of that machinery. There is no service-ref resolution and no
+   * ownership gate, because the narrowing IS the tenant id: the control plane reads a
+   * dataset keyed on tenant, and `this.tenantId` was fixed at construction from the
+   * session. A caller here cannot widen it — there is no parameter for that — which is
+   * the same posture as the rest of this class, one layer further down.
+   */
+  async tenantMetrics(input: { scopeId?: string; vertical?: string; hours: number }): Promise<
+    Array<{
+      scopeId: string;
+      vertical: string | null;
+      surface: string | null;
+      requests: number;
+      errors: number;
+      durationP50: number;
+      durationP95: number;
+    }>
+  > {
+    const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
+    if (input.scopeId) q.set('scopeId', input.scopeId);
+    if (input.vertical) q.set('vertical', input.vertical);
+    const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+    const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
+    const rows =
+      (await this.call<Array<Record<string, unknown>>>(`/observability/tenant-metrics?${q.toString()}`)) ?? [];
+    return rows.map((r) => ({
+      scopeId: String(r['scopeId'] ?? ''),
+      vertical: str(r['vertical']),
+      surface: str(r['surface']),
+      requests: num(r['requests']),
+      errors: num(r['errors']),
+      durationP50: num(r['durationP50']),
+      durationP95: num(r['durationP95']),
+    }));
+  }
+
+  /** MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above. */
+  async tenantLogs(input: {
+    scopeId?: string;
+    vertical?: string;
+    level?: string;
+    search?: string;
+    hours: number;
+    limit: number;
+  }): Promise<
+    Array<{
+      timestamp: number | null;
+      level: string | null;
+      message: string | null;
+      service: string | null;
+      outcome: string | null;
+      trigger: string | null;
+      invocation: string | null;
+      entrypoint: string | null;
+      requestId: string | null;
+      cpuTimeMs: number | null;
+      wallTimeMs: number | null;
+      raw: unknown;
+    }>
+  > {
+    const q = new URLSearchParams({
+      tenantId: this.tenantId,
+      hours: String(input.hours),
+      limit: String(input.limit),
+    });
+    if (input.scopeId) q.set('scopeId', input.scopeId);
+    if (input.vertical) q.set('vertical', input.vertical);
+    if (input.level) q.set('level', input.level);
+    if (input.search) q.set('search', input.search);
+    const events =
+      (await this.call<Array<Record<string, unknown>>>(`/observability/tenant-logs?${q.toString()}`)) ?? [];
+    const str = (v: unknown) => (typeof v === 'string' ? v : null);
+    const num = (v: unknown) => (typeof v === 'number' ? v : null);
+    // Passed through whole, `raw` included, for the reason the owned-service read above
+    // gives: every event here was produced by a request to THIS tenant's own
+    // installation, so no field of it belongs to somebody else.
+    return events.map((e) => ({
+      timestamp: num(e['timestamp']),
+      level: str(e['level']),
+      message: str(e['message']),
+      service: str(e['service']),
+      outcome: str(e['outcome']),
+      trigger: str(e['trigger']),
+      invocation: str(e['invocation']),
+      entrypoint: str(e['entrypoint']),
+      requestId: str(e['requestId']),
+      cpuTimeMs: num(e['cpuTimeMs']),
+      wallTimeMs: num(e['wallTimeMs']),
+      raw: e['raw'],
+    }));
+  }
+
+  /**
    * Point a channel at a version (builder-plane.md Phase 4). dev/staging always; `prod`
    * only for a PRIVATE vertical — the worker endpoint enforces that split (a listed
    * vertical's prod is staff again). Over the service token the shared plane treats this

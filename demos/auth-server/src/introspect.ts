@@ -54,6 +54,12 @@ export const REDACTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   // the Data tab is a convenience read.
   identity_provider: ['client_secret'],
   config: ['value'],
+  // `sign_in_attempt` (`src/sign-in-log.ts`) is deliberately ABSENT, and the absence is the
+  // design rather than an omission: nothing in that table is a credential, because the writer
+  // keeps the authorization URL's path and never its query — where the PKCE challenge, the
+  // state and the signed authorize request live. A log of sign-in attempts that leaked the
+  // material of one would be a worse bug than the one it exists to diagnose, so the rule is
+  // held at the WRITE rather than here, where a redaction could only hide it from one reader.
 };
 
 /** The narrow slice of `SqlStorage` introspection needs (structurally satisfied by the DO's). */

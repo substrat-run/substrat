@@ -34,6 +34,18 @@ export interface PlatformRelayOptions {
   scopeId: string;
   /** `fetch` seam for tests; defaults to the runtime global. */
   fetchImpl?: FetchLike;
+  /**
+   * How long to wait for the relay before giving up, in ms. Default {@link RELAY_TIMEOUT_MS}.
+   *
+   * Not tuning — a bound. This POST is made from inside whatever request asked for the mail,
+   * and the caller is often not in a position to know that: Better Auth awaits a sign-up's
+   * verification email inline unless an `advanced.backgroundTasks.handler` is configured, so an
+   * unbounded send sits in the middle of a browser's redirect chain and the person watching sees
+   * a page that never finishes. Two more services are behind this hop (the control plane, then
+   * its mail provider), which is two more things that can be slow, so the bound belongs here —
+   * at the one place that knows it is talking to a network.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -43,8 +55,19 @@ export interface PlatformRelayOptions {
  */
 export type FetchLike = (
   input: string,
-  init: { method: string; headers: Record<string, string>; body: string },
+  init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignalLike },
 ) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>;
+
+/**
+ * The abort signal, structurally — declared rather than imported for the same reason `FetchLike`
+ * and `SendEmailBinding` are: this package carries no DOM or Workers lib types, so the real
+ * `AbortSignal` is not a name it can refer to. Nothing here reads the signal; it is only
+ * forwarded to whatever `fetch` it was given, so one field is the whole shape needed to keep
+ * that pass-through honest.
+ */
+export interface AbortSignalLike {
+  readonly aborted: boolean;
+}
 
 /** The response the relay returns — the normalized {@link SendResult} plus a `sent` flag. */
 interface RelayResponse {
@@ -59,6 +82,13 @@ interface RelayResponse {
 // imported so this low-level adapter takes no dependency on the kernel — the same structural
 // coupling `SendEmailBinding` makes to the Workers runtime shape.
 const PLATFORM_SECRET_HEADER = 'x-substrat-platform';
+
+/**
+ * The default bound on one relay POST. Generous for a control-plane hop that then calls a mail
+ * provider, and far short of how long a person will watch a page that is not finishing — which
+ * is the failure this exists to cap, not a slow send.
+ */
+export const RELAY_TIMEOUT_MS = 10_000;
 
 export class PlatformRelayEmailTransport implements EmailTransport {
   constructor(private readonly opts: PlatformRelayOptions) {}
@@ -76,12 +106,23 @@ export class PlatformRelayEmailTransport implements EmailTransport {
     const fetchImpl: FetchLike =
       this.opts.fetchImpl ?? ((input, init) => (globalThis as unknown as { fetch: FetchLike }).fetch(input, init));
     const base = this.opts.controlPlaneUrl.replace(/\/$/, '');
+    // `AbortSignal.timeout` is web-standard and present in Node 18+, workerd and browsers — the
+    // same availability bar the rest of this package holds to. Reached through `globalThis` with
+    // a structural type, exactly as `fetch` is two lines below, because this package declares no
+    // DOM lib. Feature-checked anyway: an environment without it must lose the bound rather than
+    // the send, and a `fetchImpl` a test supplies need not honour a signal at all.
+    const timeouts = (globalThis as unknown as { AbortSignal?: { timeout?: (ms: number) => AbortSignalLike } })
+      .AbortSignal;
+    const signal = typeof timeouts?.timeout === 'function'
+      ? timeouts.timeout(this.opts.timeoutMs ?? RELAY_TIMEOUT_MS)
+      : undefined;
     const res = await fetchImpl(`${base}/internal/email/send`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         [PLATFORM_SECRET_HEADER]: this.opts.platformSecret,
       },
+      ...(signal ? { signal } : {}),
       body: JSON.stringify({
         tenantId: this.opts.tenantId,
         scopeId: this.opts.scopeId,

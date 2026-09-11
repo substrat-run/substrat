@@ -77,11 +77,17 @@ it. That makes script-grain data safe for exactly two audiences and dangerous fo
   (A private pushed vertical with one installer is script ≈ tenant, but that's a
   coincidence, not a design.)
 
-Tenant grain is required only when one of three triggers fires, none of which is live
-today: (1) a real tenant-facing analytics page, (2) usage-based billing or quotas (the §9
-meter), (3) a per-tenant support filter. Until then, what a tenant admin actually wants
-from an "Analytics" screen is **business activity** — jobs created, invoices sent — which
-is engine events / Tier 2 (master-plan §5.3), not request telemetry, and out of scope here.
+Tenant grain was deferred until one of three triggers fired: (1) a real tenant-facing
+analytics page, (2) usage-based billing or quotas (the §9 meter), (3) a per-tenant support
+filter. **Trigger (1) fired**, from the plainest possible direction: a team opened the
+Observability tab of an app they had installed and found a sentence explaining that the
+logs belonged to the vertical's builder. That is true at script grain and is not an answer
+to "how is my app doing", which is a question about the installation rather than the code.
+
+So the tenant grain is now **built**, and it is a genuinely separate path rather than a
+filter over the reads above — see §4.5. What a tenant admin wants from an "Analytics"
+screen is still **business activity** (jobs created, invoices sent), which is engine
+events / Tier 2 (master-plan §5.3) and remains out of scope here; this is the ops half.
 
 ## 4. Design
 
@@ -117,9 +123,11 @@ Engine datapoint per dispatched request:
 
 One shared dataset — *not* per-namespace or per-tenant datasets, which buy no isolation
 (reads go through the account-level SQL API regardless) and multiply query fan-out.
-Isolation is the read proxy's `WHERE index1 = ?`, per 4.1. The write ships **now** (a few
-lines, negligible cost) so that when a §3 trigger fires there are months of history; the
-read path waits for the trigger.
+Isolation is the read proxy's `WHERE index1 = ?`, per 4.1. The write shipped first (a few
+lines, negligible cost) so that when a §3 trigger fired there would be months of history —
+which is exactly how it played out: the read path (§4.5) was built against a dataset that
+had been filling for months, and answered its first query about the past rather than
+starting a clock.
 
 **4.3 Structured-log convention.** The router logs one JSON line per request carrying
 `tenantId`, vertical, scope, and ray id. The telemetry query API filters on structured
@@ -133,6 +141,94 @@ external APM.
 `observability: { enabled: true }` in upload metadata so builder logs exist to query.
 Namespace-wide enablement via the router covers the rest.
 
+**4.5 The tenant read path (view 4), as built.** Two backends, because the tenant
+dimension lives in neither of the ones views 1–2 read.
+
+*Metrics* are one SQL read of the §4.2 dataset — **named per environment, defaulted
+nowhere**. Production's router writes `substrat_router` and TEST's writes
+`substrat_router_test`, so a dataset name baked into the reader is a TEST control plane
+charting production's traffic as a tenant's own, with a successful query and no error to
+notice (the same silent inheritance as #962's dispatch namespace). It is a checked-in
+`vars` entry on the control plane, `ROUTER_ANALYTICS_DATASET`; unset ⇒ the reader carries
+no `tenantMetrics` and the route 501s. The read is `WHERE index1 = <tenant>`, optionally
+narrowed by `blob2` (scope) and `blob1` (vertical), grouped by scope and surface. Counts
+are **`sum(_sample_interval)`, never `count()`** — Analytics Engine head-samples under
+load and reports each surviving row's weight, so `count()` undercounts a busy tenant by
+the sampling factor, silently and in the flattering direction. Quantiles are
+`quantileWeighted(q)(value, _sample_interval)` for the same reason.
+
+*Logs* are the telemetry query API in **two phases**, and the reason is the finding below.
+
+> **A trace does not cross the dispatch hop.** The obvious design is to join the router's
+> tenant-stamped line to the vertical's own lines by `traceId`, needing no code in a
+> vertical at all. It does not work, and it fails in the direction that looks like success:
+> a router line's trace reaches `substrat-control-plane` (a service binding, so the trace
+> propagates) and never the dispatched vertical, while every vertical event is a trace of
+> exactly **one** event. Verified from both directions against production before any code
+> was written. So each vertical stamps its own line — `invocationLog()` from
+> `@substrat-run/kernel`, mounted first, enforced by `pnpm lint:invocation-log`.
+
+**The stamp is a verified assertion, not a header.** The middleware writes the line from
+`readRoutedNode`'s answer, given the same `ROUTER_SECRET` and the same `ALLOW_DEV_NODE`
+opt-out the vertical's own `nodeFor` uses, and writes nothing when verification fails.
+Reading `x-substrat-tenant` directly would have been the #966 hole again: K-26's boundary
+is that a vertical's script has no public route, which is a *deployment* fact with
+`workers.dev` on by default, so an unsigned header is a claim. It matters more here than
+almost anywhere, because the read path below treats a stamped line as PROOF that an
+invocation belonged to a tenant and admits that invocation's other lines — which carry no
+tenant of their own — on the strength of it. A forged stamp is therefore chosen text on
+somebody else's dashboard, not merely a wrong row. `lint:invocation-log` refuses a mount
+that passes no `routerSecret`, since that one verifies nothing and so logs nothing —
+failing closed, and indistinguishable from the forgotten mount the gate already caught.
+
+Phase one filters on `tenantId` to find the stamped lines. Phase two fetches everything
+sharing their `$metadata.requestId`, which is what attributes a vertical's *own* output —
+an exception, a `console.log` inside a handler — to the tenant whose request produced it,
+since those lines carry no tenant of their own. The walk is capped (40 invocations × 20
+lines): under-reporting a very busy window is survivable, a page that times out is not.
+
+**An `error` read selects its own invocations**, because a level filter cannot: stamped
+lines are pure JSON, so Cloudflare leaves `$metadata.level` unset on them and a level
+filter drops every one — an error would then only ever arrive as a sibling of whichever 40
+invocations phase two happened to expand. "An error" also arrives in three shapes, and no
+one filter spans them:
+
+| Shape | How the stamped line reads | How it is found |
+|---|---|---|
+| A failed response | `status >= 500` | tenant-filtered query |
+| A crash that escaped `onError` | `threw: true`, `status: null` | tenant-filtered query — no comparison on `status` can match it |
+| A `console.error` during a request that answered 200 | `status: 200` — nothing marks it | error-level query, searched account-wide |
+
+The first two are the tenant's by construction. The third cannot be: an error-level line
+carries no tenant, so its invocation is admitted only once phase two produces a stamped
+line naming *this* tenant (and scope, and vertical, when the caller narrowed by them).
+No stamped line, or somebody else's, and the whole invocation is dropped — the
+conservative direction is the only allowed one here, since a line shown to the wrong
+tenant is exactly what the grain decision exists to prevent. The trusted invocations also
+spend the 40-invocation budget first, so a noisy neighbour's error lines cannot crowd a
+tenant's own failures off their page.
+
+Two details that are easy to get wrong and fail silently:
+
+- Workers Logs indexes a `JSON.stringify`ed `console.log` as queryable **top-level**
+  fields. The filter key is `tenantId` — *not* `$metadata.tenantId`, *not* `source.tenantId`.
+  A filter on a key that does not exist returns `success: true` with zero events, which is
+  indistinguishable from a tenant with no traffic. Same class of trap as the `otel` dataset
+  name in `observedEgress`.
+- A vertical's **successful** request emitted no log event at all before §4.2's line: the
+  host logs only on a platform fault and the scope host logs nothing. A vertical's entire
+  log presence was its crashes. The stamped line is therefore not only the correlation key,
+  it is what gives the view any rows.
+
+The narrowing is the same posture as everywhere else: the tenant comes from the session, a
+builder principal cannot name another tenant in the query, and there is no "all tenants"
+spelling in the seam — so a fleet-wide read is not one forgotten parameter away.
+
+**Rollout is not retroactive.** The stamped line exists only in versions pushed after it
+shipped, so an app keeps showing metrics (which come from the router and have months of
+history) and no logs until its vertical is re-pushed. The empty state says so rather than
+implying silence.
+
 ## 5. What each audience gets, in build order
 
 | # | View | Source | Cost |
@@ -140,7 +236,7 @@ Namespace-wide enablement via the router covers the rest.
 | 1 | Staff fleet overview (console) | GraphQL Analytics proxy | proxy route + screen |
 | 2 | Builder metrics + logs/traces for owned verticals (dashboard) | GraphQL + telemetry query proxy, owner-narrowed | proxy narrowing + screen |
 | 3 | Router AE datapoint (no UI) | §4.2 | a few lines, ships with 1–2 |
-| 4 | Tenant analytics / debug *(deferred until a §3 trigger)* | AE read proxy + telemetry with tenant filter | proxy + wire existing Analytics UI |
+| 4 | Tenant analytics / debug — **built** | AE SQL read proxy + telemetry with tenant filter | proxy + the installed-app Observability tab |
 
 Live tail is a cheap follow-on to 2 (the API has first-class endpoints for it).
 
@@ -158,7 +254,10 @@ Live tail is a cheap follow-on to 2 (the API has first-class endpoints for it).
   backend.
 - **Tail Workers.** Only if a per-tenant "recent exceptions" store is demanded beyond what
   telemetry-query filtering provides. Revisit, don't pre-build.
-- **Per-tenant request charts from script-grain data.** Forbidden, per §3 — it leaks.
+- **Per-tenant request charts from script-grain data.** Forbidden, per §3 — it leaks, and
+  §4.5 is not an exception to this: it reads a dataset the router keys on tenant, which is
+  a different source, not a filter over the script-grain one. Deriving a tenant number from
+  `workersInvocationsAdaptive` stays forbidden.
 
 ## 7. Open questions
 
@@ -168,5 +267,6 @@ Live tail is a cheap follow-on to 2 (the API has first-class endpoints for it).
    `jurisdiction: 'eu'` is sold as covering telemetry.
 2. **Traces maturity** — early beta; billing live (shared quota with logs). Treat as a
    bonus surface in view 2, not a dependency.
-3. **AE pricing at GA** — limits verified July 2026; re-check the pricing page before the
-   tenant read path (view 4) is built.
+3. **AE pricing at GA** — limits verified July 2026. View 4 is built and reads this
+   dataset per page view, so the pricing page is now a live cost question rather than a
+   pre-build one.

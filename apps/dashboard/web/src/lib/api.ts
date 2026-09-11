@@ -1088,6 +1088,25 @@ export interface ObservabilityRow {
   cpuTimeP99: number;
 }
 
+/**
+ * One installed app's own traffic — the tenant grain (observability.md §3 view 4).
+ *
+ * `ObservabilityRow` above is keyed on the deployed SERVICE, which serves every team that
+ * installed the vertical; this is keyed on the app scope, which is one installation. Two
+ * teams running the same vertical are two of these and one indistinguishable one of those.
+ */
+export interface TenantMetricsRow {
+  scopeId: string;
+  vertical: string | null;
+  /** Which declared surface answered (`app`, `api`, …). */
+  surface: string | null;
+  requests: number;
+  errors: number;
+  /** Router-observed duration quantiles, milliseconds. */
+  durationP50: number;
+  durationP95: number;
+}
+
 /** One recent log event from a team vertical's deployed service. */
 export interface ObservabilityLogEvent {
   timestamp: number | null;
@@ -1381,6 +1400,25 @@ export const api = {
     if (q.hours) p.set('hours', String(q.hours));
     if (q.limit) p.set('limit', String(q.limit));
     return call<ObservabilityLogEvent[]>(`/observability/logs?${p.toString()}`);
+  },
+
+  // -- the tenant grain (observability.md §3 view 4) ------------------------
+  // The two reads above answer "how is the vertical I PUBLISHED doing", across every
+  // team that installed it. These answer "how is MY app doing" — the question a team
+  // asks about an app running someone else's vertical, which the reads above cannot
+  // answer at all: an installed vertical has no owned service ref and comes back empty.
+  // Narrowed to this app's scope by the worker, never by this client.
+  appTenantMetrics: (scopeId: string, hours = 24) =>
+    call<TenantMetricsRow[]>(`/apps/${encodeURIComponent(scopeId)}/observability/metrics?hours=${hours}`),
+  appTenantLogs: (scopeId: string, q: { level?: string; search?: string; hours?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (q.level) p.set('level', q.level);
+    if (q.search) p.set('search', q.search);
+    if (q.hours) p.set('hours', String(q.hours));
+    if (q.limit) p.set('limit', String(q.limit));
+    return call<ObservabilityLogEvent[]>(
+      `/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
+    );
   },
   /** The tenant's GitHub-import state — connection status + the selected account's repos. */
   gitRepos: (account?: string) =>

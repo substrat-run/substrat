@@ -1950,6 +1950,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.1
+      hono:
+        specifier: 4.12.30
+        version: 4.12.30
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

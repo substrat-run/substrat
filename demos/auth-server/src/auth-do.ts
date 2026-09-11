@@ -19,6 +19,7 @@ import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
+import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
@@ -181,6 +182,18 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Read per request like everything else here, so narrowing a client in the dashboard
       // decides the very next authorize request rather than the next deploy.
       signInPolicyFor: (clientId) => readSignInPolicy(this.ctx.storage.sql, clientId),
+      // The sign-in log writes into THIS issuer's own SQLite, which is what makes it readable
+      // where a hosted install can actually be read: the admin console, the dashboard's Data
+      // tab, and `/internal/export`. A dispatch-namespace script's `console.log` is none of
+      // those.
+      recordSignIn: signInLoggerFor(this.ctx.storage.sql),
+      // `ctx.waitUntil`, which is the DO's own way of saying "finish this, but not before the
+      // response". Better Auth cannot find it by itself — it is handed a `Request` and nothing
+      // else — so without this line a new user's verification email is awaited inside the
+      // callback and the browser's redirect waits on the platform mail relay.
+      runInBackground: (promise) => {
+        this.ctx.waitUntil(promise.catch((e: unknown) => console.error('auth-server: background task failed', e)));
+      },
     });
   }
 

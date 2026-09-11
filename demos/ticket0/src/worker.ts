@@ -50,7 +50,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { CloudflareScopeHost, cloudflareClientContext, defineScopeDO } from '@substrat-run/adapter-cloudflare';
-import { readRoutedNode, RouterAssertionError, ulid, type ScopeStub } from '@substrat-run/kernel';
+import { readRoutedNode, RouterAssertionError, ulid, type ScopeStub, invocationLog } from '@substrat-run/kernel';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -402,6 +402,21 @@ async function principalFor(env: Env, req: Request): Promise<PrincipalId | null>
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// FIRST, before any route: Hono composes handlers in registration order and stops at the
+// one that answers, so a route registered above this line would never be logged. The line
+// it writes is what attributes this vertical's invocations to the tenant they served —
+// see `invocationLog`'s header for why the router cannot supply that from its side.
+app.use(
+  '*',
+  invocationLog<Env>({
+    // The same two answers this worker gives `readRoutedNode` in `nodeFor`: the line is
+    // written from a VERIFIED assertion, never from the header, or anyone who could reach
+    // this script directly could file their request under a tenant of their choosing.
+    routerSecret: (env) => env.ROUTER_SECRET,
+    allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',
+  }),
+);
 
 /** Resolve caller + routed node → a scope stub. 401 if nobody. */
 async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {

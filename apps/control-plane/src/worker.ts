@@ -237,6 +237,16 @@ interface Env extends OidcEnv, ConnectorEnv {
   CF_ACCOUNT_ID?: string;
   DISPATCH_NAMESPACE?: string;
   /**
+   * The Analytics Engine dataset the ROUTER writes per-request datapoints into — the
+   * only source of the tenant grain (observability.md §4.2). A checked-in `vars` entry
+   * per environment, matching that environment's router binding
+   * (`apps/router/wrangler.jsonc`: `substrat_router`, `substrat_router_test`), and with
+   * NO default for the same reason DISPATCH_NAMESPACE has none (#962) — an inherited
+   * default would have TEST reading production's traffic, and the query would succeed.
+   * Unset ⇒ the tenant-metrics route 501s.
+   */
+  ROUTER_ANALYTICS_DATASET?: string;
+  /**
    * Head sampling rate (0–1) for Workers automatic tracing on pushed verticals (#858).
    * Unset ⇒ pushed scripts declare no `traces` block and emit logs only, which is every
    * push to date. Set to `1` on TEST to answer whether tracing reaches dispatch-namespace
@@ -463,7 +473,14 @@ function fetchVerticalAssetFor(env: Env): FetchVerticalAssetFn | undefined {
  */
 function observabilityFor(env: Env) {
   if (!env.CF_API_TOKEN || !env.CF_ACCOUNT_ID) return undefined;
-  return createCfObservabilityReader({ accountId: env.CF_ACCOUNT_ID, apiToken: env.CF_API_TOKEN });
+  return createCfObservabilityReader({
+    accountId: env.CF_ACCOUNT_ID,
+    apiToken: env.CF_API_TOKEN,
+    // Per-environment and never defaulted — see `ROUTER_ANALYTICS_DATASET`. Absent ⇒ the
+    // reader exposes no `tenantMetrics` and the route 501s, which is the honest answer;
+    // the alternative was TEST quietly charting production's traffic as a tenant's own.
+    routerDataset: env.ROUTER_ANALYTICS_DATASET,
+  });
 }
 
 /**

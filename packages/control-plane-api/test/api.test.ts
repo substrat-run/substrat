@@ -4847,6 +4847,124 @@ describe('control-plane API — observability proxy', () => {
     const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
     expect((await app.request(`/verticals/${slug}/egress`, { headers: asBuilder })).status).toBe(403);
   });
+
+  /**
+   * The TENANT grain (observability.md §3 view 4) — the one observability surface a
+   * non-staff caller may read, and safe to read precisely because its backends are keyed
+   * on the tenant rather than on the shared script. This suite is mostly about who may
+   * ask for whom: the numbers are the stub's, and the narrowing is the whole feature.
+   */
+  describe('tenant grain', () => {
+    const asBuilder = { [BUILDER_HEADER]: builderTenant, 'content-type': 'application/json' };
+    const tenantSeen: { metrics: unknown[]; logs: unknown[] } = { metrics: [], logs: [] };
+    const tenantReader = {
+      ...reader,
+      tenantMetrics: async (input: unknown) => {
+        tenantSeen.metrics.push(input);
+        return [
+          {
+            scopeId: '01SCOPE',
+            vertical: 'acme/widgets',
+            surface: 'app',
+            requests: 79,
+            errors: 0,
+            durationP50: 216,
+            durationP95: 537,
+          },
+        ];
+      },
+      tenantLogs: async (input: unknown) => {
+        tenantSeen.logs.push(input);
+        return [];
+      },
+    };
+
+    /**
+     * A reader can answer the script grain and still have no tenant dimension at all —
+     * the tenant is the one fact a runtime cannot record by itself. 501, never an empty
+     * array, which the dashboard would draw as "your app served nothing".
+     */
+    it('501s when the reader has no tenant grain, though it answers everything else', async () => {
+      const app = appWith(reader); // the base stub: no tenantMetrics / tenantLogs
+      expect((await app.request('/observability/tenant-metrics', { headers: asBuilder })).status).toBe(501);
+      expect((await app.request('/observability/tenant-logs', { headers: asBuilder })).status).toBe(501);
+    });
+
+    it('lets a builder read their own traffic', async () => {
+      const app = appWith(tenantReader);
+      const res = await app.request('/observability/tenant-metrics', { headers: asBuilder });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject([{ scopeId: '01SCOPE', requests: 79 }]);
+      expect(tenantSeen.metrics.at(-1)).toMatchObject({ tenantId: builderTenant, hours: 24 });
+    });
+
+    /**
+     * THE test. A builder's tenant comes from the authenticated principal, and a
+     * `tenantId` in the query is ignored rather than honoured — otherwise every
+     * installer could read every other installer by editing a URL, which is the exact
+     * leak the grain decision exists to prevent.
+     */
+    it('ignores a tenantId a builder puts in the query — the principal decides', async () => {
+      const app = appWith(tenantReader);
+      const someoneElse = tenantId.parse(ulid());
+      const res = await app.request(`/observability/tenant-metrics?tenantId=${someoneElse}`, {
+        headers: asBuilder,
+      });
+      expect(res.status).toBe(200);
+      expect(tenantSeen.metrics.at(-1)).toMatchObject({ tenantId: builderTenant });
+      expect(tenantSeen.metrics.at(-1)).not.toMatchObject({ tenantId: someoneElse });
+    });
+
+    it('same for logs — the query cannot name another tenant', async () => {
+      const app = appWith(tenantReader);
+      const someoneElse = tenantId.parse(ulid());
+      await app.request(`/observability/tenant-logs?tenantId=${someoneElse}`, { headers: asBuilder });
+      expect(tenantSeen.logs.at(-1)).toMatchObject({ tenantId: builderTenant });
+    });
+
+    /**
+     * A staff/service caller has no tenant of its own, so it must SAY whose view it
+     * wants. Refusing is the point: defaulting to fleet-wide on a forgotten parameter is
+     * how a leak ships. The `/service-refs` forced-filter pattern.
+     */
+    it('refuses a staff read that names no tenant', async () => {
+      const app = appWith(tenantReader);
+      expect((await app.request('/observability/tenant-metrics', { headers: asStaff })).status).toBe(400);
+      expect((await app.request('/observability/tenant-logs', { headers: asStaff })).status).toBe(400);
+    });
+
+    it('lets a staff caller name one explicitly', async () => {
+      const app = appWith(tenantReader);
+      const someone = tenantId.parse(ulid());
+      const res = await app.request(`/observability/tenant-metrics?tenantId=${someone}`, { headers: asStaff });
+      expect(res.status).toBe(200);
+      expect(tenantSeen.metrics.at(-1)).toMatchObject({ tenantId: someone });
+    });
+
+    it('passes the within-tenant narrowing through and bounds the window', async () => {
+      const app = appWith(tenantReader);
+      await app.request(
+        '/observability/tenant-logs?scopeId=01SCOPE&vertical=acme/widgets&level=error&hours=72&limit=50',
+        { headers: asBuilder },
+      );
+      expect(tenantSeen.logs.at(-1)).toMatchObject({
+        tenantId: builderTenant,
+        scopeId: '01SCOPE',
+        vertical: 'acme/widgets',
+        level: 'error',
+        hours: 72,
+        limit: 50,
+      });
+      expect((await app.request('/observability/tenant-metrics?hours=9000', { headers: asBuilder })).status).toBe(400);
+    });
+
+    /** The script-grain neighbours stay shut to a builder — this adds one door, not two. */
+    it('does not open the script-grain routes to a builder', async () => {
+      const app = appWith(tenantReader);
+      expect((await app.request('/observability/metrics', { headers: asBuilder })).status).toBe(403);
+      expect((await app.request('/observability/logs', { headers: asBuilder })).status).toBe(403);
+    });
+  });
 });
 
 /**

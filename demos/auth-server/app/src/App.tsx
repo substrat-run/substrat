@@ -19,10 +19,20 @@ import { SignIn } from './auth/SignIn';
 import { SignUp } from './auth/SignUp';
 import { Console } from './console/Console';
 import { returnTarget } from './console/routes';
-import { Centered } from './primitives';
+import { Card, Centered } from './primitives';
+import { IssuerUnreachable } from './wire';
 
 type Phase =
   | { t: 'loading' }
+  /**
+   * The read that decides every other screen did not answer (`wire.ts`).
+   *
+   * A phase of its own rather than an error on one of the others, because at this point NOTHING
+   * is known: not whether the issuer is bootstrapped, not whether anyone is signed in, so there
+   * is no screen this belongs on top of. Its absence is what made a failure here render as
+   * "Loading…" forever — the one outcome in this app that told the person nothing at all.
+   */
+  | { t: 'failed'; message: string }
   | { t: 'reset'; token: string }
   | { t: 'setup' }
   | {
@@ -161,9 +171,25 @@ export default function App() {
     setPhase(session.role === 'admin' ? { t: 'dashboard', session } : { t: 'not-admin', session });
   }, []);
 
-  useEffect(() => {
-    void refresh();
+  /**
+   * Every caller of `refresh` goes through here, and that is the whole point: there were five
+   * bare `void refresh()` calls, so a rejection anywhere — including after a sign-in, where the
+   * person has just proved who they are — left the phase on whatever it was and nothing said
+   * why. A rejection is now a screen.
+   */
+  const run = useCallback(() => {
+    refresh().catch((e: unknown) => {
+      // The issuer's own words go to the console and never to the page — `wire.ts` carries the
+      // two apart, and this is the half that is allowed to be specific.
+      const detail = e instanceof IssuerUnreachable ? e.detail : undefined;
+      if (detail) console.error('auth-server: the issuer said:', detail);
+      setPhase({ t: 'failed', message: e instanceof Error ? e.message : String(e) });
+    });
   }, [refresh]);
+
+  useEffect(() => {
+    run();
+  }, [run]);
 
   /**
    * Sign-in finished without an OIDC request to resume — hand the URL to the console.
@@ -182,22 +208,40 @@ export default function App() {
     if (window.location.pathname + window.location.search !== target) {
       window.history.replaceState({}, '', target);
     }
-    void refresh();
-  }, [refresh]);
+    run();
+  }, [run]);
 
   const signOutAndRefresh = useCallback(async () => {
     await signOut();
     // Signing out from a console URL would otherwise leave the address bar on a section the
     // signed-out screen has nothing to do with.
     window.history.replaceState({}, '', '/');
-    void refresh();
-  }, [refresh]);
+    run();
+  }, [run]);
 
   switch (phase.t) {
     case 'loading':
       return <Centered>Loading…</Centered>;
+    case 'failed':
+      // Named as the issuer's problem rather than the person's, because it is: nothing they
+      // typed reaches these two reads. Retry is the whole remedy and is worth offering — the
+      // failures this catches are transient (a deploy mid-flight, a 5xx) far more often than
+      // not, and before this the only retry available was the one the person guessed at.
+      return (
+        <Centered>
+          <Card title={theme.title ?? 'Substrat Auth'} logo={theme.logoUrl}>
+            <p className="error">{phase.message}</p>
+            <p className="muted">
+              This is the issuer, not you — signing in cannot be offered until it answers.
+            </p>
+            <button className="btn primary" onClick={() => { setPhase({ t: 'loading' }); run(); }}>
+              Try again
+            </button>
+          </Card>
+        </Centered>
+      );
     case 'reset':
-      return <ResetPassword token={phase.token} onDone={() => { window.history.replaceState({}, '', '/'); void refresh(); }} />;
+      return <ResetPassword token={phase.token} onDone={() => { window.history.replaceState({}, '', '/'); run(); }} />;
     case 'setup':
       return <Setup onDone={doneSigningIn} />;
     case 'signin':
@@ -221,7 +265,7 @@ export default function App() {
           oauthQuery={phase.oauthQuery}
           theme={theme}
           onDone={doneSigningIn}
-          onSignIn={() => void refresh()}
+          onSignIn={run}
         />
       );
     case 'consent':

@@ -159,3 +159,14 @@
    `apps/console` picked, and for the same reason: a table's trailing Actions cell goes
    off-screen long before the viewport is a phone. */
 .console-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4); z-index: 30; }
+
+/* The sign-in log's reason column. NOT muted, deliberately: the upstream's own sentence —
+   Entra's `AADSTS…` text — is usually the whole diagnosis, so it is the most readable thing
+   in the row rather than a footnote to the code beside it. Wraps instead of truncating,
+   because the part that names the misconfiguration is often at the end. */
+.console-root .grid .reason {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  max-width: 52ch;
+  overflow-wrap: anywhere;
+}

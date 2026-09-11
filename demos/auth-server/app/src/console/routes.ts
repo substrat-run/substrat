@@ -58,6 +58,9 @@ export const ROUTES: Route[] = [
   { path: '/providers', label: 'Sign-in providers', icon: SubIcons.globe, group: 'Sign-in', adminOnly: true },
   { path: '/bankid', label: 'BankID', icon: SubIcons.box, group: 'Sign-in', adminOnly: true },
   { path: '/access', label: 'Access', icon: SubIcons.sliders, group: 'Sign-in', adminOnly: true },
+  // Beside the providers it explains rather than under the issuer's settings: it is read in the
+  // same minute as the panel it sends an operator back to.
+  { path: '/sign-in-log', label: 'Sign-in log', icon: SubIcons.scroll, group: 'Sign-in', adminOnly: true },
   { path: '/issuer', label: 'Issuer', icon: SubIcons.cog, group: 'Issuer', adminOnly: true },
   { path: '/account', label: 'Your account', icon: ICON_ACCOUNT, group: 'You', adminOnly: false },
 ];

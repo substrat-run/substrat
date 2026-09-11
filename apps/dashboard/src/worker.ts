@@ -3589,6 +3589,62 @@ app.get('/api/observability/logs', async (c) => {
 });
 
 /**
+ * ONE app's own traffic and logs — the tenant grain (observability.md §3 view 4).
+ *
+ * The two routes above are owner-narrowed: they answer about verticals this tenant
+ * PUBLISHED, which is the builder's view of their product's health across every installer.
+ * These answer the other question — how is MY installation doing — and they are the only
+ * ones that can, because an app running somebody else's vertical has no owned service ref
+ * and reads as empty up there.
+ *
+ * Two narrowings stack, and neither is the client's to choose. The tenant is fixed from
+ * the session by `controlPlaneFor`, so a request cannot name another. The scope is
+ * resolved through this tenant's own `list-apps` first, so a foreign scope id is a 404
+ * rather than a filter that quietly matches nothing (K-3) — belt and braces, since the
+ * tenant predicate alone would already have emptied it.
+ */
+app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const hours = Number(c.req.query('hours') ?? '24');
+  return c.json(
+    await cpObservability(() =>
+      cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: Number.isFinite(hours) ? hours : 24 }),
+    ),
+  );
+});
+
+app.get('/api/apps/:scopeId/observability/logs', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const hours = Number(c.req.query('hours') ?? '24');
+  const limit = Number(c.req.query('limit') ?? '100');
+  return c.json(
+    await cpObservability(() =>
+      cp.tenantLogs({
+        scopeId: appRow.app_scope_id,
+        level: c.req.query('level') || undefined,
+        search: c.req.query('search') || undefined,
+        hours: Number.isFinite(hours) ? hours : 24,
+        limit: Number.isFinite(limit) ? limit : 100,
+      }),
+    ),
+  );
+});
+
+/**
  * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
  * serve while the vertical is PRIVATE (its blast radius is this tenant alone — merge-to-main
  * deploys and dashboard rollback both land here). Prod on a LISTED vertical is refused:
