@@ -168,6 +168,19 @@ the sampling factor, silently and in the flattering direction. Quantiles are
 > was written. So each vertical stamps its own line — `invocationLog()` from
 > `@substrat-run/kernel`, mounted first, enforced by `pnpm lint:invocation-log`.
 
+**The stamp is a verified assertion, not a header.** The middleware writes the line from
+`readRoutedNode`'s answer, given the same `ROUTER_SECRET` and the same `ALLOW_DEV_NODE`
+opt-out the vertical's own `nodeFor` uses, and writes nothing when verification fails.
+Reading `x-substrat-tenant` directly would have been the #966 hole again: K-26's boundary
+is that a vertical's script has no public route, which is a *deployment* fact with
+`workers.dev` on by default, so an unsigned header is a claim. It matters more here than
+almost anywhere, because the read path below treats a stamped line as PROOF that an
+invocation belonged to a tenant and admits that invocation's other lines — which carry no
+tenant of their own — on the strength of it. A forged stamp is therefore chosen text on
+somebody else's dashboard, not merely a wrong row. `lint:invocation-log` refuses a mount
+that passes no `routerSecret`, since that one verifies nothing and so logs nothing —
+failing closed, and indistinguishable from the forgotten mount the gate already caught.
+
 Phase one filters on `tenantId` to find the stamped lines. Phase two fetches everything
 sharing their `$metadata.requestId`, which is what attributes a vertical's *own* output —
 an exception, a `console.log` inside a handler — to the tenant whose request produced it,

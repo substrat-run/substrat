@@ -26,17 +26,33 @@ function capture() {
   return { lines, restore: () => void (console.log = original) };
 }
 
-/** The headers the router asserts on every dispatched request. */
+const SECRET = 'router-sekret';
+// Valid 26-char ULIDs (Crockford base32 — no I/L/O/U). The ids are PARSED now, so a
+// placeholder string would be refused as a malformed assertion and write no line.
+const TENANT = '01JZ0000000000000000TEN001';
+const SCOPE = '01JZ0000000000000000SCP001';
+
+/** The headers the router asserts on every dispatched request — signature included. */
 const routed = {
-  'x-substrat-tenant': '01TENANT',
-  'x-substrat-scope': '01SCOPE',
+  'x-substrat-router': SECRET,
+  'x-substrat-tenant': TENANT,
+  'x-substrat-scope': SCOPE,
   'x-substrat-vertical': 'acme/widgets',
   'x-substrat-surface': 'app',
 };
 
-function appWith(handler: (app: Hono) => void) {
-  const app = new Hono();
-  app.use('*', invocationLog());
+type Env = { ROUTER_SECRET?: string; ALLOW_DEV_NODE?: string };
+const ENV: Env = { ROUTER_SECRET: SECRET };
+
+function appWith(handler: (app: Hono<{ Bindings: Env }>) => void) {
+  const app = new Hono<{ Bindings: Env }>();
+  app.use(
+    '*',
+    invocationLog<Env>({
+      routerSecret: (env) => env.ROUTER_SECRET,
+      allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',
+    }),
+  );
   handler(app);
   return app;
 }
@@ -46,13 +62,13 @@ describe('invocationLog', () => {
     const cap = capture();
     try {
       const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
-      const res = await app.request('/api/me', { headers: routed });
+      const res = await app.request('/api/me', { headers: routed }, ENV);
       expect(res.status).toBe(200);
       expect(cap.lines).toHaveLength(1);
       expect(cap.lines[0]).toMatchObject({
         substrat: 'invocation',
-        tenantId: '01TENANT',
-        scopeId: '01SCOPE',
+        tenantId: TENANT,
+        scopeId: SCOPE,
         vertical: 'acme/widgets',
         surface: 'app',
         method: 'GET',
@@ -77,7 +93,84 @@ describe('invocationLog', () => {
     const cap = capture();
     try {
       const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
-      await app.request('/api/me');
+      await app.request('/api/me', {}, ENV);
+      expect(cap.lines).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  /**
+   * THE isolation test. K-26's boundary is that a vertical's script has no public route
+   * — a deployment fact, with `workers.dev` on by default — so a header nobody signed is
+   * a CLAIM, not an assertion. Writing the line from it meant anyone who could reach the
+   * script could file their request under a tenant of their choosing, and the read path
+   * treats a stamped line as proof that the invocation was that tenant's: it admits the
+   * invocation's other lines, which carry no tenant of their own, into that tenant's
+   * view. A forged stamp is chosen text on somebody else's dashboard.
+   */
+  it('writes NO line for an unsigned assertion, however complete it looks', async () => {
+    const cap = capture();
+    try {
+      const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
+      const { 'x-substrat-router': _signature, ...forged } = routed;
+      await app.request('/api/me', { headers: forged }, ENV);
+      expect(cap.lines).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('writes NO line when the signature is not this worker’s secret', async () => {
+    const cap = capture();
+    try {
+      const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
+      await app.request('/api/me', { headers: { ...routed, 'x-substrat-router': 'guessed' } }, ENV);
+      expect(cap.lines).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  /**
+   * #966's rule, now on this side too: a worker deployed without its secret cannot verify
+   * anything, so it trusts nothing. The feature going quiet is the visible failure; the
+   * alternative is an open door that looks like it is working.
+   */
+  it('writes NO line when this worker holds no secret to verify against', async () => {
+    const cap = capture();
+    try {
+      const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
+      await app.request('/api/me', { headers: routed }, {});
+      expect(cap.lines).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  /** The one legitimate exception, and it is the vertical's own `ALLOW_DEV_NODE`. */
+  it('accepts an unsigned assertion on an un-routed dev instance', async () => {
+    const cap = capture();
+    try {
+      const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
+      const { 'x-substrat-router': _signature, ...unsigned } = routed;
+      await app.request('/api/me', { headers: unsigned }, { ALLOW_DEV_NODE: 'true' });
+      expect(cap.lines).toHaveLength(1);
+      expect(cap.lines[0]).toMatchObject({ tenantId: TENANT, scopeId: SCOPE });
+    } finally {
+      cap.restore();
+    }
+  });
+
+  /** An id that is not a ULID is not an id — the same refusal `readRoutedNode` makes. */
+  it('writes NO line for a malformed id, and never fails the request for it', async () => {
+    const cap = capture();
+    try {
+      const app = appWith((a) => a.get('/api/me', (c) => c.json({ ok: true })));
+      const res = await app.request('/api/me', { headers: { ...routed, 'x-substrat-tenant': 'not-a-ulid' } }, ENV);
+      // The request is answered exactly as it would have been — logging fails closed and
+      // silently, never by turning a 200 into an error.
+      expect(res.status).toBe(200);
       expect(cap.lines).toHaveLength(0);
     } finally {
       cap.restore();
@@ -93,7 +186,7 @@ describe('invocationLog', () => {
     const cap = capture();
     try {
       const app = appWith((a) => a.get('/callback', (c) => c.text('ok')));
-      await app.request('/callback?code=SECRET_AUTH_CODE&state=xyz', { headers: routed });
+      await app.request('/callback?code=SECRET_AUTH_CODE&state=xyz', { headers: routed }, ENV);
       const [line] = cap.lines;
       expect(line?.path).toBe('/callback');
       // Assert on the WHOLE serialized line, not just `path`: the guarantee is that the
@@ -126,7 +219,7 @@ describe('invocationLog', () => {
         seen = err;
         return c.json({ error: 'mapped' }, 500);
       });
-      const res = await app.request('/api/explode', { headers: routed });
+      const res = await app.request('/api/explode', { headers: routed }, ENV);
       expect(res.status).toBe(500);
       // The envelope still got the original error — the middleware swallowed nothing.
       expect(seen).toBe(boom);
@@ -146,7 +239,7 @@ describe('invocationLog', () => {
           return c.text('ok');
         }),
       );
-      await app.request('/api/noisy', { headers: routed });
+      await app.request('/api/noisy', { headers: routed }, ENV);
       // Exactly one INVOCATION line; the vertical's own line passed through untouched.
       expect(cap.lines).toHaveLength(1);
     } finally {

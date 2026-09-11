@@ -243,7 +243,16 @@ const app = new Hono<{ Bindings: Env }>();
 // one that answers, so a route registered above this line would never be logged. The line
 // it writes is what attributes this vertical's invocations to the tenant they served —
 // see `invocationLog`'s header for why the router cannot supply that from its side.
-app.use('*', invocationLog());
+app.use(
+  '*',
+  invocationLog<Env>({
+    // The same two answers this worker gives `readRoutedNode` in `nodeFor`: the line is
+    // written from a VERIFIED assertion, never from the header, or anyone who could reach
+    // this script directly could file their request under a tenant of their choosing.
+    routerSecret: (env) => env.ROUTER_SECRET,
+    allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',
+  }),
+);
 
 // Who am I, and what instance am I on — resolves the caller without invoking
 // anything. Auth-shaped and host-specific, so it stays OUT of the shared table;

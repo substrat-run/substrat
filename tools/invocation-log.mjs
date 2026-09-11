@@ -52,8 +52,19 @@ const TEMPLATE = 'packages/create-substrat/template';
 const CONSTRUCTS_APP = /^const app = new Hono\b/m;
 /** Any registration on that app — `app.use(`, `app.get(`, `app.all(`, `app.on(`, … */
 const REGISTRATION = /^app\.(\w+)\s*\(/gm;
-/** The mount we require, quote- and spacing-tolerant. */
-const MOUNT = /^app\.use\(\s*['"`]\*['"`]\s*,\s*invocationLog\(\)\s*\)/m;
+/**
+ * The mount we require, quote- and spacing-tolerant — and it must CONFIGURE the
+ * verification, not merely be present.
+ *
+ * `invocationLog()` with no arguments compiles, mounts, runs, and writes nothing: with no
+ * `routerSecret` to check the assertion against, every routed request fails verification
+ * and the line is dropped. That is the fail-closed behaviour the middleware wants and it
+ * is indistinguishable, from the outside, from the empty log view this gate exists to
+ * prevent. So a bare call is an offence in its own right.
+ */
+const MOUNT = /^app\.use\(\s*['"`]\*['"`]\s*,\s*invocationLog[<(]/;
+/** …and the options it must carry, found in the lines following the mount. */
+const VERIFIES = /invocationLog\s*(?:<[^>]*>)?\s*\(\s*\{[\s\S]{0,600}?routerSecret\s*:/m;
 
 /**
  * The offence in one file, or null when it is fine.
@@ -67,20 +78,36 @@ function offence(source) {
   REGISTRATION.lastIndex = 0;
   const first = REGISTRATION.exec(source);
   if (!first) return null; // an app with no routes registers nothing to miss
-  const line = source.slice(first.index).split('\n')[0].trim();
-  if (MOUNT.test(line)) return null;
-  return MOUNT.test(source)
-    ? `invocationLog() is mounted, but AFTER \`${line}\` — Hono will not wrap the routes above it`
-    : `no \`app.use('*', invocationLog())\` — first registration is \`${line}\``;
+  // The mount spans several lines once it carries options, so judge the window that
+  // starts at the first registration rather than that line alone.
+  const from = source.slice(first.index);
+  const line = from.split('\n')[0].trim();
+  const head = from.split('\n').slice(0, 14).join('\n');
+  // Anchored at the FIRST registration, not searched within the window: "present" is not
+  // the property that matters, "present before everything else" is. `\s` spans newlines,
+  // so the one-line and the options-carrying multi-line spellings both match here.
+  if (!MOUNT.test(from)) {
+    return /invocationLog[<(]/.test(source)
+      ? `invocationLog() is mounted, but AFTER \`${line}\` — Hono will not wrap the routes above it`
+      : `no \`app.use('*', invocationLog({ … }))\` — first registration is \`${line}\``;
+  }
+  if (!VERIFIES.test(head)) {
+    return 'invocationLog() is mounted first but passes no `routerSecret` — it can verify nothing, so it writes nothing';
+  }
+  return null;
 }
 
 // ── The predicate has to be able to tell its own cases apart, or a green run means
 //    nothing. Same guard `lint:vite-proxy` carries, for the same reason.
+const CONFIGURED = "app.use(\n  '*',\n  invocationLog<Env>({\n    routerSecret: (env) => env.ROUTER_SECRET,\n  }),\n);";
 const SELF_TEST = [
-  ["const app = new Hono();\napp.use('*', invocationLog());\napp.get('/x', h);", false],
-  ['const app = new Hono<{ Bindings: Env }>();\napp.get("/x", h);', true],
-  ["const app = new Hono();\napp.get('/x', h);\napp.use('*', invocationLog());", true],
-  ["const app = new Hono();\napp.use('*', invocationLog())\n", false],
+  [`const app = new Hono();\n${CONFIGURED}\napp.get('/x', h);`, false],
+  [`const app = new Hono<{ Bindings: Env }>();\napp.get("/x", h);`, true],
+  [`const app = new Hono();\napp.get('/x', h);\n${CONFIGURED}`, true],
+  // Mounted first, but verifying nothing — writes no lines at all.
+  ["const app = new Hono();\napp.use('*', invocationLog());\napp.get('/x', h);", true],
+  // The one-line spelling, still configured.
+  ["const app = new Hono();\napp.use('*', invocationLog<Env>({ routerSecret: (e) => e.ROUTER_SECRET }));\napp.get('/x', h);", false],
   ['const notAnApp = 1;\n', false],
 ];
 const drift = SELF_TEST.filter(([src, shouldFail]) => Boolean(offence(src)) !== shouldFail);
@@ -169,8 +196,12 @@ for (const dir of dirs) {
 
 if (offenders.length > 0) {
   console.error("invocation-log: a vertical's tenant-facing logs would be partly or wholly empty.");
-  console.error("  Mount it directly after the app is constructed, before any route:");
-  console.error("    app.use('*', invocationLog());   // from '@substrat-run/kernel'");
+  console.error('  Mount it directly after the app is constructed, before any route, and');
+  console.error('  give it the same answers this worker gives `readRoutedNode` in `nodeFor`:');
+  console.error("    app.use('*', invocationLog<Env>({");
+  console.error('      routerSecret: (env) => env.ROUTER_SECRET,');
+  console.error("      allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',");
+  console.error('    }));   // from \'@substrat-run/kernel\'');
   for (const o of offenders) console.error(`  ${o}`);
   process.exit(1);
 }

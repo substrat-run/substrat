@@ -35,7 +35,26 @@
  * is never shown to a tenant (§4.3). An un-routed local invocation has no asserted
  * headers and therefore emits no line — there is no tenant it could be attributed to, and
  * inventing one is the only way this could ever leak.
+ *
+ * ## The tenant is a VERIFIED assertion, never a header
+ *
+ * Which is why the line is written from `readRoutedNode`'s answer and not from
+ * `headers.get('x-substrat-tenant')`. The two look interchangeable — behind the router
+ * they are — and they are not, for exactly the reason #966 made `readRoutedNode` itself
+ * fail closed: K-26's boundary is that a vertical's script has no public route, and that
+ * is a DEPLOYMENT fact, with `workers.dev` on by default. Reading the header directly
+ * meant anyone who could reach the script could name any tenant they liked and have the
+ * line filed under it — a request the vertical then refuses with a 400, since `nodeFor`
+ * does verify, while this middleware's `finally` had already written the forged line.
+ *
+ * That is not a cosmetic wrong row. The read path uses the stamped line as PROOF that an
+ * invocation was a given tenant's, and admits that invocation's other log lines — which
+ * carry no tenant of their own — into that tenant's view on the strength of it. A forged
+ * stamp is therefore a way to put chosen text on somebody else's dashboard. So the same
+ * verification the vertical does for its own routing happens here, with the same secret
+ * and the same dev opt-out, and a failed one writes nothing at all.
  */
+import { readRoutedNode, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
 
 /**
@@ -52,9 +71,38 @@ import type { HeaderReader } from './routed-node.js';
  * seen from the other end: it writes that assertion down so a reader can find it again.
  * Living here means a lean vertical picks it up without also taking on an AI SDK.
  */
-export interface InvocationLogContext {
+export interface InvocationLogContext<Env = unknown> {
   req: { method: string; raw: { url: string; headers: HeaderReader } };
   res?: { status: number };
+  /** The worker's bindings — read ONLY through the options below, never otherwise. */
+  env: Env;
+}
+
+/**
+ * How this middleware verifies the router's assertion, in the vertical's own terms.
+ *
+ * Both are functions of the env rather than plain values because a Worker's bindings
+ * arrive per-request, while `app.use(...)` runs once at module scope. They are the same
+ * two knobs the vertical already passes to `readRoutedNode` in its `nodeFor`, and they
+ * must be given the same answers: a log that trusts more than the router does is the
+ * forged-tenant hole, and one that trusts less is silently empty.
+ */
+export interface InvocationLogOptions<Env = unknown> {
+  /**
+   * The router's shared secret as this worker holds it — `(env) => env.ROUTER_SECRET`.
+   *
+   * Omitting it is not a shortcut: with no secret to check against, an assertion can
+   * only be accepted by `allowUnsigned`, so a bare `invocationLog()` in a deployed
+   * vertical writes NOTHING. `pnpm lint:invocation-log` refuses that arrangement rather
+   * than leaving a vertical to discover it from an empty log view.
+   */
+  routerSecret?: (env: Env) => string | undefined;
+  /**
+   * The vertical's own `ALLOW_DEV_NODE` — an un-routed local instance behind a dev
+   * router that holds no secret either. Anywhere else this must stay false, or the
+   * header is a claim again.
+   */
+  allowUnsigned?: (env: Env) => boolean;
 }
 
 // Runtime globals, declared rather than imported: this package compiles against
@@ -78,6 +126,11 @@ export interface InvocationLogLine {
   tenantId: string;
   scopeId: string | null;
   vertical: string | null;
+  /**
+   * The K-26 surface that answered. Taken from the verified node, so an assertion that
+   * named none reads as `readRoutedNode`'s documented default (`app`) rather than as a
+   * null only this writer would produce — one representation across the platform.
+   */
   surface: string | null;
   method: string;
   /** Path ONLY — see `pathOf`. */
@@ -123,11 +176,18 @@ function pathOf(url: string): string {
 }
 
 /**
- * Mount as the FIRST middleware on a vertical's app:
+ * Mount as the FIRST middleware on a vertical's app, with the same two answers the
+ * vertical gives `readRoutedNode` in its own `nodeFor`:
  *
  * ```ts
  * const app = new Hono<{ Bindings: Env }>();
- * app.use('*', invocationLog());
+ * app.use(
+ *   '*',
+ *   invocationLog<Env>({
+ *     routerSecret: (env) => env.ROUTER_SECRET,
+ *     allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',
+ *   }),
+ * );
  * ```
  *
  * First, because Hono composes handlers in registration order and stops at the one that
@@ -140,10 +200,9 @@ function pathOf(url: string): string {
  * Nothing here can fail a request: the line is written in a `finally`, and a throw from
  * the handler is re-thrown untouched for `onError` to map as it always did.
  */
-export function invocationLog(): (
-  c: InvocationLogContext,
-  next: () => Promise<void>,
-) => Promise<void> {
+export function invocationLog<Env = unknown>(
+  options: InvocationLogOptions<Env> = {},
+): (c: InvocationLogContext<Env>, next: () => Promise<void>) => Promise<void> {
   return async (c, next) => {
     // Host code, so a real clock is correct here — `ctx.now()` is the module-code rule,
     // and this middleware runs outside any operation's transaction.
@@ -157,18 +216,19 @@ export function invocationLog(): (
       // the caller, and swallowing here would turn a fault into a silent 200.
       throw e;
     } finally {
-      const headers = c.req.raw.headers;
-      const tenantId = headers.get('x-substrat-tenant');
-      // No asserted tenant ⇒ no line. The router strips every client-supplied
-      // `x-substrat-*` before setting its own, so this header is the platform's
-      // assertion and not a caller's claim.
-      if (tenantId) {
+      // No VERIFIED tenant ⇒ no line, and the three ways that happens are all silence
+      // here: no assertion at all (an un-routed call), an assertion this worker cannot
+      // verify or that is not the router's (`RouterAssertionError`), and — defensively —
+      // anything else the read throws. Writing a line for any of them would be filing
+      // one caller's request under a tenant of their choosing.
+      const node = routedNodeOrNull(c, options);
+      if (node) {
         const line: InvocationLogLine = {
           substrat: 'invocation',
-          tenantId,
-          scopeId: headers.get('x-substrat-scope'),
-          vertical: headers.get('x-substrat-vertical'),
-          surface: headers.get('x-substrat-surface'),
+          tenantId: node.tenantId,
+          scopeId: node.scopeId,
+          vertical: node.verticalSlug,
+          surface: node.surface,
           method: c.req.method,
           path: pathOf(c.req.raw.url),
           status: threw ? null : (c.res?.status ?? null),
@@ -179,4 +239,31 @@ export function invocationLog(): (
       }
     }
   };
+}
+
+/**
+ * The verified node, or `null` — never a throw.
+ *
+ * `readRoutedNode` is deliberately loud: present-but-wrong headers are a
+ * misconfiguration or an attack and a caller that routes on them must hear about it.
+ * This caller does not route on them; it writes a log line in a `finally`, where a throw
+ * would replace the vertical's real answer with a logging failure. So the loudness is
+ * swallowed HERE and only here, and the request is unaffected either way.
+ */
+function routedNodeOrNull<Env>(
+  c: InvocationLogContext<Env>,
+  options: InvocationLogOptions<Env>,
+) {
+  try {
+    return readRoutedNode(c.req.raw.headers, {
+      expectedSecret: options.routerSecret?.(c.env),
+      allowUnsigned: options.allowUnsigned?.(c.env) ?? false,
+    });
+  } catch (e) {
+    // `RouterAssertionError` is the expected shape — a bad, missing or unverifiable
+    // secret, or a malformed id. Anything else would be a bug in the read, and a bug in
+    // the LOGGER must not become a failed request either.
+    if (!(e instanceof RouterAssertionError)) console.log(JSON.stringify({ substrat: 'invocation-log-fault', detail: String(e) }));
+    return null;
+  }
 }

@@ -18,8 +18,13 @@ same vertical see two different pages, with no overlap.
 Two pieces:
 
 - `invocationLog()` (`@substrat-run/kernel`) — a vertical mounts it as its first
-  middleware and it writes one structured line per invocation, carrying the tenant and
-  scope the router asserted. The path is recorded **without its query string**, since an
+  middleware, giving it the same `ROUTER_SECRET` and `ALLOW_DEV_NODE` its own routing
+  uses, and it writes one structured line per invocation carrying the tenant and scope
+  the router asserted. The assertion is VERIFIED, never read off the header: a stamped
+  line is what the read path treats as proof that an invocation was a given tenant's, so
+  an unverified one would let anyone who can reach the script put chosen text on another
+  tenant's dashboard. A mount that can verify nothing writes nothing, and the gate
+  refuses it. The path is recorded **without its query string**, since an
   OIDC vertical carries `code` and `state` there and an invite flow carries a single-use
   token. A line is written only when the router asserted a tenant, so there is never a
   line that could be attributed to the wrong one.
