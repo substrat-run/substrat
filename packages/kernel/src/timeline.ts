@@ -13,8 +13,10 @@ import {
   type Page,
   type PiiClass,
   type TimelineEntry,
+  type EventFacetInput,
+  type EventFacetResult,
 } from '@substrat-run/contracts';
-import type { ScopedSql } from './scope-host.js';
+import type { ScopedSql, SqlValue } from './scope-host.js';
 
 /**
  * Reading an entity's history out of the spine (#800).
@@ -234,3 +236,88 @@ export function readHistory(
   const rows = ctx.sql.query<HistoryRow>(sql, params);
   return pageOf(rows.map(mapHistoryRow), limit, (entry) => entry.id);
 }
+
+/**
+ * Facet a scope's own outbox (#1239 stage 1): narrow by type and window, group by
+ * one envelope column or one payload field, count.
+ *
+ * The sanctioned read, for the same reason `readHistory` is: the spine has rules a
+ * hand-rolled `SELECT` does not know, and this one is load-bearing —
+ *
+ * **an erased payload is not a missing value.** A shred keeps the row and drops
+ * the content (§5.3), so `json_extract(payload, '$.x')` over a shredded event
+ * yields NULL exactly as it does for an event that never carried `x`. Grouped
+ * naively, redacted history disappears into a "no value" bucket and the reader
+ * sees a clean distribution with no hint that part of it was erased. So erased
+ * rows are counted in their own total and kept out of the buckets entirely.
+ *
+ * The group-by is a fixed shape, never interpolated SQL: an envelope grouping
+ * selects a known column, and a payload grouping binds `'$.<field>'` as a
+ * parameter, with the field's own pattern enforced by `eventFacetGroupBy`.
+ */
+export function facetEvents(ctx: TimelineReader, input: EventFacetInput): EventFacetResult {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const where: string[] = [];
+  const params: SqlValue[] = [];
+  if (input.type !== undefined) {
+    where.push('type = ?');
+    params.push(input.type);
+  }
+  if (input.since !== undefined) {
+    where.push('occurred_at >= ?');
+    params.push(input.since);
+  }
+  if (input.until !== undefined) {
+    where.push('occurred_at < ?');
+    params.push(input.until);
+  }
+  const filter = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+
+  const total =
+    ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM _substrat_outbox${filter}`, params)[0]?.n ?? 0;
+
+  // An envelope column cannot be erased, so the erased count is structurally zero
+  // and every matching row is groupable.
+  if (input.groupBy.kind !== 'payload') {
+    const column = ENVELOPE_COLUMN[input.groupBy.kind];
+    const rows = ctx.sql.query<{ value: string | null; n: number }>(
+      `SELECT ${column} AS value, COUNT(*) AS n FROM _substrat_outbox${filter}
+        GROUP BY ${column} ORDER BY n DESC, value LIMIT ?`,
+      [...params, limit + 1],
+    );
+    return {
+      buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n })),
+      erased: 0,
+      total,
+      truncated: rows.length > limit,
+    };
+  }
+
+  // Erased rows are counted, then excluded — the whole point of this branch.
+  const erasedFilter = filter === '' ? ' WHERE payload IS NULL' : `${filter} AND payload IS NULL`;
+  const erased =
+    ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM _substrat_outbox${erasedFilter}`, params)[0]?.n ?? 0;
+
+  const liveFilter = filter === '' ? ' WHERE payload IS NOT NULL' : `${filter} AND payload IS NOT NULL`;
+  const rows = ctx.sql.query<{ value: string | null; n: number }>(
+    `SELECT json_extract(payload, ?) AS value, COUNT(*) AS n FROM _substrat_outbox${liveFilter}
+      GROUP BY value ORDER BY n DESC, value LIMIT ?`,
+    [`$.${input.groupBy.field}`, ...params, limit + 1],
+  );
+  return {
+    buckets: rows.slice(0, limit).map((r) => ({ value: r.value === null ? null : String(r.value), count: r.n })),
+    erased,
+    total,
+    truncated: rows.length > limit,
+  };
+}
+
+/** The envelope columns a facet may group by — a fixed map, never a caller's string. */
+const ENVELOPE_COLUMN: Record<string, string> = {
+  type: 'type',
+  actor: 'actor',
+  operation: 'operation',
+  version: 'version',
+  entityType: 'entity_type',
+  piiClass: 'pii_class',
+};

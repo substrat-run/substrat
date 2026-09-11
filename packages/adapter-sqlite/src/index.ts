@@ -294,6 +294,7 @@ import {
   createUlid,
   type UlidMint,
   type IdempotencyRow,
+  facetEvents,
   readHistory,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
@@ -5596,6 +5597,14 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt: scope.expires_at },
           { expiresAt },
         );
+      },
+      facetEvents: async (actor, tenantId, scopeId, input) => {
+        // `facetEvents` is the sanctioned read: an erased payload yields the same
+        // NULL a missing field does, and only the helper counts them apart.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const result = facetEvents({ sql: scopedSql(db) }, input);
+        this.recordAccess(actor, 'facetEvents', { tenantId, scopeId }, input, result.buckets.length);
+        return result;
       },
       entityHistory: async (actor, tenantId, scopeId, input) => {
         // `readHistory` over this scope's own outbox — the sanctioned read, and the

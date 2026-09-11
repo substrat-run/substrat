@@ -540,6 +540,49 @@ export function scopeHostContractSuite(
       expect(journal2.filter((r) => r.module_id === '@test/mod')).toHaveLength(1);
     });
 
+    it('facets the outbox, and keeps an ERASED payload out of the null bucket (#1239)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const subject = ulid();
+      // Three events: two whose payload carries `secret`, one that never had it.
+      await stub.invoke('test/emit-event', { subject, secret: 'kept' });
+      await stub.invoke('test/emit-event', { subject: ulid(), secret: 'kept' });
+      await stub.invoke('test/emit-event');
+
+      const byType = await host.admin.facetEvents(staff, t1, s1, { groupBy: { kind: 'type' } });
+      const happened = byType.buckets.find((b) => b.value === 'test.happened')!;
+      expect(happened.count).toBeGreaterThanOrEqual(3);
+      // An envelope grouping cannot be erased, so the count is structurally zero.
+      expect(byType.erased).toBe(0);
+
+      const before = await host.admin.facetEvents(staff, t1, s1, {
+        groupBy: { kind: 'payload', field: 'secret' },
+        type: 'test.happened',
+      });
+      expect(before.erased).toBe(0);
+      expect(before.buckets.find((b) => b.value === 'kept')!.count).toBe(2);
+      // The event that never carried the field is a genuine null bucket — an
+      // absence in the data, which is a different fact from an erasure.
+      expect(before.buckets.find((b) => b.value === null)!.count).toBeGreaterThanOrEqual(1);
+
+      // Now erase one subject: the shred keeps the row and drops the payload.
+      await host.admin.shredSubject(staff, t1, s1, dataSubjectId.parse(subject));
+
+      const after = await host.admin.facetEvents(staff, t1, s1, {
+        groupBy: { kind: 'payload', field: 'secret' },
+        type: 'test.happened',
+      });
+      // THE RULE: the erased event is counted apart, and did NOT join the null
+      // bucket. Folding it in would show a reader a clean distribution with no
+      // hint that part of the history was redacted.
+      expect(after.erased).toBe(1);
+      expect(after.buckets.find((b) => b.value === 'kept')!.count).toBe(1);
+      expect(after.buckets.find((b) => b.value === null)?.count ?? 0).toBe(
+        before.buckets.find((b) => b.value === null)!.count,
+      );
+      // And the denominator still counts it: the event happened, whatever it said.
+      expect(after.total).toBe(before.total);
+    });
+
     it('answers one record’s history through the platform (#1235)', async () => {
       // `readHistory` has been the sanctioned read since #800 and, until this
       // verb, nothing above the scope could call it — the whole point of #1235.

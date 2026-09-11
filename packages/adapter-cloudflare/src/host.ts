@@ -70,6 +70,8 @@ import {
   type OpsFailureEntry,
   type IssueEntry,
   type EntityHistoryInput,
+  type EventFacetInput,
+  type EventFacetResult,
   type HistoryEntry,
   type Page,
   type SweepRunEntry,
@@ -933,6 +935,7 @@ interface ScopeStubRpc {
     limit?: number;
     cursor?: string;
   }): Promise<Page<HistoryEntry>>;
+  facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1678,6 +1681,11 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
     return this.scopeStub(scopeId).exportDump();
+  }
+
+  /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */
+  async facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
+    return this.scopeStub(scopeId).facetEvents(input);
   }
 
   /** One record's event history (#1235) on this host's own scope — the vertical-host read. */
@@ -3878,6 +3886,13 @@ export class CloudflareScopeHost implements ScopeHost {
         const tables = await this.scopeStub(scopeId).introspectTables();
         await this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
+      },
+      facetEvents: async (actor, tenantId, scopeId, input: EventFacetInput): Promise<EventFacetResult> => {
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        const result = await this.scopeStub(scopeId).facetEvents(input);
+        await this.recordAccess(actor, 'facetEvents', { tenantId, scopeId }, input, result.buckets.length);
+        return result;
       },
       entityHistory: async (
         actor,
