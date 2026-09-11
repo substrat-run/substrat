@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { EmptyState } from '@substrat-run/ui';
 import {
+  adminRemoveSignInMethod,
   adminSignInMethods,
   banUserWithReason,
   getUser,
@@ -90,7 +91,7 @@ export function UserDetailView({ userId, me }: { userId: string; me: string }) {
       ) : (
         <>
           <IdentityHeader user={user} me={me} onChanged={onChanged} />
-          <SignInMethodsPanel userId={userId} reloadKey={changed} />
+          <SignInMethodsPanel userId={userId} email={user.email} reloadKey={changed} onChanged={onChanged} />
           <SessionsPanel userId={userId} />
           <ActionsPanel user={user} me={me} onChanged={onChanged} />
         </>
@@ -190,9 +191,56 @@ function IdentityHeader({ user, me, onChanged }: { user: AdminUser; me: string; 
 
 /* ---- how they sign in ---- */
 
-function SignInMethodsPanel({ userId, reloadKey }: { userId: string; reloadKey: number }) {
+/**
+ * The method named mid-sentence — what the confirmation and the accessible label both need,
+ * and the reason a `credential` row is "password" here and `Password` in the table: one is a
+ * column value, the other is part of a sentence about it.
+ */
+const methodLabel = (m: AdminSignInMethod): string => (m.provider === 'credential' ? 'password' : m.provider);
+
+/**
+ * The accessible name of one Remove button, which needs more than the method's name: somebody
+ * CAN hold two accounts at the same provider, and telling those apart is the whole reason the
+ * table has an "Account at the provider" column. Two buttons both announcing "Remove their
+ * google" would drop exactly the distinction the screen exists to draw.
+ */
+const removeLabel = (m: AdminSignInMethod): string =>
+  m.provider === 'credential'
+    ? `Remove their ${methodLabel(m)}`
+    : `Remove their ${methodLabel(m)} account ${m.accountId}`;
+
+/**
+ * What an operator is agreeing to, written from their side and naming the consequence rather
+ * than the verb. Removing a password and disconnecting an upstream are different acts with
+ * different aftermaths, so they get different sentences.
+ *
+ * Both say that sessions survive. It is the fact most likely to be assumed the other way —
+ * "I removed their Google account" reads like a sign-out and is not one — and the panel that
+ * does end a session is directly below this one.
+ */
+function removalWarning(m: AdminSignInMethod, email: string): string {
+  if (m.provider === 'credential') {
+    return `Remove the ${methodLabel(m)} for ${email}? They will not be able to sign in with an email address and password until an administrator sets a new one. Sessions they already have stay open — revoke those under Sessions if that is the point.`;
+  }
+  return `Disconnect ${methodLabel(m)} from ${email}? Signing in with ${m.provider} will no longer bring them to this account, and reconnecting it is theirs to do, not yours. Sessions they already have stay open — revoke those under Sessions if that is the point.`;
+}
+
+function SignInMethodsPanel({
+  userId,
+  email,
+  reloadKey,
+  onChanged,
+}: {
+  userId: string;
+  email: string;
+  reloadKey: number;
+  onChanged: () => void;
+}) {
   const [methods, setMethods] = useState<AdminSignInMethod[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Which row is being removed, so its own button says so — a panel-wide spinner would leave an
+  // operator who clicked one of four Remove buttons unsure which one took.
+  const [removing, setRemoving] = useState<string | null>(null);
 
   // `reloadKey` is why this panel is not read-only in effect: setting a password under Actions
   // creates the very `credential` row listed here, and without the re-read the screen would go
@@ -211,6 +259,32 @@ function SignInMethodsPanel({ userId, reloadKey }: { userId: string; reloadKey: 
     };
   }, [userId, reloadKey]);
 
+  // The same question the server asks, over the same fact: does removing THIS row take away
+  // their last way in. Counting rows would answer differently — a `credential` row with no
+  // password is listed here and is not a way in — so the screen would disable a button the
+  // server would have allowed, and enable one it will refuse. `usable` is on the wire so that
+  // both ends read one predicate. The server's refusal is still the one that counts; this only
+  // keeps an operator from meeting it as an error banner.
+  const removable = (m: AdminSignInMethod): boolean =>
+    !m.usable || (methods ?? []).some((other) => other.id !== m.id && other.usable);
+
+  const remove = async (m: AdminSignInMethod) => {
+    if (!window.confirm(removalWarning(m, email))) return;
+    setRemoving(m.id);
+    setErr(null);
+    try {
+      await adminRemoveSignInMethod(userId, m.id);
+      // Through the parent, not a local re-read: removing the password changes what the
+      // Actions panel's "Set a password" field means, and the identity header is the other
+      // half of the same person.
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRemoving(null);
+    }
+  };
+
   return (
     <section className="panel">
       <div className="panel-head"><h2>Sign-in methods</h2></div>
@@ -225,26 +299,51 @@ function SignInMethodsPanel({ userId, reloadKey }: { userId: string; reloadKey: 
         </p>
       )}
       {methods && methods.length > 0 && (
-        <table className="grid">
-          <thead>
-            <tr><th>Method</th><th>Account at the provider</th><th>Connected</th></tr>
-          </thead>
-          <tbody>
-            {methods.map((m) => (
-              <tr key={m.id}>
-                <td>{m.provider === 'credential' ? 'Password' : m.provider}</td>
-                {/* For a password row this is the person's own id, not an upstream subject —
-                    saying nothing is more honest than repeating it as though it meant more. */}
-                <td>{m.provider === 'credential' ? '—' : <code>{m.accountId}</code>}</td>
-                <td>{m.createdAt ? new Date(m.createdAt).toLocaleDateString() : '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <table className="grid">
+            <thead>
+              <tr><th>Method</th><th>Account at the provider</th><th>Connected</th><th></th></tr>
+            </thead>
+            <tbody>
+              {methods.map((m) => (
+                <tr key={m.id}>
+                  <td>
+                    {m.provider === 'credential' ? 'Password' : m.provider}{' '}
+                    {/* A row that is listed and is not a way in — today only a `credential` row
+                        whose password was cleared. Saying so is what makes the Remove button
+                        beside it make sense: it is enabled because there is nothing to lose. */}
+                    {!m.usable && <span className="tag warn">no password set</span>}
+                  </td>
+                  {/* For a password row this is the person's own id, not an upstream subject —
+                      saying nothing is more honest than repeating it as though it meant more. */}
+                  <td>{m.provider === 'credential' ? '—' : <code>{m.accountId}</code>}</td>
+                  <td>{m.createdAt ? new Date(m.createdAt).toLocaleDateString() : '—'}</td>
+                  <td className="actions">
+                    {/* Disabled rather than hidden, for the reason the Actions panel gives about
+                        its own row: a missing button reads as "not possible here", and the true
+                        answer is "not while it is the only way in". */}
+                    <button
+                      className="btn tiny"
+                      disabled={removing !== null || !removable(m)}
+                      onClick={() => void remove(m)}
+                      aria-label={removeLabel(m)}
+                    >
+                      {removing === m.id ? 'Removing…' : 'Remove'}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {methods.some((m) => !removable(m)) && (
+            <p className="muted note">
+              Their only way to sign in cannot be removed. Set a password under Actions, or have
+              them connect a provider, and it becomes removable — to close the account entirely,
+              use Remove under Actions.
+            </p>
+          )}
+        </>
       )}
-      {/* Read-only for now, and deliberately: an admin unlink is a second server surface and
-          it can lock a person out of their own account, so it wants the confirmation copy
-          #1278 asks for rather than a bare button. */}
     </section>
   );
 }

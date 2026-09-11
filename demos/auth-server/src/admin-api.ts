@@ -210,6 +210,44 @@ async function pluginCall(fn: () => Promise<unknown>): Promise<unknown> {
 const NOW_MS = "cast(unixepoch('subsecond') * 1000 as integer)";
 
 /**
+ * Whether an `account` row is actually a way in — as a PREDICATE over the hash, never the hash.
+ * The answer the screen and the unlink guard both need is "is there a password", and selecting
+ * the column to work it out would put a bcrypt hash in a variable one careless `c.json(row)`
+ * away from the wire.
+ *
+ * Only a `credential` row can be false today: an upstream row exists because somebody completed
+ * a round trip with that provider. Deliberately NOT narrowed further to the providers this
+ * issuer currently offers — disabling a provider leaves its `account` rows alone on purpose
+ * (see the provider delete above), and re-enabling it restores those sign-ins, so treating a
+ * disabled provider's row as "not a way in" would turn a reversible state into a permitted,
+ * irreversible unlink.
+ */
+const METHOD_IS_USABLE = "(provider_id <> 'credential' OR (password IS NOT NULL AND password <> ''))";
+
+interface SignInMethodRow {
+  id: string;
+  provider_id: string;
+  account_id: string;
+  issuer: string | null;
+  created_at: number | null;
+  usable: number;
+}
+
+/**
+ * One person's `account` rows, in the shape both the read and the unlink need. One reader, so
+ * the screen's idea of "this cannot be removed" and the server's refusal cannot drift apart.
+ */
+function readSignInMethods(sql: SqlExec, userId: string): SignInMethodRow[] {
+  return sql
+    .exec(
+      `SELECT id, provider_id, account_id, issuer, created_at, ${METHOD_IS_USABLE} AS usable
+         FROM account WHERE user_id = ? ORDER BY created_at ASC`,
+      userId,
+    )
+    .toArray() as unknown as SignInMethodRow[];
+}
+
+/**
  * Refuse a client write whose `signIn` policy is not one (`src/sign-in-policy.ts`).
  *
  * The runtime read is deliberately permissive — a policy it cannot understand is no policy,
@@ -714,7 +752,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
    *
    * A password row is `provider_id = 'credential'`. It is returned like any other method
    * because the screen has to be able to say "this account has a password" — the fact, never
-   * the hash.
+   * the hash — and `usable` is that fact, in the one shape a browser can be told it.
    */
   app.get('/users/:userId/sign-in-methods', (c) => {
     const userId = c.req.param('userId');
@@ -722,19 +760,7 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     // 404 rather than an empty list: "no such person" and "a person with no way in" are
     // different answers, and the second one is a real state an operator has to be able to see.
     if (user.length === 0) throw new HTTPException(404, { message: `unknown user '${userId}'` });
-    const rows = deps.sql
-      .exec(
-        `SELECT id, provider_id, account_id, issuer, created_at
-           FROM account WHERE user_id = ? ORDER BY created_at ASC`,
-        userId,
-      )
-      .toArray() as unknown as {
-      id: string;
-      provider_id: string;
-      account_id: string;
-      issuer: string | null;
-      created_at: number | null;
-    }[];
+    const rows = readSignInMethods(deps.sql, userId);
     return c.json({
       methods: rows.map((row) => ({
         id: row.id,
@@ -742,8 +768,57 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
         accountId: row.account_id,
         issuer: row.issuer,
         createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+        usable: Boolean(row.usable),
       })),
     });
+  });
+
+  /**
+   * Take one sign-in method away — the write half of the read above, and the other thing
+   * Better Auth's `unlink-account` will not do for somebody else: it too is scoped to the
+   * caller's own session, so an operator holding "this person's old Google account is not
+   * theirs any more" had no lever at all.
+   *
+   * Two refusals, and both are the point of the endpoint rather than validation around it:
+   *
+   *  - The row must belong to the user in the path. `account.id` is globally unique, so a
+   *    delete keyed on it alone would happily unlink somebody else's method through a URL
+   *    naming the person an operator thought they were looking at.
+   *  - It must not take away their LAST way in. An account with no method is not a lesser
+   *    account, it is one nobody can sign into — recoverable here only by an administrator
+   *    setting a password, and not at all by the person themselves.
+   *
+   * The second refusal is about what is LOST, not about how many rows are left, and the
+   * difference is a real state: a `credential` row with no hash (`METHOD_IS_USABLE`) is listed
+   * on the screen and is not a way in, so removing it takes nothing away and is exactly the
+   * tidying an operator should be able to do — counting rows would refuse it and leave the
+   * dead row there with no verb that reaches it.
+   *
+   * Sessions are deliberately untouched. Removing a method decides how they sign in NEXT
+   * time; ending what they are in the middle of is `revoke-user-sessions`, a separate verb an
+   * operator may or may not mean — and doing both from one button would take the choice away.
+   */
+  app.delete('/users/:userId/sign-in-methods/:accountId', (c) => {
+    const userId = c.req.param('userId');
+    const accountId = c.req.param('accountId');
+    const rows = readSignInMethods(deps.sql, userId);
+    // Same distinction the read makes: an unknown person and a person with nothing to remove
+    // are different answers, and only the first is a 404 on the user.
+    if (rows.length === 0) {
+      const user = deps.sql.exec('SELECT id FROM user WHERE id = ?', userId).toArray();
+      if (user.length === 0) throw new HTTPException(404, { message: `unknown user '${userId}'` });
+    }
+    const target = rows.find((row) => row.id === accountId);
+    if (!target) throw new HTTPException(404, { message: `'${userId}' has no sign-in method '${accountId}'` });
+    const othersUsable = rows.some((row) => row.id !== accountId && Boolean(row.usable));
+    if (Boolean(target.usable) && !othersUsable) {
+      throw new HTTPException(409, {
+        message:
+          'this is their only way to sign in — set a password or connect another provider first, or remove the account itself',
+      });
+    }
+    deps.sql.exec('DELETE FROM account WHERE id = ? AND user_id = ?', accountId, userId);
+    return c.json({ removed: accountId });
   });
 
   app.onError((err, c) => {
