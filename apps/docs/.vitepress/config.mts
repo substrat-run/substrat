@@ -30,14 +30,17 @@ export default withMermaid(defineConfig({
     'The hard parts, hosted. A runtime-enforced substrate for building vertical B2B SaaS.',
   lastUpdated: true,
 
-  /**
-   * `/book/read.html` is written in `buildEnd` (book.mts), so the page that links to
-   * it does not exist yet when the dead-link check runs — and VitePress strips the
-   * `.html` before comparing, which is why it reads as `/book/read`. Scoped to that
-   * one artifact rather than switching the check off: every other dead link in this
-   * site should still fail the build.
+  /*
+   * No `ignoreDeadLinks`, deliberately. `/book/read.html` is written in `buildEnd`
+   * (book.mts) and used to be exempted here so a markdown link to it would build —
+   * but building was never the problem: VitePress's SPA router intercepts a
+   * same-origin link whose extension it does not recognise as a file (`.html` is one
+   * of those), so the link routed client-side to a page the router has no chunk for
+   * and rendered the 404. book/index.md points at it with a raw `<a target="_self">`
+   * instead, which the router skips. Nothing checks a raw anchor, so the exemption
+   * has no work left — and without it a markdown link to that route fails the build,
+   * which is the right answer now that a markdown link is the bug.
    */
-  ignoreDeadLinks: [/^\/book\/read(\.html)?$/],
 
   /**
    * The ticket0 support widget, in every page's `<head>` (see `WIDGET_API`).

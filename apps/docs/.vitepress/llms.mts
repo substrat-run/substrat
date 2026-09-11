@@ -242,10 +242,21 @@ export function toTwin(raw: string, srcDir?: string): string {
     push(line);
   }
 
-  // Internal links point at HTML routes; an agent reading markdown wants markdown.
-  const linked = out
+  // A raw `<a href="…" target="…">` is how a page escapes VitePress's SPA router for
+  // a route the router does not have (book/index.md is the one case). A file has no
+  // router to escape, so the twin gets the markdown link back — and then the rewrite
+  // below absolutizes it exactly as if it had been written that way.
+  const unanchored = out
     .join('\n')
-    .replace(/\]\((\/[^)\s]*)\)/g, (_m, link: string) => `](${twinUrl(link)})`);
+    .replace(/<a\s+href="([^"]+)"[^>]*>([^<]*)<\/a>/g, (_m, href: string, text: string) =>
+      `[${text}](${href})`,
+    );
+
+  // Internal links point at HTML routes; an agent reading markdown wants markdown.
+  const linked = unanchored.replace(
+    /\]\((\/[^)\s]*)\)/g,
+    (_m, link: string) => `](${twinUrl(link)})`,
+  );
 
   return `${collapseBlankRuns(linked).trimEnd()}\n`;
 }
