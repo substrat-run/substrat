@@ -345,6 +345,27 @@ export const contractTestBareOps: Record<string, OperationHandler<never, unknown
       payload: { hello: 'world', ...(input?.secret ? { secret: input.secret } : {}) },
     });
   }) as OperationHandler<never, unknown>,
+  /**
+   * The two ways a payload facet can lie, in one operation (#1239 review).
+   *
+   * `code` is emitted as a JSON NUMBER and as a JSON STRING for the same rendered
+   * value, because SQLite keeps `json_extract`'s storage classes apart and a facet
+   * that groups the raw result then stringifies would return TWO buckets both
+   * labelled `"1"` with the count split between them.
+   *
+   * And the third carries `payload: undefined` — which typechecks, since the field is
+   * `unknown`, and which `emit` stores as the same SQL NULL a shred writes. A facet that
+   * reads `payload IS NULL` as "erased" reports a redaction that never happened.
+   */
+  'test/emit-facet-edge': ((ctx, input: { code?: number | string; omit?: boolean }) => {
+    ctx.emit({
+      type: 'test.facet-edge',
+      schemaVersion: 1,
+      entity: { entityType: 'test-thing', entityId: 'facet' },
+      piiClass: 'none',
+      payload: input.omit ? undefined : { code: input.code },
+    });
+  }) as OperationHandler<never, unknown>,
   'test/emit-unclassified-pii': ((ctx) => {
     // piiClass 'direct' without subjectId — must be rejected at emit (§6.1)
     ctx.emit({

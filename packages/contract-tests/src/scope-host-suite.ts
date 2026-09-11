@@ -583,6 +583,35 @@ export function scopeHostContractSuite(
       expect(after.total).toBe(before.total);
     });
 
+    it('renders one bucket per rendered value, and does not invent an erasure (#1239)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      // SQLite keeps these in separate storage classes: `json_extract` hands back an
+      // INTEGER for the first and TEXT for the second, so grouping the raw result and
+      // stringifying afterwards produces two buckets both labelled "1".
+      await stub.invoke('test/emit-facet-edge', { code: 1 });
+      await stub.invoke('test/emit-facet-edge', { code: '1' });
+      // Legal and ordinary: an event with no payload at all. It is stored as the same
+      // SQL NULL a shred writes, and nothing about it has been erased.
+      await stub.invoke('test/emit-facet-edge', { omit: true });
+
+      const facet = await host.admin.facetEvents(staff, t1, s1, {
+        groupBy: { kind: 'payload', field: 'code' },
+        type: 'test.facet-edge',
+      });
+
+      // ONE bucket for "1", carrying both events — not two that split the count.
+      const ones = facet.buckets.filter((b) => b.value === '1');
+      expect(ones).toHaveLength(1);
+      expect(ones[0]!.count).toBe(2);
+
+      // The payload-less event is an extraction-null, NOT a redaction. Reporting it
+      // as erased would tell a reader that history was withheld from them when it
+      // was simply never written.
+      expect(facet.erased).toBe(0);
+      expect(facet.buckets.find((b) => b.value === null)!.count).toBe(1);
+      expect(facet.total).toBe(3);
+    });
+
     it('answers one record’s history through the platform (#1235)', async () => {
       // `readHistory` has been the sanctioned read since #800 and, until this
       // verb, nothing above the scope could call it — the whole point of #1235.
@@ -4319,6 +4348,17 @@ export function scopeHostContractSuite(
       expect(rec.status).toBe('reaped');
       // getScope fails closed on the reaped scope, exactly like a missing one.
       await expect(host.getScope(alice, t3, s)).rejects.toThrow(/scope not active|unknown scope/);
+      // And so does every read that would OPEN that storage. The tombstone row still
+      // resolves, so an existence check alone lets these through — and opening a
+      // reaped scope does not read an empty database, it CREATES one, answering
+      // "this scope has no events" where the truth is "this scope is gone".
+      await expect(
+        host.admin.facetEvents(staff, t3, s, { groupBy: { kind: 'type' } }),
+      ).rejects.toThrow(/reaped/);
+      await expect(
+        host.admin.entityHistory(staff, t3, s, { entityType: 'test-thing', entityId: 'x1' }),
+      ).rejects.toThrow(/reaped/);
+      await expect(host.admin.listScopeTables(staff, t3, s)).rejects.toThrow(/reaped/);
       // Audited as reapScope against the right scope + actor.
       const reapEntry = (await host.admin.auditLog(staff, { tenantId: t3 })).find(
         (r) => r.action === 'reapScope' && r.scopeId === s,

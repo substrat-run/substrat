@@ -8342,10 +8342,20 @@ export class SqliteScopeHost implements ScopeHost {
    * DB, and never CREATE one for an id that was never provisioned.
    */
   private scopeDbFor(tenantId: TenantId, scopeId: ScopeId): Database.Database {
-    const r = this.directory.prepare('SELECT tenant_id FROM scopes WHERE scope_id = ?').get(scopeId) as
-      | { tenant_id: string }
+    const r = this.directory.prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?').get(scopeId) as
+      | { tenant_id: string; status: string }
       | undefined;
     if (!r || r.tenant_id !== tenantId) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    // A reaped scope keeps its directory row as a tombstone while `reapScope` deletes
+    // the file (§4.4). `runtime()` opens a database by CREATING it when absent, so
+    // reading one here would not merely answer emptily — it would put the file back,
+    // resurrecting storage an irreversible reap destroyed, and every later read would
+    // report a scope with no events rather than a scope that is gone. `archived` is
+    // deliberately still readable: its bytes exist, and that is the whole point of the
+    // state.
+    if (r.status === 'reaped') {
+      throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
+    }
     return this.runtime(tenantId, scopeId).db;
   }
 

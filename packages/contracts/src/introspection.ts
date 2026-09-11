@@ -104,9 +104,15 @@ export type EventFacetInput = z.infer<typeof eventFacetInput>;
 /** One grouped value and how many events carried it. */
 export const eventFacetBucket = z.object({
   /**
-   * The value events were grouped under. `null` means the field was genuinely
-   * ABSENT — the event carried no such key — which is a different fact from the
-   * payload having been erased, counted separately below.
+   * The value events were grouped under, as SQLite rendered it — the query casts
+   * the extracted value to text so that the group key and this string are one
+   * representation, never two that collapse into duplicate buckets.
+   *
+   * `null` is the EXTRACTION-NULL bucket. `json_extract` returns SQL NULL both
+   * for a key the payload does not carry and for a key it carries with a JSON
+   * `null` value, and nothing downstream can tell those apart — so read it as
+   * "no value extracted", not as proof of absence. What it is NOT is an erased
+   * payload: those never reach a bucket and are counted separately below.
    */
   value: z.string().nullable(),
   count: z.number().int().nonnegative(),
