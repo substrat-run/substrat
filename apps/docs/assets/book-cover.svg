@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The cover of the EPUB edition (apps/docs/.vitepress/epub.mts).
+
+  An ASSET, not a generated file: it carries no producer header and no CI gate,
+  because it is drawing rather than derivation. `book-cover.png` beside it is this
+  file rendered at 1600x2400 by the `cover` script in apps/docs/package.json, which
+  needs `rsvg-convert` — a tool no CI here has, which is exactly why the PNG is
+  committed rather than built.
+
+  The motif is the book's first structural claim, drawn rather than stated: twelve
+  scopes, each its own closed box, with nothing joining them. One box is lit — the
+  one a request resolved to. There are no lines between them because there is no
+  join between two scopes.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2400" viewBox="0 0 1600 2400">
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#10131a"/>
+      <stop offset="100%" stop-color="#080a0e"/>
+    </linearGradient>
+    <linearGradient id="lit" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#5fd3c4"/>
+      <stop offset="100%" stop-color="#2a9d8f"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="2400" fill="url(#ground)"/>
+
+  <!-- Title block -->
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" fill="#f2f4f7">
+    <text x="160" y="430" font-size="146" font-weight="600" letter-spacing="-4">Substrat,</text>
+    <text x="160" y="580" font-size="146" font-weight="600" letter-spacing="-4">end to end</text>
+    <rect x="163" y="660" width="132" height="6" fill="#5fd3c4"/>
+    <text x="160" y="790" font-size="54" font-weight="300" fill="#9aa4b2">How the pieces join.</text>
+    <text x="160" y="866" font-size="54" font-weight="300" fill="#9aa4b2">Ten chapters, front to back.</text>
+  </g>
+
+  <!-- Twelve scopes: each its own closed box, nothing joining them. One is lit. -->
+  <g transform="translate(160,1120)">
+    <g fill="none" stroke="#2c3442" stroke-width="4">
+      <rect x="0"   y="0"   width="290" height="200" rx="18"/>
+      <rect x="330" y="0"   width="290" height="200" rx="18"/>
+      <rect x="660" y="0"   width="290" height="200" rx="18"/>
+      <rect x="990" y="0"   width="290" height="200" rx="18"/>
+      <rect x="0"   y="250" width="290" height="200" rx="18"/>
+      <rect x="660" y="250" width="290" height="200" rx="18"/>
+      <rect x="990" y="250" width="290" height="200" rx="18"/>
+      <rect x="0"   y="500" width="290" height="200" rx="18"/>
+      <rect x="330" y="500" width="290" height="200" rx="18"/>
+      <rect x="660" y="500" width="290" height="200" rx="18"/>
+      <rect x="990" y="500" width="290" height="200" rx="18"/>
+    </g>
+    <rect x="330" y="250" width="290" height="200" rx="18" fill="none" stroke="url(#lit)" stroke-width="6"/>
+    <circle cx="475" cy="350" r="17" fill="#5fd3c4"/>
+  </g>
+
+  <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" fill="#5d6878">
+    <text x="160" y="2030" font-size="40" font-weight="400" letter-spacing="1">No query crosses these lines.</text>
+    <text x="160" y="2230" font-size="38" font-weight="500" fill="#8b96a5" letter-spacing="6">SUBSTRAT.NET</text>
+  </g>
+</svg>

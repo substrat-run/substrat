@@ -18,7 +18,8 @@ side, names every phase of the fleet pass in order, and says plainly that nothin
 archived scope's storage unless a retention window has been configured, because Cloudflare
 never garbage-collects a Durable Object.
 
-It is also published in one file — `/book.txt` for printing, `pandoc`, or handing to a
-model in one shot, and `/book/read.html` as a single scrolling, printable page. Both are
-generated from the chapters at build time from the same list the nav reads, so there is no
-second copy to fall behind.
+It is also published in one file, three ways. `/book.epub` is a real EPUB 3 with a cover
+and a table of contents, so it opens in Apple Books on a phone and remembers where you got
+to; `/book.txt` is plain markdown for printing, `pandoc`, or handing to a model in one shot;
+`/book/read.html` is a single scrolling, printable page. All three are generated from the
+chapters at build time from the same list the nav reads, so none can fall behind the others.

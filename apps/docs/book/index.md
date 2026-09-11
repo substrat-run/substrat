@@ -38,14 +38,22 @@ event](/book/05-one-event) and [The two clocks](/book/09-the-two-clocks).
 
 ## Read it in one file
 
-The whole book is also published as a single document:
+The whole book is also published as a single document, three ways:
 
+- **[book.epub](/book.epub)** — a real EPUB 3, with a cover and a table of contents.
+  Open it on a phone and it lands in Apple Books (or Kobo, or anything else that reads
+  EPUB), remembers where you got to, and lets you set the type the way you like it.
 - **[book.txt](/book.txt)** — every chapter concatenated, plain markdown. Good for
   printing, for `pandoc`, or for handing to a model in one shot.
 - **[book/read.html](/book/read.html)** — the same thing as one scrolling, printable
   web page.
 
-Both are generated from these chapters at build time, so they cannot fall behind.
+All three are generated from these chapters at build time, so they cannot fall behind.
+
+::: tip Reading it on a phone
+On iOS, tapping **book.epub** in Safari offers to open it in Books. On a Mac, downloading
+it and double-clicking does the same — and Books syncs it to your phone from there.
+:::
 
 If you want the *reference* in one file instead — every page on this site, not just the
 book — that is [llms-full.txt](/llms-full.txt), and the index agents read first is

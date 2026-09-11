@@ -72,6 +72,35 @@ function chapterMarkdown(srcDir: string, link: string, demote = true): string {
   return demote ? demoteHeadings(body) : body;
 }
 
+/** One chapter of the book, at its own heading levels. */
+export interface BookPage {
+  /** The sidebar's words for it: `5. The life of one event`. */
+  text: string;
+  /** Site-absolute route: `/book/05-one-event`. */
+  link: string;
+  /** `05-one-event`, or `index` for the front matter. The EPUB names files by this. */
+  slug: string;
+  /** The twin's markdown, headings untouched — each chapter still owns its `h1`. */
+  markdown: string;
+}
+
+/**
+ * The chapters as separate documents, for a format whose unit is the chapter.
+ *
+ * `bookMarkdown` flattens these into one document and demotes their headings; the
+ * EPUB does the opposite, keeping one file per chapter so a reader's table of
+ * contents has somewhere to point. Both read the same list and the same twins, so
+ * neither edition can carry a chapter the other does not.
+ */
+export function bookPages(srcDir: string): BookPage[] {
+  return bookChapters().map((c) => ({
+    text: c.text,
+    link: c.link,
+    slug: c.link.replace(/^\/book\/?/, '') || 'index',
+    markdown: chapterMarkdown(srcDir, c.link, false),
+  }));
+}
+
 /**
  * The whole book as one markdown document, chapters in sidebar order.
  *
@@ -107,7 +136,9 @@ export function bookMarkdown(srcDir: string): string {
  * or save as a PDF, which the chapter pages are bad at and this is good at.
  */
 export function bookHtml(srcDir: string): string {
-  const md = new MarkdownIt({ html: true, linkify: true, typographer: false });
+  // `linkify: false` — see epub.mts: it turns a bare `PERMISSIONS.md` into a link to
+  // Moldova. Every link in the book is explicit markdown, so it can only invent.
+  const md = new MarkdownIt({ html: true, linkify: false, typographer: false });
   const body = md.render(bookMarkdown(srcDir));
   return `<!doctype html>
 <html lang="en">

@@ -3,6 +3,7 @@ import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 import { buildArtifacts, emitInto } from './llms.mjs';
 import { bookArtifacts } from './book.mjs';
+import { epubArtifacts } from './epub.mjs';
 import { emitHeaders } from './headers.mjs';
 import { changelogSidebar, guideSidebar } from './sidebar.mjs';
 
@@ -72,6 +73,10 @@ export default withMermaid(defineConfig({
     // same eleven chapters concatenated for printing, pandoc, or one-shot ingestion.
     // Emitted rather than checked in, so there is no second copy to drift — see book.mts.
     emitInto(siteConfig.outDir, bookArtifacts(siteConfig.srcDir));
+    // And /book.epub — the same chapters packaged for a phone: a real EPUB 3 with a
+    // cover, a table of contents and one file per chapter, so Apple Books and the rest
+    // can remember where the reader got to. See epub.mts for the zip's own rules.
+    emitInto(siteConfig.outDir, epubArtifacts(siteConfig.srcDir));
     // The `_headers` Cloudflare Pages serves the site with, including a CSP
     // whose script hashes are read back out of the HTML this build just wrote
     // (headers.mts explains why they cannot be written down). Emitted last: it
