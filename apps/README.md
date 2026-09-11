@@ -14,7 +14,8 @@ manufacture a paid tier. The substrate an `apps/` process runs on is fully open 
 genuinely exitable:
 
 - `packages/contracts`, `packages/cli`, `packages/create-substrat`,
-  `packages/boundary-lint`, `packages/model-emit`, `demos/*` — **Apache-2.0**
+  `packages/boundary-lint`, `packages/model-emit`, `packages/model-view`,
+  `demos/*` — **Apache-2.0**
 - `packages/kernel`, `packages/adapter-sqlite`, `packages/adapter-cloudflare`,
   `packages/control-plane-api`,
   `packages/vertical-host`, `packages/vertical-auth`, `packages/oidc-rp`,

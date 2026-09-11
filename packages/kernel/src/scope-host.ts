@@ -101,6 +101,8 @@ import type {
   FreshnessSpec,
   DrainedEvent,
   EntityHistoryInput,
+  EventFacetInput,
+  EventFacetResult,
   HistoryEntry,
   ErrorCode,
   PlatformRequestFailureOrigin,
@@ -2015,6 +2017,22 @@ export interface HostAdmin {
     scopeId: ScopeId,
     eventIds: readonly string[],
   ): Promise<number>;
+
+  /**
+   * Facet a CO-LOCATED scope's outbox (#1239) — narrow, group, count. For a
+   * dispatch vertical the route reads it through the vertical's own
+   * `/internal/facets`; this is the co-located fallback, like `entityHistory`.
+   *
+   * The erased-payload rule lives in `facetEvents`, not here: a shredded event
+   * yields the same NULL a missing field does, and folding the two would report
+   * redacted history as "no value". The helper counts them apart.
+   */
+  facetEvents(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: EventFacetInput,
+  ): Promise<EventFacetResult>;
 
   /**
    * One record's event history (#1235) on a CO-LOCATED scope — `readHistory`'s

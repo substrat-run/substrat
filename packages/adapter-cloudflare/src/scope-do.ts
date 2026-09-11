@@ -116,8 +116,14 @@ import {
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
-import { readHistory } from '@substrat-run/kernel';
-import type { DrainedEvent, HistoryEntry, Page } from '@substrat-run/contracts';
+import { facetEvents, readHistory } from '@substrat-run/kernel';
+import type {
+  DrainedEvent,
+  EventFacetInput,
+  EventFacetResult,
+  HistoryEntry,
+  Page,
+} from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
 
 /**
@@ -1026,6 +1032,15 @@ export function defineScopeDO(
         }
         return drained;
       });
+    }
+
+    /**
+     * Facet this scope's own outbox (#1239) — `facetEvents`, which is the
+     * sanctioned read: an erased payload yields the same NULL a missing field
+     * does, and only the helper keeps them apart.
+     */
+    facetEvents(input: EventFacetInput): EventFacetResult {
+      return facetEvents({ sql: doScopedSql(this.sql) }, input);
     }
 
     /**

@@ -11,6 +11,7 @@
 	},
 	"include": [
 		"src/worker.ts",
+		"src/teams.ts",
 		"src/agent.ts",
 		"src/providers-worker.ts",
 		"src/metering.ts"

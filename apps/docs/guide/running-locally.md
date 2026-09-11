@@ -254,10 +254,10 @@ way to change the local world:
 
 ## Adding another application
 
-A "new application" is a new **vertical**. Today each of the eight demo verticals
-(`demos/{callout,handlebar,manyfold,meridian,rally,shop,ticket0,todo}`) ships its own dev server —
+A "new application" is a new **vertical**. Today each of the nine demo verticals
+(`demos/{callout,handlebar,manyfold,meridian,rally,shop,ticket0,tock,todo}`) ships its own dev server —
 Callout's is `demos/callout/src/server.ts` — and each composes its engines + module into a host.
-(A ninth directory, `demos/auth-server`, is a shared OIDC provider, not a business vertical.) To
+(A tenth directory, `demos/auth-server`, is a shared OIDC provider, not a business vertical.) To
 scaffold one, follow [Getting started](/guide/getting-started) with the engines you need, and
 [Deploying a vertical](/guide/deploying) when it's ready to ship.
 
