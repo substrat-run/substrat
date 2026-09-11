@@ -145,4 +145,78 @@ export const tockMigrations: SqlMigration[] = [
       ALTER TABLE tock_runs ADD COLUMN subject_field TEXT;
     `,
   },
+  {
+    // variant-key-rebuild
+    version: '0003',
+    sql: `
+      -- HAND-WRITTEN. The planner refuses to generate this and is right to: SQLite cannot add a
+      -- UNIQUE constraint to a table that exists, so both tables are rebuilt the long way round.
+      --
+      -- Every backfilled value is '' and every one of them is TRUE, which is what makes a default
+      -- honest here where it would not have been for the read plan in 0002. An existing schema
+      -- described every record of its source, and the empty variant IS the envelope every record
+      -- carries. An existing row matched no variant because none had been declared, and the empty
+      -- variant is exactly how "matched none" is spelled. Neither backfill invents a choice.
+
+      CREATE TABLE tock_observations_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL REFERENCES tock_runs(id),
+        variant_key TEXT NOT NULL,
+        field TEXT NOT NULL,
+        present_count INTEGER NOT NULL,
+        null_count INTEGER NOT NULL,
+        inferred_type TEXT NOT NULL,
+        distinct_estimate INTEGER NOT NULL,
+        declared INTEGER NOT NULL,
+        UNIQUE (run_id, variant_key, field)
+      );
+
+      INSERT INTO tock_observations_new
+        (id, run_id, variant_key, field, present_count, null_count, inferred_type, distinct_estimate, declared)
+        SELECT id, run_id, '', field, present_count, null_count, inferred_type, distinct_estimate, declared
+          FROM tock_observations;
+
+      DROP TABLE tock_observations;
+
+      ALTER TABLE tock_observations_new RENAME TO tock_observations;
+
+      CREATE TABLE tock_schemas_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_key TEXT NOT NULL,
+        variant_key TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        fields_json TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (source_key, variant_key, version)
+      );
+
+      INSERT INTO tock_schemas_new
+        (id, source_key, variant_key, version, fields_json, created_by, created_at)
+        SELECT id, source_key, '', version, fields_json, created_by, created_at FROM tock_schemas;
+
+      DROP TABLE tock_schemas;
+
+      ALTER TABLE tock_schemas_new RENAME TO tock_schemas;
+
+      ALTER TABLE tock_rows ADD COLUMN variant_key TEXT NOT NULL DEFAULT '';
+
+    `,
+  },
+  {
+    // add-tock_sources-discriminators-and-1-more
+    version: '0004',
+    sql: `
+      ALTER TABLE tock_sources ADD COLUMN discriminators TEXT;
+
+      CREATE TABLE tock_variants (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_key TEXT NOT NULL,
+        key TEXT NOT NULL,
+        selector TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (source_key, key)
+      );
+    `,
+  },
 ];

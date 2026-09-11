@@ -858,3 +858,140 @@ describe('two runs counted in the same instant still yield one current run', () 
     expect(report.rows[0]?.events).toBe(1);
   });
 });
+
+describe('one file, several kinds of record', () => {
+  const SRC = 'firehose';
+  /** An envelope every record carries, plus properties that differ by kind. */
+  const batch = [
+    { occurredAt: '2026-04-01T08:00:00.000Z', subject: 'a', fields: { type: 'page', country: 'SE', url: '/home' } },
+    { occurredAt: '2026-04-01T08:01:00.000Z', subject: 'b', fields: { type: 'track', event: 'scroll', country: 'SE', depth: '80' } },
+    { occurredAt: '2026-04-01T08:02:00.000Z', subject: 'c', fields: { type: 'track', event: 'viewArticle', country: 'NO', name: 'Tide' } },
+    // A kind nobody declared. It must survive.
+    { occurredAt: '2026-04-01T08:03:00.000Z', subject: 'd', fields: { type: 'podcast', country: 'DK', sku: 'p-1' } },
+  ];
+
+  const openRun = async (who: Who, filename: string) => {
+    const s = await as(who);
+    return s.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC,
+      filename,
+      byteSize: 64,
+      contentHash: `sha256:${filename}`,
+      storageKey: `runs/${filename}`,
+      format: 'jsonl',
+      delimiter: null,
+      timeField: 'occurred_at',
+      subjectField: 'subject',
+      periodFrom: '2026-04-01T00:00:00.000Z',
+      periodTo: '2026-04-02T00:00:00.000Z',
+    });
+  };
+
+  it('18 — a source declares which fields tell kinds apart, and the kinds', async () => {
+    const ines = await as('ines');
+    await ines.invoke('tock/declare-source', { key: SRC, title: 'Firehose', expectedCadence: 'daily' });
+    const out = await ines.invoke<{ discriminators: string[]; variants: { key: string }[] }>('tock/declare-variants', {
+      sourceKey: SRC,
+      discriminators: ['type', 'event'],
+      variants: [{ selector: ['page'] }, { selector: ['track'] }, { selector: ['track', 'scroll'] }, { selector: ['track', 'viewArticle'] }],
+    });
+    expect(out.discriminators).toEqual(['type', 'event']);
+    expect(out.variants.map((v) => v.key).sort()).toEqual(['page', 'track', 'track/scroll', 'track/viewArticle']);
+  });
+
+  it('19 — a selector longer than the discriminators is refused, and so is a duplicate', async () => {
+    const ines = await as('ines');
+    await expect(
+      ines.invoke('tock/declare-variants', {
+        sourceKey: SRC,
+        discriminators: ['type'],
+        variants: [{ selector: ['track', 'scroll'] }],
+      }),
+    ).rejects.toThrow(/PREFIX/);
+    await expect(
+      ines.invoke('tock/declare-variants', {
+        sourceKey: SRC,
+        discriminators: ['type'],
+        variants: [{ selector: ['page'] }, { selector: ['page'] }],
+      }),
+    ).rejects.toThrow(/share the selector/);
+  });
+
+  it('20 — each record lands in the LONGEST kind that matches, and an undeclared kind still lands', async () => {
+    const ines = await as('ines');
+    // Restore the four-variant declaration that 19's refusals left untouched.
+    await ines.invoke('tock/declare-variants', {
+      sourceKey: SRC,
+      discriminators: ['type', 'event'],
+      variants: [{ selector: ['page'] }, { selector: ['track'] }, { selector: ['track', 'scroll'] }, { selector: ['track', 'viewArticle'] }],
+    });
+
+    const run = await openRun('tomas', 'day-1.jsonl');
+    const tomas = await as('tomas');
+    await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: true });
+
+    const rows = await tomas.invoke<{ entries: { variant_key: string }[] }>('tock/list-rows', { runId: run.id });
+    const kinds = rows.entries.map((r) => r.variant_key).sort();
+    // `track/scroll` beats `track`: the longest matching selector wins. `podcast` matched
+    // nothing and is the empty string — kept, classified, not dropped.
+    expect(kinds).toEqual(['', 'page', 'track/scroll', 'track/viewArticle']);
+    expect(rows.entries).toHaveLength(4);
+  });
+
+  it('21 — observations are per kind, so "not carried here" stops looking like "missing"', async () => {
+    const tomas = await as('tomas');
+    const run = (await tomas.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC })).entries[0]!;
+    const obs = await tomas.invoke<{ entries: { variant_key: string; field: string; present_count: number }[] }>(
+      'tock/list-observations',
+      { runId: run.id },
+    );
+    const at = (v: string, f: string) => obs.entries.find((o) => o.variant_key === v && o.field === f);
+    // `depth` is a scroll field. It is present there and has no row at all for a page —
+    // which is the point: absence of the OBSERVATION says the kind does not carry it.
+    expect(at('track/scroll', 'depth')?.present_count).toBe(1);
+    expect(at('page', 'depth')).toBeUndefined();
+    // The envelope is carried by every kind, so it is observed under each of them.
+    expect(at('page', 'country')?.present_count).toBe(1);
+    expect(at('track/scroll', 'country')?.present_count).toBe(1);
+  });
+
+  it('22 — the undeclared kind is reported as a finding, naming what it cost (nothing)', async () => {
+    const ines = await as('ines');
+    await ines.invoke('tock/save-schema', { sourceKey: SRC, fields: { country: { type: 'text', role: 'dimension' } } });
+    const found = await ines.invoke<{ findings: { kind: string; detail: string }[] }>('tock/deviations', { sourceKey: SRC });
+    const unmatched = found.findings.find((f) => f.kind === 'unmatched_records');
+    expect(unmatched).toBeDefined();
+    expect(unmatched!.detail).toMatch(/1 record\(s\)/);
+    expect(unmatched!.detail).toMatch(/never dropped/);
+  });
+
+  it('23 — the envelope is declared once and a kind adds only what it adds', async () => {
+    const ines = await as('ines');
+    // The envelope already declares `country` as a dimension. A kind adding a second one is
+    // fine; a kind adding a second dimension ON TOP of it would exceed the rollup's two slots.
+    await ines.invoke('tock/save-schema', {
+      sourceKey: SRC,
+      variantKey: 'track/scroll',
+      fields: { depth: { type: 'int', role: 'measure' } },
+    });
+    const schemas = await ines.invoke<{ entries: { variant_key: string; version: number }[] }>('tock/list-schemas', {
+      sourceKey: SRC,
+    });
+    const keys = schemas.entries.map((s) => `${s.variant_key}@${s.version}`).sort();
+    // Versions run per kind: the envelope's v1 and the variant's v1 are different things.
+    expect(keys).toEqual(['@1', 'track/scroll@1']);
+  });
+
+  it('24 — the kinds freeze once a run has been counted', async () => {
+    const tomas = await as('tomas');
+    const ines = await as('ines');
+    const run = (await tomas.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC })).entries[0]!;
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+    await tomas.invoke('tock/count-run', { runId: run.id });
+    // Rows were classified by the kinds declared when they were profiled. Changing them now
+    // would leave a current number nobody could reproduce.
+    await expect(
+      ines.invoke('tock/declare-variants', { sourceKey: SRC, discriminators: ['type'], variants: [{ selector: ['page'] }] }),
+    ).rejects.toThrow(/counted runs/);
+  });
+});

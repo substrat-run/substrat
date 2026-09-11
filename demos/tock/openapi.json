@@ -330,6 +330,16 @@
                     "expected_cadence": {
                       "type": "string"
                     },
+                    "discriminators": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     }
@@ -338,6 +348,7 @@
                     "key",
                     "title",
                     "expected_cadence",
+                    "discriminators",
                     "created_at"
                   ],
                   "additionalProperties": false
@@ -452,6 +463,16 @@
                       "expected_cadence": {
                         "type": "string"
                       },
+                      "discriminators": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "created_at": {
                         "type": "string"
                       }
@@ -460,10 +481,255 @@
                       "key",
                       "title",
                       "expected_cadence",
+                      "discriminators",
                       "created_at"
                     ],
                     "additionalProperties": false
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/api/sources/{sourceKey}/variants": {
+      "post": {
+        "operationId": "tock-declare-variants",
+        "summary": "Declare the fields that tell record kinds apart, and the kinds",
+        "parameters": [
+          {
+            "name": "sourceKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "A token of your choosing identifying this request. Send the SAME token when retrying and the original response is replayed instead of the work being done again; the reply carries `Idempotency-Replayed: true` when it was. Reusing a token for a different request is refused with 409. Remembered for 24 hours.",
+            "schema": {
+              "type": "string",
+              "maxLength": 255
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "sourceKey": {
+                    "type": "string"
+                  },
+                  "discriminators": {
+                    "maxItems": 4,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "variants": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "selector": {
+                          "minItems": 1,
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "selector"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "sourceKey",
+                  "discriminators",
+                  "variants"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "sourceKey": {
+                      "type": "string"
+                    },
+                    "discriminators": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "variants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "source_key": {
+                            "type": "string"
+                          },
+                          "key": {
+                            "type": "string"
+                          },
+                          "selector": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "source_key",
+                          "key",
+                          "selector",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "sourceKey",
+                    "discriminators",
+                    "variants"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "get": {
+        "operationId": "tock-list-variants",
+        "summary": "The record kinds declared for a source",
+        "parameters": [
+          {
+            "name": "sourceKey",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The operation result.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "discriminators": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "variants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "source_key": {
+                            "type": "string"
+                          },
+                          "key": {
+                            "type": "string"
+                          },
+                          "selector": {
+                            "type": "string"
+                          },
+                          "created_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "source_key",
+                          "key",
+                          "selector",
+                          "created_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "discriminators",
+                    "variants"
+                  ],
+                  "additionalProperties": false
                 }
               }
             }
@@ -547,7 +813,8 @@
                               "undeclared_field",
                               "declared_never_arrived",
                               "type_mismatch",
-                              "cardinality_spike"
+                              "cardinality_spike",
+                              "unmatched_records"
                             ]
                           },
                           "field": {
@@ -1002,6 +1269,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "variant_key",
+            "in": "query",
+            "required": false,
+            "description": "Only entries whose `variant_key` equals this.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "description": "What arrived in one run, field by field.",
@@ -1032,6 +1308,9 @@
                       "run_id": {
                         "type": "string"
                       },
+                      "variant_key": {
+                        "type": "string"
+                      },
                       "field": {
                         "type": "string"
                       },
@@ -1054,6 +1333,7 @@
                     "required": [
                       "id",
                       "run_id",
+                      "variant_key",
                       "field",
                       "present_count",
                       "null_count",
@@ -1168,6 +1448,9 @@
                       "run_id": {
                         "type": "string"
                       },
+                      "variant_key": {
+                        "type": "string"
+                      },
                       "occurred_at": {
                         "type": "string"
                       },
@@ -1184,6 +1467,7 @@
                     "required": [
                       "id",
                       "run_id",
+                      "variant_key",
                       "occurred_at",
                       "subject_key",
                       "dims_json",
@@ -1830,6 +2114,23 @@
               ],
               "default": "asc"
             }
+          },
+          {
+            "name": "variant_key",
+            "in": "query",
+            "required": false,
+            "description": "Only entries whose `variant_key` equals this.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "variantKey",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "tags": [
@@ -1859,6 +2160,9 @@
                       "source_key": {
                         "type": "string"
                       },
+                      "variant_key": {
+                        "type": "string"
+                      },
                       "version": {
                         "type": "number"
                       },
@@ -1875,6 +2179,7 @@
                     "required": [
                       "id",
                       "source_key",
+                      "variant_key",
                       "version",
                       "fields_json",
                       "created_by",
@@ -1946,6 +2251,10 @@
                   "sourceKey": {
                     "type": "string"
                   },
+                  "variantKey": {
+                    "default": "",
+                    "type": "string"
+                  },
                   "fields": {
                     "type": "object",
                     "propertyNames": {
@@ -2010,6 +2319,9 @@
                     "source_key": {
                       "type": "string"
                     },
+                    "variant_key": {
+                      "type": "string"
+                    },
                     "version": {
                       "type": "number"
                     },
@@ -2026,6 +2338,7 @@
                   "required": [
                     "id",
                     "source_key",
+                    "variant_key",
                     "version",
                     "fields_json",
                     "created_by",

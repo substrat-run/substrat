@@ -79,9 +79,45 @@ export const tockEntities = defineEntities({
       key: z.string(),
       title: z.string(),
       expected_cadence: z.string(),
+      /**
+       * The ordered field paths whose values tell record kinds apart, as JSON — `["type",
+       * "event"]` for a stream that splits twice, `[]` for one that holds a single shape.
+       *
+       * Null is the older fact: this source predates variants. It is read as `[]`, so a
+       * stream declared before any of this existed keeps behaving exactly as it did.
+       */
+      discriminators: z.string().nullable(),
       created_at: z.string(),
     }),
     primaryKey: ['key'],
+  },
+
+  /**
+   * One record kind — a PREFIX of the source's discriminator values.
+   *
+   * `selector` is the ordered list, as JSON: `["page"]` stops at one level because a page
+   * record carries no `event`; `["track","scroll"]` goes to two. A record belongs to the
+   * LONGEST variant whose values all hold, which is why a prefix and not a full tuple: the
+   * levels a kind does not reach are absent rather than null.
+   *
+   * A source with no discriminators has exactly one variant with an empty selector, so a
+   * single-shape stream is the simple case rather than a special case.
+   *
+   * Keyed by `(source_key, key)` with a ULID id so it stays pointable — the variant is what
+   * a schema, an observation and a row all name.
+   */
+  variant: {
+    table: 'tock_variants',
+    fields: z.object({
+      id: z.string(),
+      source_key: z.string(),
+      /** Readable and stable: `track/scroll`, derived from the selector when declared. */
+      key: z.string(),
+      selector: z.string(),
+      created_at: z.string(),
+    }),
+    parents: ['source'],
+    key: ['source_key', 'key'],
   },
 
   /**
@@ -98,13 +134,23 @@ export const tockEntities = defineEntities({
     fields: z.object({
       id: z.string(),
       source_key: z.string(),
+      /**
+       * Which kind this shape describes. The EMPTY STRING is the envelope every record
+       * carries, and it is a real value rather than a null: a source always has a root
+       * schema, even when it has no variants at all.
+       *
+       * A record's effective shape is the union along its path — envelope, then its kind,
+       * then its sub-kind. Declaring the envelope once is the point; fourteen variants
+       * repeating sixteen identical fields would be fourteen places for them to drift.
+       */
+      variant_key: z.string(),
       version: z.number(),
       fields_json: z.string(),
       created_by: z.string(),
       created_at: z.string(),
     }),
     parents: ['source'],
-    key: ['source_key', 'version'],
+    key: ['source_key', 'variant_key', 'version'],
   },
 
   /**
@@ -237,6 +283,8 @@ export const tockEntities = defineEntities({
     fields: z.object({
       id: z.string(),
       run_id: z.string(),
+      /** Which kind these counts are for. Empty string = records that matched no variant. */
+      variant_key: z.string(),
       field: z.string(),
       present_count: z.number(),
       null_count: z.number(),
@@ -245,7 +293,7 @@ export const tockEntities = defineEntities({
       declared: z.number(),
     }),
     parents: ['run'],
-    key: ['run_id', 'field'],
+    key: ['run_id', 'variant_key', 'field'],
   },
 
   /**
@@ -285,6 +333,14 @@ export const tockEntities = defineEntities({
     fields: z.object({
       id: z.string(),
       run_id: z.string(),
+      /**
+       * The variant this record matched, or the empty string when it matched none.
+       *
+       * Unmatched is a CLASSIFICATION, never a rejection: a producer shipping a kind nobody
+       * declared must not cost the data. The findings view reports the value and the count,
+       * and a person decides whether it is a variant worth declaring.
+       */
+      variant_key: z.string(),
       occurred_at: z.string(),
       subject_key: z.string(),
       dims_json: z.string(),
@@ -405,6 +461,56 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     },
   },
 
+  /**
+   * Declare which fields tell record kinds apart, and the kinds themselves.
+   *
+   * Both in one act because they are one decision: a discriminator with no variants
+   * classifies nothing, and a variant whose selector names an undeclared discriminator is
+   * meaningless. Saving replaces the set — a source has one answer to "what kinds are
+   * these", not a version history of it, because a variant that stopped existing would
+   * leave rows pointing at a kind no longer declared.
+   *
+   * Refused once a run has been counted: variants decide how rows were classified, so
+   * changing them after the fact would make a counted run's classification unreproducible
+   * while its numbers still claimed to be current.
+   */
+  'tock/declare-variants': {
+    summary: 'Declare the fields that tell record kinds apart, and the kinds',
+    permission: 'schema:manage',
+    input: z.object({
+      sourceKey: z.string(),
+      /** Ordered. `["type","event"]` splits twice; `[]` is a stream of one shape. */
+      discriminators: z.array(z.string().min(1)).max(4),
+      /** Each selector is a PREFIX of the discriminator values, shortest first. */
+      variants: z.array(z.object({ selector: z.array(z.string()).min(1) })),
+    }),
+    output: z.object({
+      sourceKey: z.string(),
+      discriminators: z.array(z.string()),
+      variants: z.array(tockEntities.variant.fields),
+    }),
+    http: { method: 'POST', path: '/sources/{sourceKey}/variants' },
+    emits: {
+      entity: 'source',
+      entityIdFrom: 'sourceKey',
+      type: 'tock.variants-declared',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['sourceKey'],
+    },
+  },
+
+  'tock/list-variants': {
+    summary: 'The record kinds declared for a source',
+    permission: 'report:read',
+    input: z.object({ sourceKey: z.string() }),
+    output: z.object({
+      discriminators: z.array(z.string()),
+      variants: z.array(tockEntities.variant.fields),
+    }),
+    http: { method: 'GET', path: '/sources/{sourceKey}/variants' },
+  },
+
   'tock/list-sources': {
     summary: 'The sources in this workspace',
     permission: 'report:read',
@@ -425,6 +531,12 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     permission: 'schema:manage',
     input: z.object({
       sourceKey: z.string(),
+      /**
+       * Which kind this shape describes. Omitted means the ENVELOPE — the fields every
+       * record carries, whatever its kind. That default is what keeps a single-shape
+       * source unchanged by any of this.
+       */
+      variantKey: z.string().default(''),
       fields: z.record(
         /**
          * A field name is whatever the FILE called the column, and almost nothing is refused.
@@ -477,9 +589,9 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
   'tock/list-schemas': {
     summary: 'Every version of a source shape',
     permission: 'report:read',
-    input: z.object({ sourceKey: z.string() }),
+    input: z.object({ sourceKey: z.string(), variantKey: z.string().optional() }),
     output: tockEntities.schema.fields,
-    paged: { over: { entity: 'schema', sortable: ['version'], filterable: ['source_key'] } },
+    paged: { over: { entity: 'schema', sortable: ['version'], filterable: ['source_key', 'variant_key'] } },
     http: { method: 'GET', path: '/sources/{sourceKey}/schemas' },
   },
 
@@ -752,7 +864,9 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       declared: z.boolean().optional(),
     }),
     output: tockEntities.observation.fields,
-    paged: { over: { entity: 'observation', sortable: ['field'], filterable: ['run_id', 'declared'] } },
+    paged: {
+      over: { entity: 'observation', sortable: ['field'], filterable: ['run_id', 'declared', 'variant_key'] },
+    },
     http: { method: 'GET', path: '/runs/{runId}/observations' },
   },
 
@@ -772,7 +886,14 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       schemaVersion: z.number().int(),
       findings: z.array(
         z.object({
-          kind: z.enum(['undeclared_field', 'declared_never_arrived', 'type_mismatch', 'cardinality_spike']),
+          kind: z.enum([
+            'undeclared_field',
+            'declared_never_arrived',
+            'type_mismatch',
+            'cardinality_spike',
+            /** Records whose discriminator values match no declared kind. Kept, not dropped. */
+            'unmatched_records',
+          ]),
           field: z.string(),
           detail: z.string(),
           firstSeen: z.string().nullable(),
