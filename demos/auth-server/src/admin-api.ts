@@ -28,6 +28,7 @@ import {
 } from './providers.js';
 import { resolveIssuerEndpoints } from './provider-discovery.js';
 import { deleteBankIdConfig, putBankIdConfig, readBankIdConfig, toWireBankId } from './bankid.js';
+import { SIGN_IN_LOG_LIMIT, readSignInLog, signInLogQuery } from './sign-in-log.js';
 
 /**
  * The issuer's own admin surface — what neither Better Auth nor `oauthProvider` has an
@@ -819,6 +820,39 @@ export function createAdminApi(deps: AdminApiDeps): Hono {
     }
     deps.sql.exec('DELETE FROM account WHERE id = ? AND user_id = ?', accountId, userId);
     return c.json({ removed: accountId });
+  });
+
+  /* ---- what happened when people tried to sign in ---- */
+
+  /**
+   * The sign-in log (`src/sign-in-log.ts`) — the read an operator makes when someone says
+   * "I cannot sign in with Microsoft".
+   *
+   * `admin`-gated like everything else here, and that is not ceremony: a row names the relying
+   * party someone was trying to reach, the account it resolved to, and the directory this
+   * issuer addressed on their behalf. None of it is a credential; all of it is somebody's
+   * sign-in activity.
+   *
+   * `limit`/`before` page by id rather than by offset, because the table is a RING pruned on
+   * write — an offset walks rows that have moved underneath the reader. `retained` is sent so
+   * the screen can say how far back the window reaches instead of implying the log is complete.
+   */
+  app.get('/sign-in-log', (c) => {
+    const parsed = signInLogQuery.safeParse({
+      limit: c.req.query('limit'),
+      before: c.req.query('before'),
+      method: c.req.query('method'),
+      outcome: c.req.query('outcome'),
+    });
+    if (!parsed.success) {
+      throw new HTTPException(400, {
+        message: parsed.error.issues
+          .map((i) => (i.path.length ? `${i.path.join('.')}: ${i.message}` : i.message))
+          .join('; '),
+      });
+    }
+    const { attempts, total } = readSignInLog(deps.sql, parsed.data);
+    return c.json({ attempts, total, retained: SIGN_IN_LOG_LIMIT });
   });
 
   app.onError((err, c) => {

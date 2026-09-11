@@ -30,6 +30,7 @@ import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } f
 import { clientBranding } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
+import { signInLoggerFor } from './sign-in-log.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
 
 /**
@@ -156,6 +157,9 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // Read per request like everything else here, so narrowing a client in the dashboard
     // decides the very next authorize request rather than the next restart.
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
+    // The same sign-in log the deployed issuer keeps, over the dev database — so a provider
+    // misconfiguration is debugged the same way locally as in production.
+    recordSignIn: signInLoggerFor(sql),
   });
 };
 

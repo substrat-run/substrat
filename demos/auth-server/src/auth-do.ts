@@ -19,6 +19,7 @@ import { createAdminApi } from './admin-api.js';
 import { clientBranding } from './branding.js';
 import { clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
+import { readSignInLog, signInLoggerFor, type SignInLogQuery } from './sign-in-log.js';
 import { ACCOUNT_LINKING, ALLOW_SIGNUP, accountLinkingMode, deliveredConfig, isTruthy, putDeliveredConfig, supabaseBridgeFrom } from './settings.js';
 import { genericProvidersFrom, publicProvidersFrom, readProviders, socialProvidersFrom, trustedProvidersFrom } from './providers.js';
 import {
@@ -181,6 +182,11 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // Read per request like everything else here, so narrowing a client in the dashboard
       // decides the very next authorize request rather than the next deploy.
       signInPolicyFor: (clientId) => readSignInPolicy(this.ctx.storage.sql, clientId),
+      // The sign-in log writes into THIS issuer's own SQLite, which is what makes it readable
+      // where a hosted install can actually be read: the admin console, the dashboard's Data
+      // tab, and `/internal/export`. A dispatch-namespace script's `console.log` is none of
+      // those.
+      recordSignIn: signInLoggerFor(this.ctx.storage.sql),
     });
   }
 

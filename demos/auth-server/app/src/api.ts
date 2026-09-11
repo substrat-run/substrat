@@ -1001,3 +1001,48 @@ export async function saveBankidSettings(draft: BankIdDraft): Promise<BankIdSett
 export async function removeBankid(): Promise<void> {
   await admin('/bankid', { method: 'DELETE' });
 }
+
+/* ---- what happened when people tried to sign in (`/api/admin/sign-in-log`) ---- */
+
+/**
+ * One hop of a federated sign-in, as the issuer recorded it (`src/sign-in-log.ts`).
+ *
+ * Two rows per attempt, and the PAIR is the diagnosis. A `started` with no `callback` beside it
+ * is the most telling shape there is: the person was sent to the upstream and never came back,
+ * so whatever refused them did so on the provider's own screen — and `authority` is then the
+ * only thing that can say why, because a single-tenant app registration addressed through
+ * Microsoft's `common` authority fails exactly like this.
+ */
+export interface SignInAttempt {
+  id: number;
+  at: number;
+  method: string;
+  outcome: 'started' | 'succeeded' | 'failed';
+  phase: string;
+  authority: string | null;
+  error: string | null;
+  errorDescription: string | null;
+  clientId: string | null;
+  userId: string | null;
+}
+
+export interface SignInLogPage {
+  attempts: SignInAttempt[];
+  total: number;
+  /** How many rows the issuer keeps at all — the log is a ring, and the screen says so. */
+  retained: number;
+}
+
+export interface SignInLogFilter {
+  method?: string;
+  outcome?: 'started' | 'succeeded' | 'failed';
+  limit?: number;
+}
+
+export async function signInLog(filter: SignInLogFilter = {}): Promise<SignInLogPage> {
+  const query = new URLSearchParams();
+  if (filter.method) query.set('method', filter.method);
+  if (filter.outcome) query.set('outcome', filter.outcome);
+  query.set('limit', String(filter.limit ?? 50));
+  return admin(`/sign-in-log?${query}`);
+}
