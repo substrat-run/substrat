@@ -1118,3 +1118,116 @@ describe('one file, several kinds of record', () => {
     ).rejects.toThrow(/inherits/);
   });
 });
+
+describe('two kinds collapse into one thing you count', () => {
+  const SRC = 'engagement-src';
+  /** The firehose case: two event names, identical shape, the same measurement. */
+  const batch = [
+    { occurredAt: '2026-05-01T08:00:00.000Z', subject: 'a', fields: { type: 'track', event: 'activeDuration', country: 'SE', duration: '30' } },
+    { occurredAt: '2026-05-01T08:01:00.000Z', subject: 'b', fields: { type: 'track', event: 'idleDuration', country: 'SE', duration: '12' } },
+    { occurredAt: '2026-05-01T08:02:00.000Z', subject: 'c', fields: { type: 'track', event: 'activeDuration', country: 'NO', duration: '45' } },
+  ];
+
+  it('25 — an output shape is declared, and it is additive only', async () => {
+    const ines = await as('ines');
+    await ines.invoke('tock/declare-source', { key: SRC, title: 'Engagement', expectedCadence: 'daily' });
+    await ines.invoke('tock/declare-variants', {
+      sourceKey: SRC,
+      discriminators: ['type', 'event'],
+      variants: [{ selector: ['track', 'activeDuration'] }, { selector: ['track', 'idleDuration'] }],
+    });
+    await ines.invoke('tock/save-output-schema', {
+      sourceKey: SRC,
+      key: 'engagement',
+      fields: { country: { type: 'text', role: 'dimension' }, seconds: { type: 'int', role: 'measure' } },
+    });
+    // Dropping a declared field is refused: numbers already counted under it cannot be un-counted.
+    await expect(
+      ines.invoke('tock/save-output-schema', {
+        sourceKey: SRC,
+        key: 'engagement',
+        fields: { country: { type: 'text', role: 'dimension' } },
+      }),
+    ).rejects.toThrow(/additive/);
+    // And repurposing one is refused by name.
+    await expect(
+      ines.invoke('tock/save-output-schema', {
+        sourceKey: SRC,
+        key: 'engagement',
+        fields: { country: { type: 'text', role: 'measure' }, seconds: { type: 'int', role: 'measure' } },
+      }),
+    ).rejects.toThrow(/never changes meaning/);
+  });
+
+  it('26 — a rule that writes a field the output does not have is refused', async () => {
+    const ines = await as('ines');
+    await expect(
+      ines.invoke('tock/save-mapping', {
+        sourceKey: SRC,
+        variantKey: 'track/activeDuration',
+        outputKey: 'engagement',
+        rules: [{ from: 'duration', to: 'nope' }],
+      }),
+    ).rejects.toThrow(/no field 'nope'/);
+  });
+
+  it('27 — both kinds map to one output, and the counts are comparable', async () => {
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    // The envelope maps what every record carries; each kind maps only its own field.
+    await ines.invoke('tock/save-mapping', { sourceKey: SRC, outputKey: 'engagement', rules: [{ from: 'country', to: 'country' }] });
+    for (const v of ['track/activeDuration', 'track/idleDuration']) {
+      await ines.invoke('tock/save-mapping', {
+        sourceKey: SRC,
+        variantKey: v,
+        outputKey: 'engagement',
+        rules: [{ from: 'duration', to: 'seconds' }],
+      });
+    }
+    await ines.invoke('tock/save-schema', { sourceKey: SRC, fields: { country: { type: 'text', role: 'dimension' } } });
+
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename: 'e.jsonl', byteSize: 64, contentHash: 'sha256:e', storageKey: 'runs/e.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-05-01T00:00:00.000Z', periodTo: '2026-05-02T00:00:00.000Z',
+    });
+    await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: true });
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+    await tomas.invoke('tock/count-run', { runId: run.id });
+
+    // All three records reach ONE output, so SE's two events are comparable — which they
+    // would not be if each arriving event name were its own shape.
+    const byCountry = await ines.invoke<{ rows: { dim1: string; events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: SRC, outputKey: 'engagement', grain: 'day', dimSet: 'country',
+      from: '2026-01-01T00:00:00.000Z', to: '2027-01-01T00:00:00.000Z',
+    });
+    const se = byCountry.rows.find((r) => r.dim1 === 'SE');
+    expect(se?.events).toBe(2);
+    // 30 + 12, the envelope's country and each kind's own duration, stacked.
+    expect(se?.measure).toBe('42');
+    expect(byCountry.rows.find((r) => r.dim1 === 'NO')?.measure).toBe('45');
+  });
+
+  it('28 — the run records which mapping made the numbers', async () => {
+    const ines = await as('ines');
+    const run = (await ines.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC })).entries[0]!;
+    const rules = await ines.invoke<{ entries: { rule_kind: string; identifier: string }[] }>('tock/run-rules', { runId: run.id });
+    const mapping = rules.entries.find((r) => r.rule_kind === 'mapping');
+    expect(mapping).toBeDefined();
+    // Names every mapping version in force, so a re-run under a corrected one is explainable
+    // rather than merely different.
+    expect(mapping!.identifier).toMatch(/envelope->engagement@v1/);
+    expect(mapping!.identifier).toMatch(/track\/activeDuration->engagement@v1/);
+  });
+
+  it('29 — a source with no output shapes still counts against the envelope', async () => {
+    // The whole of the backward-compatibility claim, asserted rather than assumed: the
+    // firehose source from the previous block declares no outputs and still reports.
+    const ines = await as('ines');
+    const plain = await ines.invoke<{ rows: { events: number }[] }>('tock/report', {
+      sourceKey: 'firehose', grain: 'day', dimSet: 'total',
+      from: '2026-01-01T00:00:00.000Z', to: '2027-01-01T00:00:00.000Z',
+    });
+    expect(plain.rows[0]?.events).toBe(4);
+  });
+});

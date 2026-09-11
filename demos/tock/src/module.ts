@@ -52,6 +52,14 @@ type ObservationRow = EntityRow<typeof tockEntities, 'observation'>;
 type FieldHistoryRow = EntityRow<typeof tockEntities, 'field_history'>;
 type RowRow = EntityRow<typeof tockEntities, 'row'>;
 type VariantRow = EntityRow<typeof tockEntities, 'variant'>;
+type OutputSchemaRow = EntityRow<typeof tockEntities, 'output_schema'>;
+type MappingRow = EntityRow<typeof tockEntities, 'mapping'>;
+
+/** One correspondence: a field over here becomes a field over there. Nothing else. */
+interface MappingRule {
+  from: string;
+  to: string;
+}
 
 /** The envelope every record carries, whatever its kind. A real value, never a null. */
 const ROOT = '';
@@ -381,6 +389,136 @@ const listVariantsOp: OperationHandler<
     discriminators: discriminatorsOf(ctx, input.sourceKey),
     variants: ctx.sql.query<VariantRow>('SELECT * FROM tock_variants WHERE source_key = ? ORDER BY key', [input.sourceKey]),
   };
+};
+
+/** The latest version of one output shape, or undefined when none is declared. */
+function latestOutput(ctx: OperationContext, sourceKey: string, key: string): OutputSchemaRow | undefined {
+  return ctx.sql.query<OutputSchemaRow>(
+    'SELECT * FROM tock_output_schemas WHERE source_key = ? AND key = ? ORDER BY version DESC LIMIT 1',
+    [sourceKey, key],
+  )[0];
+}
+
+const saveOutputSchemaOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/save-output-schema']>,
+  HandlerOutput<(typeof tockOperations)['tock/save-output-schema']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.schemaManage));
+  sourceOrThrow(ctx, input.sourceKey);
+
+  const dims = Object.entries(input.fields).filter(([, f]) => f.role === 'dimension');
+  if (dims.length > MAX_GROUPING_DIMENSIONS)
+    throw substratError(
+      'validation_failed',
+      `an output shape may declare at most ${MAX_GROUPING_DIMENSIONS} grouping dimensions; this one declares ${dims.length} (${dims.map(([n]) => n).join(', ')})`,
+    );
+
+  /**
+   * Additive only, and refused by name when it is not.
+   *
+   * A field that changes meaning turns every number already counted under it into a silent
+   * lie, and unlike a wrong count that is not visible afterwards — the rows look fine. So the
+   * refusal happens here, where someone can still choose a different field name.
+   */
+  const prior = latestOutput(ctx, input.sourceKey, input.key);
+  if (prior) {
+    const was = JSON.parse(prior.fields_json) as Record<string, { type: string; role: string }>;
+    for (const [name, def] of Object.entries(was)) {
+      const now = input.fields[name];
+      if (!now)
+        throw substratError(
+          'validation_failed',
+          `output '${input.key}' v${prior.version} declares '${name}' and this version drops it — an output shape is additive, because numbers already counted under a field cannot be un-counted`,
+        );
+      if (now.type !== def.type || now.role !== def.role)
+        throw substratError(
+          'validation_failed',
+          `output '${input.key}' would change '${name}' from ${def.role}/${def.type} to ${now.role}/${now.type} — a field never changes meaning; add a new one`,
+        );
+    }
+  }
+
+  const version = (prior?.version ?? 0) + 1;
+  const id = ulid();
+  ctx.sql.exec(
+    'INSERT INTO tock_output_schemas (id, source_key, key, version, fields_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, input.sourceKey, input.key, version, JSON.stringify(input.fields), ctx.principal, ctx.now()],
+  );
+  const row = ctx.sql.query<OutputSchemaRow>('SELECT * FROM tock_output_schemas WHERE id = ?', [id])[0]!;
+  ctx.emit({
+    type: 'tock.output-schema-saved',
+    schemaVersion: 1,
+    entity: sourceRef(row.source_key),
+    piiClass: 'none',
+    payload: { source_key: row.source_key, key: row.key, version: row.version },
+  });
+  return row;
+};
+
+const listOutputSchemasOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/list-output-schemas']>,
+  HandlerOutput<(typeof tockOperations)['tock/list-output-schemas']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.reportRead));
+  return ctx.page<OutputSchemaRow>('output_schema', { ...input, filters: { source_key: input.sourceKey } });
+};
+
+const saveMappingOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/save-mapping']>,
+  HandlerOutput<(typeof tockOperations)['tock/save-mapping']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.schemaManage));
+  sourceOrThrow(ctx, input.sourceKey);
+
+  const output = latestOutput(ctx, input.sourceKey, input.outputKey);
+  if (!output) throw substratError('not_found', `source ${input.sourceKey} declares no output shape '${input.outputKey}'`);
+  if (input.variantKey !== ROOT) {
+    const known = ctx.sql.query<{ key: string }>('SELECT key FROM tock_variants WHERE source_key = ? AND key = ?', [
+      input.sourceKey,
+      input.variantKey,
+    ])[0];
+    if (!known) throw substratError('not_found', `source ${input.sourceKey} declares no variant '${input.variantKey}'`);
+  }
+
+  // Every rule must land somewhere the output actually has. A correspondence to a field
+  // nobody declared would count into nothing and look like a mapping that worked.
+  const outFields = JSON.parse(output.fields_json) as Record<string, unknown>;
+  const seen = new Set<string>();
+  for (const rule of input.rules) {
+    if (!(rule.to in outFields))
+      throw substratError('validation_failed', `output '${input.outputKey}' has no field '${rule.to}'`);
+    if (seen.has(rule.to))
+      throw substratError('validation_failed', `two rules both write '${rule.to}'`);
+    seen.add(rule.to);
+  }
+
+  const prior = ctx.sql.query<{ version: number }>(
+    'SELECT MAX(version) AS version FROM tock_mappings WHERE source_key = ? AND variant_key = ? AND output_key = ?',
+    [input.sourceKey, input.variantKey, input.outputKey],
+  )[0];
+  const version = (prior?.version ?? 0) + 1;
+  const id = ulid();
+  ctx.sql.exec(
+    'INSERT INTO tock_mappings (id, source_key, variant_key, output_key, version, rules_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, input.sourceKey, input.variantKey, input.outputKey, version, JSON.stringify(input.rules), ctx.principal, ctx.now()],
+  );
+  const row = ctx.sql.query<MappingRow>('SELECT * FROM tock_mappings WHERE id = ?', [id])[0]!;
+  ctx.emit({
+    type: 'tock.mapping-saved',
+    schemaVersion: 1,
+    entity: sourceRef(row.source_key),
+    piiClass: 'none',
+    payload: { source_key: row.source_key, variant_key: row.variant_key, output_key: row.output_key, version: row.version },
+  });
+  return row;
+};
+
+const listMappingsOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/list-mappings']>,
+  HandlerOutput<(typeof tockOperations)['tock/list-mappings']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.reportRead));
+  return ctx.page<MappingRow>('mapping', { ...input, filters: { source_key: input.sourceKey } });
 };
 
 const listSourcesOp: OperationHandler<
@@ -840,25 +978,69 @@ const countRunOp: OperationHandler<
    * rather than two, so `country+episode_id` is not the same string as `episode_id+country`
    * and only the declared order has rows.
    */
-  const groupings: { dimSet: string; dims: string[] }[] = [
-    { dimSet: 'total', dims: [] },
-    ...dimensions.map((d) => ({ dimSet: d, dims: [d] })),
-    ...(dimensions.length === MAX_GROUPING_DIMENSIONS
-      ? [{ dimSet: dimensions.join('+'), dims: dimensions }]
-      : []),
-  ];
+  /**
+   * The output shapes this run counts into, and how each kind reaches them.
+   *
+   * Mappings STACK along a record's path exactly as schemas do: the envelope maps the fields
+   * every record carries, a kind maps its own, nearest wins. One mapping written once at the
+   * root therefore serves every kind, and a kind says only what is different about it.
+   */
+  const outputs = ctx.sql.query<OutputSchemaRow>(
+    `SELECT o.* FROM tock_output_schemas o
+      WHERE o.source_key = ?
+        AND o.version = (SELECT MAX(v.version) FROM tock_output_schemas v
+                          WHERE v.source_key = o.source_key AND v.key = o.key)`,
+    [run.source_key],
+  );
+  const mappings = ctx.sql.query<MappingRow>(
+    `SELECT m.* FROM tock_mappings m
+      WHERE m.source_key = ?
+        AND m.version = (SELECT MAX(v.version) FROM tock_mappings v
+                          WHERE v.source_key = m.source_key AND v.variant_key = m.variant_key
+                            AND v.output_key = m.output_key)`,
+    [run.source_key],
+  );
+
+  /** The rules reaching a record of this kind for this output: root first, nearest last. */
+  const rulesFor = (outputKey: string, variantKey: string): MappingRule[] => {
+    const byTo = new Map<string, MappingRule>();
+    for (const prefix of pathOf(variantKey)) {
+      const m = mappings.find((x) => x.output_key === outputKey && x.variant_key === prefix);
+      if (!m) continue;
+      for (const r of JSON.parse(m.rules_json) as MappingRule[]) byTo.set(r.to, r);
+    }
+    return [...byTo.values()];
+  };
+
+  /** The grouping sets one shape serves: the total, each dimension, and the pair when it has two. */
+  const groupingsOf = (shape: FieldDefs) => {
+    const dims = Object.entries(shape).filter(([, f]) => f.role === 'dimension').map(([n]) => n);
+    return {
+      dims,
+      measure: Object.entries(shape).find(([, f]) => f.role === 'measure')?.[0],
+      sets: [
+        { dimSet: 'total', dims: [] as string[] },
+        ...dims.map((d) => ({ dimSet: d, dims: [d] })),
+        ...(dims.length === MAX_GROUPING_DIMENSIONS ? [{ dimSet: dims.join('+'), dims }] : []),
+      ],
+    };
+  };
 
   /**
-   * The tuple travels ON the value, and the key is only a lookup token.
+   * What this run counts into.
    *
-   * It used to be joined with NUL and split apart again, which the PR that introduced it
-   * claimed to have stopped doing. Two reasons that is wrong, and the second survives the
-   * first: a parsed field value is a producer's text and may contain the delimiter, moving
-   * the tuple boundary and merging two cells into one — and SQLite terminates a TEXT value at
-   * a NUL, so the delimiter could not even survive being stored. `JSON.stringify` of an array
-   * of strings has no such boundary to move.
+   * With no output shapes declared it is the envelope under `output_key = ''` — byte for byte
+   * what every run counted before outputs existed, which is what keeps a source that never
+   * adopts them working exactly as it did.
    */
+  const targets =
+    outputs.length === 0
+      ? [{ key: ROOT, shape: fields }]
+      : outputs.map((o) => ({ key: o.key, shape: JSON.parse(o.fields_json) as FieldDefs }));
+  const plans = new Map(targets.map((t) => [t.key, { ...groupingsOf(t.shape), shape: t.shape }]));
+
   interface Cell {
+    readonly outputKey: string;
     readonly grain: string;
     readonly dimSet: string;
     readonly periodStart: string;
@@ -866,48 +1048,67 @@ const countRunOp: OperationHandler<
     readonly dim2: string;
     events: number;
     measure: string | null;
+    unit: string | null;
   }
   const cells = new Map<string, Cell>();
   const labels = new Map<string, { dim: string; value: string; label: string }>();
   let rejected = 0;
 
   for (const row of rows) {
-    const values = JSON.parse(row.dims_json) as Record<string, string | null>;
+    const raw = JSON.parse(row.dims_json) as Record<string, string | null>;
+
+    // Required-ness and labels are judged against what ARRIVED, not against an output: a field
+    // the file was supposed to carry is a fact about the file.
     for (const [name, f] of Object.entries(fields)) {
-      if (f.required && (values[name] === undefined || values[name] === null)) rejected += 1;
+      if (f.required && (raw[name] === undefined || raw[name] === null)) rejected += 1;
       if (f.role === 'dimension' && f.labelField) {
-        const value = values[name];
-        const label = values[f.labelField];
+        const value = raw[name];
+        const label = raw[f.labelField];
         // Captured per run, which is what makes "the title as it was" true a year later.
         if (value !== null && value !== undefined && label !== null && label !== undefined)
           labels.set(JSON.stringify([name, value]), { dim: name, value, label });
       }
     }
-    const amount = measure === undefined ? null : (values[measure] ?? null);
 
-    for (const grouping of groupings) {
-      // An absent value is its own bucket, never folded into a fabricated one and never a
-      // NULL, which inside this composite key would not compare equal to itself. Which of the
-      // two absences this is — no such slot, or no value in it — is read off `dim_set`.
-      const dim1 = grouping.dims[0] === undefined ? DIM_NONE : (values[grouping.dims[0]] ?? DIM_NONE);
-      const dim2 = grouping.dims[1] === undefined ? DIM_NONE : (values[grouping.dims[1]] ?? DIM_NONE);
-      for (const [grain, startOf] of GRAINS) {
-        const periodStart = startOf(row.occurred_at);
-        const key = JSON.stringify([grain, grouping.dimSet, periodStart, dim1, dim2]);
-        const cell = cells.get(key) ?? {
-          grain,
-          dimSet: grouping.dimSet,
-          periodStart,
-          dim1,
-          dim2,
-          events: 0,
-          measure: null,
-        };
-        cell.events += 1;
-        // A missing amount stays null and is skipped, because a measure defaulted to zero is
-        // invisible in a total and silently wrong.
-        if (amount !== null) cell.measure = cell.measure === null ? amount : addDecimal(cell.measure, amount);
-        cells.set(key, cell);
+    for (const target of targets) {
+      const plan = plans.get(target.key)!;
+      let values = raw;
+      if (target.key !== ROOT) {
+        const rules = rulesFor(target.key, row.variant_key);
+        // No rule reaches this kind, so this record is simply not part of this output. That is
+        // an ordinary answer — an output shape describes some of a stream, rarely all of it.
+        if (rules.length === 0) continue;
+        values = {};
+        for (const rule of rules) values[rule.to] = raw[rule.from] ?? null;
+      }
+      const amount = plan.measure === undefined ? null : (values[plan.measure] ?? null);
+
+      for (const grouping of plan.sets) {
+        // An absent value is its own bucket, never folded into a fabricated one and never a
+        // NULL, which inside this composite key would not compare equal to itself. Which of
+        // the two absences this is — no such slot, or no value in it — is read off `dim_set`.
+        const dim1 = grouping.dims[0] === undefined ? DIM_NONE : (values[grouping.dims[0]] ?? DIM_NONE);
+        const dim2 = grouping.dims[1] === undefined ? DIM_NONE : (values[grouping.dims[1]] ?? DIM_NONE);
+        for (const [grain, startOf] of GRAINS) {
+          const periodStart = startOf(row.occurred_at);
+          const key = JSON.stringify([target.key, grain, grouping.dimSet, periodStart, dim1, dim2]);
+          const cell = cells.get(key) ?? {
+            outputKey: target.key,
+            grain,
+            dimSet: grouping.dimSet,
+            periodStart,
+            dim1,
+            dim2,
+            events: 0,
+            measure: null,
+            unit: plan.measure ?? null,
+          };
+          cell.events += 1;
+          // A missing amount stays null and is skipped, because a measure defaulted to zero is
+          // invisible in a total and silently wrong.
+          if (amount !== null) cell.measure = cell.measure === null ? amount : addDecimal(cell.measure, amount);
+          cells.set(key, cell);
+        }
       }
     }
   }
@@ -916,19 +1117,22 @@ const countRunOp: OperationHandler<
    * `events` counts ROWS, and that is a request count rather than a listener count.
    *
    * Two records with the same `subject_key` inside a day are two events here, deliberately:
-   * the rollup declares one count column, and the concept's ten-column shape has nowhere to
-   * put a second. `subject_key` and the `dedup_window` rule kind are what a distinct-listener
-   * measure would be built FROM, and building it means adding a column to an approved table
-   * — a concept decision, not something counting should start doing quietly.
+   * the rollup declares one count column and has nowhere to put a second. `subject_key` and
+   * the `dedup_window` rule kind are what a distinct-listener measure would be built FROM,
+   * and building it means adding a column to an approved table — a concept decision, not
+   * something counting should start doing quietly.
    */
   for (const cell of cells.values()) {
     ctx.sql.exec(
       `INSERT INTO tock_rollups
-         (source_key, grain, dim_set, period_start, dim1, dim2, run_id, events, measure, unit)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(source_key, grain, dim_set, period_start, dim1, dim2, run_id) DO UPDATE SET
+         (source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id, events, measure, unit)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id) DO UPDATE SET
          events = excluded.events, measure = excluded.measure`,
-      [run.source_key, cell.grain, cell.dimSet, cell.periodStart, cell.dim1, cell.dim2, run.id, cell.events, cell.measure, measure ?? null],
+      [
+        run.source_key, cell.outputKey, cell.grain, cell.dimSet, cell.periodStart,
+        cell.dim1, cell.dim2, run.id, cell.events, cell.measure, cell.unit,
+      ],
     );
   }
 
@@ -967,6 +1171,34 @@ const countRunOp: OperationHandler<
   const saltHash = hex(
     await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(saltIds.join(','))),
   );
+  /**
+   * Which mapping made these numbers, captured beside the other rules.
+   *
+   * Without it a superseded run's figures are preserved and unaccountable: you can see the old
+   * number and the new one and not say what changed between them. The identifier names every
+   * mapping version in force, so a re-run under a corrected mapping is explainable rather than
+   * merely different — which is the promise the reprocessing design made and could not keep
+   * while nothing recorded a mapping at all.
+   */
+  if (mappings.length > 0) {
+    const applied = mappings
+      .map((m) => `${m.variant_key || 'envelope'}->${m.output_key}@v${m.version}`)
+      .sort()
+      .join(', ');
+    ctx.sql.exec(
+      `INSERT INTO tock_rule_states (id, run_id, rule_kind, identifier, content_hash, captured_at)
+         VALUES (?, ?, 'mapping', ?, ?, ?)
+       ON CONFLICT(run_id, rule_kind) DO UPDATE SET identifier = excluded.identifier`,
+      [
+        ulid(),
+        run.id,
+        applied,
+        hex(await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(applied))),
+        ctx.now(),
+      ],
+    );
+  }
+
   ctx.sql.exec(
     `INSERT INTO tock_rule_states (id, run_id, rule_kind, identifier, content_hash, captured_at)
        VALUES (?, ?, 'salt', ?, ?, ?)
@@ -1294,7 +1526,7 @@ const reportOp: OperationHandler<
        FROM tock_rollups ro
        LEFT JOIN tock_labels l1 ON l1.run_id = ro.run_id AND l1.dim = ? AND l1.value = ro.dim1
        LEFT JOIN tock_labels l2 ON l2.run_id = ro.run_id AND l2.dim = ? AND l2.value = ro.dim2
-      WHERE ro.source_key = ? AND ro.grain = ? AND ro.dim_set = ?
+      WHERE ro.source_key = ? AND ro.output_key = ? AND ro.grain = ? AND ro.dim_set = ?
         AND ro.period_start >= ? AND ro.period_start < ?
         AND ro.run_id = (
               -- The run that is CURRENT for this bucket, as exactly one row.
@@ -1307,13 +1539,14 @@ const reportOp: OperationHandler<
               -- same-instant tie by receive order, ULIDs being chronological.
               SELECT ro2.run_id FROM tock_rollups ro2
                 JOIN tock_runs r2 ON r2.id = ro2.run_id
-               WHERE ro2.source_key = ro.source_key AND ro2.grain = ro.grain
+               WHERE ro2.source_key = ro.source_key AND ro2.output_key = ro.output_key
+                 AND ro2.grain = ro.grain
                  AND ro2.dim_set = ro.dim_set AND ro2.period_start = ro.period_start
                ORDER BY r2.counted_at DESC, r2.id DESC
                LIMIT 1
             )
       ORDER BY ro.period_start, ro.dim1, ro.dim2`,
-    [dims[0] ?? '', dims[1] ?? '', input.sourceKey, input.grain, input.dimSet, input.from, input.to],
+    [dims[0] ?? '', dims[1] ?? '', input.sourceKey, input.outputKey, input.grain, input.dimSet, input.from, input.to],
   );
 
   // Unknown is an empty value in a slot the grouping USES; an empty value in a slot it does
@@ -1342,6 +1575,10 @@ const reportOp: OperationHandler<
 const operations = {
   'tock/declare-source': declareSourceOp,
   'tock/declare-variants': declareVariantsOp,
+  'tock/save-output-schema': saveOutputSchemaOp,
+  'tock/list-output-schemas': listOutputSchemasOp,
+  'tock/save-mapping': saveMappingOp,
+  'tock/list-mappings': listMappingsOp,
   'tock/list-variants': listVariantsOp,
   'tock/list-sources': listSourcesOp,
   'tock/save-schema': saveSchemaOp,

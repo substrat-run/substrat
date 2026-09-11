@@ -129,7 +129,7 @@ export interface SourceFile {
 export interface RuleState {
   id: string;
   run_id: string;
-  rule_kind: "bot_list" | "threshold" | "dedup_window" | "salt";
+  rule_kind: "bot_list" | "threshold" | "dedup_window" | "salt" | "mapping";
   identifier: string;
   content_hash: string;
   captured_at: string;
@@ -178,9 +178,33 @@ export interface Row {
   metrics_json: string;
 }
 
+/** `tock_output_schemas` — declared in spec/model.ts. */
+export interface OutputSchema {
+  id: string;
+  source_key: string;
+  key: string;
+  version: number;
+  fields_json: string;
+  created_by: string;
+  created_at: string;
+}
+
+/** `tock_mappings` — declared in spec/model.ts. */
+export interface Mapping {
+  id: string;
+  source_key: string;
+  variant_key: string;
+  output_key: string;
+  version: number;
+  rules_json: string;
+  created_by: string;
+  created_at: string;
+}
+
 /** `tock_rollups` — declared in spec/model.ts. */
 export interface Rollup {
   source_key: string;
+  output_key: string;
   grain: string;
   dim_set: string;
   period_start: string;
@@ -208,7 +232,7 @@ export interface TockClient {
    *
    * `POST /runs/{runId}/count` — `tock/count-run`
    */
-  countRun(input: { runId: string; rules?: ({ kind: "bot_list" | "threshold" | "dedup_window" | "salt"; identifier: string; contentHash: string })[] }): Promise<{ id: string; source_key: string; schema_version: number | null; filename: string; byte_size: number; content_hash: string; format: "csv" | "jsonl" | null; delimiter: string | null; time_field: string | null; subject_field: string | null; status: "received" | "profiled" | "mapped" | "counted" | "failed"; period_from: string; period_to: string; row_count: number | null; rejected_count: number | null; received_at: string; received_by: string; counted_at: string | null; complete: boolean }>;
+  countRun(input: { runId: string; rules?: ({ kind: "bot_list" | "threshold" | "dedup_window" | "salt" | "mapping"; identifier: string; contentHash: string })[] }): Promise<{ id: string; source_key: string; schema_version: number | null; filename: string; byte_size: number; content_hash: string; format: "csv" | "jsonl" | null; delimiter: string | null; time_field: string | null; subject_field: string | null; status: "received" | "profiled" | "mapped" | "counted" | "failed"; period_from: string; period_to: string; row_count: number | null; rejected_count: number | null; received_at: string; received_by: string; counted_at: string | null; complete: boolean }>;
 
   /**
    * Declare a named stream of files
@@ -246,6 +270,15 @@ export interface TockClient {
   getRun(input: { runId: string }): Promise<Run>;
 
   /**
+   * How each kind becomes an output shape
+   *
+   * `GET /sources/{sourceKey}/mappings` — `tock/list-mappings`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listMappings(input: { sourceKey: string }): Promise<Paged<Mapping>>;
+
+  /**
    * What arrived in one run, field by field
    *
    * `GET /runs/{runId}/observations` — `tock/list-observations`
@@ -253,6 +286,15 @@ export interface TockClient {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listObservations(input: { runId: string; declared?: boolean; variantKey?: string }): Promise<Paged<Observation>>;
+
+  /**
+   * The stable shapes declared for a source
+   *
+   * `GET /sources/{sourceKey}/outputs` — `tock/list-output-schemas`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listOutputSchemas(input: { sourceKey: string }): Promise<Paged<OutputSchema>>;
 
   /**
    * The mapped rows of one run
@@ -323,7 +365,7 @@ export interface TockClient {
    *
    * `GET /sources/{sourceKey}/report` — `tock/report`
    */
-  report(input: { sourceKey: string; grain: "hour" | "day" | "month"; dimSet: string; from: string; to: string; includeUnknown?: boolean }): Promise<{ rows: ({ periodStart: string; dim1: string; dim2: string; label1: string | null; label2: string | null; events: number; measure: string | null; unit: string | null; runId: string })[]; grain: "hour" | "day" | "month"; dimSet: string }>;
+  report(input: { sourceKey: string; outputKey?: string; grain: "hour" | "day" | "month"; dimSet: string; from: string; to: string; includeUnknown?: boolean }): Promise<{ rows: ({ periodStart: string; dim1: string; dim2: string; label1: string | null; label2: string | null; events: number; measure: string | null; unit: string | null; runId: string })[]; grain: "hour" | "day" | "month"; dimSet: string }>;
 
   /**
    * The rules in force when a run was counted
@@ -331,6 +373,20 @@ export interface TockClient {
    * `GET /runs/{runId}/rules` — `tock/run-rules`
    */
   runRules(input: { runId: string }): Promise<{ entries: RuleState[] }>;
+
+  /**
+   * Map one record kind into one output shape
+   *
+   * `POST /sources/{sourceKey}/mappings` — `tock/save-mapping`
+   */
+  saveMapping(input: { sourceKey: string; variantKey?: string; outputKey: string; rules: { from: string; to: string }[] }): Promise<Mapping>;
+
+  /**
+   * Declare a stable shape that counts are built over
+   *
+   * `POST /sources/{sourceKey}/outputs` — `tock/save-output-schema`
+   */
+  saveOutputSchema(input: { sourceKey: string; key: string; fields: Record<string, { type: "text" | "int" | "decimal" | "timestamp" | "bool"; role: "dimension" | "measure" | "ignored" }> }): Promise<OutputSchema>;
 
   /**
    * Save the next version of a source shape
@@ -451,8 +507,12 @@ export function createClient(options: ClientOptions = {}): TockClient {
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/fields`, "GET", undefined, omit(input, ["sourceKey"])),
     getRun: (input: Args) =>
       send(`/runs/${encodeURIComponent(String(input.runId))}`, "GET", undefined, omit(input, ["runId"])),
+    listMappings: (input: Args) =>
+      page(`/sources/${encodeURIComponent(String(input.sourceKey))}/mappings`, "GET", undefined, omit(input, ["sourceKey"])),
     listObservations: (input: Args) =>
       page(`/runs/${encodeURIComponent(String(input.runId))}/observations`, "GET", undefined, omit(input, ["runId"])),
+    listOutputSchemas: (input: Args) =>
+      page(`/sources/${encodeURIComponent(String(input.sourceKey))}/outputs`, "GET", undefined, omit(input, ["sourceKey"])),
     listRows: (input: Args) =>
       page(`/runs/${encodeURIComponent(String(input.runId))}/rows`, "GET", undefined, omit(input, ["runId"])),
     listRuns: (input: Args) =>
@@ -473,6 +533,10 @@ export function createClient(options: ClientOptions = {}): TockClient {
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/report`, "GET", undefined, omit(input, ["sourceKey"])),
     runRules: (input: Args) =>
       send(`/runs/${encodeURIComponent(String(input.runId))}/rules`, "GET", undefined, omit(input, ["runId"])),
+    saveMapping: (input: Args) =>
+      send(`/sources/${encodeURIComponent(String(input.sourceKey))}/mappings`, "POST", omit(input, ["sourceKey"]), undefined),
+    saveOutputSchema: (input: Args) =>
+      send(`/sources/${encodeURIComponent(String(input.sourceKey))}/outputs`, "POST", omit(input, ["sourceKey"]), undefined),
     saveSchema: (input: Args) =>
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/schemas`, "POST", omit(input, ["sourceKey"]), undefined),
     follow: async (next: string) => {

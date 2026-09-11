@@ -76,6 +76,58 @@
         "value"
       ]
     },
+    "mapping": {
+      "table": "tock_mappings",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_key": {
+            "type": "string"
+          },
+          "variant_key": {
+            "type": "string"
+          },
+          "output_key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "rules_json": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_key",
+          "variant_key",
+          "output_key",
+          "version",
+          "rules_json",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "source"
+      ],
+      "key": [
+        "output_key",
+        "source_key",
+        "variant_key",
+        "version"
+      ]
+    },
     "observation": {
       "table": "tock_observations",
       "fields": {
@@ -131,12 +183,62 @@
         "variant_key"
       ]
     },
+    "output_schema": {
+      "table": "tock_output_schemas",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_key": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "version": {
+            "type": "number"
+          },
+          "fields_json": {
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_key",
+          "key",
+          "version",
+          "fields_json",
+          "created_by",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "source"
+      ],
+      "key": [
+        "key",
+        "source_key",
+        "version"
+      ]
+    },
     "rollup": {
       "table": "tock_rollups",
       "fields": {
         "type": "object",
         "properties": {
           "source_key": {
+            "type": "string"
+          },
+          "output_key": {
             "type": "string"
           },
           "grain": {
@@ -183,6 +285,7 @@
         },
         "required": [
           "source_key",
+          "output_key",
           "grain",
           "dim_set",
           "period_start",
@@ -197,6 +300,7 @@
       },
       "primaryKey": [
         "source_key",
+        "output_key",
         "grain",
         "dim_set",
         "period_start",
@@ -267,7 +371,8 @@
               "bot_list",
               "threshold",
               "dedup_window",
-              "salt"
+              "salt",
+              "mapping"
             ]
           },
           "identifier": {

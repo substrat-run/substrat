@@ -29,7 +29,7 @@ export const RUN_STATUSES = ['received', 'profiled', 'mapped', 'counted', 'faile
  * What a captured rule is. `salt` is here because a re-run's de-duplication is only
  * comparable to the original if it used the same salt, and that is a fact about the run.
  */
-export const RULE_KINDS = ['bot_list', 'threshold', 'dedup_window', 'salt'] as const;
+export const RULE_KINDS = ['bot_list', 'threshold', 'dedup_window', 'salt', 'mapping'] as const;
 
 /**
  * Two dimension slots, and the schema editor refuses a third (concept section 7). A limit
@@ -382,10 +382,75 @@ export const tockEntities = defineEntities({
    * `measure` is nullable and never zero when absent: a missing amount that becomes 0 is
    * invisible in a sum and silently wrong, while a null is skipped by SUM, which is correct.
    */
+  /**
+   * A stable shape counts are built over, and the thing that reaches a long-term store.
+   *
+   * Variants describe what ARRIVES, and what arrives drifts — a producer renames a field,
+   * splits one event into two. Counting over variants directly would make every such change
+   * a break in the numbers, which is the opposite of what a durable archive is for. So the
+   * shape counted is declared separately and a mapping absorbs the movement between them.
+   *
+   * Versioned and **additive only**, by the same rule the rest of this design runs on: a
+   * field never changes meaning, because a field that does turns every historical number
+   * into a silent lie.
+   */
+  output_schema: {
+    table: 'tock_output_schemas',
+    fields: z.object({
+      id: z.string(),
+      source_key: z.string(),
+      key: z.string(),
+      version: z.number(),
+      fields_json: z.string(),
+      created_by: z.string(),
+      created_at: z.string(),
+    }),
+    parents: ['source'],
+    key: ['source_key', 'key', 'version'],
+  },
+
+  /**
+   * How one kind becomes one output shape.
+   *
+   * `rules_json` is a list of correspondences — a source field, an output field, and nothing
+   * else. **It holds no expressions, and that is the design rather than a limitation.** Every
+   * rule is a datum a person can read in a table and check against the file; admit arithmetic
+   * and there is a programming language inside a schema editor, untested against anything but
+   * itself. A value that needs computing belongs in the producer, where it can be tested.
+   *
+   * Versioned, and which version a run used is captured beside its other rules — so a
+   * corrected number is explained by the mapping that made it and not merely by its file.
+   */
+  mapping: {
+    table: 'tock_mappings',
+    fields: z.object({
+      id: z.string(),
+      source_key: z.string(),
+      /** The kind this reads. Empty string maps every record the envelope describes. */
+      variant_key: z.string(),
+      output_key: z.string(),
+      version: z.number(),
+      rules_json: z.string(),
+      created_by: z.string(),
+      created_at: z.string(),
+    }),
+    parents: ['source'],
+    key: ['source_key', 'variant_key', 'output_key', 'version'],
+  },
+
   rollup: {
     table: 'tock_rollups',
     fields: z.object({
       source_key: z.string(),
+      /**
+       * Which output shape these counts belong to. Empty string is the older fact: counted
+       * before outputs existed, against the envelope directly.
+       *
+       * In the key because two outputs can legitimately share a grain, a grouping and a
+       * period — `engagement` and `commerce` both counted by country on the same day — and
+       * without it one would overwrite the other.
+       */
+      output_key: z.string(),
       grain: z.string(),
       dim_set: z.string(),
       period_start: z.string(),
@@ -396,7 +461,7 @@ export const tockEntities = defineEntities({
       measure: z.string().nullable(),
       unit: z.string().nullable(),
     }),
-    primaryKey: ['source_key', 'grain', 'dim_set', 'period_start', 'dim1', 'dim2', 'run_id'],
+    primaryKey: ['source_key', 'output_key', 'grain', 'dim_set', 'period_start', 'dim1', 'dim2', 'run_id'],
   },
 
   /**
@@ -605,6 +670,89 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       piiClass: 'none',
       payload: ['id', 'source_key', 'version'],
     },
+  },
+
+  /**
+   * Declare a stable shape counts are built over.
+   *
+   * Versioned like an input schema and **additive only**: a later version may add fields and
+   * may not remove or repurpose one, because a field that changes meaning turns every number
+   * already counted under it into a silent lie. The refusal is at save time, naming the field.
+   */
+  'tock/save-output-schema': {
+    summary: 'Declare a stable shape that counts are built over',
+    permission: 'schema:manage',
+    input: z.object({
+      sourceKey: z.string(),
+      key: z.string().regex(/^[a-z][a-z0-9-]*$/, 'an output key is lower-kebab, starting with a letter'),
+      fields: z.record(
+        z.string().min(1).max(200),
+        z.object({
+          type: z.enum(['text', 'int', 'decimal', 'timestamp', 'bool']),
+          role: z.enum(['dimension', 'measure', 'ignored']),
+        }),
+      ),
+    }),
+    output: tockEntities.output_schema.fields,
+    http: { method: 'POST', path: '/sources/{sourceKey}/outputs' },
+    emits: {
+      entity: 'source',
+      entityIdFrom: 'source_key',
+      type: 'tock.output-schema-saved',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['source_key', 'key', 'version'],
+    },
+  },
+
+  'tock/list-output-schemas': {
+    summary: 'The stable shapes declared for a source',
+    permission: 'report:read',
+    input: z.object({ sourceKey: z.string() }),
+    output: tockEntities.output_schema.fields,
+    paged: { over: { entity: 'output_schema', sortable: ['key', 'version'], filterable: ['source_key', 'key'] } },
+    http: { method: 'GET', path: '/sources/{sourceKey}/outputs' },
+  },
+
+  /**
+   * Map one kind into one output shape.
+   *
+   * Rules are **correspondences and nothing else** — a field over here is a field over there.
+   * No arithmetic, no conditionals, no reference to a second field. That bound is what keeps
+   * the mapping a table a reviewer can check against the file, and it is why a value that
+   * needs computing belongs in the producer where it can be tested.
+   *
+   * Two kinds may map to the same output, which is the point: the collapse that makes eleven
+   * arriving event names into the handful of things anyone counts.
+   */
+  'tock/save-mapping': {
+    summary: 'Map one record kind into one output shape',
+    permission: 'schema:manage',
+    input: z.object({
+      sourceKey: z.string(),
+      variantKey: z.string().default(''),
+      outputKey: z.string(),
+      rules: z.array(z.object({ from: z.string().min(1), to: z.string().min(1) })),
+    }),
+    output: tockEntities.mapping.fields,
+    http: { method: 'POST', path: '/sources/{sourceKey}/mappings' },
+    emits: {
+      entity: 'source',
+      entityIdFrom: 'source_key',
+      type: 'tock.mapping-saved',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['source_key', 'variant_key', 'output_key', 'version'],
+    },
+  },
+
+  'tock/list-mappings': {
+    summary: 'How each kind becomes an output shape',
+    permission: 'report:read',
+    input: z.object({ sourceKey: z.string() }),
+    output: tockEntities.mapping.fields,
+    paged: { over: { entity: 'mapping', sortable: ['variant_key', 'output_key', 'version'], filterable: ['source_key'] } },
+    http: { method: 'GET', path: '/sources/{sourceKey}/mappings' },
   },
 
   'tock/list-schemas': {
@@ -1002,6 +1150,9 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     permission: 'report:read',
     input: z.object({
       sourceKey: z.string(),
+      /** Which stable shape to read. Omitted is the envelope — what a source counts before
+       *  any output is declared, and what every run counted before outputs existed. */
+      outputKey: z.string().default(''),
       grain: z.enum(['hour', 'day', 'month']),
       dimSet: z.string(),
       from: z.string(),
