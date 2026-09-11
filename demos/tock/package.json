@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/demo-tock",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "private": true,
   "description": "Turning delivered files into numbers you can stand behind — declared schemas, observed arrivals, runs that supersede",
   "license": "Apache-2.0",

@@ -1,5 +1,127 @@
 # @substrat-run/control-plane-api
 
+## 0.109.0
+
+### Minor Changes
+
+- 6999cad: The event explorer is on screen (#1239 stage 1). An Events panel on the app's
+  Observability tab groups the app's own events by a dimension — type, operation,
+  actor, version, entity type, PII class — or by any top-level payload field
+  (nested paths are a deliberate v1 omission), narrows them to one event type and
+  a window, and counts them. "Which operation emits most of
+  this", "which version were these under", answered on what the spine already
+  holds.
+
+  `facetEvents` landed as a kernel helper with no caller; this is the path to it:
+  the vertical's `/internal/facets`, a control-plane route delegating like the
+  history read, and the dashboard's own read.
+
+  Two things the view states rather than implies. **An erased payload is not a
+  missing value** — grouping by a payload field over a shredded event yields the
+  same null a never-present key does, so the erased count is shown beside the
+  buckets instead of folded into a "no value" row, and a distribution over
+  redacted history cannot read as complete. **A truncated result says so** — the
+  bucket list is capped, and a tail that exists but is not shown must not read as
+  a tail that does not exist.
+
+  Grouping applies on submit rather than per keystroke: every query is a scope
+  read, and a half-typed field name is a query nobody asked for. The chosen window
+  is resolved at submit too, so the counts on screen stay an answer to the question
+  that was asked.
+
+  What stage 1 does not yet carry, and #1239 stays open for: filtering by a
+  dimension's or a payload field's VALUE (the narrowing today is event type plus
+  the window), and counts over time — a facet is one total per bucket, not a
+  series.
+
+- 4fc7db2: The event drain runs (#1334, ingest complete). `EventSink` joins `AccessLogSink`
+  as a kernel-named seam the platform binds an implementation to, the sweep gains
+  an event-drain phase over every active scope, and `createR2EventSink` writes the
+  batches as partitioned NDJSON.
+
+  The order is the safety property, and it is the same one the access-log drain
+  already documents: read the oldest undrained events, ship them and let the sink
+  confirm durability, and only then stamp `drainedAt`. Reversing the last two would
+  mark events as shipped that never left — and unlike the access log nothing
+  downstream would notice, because the stamp is the only record of what the lake is
+  supposed to hold. A repeat is the acceptable failure; a silent hole is not.
+
+  Absent a sink, no scope is drained — the same "absent is a supported answer"
+  shape `accessLogSink` and `recordSweepRun` already have. One scope's failure is
+  reported and never stamps, so its events are taken again next tick, and a scope
+  whose batch fills the budget is reported rather than looped so one busy scope
+  cannot starve the pass. Nothing is pruned: the outbox still serves consumers,
+  replay and `readHistory`, so the stamp buys knowing what has left, not deletion.
+
+  This establishes durable Tier 2 ingestion. It does **not** bound scope storage:
+  nothing is deleted from `_substrat_outbox`, which still serves consumers, replay
+  and `readHistory`, so a scope's events keep accumulating exactly as before. What
+  the stamp buys is knowing what has left; a retention policy is a separate
+  decision that has not been made.
+
+  **NDJSON to R2 rather than Pipelines-to-Iceberg for v1, deliberately.** §5.3
+  settles that "Iceberg is the contract, the query engine is replaceable" and
+  leaves R2 SQL's fitness open pending a benchmark, so this uses a bucket the
+  platform already operates without committing the ingest path to a product
+  decision nobody has made. Objects are partitioned by tenant, scope and the UTC
+  day each event OCCURRED — a batch spanning midnight is split, so a `day=`
+  partition never contains another day's events. The drain is at-least-once by
+  design, so a reader deduplicates on event id.
+
+- 62f4e87: A team can now read the traffic and logs of an app they installed, even when the vertical
+  it runs is published by somebody else.
+
+  Observability was keyed on the deployed script, and one vertical's script serves every
+  team that installed it — so those numbers belong to the vertical's builder, and an
+  installed app's Observability tab could only say so. That is true and it is not an answer
+  to "how is my app doing", which is a question about the installation rather than the code.
+
+  The new tenant grain is keyed on `(tenant, scope)`: the requests the router dispatched to
+  one app, and the lines that app's vertical wrote while serving them. Two teams running the
+  same vertical see two different pages, with no overlap.
+
+  Two pieces:
+
+  - `invocationLog()` (`@substrat-run/kernel`) — a vertical mounts it as its first
+    middleware, giving it the same `ROUTER_SECRET` and `ALLOW_DEV_NODE` its own routing
+    uses, and it writes one structured line per invocation carrying the tenant and scope
+    the router asserted. The assertion is VERIFIED, never read off the header: a stamped
+    line is what the read path treats as proof that an invocation was a given tenant's, so
+    an unverified one would let anyone who can reach the script put chosen text on another
+    tenant's dashboard. A mount that can verify nothing writes nothing, and the gate
+    refuses it. The path is recorded **without its query string**, since an
+    OIDC vertical carries `code` and `state` there and an invite flow carries a single-use
+    token. A line is written only when the router asserted a tenant, so there is never a
+    line that could be attributed to the wrong one.
+  - `tenantMetrics` / `tenantLogs` on `ObservabilityReader` — optional, like the other
+    backend-dependent reads, and 501 when absent rather than returning an empty array that
+    a caller would draw as "your app served nothing". `tenantId` is not a widenable filter:
+    it is the narrowing, and the seam has no "all tenants" spelling.
+
+  The Cloudflare reader takes the router's Analytics Engine dataset as `routerDataset`, with
+  no default: the environments write to different datasets, and a default is the spelling
+  that has one of them quietly reading the other's traffic. Naming none leaves `tenantMetrics`
+  off the reader entirely, so the route says 501 instead of answering with the wrong numbers.
+
+  An error read looks for all three shapes an error arrives in — a failed response, a crash
+  that escaped the error envelope (which carries no status at all), and an error logged by a
+  request that still answered 200. The last of those is found by searching error lines
+  account-wide and keeping only the invocations whose stamped line names this tenant, so it
+  widens what a team can find about their own app without widening what they can see.
+
+  A vertical picks this up on its next push. Until then its app shows traffic (which comes
+  from the router and needs nothing from the vertical) and no logs; the empty state says
+  which of the two it is looking at.
+
+### Patch Changes
+
+- Updated dependencies [7aa3ea5]
+- Updated dependencies [1e175ce]
+- Updated dependencies [4fc7db2]
+- Updated dependencies [62f4e87]
+  - @substrat-run/contracts@0.109.0
+  - @substrat-run/kernel@0.109.0
+
 ## 0.108.0
 
 ### Minor Changes

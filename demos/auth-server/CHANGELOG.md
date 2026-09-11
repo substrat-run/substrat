@@ -1,5 +1,225 @@
 # @substrat-run/demo-auth-server
 
+## 0.7.5
+
+### Patch Changes
+
+- 8108cf7: An administrator can take one sign-in method away (part of #1278).
+
+  The user-detail screen could already answer "how does this person sign in" for somebody
+  else — that read was the one server surface the screen needed — but it could only read.
+  An operator holding "this Google account is not theirs any more" had no lever, because
+  Better Auth's `unlink-account`, like its `list-accounts`, answers only for the session
+  making the call.
+
+  `DELETE /api/admin/users/:userId/sign-in-methods/:accountId` is that lever, behind the
+  same session + `admin` gate as its neighbours, with two refusals that are the point of
+  it rather than validation around it. The row must belong to the user the URL names —
+  `account.id` is globally unique, so a delete keyed on the id alone would unlink a
+  different person's method through a URL naming the one an operator was looking at. And
+  it must not be their last way in: an account with no method is not a lesser account, it
+  is one nobody can sign into, recoverable only by an administrator setting a password and
+  not at all by the person themselves. A `credential` row counts only when it actually
+  carries a hash, which is a distinction the browser cannot make and so belongs here.
+
+  On screen each row gets a Remove button whose confirmation names the consequence rather
+  than the verb, and says the thing most likely to be assumed the other way: removing a
+  method decides how they sign in next time, and leaves the sessions they already have
+  open. Ending those is Revoke, one panel below, and doing both from one button would take
+  the choice away. The last remaining method's button is disabled with the reason written
+  out beside it — the server refuses it either way, and meeting that refusal as an error
+  banner is a worse way to learn it.
+
+  The password hash and the upstream's tokens still never leave the server: the row that
+  decides is read as a predicate (`password IS NOT NULL`), never as a value.
+
+  No migration and no permission key. `impersonate-user` stays mounted and unused — that
+  is a separate decision #1278 asks to be argued rather than taken in passing.
+
+- 00c0f8d: The issuer remembers what happened when someone tried to sign in.
+
+  "A user cannot sign in with Microsoft" was a question this issuer had no way to answer.
+  Every fact that would have settled it was destroyed as it was produced: a refused
+  federated sign-in reports itself by REDIRECTING, so the reason existed only as a query
+  parameter on somebody else's screen; the authority the issuer addressed on that person's
+  behalf existed only in an address bar, mid-navigation; and a hosted install is a script in
+  the platform's dispatch namespace, whose `console.log` is not somewhere the operator who
+  configured the provider can look. So the answer went where that operator already is — the
+  issuer's own SQLite, which is what the admin console reads, what the dashboard's Data tab
+  shows, and what `/internal/export` dumps.
+
+  `sign_in_attempt` records both ENDS of a round trip, one row per hop, and the pair is the
+  diagnosis. `started` says the person was handed an authorization URL and names the
+  authority they were sent to. `succeeded` / `failed` says what came back, carrying the
+  refusal code and — the field that is usually the whole answer — the upstream's own
+  sentence about it, because an `AADSTS…` message names the exact misconfiguration. A
+  `started` row with nothing after it is itself the most telling shape there is: the person
+  never returned, so the refusal happened on the provider's own screen, and the authority is
+  then the only evidence available. `common` against a single-tenant app registration fails
+  exactly that way, and the log is now the one place that distinction is visible.
+
+  It is written from an after-hook, which is the only place either end is observable:
+  `/callback/:id` signals every outcome it has — success and refusal alike — by THROWING a
+  redirect, so the outcome is read off that redirect's `location` and not from a return
+  value that does not exist. A hook written against the return value would log nothing on
+  the paths that matter and pass its own tests, which is why the suite drives a real round
+  trip for each.
+
+  No credential can reach a row. The writer takes a fixed, narrow set of fields — nothing
+  arrives by spread — and of the authorization URL it keeps only the part before the `?`:
+  the query is where the PKCE challenge, the state and the signed authorize request live. A
+  log of sign-in attempts that leaked the material of one would be worse than the problem it
+  was added for, so that rule is held at the write, and a test asserts the property over
+  every stored cell rather than over the fields it happens to know about.
+
+  The table is a RING, pruned on write to the most recent 500 hops: this is a debugging aid
+  in a Durable Object's SQLite, not an audit trail, and the screen says so instead of
+  implying the log is complete. The writer swallows its own errors for the same reason — a
+  debugging aid must never be the thing that costs someone a login.
+
+  `GET /api/admin/sign-in-log` reads it behind the same session + `admin` gate as its
+  neighbours, paging by id rather than by offset because the ring moves underneath a reader.
+  On screen it is a new **Sign-in log** section beside the providers it explains, with a
+  "Refusals only" filter, since that is the read an operator actually makes.
+
+  No migration to review and no new permission key. Passwords and BankID are not recorded:
+  what went missing was the federated round trip, and a narrower table is a smaller amount
+  of somebody's sign-in activity to hold.
+
+  ## And the spinner that never resolved
+
+  A stuck screen is not a refusal, so the log above would not have explained one. Two reads
+  gate every screen this app has — `/api/setup-state` and `/api/session` — and both trusted
+  whatever came back: `res.json()`, no status check, no shape check, called from a `refresh()`
+  with no `catch` and five bare `void refresh()` callers. Both failure shapes a deployed
+  issuer actually produces ended somewhere worse than an error message.
+
+  A body that is not JSON — a worker exception page, a 5xx from an intermediary, anything
+  HTML — made `res.json()` reject inside that un-caught `refresh()`. The phase stayed
+  `loading`, so the page said “Loading…” and meant “this failed seconds ago and nobody is
+  going to tell you”. That is the shape a person reports as being stuck on a spinner.
+
+  An `{ error }` envelope — which is exactly what `routes.ts` answers a failure with — parsed
+  perfectly well and was handed on as data. As a session it is a truthy object with no
+  `role`, so the console told an administrator they were not one. As the issuer state it left
+  `providers` undefined for a screen whose next line is `providers.length`.
+
+  Both reads now go through `app/src/wire.ts`, which checks the status, reads the body as text
+  so a non-JSON answer becomes “the issuer answered 502” rather than a parser error, lifts the
+  issuer's own `error` message when there is one, and refuses a body that parses but is the
+  wrong shape. It is React-free and `fetch`-free for the reason `paths.ts` is, so the issuer's
+  own vitest pins all of it.
+
+  The distinction the tests care about most: a failed session read must never be reported as
+  “signed out”. Signing out someone who is signed in sends them to a login screen — and for a
+  client restricted to one provider, that screen redirects straight back out to it, so the
+  cheap answer turns one failed read into a loop through a working directory.
+
+  `refresh()` now has one wrapper every caller goes through, and a rejection is a screen: the
+  reason, the fact that it is the issuer's problem rather than the person's, and a Try again
+  button. `clientOptions` is deliberately left alone — a theme and a sign-in narrowing have an
+  honest fallback in the issuer's own defaults, so that read degrades rather than failing.
+  These two have no fallback; there is no honest “probably signed in”.
+
+  ## From review
+
+  Three things the first cut got wrong, all worth the fix:
+
+  **The two halves of one attempt were not joined.** "A hop out with nothing after it means they
+  never came back" is an inference over two rows, and two people signing in at once is all it takes
+  to break it: `started, started, succeeded` says nothing about which of them is still missing — so
+  the inference the table exists to support would have been wrong exactly when the issuer was busy.
+  The rows now carry a `correlation`, derived independently at both ends from the OAuth `state`,
+  which is the only thing that survives the round trip. Hashed, truncated to 64 bits, never stored
+  raw: the state is what the callback checks the returning request against, so a log holding it in
+  plaintext would be a log of live single-use tokens — the exact class of thing this table refuses
+  to carry. The screen uses it to mark an unanswered hop itself rather than asking a reader to pair
+  rows up by eye.
+
+  **The failed screen printed the issuer's own error text.** That screen is pre-auth and themed as
+  whichever relying party sent the person there, so its reader is a stranger signing into somebody
+  else's app — and `routes.ts` answers a failure with the raw `.message` of whatever threw inside
+  the issuer. `IssuerUnreachable` now carries the two apart: a generic `message` with the status for
+  the page, the issuer's own words in `detail`, which `App.tsx` logs to the console and never
+  renders.
+
+  **The screen claimed to page and did not.** The read was keyset-paged server-side and the view
+  only ever asked for the newest page, so on a busy issuer the older four-fifths of the ring were
+  unreachable from the one screen built to read it. There is now a Load older control, keyed on the
+  oldest row's id — keyset rather than offset, for the reason the server is: the ring is pruned
+  under a reader and an offset steps over whatever moved.
+
+- 206282d: BankID's certificate form is a screen with a URL (part of #1278).
+
+  The last configuration surface in the issuer console that was still edited inline: an
+  mTLS certificate, a private key, an environment and two decisions, in a form that
+  unfolded under the status table with no address of its own. So a reload lost whatever
+  had been pasted, a stale session's sign-in landed the operator back on the status table,
+  and the screen could not be sent to anyone.
+
+  `/bankid` is now the status — environment, whether a certificate is stored, enabled or
+  disabled, and what an operator can do next — and `/bankid/settings` is the certificate,
+  the environment and an Actions panel holding the removal. `returnTarget` keeps the
+  second one across the sign-in it triggers, so a pasted link survives the login it
+  provokes, the same way the Users, Applications and Sign-in-provider detail screens do.
+
+  It is the one detail screen with nothing to identify: there is a single BankID
+  configuration per issuer, no client id and no redirect URI to register, so the segment
+  is a literal rather than an id — and, unlike the other three, the path is a place
+  whether or not anything is configured there yet. Enabling BankID and editing it are the
+  same screen, which is why the status table's button is a link.
+
+  No server surface, no migration and no permission key: `GET /api/admin/bankid` already
+  returned every fact both screens show.
+
+- 00c0f8d: A new person's first federated sign-in no longer waits on the verification email.
+
+  This is the asymmetry behind "sign-in works, except for people who have never signed in
+  before" — a report that sounds arbitrary and is not. Exactly one thing happens on a first
+  sign-in and never again:
+
+  ```
+  handleOAuthUserInfo → isRegister && !user.emailVerified && sendOnSignUp
+                      → dispatchVerificationEmail
+                      → runInBackgroundOrAwait(send)     ← with no handler: `else await promise`
+  ```
+
+  Both conditions hold permanently on this issuer. `emailVerification.sendOnSignUp` is on, and
+  Entra does not publish `email_verified` — which Better Auth maps to `false` — so every
+  brand-new Microsoft user is created unverified and gets the mail. No handler was configured,
+  so that send was **awaited inside `/callback/:id`**, which has not answered yet: the browser
+  is mid-redirect, looking at a page that is still loading, while the platform mail relay — the
+  control plane, and then its own mail provider — decides how long it takes. A returning user
+  skips all of it, which is why it looked like a property of the person rather than of the path.
+
+  `buildAuth` now takes `runInBackground`, wired to Better Auth's
+  `advanced.backgroundTasks.handler`. The Durable Object hands it `ctx.waitUntil` — which Better
+  Auth cannot find by itself, since it is given a `Request` and nothing else — and the dev server
+  simply does not await it, so local behaviour is the deployed behaviour. Left undefined, Better
+  Auth awaits exactly as before, which is what keeps the test suite deterministic: a test
+  asserting a verification mail was sent must not race its assertion against a floating promise.
+
+  The regression test hands the transport a promise that **never resolves**, because that is the
+  shape of the production failure and the only way to assert the property rather than the timing:
+  if the callback waits on the mail at all, the test cannot finish. Removing the fix makes it
+  time out, which is what the browser was doing.
+
+  And the relay itself is now bounded. `PlatformRelayEmailTransport` POSTs to the control plane
+  with no timeout at all, which is how an unbounded send became an unbounded page load. It takes
+  a `timeoutMs` (default 10s) and passes an `AbortSignal` — a bound rather than tuning, at the one
+  place in the chain that knows it is talking to a network. Defence in depth: with the handler in
+  place the send is no longer in anybody's way, but a transactional mail send should not be able
+  to hang regardless of who is waiting.
+
+- Updated dependencies [7aa3ea5]
+- Updated dependencies [1e175ce]
+- Updated dependencies [4fc7db2]
+- Updated dependencies [00c0f8d]
+- Updated dependencies [62f4e87]
+  - @substrat-run/contracts@0.109.0
+  - @substrat-run/kernel@0.109.0
+  - @substrat-run/adapter-email@0.2.1
+
 ## 0.7.4
 
 ### Patch Changes

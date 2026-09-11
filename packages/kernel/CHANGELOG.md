@@ -1,5 +1,155 @@
 # @substrat-run/kernel
 
+## 0.109.0
+
+### Minor Changes
+
+- 7aa3ea5: The outbox can be drained (#1334, the scope-side half of Tier 2). Two new
+  `HostAdmin` verbs on both adapters: `readUndrainedEvents` reads the events a
+  scope has not shipped yet — `drained_at IS NULL`, the column the spine has
+  carried since the outbox shipped and nothing has ever written — and
+  `markEventsDrained` stamps them once a sink has accepted them.
+
+  They are separate verbs deliberately. Marking before shipping loses events when
+  the sink fails; shipping before marking can repeat them, and a repeat is
+  harmless — the lake is keyed by event id and every consumer here is already
+  required-idempotent. At-least-once is the only one of the two that cannot
+  silently lose exact history, which is the whole point of the tier.
+
+  A drained event carries the full envelope plus the two dimensions that live only
+  on the column: the emitting `operation` and the `version` the code ran as, which
+  #1250 keeps off the envelope on purpose. It also carries `subjectId`, the
+  pseudonymous erasure key — shipping payloads out of the scope without the key
+  that can find them again would put personal data somewhere an erasure cannot
+  follow.
+
+  Marking only ever stamps an UNDRAINED row, so a replayed batch cannot move an
+  earlier drain's timestamp forward and misreport when a lake row shipped. It
+  returns how many rows it actually stamped, which is what makes that idempotence
+  observable — and what the receipt below is written from.
+
+  Declaring a batch shipped is now audited. Domain payloads leaving the platform
+  are an egress, and a larger one than the access log's metadata, so the admin log
+  gains a `drainEvents` action recording who declared it, for which scope, and how
+  many rows it covered — the same evidence `drainAccessLog` already carries one
+  tier up. A retried pass that re-marks a batch it already shipped changes nothing
+  and records nothing, so the log never grows a row claiming an egress that never
+  happened.
+
+  The spine gains an index on `(drained_at, id)`. The drain reads
+  `WHERE drained_at IS NULL ORDER BY id`, and no existing index started with that
+  column, so SQLite walked the primary key from the oldest event forward. A drain
+  retains what it marks, so that prefix only grows: finding the next batch would
+  have cost more as a scope aged, regardless of how far behind the drain was.
+
+  No sink yet, and nothing is wired into a sweep: this is the half that needs no
+  infrastructure.
+
+- 1e175ce: The outbox can be faceted (#1239 stage 1, the reader). `facetEvents` narrows a
+  scope's own events by type and window, groups them by one envelope column
+  (`type`, `actor`, `operation`, `version`, `entityType`, `piiClass`) or one
+  payload field, and counts — "which currency do the failing pushes carry",
+  answered on what the spine already holds, with no new storage.
+
+  **An erased payload is not a missing value, and this is the whole reason it is a
+  helper.** A shred keeps the row and drops the content (§5.3), so
+  `json_extract(payload, '$.x')` over a shredded event yields exactly the NULL an
+  event that never carried `x` yields. Grouped naively, redacted history vanishes
+  into a "no value" bucket and a reader sees a clean distribution with no hint
+  that part of it was erased. So erased rows are counted in their own total, kept
+  out of the buckets, and still counted in the denominator — the event happened,
+  whatever it said. A contract test on both adapters shreds a subject mid-test and
+  asserts the null bucket does not grow.
+
+  The group-by is a fixed shape rather than interpolated SQL: an envelope grouping
+  selects from a known column map, and a payload grouping binds its JSON path as a
+  parameter with the field's pattern enforced by the contract.
+
+- 4fc7db2: The event drain runs (#1334, ingest complete). `EventSink` joins `AccessLogSink`
+  as a kernel-named seam the platform binds an implementation to, the sweep gains
+  an event-drain phase over every active scope, and `createR2EventSink` writes the
+  batches as partitioned NDJSON.
+
+  The order is the safety property, and it is the same one the access-log drain
+  already documents: read the oldest undrained events, ship them and let the sink
+  confirm durability, and only then stamp `drainedAt`. Reversing the last two would
+  mark events as shipped that never left — and unlike the access log nothing
+  downstream would notice, because the stamp is the only record of what the lake is
+  supposed to hold. A repeat is the acceptable failure; a silent hole is not.
+
+  Absent a sink, no scope is drained — the same "absent is a supported answer"
+  shape `accessLogSink` and `recordSweepRun` already have. One scope's failure is
+  reported and never stamps, so its events are taken again next tick, and a scope
+  whose batch fills the budget is reported rather than looped so one busy scope
+  cannot starve the pass. Nothing is pruned: the outbox still serves consumers,
+  replay and `readHistory`, so the stamp buys knowing what has left, not deletion.
+
+  This establishes durable Tier 2 ingestion. It does **not** bound scope storage:
+  nothing is deleted from `_substrat_outbox`, which still serves consumers, replay
+  and `readHistory`, so a scope's events keep accumulating exactly as before. What
+  the stamp buys is knowing what has left; a retention policy is a separate
+  decision that has not been made.
+
+  **NDJSON to R2 rather than Pipelines-to-Iceberg for v1, deliberately.** §5.3
+  settles that "Iceberg is the contract, the query engine is replaceable" and
+  leaves R2 SQL's fitness open pending a benchmark, so this uses a bucket the
+  platform already operates without committing the ingest path to a product
+  decision nobody has made. Objects are partitioned by tenant, scope and the UTC
+  day each event OCCURRED — a batch spanning midnight is split, so a `day=`
+  partition never contains another day's events. The drain is at-least-once by
+  design, so a reader deduplicates on event id.
+
+- 62f4e87: A team can now read the traffic and logs of an app they installed, even when the vertical
+  it runs is published by somebody else.
+
+  Observability was keyed on the deployed script, and one vertical's script serves every
+  team that installed it — so those numbers belong to the vertical's builder, and an
+  installed app's Observability tab could only say so. That is true and it is not an answer
+  to "how is my app doing", which is a question about the installation rather than the code.
+
+  The new tenant grain is keyed on `(tenant, scope)`: the requests the router dispatched to
+  one app, and the lines that app's vertical wrote while serving them. Two teams running the
+  same vertical see two different pages, with no overlap.
+
+  Two pieces:
+
+  - `invocationLog()` (`@substrat-run/kernel`) — a vertical mounts it as its first
+    middleware, giving it the same `ROUTER_SECRET` and `ALLOW_DEV_NODE` its own routing
+    uses, and it writes one structured line per invocation carrying the tenant and scope
+    the router asserted. The assertion is VERIFIED, never read off the header: a stamped
+    line is what the read path treats as proof that an invocation was a given tenant's, so
+    an unverified one would let anyone who can reach the script put chosen text on another
+    tenant's dashboard. A mount that can verify nothing writes nothing, and the gate
+    refuses it. The path is recorded **without its query string**, since an
+    OIDC vertical carries `code` and `state` there and an invite flow carries a single-use
+    token. A line is written only when the router asserted a tenant, so there is never a
+    line that could be attributed to the wrong one.
+  - `tenantMetrics` / `tenantLogs` on `ObservabilityReader` — optional, like the other
+    backend-dependent reads, and 501 when absent rather than returning an empty array that
+    a caller would draw as "your app served nothing". `tenantId` is not a widenable filter:
+    it is the narrowing, and the seam has no "all tenants" spelling.
+
+  The Cloudflare reader takes the router's Analytics Engine dataset as `routerDataset`, with
+  no default: the environments write to different datasets, and a default is the spelling
+  that has one of them quietly reading the other's traffic. Naming none leaves `tenantMetrics`
+  off the reader entirely, so the route says 501 instead of answering with the wrong numbers.
+
+  An error read looks for all three shapes an error arrives in — a failed response, a crash
+  that escaped the error envelope (which carries no status at all), and an error logged by a
+  request that still answered 200. The last of those is found by searching error lines
+  account-wide and keeping only the invocations whose stamped line names this tenant, so it
+  widens what a team can find about their own app without widening what they can see.
+
+  A vertical picks this up on its next push. Until then its app shows traffic (which comes
+  from the router and needs nothing from the vertical) and no logs; the empty state says
+  which of the two it is looking at.
+
+### Patch Changes
+
+- Updated dependencies [7aa3ea5]
+- Updated dependencies [1e175ce]
+  - @substrat-run/contracts@0.109.0
+
 ## 0.108.0
 
 ### Minor Changes
@@ -4056,7 +4206,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

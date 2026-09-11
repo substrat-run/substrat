@@ -1,5 +1,42 @@
 # @substrat-run/docs
 
+## 0.1.15
+
+### Patch Changes
+
+- 99b974c: substrat.net now has a **book** — ten chapters meant to be read in order, front to back,
+  rather than arrived at with a question. The rest of the site is a reference, and a
+  reference never says how the pieces join: which thing calls which, what happens between a
+  request landing and a row being written, who retries what when it fails.
+
+  The chapters that carry genuinely new material are the ones the reference had no home for.
+  **The path of one request** walks every hop from hostname to SQL and back — the router's
+  trust boundary, dispatch, the lifecycle gates, lazy migration on wake, the per-scope queue,
+  the transaction. **The life of one event** follows `ctx.emit` into the outbox, through the
+  post-commit dispatch loop, to a consumer's own transaction — including that an in-scope
+  consumer **does not retry**, where an executor does, with backoff and a dead letter. **The
+  two clocks** finally puts the platform sweeper and the vertical's own scope sweeper side by
+  side, names every phase of the fleet pass in order, and says plainly that nothing reaps an
+  archived scope's storage unless a retention window has been configured, because Cloudflare
+  never garbage-collects a Durable Object.
+
+  It is also published in one file, three ways. `/book.epub` is a real EPUB 3 with a cover
+  and a table of contents, so it opens in Apple Books on a phone and remembers where you got
+  to; `/book.txt` is plain markdown for printing, `pandoc`, or handing to a model in one shot;
+  `/book/read.html` is a single scrolling, printable page. All three are generated from the
+  chapters at build time from the same list the nav reads, so none can fall behind the others.
+
+- 9ddda35: The EPUB edition of the book now opens. `/book.epub` shipped with ten invalid identifiers
+  in its package document — a manifest id may not begin with a digit, and ten of the eleven
+  chapters are numbered — so the file failed to parse and Apple Books declined it without
+  saying why. It is now clean against the EPUB 3.3 rules, and the contents page no longer
+  prints every chapter number twice.
+- a4ee4ca: The link to the book's printable edition works again. `/book/read.html` is written after
+  VitePress has finished building, so the site's client-side router has no route for it —
+  and it intercepts `.html` links rather than letting the browser fetch them, so clicking
+  the link on the book's front page rendered a 404 without a request ever leaving the
+  browser. Pasting the URL always worked, which is why the page itself was never at fault.
+
 ## 0.1.14
 
 ### Patch Changes
