@@ -1118,3 +1118,234 @@ describe('one file, several kinds of record', () => {
     ).rejects.toThrow(/inherits/);
   });
 });
+
+describe('two kinds collapse into one thing you count', () => {
+  const SRC = 'engagement-src';
+  /** The firehose case: two event names, identical shape, the same measurement. */
+  const batch = [
+    { occurredAt: '2026-05-01T08:00:00.000Z', subject: 'a', fields: { type: 'track', event: 'activeDuration', country: 'SE', duration: '30' } },
+    { occurredAt: '2026-05-01T08:01:00.000Z', subject: 'b', fields: { type: 'track', event: 'idleDuration', country: 'SE', duration: '12' } },
+    { occurredAt: '2026-05-01T08:02:00.000Z', subject: 'c', fields: { type: 'track', event: 'activeDuration', country: 'NO', duration: '45' } },
+  ];
+
+  it('25 — an output shape is declared, and it is additive only', async () => {
+    const ines = await as('ines');
+    await ines.invoke('tock/declare-source', { key: SRC, title: 'Engagement', expectedCadence: 'daily' });
+    await ines.invoke('tock/declare-variants', {
+      sourceKey: SRC,
+      discriminators: ['type', 'event'],
+      variants: [{ selector: ['track', 'activeDuration'] }, { selector: ['track', 'idleDuration'] }],
+    });
+    await ines.invoke('tock/save-output-schema', {
+      sourceKey: SRC,
+      key: 'engagement',
+      fields: { country: { type: 'text', role: 'dimension' }, seconds: { type: 'int', role: 'measure' } },
+    });
+    // Dropping a declared field is refused: numbers already counted under it cannot be un-counted.
+    await expect(
+      ines.invoke('tock/save-output-schema', {
+        sourceKey: SRC,
+        key: 'engagement',
+        fields: { country: { type: 'text', role: 'dimension' } },
+      }),
+    ).rejects.toThrow(/additive/);
+    // And repurposing one is refused by name.
+    await expect(
+      ines.invoke('tock/save-output-schema', {
+        sourceKey: SRC,
+        key: 'engagement',
+        fields: { country: { type: 'text', role: 'measure' }, seconds: { type: 'int', role: 'measure' } },
+      }),
+    ).rejects.toThrow(/never changes meaning/);
+  });
+
+  it('26 — a rule that writes a field the output does not have is refused', async () => {
+    const ines = await as('ines');
+    await expect(
+      ines.invoke('tock/save-mapping', {
+        sourceKey: SRC,
+        variantKey: 'track/activeDuration',
+        outputKey: 'engagement',
+        rules: [{ from: 'duration', to: 'nope' }],
+      }),
+    ).rejects.toThrow(/no field 'nope'/);
+  });
+
+  it('27 — both kinds map to one output, and the counts are comparable', async () => {
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    // The envelope maps what every record carries; each kind maps only its own field.
+    await ines.invoke('tock/save-mapping', { sourceKey: SRC, outputKey: 'engagement', rules: [{ from: 'country', to: 'country' }] });
+    for (const v of ['track/activeDuration', 'track/idleDuration']) {
+      await ines.invoke('tock/save-mapping', {
+        sourceKey: SRC,
+        variantKey: v,
+        outputKey: 'engagement',
+        rules: [{ from: 'duration', to: 'seconds' }],
+      });
+    }
+    await ines.invoke('tock/save-schema', { sourceKey: SRC, fields: { country: { type: 'text', role: 'dimension' } } });
+
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename: 'e.jsonl', byteSize: 64, contentHash: 'sha256:e', storageKey: 'runs/e.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-05-01T00:00:00.000Z', periodTo: '2026-05-02T00:00:00.000Z',
+    });
+    await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: true });
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+    await tomas.invoke('tock/count-run', { runId: run.id });
+
+    // All three records reach ONE output, so SE's two events are comparable — which they
+    // would not be if each arriving event name were its own shape.
+    const byCountry = await ines.invoke<{ rows: { dim1: string; events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: SRC, outputKey: 'engagement', grain: 'day', dimSet: 'country',
+      from: '2026-01-01T00:00:00.000Z', to: '2027-01-01T00:00:00.000Z',
+    });
+    const se = byCountry.rows.find((r) => r.dim1 === 'SE');
+    expect(se?.events).toBe(2);
+    // 30 + 12, the envelope's country and each kind's own duration, stacked.
+    expect(se?.measure).toBe('42');
+    expect(byCountry.rows.find((r) => r.dim1 === 'NO')?.measure).toBe('45');
+  });
+
+  it('28 — the run records which mapping made the numbers', async () => {
+    const ines = await as('ines');
+    const run = (await ines.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC })).entries[0]!;
+    const rules = await ines.invoke<{ entries: { rule_kind: string; identifier: string }[] }>('tock/run-rules', { runId: run.id });
+    const mapping = rules.entries.find((r) => r.rule_kind === 'mapping');
+    expect(mapping).toBeDefined();
+    // Names every mapping version in force, so a re-run under a corrected one is explainable
+    // rather than merely different.
+    expect(mapping!.identifier).toMatch(/envelope->engagement@v1/);
+    expect(mapping!.identifier).toMatch(/track\/activeDuration->engagement@v1/);
+  });
+
+  it('29 — a source with no output shapes still counts against the envelope', async () => {
+    // The whole of the backward-compatibility claim, asserted rather than assumed: the
+    // firehose source from the previous block declares no outputs and still reports.
+    const ines = await as('ines');
+    const plain = await ines.invoke<{ rows: { events: number }[] }>('tock/report', {
+      sourceKey: 'firehose', grain: 'day', dimSet: 'total',
+      from: '2026-01-01T00:00:00.000Z', to: '2027-01-01T00:00:00.000Z',
+    });
+    expect(plain.rows[0]?.events).toBe(4);
+  });
+
+  /**
+   * The promise the deviations view makes in as many words: a record matching no declared
+   * kind is "kept and counted under the envelope, never dropped". Declaring an output used
+   * to REPLACE the envelope target, so an unmatched record either fell out of counting
+   * altogether or was counted into an output whose shape says nothing about it — and the
+   * finding went on claiming otherwise.
+   */
+  it('30 — an unmatched record is still counted under the envelope once outputs exist', async () => {
+    // A source of its own, whose only mapping is VARIANT-level: nothing maps the envelope
+    // into the output, which is the arrangement that used to lose the record entirely.
+    // Declaring an output replaced the envelope target, so a record matching no declared
+    // kind reached no target at all and was silently dropped from counting — while the
+    // deviations finding went on saying it had been "kept and counted under the envelope".
+    const OWN = 'unmatched-src';
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    await ines.invoke('tock/declare-source', { key: OWN, title: 'Unmatched', expectedCadence: 'daily' });
+    await ines.invoke('tock/declare-variants', {
+      sourceKey: OWN,
+      discriminators: ['type'],
+      variants: [{ selector: ['track'] }],
+    });
+    await ines.invoke('tock/save-schema', { sourceKey: OWN, fields: { country: { type: 'text', role: 'dimension' } } });
+    await ines.invoke('tock/save-output-schema', {
+      sourceKey: OWN,
+      key: 'engagement',
+      fields: { country: { type: 'text', role: 'dimension' } },
+    });
+    await ines.invoke('tock/save-mapping', {
+      sourceKey: OWN,
+      variantKey: 'track',
+      outputKey: 'engagement',
+      rules: [{ from: 'country', to: 'country' }],
+    });
+
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: OWN, filename: 'u.jsonl', byteSize: 64, contentHash: 'sha256:u', storageKey: 'runs/u.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-05-02T00:00:00.000Z', periodTo: '2026-05-03T00:00:00.000Z',
+    });
+    await tomas.invoke('tock/profile-run', {
+      runId: run.id,
+      batch: [
+        // `page` matches no declared kind — the record this test exists for.
+        { occurredAt: '2026-05-02T08:00:00.000Z', subject: 'z', fields: { type: 'page', country: 'DK' } },
+        { occurredAt: '2026-05-02T08:01:00.000Z', subject: 'y', fields: { type: 'track', country: 'SE' } },
+      ],
+      final: true,
+    });
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+    await tomas.invoke('tock/count-run', { runId: run.id });
+
+    const envelope = await ines.invoke<{ rows: { events: number }[] }>('tock/report', {
+      sourceKey: OWN, grain: 'day', dimSet: 'total',
+      from: '2026-05-02T00:00:00.000Z', to: '2026-05-03T00:00:00.000Z',
+    });
+    // The unmatched record, kept — and ONLY it, since the matched kind belongs to the output.
+    expect(envelope.rows[0]?.events).toBe(1);
+
+    const output = await ines.invoke<{ rows: { events: number }[] }>('tock/report', {
+      sourceKey: OWN, outputKey: 'engagement', grain: 'day', dimSet: 'total',
+      from: '2026-05-02T00:00:00.000Z', to: '2026-05-03T00:00:00.000Z',
+    });
+    expect(output.rows[0]?.events).toBe(1);
+  });
+
+  /**
+   * `salt` and `mapping` are DERIVED from what the run actually did, and the caller's loop
+   * runs after the derived insert with an `ON CONFLICT … DO UPDATE` — so accepting them
+   * from a request let one call rewrite the record of which mapping produced the numbers.
+   * An audit row that says whatever its subject prefers is worse than no audit row.
+   */
+  it('31 — a caller cannot declare the rules the run derives for itself', async () => {
+    const tomas = await as('tomas');
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename: 'r.jsonl', byteSize: 64, contentHash: 'sha256:r', storageKey: 'runs/r.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-05-01T00:00:00.000Z', periodTo: '2026-05-02T00:00:00.000Z',
+    });
+    await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: true });
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+    await expect(
+      tomas.invoke('tock/count-run', {
+        runId: run.id,
+        rules: [{ kind: 'mapping', identifier: 'whatever-I-say', contentHash: 'deadbeef' }],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      tomas.invoke('tock/count-run', {
+        runId: run.id,
+        rules: [{ kind: 'salt', identifier: 'mine', contentHash: 'deadbeef' }],
+      }),
+    ).rejects.toThrow();
+
+    // The kinds a caller CAN declare still land, and the derived mapping survives beside them.
+    await tomas.invoke('tock/count-run', {
+      runId: run.id,
+      rules: [{ kind: 'bot_list', identifier: 'iab/2026-05', contentHash: 'abc123' }],
+    });
+    const rules = await tomas.invoke<{ entries: { rule_kind: string; identifier: string }[] }>('tock/run-rules', {
+      runId: run.id,
+    });
+    expect(rules.entries.find((r) => r.rule_kind === 'bot_list')?.identifier).toBe('iab/2026-05');
+    expect(rules.entries.find((r) => r.rule_kind === 'mapping')?.identifier).toMatch(/->engagement@v/);
+  });
+
+  /** A second measure is silently dropped by `groupingsOf`, so the shape is refused instead. */
+  it('32 — an output shape may declare only one measure', async () => {
+    const ines = await as('ines');
+    await expect(
+      ines.invoke('tock/save-output-schema', {
+        sourceKey: SRC,
+        key: 'two-measures',
+        fields: { seconds: { type: 'int', role: 'measure' }, bytes: { type: 'int', role: 'measure' } },
+      }),
+    ).rejects.toThrow(/at most 1 measure/);
+  });
+});

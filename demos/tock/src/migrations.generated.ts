@@ -219,4 +219,105 @@ export const tockMigrations: SqlMigration[] = [
       );
     `,
   },
+  {
+    // rollup-output-key
+    version: '0005',
+    sql: `
+      -- HAND-WRITTEN, for the reason 0003 was: SQLite cannot change a primary key in place, so
+      -- the table is rebuilt the long way round.
+      --
+      -- The backfill is '' and it is TRUE: these rows were counted before output shapes existed,
+      -- against the envelope directly, and '' is exactly how "no output shape" is spelled. As in
+      -- 0003 and unlike 0002, a default here records what happened rather than inventing a choice.
+      --
+      -- output_key goes SECOND in the key, straight after the source. The report still asks for
+      -- one source, one output, one grain, one grouping and a date RANGE, so the range has to stay
+      -- a key prefix — putting the new column after period_start would have turned every report
+      -- back into a scan of the whole grouping.
+
+      CREATE TABLE tock_rollups_new (
+        source_key TEXT NOT NULL,
+        output_key TEXT NOT NULL,
+        grain TEXT NOT NULL,
+        dim_set TEXT NOT NULL,
+        period_start TEXT NOT NULL,
+        dim1 TEXT NOT NULL,
+        dim2 TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        events INTEGER NOT NULL,
+        measure TEXT,
+        unit TEXT,
+        PRIMARY KEY (source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id)
+      );
+
+      INSERT INTO tock_rollups_new
+        (source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id, events, measure, unit)
+        SELECT source_key, '', grain, dim_set, period_start, dim1, dim2, run_id, events, measure, unit
+          FROM tock_rollups;
+
+      DROP TABLE tock_rollups;
+
+      ALTER TABLE tock_rollups_new RENAME TO tock_rollups;
+
+    `,
+  },
+  {
+    // add-tock_mappings-and-1-more
+    version: '0006',
+    sql: `
+      CREATE TABLE tock_mappings (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_key TEXT NOT NULL,
+        variant_key TEXT NOT NULL,
+        output_key TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        rules_json TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (source_key, variant_key, output_key, version)
+      );
+
+      CREATE TABLE tock_output_schemas (
+        id TEXT PRIMARY KEY NOT NULL,
+        source_key TEXT NOT NULL,
+        key TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        fields_json TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (source_key, key, version)
+      );
+    `,
+  },
+  {
+    // rule-kind-mapping
+    version: '0007',
+    sql: `
+      -- HAND-WRITTEN. Widening an enum in the model does not widen the CHECK constraint the
+      -- table already carries, and SQLite cannot alter one in place — so the table is rebuilt.
+      --
+      -- Worth knowing WHY this needed writing by hand: the planner does not diff CHECK constraints,
+      -- so the model said five rule kinds while the table enforced four and nothing was red. It
+      -- surfaced as a failing insert at count time, which is a long way from the declaration that
+      -- caused it. Any future enum widening on a shipped table has the same shape.
+
+      CREATE TABLE tock_rule_states_new (
+        id TEXT PRIMARY KEY NOT NULL,
+        run_id TEXT NOT NULL REFERENCES tock_runs(id),
+        rule_kind TEXT NOT NULL CHECK (rule_kind IN ('bot_list','threshold','dedup_window','salt','mapping')),
+        identifier TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        captured_at TEXT NOT NULL,
+        UNIQUE (run_id, rule_kind)
+      );
+
+      INSERT INTO tock_rule_states_new (id, run_id, rule_kind, identifier, content_hash, captured_at)
+        SELECT id, run_id, rule_kind, identifier, content_hash, captured_at FROM tock_rule_states;
+
+      DROP TABLE tock_rule_states;
+
+      ALTER TABLE tock_rule_states_new RENAME TO tock_rule_states;
+
+    `,
+  },
 ];

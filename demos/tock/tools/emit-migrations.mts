@@ -51,6 +51,25 @@ if (check && plan.kind === 'append') {
   process.exit(1);
 }
 
+/**
+ * A backtick in an entry's SQL closes the template literal the module below wraps it in.
+ *
+ * The generated file still WRITES, and it is broken TypeScript — every consumer fails to
+ * parse with an error pointing at a column of SQL rather than at the journal that produced
+ * it. That is a long way to travel from the cause, and a hand-written entry is exactly where
+ * someone reaches for backticks to quote a column name in a comment.
+ */
+for (const entry of journal.entries) {
+  if (entry.sql.includes('`')) {
+    process.stderr.write(
+      `emit-migrations: entry ${entry.version} contains a backtick.\n` +
+        '  The rendered module wraps each entry in a template literal, so a backtick there\n' +
+        '  produces a file that does not parse. Quote column names some other way.\n',
+    );
+    process.exit(2);
+  }
+}
+
 /** What the journal WILL be — unchanged when up to date, one entry longer when not. */
 const next: Journal = plan.kind === 'append' ? { entries: [...journal.entries, plan.entry] } : journal;
 
