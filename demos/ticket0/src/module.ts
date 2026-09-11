@@ -506,6 +506,37 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
 }
 
 /**
+ * The first line of the note an inbound mail's attachments leave behind (#1080).
+ *
+ * Exported so the suite can find the note without re-typing its prose, and so the
+ * desk's own screens have one string to look for if they ever want to draw it as
+ * something other than a note.
+ */
+export const ATTACHMENTS_NOT_STORED =
+  'Files came with this message and were not stored — this desk has nowhere to put them yet.';
+
+/** How one dropped file reads. Exact bytes: a rounded size is a number nobody can act on. */
+function attachmentLine(a: { filename: string; contentType: string; sizeBytes: number }): string {
+  return `- ${a.filename} (${a.contentType}, ${a.sizeBytes} bytes)`;
+}
+
+/**
+ * The internal note that stands in for the files themselves.
+ *
+ * Everything the mail told us about each file, and one sentence saying plainly that
+ * the bytes are gone — so an agent reading the thread knows to go to the original mail
+ * rather than telling a customer nothing arrived. The filenames are the customer's
+ * words, which is why this lives in `body_text`: that column is already `erasable`, so
+ * an erasure takes the note with the message it is about and nothing has to remember
+ * this file exists.
+ */
+function droppedAttachmentsNote(
+  attachments: readonly { filename: string; contentType: string; sizeBytes: number }[],
+): string {
+  return [ATTACHMENTS_NOT_STORED, ...attachments.map(attachmentLine)].join('\n');
+}
+
+/**
  * What a visitor who asked for a person is told, straight away. One sentence, one
  * place — and deliberately not a promise about how long it will take, which is a thing
  * this code cannot know and the desk's own reply can say.
@@ -3100,6 +3131,26 @@ const operations = {
       emailMessageId: input.emailMessageId,
       emailInReplyTo: input.emailInReplyTo ?? null,
     });
+
+    // The files, as a note rather than as files (#1080). There is still nowhere to put
+    // the bytes, so this does not pretend otherwise — it makes the loss AUDIBLE, which
+    // is the half of the complaint that costs nothing to fix. INTERNAL, because it is
+    // the desk talking to itself about the customer's mail: the customer knows what
+    // they attached, and `publicThread` never returns it to them.
+    //
+    // No event of its own, deliberately. The ingestion is one fact, and a second
+    // `ticket0.message-ingested` would have a consumer counting two inbound messages
+    // for one mail. The escalation acknowledgement is written the same way.
+    if (input.attachments && input.attachments.length > 0) {
+      writeMessage(ctx, {
+        conversationId: conversation.id,
+        authorKind: 'system',
+        authorPrincipal: String(ctx.principal),
+        visibility: 'internal',
+        bodyText: droppedAttachmentsNote(input.attachments),
+      });
+    }
+
     settle(ctx, conversation, next);
     if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));

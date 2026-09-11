@@ -403,7 +403,7 @@ export interface Ticket0Client {
    *
    * `POST /relay/inbound` — `ticket0/ingest-message`
    */
-  ingestMessage(input: { conversationId: string | null; contactEmail: string; contactName?: string | null; subject: string; bodyText: string; bodyHtml?: string | null; emailMessageId: string; emailInReplyTo?: string | null }): Promise<Message>;
+  ingestMessage(input: { conversationId: string | null; contactEmail: string; contactName?: string | null; subject: string; bodyText: string; bodyHtml?: string | null; emailMessageId: string; emailInReplyTo?: string | null; attachments?: { filename: string; contentType: string; sizeBytes: number }[] }): Promise<Message>;
 
   /**
    * The staff of this desk

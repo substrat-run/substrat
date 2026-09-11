@@ -2977,6 +2977,30 @@
                         "type": "null"
                       }
                     ]
+                  },
+                  "attachments": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "filename": {
+                          "type": "string"
+                        },
+                        "contentType": {
+                          "type": "string"
+                        },
+                        "sizeBytes": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "filename",
+                        "contentType",
+                        "sizeBytes"
+                      ]
+                    }
                   }
                 },
                 "required": [

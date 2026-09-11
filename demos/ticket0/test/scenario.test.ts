@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { principalId, type CountedPage, type Page } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import { T0_PERM } from '../src/manifest.js';
+import { ATTACHMENTS_NOT_STORED } from '../src/module.js';
 import { buildHost, seed, signIdentity, type Desk, type World } from '../src/seed.js';
 
 let dir: string;
@@ -1505,6 +1506,150 @@ describe('a signed-in customer, by contrast', () => {
     await expect(
       stub.invoke('ticket0/my-messages', { conversationId: elsewhere.conversation_id }),
     ).rejects.toThrow(/permission denied/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+/**
+ * What came with the mail, when there is nowhere to put it (#1080).
+ *
+ * The desk still cannot store a file. What it can stop doing is losing the fact that
+ * one arrived: a mail that carried an invoice used to become a mail that carried
+ * nothing, with no trace anywhere, so an agent read the thread and told a customer
+ * their attachment never came. The files are now a note — internal, because it is the
+ * desk talking to itself about the customer's own mail.
+ *
+ * Driven through the relay's own door on the SEEDED customer's address, so the same
+ * portal grant the block above proves reaches this conversation too: the assertion
+ * that the note is invisible to them is a real read by a real principal, not a
+ * `WHERE visibility` somebody remembered to write.
+ */
+describe('what arrives with a mail, when there is nowhere to put it', () => {
+  const desk = () => world.substrat;
+  let withFiles = '';
+  let plain = '';
+
+  it('a mail with no files is one message, exactly as before', async () => {
+    const relay = await at(desk(), 'relay');
+    const arrived = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: desk().customer.email,
+      subject: 'Nothing attached',
+      bodyText: 'Just words this time.',
+      emailMessageId: '<plain-1@mail.example>',
+    })) as Message;
+    plain = arrived.conversation_id;
+
+    const agent = await at(desk(), 'agent');
+    const thread = (await agent.invoke('ticket0/list-messages', {
+      conversationId: plain,
+    })) as CountedPage<Message>;
+    expect(thread.entries).toHaveLength(1);
+    expect(thread.entries[0]!.id).toBe(arrived.id);
+  });
+
+  it('a mail with two files leaves a note that names both, and what was lost', async () => {
+    const relay = await at(desk(), 'relay');
+    const arrived = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: desk().customer.email,
+      subject: 'Invoice attached',
+      bodyText: 'See attached.',
+      emailMessageId: '<files-1@mail.example>',
+      attachments: [
+        { filename: 'invoice-2041.pdf', contentType: 'application/pdf', sizeBytes: 186_240 },
+        { filename: 'screenshot.png', contentType: 'image/png', sizeBytes: 48_112 },
+      ],
+    })) as Message;
+    withFiles = arrived.conversation_id;
+
+    // The customer's own message is untouched: same row, same visibility, same body.
+    expect(arrived.visibility).toBe('public');
+    expect(arrived.author_kind).toBe('contact');
+    expect(arrived.body_text).toBe('See attached.');
+
+    const agent = await at(desk(), 'agent');
+    const thread = (await agent.invoke('ticket0/list-messages', {
+      conversationId: withFiles,
+    })) as CountedPage<Message>;
+    expect(thread.entries).toHaveLength(2);
+
+    const note = thread.entries.find((m) => m.visibility === 'internal');
+    expect(note).toBeDefined();
+    expect(note!.author_kind).toBe('system');
+    expect(note!.body_text).toContain(ATTACHMENTS_NOT_STORED);
+    expect(note!.body_text).toContain('invoice-2041.pdf');
+    expect(note!.body_text).toContain('application/pdf');
+    expect(note!.body_text).toContain('186240 bytes');
+    expect(note!.body_text).toContain('screenshot.png');
+    expect(note!.body_text).toContain('image/png');
+  });
+
+  it('and the customer never reads it — they know what they attached', async () => {
+    const priya = await at(desk(), 'customer');
+    const thread = (await priya.invoke('ticket0/my-messages', {
+      conversationId: withFiles,
+    })) as Page<Message>;
+    expect(thread.entries).toHaveLength(1);
+    expect(thread.entries.every((m) => m.visibility === 'public')).toBe(true);
+    expect(thread.entries.some((m) => m.body_text.includes('invoice-2041.pdf'))).toBe(false);
+  });
+
+  it('nor does the relay ever mail it back out', async () => {
+    const relay = await at(desk(), 'relay');
+    const waiting = (await relay.invoke('ticket0/list-pending-outbound', {})) as Page<{
+      messageId: string;
+    }>;
+    const agent = await at(desk(), 'agent');
+    const thread = (await agent.invoke('ticket0/list-messages', {
+      conversationId: withFiles,
+    })) as CountedPage<Message>;
+    const noteId = thread.entries.find((m) => m.visibility === 'internal')!.id;
+
+    expect(waiting.entries.some((m) => m.messageId === noteId)).toBe(false);
+    await expect(relay.invoke('ticket0/read-outbound', { messageId: noteId })).rejects.toThrow(
+      /internal notes are never sent/i,
+    );
+  });
+
+  it('a redelivered mail writes neither the message nor the note a second time', async () => {
+    const relay = await at(desk(), 'relay');
+    await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: desk().customer.email,
+      subject: 'Invoice attached',
+      bodyText: 'See attached.',
+      emailMessageId: '<files-1@mail.example>',
+      attachments: [
+        { filename: 'invoice-2041.pdf', contentType: 'application/pdf', sizeBytes: 186_240 },
+      ],
+    });
+
+    const agent = await at(desk(), 'agent');
+    const thread = (await agent.invoke('ticket0/list-messages', {
+      conversationId: withFiles,
+    })) as CountedPage<Message>;
+    expect(thread.entries).toHaveLength(2);
+  });
+
+  it('an empty array is the same as no files at all', async () => {
+    const relay = await at(desk(), 'relay');
+    const arrived = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: plain,
+      contactEmail: desk().customer.email,
+      subject: 'Nothing attached',
+      bodyText: 'Still nothing.',
+      emailMessageId: '<plain-2@mail.example>',
+      attachments: [],
+    })) as Message;
+
+    const agent = await at(desk(), 'agent');
+    const thread = (await agent.invoke('ticket0/list-messages', {
+      conversationId: arrived.conversation_id,
+    })) as CountedPage<Message>;
+    expect(thread.entries).toHaveLength(2);
+    expect(thread.entries.every((m) => m.visibility === 'public')).toBe(true);
   });
 });
 
