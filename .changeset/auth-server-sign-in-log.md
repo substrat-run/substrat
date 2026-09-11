@@ -52,3 +52,38 @@ On screen it is a new **Sign-in log** section beside the providers it explains, 
 No migration to review and no new permission key. Passwords and BankID are not recorded:
 what went missing was the federated round trip, and a narrower table is a smaller amount
 of somebody's sign-in activity to hold.
+
+## And the spinner that never resolved
+
+A stuck screen is not a refusal, so the log above would not have explained one. Two reads
+gate every screen this app has — `/api/setup-state` and `/api/session` — and both trusted
+whatever came back: `res.json()`, no status check, no shape check, called from a `refresh()`
+with no `catch` and five bare `void refresh()` callers. Both failure shapes a deployed
+issuer actually produces ended somewhere worse than an error message.
+
+A body that is not JSON — a worker exception page, a 5xx from an intermediary, anything
+HTML — made `res.json()` reject inside that un-caught `refresh()`. The phase stayed
+`loading`, so the page said “Loading…” and meant “this failed seconds ago and nobody is
+going to tell you”. That is the shape a person reports as being stuck on a spinner.
+
+An `{ error }` envelope — which is exactly what `routes.ts` answers a failure with — parsed
+perfectly well and was handed on as data. As a session it is a truthy object with no
+`role`, so the console told an administrator they were not one. As the issuer state it left
+`providers` undefined for a screen whose next line is `providers.length`.
+
+Both reads now go through `app/src/wire.ts`, which checks the status, reads the body as text
+so a non-JSON answer becomes “the issuer answered 502” rather than a parser error, lifts the
+issuer's own `error` message when there is one, and refuses a body that parses but is the
+wrong shape. It is React-free and `fetch`-free for the reason `paths.ts` is, so the issuer's
+own vitest pins all of it.
+
+The distinction the tests care about most: a failed session read must never be reported as
+“signed out”. Signing out someone who is signed in sends them to a login screen — and for a
+client restricted to one provider, that screen redirects straight back out to it, so the
+cheap answer turns one failed read into a loop through a working directory.
+
+`refresh()` now has one wrapper every caller goes through, and a rejection is a screen: the
+reason, the fact that it is the issuer's problem rather than the person's, and a Try again
+button. `clientOptions` is deliberately left alone — a theme and a sign-in narrowing have an
+honest fallback in the issuer's own defaults, so that read degrades rather than failing.
+These two have no fallback; there is no honest “probably signed in”.

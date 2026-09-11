@@ -1,5 +1,6 @@
 import { createAuthClient } from 'better-auth/client';
 import { adminClient } from 'better-auth/client/plugins';
+import { isIssuerState, isSessionOrNull, readIssuerJson } from './wire';
 
 /**
  * The Better Auth browser client, pointed at THIS issuer (same origin, `/api/auth`). The
@@ -48,8 +49,9 @@ export interface PublicProvider {
 }
 
 export async function setupState(): Promise<IssuerState> {
-  const res = await fetch('/api/setup-state');
-  return res.json();
+  // Checked rather than trusted — see `wire.ts`. This read gates every screen, so an answer
+  // that is not an answer has to become a sentence instead of an eternal "Loading…".
+  return readIssuerJson(await fetch('/api/setup-state'), 'The issuer state', isIssuerState);
 }
 
 /** Create the first administrator (only possible while there are no users). */
@@ -62,10 +64,17 @@ export async function createFirstAdmin(body: { email: string; password: string; 
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'setup failed');
 }
 
-/** The current session (subject + role), or null. */
+/**
+ * The current session (subject + role), or null for nobody signed in.
+ *
+ * `null` and "the read failed" are held apart on purpose (`wire.ts`): they used to be the same
+ * answer, and collapsing them is worse than it sounds. A failed read read as "signed out" sends
+ * a signed-in person to the login screen — which, for a client restricted to one provider,
+ * redirects them straight back out to it. And an `{ error }` envelope read as a session told an
+ * administrator they were not one, because the envelope is a truthy object with no `role`.
+ */
 export async function currentSession(): Promise<Session | null> {
-  const res = await fetch('/api/session');
-  return res.json();
+  return readIssuerJson(await fetch('/api/session'), 'The current session', isSessionOrNull);
 }
 
 /** The plugin's own name for the parameter that lists which parameters the signature covers.
