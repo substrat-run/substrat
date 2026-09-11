@@ -50,7 +50,7 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { CloudflareScopeHost, cloudflareClientContext, defineScopeDO } from '@substrat-run/adapter-cloudflare';
-import { readRoutedNode, RouterAssertionError, ulid, type ScopeStub, invocationLog } from '@substrat-run/kernel';
+import { globalFetch, readRoutedNode, RouterAssertionError, ulid, type ScopeStub, invocationLog } from '@substrat-run/kernel';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -85,6 +85,7 @@ import {
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh } from '../harness/kb-refresh.js';
+import { senderFor, sweepOutbound } from '../harness/relay.js';
 import { mountInvites, recordStaffProfile } from '../harness/invites.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 import {
@@ -889,6 +890,86 @@ async function answerFor(
         error: errorText(recordErr),
       });
     }
+  }
+}
+
+// ── The email relay ──────────────────────────────────────────────────────────
+
+/**
+ * What turns a public reply into mail (#935).
+ *
+ * A Worker has no boot loop, so there is nothing here to run a timer on — the node
+ * host's answer. Of the two candidates the design left open, this is the second: the
+ * sweep rides `executionCtx.waitUntil` off the request that CREATED the work, the
+ * same way the assistant's turn does. A reply is posted, the agent gets their 200,
+ * and the send happens after the response while the isolate is still alive.
+ *
+ * Registered BEFORE `mountApi` because Hono composes in registration order and this
+ * has to be the middleware that wraps the handler rather than a route that shadows
+ * it. `await next()` first: the sweep must see a COMMITTED reply, and a refused one
+ * must not sweep at all.
+ *
+ * This is a TRIGGER and not the only way a message gets sent, which is what makes it
+ * safe to hang off a request: `list-pending-outbound` is defined by the absence of a
+ * delivery, so a sweep that never ran — a cancelled isolate, a reply posted while the
+ * provider was down — leaves the message on the list for the next one to find. No
+ * reply depends on its own request's sweep succeeding.
+ */
+app.post('/api/conversations/:conversationId/replies', async (c, next) => {
+  await next();
+  if (c.res.status >= 400) return;
+  const env = c.env as Env;
+  // The getter THROWS when there is no execution context — a direct `app.request(…)`,
+  // which is how a test drives this app. Reading it after `await next()` has already
+  // set a successful response would turn that into a 500 from `app.onError`, so the
+  // absence is caught and nothing else is: `sweepFor` logs its own failures, and a
+  // sweep that never ran loses nothing, because the message is still on the list.
+  let post: typeof c.executionCtx;
+  try {
+    post = c.executionCtx;
+  } catch {
+    return;
+  }
+  post.waitUntil(sweepFor(env, c.req.raw));
+});
+
+/**
+ * Send this desk's waiting replies, out of band.
+ *
+ * As the desk's own `relay` principal, which holds `conversation:relay` and nothing
+ * else — it can read a message that is going out and record that it went, and it can
+ * neither read the inbox nor write a reply of its own.
+ *
+ * Nothing in here throws into the response: the reply is already committed and the
+ * agent has already been told so. A failure is logged and the message stays pending,
+ * which is the truthful state — see `harness/relay.ts` for why that is the right way
+ * round.
+ */
+async function sweepFor(env: Env, req: Request): Promise<void> {
+  const node = nodeFor(req, env);
+  try {
+    const relay = await serviceStub(env, node, 'relay');
+    // Null before this desk has been reconciled onto a version that mints the relay
+    // principal (#1172) — the same "not provisioned yet" the widget surface shows.
+    if (!relay) return;
+    const { settings } = await instanceConfig(env, node);
+    const sender = senderFor(settings as { RESEND_API_KEY?: string }, globalFetch);
+    const report = await sweepOutbound({
+      invoke: <T,>(op: string, input: unknown) => relay.invoke(op, input) as Promise<T>,
+      sender,
+    });
+    if (report.failed > 0) {
+      console.error('ticket0: relay sweep left messages unsent', {
+        scope: node.scopeId,
+        provider: sender.name,
+        ...report,
+      });
+    }
+  } catch (error) {
+    console.error('ticket0: relay sweep failed', {
+      scope: node.scopeId,
+      error: errorText(error),
+    });
   }
 }
 

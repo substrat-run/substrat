@@ -104,6 +104,30 @@ export const TICKET0_ENV: EnvVarSpec[] = [
     secret: false,
     group: 'Assistant',
   },
+  /**
+   * The desk's own mail provider (#935) — what the relay sends business mail THROUGH.
+   *
+   * Not `packages/adapter-email`, and the distinction is the whole reason this key
+   * exists: the adapter sends PLATFORM mail from `substrat.run` (invites, signup
+   * confirmations) on the platform's onboarded sender, and a desk's reply to a
+   * customer is the tenant's own mail from the tenant's own domain. One credential
+   * cannot be both — the platform's would let any desk send as anyone.
+   *
+   * Absent is a supported configuration, not a broken install: a desk that answers in
+   * the widget needs no mail provider at all. What it is NOT is silently fine — the
+   * relay refuses each send loudly rather than stamping a delivery nobody made, so an
+   * email desk with no key says so on every reply instead of looking answered.
+   */
+  {
+    key: 'RESEND_API_KEY',
+    label: 'Resend API key',
+    description:
+      'Sends this desk’s replies as email, from the desk’s own From address. Without it the desk still answers in the widget, and email replies stay unsent rather than being marked delivered.',
+    placeholder: 're_…',
+    required: false,
+    secret: true,
+    group: 'Email',
+  },
 ];
 
 export const ticket0Manifest = moduleManifest.parse({

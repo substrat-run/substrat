@@ -106,6 +106,7 @@
     "outbound": [
       "api.anthropic.com",
       "api.cloudflare.com",
+      "api.resend.com",
       "api.scaleway.ai",
       "substrat.net"
     ],

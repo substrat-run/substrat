@@ -209,6 +209,47 @@ Kestrel's documentation URL is deliberately fake, so one source succeeds and one
 on every fresh boot. A desk whose knowledge base can only be seen working is a desk
 whose failure state nobody has looked at.
 
+## The email relay
+
+A public reply on an **email** conversation is a row, and something has to turn it into
+mail. That something is `harness/relay.ts` — a sweep that asks
+`ticket0/list-pending-outbound` what is waiting, reads each message back through
+`ticket0/read-outbound`, hands it to a provider, and records what the provider named it
+with `ticket0/record-delivery`. It runs as the desk's own `relay` principal, which holds
+`conversation:relay` and nothing else, so the runner can send what is going out and
+cannot read the inbox or write a reply of its own.
+
+What is waiting is defined by the **absence of a delivery**, not by a queue: the sweep
+is idempotent, two of them running at once converge, and a reply whose send failed is
+still on the list next time. The send happens **after** the reply commits — a provider
+outage must not roll back an agent's work, so it leaves a public message with no
+`delivered_at`, which is the truthful state. `record-delivery` is a second call, so a
+crash between the two can send twice; closing that window needs a reservation column and
+is left for its own change.
+
+The trigger differs by host for the reason everything else in `src/worker.ts` vs
+`src/server.ts` does: node keeps a process up, so the dev server runs a timer; a Workers
+isolate does not, so the worker hangs the sweep off `executionCtx.waitUntil` on the reply
+request that created the work. Neither is load-bearing — a missed sweep loses nothing.
+
+What gets recorded is the **`Message-ID` that went out on the wire**, not the provider's
+own handle for the row — at Resend those are two different values, and threading on the
+wrong one is silent: the mail goes, the customer answers, and their answer opens a new
+conversation. So the connector asks the provider what it actually sent, and only falls
+back to the provider's id (loudly) when it will not say, because sending the same reply
+twice is the worse of the two.
+
+Sending needs a provider. `RESEND_API_KEY` in the dashboard's Env tab selects Resend;
+absent, the relay refuses each send **loudly** rather than stamping a delivery nobody
+made, because a desk that looks answered and is not is the worse failure. Locally the
+loop is off unless `TICKET0_RELAY=1`, so a demo with no key does not fill the terminal
+with refusals.
+
+Note what this is **not**: `packages/adapter-email`, which sends platform mail from
+`substrat.run` (invites, signup confirmations) on the platform's onboarded sender. A
+desk's reply is the tenant's own mail from the tenant's own `from_address`, and one
+credential cannot be both.
+
 ## The model
 
 By default there is **no model**: the assistant retrieves the best-matching section and
@@ -349,7 +390,7 @@ line, so one serving script can run every desk without billing them to whoever s
 token last. A desk whose provider the platform holds nothing for still works: answers
 become extractive quotes, labelled `offline/extractive`.
 
-`substrat.outbound` declares the two hosts this vertical may reach — `api.cloudflare.com`
-(Workers AI) and `substrat.net` (this desk's own documentation). A desk pointed at
+`substrat.outbound` declares the hosts this vertical may reach — the model providers,
+`api.resend.com` (the email relay) and `substrat.net` (this desk's own documentation). A desk pointed at
 somebody else's docs needs that host added to the declaration and a new version pushed;
 the egress allowlist is a fact about the version, not about the install.

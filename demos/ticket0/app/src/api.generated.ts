@@ -467,6 +467,15 @@ export interface Ticket0Client {
   listMessages(input: { conversationId: string }): Promise<Paged<({ id: string; conversation_id: string; author_kind: "contact" | "agent" | "assistant" | "system"; author_principal: string | null; visibility: "public" | "internal"; body_text: string; body_html: string | null; email_message_id: string | null; email_in_reply_to: string | null; delivered_at: string | null; cited_article_ids: string | null; created_at: string; citations: { id: string; title: string; url: string; headingPath: string }[] })>>;
 
   /**
+   * Public replies on email conversations that have not been sent yet
+   *
+   * `GET /relay/outbound` — `ticket0/list-pending-outbound`
+   *
+   * Paged: walk it with `follow(page.next)` until `next` is `null`.
+   */
+  listPendingOutbound(): Promise<Paged<{ messageId: string; conversationId: string; createdAt: string }>>;
+
+  /**
    * The desk’s canned answers
    *
    * `GET /saved-replies` — `ticket0/list-saved-replies`
@@ -1017,6 +1026,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       page("/kb/sources", "GET", undefined, undefined),
     listMessages: (input: Args) =>
       page(`/conversations/${encodeURIComponent(String(input.conversationId))}/messages`, "GET", undefined, omit(input, ["conversationId"])),
+    listPendingOutbound: () =>
+      page("/relay/outbound", "GET", undefined, undefined),
     listSavedReplies: () =>
       page("/saved-replies", "GET", undefined, undefined),
     listSignups: (input: Args) =>
