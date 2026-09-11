@@ -428,6 +428,32 @@ describe('problemDetail', () => {
     expect(problemDetail({ error: 'scope is suspended' })).toBe('scope is suspended');
   });
 
+  // The cases above each expose ONE candidate, so they pin that every member is reachable
+  // and nothing about the order between them: `error ?? detail` would pass all of them.
+  // This body carries all four at once, with DIFFERENT values, and then removes them from
+  // the front one at a time — which is the only shape that pins the precedence itself.
+  it('pins the precedence when the members disagree', () => {
+    const all = {
+      detail: 'this occurrence',
+      error: 'the deprecated duplicate',
+      message: 'a relayed fault',
+      title: 'the class of failure',
+    };
+    expect(problemDetail(all)).toBe('this occurrence');
+    expect(problemDetail({ ...all, detail: undefined })).toBe('the deprecated duplicate');
+    expect(problemDetail({ ...all, detail: undefined, error: undefined })).toBe('a relayed fault');
+    expect(problemDetail({ ...all, detail: undefined, error: undefined, message: undefined })).toBe(
+      'the class of failure',
+    );
+    // An empty member is skipped rather than returned, at every position — otherwise a
+    // `detail: ''` would satisfy the caller's `?? fallback` and render a blank failure.
+    expect(problemDetail({ ...all, detail: '' })).toBe('the deprecated duplicate');
+    expect(problemDetail({ ...all, detail: '', error: '' })).toBe('a relayed fault');
+    expect(problemDetail({ ...all, detail: '', error: '', message: '' })).toBe(
+      'the class of failure',
+    );
+  });
+
   it('reads `detail` from a body the strict schema refuses', () => {
     // A relayed fault from something in front of the control plane: no `type`, no
     // `title`, so `problem.safeParse` fails — and the sentence is still right there.
