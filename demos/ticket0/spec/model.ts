@@ -2279,6 +2279,24 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * message must not become a second message in the thread. Thread stitching itself
    * is the connector's job — by the time this is called, the decision about which
    * conversation this belongs to has already been made from the mail headers.
+   *
+   * `attachments` is METADATA ONLY, and deliberately so (#1080). This desk still has
+   * nowhere to put the bytes — no `attachment` entity, no blob-store seam reachable
+   * from module code — so a mail whose whole point was the invoice still loses the
+   * invoice. What it stops losing is the FACT: the handler writes a second, internal
+   * message naming every file that came with the mail, so an agent reading the thread
+   * can see that something arrived and go and get it, instead of answering a customer
+   * who is sure they sent it. Drop the bytes if we must; drop the record of them and
+   * the desk is lying to its own staff.
+   *
+   * Optional, so every caller that predates it is unchanged, and the schema itself
+   * refuses nothing: a `.max()` or a `.min(1)` here rejects the whole mail — body and
+   * all — over a file count or an empty filename nobody has a rule about yet, which is
+   * a worse drop than the one this fixes. The bound lives one step in, on what the desk
+   * WRITES: the note names at most a hundred files and counts the rest, and cuts each
+   * field to one readable line. That is what keeps an oversized note from failing the
+   * ingest transaction and taking the customer's message down with it — the caller is
+   * the relay principal, but the mail it carries came from whoever chose to send it.
    */
   'ticket0/ingest-message': {
     // Not a tool: the email relay's own surface — it brings mail in and reports what it sent.
@@ -2294,6 +2312,15 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       bodyHtml: z.string().nullable().optional(),
       emailMessageId: z.string(),
       emailInReplyTo: z.string().nullable().optional(),
+      attachments: z
+        .array(
+          z.object({
+            filename: z.string(),
+            contentType: z.string(),
+            sizeBytes: z.number().int().nonnegative(),
+          }),
+        )
+        .optional(),
     }),
     output: ticket0Entities.message.fields,
     http: { method: 'POST', path: '/relay/inbound' },

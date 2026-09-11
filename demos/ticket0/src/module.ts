@@ -506,6 +506,82 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
 }
 
 /**
+ * The first line of the note an inbound mail's attachments leave behind (#1080).
+ *
+ * Exported so the suite can find the note without re-typing its prose, and so the
+ * desk's own screens have one string to look for if they ever want to draw it as
+ * something other than a note.
+ */
+export const ATTACHMENTS_NOT_STORED =
+  'Files came with this message and were not stored — this desk has nowhere to put them yet.';
+
+/** The longest a filename or a content type is allowed to be before it is cut short. */
+const ATTACHMENT_FIELD_MAX = 200;
+
+/** How many files the note names one by one before it starts counting them instead. */
+const ATTACHMENT_NOTE_MAX = 100;
+
+/**
+ * One field of one file, flattened to a single line.
+ *
+ * A filename is the SENDER's text — anyone who can email this desk chooses it — and the
+ * relay is a courier rather than a filter, so it arrives here untrusted. A newline in it
+ * would forge a second bullet in the note and an agent would read a file that was never
+ * sent; a filename the length of a novel would be the whole thread. So control
+ * characters become spaces and the rest is cut to a length a person can read.
+ *
+ * U+2028 and U+2029 are in that class with the C0 controls even though they are not
+ * controls: the staff thread draws a note with pre-wrap whitespace, where both break a
+ * line exactly as a newline does. What decides this list is what puts text on a new
+ * line on a screen, not which Unicode category a code point is filed under.
+ */
+function oneLine(value: string): string {
+  const flat = value.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim();
+  return flat.length > ATTACHMENT_FIELD_MAX ? `${flat.slice(0, ATTACHMENT_FIELD_MAX)}…` : flat;
+}
+
+/** How one dropped file reads. Exact bytes: a rounded size is a number nobody can act on. */
+function attachmentLine(a: { filename: string; contentType: string; sizeBytes: number }): string {
+  const name = oneLine(a.filename) || '(unnamed)';
+  const type = oneLine(a.contentType) || '(unknown type)';
+  return `- ${name} (${type}, ${a.sizeBytes} bytes)`;
+}
+
+/**
+ * The internal note that stands in for the files themselves.
+ *
+ * Everything the mail told us about each file, and one sentence saying plainly that
+ * the bytes are gone — so an agent reading the thread knows to go to the original mail
+ * rather than telling a customer nothing arrived.
+ *
+ * **Bounded, and that bound is a correctness property rather than a nicety.** This note
+ * is written inside the ingest transaction, beside the customer's own message, so a
+ * `body_text` big enough to be refused takes the MESSAGE down with it — the mail would
+ * arrive nowhere at all, which is worse than the silent drop this exists to fix. A mail
+ * carrying more files than a person will read therefore gets a count instead of a list;
+ * the fields are cut by `oneLine` for the same reason one level down. The input schema
+ * still refuses nothing, deliberately: what is bounded is what this desk WRITES, not
+ * what it will accept, so no mail is ever rejected over its attachment count.
+ *
+ * The filenames are the customer's words, and this note holds them exactly as every
+ * other message holds a body: `message.erasable` names `body_text`, which is what keeps
+ * it off every event (`shredSubject` redacts the outbox, never a vertical's own table),
+ * and it is also why this note emits no event of its own. Whatever erases a customer's
+ * messages from this desk reaches the note on the same terms — no better, no worse.
+ */
+function droppedAttachmentsNote(
+  attachments: readonly { filename: string; contentType: string; sizeBytes: number }[],
+): string {
+  const named = attachments.slice(0, ATTACHMENT_NOTE_MAX).map(attachmentLine);
+  const rest = attachments.length - named.length;
+  return [
+    ATTACHMENTS_NOT_STORED,
+    ...named,
+    ...(rest > 0 ? [`- and ${rest} more, not named here`] : []),
+  ].join('\n');
+}
+
+/**
  * What a visitor who asked for a person is told, straight away. One sentence, one
  * place — and deliberately not a promise about how long it will take, which is a thing
  * this code cannot know and the desk's own reply can say.
@@ -3100,6 +3176,26 @@ const operations = {
       emailMessageId: input.emailMessageId,
       emailInReplyTo: input.emailInReplyTo ?? null,
     });
+
+    // The files, as a note rather than as files (#1080). There is still nowhere to put
+    // the bytes, so this does not pretend otherwise — it makes the loss AUDIBLE, which
+    // is the half of the complaint that costs nothing to fix. INTERNAL, because it is
+    // the desk talking to itself about the customer's mail: the customer knows what
+    // they attached, and `publicThread` never returns it to them.
+    //
+    // No event of its own, deliberately. The ingestion is one fact, and a second
+    // `ticket0.message-ingested` would have a consumer counting two inbound messages
+    // for one mail. The escalation acknowledgement is written the same way.
+    if (input.attachments && input.attachments.length > 0) {
+      writeMessage(ctx, {
+        conversationId: conversation.id,
+        authorKind: 'system',
+        authorPrincipal: String(ctx.principal),
+        visibility: 'internal',
+        bodyText: droppedAttachmentsNote(input.attachments),
+      });
+    }
+
     settle(ctx, conversation, next);
     if (conversation.assignee) notify(ctx, conversation.assignee, 'replied', conversation.id);
     ctx.emit(messageEvent(row, 'ticket0.message-ingested'));
