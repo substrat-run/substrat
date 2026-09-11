@@ -28,6 +28,7 @@ import {
   readRoutedNode,
   RouterAssertionError,
   ulid,
+  invocationLog,
 } from '@substrat-run/kernel';
 import { declareScriveConnector } from '@substrat-run/connector-scrive';
 import type { PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
@@ -204,6 +205,12 @@ async function principalFor(env: Env, req: Request): Promise<PrincipalId | null>
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+// FIRST, before any route: Hono composes handlers in registration order and stops at the
+// one that answers, so a route registered above this line would never be logged. The line
+// it writes is what attributes this vertical's invocations to the tenant they served —
+// see `invocationLog`'s header for why the router cannot supply that from its side.
+app.use('*', invocationLog());
 
 // Identity/credentials/sessions live entirely at the OIDC issuer (oidc-only-demos.md): the
 // vertical runs no credential store and hosts no sign-up. `/api/auth/*` is the relying-party

@@ -265,3 +265,6 @@ export type {
   MeterScopeInput,
   MeterTenantInput,
 } from './meters.js';
+
+export { invocationLog } from './invocation-log.js';
+export type { InvocationLogLine, InvocationLogContext } from './invocation-log.js';
