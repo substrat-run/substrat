@@ -52,10 +52,14 @@ export interface FlowFindingsView {
   available: boolean;
   /**
    * False when the observed side was cut short — more distinct event types exist
-   * than the facet returned. The event findings are withheld then: a type absent
-   * only because its bucket fell off the tail is not evidence of anything, and
-   * reporting it would be a fabricated finding rather than a cautious one. Provider
-   * findings are unaffected and still render.
+   * than the facet returned.
+   *
+   * What it withholds is the ABSENCE findings only. A type missing from a truncated
+   * result may never have been recorded or may have fallen off the tail, and nothing
+   * here can tell which, so `unemitted` / `unconsumed` are not reported. A bucket the
+   * facet DID return is not ambiguous — its count and its recency are real — so
+   * staleness is still reported, as are the provider findings, which never depended
+   * on the events at all.
    */
   observedComplete: boolean;
   /**
@@ -155,50 +159,67 @@ export function deriveFlowFindings(input: {
   const known = new Set(knownProviders);
   const findings: FlowFinding[] = [];
 
-  // Emits and consumes are kept apart because the findings mean different things,
-  // and the star topology means the two are declared by different modules that
-  // never import each other.
+  // ABSENCE findings, one per declaration. Emits and consumes are kept apart because
+  // they mean different things, and the star topology means the two are declared by
+  // different modules that never import each other.
   const declaredTypes = new Set<string>();
   for (const d of declaredEvents) {
     declaredTypes.add(d.type);
-    // Still counted, never reported: with a truncated observation, absence is not
-    // evidence, and the "N of M" line stays true either way.
+    if (seen.has(d.type)) continue;
+    // A type the facet did not return is ambiguous under truncation — never recorded,
+    // or recorded and cut from the tail — so absence is reported only when the
+    // observation was complete. Presence is not ambiguous, which is why the staleness
+    // pass below is NOT gated the same way.
     if (!observedComplete) continue;
-    const hit = seen.get(d.type);
-    if (hit === undefined) {
-      findings.push(
-        d.direction === 'emits'
-          ? {
-              kind: 'unemitted',
-              subject: d.type,
-              moduleId: d.moduleId,
-              detail: `${d.moduleId} declares this event, and none has been recorded — a path that never runs, or one nobody has exercised yet.`,
-            }
-          : {
-              kind: 'unconsumed',
-              subject: d.type,
-              moduleId: d.moduleId,
-              detail: `${d.moduleId} handles this event, and nothing in this app has produced one — the handler has never had anything to do.`,
-            },
-      );
-      continue;
-    }
-    // STOPPED is not the same as never, and it is the one a count hides: a type with
-    // thousands of events that fell silent looks healthy on volume alone. Reported once
-    // per declaring module, because "the handler stopped" and "the producer stopped"
-    // are read by different people.
-    if (hit.lastSeen !== null && hit.lastSeen < staleBefore) {
-      const days = Math.floor((Date.parse(now) - Date.parse(hit.lastSeen)) / 86_400_000);
-      findings.push({
-        kind: 'stale',
-        subject: d.type,
-        moduleId: d.moduleId,
-        detail:
-          d.direction === 'emits'
-            ? `${d.moduleId} last emitted this ${days} days ago, after ${hit.count.toLocaleString()} in all. Either the work stopped or nothing is asking for it.`
-            : `${d.moduleId} last had one of these to handle ${days} days ago, after ${hit.count.toLocaleString()} in all — whatever produces them stopped.`,
-      });
-    }
+    findings.push(
+      d.direction === 'emits'
+        ? {
+            kind: 'unemitted',
+            subject: d.type,
+            moduleId: d.moduleId,
+            detail: `${d.moduleId} declares this event, and none has been recorded — a path that never runs, or one nobody has exercised yet.`,
+          }
+        : {
+            kind: 'unconsumed',
+            subject: d.type,
+            moduleId: d.moduleId,
+            detail: `${d.moduleId} handles this event, and nothing in this app has produced one — the handler has never had anything to do.`,
+          },
+    );
+  }
+
+  // STALENESS, one per TYPE — never per declaration, because the fact is not a
+  // module's. The facet groups by event type alone, so its count and its recency
+  // belong to the type across the whole scope; attributing them to a declaring module
+  // would claim that module emitted every one of those events and the newest of them.
+  // Two modules may declare the same type, and one module may declare it in BOTH
+  // directions (`@test/flow` does), so per-declaration findings would also have said
+  // the same thing two or three times under one identity.
+  //
+  // It is reported under a truncated observation, unlike the absences above: a bucket
+  // the facet DID return carries a real count and a real timestamp, and withholding
+  // that would be caution about a fact rather than about a gap.
+  for (const type of [...declaredTypes].sort()) {
+    const hit = seen.get(type);
+    if (hit?.lastSeen == null || hit.lastSeen >= staleBefore) continue;
+    const days = Math.floor((Date.parse(now) - Date.parse(hit.lastSeen)) / 86_400_000);
+    const declarers = declaredEvents.filter((d) => d.type === type);
+    const emitters = [...new Set(declarers.filter((d) => d.direction === 'emits').map((d) => d.moduleId))];
+    const handlers = [...new Set(declarers.filter((d) => d.direction === 'consumes').map((d) => d.moduleId))];
+    const by = [
+      emitters.length > 0 ? `emitted by ${emitters.join(', ')}` : null,
+      handlers.length > 0 ? `handled by ${handlers.join(', ')}` : null,
+    ]
+      .filter((x): x is string => x !== null)
+      .join(' and ');
+    findings.push({
+      kind: 'stale',
+      subject: type,
+      // Null because the recency is not any one module's: the modules are named in the
+      // sentence as DECLARERS, which is all the manifest actually says.
+      moduleId: null,
+      detail: `Last recorded ${days} days ago, after ${hit.count.toLocaleString()} in all — ${by}. It ran and stopped, which is a different thing from never having run.`,
+    });
   }
 
   for (const provider of new Set(requires)) {

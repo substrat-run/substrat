@@ -1252,8 +1252,9 @@ function FlowFindings({ view }: { view: FlowFindingsView }) {
 
       {!view.observedComplete && (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
-          This app has recorded more event types than can be compared at once, so the event findings are
-          withheld &mdash; a type missing from a shortened list is not evidence that it never happened.
+          This app has recorded more event types than can be compared at once, so nothing is reported as
+          never recorded &mdash; a type missing from a shortened list is not evidence that it never
+          happened. Events that were counted are still judged on how recently they ran.
         </p>
       )}
 

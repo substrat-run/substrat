@@ -183,9 +183,54 @@ describe('deriveFlowFindings (#1234)', () => {
       observed: [seen('receipt.landed', 61, 4210)],
     });
     expect(v.findings.map((f) => f.kind)).toEqual(['stale']);
-    expect(v.findings[0]!.detail).toMatch(/last emitted this 61 days ago, after 4,210 in all/);
-    // NOT "never": the path demonstrably works, which is a different conversation.
-    expect(v.findings[0]!.detail).not.toMatch(/never/);
+    expect(v.findings[0]!.detail).toMatch(/Last recorded 61 days ago, after 4,210 in all — emitted by sync/);
+    // NOT "never having run" as the headline: the path demonstrably works.
+    expect(v.findings[0]!.detail).toMatch(/ran and stopped/);
+  });
+
+  /**
+   * The facet groups by event TYPE. Its count and its recency therefore belong to the
+   * type across the whole scope, and attributing them to a declaring module would say
+   * that module emitted all 4,210 of them and the newest one — which the data cannot
+   * support and which is false outright when two modules declare the same type.
+   */
+  it('keeps a stale claim type-level rather than pinning it on one declaring module', () => {
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('shared.type', 'emits', 'mod-a'), decl('shared.type', 'emits', 'mod-b')],
+      observed: [seen('shared.type', 61, 4210)],
+    });
+    // ONE finding for the type, not one per producer each claiming the whole count.
+    expect(v.findings).toHaveLength(1);
+    expect(v.findings[0]!.moduleId).toBeNull();
+    expect(v.findings[0]!.detail).toMatch(/emitted by mod-a, mod-b/);
+  });
+
+  it('does not report one module twice for a type it both emits and handles', () => {
+    // `@test/flow` in the contract fixtures declares a type in BOTH directions. Two
+    // findings sharing kind, subject and moduleId would also collide as a render key.
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('flow.step1', 'emits', 'flow'), decl('flow.step1', 'consumes', 'flow')],
+      observed: [seen('flow.step1', 61, 8)],
+    });
+    expect(v.findings).toHaveLength(1);
+    expect(v.findings[0]!.detail).toMatch(/emitted by flow and handled by flow/);
+  });
+
+  it('gives every finding a distinct identity, so a render key cannot collide', () => {
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [
+        decl('both.ways', 'emits', 'flow'),
+        decl('both.ways', 'consumes', 'flow'),
+        decl('gone.quiet', 'emits', 'flow'),
+      ],
+      requires: ['scrive'],
+      observed: [seen('gone.quiet', 61, 8)],
+    });
+    const keys = v.findings.map((f) => `${f.kind}:${f.subject}:${f.moduleId ?? ''}`);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 
   it('says nothing about a type seen inside the window', () => {
@@ -211,21 +256,34 @@ describe('deriveFlowFindings (#1234)', () => {
     ]);
   });
 
-  it('words a stopped HANDLER as the producer having stopped, not the handler failing', () => {
-    // The handler is fine; nothing is feeding it. Blaming the consumer would point the
-    // reader at the one component that is behaving correctly.
+  it('names the handler as a declarer without blaming it for the silence', () => {
+    // The handler is fine; nothing is feeding it. The sentence says it handles the
+    // type and that the type stopped — it does not say the handler stopped.
     const v = deriveFlowFindings({
       ...base,
       declaredEvents: [decl('invoice.sent', 'consumes', 'billing')],
       observed: [seen('invoice.sent', 45, 900)],
     });
     expect(v.findings[0]!.kind).toBe('stale');
-    expect(v.findings[0]!.detail).toMatch(/whatever produces them stopped/);
+    expect(v.findings[0]!.detail).toMatch(/handled by billing/);
   });
 
-  it('withholds staleness too when the observation was cut short', () => {
-    // A truncated facet may simply not have returned this type's bucket. Reporting it
-    // stale would be the same fabrication as reporting it never seen.
+  it('withholds ABSENCE under a truncated observation, but not staleness', () => {
+    // The two are not alike. A type the facet did not return may never have been
+    // recorded or may have fallen off the tail — unknowable, so unreported. A bucket
+    // it DID return carries a real count and a real timestamp, and withholding that
+    // would be caution about a fact rather than about a gap. It is also what the map
+    // draws, and the two must not disagree within one read.
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('missing.type', 'emits'), decl('old.type', 'emits')],
+      observed: [seen('old.type', 61, 12)],
+      observedComplete: false,
+    });
+    expect(v.findings.map((f) => `${f.kind}:${f.subject}`)).toEqual(['stale:old.type']);
+  });
+
+  it('reports nothing for a type the truncated facet never returned', () => {
     const v = deriveFlowFindings({
       ...base,
       declaredEvents: [decl('a.thing', 'emits')],

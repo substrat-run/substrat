@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { DeclaredEventSurface } from '@substrat-run/contracts';
 import { deriveFlowGraph } from '../src/flow-graph.js';
+import { deriveFlowFindings } from '../src/flow-findings.js';
 
 const decl = (type: string, direction: 'emits' | 'consumes', moduleId = 'crm'): DeclaredEventSurface =>
   ({ moduleId, type, direction }) as DeclaredEventSurface;
@@ -263,5 +264,47 @@ describe('deriveFlowGraph (#1234)', () => {
       observed: [seen('b', 90, 2), seen('c', 1, 2)],
     });
     for (const n of g.nodes) expect(n.silent && n.stale).toBe(false);
+  });
+
+  /**
+   * The map and the list are two projections of ONE read, and the worker serves them
+   * together — so a node the map colours amber must have a finding beside it, and a
+   * node it leaves alone must not. They drifted apart once already: the findings pass
+   * withheld every event finding under truncation while the map went on marking the
+   * buckets the facet had returned, which put an amber node on screen above a sentence
+   * saying nothing could be reported.
+   */
+  it('agrees with the findings list about staleness, truncated or not', () => {
+    for (const observedComplete of [true, false]) {
+      const shared = {
+        declaredEvents: [
+          decl('stopped.type', 'emits', 'mod-a'),
+          decl('stopped.type', 'consumes', 'mod-b'),
+          decl('busy.type', 'emits', 'mod-a'),
+          decl('unseen.type', 'emits', 'mod-a'),
+        ],
+        observed: [seen('stopped.type', 61, 4210), seen('busy.type', 2, 9)],
+        observedComplete,
+        now: NOW,
+        staleAfterDays: 30,
+        knownProviders: base.knownProviders,
+        requires: [],
+        connections: [],
+        declaredComplete: true,
+      };
+      const g = deriveFlowGraph({ ...shared, schedules: [], outbound: [] });
+      const f = deriveFlowFindings(shared);
+
+      const staleNodes = g.nodes.filter((n) => n.stale).map((n) => n.label).sort();
+      const staleFindings = f.findings.filter((x) => x.kind === 'stale').map((x) => x.subject).sort();
+      expect(staleNodes).toEqual(['stopped.type']);
+      expect(staleFindings).toEqual(staleNodes);
+
+      // And the silence side moves together too: unreportable when truncated, on both.
+      const silentNodes = g.nodes.filter((n) => n.silent).map((n) => n.label);
+      const absenceFindings = f.findings.filter((x) => x.kind === 'unemitted').map((x) => x.subject);
+      expect(silentNodes).toEqual(observedComplete ? ['unseen.type'] : []);
+      expect(absenceFindings).toEqual(observedComplete ? ['unseen.type'] : []);
+    }
   });
 });
