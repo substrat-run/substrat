@@ -55,6 +55,17 @@ parsed and thrown away.
 
 Money is stored as amount-string plus currency, never a float (K-14).
 
+Currency lives on the **line**, so the one total the stored rows cannot label is an **empty**
+basis's zero — and the engine used to answer that with `SEK`, a Swedish answer handed to a
+vertical that may never have priced in it
+([#967](https://github.com/substrat-run/substrat/issues/967)). The optional `currency` on
+`invoicing/export` is where a caller says otherwise. It is additive: omit it and the fallback
+is still `SEK`, so every existing caller keeps its total. When there ARE lines they decide,
+and a `currency` that contradicts them is refused with the `currency_mismatch` conflict —
+the alternative is an exported event labelled with a currency the caller did not mean, read
+by an accounting connector. Hoisting currency onto the underlag row is the honest fix and
+needs a migration, so it stays a human checkpoint (commerce-gaps §3.1).
+
 ## 3. State machine
 
 ```

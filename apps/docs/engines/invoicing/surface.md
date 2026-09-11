@@ -13,7 +13,7 @@ arrive by event, not by call. See [Events](./events).
 |---|---|---|
 | `invoicing/list` | `invoicing:read` | list underlag (optionally by status), each with its computed total |
 | `invoicing/get` | `invoicing:read` | one underlag with all lines and total |
-| `invoicing/export` | `invoicing:export` | flip to `exported` — the point of no return |
+| `invoicing/export` | `invoicing:export` | flip to `exported` — the point of no return; optional `currency` labels the total of a basis with no lines (default `SEK`) |
 
 There is no `create` and no `add-line`: an underlag is never authored, only accumulated. The
 only way to put a line on one is to emit an event this engine consumes. That is the design —

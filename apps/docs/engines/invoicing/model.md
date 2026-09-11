@@ -96,8 +96,12 @@ creates a document that can't be read or exported. Rejecting at read time instea
 a document that can never be listed or exported again.
 
 ::: warning Currency lives on the line, not the document
-Currency is carried per line today, so an underlag with no lines has no currency to report and
-falls back to `SEK` — attributing a currency to an empty document is exactly the guess this
-engine shouldn't make. Hoisting currency onto the underlag itself is the honest fix; it needs
+Currency is carried per line today, so an underlag with no lines has no currency to report —
+attributing one to an empty document is exactly the guess this engine shouldn't make. The
+optional `currency` on `invoicing/export` is where a caller says instead
+([#967](https://github.com/substrat-run/substrat/issues/967)); omit it and the fallback is
+still `SEK`, so every existing caller keeps the total it has today. When there ARE lines they
+decide, and a `currency` that contradicts them is refused with `currency_mismatch` rather than
+quietly ignored. Hoisting currency onto the underlag itself is still the honest fix; it needs
 a migration and therefore a human review checkpoint.
 :::

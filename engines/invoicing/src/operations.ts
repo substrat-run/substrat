@@ -31,7 +31,7 @@
  * vertical needing a customer to see only their own basis puts that walk in its
  * own operation, where the customer edge exists.
  */
-import { defineOperations, z } from '@substrat-run/contracts';
+import { currencyCode, defineOperations, z } from '@substrat-run/contracts';
 import { invoicingEntities, underlagRow } from './entities.js';
 import { underlagDetail, underlagListRow } from './schemas.js';
 
@@ -71,7 +71,28 @@ export const invoicingOperations = defineOperations(invoicingEntities, INVOICING
   'invoicing/export': {
     summary: 'Export an invoice basis — makes it immutable',
     permission: 'invoicing:export',
-    input: underlagId,
+    input: underlagId.extend({
+      /**
+       * The currency of an EMPTY basis's zero total — the one total the lines
+       * cannot label themselves (#967).
+       *
+       * This is the only operation that takes it, because this is the only one
+       * where the currency leaves the engine: `invoicing/list` and
+       * `invoicing/get` answer with `total` as a bare string, so a currency
+       * declared to either would be discarded. The exported event carries
+       * `total` as Money, and its consumer is by design an accounting
+       * connector — a zero labelled `SEK` is a Swedish answer handed to a
+       * vertical that may never have priced in it.
+       *
+       * Optional, and NOT defaulted by this schema: the basis's lines decide
+       * whenever there are any, this field decides when there are none, and
+       * `SEK` is the engine's last-resort fallback when neither says anything —
+       * so a caller that omits it gets the answer it got before. Declaring one
+       * that contradicts the lines is refused (`currency_mismatch`) rather than
+       * silently ignored.
+       */
+      currency: currencyCode.optional(),
+    }),
     output: underlagRow,
   },
 });

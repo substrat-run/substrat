@@ -357,8 +357,17 @@ const storedLine = (r: UnderlagLine): UnderlagLine =>
  * a number that means nothing. `addMoney` throws on a currency mismatch, so the
  * engine refuses rather than invents. `assertSingleCurrency` in the consumers is
  * the real guard — this is defence in depth behind it.
+ *
+ * `declaredCurrency` is the caller's answer to the one question the lines cannot
+ * answer: what currency an EMPTY underlag's zero total is in (#967). It is
+ * optional, the lines win whenever there are any, and a declaration that
+ * contradicts them is refused.
  */
-function underlagTotalMoney(ctx: OperationContext, underlagId: string): Money {
+function underlagTotalMoney(
+  ctx: OperationContext,
+  underlagId: string,
+  declaredCurrency?: string,
+): Money {
   const rows = ctx.sql
     .query<{ line_total_amount: string; currency: string }>(
       `SELECT ${columnsOf(lineAmount)} FROM invoicing_lines WHERE underlag_id = ?`,
@@ -368,13 +377,28 @@ function underlagTotalMoney(ctx: OperationContext, underlagId: string): Money {
     // delta: a summand that drifted crosses as a number nobody questions, and
     // this one ends up on an exported invoice.
     .map((r) => returns(lineAmount, `line amount on underlag ${underlagId}`, r));
+  const lineCurrency = rows[0]?.currency;
+  if (declaredCurrency !== undefined && lineCurrency !== undefined && declaredCurrency !== lineCurrency) {
+    // The lines win on their own arithmetic (`addMoney` refuses a mixed sum), so
+    // a declared currency that contradicts them can only label the total with a
+    // currency the caller did not mean. Refuse instead — the same answer
+    // `completeWorkOrder` gives to the other half of #967, in this engine's own
+    // conflict vocabulary.
+    throw conflict('currency_mismatch',
+      `currency mismatch on underlag ${underlagId}: declared ${declaredCurrency}, its lines are in ${lineCurrency} — an underlag is one document in one currency`,
+    );
+  }
   // An underlag with no lines is unreachable in practice — find-or-create and
   // the line inserts share one transaction — but a zero total must still have a
-  // currency to be Money at all. Attributing a currency to an empty document is
-  // exactly the guess this engine should not make; SEK is the demo default and
-  // the honest fix is a currency column on the underlag, which needs a migration
-  // and therefore a human checkpoint (see docs/strategy/commerce-gaps.md §3.1).
-  if (rows.length === 0) return moneyOf('0', 'SEK');
+  // currency to be Money at all, and attributing one to an empty document is
+  // exactly the guess this engine should not make. `declaredCurrency` is where
+  // the caller says otherwise; `invoicing/export` takes it as an optional input,
+  // so a EUR vertical no longer receives a SEK total. `SEK` stays the last-resort
+  // fallback when nobody has said anything, which is what keeps every existing
+  // caller on the total it has today. The honest fix is still a currency column
+  // on the underlag, which needs a migration and therefore a human checkpoint
+  // (see docs/strategy/commerce-gaps.md §3.1).
+  if (rows.length === 0) return moneyOf('0', declaredCurrency ?? 'SEK');
 
   return rows
     .map((r) => moneyOf(r.line_total_amount, r.currency))
@@ -697,7 +721,10 @@ const getOp: OperationHandler<{ underlagId: string }, UnderlagDetail> = async (c
   });
 };
 
-const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (ctx, input) => {
+const exportOp: OperationHandler<{ underlagId: string; currency?: string }, UnderlagRow> = async (
+  ctx,
+  input,
+) => {
   assertAllowed(await ctx.check(INVOICING_PERM.export));
   const stored = ctx.sql.query<UnderlagRow>(
     `SELECT ${UNDERLAG_COLUMNS} FROM invoicing_underlag WHERE id = ?`,
@@ -715,6 +742,11 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
   if (!transitionFor(invoicingLifecycles.underlag, underlag.status, 'invoicing/export')) {
     throw conflict('immutable_after_export', `underlag ${underlag.number} is '${underlag.status}' — exported underlag are immutable`);
   }
+  // Folded BEFORE the write, not inside the emit: a declared `currency` that
+  // contradicts the lines is a refusal, and an operation refuses before it
+  // mutates. The fold reads only lines, which this operation does not touch, so
+  // the total is the same number either way.
+  const total = underlagTotalMoney(ctx, underlag.id, input.currency);
   ctx.sql.exec(
     `UPDATE invoicing_underlag SET status = 'exported', exported_at = ? WHERE id = ?`,
     [ctx.now(), underlag.id],
@@ -729,7 +761,7 @@ const exportOp: OperationHandler<{ underlagId: string }, UnderlagRow> = async (c
       number: underlag.number,
       // Money, not a bare string: the consumer of an export event is an
       // accounting connector, and "1550" without a currency is not an amount.
-      total: underlagTotalMoney(ctx, underlag.id),
+      total,
     },
   });
   return storedUnderlag(
