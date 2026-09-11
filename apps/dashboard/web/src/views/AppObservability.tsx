@@ -492,6 +492,9 @@ interface AppliedFacet {
   field: string;
   type: string;
   since: string | undefined;
+  /** The window as the reader chose it, carried so the header names the SUBMITTED
+   *  window rather than whatever the select happens to show now. */
+  windowLabel: string;
 }
 
 /**
@@ -522,13 +525,20 @@ function EventExplorer({ app }: { app: AppRow }) {
   // read, and a half-typed field name is a query nobody asked for. `since` is resolved
   // HERE, at submit, so the window is the one the reader chose and not one that slides
   // out from under the answer on the next render.
-  const [applied, setApplied] = useState<AppliedFacet>({ groupBy: 'type', field: '', type: '', since: undefined });
+  const [applied, setApplied] = useState<AppliedFacet>(() => ({
+    groupBy: 'type',
+    field: '',
+    type: '',
+    since: sinceOf(FACET_WINDOWS[1]!.label),
+    windowLabel: FACET_WINDOWS[1]!.label,
+  }));
   const submit = () =>
     setApplied({
       groupBy,
       field: field.trim(),
       type: type.trim(),
       since: sinceOf(windowLabel),
+      windowLabel,
     });
 
   useEffect(() => {
@@ -607,7 +617,7 @@ function EventExplorer({ app }: { app: AppRow }) {
         <>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
             {result.total.toLocaleString()} event{result.total === 1 ? '' : 's'} matched
-            {applied.since !== undefined && <span> in {windowLabel.toLowerCase()}</span>}
+            {applied.since !== undefined && <span> in {applied.windowLabel.toLowerCase()}</span>}
             {result.erased > 0 && (
               <span style={{ color: 'var(--status-warning-fg)' }}>
                 {' '}· {result.erased.toLocaleString()} with an erased payload, counted apart and not grouped
