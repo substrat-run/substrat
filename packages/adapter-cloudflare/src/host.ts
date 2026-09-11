@@ -69,6 +69,7 @@ import {
   type AdminLogEntry,
   type OpsFailureEntry,
   type IssueEntry,
+  type DrainedEvent,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventFacetResult,
@@ -935,6 +936,8 @@ interface ScopeStubRpc {
     limit?: number;
     cursor?: string;
   }): Promise<Page<HistoryEntry>>;
+  undrainedEvents(limit: number): Promise<DrainedEvent[]>;
+  markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
   facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
@@ -3885,6 +3888,36 @@ export class CloudflareScopeHost implements ScopeHost {
         const tables = await this.scopeStub(scopeId).introspectTables();
         await this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
+      },
+      readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<DrainedEvent[]> => {
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const events = await this.scopeStub(scopeId).undrainedEvents(Math.min(Math.max(limit ?? 200, 1), 1000));
+        await this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, events.length);
+        return events;
+      },
+      markEventsDrained: async (actor, tenantId, scopeId, eventIds): Promise<number> => {
+        // The same refusal the reads carry: a reaped scope's storage is gone, and
+        // addressing its DO would construct an empty one to stamp nothing in.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        if (eventIds.length === 0) return 0;
+        const drainedAt = new Date().toISOString();
+        const drained = await this.scopeStub(scopeId).markEventsDrained(eventIds, drainedAt);
+        // K-24's rule, one tier down (#1334): declaring domain payloads shipped is an
+        // EGRESS, and the admin log is where "these events left the platform, at this
+        // time, on this actor's say-so" is recorded. `drainAccessLog` audits the same
+        // act for the smaller class of data; this one carries the larger. Only a
+        // NONZERO change is recorded, so a retried pass that re-marks a batch it
+        // already shipped writes no row claiming an egress that never happened.
+        if (drained > 0) {
+          await this.recordAdmin(
+            actor,
+            'drainEvents',
+            { tenantId, scopeId },
+            null,
+            { drained, requested: eventIds.length, drainedAt },
+          );
+        }
+        return drained;
       },
       facetEvents: async (actor, tenantId, scopeId, input: EventFacetInput): Promise<EventFacetResult> => {
         await this.scopeRecordForRead(tenantId, scopeId);

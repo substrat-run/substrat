@@ -428,6 +428,15 @@ const KERNEL_DDL = `
   -- #1232: the freshness evaluator's read — MAX(occurred_at) per type, every pass,
   -- over a table that is never pruned. Unindexed, that is a full history scan.
   CREATE INDEX IF NOT EXISTS _substrat_outbox_type_at ON _substrat_outbox (type, occurred_at);
+  -- #1334: the drain's read — WHERE drained_at IS NULL ORDER BY id. No existing index
+  -- starts with drained_at, so without this one SQLite walks the PRIMARY KEY from the
+  -- oldest event forward, stepping over every row a previous pass already shipped. A
+  -- drain RETAINS what it marks, so that prefix only grows: the cost of finding the next
+  -- batch would rise with the scope's lifetime event count rather than with how far
+  -- behind the drain is. Leading with drained_at makes the undrained rows a seekable
+  -- range, and the trailing id gives the ORDER BY for free. IF NOT EXISTS in
+  -- KERNEL_DDL, which every runtime() re-runs, so existing scopes get it on next wake.
+  CREATE INDEX IF NOT EXISTS _substrat_outbox_drained ON _substrat_outbox (drained_at, id);
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
   -- to drain and execute with HostAdmin authority — the sandbox-clean way a vertical asks for a
   -- privileged action. Written by the kernel (spine), settled by the platform drain.
@@ -5598,6 +5607,53 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt },
         );
       },
+      readUndrainedEvents: async (actor, tenantId, scopeId, limit) => {
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const rows = db
+          .prepare(`SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ?`)
+          .all(Math.min(Math.max(limit ?? 200, 1), 1000)) as Array<Record<string, unknown>>;
+        this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, rows.length);
+        return rows.map((r) => ({
+          ...this.parseOutboxRow(r as never),
+          operation: (r.operation as string | null) ?? null,
+          version: (r.version as string | null) ?? null,
+        })) as never;
+      },
+      markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {
+        // BEFORE the empty-batch shortcut, not after. "Nothing to mark" and "you may
+        // not address this scope" are different answers, and returning 0 for an
+        // unknown pair would make a caller's typo look like a successful no-op —
+        // while the Cloudflare host, which resolves the record first, throws. An
+        // empty batch must not open the scope file either, which is why this is the
+        // directory-only check rather than `scopeDbFor`.
+        this.assertScopeReachable(tenantId, scopeId);
+        if (eventIds.length === 0) return 0;
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const at = new Date().toISOString();
+        // Only an UNDRAINED row is stamped, so a replayed batch cannot move an
+        // earlier drain's timestamp forward and misreport when it shipped.
+        const stmt = db.prepare(
+          `UPDATE _substrat_outbox SET drained_at = ? WHERE id = ? AND drained_at IS NULL`,
+        );
+        let drained = 0;
+        for (const id of eventIds) drained += stmt.run(at, id).changes;
+        // K-24's rule, one tier down (#1334): declaring domain payloads shipped is an
+        // EGRESS, and the admin log is where "these events left the platform, at this
+        // time, on this actor's say-so" is recorded. `drainAccessLog` audits the same
+        // act for the smaller class of data; this one carries the larger. Only a
+        // NONZERO change is recorded, so a retried pass that re-marks a batch it
+        // already shipped writes no row claiming an egress that never happened.
+        if (drained > 0) {
+          this.recordAdmin(
+            actor,
+            'drainEvents',
+            { tenantId, scopeId },
+            null,
+            { drained, requested: eventIds.length, drainedAt: at },
+          );
+        }
+        return drained;
+      },
       facetEvents: async (actor, tenantId, scopeId, input) => {
         // `facetEvents` is the sanctioned read: an erased payload yields the same
         // NULL a missing field does, and only the helper counts them apart.
@@ -8341,21 +8397,32 @@ export class SqliteScopeHost implements ScopeHost {
    * DIFFERENT tenant, throws — the introspection reads never open another tenant's
    * DB, and never CREATE one for an id that was never provisioned.
    */
-  private scopeDbFor(tenantId: TenantId, scopeId: ScopeId): Database.Database {
+  /**
+   * Whether this (tenant, scope) pair may be reached at all — the DIRECTORY half of
+   * `scopeDbFor`, split out so a call that ends up touching no rows still answers the
+   * question. K-3 first: a scope under another tenant is indistinguishable from one
+   * that does not exist. Then the reap.
+   *
+   * A reaped scope keeps its directory row as a tombstone while `reapScope` deletes
+   * the file (§4.4). `runtime()` opens a database by CREATING it when absent, so
+   * reading one would not merely answer emptily — it would put the file back,
+   * resurrecting storage an irreversible reap destroyed, and every later read would
+   * report a scope with no events rather than a scope that is gone. `archived` is
+   * deliberately still reachable: its bytes exist, and that is the whole point of the
+   * state.
+   */
+  private assertScopeReachable(tenantId: TenantId, scopeId: ScopeId): void {
     const r = this.directory.prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?').get(scopeId) as
       | { tenant_id: string; status: string }
       | undefined;
     if (!r || r.tenant_id !== tenantId) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
-    // A reaped scope keeps its directory row as a tombstone while `reapScope` deletes
-    // the file (§4.4). `runtime()` opens a database by CREATING it when absent, so
-    // reading one here would not merely answer emptily — it would put the file back,
-    // resurrecting storage an irreversible reap destroyed, and every later read would
-    // report a scope with no events rather than a scope that is gone. `archived` is
-    // deliberately still readable: its bytes exist, and that is the whole point of the
-    // state.
     if (r.status === 'reaped') {
       throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
     }
+  }
+
+  private scopeDbFor(tenantId: TenantId, scopeId: ScopeId): Database.Database {
+    this.assertScopeReachable(tenantId, scopeId);
     return this.runtime(tenantId, scopeId).db;
   }
 

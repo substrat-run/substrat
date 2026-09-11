@@ -89,8 +89,17 @@ export const domainEventInput = z
   .superRefine(piiInvariant);
 export type DomainEventInput = z.infer<typeof domainEventInput>;
 
-// The full envelope as it enters the spine.
-export const domainEvent = z
+/**
+ * The envelope's SHAPE, unrefined — the one place its fields are written down.
+ *
+ * `domainEvent` below is this plus the PII rule, and `drainedEvent` is this with
+ * two columns swapped in plus the SAME rule. Keeping the shape separate is what
+ * lets the second exist: the two schemas disagree about `operation` (optional in
+ * the envelope, nullable on the way out of the spine), so neither can be built
+ * from the other by extension, and intersecting them would demand a value satisfy
+ * both — which `null` cannot.
+ */
+const domainEventShape = z
   .object({
     id: eventId, // ULID; idempotency key downstream (consumers are required-idempotent)
     type: eventType,
@@ -122,8 +131,10 @@ export const domainEvent = z
     // things that are not operations — and absent on rows that predate the field.
     operation: z.string().min(1).optional(),
     payload: z.unknown(),
-  })
-  .superRefine(piiInvariant);
+  });
+
+// The full envelope as it enters the spine.
+export const domainEvent = domainEventShape.superRefine(piiInvariant);
 export type DomainEvent = z.infer<typeof domainEvent>;
 
 /**
@@ -211,3 +222,52 @@ export const historyEntry = timelineEntry.extend({
   version: z.string().nullable(),
 });
 export type HistoryEntry = z.infer<typeof historyEntry>;
+
+/**
+ * One event as it leaves the scope for Tier 2 (#1334) — the exact-history lake
+ * the master plan commits to (§5.3: "domain events → Pipelines → Iceberg on R2").
+ *
+ * Everything the envelope holds, because the lake is where reporting,
+ * reconciliation and audit are answered and a field dropped here cannot be
+ * recovered later. In particular it carries:
+ *
+ * - **`subjectId`**, the pseudonymous erasure key. A shred erases Tier 1's
+ *   payload; the lake copy has to be reachable too, and this is the column that
+ *   makes "delete every row for this subject" expressible there. Shipping
+ *   payloads without it would put personal data somewhere an erasure cannot
+ *   follow — so the key travels with them, always.
+ * - **`authorization`, `impersonation`, `operation`, `version`** — the K-34 chain,
+ *   the K-42 stamp and the signals dimensions, whose nulls stay facts on the way
+ *   out exactly as `historyEntry` documents them.
+ */
+// Built from the SHAPE, not from `domainEvent` — and deliberately not as an
+// intersection of the two. `operation` is `.optional()` on the envelope and
+// nullable here, and an intersection requires a value to satisfy BOTH sides: the
+// one thing this schema exists to carry, a drained row whose `operation` is null,
+// is exactly what such a schema would reject. Re-applying `piiInvariant` keeps the
+// PII rule the envelope's own — a `direct` class must still name a subject.
+export const drainedEvent = domainEventShape
+  .extend({
+    /**
+     * The `invoke()` string this event was emitted from (#1231), or null — two
+     * facts the spine cannot separate afterwards: a consumer emitted it (no
+     * operation ran), or the row predates the column.
+     *
+     * `.min(1)` because the envelope's own `operation` carries it: the drain
+     * WIDENS absent to null, and widening that far would also admit `''`, which
+     * is neither a fact nor an operation — just a row nothing can be grouped by.
+     */
+    operation: z.string().min(1).nullable(),
+    /**
+     * The version the emitting code was deployed as (#1242), or null. Read from
+     * the outbox COLUMN, never the envelope — #1250 kept it off `domainEvent` on
+     * purpose (script configuration, not event data), so a drain is one of the
+     * few sanctioned joins from an event to its push. `.min(1)` for the reason
+     * `operation` carries it: "no version identity was present" is spelled null,
+     * and an empty string is a third spelling of it that nothing should have to
+     * handle.
+     */
+    version: z.string().min(1).nullable(),
+  })
+  .superRefine(piiInvariant);
+export type DrainedEvent = z.infer<typeof drainedEvent>;
