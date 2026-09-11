@@ -51,6 +51,85 @@ type SourceFileRow = EntityRow<typeof tockEntities, 'source_file'>;
 type ObservationRow = EntityRow<typeof tockEntities, 'observation'>;
 type FieldHistoryRow = EntityRow<typeof tockEntities, 'field_history'>;
 type RowRow = EntityRow<typeof tockEntities, 'row'>;
+type VariantRow = EntityRow<typeof tockEntities, 'variant'>;
+
+/** The envelope every record carries, whatever its kind. A real value, never a null. */
+const ROOT = '';
+
+/**
+ * A variant's key is its selector joined — `track/scroll`. Readable, and its own path.
+ *
+ * The join is only reversible because `tock/declare-variants` refuses a selector value that
+ * is empty or contains `/`. That refusal is what lets `pathOf` read a key back as the list
+ * of levels a record inherits from; without it `ui/click` would be one kind that reads as
+ * two, inheriting from a `ui` nobody declared, and `''` would be a kind that reads as the
+ * envelope. The constraint lives at declaration because that is the only place a person can
+ * still fix it.
+ */
+const keyOf = (selector: readonly string[]) => selector.join('/');
+
+/**
+ * Every prefix of a variant key, root first: `''`, `'track'`, `'track/scroll'`.
+ *
+ * This is what "schemas stack" means mechanically — a record's shape is the union along this
+ * list, so the envelope is declared once and a kind declares only what it adds.
+ */
+function pathOf(variantKey: string): string[] {
+  if (variantKey === ROOT) return [ROOT];
+  const parts = variantKey.split('/');
+  return [ROOT, ...parts.map((_, i) => parts.slice(0, i + 1).join('/'))];
+}
+
+/**
+ * Which kind a record belongs to: the LONGEST variant whose discriminator values all hold.
+ *
+ * Returns `ROOT` when none match, which is a classification and not a rejection — a producer
+ * shipping a kind nobody declared must never cost the data, and the findings view is where
+ * that surfaces. Ambiguity cannot arise here because a longer selector always wins; two
+ * variants with the SAME selector are refused at declaration instead.
+ */
+function classify(
+  discriminators: string[],
+  variants: readonly { key: string; selector: string[] }[],
+  fields: Record<string, string | null>,
+): string {
+  let best = ROOT;
+  // The depth is carried, never re-derived from the key: `best.split('/')` asks the key how
+  // deep it is, which is a second, weaker answer to a question the selector already answered
+  // exactly. They agree only while every selector value is `/`-free — true today because
+  // declaration refuses otherwise, and not a thing this loop should depend on.
+  let bestDepth = 0;
+  for (const v of variants) {
+    if (v.selector.length <= bestDepth) continue;
+    const holds = v.selector.every((want, i) => {
+      const field = discriminators[i];
+      return field !== undefined && fields[field] === want;
+    });
+    if (holds) {
+      best = v.key;
+      bestDepth = v.selector.length;
+    }
+  }
+  return best;
+}
+
+/** A source's declared kinds, in the shape `classify` wants. */
+function variantsOf(ctx: OperationContext, sourceKey: string) {
+  const rows = ctx.sql.query<VariantRow>(
+    'SELECT * FROM tock_variants WHERE source_key = ? ORDER BY key',
+    [sourceKey],
+  );
+  return rows.map((r) => ({ key: r.key, selector: JSON.parse(r.selector) as string[] }));
+}
+
+function discriminatorsOf(ctx: OperationContext, sourceKey: string): string[] {
+  const row = ctx.sql.query<{ discriminators: string | null }>(
+    'SELECT discriminators FROM tock_sources WHERE key = ?',
+    [sourceKey],
+  )[0];
+  // Null is the older fact — this source predates variants — and reads as "no kinds".
+  return row?.discriminators ? (JSON.parse(row.discriminators) as string[]) : [];
+}
 type RuleStateRow = EntityRow<typeof tockEntities, 'rule_state'>;
 
 const runRef = (id: string) => ({ entityType: 'run', entityId: id });
@@ -82,13 +161,32 @@ function sourceOrThrow(ctx: OperationContext, key: string): SourceRow {
   return row;
 }
 
-function schemaOrThrow(ctx: OperationContext, sourceKey: string, version: number): SchemaRow {
+function schemaOrThrow(ctx: OperationContext, sourceKey: string, version: number, variantKey = ROOT): SchemaRow {
   const row = ctx.sql.query<SchemaRow>(
-    'SELECT * FROM tock_schemas WHERE source_key = ? AND version = ?',
-    [sourceKey, version],
+    'SELECT * FROM tock_schemas WHERE source_key = ? AND variant_key = ? AND version = ?',
+    [sourceKey, variantKey, version],
   )[0];
-  if (!row) throw substratError('not_found', `no version ${version} of schema ${sourceKey}`);
+  if (!row) throw substratError('not_found', `no version ${version} of the ${variantKey || 'envelope'} schema for ${sourceKey}`);
   return row;
+}
+
+/**
+ * The fields a record of this kind carries — the union along its path, nearest wins.
+ *
+ * Always the latest version of each prefix. A run pins the ENVELOPE version it was mapped to;
+ * pinning every level independently would need a version per level on the run, which is a
+ * cost this slice does not pay and the mapping slice will have to.
+ */
+function effectiveFields(ctx: OperationContext, sourceKey: string, variantKey: string): FieldDefs {
+  const out: FieldDefs = {};
+  for (const prefix of pathOf(variantKey)) {
+    const row = ctx.sql.query<SchemaRow>(
+      'SELECT * FROM tock_schemas WHERE source_key = ? AND variant_key = ? ORDER BY version DESC LIMIT 1',
+      [sourceKey, prefix],
+    )[0];
+    if (row) Object.assign(out, JSON.parse(row.fields_json) as FieldDefs);
+  }
+  return out;
 }
 
 /**
@@ -194,8 +292,8 @@ const declareSourceOp: OperationHandler<
   if (existing) throw substratError('conflict', `a source called ${input.key} already exists`);
 
   ctx.sql.exec(
-    'INSERT INTO tock_sources (key, title, expected_cadence, created_at) VALUES (?, ?, ?, ?)',
-    [input.key, input.title, input.expectedCadence, ctx.now()],
+    'INSERT INTO tock_sources (key, title, expected_cadence, discriminators, created_at) VALUES (?, ?, ?, ?, ?)',
+    [input.key, input.title, input.expectedCadence, '[]', ctx.now()],
   );
   const row = sourceOrThrow(ctx, input.key);
   ctx.emit({
@@ -206,6 +304,83 @@ const declareSourceOp: OperationHandler<
     payload: { key: row.key, title: row.title, expected_cadence: row.expected_cadence },
   });
   return row;
+};
+
+/**
+ * Declare the discriminators and the kinds, as one act.
+ *
+ * Replaces the set rather than versioning it. A variant that stopped existing would strand
+ * every row classified into it, pointing at a kind nobody declares any more — so the set is
+ * frozen once a run has been COUNTED instead, which is the point after which a
+ * classification is load-bearing. Before that, changing your mind is free.
+ */
+const declareVariantsOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/declare-variants']>,
+  HandlerOutput<(typeof tockOperations)['tock/declare-variants']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.schemaManage));
+  sourceOrThrow(ctx, input.sourceKey);
+
+  const counted = ctx.sql.query<{ n: number }>(
+    "SELECT COUNT(*) AS n FROM tock_runs WHERE source_key = ? AND status = 'counted'",
+    [input.sourceKey],
+  )[0];
+  if ((counted?.n ?? 0) > 0)
+    throw substratError(
+      'conflict',
+      'this source has counted runs, and their rows were classified by the kinds declared then — changing the kinds now would make a current number unreproducible',
+      { reason: 'already_counted' },
+    );
+
+  const seen = new Set<string>();
+  for (const v of input.variants) {
+    if (v.selector.length > input.discriminators.length)
+      throw substratError(
+        'validation_failed',
+        `selector [${v.selector.join(', ')}] is longer than the ${input.discriminators.length} declared discriminator(s) — a selector is a PREFIX of them`,
+      );
+    const key = keyOf(v.selector);
+    if (seen.has(key))
+      throw substratError('validation_failed', `two variants share the selector [${v.selector.join(', ')}]`);
+    seen.add(key);
+  }
+
+  ctx.sql.exec('UPDATE tock_sources SET discriminators = ? WHERE key = ?', [
+    JSON.stringify(input.discriminators),
+    input.sourceKey,
+  ]);
+  ctx.sql.exec('DELETE FROM tock_variants WHERE source_key = ?', [input.sourceKey]);
+  const now = ctx.now();
+  for (const v of input.variants) {
+    ctx.sql.exec(
+      'INSERT INTO tock_variants (id, source_key, key, selector, created_at) VALUES (?, ?, ?, ?, ?)',
+      [ulid(), input.sourceKey, keyOf(v.selector), JSON.stringify(v.selector), now],
+    );
+  }
+  ctx.emit({
+    type: 'tock.variants-declared',
+    schemaVersion: 1,
+    entity: sourceRef(input.sourceKey),
+    piiClass: 'none',
+    payload: { sourceKey: input.sourceKey },
+  });
+  return {
+    sourceKey: input.sourceKey,
+    discriminators: input.discriminators,
+    variants: ctx.sql.query<VariantRow>('SELECT * FROM tock_variants WHERE source_key = ? ORDER BY key', [input.sourceKey]),
+  };
+};
+
+const listVariantsOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/list-variants']>,
+  HandlerOutput<(typeof tockOperations)['tock/list-variants']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.reportRead));
+  sourceOrThrow(ctx, input.sourceKey);
+  return {
+    discriminators: discriminatorsOf(ctx, input.sourceKey),
+    variants: ctx.sql.query<VariantRow>('SELECT * FROM tock_variants WHERE source_key = ? ORDER BY key', [input.sourceKey]),
+  };
 };
 
 const listSourcesOp: OperationHandler<
@@ -230,11 +405,37 @@ const saveSchemaOp: OperationHandler<
   assertAllowed(await ctx.check(TOCK_PERM.schemaManage));
   sourceOrThrow(ctx, input.sourceKey);
 
-  const dimensions = Object.entries(input.fields).filter(([, f]) => f.role === 'dimension');
+  if (input.variantKey !== ROOT) {
+    const known = ctx.sql.query<{ key: string }>('SELECT key FROM tock_variants WHERE source_key = ? AND key = ?', [
+      input.sourceKey,
+      input.variantKey,
+    ])[0];
+    if (!known) throw substratError('not_found', `source ${input.sourceKey} declares no variant '${input.variantKey}'`);
+  }
+
+  /**
+   * The cap is on the EFFECTIVE shape, not on this schema alone.
+   *
+   * A record's dimensions are the union along its path, so a root declaring one and a variant
+   * declaring two is three — and checking only the file in front of you would accept that and
+   * fail at count time, about a schema the person is not looking at.
+   */
+  const inherited = new Map<string, FieldDef>();
+  for (const prefix of pathOf(input.variantKey)) {
+    if (prefix === input.variantKey) continue;
+    const row = ctx.sql.query<SchemaRow>(
+      'SELECT * FROM tock_schemas WHERE source_key = ? AND variant_key = ? ORDER BY version DESC LIMIT 1',
+      [input.sourceKey, prefix],
+    )[0];
+    if (row) for (const [n, f] of Object.entries(JSON.parse(row.fields_json) as FieldDefs)) inherited.set(n, f);
+  }
+  const effective = new Map(inherited);
+  for (const [n, f] of Object.entries(input.fields)) effective.set(n, f);
+  const dimensions = [...effective].filter(([, f]) => f.role === 'dimension');
   if (dimensions.length > MAX_GROUPING_DIMENSIONS)
     throw substratError(
       'validation_failed',
-      `a schema may declare at most ${MAX_GROUPING_DIMENSIONS} grouping dimensions; this one declares ${dimensions.length} (${dimensions.map(([n]) => n).join(', ')}). The rollup holds two dimension slots, so a third could be stored and never grouped by.`,
+      `a record may carry at most ${MAX_GROUPING_DIMENSIONS} grouping dimensions; this one would carry ${dimensions.length} (${dimensions.map(([n]) => n).join(', ')}) once the envelope is included. The rollup holds two dimension slots, so a third could be stored and never grouped by.`,
     );
   /**
    * One measure, refused at save time for exactly the reason the dimension cap is.
@@ -251,23 +452,36 @@ const saveSchemaOp: OperationHandler<
       `a schema may declare at most 1 measure; this one declares ${measures.length} (${measures.map(([n]) => n).join(', ')}). A rollup row holds one measure and one unit, so a second could be declared and never counted.`,
     );
   for (const [name, f] of Object.entries(input.fields)) {
-    if (f.labelField && !input.fields[f.labelField])
-      throw substratError('validation_failed', `field '${name}' names a labelField '${f.labelField}' that is not a field of this schema`);
+    // Against the EFFECTIVE shape, like the dimension cap above: a kind's label field
+    // routinely lives in the envelope — that is what declaring the envelope once is for —
+    // and resolving against this file alone refused a schema whose record does carry it.
+    if (f.labelField && !effective.has(f.labelField))
+      throw substratError(
+        'validation_failed',
+        `field '${name}' names a labelField '${f.labelField}' that is not a field of this schema or of the ones it inherits`,
+      );
   }
 
+  // Versions run per VARIANT: the envelope and a kind evolve at their own paces, and one
+  // shared counter would make a change to either look like a change to both.
   const latest = ctx.sql.query<{ version: number }>(
-    'SELECT MAX(version) AS version FROM tock_schemas WHERE source_key = ?',
-    [input.sourceKey],
+    'SELECT MAX(version) AS version FROM tock_schemas WHERE source_key = ? AND variant_key = ?',
+    [input.sourceKey, input.variantKey],
   )[0];
   const version = (latest?.version ?? 0) + 1;
   const id = ulid();
   ctx.sql.exec(
-    'INSERT INTO tock_schemas (id, source_key, version, fields_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, input.sourceKey, version, JSON.stringify(input.fields), ctx.principal, ctx.now()],
+    'INSERT INTO tock_schemas (id, source_key, variant_key, version, fields_json, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [id, input.sourceKey, input.variantKey, version, JSON.stringify(input.fields), ctx.principal, ctx.now()],
   );
   ctx.link({ entityType: 'schema', entityId: id }, sourceRef(input.sourceKey));
 
-  const row = schemaOrThrow(ctx, input.sourceKey, version);
+  // The variant is NOT optional here: versions run per variant, so version 3 of
+  // `track/scroll` and version 3 of the envelope are different rows. Reading back at the
+  // default ROOT either threw `not_found` for a kind the envelope had not reached yet, or —
+  // worse — returned the ENVELOPE's row of the same number, so the operation answered with
+  // another schema's id and the event announced a save that did not happen.
+  const row = schemaOrThrow(ctx, input.sourceKey, version, input.variantKey);
   ctx.emit({
     type: 'tock.schema-saved',
     schemaVersion: 1,
@@ -283,7 +497,16 @@ const listSchemasOp: OperationHandler<
   HandlerOutput<(typeof tockOperations)['tock/list-schemas']>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(TOCK_PERM.reportRead));
-  return ctx.page<SchemaRow>('schema', { ...input, filters: { source_key: input.sourceKey } });
+  // `variant_key` travels only when asked for, and `''` IS an ask — it names the envelope.
+  // An absent one must not become `WHERE variant_key = ''`, which would answer every
+  // question about a kind with the envelope's versions.
+  return ctx.page<SchemaRow>('schema', {
+    ...input,
+    filters: {
+      ...(input.variantKey === undefined ? {} : { variant_key: input.variantKey }),
+      source_key: input.sourceKey,
+    },
+  });
 };
 
 // ── the lifecycle ───────────────────────────────────────────────────────────
@@ -360,10 +583,14 @@ const profileRunOp: OperationHandler<
   if (run.status === 'profiled')
     throw substratError('conflict', 'this run has already finished profiling', { reason: 'already_profiled' });
 
+  // Read once per invocation rather than per record: a batch is thousands of records and the
+  // declaration does not move underneath them, so one operation gets one consistent answer.
+  const discriminators = discriminatorsOf(ctx, run.source_key);
+  const variants = variantsOf(ctx, run.source_key);
   let written = 0;
 
   /**
-   * Accumulated for the whole batch and written once per field, rather than once per record.
+   * Accumulated for the whole batch and written once per KIND PER FIELD, rather than per field.
    *
    * `types` is a SET, and that is the correction. The column used to be assigned by whichever
    * record reached the field first and never revisited: a field whose first value was null
@@ -376,6 +603,7 @@ const profileRunOp: OperationHandler<
     nulls: number;
     readonly types: Set<string>;
   }
+  /** Keyed by `[kind, field]` through JSON, for the delimiter-free reason `history` gives. */
   const observed = new Map<string, Observed>();
   /** Per field per day: the window it was seen in, and how many of those carried a value. */
   interface Seen {
@@ -390,17 +618,25 @@ const profileRunOp: OperationHandler<
     const { secret } = saltFor(ctx, day);
     const key = await subjectKey(secret, record.subject);
 
+    // Which kind this record is. `ROOT` when it matches none, which is a classification and
+    // never a rejection — a producer shipping an undeclared kind must not cost the data.
+    const kind = classify(discriminators, variants, record.fields);
+
     const dims: Record<string, string | null> = {};
     for (const [field, value] of Object.entries(record.fields)) {
       dims[field] = value;
       // The observed half. Counted per field whether or not any schema declares it — a field
       // nobody modelled is the finding, so refusing it here would destroy the evidence.
       const present = value === null ? 0 : 1;
-      const o = observed.get(field) ?? { present: 0, nulls: 0, types: new Set<string>() };
+      // Counted per KIND per field. As one number per field, "absent because this kind does
+      // not carry it" and "absent because it went missing" were the same number — which is
+      // the distinction variants exist to draw.
+      const okey = JSON.stringify([kind, field]);
+      const o = observed.get(okey) ?? { present: 0, nulls: 0, types: new Set<string>() };
       o.present += present;
       o.nulls += 1 - present;
       if (value !== null) o.types.add(inferType(value));
-      observed.set(field, o);
+      observed.set(okey, o);
 
       // Kept longer than the rows it came from — that is the whole job, so it is written per
       // day rather than per run and never pruned with them.
@@ -422,32 +658,37 @@ const profileRunOp: OperationHandler<
     }
 
     ctx.sql.exec(
-      'INSERT INTO tock_rows (id, run_id, occurred_at, subject_key, dims_json, metrics_json) VALUES (?, ?, ?, ?, ?, ?)',
-      [ulid(), run.id, record.occurredAt, key, JSON.stringify(dims), '{}'],
+      'INSERT INTO tock_rows (id, run_id, variant_key, occurred_at, subject_key, dims_json, metrics_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [ulid(), run.id, kind, record.occurredAt, key, JSON.stringify(dims), '{}'],
     );
     written += 1;
   }
 
-  for (const [field, o] of observed) {
+  for (const [okey, o] of observed) {
+    const [kind, field] = JSON.parse(okey) as [string, string];
     // Merged with whatever an earlier batch of this run recorded: a resumed delivery adds to
     // the counts and UNIONS the types. `declared` is left alone — it is nil until a schema is
     // chosen, and `map-run` is what decides it.
     const prior = ctx.sql.query<{ inferred_type: string }>(
-      'SELECT inferred_type FROM tock_observations WHERE run_id = ? AND field = ?',
-      [run.id, field],
+      'SELECT inferred_type FROM tock_observations WHERE run_id = ? AND variant_key = ? AND field = ?',
+      [run.id, kind, field],
     )[0];
     const merged = typeSet([...o.types, ...(prior?.inferred_type ?? '').split(',')]);
     ctx.sql.exec(
-      `INSERT INTO tock_observations (id, run_id, field, present_count, null_count, inferred_type, distinct_estimate, declared)
-           VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-         ON CONFLICT(run_id, field) DO UPDATE SET
+      `INSERT INTO tock_observations (id, run_id, variant_key, field, present_count, null_count, inferred_type, distinct_estimate, declared)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
+         ON CONFLICT(run_id, variant_key, field) DO UPDATE SET
            present_count = present_count + excluded.present_count,
            null_count    = null_count + excluded.null_count,
            inferred_type = excluded.inferred_type`,
-      [ulid(), run.id, field, o.present, o.nulls, merged],
+      [ulid(), run.id, kind, field, o.present, o.nulls, merged],
     );
   }
 
+  // Field history stays keyed per SOURCE, not per kind, and that is deliberate: its job is
+  // "when did this field first arrive here", which outlives both the runs and the variant set
+  // a person happened to declare at the time. Per-kind history would answer a narrower
+  // question and lose the one the back-fill affordance actually asks.
   for (const [hkey, h] of history) {
     const [field, day] = JSON.parse(hkey) as [string, string];
     ctx.sql.exec(
@@ -565,6 +806,20 @@ const countRunOp: OperationHandler<
   if (run.status !== 'mapped')
     throw substratError('conflict', `a ${run.status} run cannot be counted`, { reason: 'wrong_state' });
 
+  /**
+   * Counted against the ENVELOPE, whatever kinds the rows belong to.
+   *
+   * `schemaOrThrow` resolves the root, and that is the boundary of this slice rather than an
+   * oversight: envelope fields are the ones every record carries, so a dimension declared
+   * there means the same thing for a page and for a track event. A dimension declared on one
+   * KIND cannot be counted yet — two kinds could each declare `country` and the rollup, which
+   * has no variant column, would silently merge them.
+   *
+   * Counting per kind is what output schemas are for: the thing counted becomes the output
+   * shape rather than the arriving one, which is also what stops a producer's rename from
+   * breaking the numbers. Until then a variant's own fields are observed and declared, and
+   * not yet rolled up.
+   */
   const schema = schemaOrThrow(ctx, run.source_key, run.schema_version ?? 0);
   const fields: FieldDefs = JSON.parse(schema.fields_json) as FieldDefs;
   const dimensions = Object.entries(fields).filter(([, f]) => f.role === 'dimension').map(([n]) => n);
@@ -818,6 +1073,7 @@ const listObservationsOp: OperationHandler<
     ...input,
     filters: {
       ...(input.declared === undefined ? {} : { declared: input.declared ? 1 : 0 }),
+      ...(input.variantKey === undefined ? {} : { variant_key: input.variantKey }),
       run_id: run.id,
     },
   });
@@ -903,6 +1159,37 @@ const deviationsOp: OperationHandler<
       firstSeen: null,
       lastSeen: null,
       runs: 0,
+    });
+  }
+
+  /**
+   * Records that matched no declared kind.
+   *
+   * The counterpart of an undeclared FIELD, one level up, and reported the same way: the data
+   * was kept and this says so. A stream whose producer ships a new event name shows up here
+   * rather than as a number that quietly stopped adding up.
+   */
+  const unmatched = ctx.sql.query<{ n: number; runs: number }>(
+    `SELECT COUNT(*) AS n, COUNT(DISTINCT w.run_id) AS runs
+       FROM tock_rows w JOIN tock_runs r ON r.id = w.run_id
+      WHERE r.source_key = ? AND w.variant_key = ''`,
+    [input.sourceKey],
+  )[0];
+  const declaredKinds = ctx.sql.query<{ n: number }>(
+    'SELECT COUNT(*) AS n FROM tock_variants WHERE source_key = ?',
+    [input.sourceKey],
+  )[0];
+  // Only a finding once kinds exist: with none declared, every row is unmatched by
+  // construction and reporting it would be noise about a decision nobody has taken.
+  if ((declaredKinds?.n ?? 0) > 0 && (unmatched?.n ?? 0) > 0) {
+    const discriminators = discriminatorsOf(ctx, input.sourceKey);
+    findings.push({
+      kind: 'unmatched_records',
+      field: discriminators.join(' / ') || '(no discriminators)',
+      detail: `${unmatched!.n} record(s) across ${unmatched!.runs} run(s) matched no declared kind — kept and counted under the envelope, never dropped`,
+      firstSeen: null,
+      lastSeen: null,
+      runs: unmatched!.runs,
     });
   }
 
@@ -1054,6 +1341,8 @@ const reportOp: OperationHandler<
 
 const operations = {
   'tock/declare-source': declareSourceOp,
+  'tock/declare-variants': declareVariantsOp,
+  'tock/list-variants': listVariantsOp,
   'tock/list-sources': listSourcesOp,
   'tock/save-schema': saveSchemaOp,
   'tock/list-schemas': listSchemasOp,

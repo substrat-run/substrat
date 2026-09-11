@@ -69,6 +69,16 @@ export interface Source {
   key: string;
   title: string;
   expected_cadence: string;
+  discriminators: string | null;
+  created_at: string;
+}
+
+/** `tock_variants` — declared in spec/model.ts. */
+export interface Variant {
+  id: string;
+  source_key: string;
+  key: string;
+  selector: string;
   created_at: string;
 }
 
@@ -76,6 +86,7 @@ export interface Source {
 export interface Schema {
   id: string;
   source_key: string;
+  variant_key: string;
   version: number;
   fields_json: string;
   created_by: string;
@@ -137,6 +148,7 @@ export interface Salt {
 export interface Observation {
   id: string;
   run_id: string;
+  variant_key: string;
   field: string;
   present_count: number;
   null_count: number;
@@ -159,6 +171,7 @@ export interface FieldHistory {
 export interface Row {
   id: string;
   run_id: string;
+  variant_key: string;
   occurred_at: string;
   subject_key: string;
   dims_json: string;
@@ -205,11 +218,18 @@ export interface TockClient {
   declareSource(input: { key: string; title: string; expectedCadence: string }): Promise<Source>;
 
   /**
+   * Declare the fields that tell record kinds apart, and the kinds
+   *
+   * `POST /sources/{sourceKey}/variants` — `tock/declare-variants`
+   */
+  declareVariants(input: { sourceKey: string; discriminators: string[]; variants: { selector: string[] }[] }): Promise<{ sourceKey: string; discriminators: string[]; variants: Variant[] }>;
+
+  /**
    * Where a source declared shape and its data disagree
    *
    * `GET /sources/{sourceKey}/deviations` — `tock/deviations`
    */
-  deviations(input: { sourceKey: string; schemaVersion?: number }): Promise<{ sourceKey: string; schemaVersion: number; findings: ({ kind: "undeclared_field" | "declared_never_arrived" | "type_mismatch" | "cardinality_spike"; field: string; detail: string; firstSeen: string | null; lastSeen: string | null; runs: number })[] }>;
+  deviations(input: { sourceKey: string; schemaVersion?: number }): Promise<{ sourceKey: string; schemaVersion: number; findings: ({ kind: "undeclared_field" | "declared_never_arrived" | "type_mismatch" | "cardinality_spike" | "unmatched_records"; field: string; detail: string; firstSeen: string | null; lastSeen: string | null; runs: number })[] }>;
 
   /**
    * When a field first and last arrived, across every run
@@ -232,7 +252,7 @@ export interface TockClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listObservations(input: { runId: string; declared?: boolean }): Promise<Paged<Observation>>;
+  listObservations(input: { runId: string; declared?: boolean; variantKey?: string }): Promise<Paged<Observation>>;
 
   /**
    * The mapped rows of one run
@@ -259,7 +279,7 @@ export interface TockClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listSchemas(input: { sourceKey: string }): Promise<Paged<Schema>>;
+  listSchemas(input: { sourceKey: string; variantKey?: string }): Promise<Paged<Schema>>;
 
   /**
    * The sources in this workspace
@@ -269,6 +289,13 @@ export interface TockClient {
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
   listSources(): Promise<Paged<Source>>;
+
+  /**
+   * The record kinds declared for a source
+   *
+   * `GET /sources/{sourceKey}/variants` — `tock/list-variants`
+   */
+  listVariants(input: { sourceKey: string }): Promise<{ discriminators: string[]; variants: Variant[] }>;
 
   /**
    * Bind a profiled run to a schema version
@@ -310,7 +337,7 @@ export interface TockClient {
    *
    * `POST /sources/{sourceKey}/schemas` — `tock/save-schema`
    */
-  saveSchema(input: { sourceKey: string; fields: Record<string, { type: "text" | "int" | "decimal" | "timestamp" | "bool"; role: "dimension" | "measure" | "ignored"; required?: boolean; labelField?: string }> }): Promise<Schema>;
+  saveSchema(input: { sourceKey: string; variantKey?: string; fields: Record<string, { type: "text" | "int" | "decimal" | "timestamp" | "bool"; role: "dimension" | "measure" | "ignored"; required?: boolean; labelField?: string }> }): Promise<Schema>;
 
   /**
    * Fetch the next page of any paged read, given a previous page's `next`.
@@ -416,6 +443,8 @@ export function createClient(options: ClientOptions = {}): TockClient {
       send(`/runs/${encodeURIComponent(String(input.runId))}/count`, "POST", omit(input, ["runId"]), undefined),
     declareSource: (input: Args) =>
       send("/sources", "POST", input, undefined),
+    declareVariants: (input: Args) =>
+      send(`/sources/${encodeURIComponent(String(input.sourceKey))}/variants`, "POST", omit(input, ["sourceKey"]), undefined),
     deviations: (input: Args) =>
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/deviations`, "GET", undefined, omit(input, ["sourceKey"])),
     fieldHistory: (input: Args) =>
@@ -432,6 +461,8 @@ export function createClient(options: ClientOptions = {}): TockClient {
       page(`/sources/${encodeURIComponent(String(input.sourceKey))}/schemas`, "GET", undefined, omit(input, ["sourceKey"])),
     listSources: () =>
       page("/sources", "GET", undefined, undefined),
+    listVariants: (input: Args) =>
+      send(`/sources/${encodeURIComponent(String(input.sourceKey))}/variants`, "GET", undefined, omit(input, ["sourceKey"])),
     mapRun: (input: Args) =>
       send(`/runs/${encodeURIComponent(String(input.runId))}/map`, "POST", omit(input, ["runId"]), undefined),
     readSourceFile: (input: Args) =>

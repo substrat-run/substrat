@@ -87,6 +87,9 @@
           "run_id": {
             "type": "string"
           },
+          "variant_key": {
+            "type": "string"
+          },
           "field": {
             "type": "string"
           },
@@ -109,6 +112,7 @@
         "required": [
           "id",
           "run_id",
+          "variant_key",
           "field",
           "present_count",
           "null_count",
@@ -123,7 +127,8 @@
       ],
       "key": [
         "field",
-        "run_id"
+        "run_id",
+        "variant_key"
       ]
     },
     "rollup": {
@@ -211,6 +216,9 @@
           "run_id": {
             "type": "string"
           },
+          "variant_key": {
+            "type": "string"
+          },
           "occurred_at": {
             "type": "string"
           },
@@ -227,6 +235,7 @@
         "required": [
           "id",
           "run_id",
+          "variant_key",
           "occurred_at",
           "subject_key",
           "dims_json",
@@ -501,6 +510,9 @@
           "source_key": {
             "type": "string"
           },
+          "variant_key": {
+            "type": "string"
+          },
           "version": {
             "type": "number"
           },
@@ -517,6 +529,7 @@
         "required": [
           "id",
           "source_key",
+          "variant_key",
           "version",
           "fields_json",
           "created_by",
@@ -529,6 +542,7 @@
       ],
       "key": [
         "source_key",
+        "variant_key",
         "version"
       ]
     },
@@ -546,6 +560,16 @@
           "expected_cadence": {
             "type": "string"
           },
+          "discriminators": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           }
@@ -554,6 +578,7 @@
           "key",
           "title",
           "expected_cadence",
+          "discriminators",
           "created_at"
         ],
         "additionalProperties": false
@@ -601,6 +626,44 @@
       ],
       "primaryKey": [
         "run_id"
+      ]
+    },
+    "variant": {
+      "table": "tock_variants",
+      "fields": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "source_key": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          },
+          "selector": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_key",
+          "key",
+          "selector",
+          "created_at"
+        ],
+        "additionalProperties": false
+      },
+      "parents": [
+        "source"
+      ],
+      "key": [
+        "key",
+        "source_key"
       ]
     }
   }
