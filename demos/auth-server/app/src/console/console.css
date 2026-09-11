@@ -116,6 +116,19 @@
    while everything around them was Geist. Scoped to the console root for the usual reason:
    the `<code>` on the themed consent screen is not ours to restyle. */
 .console-root code { font-family: var(--font-mono); }
+/* The JSON editors, for the same reason one step further: a mono face was already being
+   asked for here, and now there is a branded one to ask for. Beats the `.editor textarea`
+   rule in tokens.css on specificity (0,2,1 over 0,1,1) rather than on order. */
+.console-root .editor textarea { font-family: var(--font-mono); }
+/* Form controls do NOT inherit `font-family` — every browser's user-agent stylesheet gives
+   them one of its own, and `tokens.css` sets their size and colour but never their face. So
+   without this the console's buttons, inputs and selects would sit in the UA default while
+   the text around them was Geist, differently on each browser. `inherit` rather than
+   `var(--font-sans)` so the two rules above keep winning where a mono face is wanted. */
+.console-root button,
+.console-root input,
+.console-root select,
+.console-root textarea { font-family: inherit; }
 .console-root .editor,
 .console-root .new-user { background: var(--surface-inset); border-color: var(--border-default); }
 .console-root .btn { border-color: var(--border-strong); background: var(--surface-raised); color: var(--text-primary); }

@@ -92,6 +92,18 @@ describe('the console webfonts are self-hosted', () => {
     }
   });
 
+  it('reaches the faces from console.css, and from nowhere else', () => {
+    // Without this the rest of the suite grades a file nothing loads: delete the one
+    // `@import` and `fonts.css` still declares two perfect faces, every other case here
+    // still passes, and the console quietly falls back to the system stack. The import IS
+    // the shipping, so it is asserted, and asserted to be the only one — a second route in
+    // from a themed stylesheet would put the faces back on a relying party's screens.
+    const importers = sheets
+      .filter(({ text }) => /@import\s+["']\.\/fonts\.css["']|fonts\.css/.test(code(text)))
+      .map(({ path }) => path);
+    expect(importers).toEqual([join('console', 'console.css')]);
+  });
+
   it('ships the latin upright subset of each face and nothing else', () => {
     const fonts = sheets.find((s) => s.path === join('console', 'fonts.css'));
     expect(fonts, 'app/src/console/fonts.css is where the faces are declared').toBeDefined();
