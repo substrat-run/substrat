@@ -2289,11 +2289,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * who is sure they sent it. Drop the bytes if we must; drop the record of them and
    * the desk is lying to its own staff.
    *
-   * Optional, so every caller that predates it is unchanged, and unbounded on purpose:
-   * a `.max()` here would reject the whole mail — body and all — over a count of files
-   * nobody has a rule about yet, which is a worse drop than the one this fixes. The
-   * caller is the relay principal, not a public door, so there is no untrusted volume
-   * to bound at this seam.
+   * Optional, so every caller that predates it is unchanged, and the schema itself
+   * refuses nothing: a `.max()` or a `.min(1)` here rejects the whole mail — body and
+   * all — over a file count or an empty filename nobody has a rule about yet, which is
+   * a worse drop than the one this fixes. The bound lives one step in, on what the desk
+   * WRITES: the note names at most a hundred files and counts the rest, and cuts each
+   * field to one readable line. That is what keeps an oversized note from failing the
+   * ingest transaction and taking the customer's message down with it — the caller is
+   * the relay principal, but the mail it carries came from whoever chose to send it.
    */
   'ticket0/ingest-message': {
     // Not a tool: the email relay's own surface — it brings mail in and reports what it sent.

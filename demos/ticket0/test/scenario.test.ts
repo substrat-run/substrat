@@ -94,6 +94,22 @@ async function openSession(desk: Desk, identify = true) {
   })) as { sessionId: string; token: string; verified: boolean };
 }
 
+/**
+ * How many times a desk has announced one kind of thing.
+ *
+ * Row counts cannot see a stray `ctx.emit`, so where a block's claim is about how MANY
+ * events an operation makes, it has to read the spine. The audit-spine block below reads
+ * the newest one instead, which is a different question.
+ */
+function outboxCount(desk: Desk, type: string): number {
+  const db = new Database(join(dir, `${desk.tenant}__${desk.scope}.sqlite`), { readonly: true });
+  const row = db.prepare('SELECT COUNT(*) AS n FROM _substrat_outbox WHERE type = ?').get(type) as {
+    n: number;
+  };
+  db.close();
+  return row.n;
+}
+
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'ticket0-scenario-'));
   host = buildHost(dir);
@@ -1650,6 +1666,14 @@ describe('what arrives with a mail, when there is nowhere to put it', () => {
           contentType: 'application/pdf',
           sizeBytes: 12,
         },
+        {
+          // U+2028 LINE SEPARATOR: not a control character, and it breaks a line in the
+          // staff thread exactly as `\n` does. What belongs in that strip list is what
+          // draws a new line on a screen, not what Unicode files as a control.
+          filename: `also-ok.pdf${String.fromCharCode(0x2028)}- credit-note.pdf (application/pdf, 1 bytes)`,
+          contentType: 'application/pdf',
+          sizeBytes: 34,
+        },
         { filename: '', contentType: '', sizeBytes: 0 },
       ],
     })) as Message;
@@ -1660,11 +1684,66 @@ describe('what arrives with a mail, when there is nowhere to put it', () => {
     })) as CountedPage<Message>;
     const note = thread.entries.find((m) => m.visibility === 'internal')!;
 
-    // One headline, one line per file that actually arrived, and no more.
-    expect(note.body_text.split('\n')).toHaveLength(3);
+    // One headline, one line per file that actually arrived, and no more — by either
+    // spelling of "new line", and none of the three left behind a separator of its own.
+    expect(note.body_text.split('\n')).toHaveLength(4);
+    expect(note.body_text).not.toContain(String.fromCharCode(0x2028));
     expect(note.body_text).toContain('ok.pdf - refund-approved.pdf');
+    expect(note.body_text).toContain('also-ok.pdf - credit-note.pdf');
     expect(note.body_text).toContain('(unnamed)');
     expect(note.body_text).toContain('(unknown type)');
+  });
+
+  it('names a hundred files and counts the rest, so the note cannot fail the ingest', async () => {
+    // The note is written inside the ingest transaction. A `body_text` big enough to be
+    // refused would take the customer's MESSAGE with it — the mail arriving nowhere at
+    // all, which is worse than the drop this whole block exists to fix.
+    const relay = await at(desk(), 'relay');
+    const arrived = (await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: desk().customer.email,
+      subject: 'A great many files',
+      bodyText: 'All of them, sorry.',
+      emailMessageId: '<many-1@mail.example>',
+      attachments: Array.from({ length: 150 }, (_, i) => ({
+        filename: `page-${i}.png`,
+        contentType: 'image/png',
+        sizeBytes: 1000 + i,
+      })),
+    })) as Message;
+
+    const agent = await at(desk(), 'agent');
+    const thread = (await agent.invoke('ticket0/list-messages', {
+      conversationId: arrived.conversation_id,
+    })) as CountedPage<Message>;
+    const note = thread.entries.find((m) => m.visibility === 'internal')!;
+
+    // Headline + 100 named + one line saying how many were not.
+    expect(note.body_text.split('\n')).toHaveLength(102);
+    expect(note.body_text).toContain('page-0.png');
+    expect(note.body_text).toContain('page-99.png');
+    expect(note.body_text).not.toContain('page-100.png');
+    expect(note.body_text).toContain('and 50 more, not named here');
+
+    // The mail itself arrived intact, which is the property the bound protects.
+    expect(arrived.body_text).toBe('All of them, sorry.');
+  });
+
+  it('announces the mail once, never twice — the note is not a second arrival', async () => {
+    // The note deliberately emits nothing. Counting rows cannot see a stray `ctx.emit`,
+    // and a consumer that saw two `message-ingested` for one mail would double-count
+    // every customer who ever attached a file.
+    const relay = await at(desk(), 'relay');
+    const before = outboxCount(desk(), 'ticket0.message-ingested');
+    await relay.invoke('ticket0/ingest-message', {
+      conversationId: null,
+      contactEmail: desk().customer.email,
+      subject: 'Counted once',
+      bodyText: 'With a file.',
+      emailMessageId: '<counted-1@mail.example>',
+      attachments: [{ filename: 'a.pdf', contentType: 'application/pdf', sizeBytes: 9 }],
+    });
+    expect(outboxCount(desk(), 'ticket0.message-ingested')).toBe(before + 1);
   });
 
   it('an empty array is the same as no files at all', async () => {

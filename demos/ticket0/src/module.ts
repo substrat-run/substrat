@@ -518,6 +518,9 @@ export const ATTACHMENTS_NOT_STORED =
 /** The longest a filename or a content type is allowed to be before it is cut short. */
 const ATTACHMENT_FIELD_MAX = 200;
 
+/** How many files the note names one by one before it starts counting them instead. */
+const ATTACHMENT_NOTE_MAX = 100;
+
 /**
  * One field of one file, flattened to a single line.
  *
@@ -526,9 +529,14 @@ const ATTACHMENT_FIELD_MAX = 200;
  * would forge a second bullet in the note and an agent would read a file that was never
  * sent; a filename the length of a novel would be the whole thread. So control
  * characters become spaces and the rest is cut to a length a person can read.
+ *
+ * U+2028 and U+2029 are in that class with the C0 controls even though they are not
+ * controls: the staff thread draws a note with pre-wrap whitespace, where both break a
+ * line exactly as a newline does. What decides this list is what puts text on a new
+ * line on a screen, not which Unicode category a code point is filed under.
  */
 function oneLine(value: string): string {
-  const flat = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  const flat = value.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, ' ').trim();
   return flat.length > ATTACHMENT_FIELD_MAX ? `${flat.slice(0, ATTACHMENT_FIELD_MAX)}…` : flat;
 }
 
@@ -544,15 +552,33 @@ function attachmentLine(a: { filename: string; contentType: string; sizeBytes: n
  *
  * Everything the mail told us about each file, and one sentence saying plainly that
  * the bytes are gone — so an agent reading the thread knows to go to the original mail
- * rather than telling a customer nothing arrived. The filenames are the customer's
- * words, which is why this lives in `body_text`: that column is already `erasable`, so
- * an erasure takes the note with the message it is about and nothing has to remember
- * this file exists.
+ * rather than telling a customer nothing arrived.
+ *
+ * **Bounded, and that bound is a correctness property rather than a nicety.** This note
+ * is written inside the ingest transaction, beside the customer's own message, so a
+ * `body_text` big enough to be refused takes the MESSAGE down with it — the mail would
+ * arrive nowhere at all, which is worse than the silent drop this exists to fix. A mail
+ * carrying more files than a person will read therefore gets a count instead of a list;
+ * the fields are cut by `oneLine` for the same reason one level down. The input schema
+ * still refuses nothing, deliberately: what is bounded is what this desk WRITES, not
+ * what it will accept, so no mail is ever rejected over its attachment count.
+ *
+ * The filenames are the customer's words, and this note holds them exactly as every
+ * other message holds a body: `message.erasable` names `body_text`, which is what keeps
+ * it off every event (`shredSubject` redacts the outbox, never a vertical's own table),
+ * and it is also why this note emits no event of its own. Whatever erases a customer's
+ * messages from this desk reaches the note on the same terms — no better, no worse.
  */
 function droppedAttachmentsNote(
   attachments: readonly { filename: string; contentType: string; sizeBytes: number }[],
 ): string {
-  return [ATTACHMENTS_NOT_STORED, ...attachments.map(attachmentLine)].join('\n');
+  const named = attachments.slice(0, ATTACHMENT_NOTE_MAX).map(attachmentLine);
+  const rest = attachments.length - named.length;
+  return [
+    ATTACHMENTS_NOT_STORED,
+    ...named,
+    ...(rest > 0 ? [`- and ${rest} more, not named here`] : []),
+  ].join('\n');
 }
 
 /**
