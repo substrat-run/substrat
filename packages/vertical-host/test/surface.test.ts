@@ -212,6 +212,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       `/internal/history?scopeId=${SCOPE}&entityType=work-order&entityId=${ENTITY}`,
       { headers: authed() },
     ],
+    [`/internal/facets?scopeId=${SCOPE}&groupBy=type`, { headers: authed() }],
     ['/internal/migrations?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials/summary?scopeId=' + SCOPE, { headers: authed() }],
@@ -286,6 +287,82 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     });
     // Proof the read went to the HOST, not to an accidentally-empty default.
     expect(host.calls).toContain('entityHistoryLocal');
+  });
+
+  // #1239: facets over the scope's outbox. Counts and grouped VALUES cross here, so the
+  // query string is parsed at this door rather than forwarded — what it names decides
+  // which column, or which payload field, is read out of the spine.
+  it('passes the whole facet query through to the host', async () => {
+    const host = fakeHost();
+    const res = await appWith(host).request(
+      `/internal/facets?scopeId=${SCOPE}&field=currency&type=order.placed` +
+        `&since=2026-09-01T00:00:00.000Z&until=2026-09-08T00:00:00.000Z&limit=25`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    // The fake echoes its input back as the bucket value, so this is the input the host saw.
+    const body = (await res.json()) as { buckets: { value: string }[] };
+    expect(JSON.parse(body.buckets[0]!.value)).toEqual({
+      groupBy: { kind: 'payload', field: 'currency' },
+      type: 'order.placed',
+      since: '2026-09-01T00:00:00.000Z',
+      until: '2026-09-08T00:00:00.000Z',
+      limit: 25,
+    });
+    expect(host.calls).toContain('facetEventsLocal');
+  });
+
+  /**
+   * An envelope grouping is a NAMED dimension, not a column name — the route turns
+   * `groupBy` into `{ kind }` and the contract's enum is what keeps the query shape
+   * fixed. A `field` wins when both are present, which is the transport's one piece of
+   * precedence and is pinned here so it cannot drift into the opposite rule.
+   */
+  it('reads an envelope dimension as a kind, and lets a payload field win over one', async () => {
+    const host = fakeHost();
+    const dimension = await appWith(host).request(
+      `/internal/facets?scopeId=${SCOPE}&groupBy=operation`,
+      { headers: authed() },
+      ENV,
+    );
+    const dimensionBody = (await dimension.json()) as { buckets: { value: string }[] };
+    expect(JSON.parse(dimensionBody.buckets[0]!.value).groupBy).toEqual({ kind: 'operation' });
+
+    const both = await appWith(host).request(
+      `/internal/facets?scopeId=${SCOPE}&groupBy=operation&field=currency`,
+      { headers: authed() },
+      ENV,
+    );
+    const bothBody = (await both.json()) as { buckets: { value: string }[] };
+    expect(JSON.parse(bothBody.buckets[0]!.value).groupBy).toEqual({ kind: 'payload', field: 'currency' });
+  });
+
+  it('refuses a malformed facet input rather than widening it', async () => {
+    const host = fakeHost();
+    // A dimension the enum does not name — never a column spliced into the query.
+    const unknown = await appWith(host).request(
+      `/internal/facets?scopeId=${SCOPE}&groupBy=payload_json`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(unknown.status).toBe(400);
+    // A payload field that is not a bare name — the JSON path is bound, and the name's
+    // own pattern is what keeps it one level deep.
+    const nested = await appWith(host).request(
+      `/internal/facets?scopeId=${SCOPE}&field=order.currency`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(nested.status).toBe(400);
+    // Over the contract ceiling. Refused at the boundary, never silently clamped.
+    const wide = await appWith(host).request(
+      `/internal/facets?scopeId=${SCOPE}&groupBy=type&limit=5000`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(wide.status).toBe(400);
+    expect(host.calls).not.toContain('facetEventsLocal');
   });
 
   it('refuses a malformed history input rather than widening it', async () => {

@@ -1443,13 +1443,17 @@ export class TenantNarrowedControlPlane {
    */
   facetEvents(
     scopeId: ScopeId,
-    input: { groupBy: string; field?: string; type?: string; since?: string; limit?: number },
+    input: { groupBy: string; field?: string; type?: string; since?: string; until?: string; limit?: number },
   ): Promise<EventFacetResult> {
     const q = new URLSearchParams();
     if (input.field !== undefined) q.set('field', input.field);
     else q.set('groupBy', input.groupBy);
     if (input.type !== undefined) q.set('type', input.type);
+    // BOTH bounds, or the window is only half a window. `until` is the one parameter
+    // whose loss is invisible: the query still succeeds and simply answers about a
+    // wider slice than the caller asked about, which reads as a real distribution.
     if (input.since !== undefined) q.set('since', input.since);
+    if (input.until !== undefined) q.set('until', input.until);
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/facets?${q}`);
   }

@@ -1962,6 +1962,7 @@ app.get('/api/apps/:scopeId/facets', async (c) => {
       field: c.req.query('field') ?? undefined,
       type: c.req.query('type') ?? undefined,
       since: c.req.query('since') ?? undefined,
+      until: c.req.query('until') ?? undefined,
       limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
     }),
   );

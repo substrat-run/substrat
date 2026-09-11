@@ -442,7 +442,13 @@ export interface AppHealthRow {
 
 /** One grouped value and how many events carried it (#1239). */
 export interface EventFacetBucket {
-  /** Null = the field was genuinely ABSENT, which is not the same as erased. */
+  /**
+   * `null` is the EXTRACTION-NULL bucket, and it is weaker than "absent": SQLite
+   * returns the same NULL for a key the payload does not carry and for a key it
+   * carries with a JSON `null`, and nothing downstream can tell those apart. Read it
+   * as "no value extracted". What it is NOT is an erased payload — those never reach
+   * a bucket and are counted in `erased`.
+   */
   value: string | null;
   count: number;
 }
@@ -1456,8 +1462,13 @@ export const api = {
    * a page at a time, so dropping `nextCursor` would show a long-lived record's
    * OLDEST events and silently hide everything since.
    */
-  /** Facets over an app's events (#1239) — narrow, group, count. */
-  appFacets: (scopeId: string, q: { groupBy?: string; field?: string; type?: string; since?: string }) =>
+  /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
+   *  cross: a dropped `until` answers about a wider slice than was asked for, and
+   *  nothing about the answer says so. */
+  appFacets: (
+    scopeId: string,
+    q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string },
+  ) =>
     call<EventFacetResult>(
       `/apps/${encodeURIComponent(scopeId)}/facets?${new URLSearchParams(
         Object.fromEntries(Object.entries(q).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string>,

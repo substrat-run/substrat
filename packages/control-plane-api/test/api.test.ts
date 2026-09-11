@@ -454,6 +454,75 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t2}/scopes/${s1}/history?entityType=widget&entityId=w1`)).status).toBe(404);
   });
 
+  it('facets a scope\u2019s outbox from the co-located host, and fails closed cross-tenant (#1239)', async () => {
+    // Like the history route above, what this pins is the TRANSPORT — the semantics of a
+    // facet (the erased count, the extraction-null bucket, the truncation flag) belong to
+    // the kernel helper and are pinned against both adapters there.
+    const res = await req(`/tenants/${t1}/scopes/${s1}/facets?groupBy=type`);
+    expect(res.status).toBe(200);
+    // No modules here, so the outbox is empty — an empty facet, not a 404.
+    expect(await res.json()).toEqual({ buckets: [], erased: 0, total: 0, truncated: false });
+
+    // A dimension the enum does not name is refused: `groupBy` selects a column, so the
+    // enum is what keeps a caller's string out of the query.
+    expect((await req(`/tenants/${t1}/scopes/${s1}/facets?groupBy=payload_json`)).status).toBe(400);
+    // A payload field must be a bare name — the JSON path is bound, one level deep.
+    expect((await req(`/tenants/${t1}/scopes/${s1}/facets?field=order.currency`)).status).toBe(400);
+    // Over the contract ceiling — refused at the boundary, never silently clamped.
+    expect((await req(`/tenants/${t1}/scopes/${s1}/facets?groupBy=type&limit=5000`)).status).toBe(400);
+
+    // Cross-tenant fails closed (K-3): another tenant's pair reads as absent.
+    expect((await req(`/tenants/${t2}/scopes/${s1}/facets?groupBy=type`)).status).toBe(404);
+  });
+
+  it('delegates a facet to the vertical that holds the scope, whole query intact (#1239)', async () => {
+    const sF = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sF, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sF);
+
+    const calls: unknown[] = [];
+    const fakeVertical = {
+      facetEvents: async (s: string, input: unknown) => {
+        calls.push([s, input]);
+        return { buckets: [{ value: 'SEK', count: 3 }], erased: 1, total: 4, truncated: false };
+      },
+    } as unknown as VerticalClient;
+
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const dreq = (path: string) => delegated.request(path, { headers: auth });
+
+    const res = await dreq(
+      `/tenants/${t1}/scopes/${sF}/facets?field=currency&type=order.placed` +
+        `&since=2026-09-01T00:00:00.000Z&until=2026-09-08T00:00:00.000Z&limit=25`,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ buckets: [{ value: 'SEK', count: 3 }], erased: 1, total: 4, truncated: false });
+    // Every part of the query crossed — a dropped `until` is an unbounded-to-the-future
+    // answer to a question that named a window, which no error would ever reveal.
+    expect(calls).toEqual([
+      [
+        sF,
+        {
+          groupBy: { kind: 'payload', field: 'currency' },
+          type: 'order.placed',
+          since: '2026-09-01T00:00:00.000Z',
+          until: '2026-09-08T00:00:00.000Z',
+          limit: 25,
+        },
+      ],
+    ]);
+
+    // The Zod boundary is in front of the delegation: a malformed ask never reaches the
+    // vertical, and a foreign tenant is refused before the scope is resolved to one.
+    expect((await dreq(`/tenants/${t1}/scopes/${sF}/facets?groupBy=payload_json`)).status).toBe(400);
+    expect((await dreq(`/tenants/${t2}/scopes/${sF}/facets?groupBy=type`)).status).toBe(404);
+    expect(calls).toHaveLength(1);
+  });
+
   it("delegates a record's history to the vertical that holds the scope (#1235)", async () => {
     // The production shape (K-31): the scope's data lives in a VERTICAL's deployment,
     // so the route must ask it — and must carry the entity and the cursor across, or a

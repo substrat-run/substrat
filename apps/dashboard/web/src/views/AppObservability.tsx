@@ -468,6 +468,33 @@ function SchemaHistoryCard({ app }: { app: AppRow }) {
 
 
 /**
+ * The windows a facet may be taken over. `null` hours is "everything the scope still
+ * holds" — an explicit option rather than the absence of a control, because a count with
+ * no window is a different claim from a count over the last day and the reader has to be
+ * the one who picks.
+ */
+const FACET_WINDOWS = [
+  { label: 'Last hour', hours: 1 },
+  { label: 'Last 24 hours', hours: 24 },
+  { label: 'Last 7 days', hours: 24 * 7 },
+  { label: 'All time', hours: null },
+] as const;
+
+/** The window's lower bound as the spine stores time — ISO 8601 text, never epoch ms. */
+function sinceOf(label: string): string | undefined {
+  const hours = FACET_WINDOWS.find((w) => w.label === label)?.hours ?? null;
+  return hours === null ? undefined : new Date(Date.now() - hours * 3_600_000).toISOString();
+}
+
+/** The submitted query — what the counts on screen are an answer to. */
+interface AppliedFacet {
+  groupBy: string;
+  field: string;
+  type: string;
+  since: string | undefined;
+}
+
+/**
  * The event explorer (#1239 stage 1): narrow this app's outbox, group it, count.
  * "Which operation emits most of this?", "which version were these under?" —
  * the questions nobody predicted, answered on what the spine already holds.
@@ -486,24 +513,42 @@ function EventExplorer({ app }: { app: AppRow }) {
   const [groupBy, setGroupBy] = useState('type');
   const [field, setField] = useState('');
   const [type, setType] = useState('');
+  const [windowLabel, setWindowLabel] = useState<string>(FACET_WINDOWS[1]!.label);
   const [result, setResult] = useState<EventFacetResult | null>(null);
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // The payload field is applied on submit rather than per keystroke: each query
-  // is a scope read, and a half-typed field name is a query nobody asked for.
-  const [applied, setApplied] = useState({ groupBy: 'type', field: '', type: '' });
+  // The whole query is applied on submit rather than per keystroke: each one is a scope
+  // read, and a half-typed field name is a query nobody asked for. `since` is resolved
+  // HERE, at submit, so the window is the one the reader chose and not one that slides
+  // out from under the answer on the next render.
+  const [applied, setApplied] = useState<AppliedFacet>({ groupBy: 'type', field: '', type: '', since: undefined });
+  const submit = () =>
+    setApplied({
+      groupBy,
+      field: field.trim(),
+      type: type.trim(),
+      since: sinceOf(windowLabel),
+    });
 
   useEffect(() => {
     let live = true;
     setErr(null);
+    // The previous answer is dropped before the new one is asked for. A facet can scan a
+    // lot of history, so leaving it on screen labels one query's counts with another
+    // query's controls for as long as the read takes — and those counts look exactly
+    // like an answer.
+    setResult(null);
+    setLoading(true);
     api
       .appFacets(app.app_scope_id, {
         groupBy: applied.field ? undefined : applied.groupBy,
         field: applied.field || undefined,
         type: applied.type || undefined,
+        since: applied.since,
       })
-      .then((r) => live && setResult(r))
-      .catch((e) => live && (setResult(null), setErr(e instanceof Error ? e.message : String(e))));
+      .then((r) => live && (setResult(r), setLoading(false)))
+      .catch((e) => live && (setLoading(false), setErr(e instanceof Error ? e.message : String(e))));
     return () => {
       live = false;
     };
@@ -531,22 +576,38 @@ function EventExplorer({ app }: { app: AppRow }) {
             { value: 'piiClass', label: 'PII class' },
           ]}
           value={groupBy}
-          onChange={(e) => setGroupBy(e.target.value)}
+          // Choosing a dimension CLEARS the payload field, because submit gives the field
+          // precedence: leaving both set would group by the old field while the select
+          // showed the new dimension, and the header would agree with the select.
+          onChange={(e) => {
+            setGroupBy(e.target.value);
+            setField('');
+          }}
           style={{ width: 150 }}
         />
         <Input mono value={field} onChange={(e) => setField(e.target.value)} placeholder="…or a payload field" style={{ width: 190 }} />
         <Input mono value={type} onChange={(e) => setType(e.target.value)} placeholder="event type (optional)" style={{ width: 200 }} />
-        <Button size="sm" variant="ghost" onClick={() => setApplied({ groupBy, field: field.trim(), type: type.trim() })}>
+        <Select
+          aria-label="Window"
+          options={FACET_WINDOWS.map((w) => w.label)}
+          value={windowLabel}
+          onChange={(e) => setWindowLabel(e.target.value)}
+          style={{ width: 150 }}
+        />
+        <Button size="sm" variant="ghost" onClick={submit}>
           Group
         </Button>
       </div>
 
       {err && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
 
+      {loading && !err && <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Grouping…</div>}
+
       {result && (
         <>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
             {result.total.toLocaleString()} event{result.total === 1 ? '' : 's'} matched
+            {applied.since !== undefined && <span> in {windowLabel.toLowerCase()}</span>}
             {result.erased > 0 && (
               <span style={{ color: 'var(--status-warning-fg)' }}>
                 {' '}· {result.erased.toLocaleString()} with an erased payload, counted apart and not grouped
@@ -555,14 +616,27 @@ function EventExplorer({ app }: { app: AppRow }) {
             {result.truncated && <span> · showing the largest buckets only</span>}
           </div>
           {result.buckets.length === 0 ? (
-            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Nothing matched this filter.</div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+              {/* Empty buckets over a non-empty match is a different answer from no match
+                  at all, and saying "nothing matched" under a line reading "N events
+                  matched" is how a reader concludes the page is broken. Events that
+                  matched and produced no bucket are the erased ones — this is the whole
+                  erased-vs-absent distinction, seen from the degenerate end. */}
+              {result.total === 0
+                ? 'No events matched this filter.'
+                : result.erased === result.total
+                  ? 'Every matching event had its payload erased, so there is nothing left to group by.'
+                  : 'The matching events produced no groupable value.'}
+            </div>
           ) : (
             <div style={{ display: 'grid', gap: 4 }}>
               {result.buckets.map((b) => (
                 <div key={b.value ?? '\u0000null'} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
                   <span style={{ fontFamily: 'var(--font-mono)', minWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: b.value === null ? 'var(--text-tertiary)' : 'var(--text-primary)' }}>
-                    {/* Absent, not erased — the two are different answers and the
-                        count above carries the other one. */}
+                    {/* "No value extracted", which is weaker than absent: SQLite returns
+                        the same null for a missing key and for an explicit JSON null.
+                        What it is NOT is erased — that count is above, and the two are
+                        different answers. */}
                     {b.value ?? 'no value'}
                   </span>
                   <span style={{ flex: 1, height: 6, background: 'var(--surface-inset)', borderRadius: 3, overflow: 'hidden' }}>
