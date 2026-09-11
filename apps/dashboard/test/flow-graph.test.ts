@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { DeclaredEventSurface } from '@substrat-run/contracts';
 import { deriveFlowGraph } from '../src/flow-graph.js';
+import { deriveFlowFindings } from '../src/flow-findings.js';
 
 const decl = (type: string, direction: 'emits' | 'consumes', moduleId = 'crm'): DeclaredEventSurface =>
   ({ moduleId, type, direction }) as DeclaredEventSurface;
+
+const NOW = '2026-05-01T00:00:00.000Z';
+const daysAgo = (n: number) => new Date(Date.parse(NOW) - n * 86_400_000).toISOString();
+/** An observation: seen `count` times, most recently `n` days ago. */
+const seen = (type: string, n: number, count = 1) => ({ type, count, lastSeen: daysAgo(n) });
 
 const base = {
   declaredEvents: [] as DeclaredEventSurface[],
@@ -12,8 +18,10 @@ const base = {
   knownProviders: ['scrive', 'fortnox'],
   connections: [] as { provider: string; status: string }[],
   outbound: [] as string[],
-  observed: [] as { type: string; count: number }[],
+  observed: [] as { type: string; count: number; lastSeen: string | null }[],
   observedComplete: true,
+  now: NOW,
+  staleAfterDays: 30,
   declaredComplete: true,
 };
 
@@ -88,12 +96,12 @@ describe('deriveFlowGraph (#1234)', () => {
     const g = deriveFlowGraph({
       ...base,
       declaredEvents: [decl('seen.often', 'emits'), decl('never.seen', 'emits')],
-      observed: [{ type: 'seen.often', count: 1234 }],
+      observed: [seen('seen.often', 0, 1234)],
     });
-    const seen = g.nodes.find((n) => n.id === 'event:seen.often')!;
+    const often = g.nodes.find((n) => n.id === 'event:seen.often')!;
     const never = g.nodes.find((n) => n.id === 'event:never.seen')!;
-    expect(seen.observed).toBe(1234);
-    expect(seen.silent).toBe(false);
+    expect(often.observed).toBe(1234);
+    expect(often.silent).toBe(false);
     expect(never.observed).toBe(0);
     expect(never.silent).toBe(true);
     expect(g.partialObservation).toBe(false);
@@ -204,5 +212,99 @@ describe('deriveFlowGraph (#1234)', () => {
       'daily',
       'every 15 min',
     ]);
+  });
+  it('draws a node that ran and STOPPED differently from one that never ran', () => {
+    // The two silences. A dashed node was never used; a stale one worked and stopped,
+    // which is a change in behaviour rather than an unbuilt path — and the sublabel
+    // has to carry the recency, because a count alone reads as healthy.
+    const g = deriveFlowGraph({
+      ...base,
+      declaredEvents: [decl('stopped.type', 'emits'), decl('never.type', 'emits')],
+      observed: [seen('stopped.type', 61, 4210)],
+    });
+    const stopped = g.nodes.find((n) => n.id === 'event:stopped.type')!;
+    const never = g.nodes.find((n) => n.id === 'event:never.type')!;
+    expect(stopped.stale).toBe(true);
+    expect(stopped.silent).toBe(false);
+    expect(stopped.sublabel).toBe('4,210 · last 61d ago');
+    expect(stopped.title).toMatch(/ran and stopped, which is a different thing from never/);
+    expect(never.silent).toBe(true);
+    expect(never.stale).toBe(false);
+  });
+
+  it('leaves a node inside the window alone', () => {
+    const g = deriveFlowGraph({
+      ...base,
+      declaredEvents: [decl('busy.type', 'emits')],
+      observed: [seen('busy.type', 29, 7)],
+    });
+    const node = g.nodes.find((n) => n.id === 'event:busy.type')!;
+    expect(node.stale).toBe(false);
+    expect(node.sublabel).toBe('7 recorded');
+  });
+
+  it('will not call a node stale on a recency the facet could not supply', () => {
+    // `lastSeen: null` is "not known", never "long ago".
+    const g = deriveFlowGraph({
+      ...base,
+      declaredEvents: [decl('a.thing', 'emits')],
+      observed: [{ type: 'a.thing', count: 5, lastSeen: null }],
+    });
+    const node = g.nodes.find((n) => n.id === 'event:a.thing')!;
+    expect(node.stale).toBe(false);
+    expect(node.observed).toBe(5);
+  });
+
+  it('never marks a node both silent and stale', () => {
+    // They are mutually exclusive by construction: nothing recorded cannot also be
+    // something recorded a while ago, and a node carrying both would render as both.
+    const g = deriveFlowGraph({
+      ...base,
+      declaredEvents: [decl('a', 'emits'), decl('b', 'emits'), decl('c', 'emits')],
+      observed: [seen('b', 90, 2), seen('c', 1, 2)],
+    });
+    for (const n of g.nodes) expect(n.silent && n.stale).toBe(false);
+  });
+
+  /**
+   * The map and the list are two projections of ONE read, and the worker serves them
+   * together — so a node the map colours amber must have a finding beside it, and a
+   * node it leaves alone must not. They drifted apart once already: the findings pass
+   * withheld every event finding under truncation while the map went on marking the
+   * buckets the facet had returned, which put an amber node on screen above a sentence
+   * saying nothing could be reported.
+   */
+  it('agrees with the findings list about staleness, truncated or not', () => {
+    for (const observedComplete of [true, false]) {
+      const shared = {
+        declaredEvents: [
+          decl('stopped.type', 'emits', 'mod-a'),
+          decl('stopped.type', 'consumes', 'mod-b'),
+          decl('busy.type', 'emits', 'mod-a'),
+          decl('unseen.type', 'emits', 'mod-a'),
+        ],
+        observed: [seen('stopped.type', 61, 4210), seen('busy.type', 2, 9)],
+        observedComplete,
+        now: NOW,
+        staleAfterDays: 30,
+        knownProviders: base.knownProviders,
+        requires: [],
+        connections: [],
+        declaredComplete: true,
+      };
+      const g = deriveFlowGraph({ ...shared, schedules: [], outbound: [] });
+      const f = deriveFlowFindings(shared);
+
+      const staleNodes = g.nodes.filter((n) => n.stale).map((n) => n.label).sort();
+      const staleFindings = f.findings.filter((x) => x.kind === 'stale').map((x) => x.subject).sort();
+      expect(staleNodes).toEqual(['stopped.type']);
+      expect(staleFindings).toEqual(staleNodes);
+
+      // And the silence side moves together too: unreportable when truncated, on both.
+      const silentNodes = g.nodes.filter((n) => n.silent).map((n) => n.label);
+      const absenceFindings = f.findings.filter((x) => x.kind === 'unemitted').map((x) => x.subject);
+      expect(silentNodes).toEqual(observedComplete ? ['unseen.type'] : []);
+      expect(absenceFindings).toEqual(observedComplete ? ['unseen.type'] : []);
+    }
   });
 });

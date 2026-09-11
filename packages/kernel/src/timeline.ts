@@ -294,13 +294,13 @@ export function facetEvents(ctx: TimelineReader, input: EventFacetInput): EventF
   // and every matching row is groupable.
   if (input.groupBy.kind !== 'payload') {
     const column = ENVELOPE_COLUMN[input.groupBy.kind];
-    const rows = ctx.sql.query<{ value: string | null; n: number }>(
-      `SELECT ${column} AS value, COUNT(*) AS n FROM _substrat_outbox${filter}
+    const rows = ctx.sql.query<{ value: string | null; n: number; last: string | null }>(
+      `SELECT ${column} AS value, COUNT(*) AS n, MAX(occurred_at) AS last FROM _substrat_outbox${filter}
         GROUP BY ${column} ORDER BY n DESC, value LIMIT ?`,
       [...params, limit + 1],
     );
     return {
-      buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n })),
+      buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n, lastSeen: r.last })),
       erased: 0,
       total,
       truncated: rows.length > limit,
@@ -323,13 +323,17 @@ export function facetEvents(ctx: TimelineReader, input: EventFacetInput): EventF
   // the two groups into two buckets with the same `value` and split counts. Casting in
   // SQL makes the group key the rendered value, so one bucket per rendered value is a
   // property of the query rather than a hope about the data.
-  const rows = ctx.sql.query<{ value: string | null; n: number }>(
-    `SELECT CAST(json_extract(payload, ?) AS TEXT) AS value, COUNT(*) AS n FROM _substrat_outbox${liveFilter}
+  const rows = ctx.sql.query<{ value: string | null; n: number; last: string | null }>(
+    `SELECT CAST(json_extract(payload, ?) AS TEXT) AS value, COUNT(*) AS n, MAX(occurred_at) AS last
+      FROM _substrat_outbox${liveFilter}
       GROUP BY value ORDER BY n DESC, value LIMIT ?`,
     [`$.${input.groupBy.field}`, ...params, limit + 1],
   );
+  // Over LIVE rows only, like the count beside it: an erased row is excluded from the
+  // bucket entirely, so this is "when this value was last seen in an event that still
+  // carries its payload" — the erased total above is where the rest is accounted for.
   return {
-    buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n })),
+    buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n, lastSeen: r.last })),
     erased,
     total,
     truncated: rows.length > limit,

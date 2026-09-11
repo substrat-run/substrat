@@ -1085,10 +1085,12 @@ function FlowMap({ graph, app, onTab }: { graph: FlowGraph; app: AppRow; onTab: 
                 height={n.h}
                 rx={8}
                 fill={FILL[n.kind]}
-                stroke={STROKE[n.status]}
-                strokeWidth={n.status === 'ok' ? 1 : 1.5}
-                // A declared event nothing has recorded is the finding this view exists
-                // to draw, so it is dashed: present, wired, and never yet used.
+                strokeWidth={n.status === 'ok' && !n.stale ? 1 : 1.5}
+                // Two different silences, drawn differently. A DASHED outline is a path
+                // nothing has ever taken; a solid warning outline is one that carried
+                // traffic and stopped. Merging them would hide the second inside the
+                // first, and the second is the one that means something changed.
+                stroke={n.stale ? 'var(--status-warning-fg)' : STROKE[n.status]}
                 strokeDasharray={n.silent ? '5 3' : undefined}
               />
               <text
@@ -1107,7 +1109,7 @@ function FlowMap({ graph, app, onTab }: { graph: FlowGraph; app: AppRow; onTab: 
                   y={n.y + 34}
                   textAnchor="middle"
                   fontSize={10.5}
-                  fill={n.silent ? 'var(--status-warning-fg)' : 'var(--text-tertiary)'}
+                  fill={n.silent || n.stale ? 'var(--status-warning-fg)' : 'var(--text-tertiary)'}
                 >
                   {n.sublabel}
                 </text>
@@ -1173,6 +1175,7 @@ function FlowMap({ graph, app, onTab }: { graph: FlowGraph; app: AppRow; onTab: 
         <span>solid arrow &mdash; emits</span>
         <span>dashed arrow &mdash; handles</span>
         <span>dashed outline &mdash; declared, nothing recorded</span>
+        <span>amber outline &mdash; recorded, but not in the last 30 days</span>
       </div>
     </div>
   );
@@ -1224,6 +1227,9 @@ function FlowFindings({ view }: { view: FlowFindingsView }) {
   const TONE: Record<FlowFinding['kind'], { label: string; fg: string; bg: string }> = {
     unemitted: { label: 'never emitted', fg: 'var(--text-secondary)', bg: 'var(--surface-inset)' },
     unconsumed: { label: 'nothing to handle', fg: 'var(--text-secondary)', bg: 'var(--surface-inset)' },
+    // Louder than the two above on purpose: a path that never ran may simply not be
+    // built yet, while one that ran and stopped is a change in behaviour.
+    stale: { label: 'stopped', fg: 'var(--status-warning-fg)', bg: 'var(--status-warning-bg)' },
     'unconnected-provider': { label: 'not connected', fg: 'var(--status-warning-fg)', bg: 'var(--status-warning-bg)' },
     'unhealthy-provider': { label: 'needs reconnecting', fg: 'var(--status-danger-fg)', bg: 'var(--status-danger-bg)' },
   };
@@ -1246,8 +1252,9 @@ function FlowFindings({ view }: { view: FlowFindingsView }) {
 
       {!view.observedComplete && (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
-          This app has recorded more event types than can be compared at once, so the event findings are
-          withheld &mdash; a type missing from a shortened list is not evidence that it never happened.
+          This app has recorded more event types than can be compared at once, so nothing is reported as
+          never recorded &mdash; a type missing from a shortened list is not evidence that it never
+          happened. Events that were counted are still judged on how recently they ran.
         </p>
       )}
 

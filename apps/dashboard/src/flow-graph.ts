@@ -56,6 +56,13 @@ export interface FlowNode {
    * would otherwise be drawn as proven silence.
    */
   silent: boolean;
+  /**
+   * True when the node HAS fired and not lately. Kept apart from `silent` because
+   * they are different stories with different fixes: one path has never run, the
+   * other ran and stopped. A view that merged them would send someone hunting a
+   * feature that was never built, or shrug at one that broke.
+   */
+  stale: boolean;
   /** Set when the node is in a state worth colouring — an unusable connection. */
   status: 'ok' | 'warn' | 'danger';
   /** A sentence for the tooltip; never a claim the data does not support. */
@@ -150,6 +157,14 @@ export interface DeclaredSchedule {
 export interface ObservedType {
   type: string;
   count: number;
+  /**
+   * When this type was last recorded. Null only where the facet could not say.
+   *
+   * The half a count cannot supply: a type with thousands of events that stopped
+   * months ago reads as healthy on volume alone, and that is the failure the flow
+   * map exists to surface.
+   */
+  lastSeen: string | null;
 }
 
 /**
@@ -172,6 +187,10 @@ export function deriveFlowGraph(input: {
   observedComplete: boolean;
   /** False when the manifest says its declared surface was cut at the cap (#1234). */
   declaredComplete: boolean;
+  /** Now, as the caller reads it — one instant for the whole map. */
+  now: string;
+  /** How long without an event makes a node stale. */
+  staleAfterDays: number;
 }): FlowGraph {
   const {
     declaredEvents,
@@ -183,6 +202,8 @@ export function deriveFlowGraph(input: {
     observed,
     observedComplete,
     declaredComplete,
+    now,
+    staleAfterDays,
   } = input;
   if (declaredEvents === null) {
     return {
@@ -196,7 +217,10 @@ export function deriveFlowGraph(input: {
     };
   }
 
-  const counts = new Map(observed.map((o) => [o.type, o.count]));
+  const counts = new Map(observed.map((o) => [o.type, o]));
+  // One cutoff for the whole map, from the caller's instant: deriving it per node
+  // would let two nodes in the same drawing disagree about where the line is.
+  const staleBefore = new Date(Date.parse(now) - staleAfterDays * 86_400_000).toISOString();
   const known = new Set(knownProviders);
   const edges: FlowEdge[] = [];
 
@@ -211,6 +235,7 @@ export function deriveFlowGraph(input: {
       sublabel: 'on demand',
       observed: null,
       silent: false,
+      stale: false,
       status: 'ok',
       title:
         'Requests to this app’s own routes. Drawn unattached on purpose: which module serves a request is an operation-level fact, and the push does not declare operations — so there is no edge here that could be checked.',
@@ -222,6 +247,7 @@ export function deriveFlowGraph(input: {
       sublabel: cadenceLabel(s.cadence.everyMinutes),
       observed: null,
       silent: false,
+      stale: false,
       status: 'ok' as const,
       title: `A declared schedule: ${s.moduleId} runs ${s.operation} ${cadenceLabel(s.cadence.everyMinutes)}. Whether it has actually run is on the schedule-health card.`,
     })),
@@ -240,6 +266,7 @@ export function deriveFlowGraph(input: {
       sublabel: `${emits} emitted · ${consumes} handled`,
       observed: null,
       silent: false,
+      stale: false,
       status: 'ok' as const,
       title: `${id} declares ${emits} emitted event ${emits === 1 ? 'type' : 'types'} and handles ${consumes}.`,
     };
@@ -270,22 +297,38 @@ export function deriveFlowGraph(input: {
   const types = [...new Set(declaredEvents.map((d) => d.type))].sort();
   let partialObservation = false;
   const events = types.map((type) => {
-    const count = observedComplete ? (counts.get(type) ?? 0) : (counts.get(type) ?? null);
+    const hit = counts.get(type);
+    // Uncounted is its own answer. With a truncated facet a missing type means the
+    // reader was not told, and folding that into zero invents the silence below.
+    const count = hit ? hit.count : observedComplete ? 0 : null;
     if (count === null) partialObservation = true;
     const silent = observedComplete && count === 0;
+    const lastSeen = hit?.lastSeen ?? null;
+    const stale = !silent && lastSeen !== null && lastSeen < staleBefore;
+    const days = lastSeen === null ? null : Math.floor((Date.parse(now) - Date.parse(lastSeen)) / 86_400_000);
     return {
       id: `event:${type}`,
       kind: 'event' as const,
       label: type,
-      sublabel: count === null ? 'not counted' : count === 0 ? 'none recorded' : `${count.toLocaleString()} recorded`,
+      sublabel:
+        count === null
+          ? 'not counted'
+          : count === 0
+            ? 'none recorded'
+            : stale
+              ? `${count.toLocaleString()} · last ${days}d ago`
+              : `${count.toLocaleString()} recorded`,
       observed: count,
       silent,
+      stale,
       status: 'ok' as const,
       title: silent
         ? `${type} is declared and none has been recorded. The path may never run, or nobody may have exercised it yet.`
         : count === null
           ? `${type} is declared. This app has recorded more distinct types than could be counted in one pass, so this one has no count — which is not the same as none.`
-          : `${type}: ${count.toLocaleString()} recorded in this app’s events.`,
+          : stale
+            ? `${type}: ${count.toLocaleString()} recorded, the last ${days} days ago. It ran and stopped, which is a different thing from never having run.`
+            : `${type}: ${count.toLocaleString()} recorded in this app’s events.`,
     };
   });
 
@@ -311,6 +354,7 @@ export function deriveFlowGraph(input: {
         sublabel: live ? 'connected' : forProvider.length === 0 ? 'not connected' : 'needs reconnecting',
         observed: null,
         silent: false,
+        stale: false,
         status,
         title: live
           ? `${provider} is connected.`
@@ -326,6 +370,7 @@ export function deriveFlowGraph(input: {
       sublabel: 'declared egress',
       observed: null,
       silent: false,
+      stale: false,
       status: 'ok' as const,
       // Deliberately makes no claim about use: nothing counts egress per host today,
       // so "nothing has used this" is a finding this graph cannot yet support.

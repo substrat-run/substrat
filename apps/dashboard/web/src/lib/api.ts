@@ -466,6 +466,8 @@ export interface FlowNode {
   observed: number | null;
   /** True only when the observation is trustworthy AND found nothing. */
   silent: boolean;
+  /** True when the node HAS fired and not lately — a different story from `silent`. */
+  stale: boolean;
   status: 'ok' | 'warn' | 'danger';
   title: string;
   x: number;
@@ -502,7 +504,7 @@ export interface FlowView {
 
 /** One declared-vs-observed finding (#1234). */
 export interface FlowFinding {
-  kind: 'unemitted' | 'unconsumed' | 'unconnected-provider' | 'unhealthy-provider';
+  kind: 'unemitted' | 'unconsumed' | 'stale' | 'unconnected-provider' | 'unhealthy-provider';
   subject: string;
   moduleId: string | null;
   detail: string;

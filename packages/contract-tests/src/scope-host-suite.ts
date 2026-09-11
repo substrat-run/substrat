@@ -678,6 +678,31 @@ export function scopeHostContractSuite(
       expect(after.total).toBe(before.total);
     });
 
+    it('carries WHEN each bucket last saw an event, not only how many (#1234)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      await stub.invoke('test/emit-event');
+      await stub.invoke('test/emit-event');
+
+      const byType = await host.admin.facetEvents(staff, t1, s1, { groupBy: { kind: 'type' } });
+      const happened = byType.buckets.find((b) => b.value === 'test.happened')!;
+      // Recency is the question a count cannot answer, and the one the flow map asks:
+      // a consumer with a big number that stopped months ago is the failure volume hides.
+      expect(happened.lastSeen).toEqual(expect.any(String));
+
+      // And it is genuinely the MAXIMUM, not just some row's timestamp. `until` is
+      // exclusive, so faceting up to `lastSeen` must drop every event that carries it —
+      // which is a property of the query rather than a hope about the clock, and needs
+      // no control over time to assert.
+      const upTo = await host.admin.facetEvents(staff, t1, s1, {
+        groupBy: { kind: 'type' },
+        until: happened.lastSeen!,
+      });
+      const earlier = upTo.buckets.find((b) => b.value === 'test.happened');
+      expect(earlier?.count ?? 0).toBeLessThan(happened.count);
+      // Whatever survives is strictly older, so its own recency moved back with it.
+      if (earlier?.lastSeen) expect(earlier.lastSeen < happened.lastSeen!).toBe(true);
+    });
+
     it('renders one bucket per rendered value, and does not invent an erasure (#1239)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       // SQLite keeps these in separate storage classes: `json_extract` hands back an

@@ -13,6 +13,7 @@ export { scheduleContractSuite } from './schedule-suite.js';
 export { inputParseContractSuite } from './input-parse-suite.js';
 export { spineGuardContractSuite } from './spine-guard-suite.js';
 export { grantExpiryContractSuite } from './grant-expiry-suite.js';
+export { facetRecencyContractSuite, type FacetRecencyFixture } from './facet-recency-suite.js';
 export type { GrantExpiryFixture } from './grant-expiry-suite.js';
 export { entityCheckConformanceSuite, planEntityCheckCoverage } from './entity-check-suite.js';
 export type { EntityCheckFixture, EntityCheckSuiteOptions, PlannedCheck } from './entity-check-suite.js';

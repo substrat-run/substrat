@@ -5,6 +5,7 @@ import { UNSAFE_allowAllChecker, manualClock, webCryptoSecretBox } from '@substr
 import {
   atomicContractSuite,
   grantExpiryContractSuite,
+  facetRecencyContractSuite,
   impersonationContractSuite,
   connectorTestFetch,
   permissionContractSuite,
@@ -208,6 +209,24 @@ spineGuardContractSuite('adapter-sqlite', async () => {
 // suite header says why), so a mount there would be a fact the adapter cannot show.
 grantExpiryContractSuite('adapter-sqlite', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'substrat-expiry-'));
+  const clock = manualClock();
+  const host = new SqliteScopeHost({ dir, clock: clock.read });
+  return {
+    host,
+    clock,
+    cleanup: async () => {
+      await host.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+});
+
+// #1234: a facet bucket's `lastSeen` is the LATEST event in it. Mounted here and not
+// on the Cloudflare adapter for the same reason as the suite above: the DO stamps
+// `occurred_at` from a clock no host option reaches, and without control of time MIN
+// and MAX return the same string. The suite header carries the full argument.
+facetRecencyContractSuite('adapter-sqlite', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'substrat-recency-'));
   const clock = manualClock();
   const host = new SqliteScopeHost({ dir, clock: clock.read });
   return {
