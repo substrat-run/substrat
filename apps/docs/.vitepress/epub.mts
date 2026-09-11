@@ -74,8 +74,23 @@ const xml = (s: string): string =>
  */
 const md = new MarkdownIt({ html: true, xhtmlOut: true, linkify: false, typographer: false });
 
-/** `05-one-event` → `05-one-event.xhtml`; the front matter keeps its own name. */
+/** `05-one-event` → `text/05-one-event.xhtml`; the front matter keeps its own name. */
 const fileFor = (page: BookPage): string => `text/${page.slug}.xhtml`;
+
+/**
+ * The manifest id for a chapter.
+ *
+ * The `ch-` prefix is not decoration. A manifest `id` is an XML `ID`, and an XML name
+ * **may not start with a digit** — so `01-why-a-substrate`, the obvious id, is invalid,
+ * and an EPUB whose package document fails to parse is one Apple Books silently
+ * declines to open. Ten chapters are numbered, so ten ids were wrong.
+ *
+ * A strict XML parser does not catch this: `id` is only an `ID` by virtue of the OPF
+ * schema, and well-formedness has nothing to say about it. `idOf` is therefore the one
+ * place ids are minted, and `test/epub.test.mts` holds every id in the package document
+ * to the XML name production directly.
+ */
+const idOf = (page: BookPage): string => `ch-${page.slug}`;
 
 /**
  * Fix up the twin's links for a reader holding a phone.
@@ -158,7 +173,7 @@ function navDoc(pages: BookPage[]): string {
 <link rel="stylesheet" type="text/css" href="style.css"/>
 </head>
 <body>
-<nav epub:type="toc" id="toc">
+<nav epub:type="toc" id="toc" class="toc">
   <h1>Contents</h1>
   <ol>
 ${items}
@@ -212,10 +227,10 @@ function packageDoc(pages: BookPage[], modified: string, hasCover: boolean): str
   const chapterItems = pages
     .map(
       (p) =>
-        `    <item id="${p.slug}" href="${fileFor(p)}" media-type="application/xhtml+xml"/>`,
+        `    <item id="${idOf(p)}" href="${fileFor(p)}" media-type="application/xhtml+xml"/>`,
     )
     .join('\n');
-  const spine = pages.map((p) => `    <itemref idref="${p.slug}"/>`).join('\n');
+  const spine = pages.map((p) => `    <itemref idref="${idOf(p)}"/>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="${LANGUAGE}">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -269,6 +284,17 @@ table { border-collapse: collapse; width: 100%; font-size: 0.8em; margin: 0 0 1e
 th, td { border: 1px solid rgba(127,127,127,0.5); padding: 0.35em 0.5em;
          text-align: left; vertical-align: top; }
 th { font-weight: bold; }
+
+/*
+ * The contents page numbers itself twice otherwise. EPUB 3 requires the toc to be an
+ * ordered list, and a reader draws that list's markers — but every chapter title opens
+ * with its own number, because the number is part of the chapter's name and has to
+ * survive into a reader's own table-of-contents panel, which ignores this stylesheet.
+ * So the title keeps the number and the list marker goes.
+ */
+.toc ol { list-style: none; padding-left: 0; }
+.toc ol li { margin-bottom: 0.6em; }
+.toc ol a { text-decoration: none; }
 
 .titlepage { text-align: center; padding-top: 22%; }
 .booktitle { font-size: 2.1em; line-height: 1.15; margin: 0 0 0.7em; }
