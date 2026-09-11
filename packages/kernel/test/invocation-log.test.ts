@@ -60,7 +60,9 @@ describe('invocationLog', () => {
         status: 200,
         threw: false,
       });
-      expect(cap.lines[0].durationMs).toBeGreaterThanOrEqual(0);
+      // `toHaveLength` above does not narrow the index for the compiler, so name it.
+      const [line] = cap.lines;
+      expect(line?.durationMs).toBeGreaterThanOrEqual(0);
     } finally {
       cap.restore();
     }
@@ -92,9 +94,12 @@ describe('invocationLog', () => {
     try {
       const app = appWith((a) => a.get('/callback', (c) => c.text('ok')));
       await app.request('/callback?code=SECRET_AUTH_CODE&state=xyz', { headers: routed });
-      expect(cap.lines[0].path).toBe('/callback');
-      expect(JSON.stringify(cap.lines[0])).not.toContain('SECRET_AUTH_CODE');
-      expect(JSON.stringify(cap.lines[0])).not.toContain('state');
+      const [line] = cap.lines;
+      expect(line?.path).toBe('/callback');
+      // Assert on the WHOLE serialized line, not just `path`: the guarantee is that the
+      // secret is absent from the record, not merely from the field we remembered to check.
+      expect(JSON.stringify(line)).not.toContain('SECRET_AUTH_CODE');
+      expect(JSON.stringify(line)).not.toContain('state');
     } finally {
       cap.restore();
     }
