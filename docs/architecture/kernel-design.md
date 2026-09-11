@@ -958,8 +958,18 @@ spells the spine out for itself — `adapter-sqlite/src/index.ts` for both the s
 directory, `scope-do.ts` and `control-plane-do.ts` on the hosted side — and what keeps the
 copies honest is a gate rather than a shared source: `pnpm lint:spine-ddl`
 (`tools/spine-ddl-drift.mjs`, CI) executes each side's DDL *plus* the columns it ALTERs in
-afterwards and compares the schemas a query would actually meet, so a real divergence
-between what self-host runs and what production runs is red.
+afterwards and compares the schemas a query would actually meet — columns, indexes and
+foreign keys — so a divergence between what self-host runs and what production runs is red.
+
+Indexes are in that list because of this PR's own review, and the gap is worth recording
+rather than quietly closing. The gate compared `PRAGMA table_info` and nothing else, while
+the DDL blocks it reads carry about twenty-five `CREATE INDEX` statements each: an index on
+one side and not the other passed a green run, and so did a `UNIQUE` constraint, which
+`table_info` cannot see at all. That is the worst-behaved kind of drift this gate exists for
+— the same query, correct on both sides, that only plans a full scan in production — and a
+gate reporting green over it is worse than no gate, because the claim in the paragraph above
+was being relied on. It now reads the indexes through `PRAGMA index_list`/`index_info`, which
+compares what the planner has rather than how the two files spell it.
 
 Kernel-owned DDL was the original ask and is not off the table; it is a bigger change than
 it looks. It has to survive two dialects — `better-sqlite3` and Durable Object SQLite, which
@@ -968,10 +978,12 @@ spine schema part of the kernel's *published* surface, so it is a contract chang
 migration checkpoint rather than a refactor. Three fragments that are already dialect-neutral
 are shared from the kernel today (`IMPERSONATION_DDL`, `OUTBOX_ENTITY_INDEX`,
 `IDEMPOTENCY_DDL`, which the drift tool resolves and inlines), so the door is open one table
-at a time. The price of stopping here is the one the gate cannot pay: a table present on a
+at a time. The price of stopping here is what the gate still cannot pay. A table present on a
 single side is a note rather than a failure — the adapters really do partition the spine
-differently — so a *new* spine table still has to be added on both sides by hand. Each DDL
-site carries a header naming its counterpart for that reason.
+differently — so a *new* spine table has to be added on both sides by hand. And triggers and
+CHECK constraints are not compared: the spine has neither today, which is the only reason
+that is affordable, and the first one added would be unguarded. Each DDL site carries a
+header naming its counterpart and both limits for that reason.
 
 ## 9. Repository and package layout (§5.8)
 

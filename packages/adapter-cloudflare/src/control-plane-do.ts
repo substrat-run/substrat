@@ -493,12 +493,14 @@ export interface AdminEntryInput {
  *
  * `pnpm lint:spine-ddl` (`tools/spine-ddl-drift.mjs`) is what refuses a divergence: it
  * executes each side's DDL plus those later ALTERs and compares the schemas a query would
- * actually meet, so only a real difference is red. Note the one thing it cannot see — a
- * table present on one side only is a note, not a failure, because the adapters
- * legitimately partition the spine differently (this one projects tenant tuples, roles and
- * entitlements into each scope where the pure adapter keeps one shared directory). Keeping
- * the copies and gating them, rather than moving the DDL into the kernel, is the recorded
- * answer to #969; `docs/architecture/kernel-design.md` §8 says why.
+ * actually meet — columns, indexes (including the ones a UNIQUE creates) and foreign keys.
+ * Two things it does NOT judge. A table present on one side only is a note, not a failure,
+ * because the adapters legitimately partition the spine differently (this one projects
+ * tenant tuples, roles and entitlements into each scope where the pure adapter keeps one
+ * shared directory). And triggers and CHECK constraints are not compared at all; the spine
+ * has none today, so adding one here means adding it there with nothing to catch you.
+ * Keeping the copies and gating them, rather than moving the DDL into the kernel, is the
+ * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
  */
 const DIRECTORY_DDL = `
   -- The ';' in this comment is a deliberate tripwire; the DDL must go through

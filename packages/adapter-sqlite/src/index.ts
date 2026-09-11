@@ -405,11 +405,13 @@ export interface SqliteScopeHostOptions {
  * on the DO side).
  *
  * `pnpm lint:spine-ddl` (`tools/spine-ddl-drift.mjs`) is what refuses a divergence: it
- * executes each side's DDL plus those later ALTERs and compares the schemas a query
- * would actually meet, so only a real difference is red. Note the one thing it cannot
- * see — a table present on one side only is a note, not a failure, because the adapters
- * legitimately partition the spine differently. Keeping the copies and gating them,
- * rather than moving the DDL into the kernel, is the recorded answer to #969;
+ * executes each side's DDL plus those later ALTERs and compares the schemas a query would
+ * actually meet — columns, indexes (including the ones a UNIQUE creates) and foreign keys.
+ * Two things it does NOT judge. A table present on one side only is a note, not a failure,
+ * because the adapters legitimately partition the spine differently. And triggers and CHECK
+ * constraints are not compared at all; the spine has none today, so adding one here means
+ * adding it there with nothing to catch you. Keeping the copies and gating them, rather
+ * than moving the DDL into the kernel, is the recorded answer to #969;
  * `docs/architecture/kernel-design.md` §8 says why.
  */
 const KERNEL_DDL = `
@@ -1154,10 +1156,12 @@ export class SqliteScopeHost implements ScopeHost {
    * production. So a new directory table both adapters need, or a new column on a table
    * they both build, is added HERE and THERE — and for a directory created before it, to
    * both adapters' `ensureDirectoryColumns` as well.
-   * `pnpm lint:spine-ddl` (`tools/spine-ddl-drift.mjs`) refuses a divergence by
-   * executing each side's DDL plus those later ALTERs and comparing the schemas a query
-   * would actually meet; what it cannot see is a table present on one side only, which it
-   * reports as a note because the adapters legitimately partition the spine differently.
+   * `pnpm lint:spine-ddl` (`tools/spine-ddl-drift.mjs`) refuses a divergence by executing
+   * each side's DDL plus those later ALTERs and comparing the schemas a query would
+   * actually meet — columns, indexes and foreign keys. What it does not judge: a table
+   * present on one side only, which it reports as a note because the adapters legitimately
+   * partition the spine differently, and triggers or CHECK constraints, which it does not
+   * compare at all (the spine has none).
    * Keeping the copies and gating them, rather than moving the DDL into the kernel, is the
    * recorded answer to #969; `docs/architecture/kernel-design.md` §8 says why.
    */

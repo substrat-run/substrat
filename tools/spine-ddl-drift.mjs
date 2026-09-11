@@ -307,6 +307,8 @@ function schemaOf(ddl, additions, label) {
     }
   }
   const tables = new Map();
+  const indexes = new Map();
+  const fks = new Map();
   for (const { name } of db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
     .all()) {
@@ -323,9 +325,42 @@ function schemaOf(ddl, additions, label) {
           pk: Number(c.pk),
         })),
     );
+
+    // Indexes, read through PRAGMA rather than from `sqlite_master.sql`, so the comparison
+    // is of what the planner actually has and not of how the two files happen to spell it.
+    // `index_list` includes the ones SQLite creates for itself: `origin` is 'c' for a
+    // CREATE INDEX, 'u' for a UNIQUE constraint and 'pk' for a primary key — which is how
+    // a UNIQUE that exists on one side only gets caught, since `table_info` cannot see one.
+    indexes.set(
+      name,
+      db
+        .prepare(`PRAGMA index_list(${JSON.stringify(name)})`)
+        .all()
+        .map((ix) => ({
+          // An auto-index is named positionally (`sqlite_autoindex_<table>_1`), so its name
+          // is not a fact worth comparing — its columns are. A named index is the reverse:
+          // the name is how the two sides refer to the same index at all.
+          name: String(ix.origin) === 'c' ? ix.name : `«${ix.origin}»`,
+          unique: Number(ix.unique),
+          partial: Number(ix.partial),
+          columns: db
+            .prepare(`PRAGMA index_info(${JSON.stringify(ix.name)})`)
+            .all()
+            .map((c) => (c.name === null ? '<expr>' : c.name))
+            .join(', '),
+        })),
+    );
+
+    fks.set(
+      name,
+      db
+        .prepare(`PRAGMA foreign_key_list(${JSON.stringify(name)})`)
+        .all()
+        .map((f) => `${f.from} → ${f.table}.${f.to} (on delete ${f.on_delete})`),
+    );
   }
   db.close();
-  return tables;
+  return { tables, indexes, fks };
 }
 
 const describe = (c) =>
@@ -350,35 +385,87 @@ function tableDrift(a, b) {
   return out;
 }
 
+const describeIndex = (ix) =>
+  `${ix.unique ? 'UNIQUE ' : ''}${ix.name}(${ix.columns})${ix.partial ? ' PARTIAL' : ''}`;
+
+/**
+ * Index-level drift between one table built two ways.
+ *
+ * Compared as a SET rather than by name, because the two halves of the identity differ:
+ * a named index is the same index on both sides when the name matches, while an auto-index
+ * from a UNIQUE constraint has a positional name that means nothing across files. Matching
+ * on the rendered description covers both — and for a named index whose columns moved, it
+ * reports the pair, which is the readable form of "this index is not the same index".
+ */
+function indexDrift(a, b) {
+  const out = [];
+  const [sa, sb] = [new Set(a.map(describeIndex)), new Set(b.map(describeIndex))];
+  for (const d of sa) if (!sb.has(d)) out.push(`index ${d} is built by the first side only`);
+  for (const d of sb) if (!sa.has(d)) out.push(`index ${d} is built by the second side only`);
+  return out;
+}
+
+/** Foreign-key drift between one table built two ways. */
+function fkDrift(a, b) {
+  const out = [];
+  const [sa, sb] = [new Set(a), new Set(b)];
+  for (const d of sa) if (!sb.has(d)) out.push(`foreign key ${d} is declared by the first side only`);
+  for (const d of sb) if (!sa.has(d)) out.push(`foreign key ${d} is declared by the second side only`);
+  return out;
+}
+
 /**
  * Prove the comparison still refuses, on every run, before trusting it to pass.
  *
  * A drift gate that has quietly become a no-op reads exactly like a gate over a codebase
  * that never drifts, and this one has more than the usual room to rot that way: it reads
  * source with regexes, and the perturbation it is looking for is a single column. So it
- * perturbs a real extracted schema four ways and requires each to be caught. This costs
+ * perturbs a real extracted schema and requires each perturbation to be caught. This costs
  * nothing — the schemas are already in memory — and it fails loudly rather than passing.
+ *
+ * Every dimension the gate compares is perturbed here, and that is the rule rather than a
+ * courtesy: a comparison with no perturbation behind it is the shape this whole function
+ * exists to catch. The index cases arrived with the comparison itself (#969 review) —
+ * before it, a one-sided CREATE INDEX or UNIQUE passed a green run.
  */
 function proveItRefuses(reference) {
-  const cols = [...reference.values()].find((c) => c.length > 1);
+  const cols = [...reference.tables.values()].find((c) => c.length > 1);
   if (!cols) throw new Error('spine-ddl-drift self-check: no table with two columns to perturb');
+  const ixs = [...reference.indexes.values()].find((i) => i.length > 0);
+  if (!ixs) throw new Error('spine-ddl-drift self-check: no indexed table to perturb');
+  const probeIx = { name: '__probe_ix', unique: 0, partial: 0, columns: 'a, b' };
 
   const cases = [
-    ['a dropped column', cols, cols.slice(1)],
-    ['an added column', cols, [...cols, { name: '__probe', type: 'TEXT', notnull: 0, dflt: null, pk: 0 }]],
-    ['a retyped column', cols, [{ ...cols[0], type: 'INTEGER' }, ...cols.slice(1)]],
-    ['a widened column', cols, [{ ...cols[0], notnull: cols[0].notnull ? 0 : 1 }, ...cols.slice(1)]],
+    ['a dropped column', () => tableDrift(cols, cols.slice(1))],
+    [
+      'an added column',
+      () => tableDrift(cols, [...cols, { name: '__probe', type: 'TEXT', notnull: 0, dflt: null, pk: 0 }]),
+    ],
+    ['a retyped column', () => tableDrift(cols, [{ ...cols[0], type: 'INTEGER' }, ...cols.slice(1)])],
+    [
+      'a widened column',
+      () => tableDrift(cols, [{ ...cols[0], notnull: cols[0].notnull ? 0 : 1 }, ...cols.slice(1)]),
+    ],
+    ['a dropped index', () => indexDrift(ixs, ixs.slice(1))],
+    ['an added index', () => indexDrift(ixs, [...ixs, probeIx])],
+    ['an index over different columns', () => indexDrift([probeIx], [{ ...probeIx, columns: 'b, a' }])],
+    ['an index that stopped being UNIQUE', () => indexDrift([{ ...probeIx, unique: 1 }], [probeIx])],
+    ['a dropped foreign key', () => fkDrift(['x → y.z (on delete NO ACTION)'], [])],
   ];
-  for (const [what, a, b] of cases) {
-    if (tableDrift(a, b).length === 0) {
+  for (const [what, run] of cases) {
+    if (run().length === 0) {
       throw new Error(
         `spine-ddl-drift self-check: ${what} was NOT reported as drift. The comparison has ` +
           `stopped working — a green run would mean nothing.`,
       );
     }
   }
-  if (tableDrift(cols, cols.map((c) => ({ ...c }))).length !== 0) {
+  const copy = (xs) => xs.map((x) => ({ ...x }));
+  if (tableDrift(cols, copy(cols)).length !== 0) {
     throw new Error('spine-ddl-drift self-check: an identical table was reported as drift');
+  }
+  if (indexDrift(ixs, copy(ixs)).length !== 0) {
+    throw new Error('spine-ddl-drift self-check: an identical index set was reported as drift');
   }
   return cases.length;
 }
@@ -417,27 +504,33 @@ function main() {
     const [a, b] = [build(sideA), build(sideB)];
     proved = proveItRefuses(a);
 
-    const shared = [...a.keys()].filter((t) => b.has(t)).sort();
+    const shared = [...a.tables.keys()].filter((t) => b.tables.has(t)).sort();
     if (VERBOSE) {
       const n = (side) => sideSchemas.get(side).additions.length;
+      const ixCount = (x) => [...x.indexes.values()].reduce((t, i) => t + i.length, 0);
       console.log(
         `\n${pair.name}\n` +
-          `  ${sideA.label}: ${a.size} tables (+${n(sideA)} added columns)\n` +
-          `  ${sideB.label}: ${b.size} tables (+${n(sideB)} added columns)\n` +
-          `  ${shared.length} built by both, compared column by column`,
+          `  ${sideA.label}: ${a.tables.size} tables, ${ixCount(a)} indexes (+${n(sideA)} added columns)\n` +
+          `  ${sideB.label}: ${b.tables.size} tables, ${ixCount(b)} indexes (+${n(sideB)} added columns)\n` +
+          `  ${shared.length} built by both, compared column by column and index by index`,
       );
     }
 
     for (const table of shared) {
-      for (const line of tableDrift(a.get(table), b.get(table))) {
+      const lines = [
+        ...tableDrift(a.tables.get(table), b.tables.get(table)),
+        ...indexDrift(a.indexes.get(table), b.indexes.get(table)),
+        ...fkDrift(a.fks.get(table), b.fks.get(table)),
+      ];
+      for (const line of lines) {
         failures.push(
           `${pair.name}/${table}: ${line}\n      first:  ${sideA.label}\n      second: ${sideB.label}`,
         );
       }
     }
     for (const [only, side, other] of [
-      [[...a.keys()].filter((t) => !b.has(t)).sort(), sideA, sideB],
-      [[...b.keys()].filter((t) => !a.has(t)).sort(), sideB, sideA],
+      [[...a.tables.keys()].filter((t) => !b.tables.has(t)).sort(), sideA, sideB],
+      [[...b.tables.keys()].filter((t) => !a.tables.has(t)).sort(), sideB, sideA],
     ]) {
       for (const table of only) {
         notes.push(`${pair.name}/${table}: built by ${side.label}, not by ${other.label}`);
@@ -458,7 +551,9 @@ function main() {
     for (const f of failures) console.error(`  ✖ ${f}\n`);
     console.error(
       `The pure adapter is what dev, CI, self-host and escrow run; the Durable-Object adapter is\n` +
-        `production. A column on one and not the other is a bug that only appears in one of them.\n` +
+        `production. A column or an index on one and not the other is a bug that only appears in\n` +
+        `one of them — and the index case is the quiet one: the same query, correct on both, that\n` +
+        `only plans a scan in production.\n` +
         `Add it to both, or move the table into a kernel-owned fragment both import (as\n` +
         `IMPERSONATION_DDL and IDEMPOTENCY_DDL under packages/kernel/src already are).\n`,
     );
@@ -466,7 +561,8 @@ function main() {
   }
 
   console.log(
-    `spine schema: ${PAIRS.length} stores built two ways, no drift in any table both adapters build` +
+    `spine schema: ${PAIRS.length} stores built two ways, no column, index or foreign-key drift ` +
+      `in any table both adapters build` +
       (notes.length > 0 ? ` (${notes.length} one-sided tables, by design)` : '') +
       `; ${proved} perturbations re-checked as still caught`,
   );
