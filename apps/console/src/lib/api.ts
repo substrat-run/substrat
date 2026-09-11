@@ -1,4 +1,4 @@
-import { LIST_PAGE_MAX } from '@substrat-run/contracts';
+import { denialQuery, LIST_PAGE_MAX } from '@substrat-run/contracts';
 import type {
   AdminAction,
   AdminLogEntry,
@@ -35,19 +35,6 @@ import type {
   VerticalVersion,
 } from '@substrat-run/contracts';
 import type { DoNamespace, PlatformRuntime, TenantStores } from './cf-links';
-
-/** One spelling of the denial filter, so the two reads cannot drift on what it means. */
-function denialQuery(filter?: DenialFilter): string {
-  const q = new URLSearchParams();
-  if (filter?.actor) q.set('actor', filter.actor);
-  if (filter?.permission) q.set('permission', filter.permission);
-  if (filter?.operation) q.set('operation', filter.operation);
-  if (filter?.since) q.set('since', filter.since);
-  if (filter?.until) q.set('until', filter.until);
-  if (filter?.limit) q.set('limit', String(filter.limit));
-  const qs = q.toString();
-  return qs ? `?${qs}` : '';
-}
 
 /**
  * Client for the control-plane API (packages/control-plane-api).
