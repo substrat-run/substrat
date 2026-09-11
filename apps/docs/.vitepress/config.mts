@@ -69,7 +69,7 @@ export default withMermaid(defineConfig({
   // standalone script so it reads the same sidebar the nav renders and the same
   // srcDir VitePress just built — there is no second list of pages to forget.
   // `pnpm lint:llms --check` runs the identical code and fails on a mismatch.
-  buildEnd(siteConfig) {
+  async buildEnd(siteConfig) {
     const repoRoot = resolve(siteConfig.srcDir, '../..');
     emitInto(siteConfig.outDir, buildArtifacts(siteConfig.srcDir, repoRoot));
     // The book's single-file editions (#1401): /book.txt and /book/read.html, the
@@ -79,7 +79,9 @@ export default withMermaid(defineConfig({
     // And /book.epub — the same chapters packaged for a phone: a real EPUB 3 with a
     // cover, a table of contents and one file per chapter, so Apple Books and the rest
     // can remember where the reader got to. See epub.mts for the zip's own rules.
-    emitInto(siteConfig.outDir, epubArtifacts(siteConfig.srcDir));
+    // Async because the chapters' figures are the page's own Vue components,
+    // server-rendered for a format with no JavaScript (figures.mts).
+    emitInto(siteConfig.outDir, await epubArtifacts(siteConfig.srcDir));
     // The `_headers` Cloudflare Pages serves the site with, including a CSP
     // whose script hashes are read back out of the HTML this build just wrote
     // (headers.mts explains why they cannot be written down). Emitted last: it

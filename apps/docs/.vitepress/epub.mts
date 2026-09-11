@@ -21,6 +21,15 @@
  *   3. Every file in the zip must be declared in the package manifest, and every
  *      readable document must appear in the spine, in reading order.
  *
+ * ## The figures
+ *
+ * Five chapters draw one. On the web they are Vue components, and every other
+ * edition of the book flattens them to the prose twin beside them — right for
+ * `llms.txt`, wrong for a reader holding a phone, where the shape is supposed to
+ * arrive before the sentence. So the EPUB carries the picture: the same components,
+ * server-rendered to XHTML with their own stylesheets folded into `style.css`. See
+ * `figures.mts`, which is also where the XML rules above meet Vue's HTML output.
+ *
  * ## Why it is generated and not checked in
  *
  * Same reason as the other two editions (book.mts): a committed `.epub` is a second,
@@ -41,7 +50,15 @@ import { join } from 'node:path';
 import { zipSync, strToU8 } from 'fflate';
 import MarkdownIt from 'markdown-it';
 import { bookPages, type BookPage } from './book.mjs';
-import { SITE, type Artifact } from './llms.mjs';
+import { SITE, altTwin, type Artifact, type ComponentTwin } from './llms.mjs';
+import {
+  componentOf,
+  figureCss,
+  figureKey,
+  renderFigures,
+  type FigureRequest,
+  type FigureSet,
+} from './figures.mjs';
 
 const TITLE = 'Substrat, end to end';
 const AUTHOR = 'Substrat';
@@ -303,14 +320,46 @@ th { font-weight: bold; }
 `;
 
 /**
+ * Every `<Component />` the book's chapters draw, in reading order.
+ *
+ * Found by walking the twins with a collector rather than by grepping the sources,
+ * so the list is exactly what `toTwin` would have flattened — a component inside a
+ * fenced code block is not a figure, and nothing here has to remember that twice.
+ */
+export function figureRequests(srcDir: string): FigureRequest[] {
+  const found: FigureRequest[] = [];
+  bookPages(srcDir, (name, props) => {
+    found.push({ name, props });
+    return '';
+  });
+  return found;
+}
+
+/**
+ * The figure for a component line, falling back to its prose twin.
+ *
+ * The fallback is not decoration: `buildEpub` is callable with no figures at all
+ * (the sync path a test or a caller without a renderer takes), and a book that
+ * silently dropped five diagrams would be worse than one that keeps the prose.
+ */
+const twinWith =
+  (figures: FigureSet): ComponentTwin =>
+  (name, props) =>
+    figures.get(figureKey(name, props)) ?? altTwin(name, props);
+
+/**
  * Build the EPUB.
  *
  * `mimetype` is added first with `level: 0` (stored). fflate writes entries in the
  * order given, so those two facts together are what make the archive an EPUB rather
  * than a zip full of EPUB-shaped files.
  */
-export function buildEpub(srcDir: string, coverPng?: Uint8Array): Uint8Array {
-  const pages = bookPages(srcDir);
+export function buildEpub(
+  srcDir: string,
+  coverPng?: Uint8Array,
+  figures: FigureSet = new Map(),
+): Uint8Array {
+  const pages = bookPages(srcDir, twinWith(figures));
   // Second-resolution UTC, which is the only form `dcterms:modified` accepts.
   const modified = `${new Date().toISOString().slice(0, 19)}Z`;
   const hasCover = coverPng !== undefined && coverPng.length > 0;
@@ -330,7 +379,12 @@ export function buildEpub(srcDir: string, coverPng?: Uint8Array): Uint8Array {
     'EPUB/package.opf': [strToU8(packageDoc(pages, modified, hasCover)), { level: 6 }],
     'EPUB/nav.xhtml': [strToU8(navDoc(pages)), { level: 6 }],
     'EPUB/toc.ncx': [strToU8(ncxDoc(pages)), { level: 6 }],
-    'EPUB/style.css': [strToU8(STYLE), { level: 6 }],
+    'EPUB/style.css': [
+      // Styles for the figures actually embedded — not for every one the chapters
+      // ask for, so the sync path ships no rules for pictures it does not carry.
+      strToU8(STYLE + figureCss(srcDir, [...figures.keys()].map(componentOf))),
+      { level: 6 },
+    ],
     'EPUB/titlepage.xhtml': [strToU8(titlePage()), { level: 6 }],
   };
   if (hasCover) files['EPUB/cover.png'] = [coverPng, { level: 6 }];
@@ -350,6 +404,7 @@ export function readCover(srcDir: string): Uint8Array | undefined {
   }
 }
 
-export function epubArtifacts(srcDir: string): Artifact[] {
-  return [{ path: 'book.epub', contents: buildEpub(srcDir, readCover(srcDir)) }];
+export async function epubArtifacts(srcDir: string): Promise<Artifact[]> {
+  const figures = await renderFigures(srcDir, figureRequests(srcDir));
+  return [{ path: 'book.epub', contents: buildEpub(srcDir, readCover(srcDir), figures) }];
 }

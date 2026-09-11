@@ -171,6 +171,21 @@ export function propsOf(attrs: string): Record<string, string> {
 }
 
 /**
+ * How a `<Component />` line is rendered into the twin.
+ *
+ * The default flattens it to the prose in its `*.content.mts`, which is what every
+ * markdown twin wants. The EPUB passes one that returns the component's own
+ * server-rendered figure instead (`.vitepress/figures.mts`), because a reader
+ * holding a phone should get the picture the web page draws.
+ */
+export type ComponentTwin = (name: string, props: Record<string, string>) => string;
+
+/** The default: the component's prose twin, or a pointer at the page when it has none. */
+export const altTwin: ComponentTwin = (name, props) =>
+  altFor(name, props) ??
+  `*(Diagram: ${name} — rendered at the HTML page for this document.)*`;
+
+/**
  * Source markdown → the twin an agent should read.
  *
  * VitePress containers become blockquotes (the closest markdown has to an
@@ -179,7 +194,11 @@ export function propsOf(attrs: string): Record<string, string> {
  * plain arrays — and fall back to a pointer at the rendered page only when there
  * is genuinely nothing to flatten.
  */
-export function toTwin(raw: string, srcDir?: string): string {
+export function toTwin(
+  raw: string,
+  srcDir?: string,
+  component: ComponentTwin = altTwin,
+): string {
   const { body } = splitFrontmatter(raw);
   const out: string[] = [];
   let inFence = false;
@@ -227,15 +246,11 @@ export function toTwin(raw: string, srcDir?: string): string {
     }
 
     // A theme component on a line of its own, with or without simple string
-    // props. Its content is markdown when the component keeps it in a content
-    // module; a pointer at the page when it does not.
-    const component = COMPONENT_LINE.exec(line.trim());
-    if (component) {
-      const flattened = altFor(component[1], propsOf(component[2] ?? ''));
-      push(
-        flattened ??
-          `*(Diagram: ${component[1]} — rendered at the HTML page for this document.)*`,
-      );
+    // props. What it becomes is the caller's decision — prose by default (see
+    // `altTwin`), the rendered figure for the EPUB.
+    const match = COMPONENT_LINE.exec(line.trim());
+    if (match) {
+      push(component(match[1]!, propsOf(match[2] ?? '')));
       continue;
     }
 

@@ -25,7 +25,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import MarkdownIt from 'markdown-it';
 import { bookChapters, fileForLink } from './sidebar.mjs';
-import { SITE, toTwin, type Artifact } from './llms.mjs';
+import { SITE, toTwin, type Artifact, type ComponentTwin } from './llms.mjs';
 
 /** The book's own title, used for the `<title>` and the markdown H1. */
 const TITLE = 'Substrat, end to end';
@@ -66,9 +66,14 @@ function demoteHeadings(body: string): string {
 }
 
 /** One chapter, as markdown ready to concatenate. `demote` is false for the front matter. */
-function chapterMarkdown(srcDir: string, link: string, demote = true): string {
+function chapterMarkdown(
+  srcDir: string,
+  link: string,
+  demote = true,
+  component?: ComponentTwin,
+): string {
   const raw = readFileSync(join(srcDir, fileForLink(link)), 'utf8');
-  const body = stripNextLink(stripFrontmatter(toTwin(raw, srcDir))).trimEnd();
+  const body = stripNextLink(stripFrontmatter(toTwin(raw, srcDir, component))).trimEnd();
   return demote ? demoteHeadings(body) : body;
 }
 
@@ -91,13 +96,16 @@ export interface BookPage {
  * EPUB does the opposite, keeping one file per chapter so a reader's table of
  * contents has somewhere to point. Both read the same list and the same twins, so
  * neither edition can carry a chapter the other does not.
+ *
+ * `component` is how the EPUB gets the chapters' figures rather than their prose
+ * twins — it is handed each `<Component />` line and returns what stands in for it.
  */
-export function bookPages(srcDir: string): BookPage[] {
+export function bookPages(srcDir: string, component?: ComponentTwin): BookPage[] {
   return bookChapters().map((c) => ({
     text: c.text,
     link: c.link,
     slug: c.link.replace(/^\/book\/?/, '') || 'index',
-    markdown: chapterMarkdown(srcDir, c.link, false),
+    markdown: chapterMarkdown(srcDir, c.link, false, component),
   }));
 }
 

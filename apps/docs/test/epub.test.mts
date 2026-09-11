@@ -12,11 +12,19 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { unzipSync, strFromU8 } from 'fflate';
 import { parseXml } from '@rgrove/parse-xml';
-import { buildEpub, readCover } from '../.vitepress/epub.mjs';
+import { buildEpub, figureRequests, readCover } from '../.vitepress/epub.mjs';
+import { renderFigures } from '../.vitepress/figures.mjs';
 import { bookChapters } from '../.vitepress/sidebar.mjs';
 
 const SRC = resolve(fileURLToPath(import.meta.url), '../..');
-const epub = buildEpub(SRC, readCover(SRC));
+/**
+ * The real archive, figures and all. Rendering them stands up a Vite server and
+ * server-renders five Vue components, which is slow enough to be worth doing once
+ * for the file — and worth doing at all, because the figures are exactly the part
+ * that turns a chapter into XML a reader refuses.
+ */
+const requests = figureRequests(SRC);
+const epub = buildEpub(SRC, readCover(SRC), await renderFigures(SRC, requests));
 const files = unzipSync(epub);
 const text = (path: string): string => strFromU8(files[path]!);
 
@@ -57,11 +65,13 @@ describe('the archive', () => {
   });
 });
 
-describe('the content documents', () => {
-  const docs = Object.keys(files).filter((f) => /\.(xhtml|opf|ncx|xml)$/.test(f));
+/** Everything an XML parser has to accept, and the chapters among them. */
+const docs = Object.keys(files).filter((f) => /\.(xhtml|opf|ncx|xml)$/.test(f));
+const chapterDocs = docs.filter((d) => d.startsWith('EPUB/text/'));
 
+describe('the content documents', () => {
   it('covers the title page, nav, and one file per chapter', () => {
-    expect(docs.filter((d) => d.startsWith('EPUB/text/'))).toHaveLength(bookChapters().length);
+    expect(chapterDocs).toHaveLength(bookChapters().length);
   });
 
   it.each(docs)('%s parses as strict XML', (doc) => {
@@ -94,6 +104,85 @@ describe('the content documents', () => {
     for (const doc of docs.filter((d) => d.endsWith('.xhtml'))) {
       expect(text(doc)).not.toMatch(/href="http:\/\/[A-Z]/);
     }
+  });
+});
+
+describe('the figures', () => {
+  /**
+   * The chapters that draw one, and what they draw. Pinned rather than derived:
+   * deriving it from the same walk that produced the archive would assert that the
+   * code agrees with itself, and the failure this guards against is a component
+   * quietly dropping out of a chapter.
+   */
+  it('renders every diagram the chapters ask for', () => {
+    expect(requests.map((r) => r.name)).toEqual([
+      'LayerStack',
+      'TenancyTree',
+      'ScopeTopology',
+      'PermissionPipeline',
+      'BlastRadius',
+    ]);
+  });
+
+  it('leaves no chapter holding a pointer at the web page instead', () => {
+    for (const doc of chapterDocs) {
+      expect(text(doc)).not.toContain('rendered at the HTML page');
+    }
+  });
+
+  it('puts the components own markup in the chapter', () => {
+    const ch2 = text('EPUB/text/02-tenants-and-scopes.xhtml');
+    expect(ch2).toContain('class="figure figure--TenancyTree"');
+    expect(ch2).toContain('class="figure figure--ScopeTopology"');
+    // The label the SVG carries for a reader who cannot see it.
+    expect(ch2).toContain('aria-label="A tenant is a billing and identity boundary');
+  });
+
+  /**
+   * An inline `<svg>` in XHTML is only SVG if it says so — without the namespace it
+   * is eleven unknown elements in the XHTML namespace, which a reader draws as
+   * nothing at all while the document still parses.
+   */
+  it('declares the SVG namespace on every inline svg', () => {
+    for (const doc of chapterDocs) {
+      for (const [, attrs] of text(doc).matchAll(/<svg([^>]*)>/g)) {
+        expect(attrs).toContain('xmlns="http://www.w3.org/2000/svg"');
+      }
+    }
+  });
+
+  it('carries no scope attribute a stylesheet no longer names', () => {
+    for (const doc of chapterDocs) {
+      expect(text(doc)).not.toMatch(/data-v-[0-9a-f]/);
+    }
+  });
+
+  /**
+   * The stylesheet has to carry both halves or the figure arrives unstyled: the
+   * component's own rules, confined to its wrapper so two components' `.fig` do not
+   * collide, and the design tokens those rules resolve against — which on the web
+   * come from a theme an EPUB never loads.
+   */
+  it('scopes each component stylesheet to its own figure', () => {
+    const css = text('EPUB/style.css');
+    expect(css).toContain('.figure--ScopeTopology .fbox');
+    expect(css).toContain('.figure--TenancyTree .tbox');
+    expect(css).toContain('.figure--LayerStack .layerstack');
+  });
+
+  it('brings the design tokens the rules resolve against', () => {
+    const css = text('EPUB/style.css');
+    expect(css).toContain('--layer-kernel:');
+    expect(css).toContain('--surface-card:');
+    expect(css).toContain('--font-sans:');
+  });
+
+  it('still builds a book when no figures are rendered', () => {
+    // The sync path: prose twins in place of the pictures, rather than five holes.
+    const plain = unzipSync(buildEpub(SRC));
+    expect(strFromU8(plain['EPUB/text/02-tenants-and-scopes.xhtml']!)).toContain(
+      'Diagram — the topology, adapter-neutral.',
+    );
   });
 });
 
