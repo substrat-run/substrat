@@ -1,4 +1,4 @@
-import type { EmittedModel, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -440,29 +440,20 @@ export interface AppHealthRow {
   lastSweepAt: string | null;
 }
 
-/** One grouped value and how many events carried it (#1239). */
-export interface EventFacetBucket {
-  /**
-   * `null` is the EXTRACTION-NULL bucket, and it is weaker than "absent": SQLite
-   * returns the same NULL for a key the payload does not carry and for a key it
-   * carries with a JSON `null`, and nothing downstream can tell those apart. Read it
-   * as "no value extracted". What it is NOT is an erased payload — those never reach
-   * a bucket and are counted in `erased`.
-   */
-  value: string | null;
-  count: number;
-}
-
-export interface EventFacetResult {
-  buckets: EventFacetBucket[];
-  /**
-   * Events whose payload was ERASED, counted apart and never folded into a null
-   * bucket — otherwise a reader sees a clean distribution over redacted history.
-   */
-  erased: number;
-  total: number;
-  truncated: boolean;
-}
+/**
+ * A facet over the outbox (#1239) — re-exported from the contract rather than
+ * restated here, exactly as `HistoryEntry` above is. A second copy of a shape the
+ * kernel derives is a place for the two to drift, and the drift would be silent:
+ * the wire carries whatever the helper returns either way.
+ *
+ * Two of its nullables are FACTS. A bucket's `value` of `null` is the
+ * EXTRACTION-NULL bucket, which is weaker than "absent" — SQLite returns the same
+ * NULL for a key the payload does not carry and for a key carrying an explicit
+ * JSON `null`. And what it is NOT is an erased payload: those never reach a bucket
+ * at all and are counted in `erased`, so a distribution over redacted history
+ * cannot read as complete.
+ */
+export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts';
 
 /** One declared field and whether anything declares it as output (#1321). */
 export interface FieldCoverageRow {

@@ -6,8 +6,9 @@
 
 The event explorer is on screen (#1239 stage 1). An Events panel on the app's
 Observability tab groups the app's own events by a dimension — type, operation,
-actor, version, entity type, PII class — or by any payload field, narrows them
-to one event type and a window, and counts them. "Which operation emits most of
+actor, version, entity type, PII class — or by any top-level payload field
+(nested paths are a deliberate v1 omission), narrows them to one event type and
+a window, and counts them. "Which operation emits most of
 this", "which version were these under", answered on what the spine already
 holds.
 

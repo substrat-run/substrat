@@ -480,10 +480,25 @@ const FACET_WINDOWS = [
   { label: 'All time', hours: null },
 ] as const;
 
-/** The window's lower bound as the spine stores time — ISO 8601 text, never epoch ms. */
-function sinceOf(label: string): string | undefined {
+/**
+ * A window's two bounds, both derived from ONE instant — ISO 8601 text, the way the
+ * spine stores time, never epoch ms.
+ *
+ * Closing the window at submit time is what makes the counts reproducible: an open
+ * upper bound means a re-run of the same question answers about a slightly different
+ * slice, and the difference shows up as a count that moved for no reason the reader
+ * can see. "All time" is the one window with no bounds at all, which is a different
+ * claim and says so.
+ */
+function facetWindow(label: string): Pick<AppliedFacet, 'since' | 'until' | 'windowLabel'> {
   const hours = FACET_WINDOWS.find((w) => w.label === label)?.hours ?? null;
-  return hours === null ? undefined : new Date(Date.now() - hours * 3_600_000).toISOString();
+  if (hours === null) return { windowLabel: label, since: undefined, until: undefined };
+  const until = Date.now();
+  return {
+    windowLabel: label,
+    since: new Date(until - hours * 3_600_000).toISOString(),
+    until: new Date(until).toISOString(),
+  };
 }
 
 /** The submitted query — what the counts on screen are an answer to. */
@@ -492,6 +507,7 @@ interface AppliedFacet {
   field: string;
   type: string;
   since: string | undefined;
+  until: string | undefined;
   /** The window as the reader chose it, carried so the header names the SUBMITTED
    *  window rather than whatever the select happens to show now. */
   windowLabel: string;
@@ -499,6 +515,10 @@ interface AppliedFacet {
 
 /**
  * The event explorer (#1239 stage 1): narrow this app's outbox, group it, count.
+ *
+ * A payload grouping is by a TOP-LEVEL field. Nested paths are a deliberate v1
+ * omission (`eventFacetGroupBy`), not an oversight — one level answers "which
+ * currency", and deeper paths want their own thought about arrays.
  * "Which operation emits most of this?", "which version were these under?" —
  * the questions nobody predicted, answered on what the spine already holds.
  *
@@ -529,16 +549,14 @@ function EventExplorer({ app }: { app: AppRow }) {
     groupBy: 'type',
     field: '',
     type: '',
-    since: sinceOf(FACET_WINDOWS[1]!.label),
-    windowLabel: FACET_WINDOWS[1]!.label,
+    ...facetWindow(FACET_WINDOWS[1]!.label),
   }));
   const submit = () =>
     setApplied({
       groupBy,
       field: field.trim(),
       type: type.trim(),
-      since: sinceOf(windowLabel),
-      windowLabel,
+      ...facetWindow(windowLabel),
     });
 
   useEffect(() => {
@@ -556,6 +574,7 @@ function EventExplorer({ app }: { app: AppRow }) {
         field: applied.field || undefined,
         type: applied.type || undefined,
         since: applied.since,
+        until: applied.until,
       })
       .then((r) => live && (setResult(r), setLoading(false)))
       .catch((e) => live && (setLoading(false), setErr(e instanceof Error ? e.message : String(e))));
@@ -577,6 +596,7 @@ function EventExplorer({ app }: { app: AppRow }) {
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <Select
+          aria-label="Group by dimension"
           options={[
             { value: 'type', label: 'Event type' },
             { value: 'operation', label: 'Operation' },
@@ -595,8 +615,22 @@ function EventExplorer({ app }: { app: AppRow }) {
           }}
           style={{ width: 150 }}
         />
-        <Input mono value={field} onChange={(e) => setField(e.target.value)} placeholder="…or a payload field" style={{ width: 190 }} />
-        <Input mono value={type} onChange={(e) => setType(e.target.value)} placeholder="event type (optional)" style={{ width: 200 }} />
+        <Input
+          mono
+          aria-label="Group by payload field"
+          value={field}
+          onChange={(e) => setField(e.target.value)}
+          placeholder="…or a top-level payload field"
+          style={{ width: 190 }}
+        />
+        <Input
+          mono
+          aria-label="Narrow to one event type"
+          value={type}
+          onChange={(e) => setType(e.target.value)}
+          placeholder="event type (optional)"
+          style={{ width: 200 }}
+        />
         <Select
           aria-label="Window"
           options={FACET_WINDOWS.map((w) => w.label)}
