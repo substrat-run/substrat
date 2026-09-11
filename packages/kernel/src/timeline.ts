@@ -83,7 +83,7 @@ export interface TimelineReader {
 /** The envelope columns, in the order `mapTimelineRow` expects. */
 const TIMELINE_COLUMNS = 'id, type, occurred_at, actor';
 /** …plus what a history VIEW needs. See `historyEntry` for why two are nullable. */
-const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id, operation, version`;
+const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id, operation, version, caused_by`;
 
 interface TimelineRow {
   id: string;
@@ -100,6 +100,7 @@ interface HistoryRow extends TimelineRow {
   subject_id: string | null;
   operation: string | null;
   version: string | null;
+  caused_by: string | null;
 }
 
 /**
@@ -180,6 +181,11 @@ function mapHistoryRow(row: HistoryRow): HistoryEntry {
     operation: row.operation,
     // #1242: from the column, never the envelope — historyEntry's doc owns why.
     version: row.version,
+    // #1237: the event this one reacted to. Null means nothing was being
+    // delivered, or the row predates the column — historyEntry's doc owns the
+    // distinction, and the pair (operation null + this set) is what finally
+    // identifies a consumer emit, which neither field could do alone.
+    causedBy: row.caused_by as EventId | null,
   };
 }
 
@@ -221,6 +227,10 @@ export function readTimeline(
  *   which most systems cannot answer at all and this one gets for free.
  * - **`piiClass` / `subjectId`** — so the caller can decide what is safe to
  *   render before it renders it.
+ * - **`causedBy`** (#1237) — the event this one was emitted in reaction to, which
+ *   is what makes a backwards walk possible: `authorization` says under what
+ *   authority and `operation` says under what invocation, but neither says
+ *   BECAUSE OF WHAT, and a consumer emit has no operation at all.
  *
  * Same permission posture as `readTimeline`: the caller checks, this does not.
  * The payload makes that more load-bearing here, not less — this is the read that

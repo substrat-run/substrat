@@ -1018,6 +1018,14 @@ export const flowMod: ModuleRegistration = {
       ctx.sql.query(
         `SELECT actor, operation FROM _substrat_outbox WHERE type = 'flow.step2'`,
       )) as OperationHandler<never, unknown>,
+    // #1237: the causal edge, straight off the spine. Both types, so a test can see
+    // that the operation-emitted one records no cause and the consumer-emitted one
+    // names the event it reacted to.
+    'flow/causes': ((ctx) =>
+      ctx.sql.query(
+        `SELECT id, type, operation, caused_by FROM _substrat_outbox
+         WHERE type IN ('flow.step1', 'flow.step2') ORDER BY id`,
+      )) as OperationHandler<never, unknown>,
   },
   consumers: {
     'flow.step1': flowStep1Consumer,

@@ -443,6 +443,14 @@ const KERNEL_DDL = `
     -- event was emitted (the signals version dimension, #1231). NULL = the host was
     -- handed no version id, or the row predates the column.
     version TEXT,
+    -- #1237: the event this one was emitted in REACTION to — set whenever an emit
+    -- happens while a delivery is in flight (a module consumer, or a connector /
+    -- platform executor handling an event). The spine already recorded what
+    -- authority an operation held and what invocation it ran under; neither is
+    -- cause, and a consumer emit has no operation at all, so a backwards walk used
+    -- to stop dead at the first consumer hop. NULL = nothing was being delivered
+    -- (an operation emitted it directly), or the row predates the column.
+    caused_by TEXT,
     drained_at TEXT
   );
   -- #1232: the freshness evaluator's read — MAX(occurred_at) per type, every pass,
@@ -970,6 +978,9 @@ interface OutboxRow {
    *  version id, or the row predates the column. Never decoded into the envelope —
    *  a fact about the process, not event data for module code. */
   version: string | null;
+  /** #1237: the event this one reacted to. NULL = nothing was being delivered when
+   *  it was emitted, or the row predates the column. */
+  caused_by: string | null;
   payload: string | null;
 }
 
@@ -3909,6 +3920,10 @@ export class SqliteScopeHost implements ScopeHost {
             const ctx = this.operationContext(rt, asPrincipal(this.systemPrincipal), {
               system: mod.id,
             });
+            // #1237: anything this consumer emits was emitted BECAUSE of this event.
+            // `dispatchExecutors` already did this for the admin log; the module
+            // consumers never did, which is exactly where a backwards walk stopped.
+            this.causedBy = event.id;
             rt.db.exec('BEGIN IMMEDIATE');
             try {
               await consumer.handler(ctx, event);
@@ -3930,6 +3945,12 @@ export class SqliteScopeHost implements ScopeHost {
                    VALUES (?, ?, ?, ?)`,
                 )
                 .run(event.id, mod.id, new Date().toISOString(), String(err));
+            } finally {
+              // Cleared on BOTH paths. Left set, the id would leak onto every later
+              // emit in this process — an operation's own event stamped as caused by
+              // whatever happened to be delivered last, which is worse than no cause
+              // at all, because it reads as a recorded fact.
+              this.causedBy = null;
             }
           }
         }
@@ -8063,8 +8084,8 @@ export class SqliteScopeHost implements ScopeHost {
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, version, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, caused_by, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             full.id,
@@ -8085,6 +8106,10 @@ export class SqliteScopeHost implements ScopeHost {
             // about the process, so it never rides `DomainEvent` for module code to
             // branch on; it exists for the observability joins the column serves.
             this.versionId,
+            // #1237: whatever delivery is in flight, if any. Read off the host the
+            // same way `versionId` is — it is a fact about the surrounding dispatch,
+            // never envelope data module code could set or branch on.
+            this.causedBy,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
@@ -8507,6 +8532,10 @@ export class SqliteScopeHost implements ScopeHost {
     // #1242: the signals `version` dimension on the outbox, for a scope DB created
     // before the column. NULL stays honest — unstamped, not a version nobody named.
     this.ensureColumn(db, '_substrat_outbox', 'version', 'version TEXT');
+    // #1237: existing scopes get the cause column on their next wake, like the four
+    // above. Rows already written keep NULL, which is honestly "unrecorded" — the
+    // reason the column is nullable rather than defaulted.
+    this.ensureColumn(db, '_substrat_outbox', 'caused_by', 'caused_by TEXT');
   }
 
   private runtime(tenantId: TenantId, scopeId: ScopeId): ScopeRuntime {

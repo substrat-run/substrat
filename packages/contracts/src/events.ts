@@ -220,6 +220,24 @@ export const historyEntry = timelineEntry.extend({
    * so this read is the one sanctioned way to join an event to its push.
    */
   version: z.string().nullable(),
+  /**
+   * The event this one was emitted in REACTION to (#1237), or null.
+   *
+   * The spine records what authority an operation held (`authorization`) and what
+   * invocation it ran under (`operation`). Neither is cause: a consumer emits with
+   * no operation at all, so the step from "this invoice exists" back to "because
+   * that timesheet closed" was simply not written down, and a backwards walk had
+   * to stop at the first consumer hop. This is that step.
+   *
+   * Stamped by the host whenever an emit happens while a delivery is in flight —
+   * a module consumer or a connector/platform executor handling an event — which
+   * is the only time a cause exists to record. Null therefore carries three
+   * meanings the reader must not collapse: nothing was being delivered (an
+   * operation emitted this directly, the ordinary case), or the row predates the
+   * column. Where `operation` is also null and this is set, the pair is decisive:
+   * the event came from a consumer, which neither field could establish alone.
+   */
+  causedBy: eventId.nullable(),
 });
 export type HistoryEntry = z.infer<typeof historyEntry>;
 

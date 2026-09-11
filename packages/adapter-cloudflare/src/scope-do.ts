@@ -200,6 +200,9 @@ interface OutboxRow {
    *  the binding, or the row predates the column. Never decoded into the envelope —
    *  a fact about the process, not event data for module code. */
   version: string | null;
+  /** #1237: the event this one reacted to. NULL = nothing was being delivered when
+   *  it was emitted, or the row predates the column. */
+  caused_by: string | null;
   payload: string | null;
 }
 
@@ -262,6 +265,14 @@ const KERNEL_DDL = `
     -- this event was emitted (the signals version dimension, #1231). NULL = the
     -- script was deployed without the binding, or the row predates the column.
     version TEXT,
+    -- #1237: the event this one was emitted in REACTION to — set whenever an emit
+    -- happens while a delivery is in flight (a module consumer, or a connector /
+    -- platform executor handling an event). The spine already recorded what
+    -- authority an operation held and what invocation it ran under; neither is
+    -- cause, and a consumer emit has no operation at all, so a backwards walk used
+    -- to stop dead at the first consumer hop. NULL = nothing was being delivered
+    -- (an operation emitted it directly), or the row predates the column.
+    caused_by TEXT,
     drained_at TEXT
   );
   -- #1232: the freshness evaluator's read - MAX(occurred_at) per type, every pass,
@@ -2545,6 +2556,10 @@ export function defineScopeDO(
         // #1242: the signals `version` dimension on the outbox, for a scope DO
         // created before the column. NULL stays honest — unstamped.
         'ALTER TABLE _substrat_outbox ADD COLUMN version TEXT',
+        // #1237: the cause column on a scope DO created before it. Nullable, and the
+        // null is honestly "unrecorded" for every legacy row — nothing can go back and
+        // decide what a past consumer was reacting to.
+        'ALTER TABLE _substrat_outbox ADD COLUMN caused_by TEXT',
       ]) {
         try {
           this.sql.exec(alter);
@@ -2740,6 +2755,16 @@ export function defineScopeDO(
 
     // -- event dispatch (port of dispatch) ------------------------------------
 
+    /**
+     * #1237: the event currently being delivered, or null.
+     *
+     * The host carries a field of the same name for the admin log, and it is
+     * unreachable from here — it lives in the worker that holds the stub, while every
+     * emit runs inside this Durable Object. So the DO keeps its own, and the two are
+     * deliberately separate rather than one passed across the hop.
+     */
+    private causedBy: string | null = null;
+
     private async dispatch(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
       for (let round = 0; round < 50; round++) {
         let deliveredAny = false;
@@ -2760,6 +2785,10 @@ export function defineScopeDO(
               .toArray() as unknown as OutboxRow[];
             for (const row of rows) {
               const event = this.parseOutboxRow(row);
+              // #1237: anything this consumer emits was emitted BECAUSE of this event
+              // — the step a backwards walk used to stop dead at, since a consumer
+              // emit records no operation either.
+              this.causedBy = event.id;
               try {
                 await this.ctx.storage.transaction(async () => {
                   const ctx = this.operationContext(this.systemPrincipal, tenantId, scopeId, {
@@ -2786,6 +2815,12 @@ export function defineScopeDO(
                   new Date().toISOString(),
                   String(err),
                 );
+              } finally {
+                // Cleared on BOTH paths. Left set, the id leaks onto every later emit
+                // this DO makes — an operation's own event stamped as caused by
+                // whatever was delivered last, which is worse than recording nothing
+                // because it reads as a fact.
+                this.causedBy = null;
               }
             }
           }
@@ -3009,8 +3044,8 @@ export function defineScopeDO(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, version, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, caused_by, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -3029,6 +3064,10 @@ export function defineScopeDO(
             // about the deploy, so it never rides `DomainEvent` for module code to
             // branch on; it exists for the observability joins the column serves.
             this.env.SUBSTRAT_VERSION_ID ?? null,
+            // #1237: whatever delivery is in flight, if any — read off the DO the same
+            // way the version is read off its env. A fact about the surrounding
+            // dispatch, never envelope data module code could set or branch on.
+            this.causedBy,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },
