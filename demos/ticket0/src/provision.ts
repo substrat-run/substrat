@@ -14,6 +14,7 @@
 import { definePermissions, type PermissionKey, type RoleDefinition } from '@substrat-run/contracts';
 import { meteringModule, PERM as METERING_PERM } from '@substrat-run/engine-metering';
 import { T0_PERM } from './manifest.js';
+import { TICKET0_PERMISSIONS } from '../spec/model.js';
 
 // The manifest's config surface rides the same import `substrat push` already makes for
 // `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
@@ -251,8 +252,22 @@ export const STAFF_ROLES = ['desk-admin', 'agent'] as const;
  */
 export const CONTACT_BOUND_ROLE = 'customer';
 
+/**
+ * The single typed source for this vertical's permission surface — what the permission
+ * checkpoint and `substrat push` read (discovered via `package.json`
+ * `substrat.permissions`). Derived from the same `MODULES`/`ROLES` the host registers,
+ * so it cannot drift from what runs.
+ *
+ * `keys` is `TICKET0_PERMISSIONS` — the array `defineOperations` already takes in
+ * `spec/model.ts` as the union a mistyped `permission:` fails against — which is what
+ * makes that restatement checked (#1208): `definePermissions` throws at module load if
+ * this vertical ever declares a key the array does not name, or the other way round.
+ * `metering:*` is in it because a ticket0 scope declares those keys — `MODULES` above
+ * registers the metering engine.
+ */
 export const permissions = definePermissions({
   modules: MODULES,
   roles: ROLES,
   entityGrants: ENTITY_GRANTS,
+  keys: TICKET0_PERMISSIONS,
 });

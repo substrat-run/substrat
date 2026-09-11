@@ -19,18 +19,34 @@ import { bikeShopEntities } from './entities.js';
  * The permission keys an operation here may name.
  *
  * Two of them are this vertical's own (they mirror `SHOP_PERM` in
- * `src/manifest.ts`); the other four are the WORKORDER ENGINE's. An engine key
- * is listed because a vertical operation may be gated by one — this is the
- * vocabulary a `permission` may draw on, not a second declaration of who owns
- * the key. The engine still declares them.
+ * `src/manifest.ts`); the rest belong to the ENGINES this vertical composes. An
+ * engine key is listed because a vertical operation may be gated by one — this
+ * is the vocabulary a `permission` may draw on, not a second declaration of who
+ * owns the key. The engine still declares them.
+ *
+ * One array, two readers, and that is what makes it checked (#1208).
+ * `defineOperations` takes it below as the union a mistyped `permission:` fails
+ * against; `definePermissions` in `src/provision.ts` takes the SAME array as
+ * `keys` and throws at module load if it and `MODULES` disagree in either
+ * direction. So every key a registered module declares is here, including the
+ * ones no shop operation checks today — `MODULES` registers both engines, so a
+ * scope declares them, and an operation gated on one had no way to say so while
+ * the list held only the subset the shop happened to check.
  */
 export const SHOP_PERMISSIONS = [
+  // The shop's own — `SHOP_PERM` in src/manifest.ts.
   'customer:manage',
   'bike:manage',
+  // @substrat-run/engine-workorder
   'workorder:create',
   'workorder:read',
+  'workorder:assign',
+  'workorder:report',
   'workorder:complete',
   'workorder:close',
+  // @substrat-run/engine-invoicing
+  'invoicing:read',
+  'invoicing:export',
 ] as const;
 
 /**

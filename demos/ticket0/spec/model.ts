@@ -658,7 +658,7 @@ export const ticket0Entities = defineEntities({
 });
 
 /**
- * Thirteen keys, and the interesting ones are the last three.
+ * Eighteen keys of ticket0's own, and the interesting ones are the last three.
  *
  * - `conversation:read` is desk-wide and held by staff. `conversation:read-own` is
  *   never held scope-wide by anybody — it is granted per contact on their own
@@ -698,6 +698,14 @@ export const ticket0Entities = defineEntities({
  * The portal is the other door and it is unchanged: a real login, a real principal,
  * `conversation:read-own` narrowed to a contact, the full kernel walk. Principals
  * where there is a login to hang one on, capabilities where there is not.
+ *
+ * One array, two readers, and that is what makes it checked (#1208). `defineOperations`
+ * takes it below as the union a mistyped `permission:` fails against; `definePermissions`
+ * in `src/provision.ts` takes the SAME array as `keys` and throws at module load if it and
+ * `MODULES` disagree in either direction. That is why the four `metering:*` keys are here:
+ * they are the ENGINE's, declared by `@substrat-run/engine-metering`, and a ticket0 scope
+ * declares them because `MODULES` registers that engine. Listing them is the vocabulary an
+ * operation's `permission` may draw on, not a second declaration of who owns the key.
  */
 export const TICKET0_PERMISSIONS = [
   'conversation:read',
@@ -728,6 +736,11 @@ export const TICKET0_PERMISSIONS = [
   'notification:read-own',
   'signup:submit',
   'signup:read',
+  // @substrat-run/engine-metering — the engine ticket0 meters its assistant spend with.
+  'metering:read',
+  'metering:record',
+  'metering:configure',
+  'metering:close',
 ] as const;
 
 /**
