@@ -745,6 +745,15 @@ function EventExplorer({ app, focusEventType }: { app: AppRow; focusEventType?: 
   const [result, setResult] = useState<EventFacetResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  /**
+   * The app serves no event reads at all — a 501 from its own deployment, which is a
+   * fact about the app and not a failure of this query. Kept apart from `err` because
+   * the two want opposite screens: an error invites a retry, and there is nothing here
+   * to retry. Not every installed app is a kernel vertical (an auth server holds
+   * accounts, not an outbox), and an app deployed before the explorer existed answers
+   * the same way, so this states the absence rather than relaying the refusal.
+   */
+  const [absent, setAbsent] = useState(false);
 
   // The whole query is applied on submit rather than per keystroke: each one is a scope
   // read, and a half-typed field name is a query nobody asked for. `since` is resolved
@@ -775,6 +784,7 @@ function EventExplorer({ app, focusEventType }: { app: AppRow; focusEventType?: 
   useEffect(() => {
     let live = true;
     setErr(null);
+    setAbsent(false);
     // The previous answer is dropped before the new one is asked for. A facet can scan a
     // lot of history, so leaving it on screen labels one query's counts with another
     // query's controls for as long as the read takes — and those counts look exactly
@@ -790,13 +800,41 @@ function EventExplorer({ app, focusEventType }: { app: AppRow; focusEventType?: 
         until: applied.until,
       })
       .then((r) => live && (setResult(r), setLoading(false)))
-      .catch((e) => live && (setLoading(false), setErr(e instanceof Error ? e.message : String(e))));
+      .catch(
+        (e) =>
+          live &&
+          (setLoading(false),
+          e instanceof ApiError && e.status === 501
+            ? setAbsent(true)
+            : setErr(e instanceof Error ? e.message : String(e))),
+      );
     return () => {
       live = false;
     };
   }, [app.app_scope_id, applied]);
 
   const widest = Math.max(1, ...(result?.buckets ?? []).map((b) => b.count));
+
+  /**
+   * The card stays and says what is missing, rather than hiding: a tab one row shorter
+   * with nothing accounting for the gap reads as a page that failed to load. What it
+   * does NOT do is keep the controls — a query nothing can answer is not a query, and
+   * relaying the vertical's own refusal ("… does not implement GET /internal/facets")
+   * described the transport where the reader needed the fact about their app.
+   */
+  if (absent) {
+    return (
+      <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Events</h3>
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          This app publishes no event stream, so there is nothing to group. An app that is
+          not built on the kernel keeps no event spine &mdash; an auth server holds accounts,
+          not an outbox &mdash; and an app last pushed before the explorer shipped answers the
+          same way, which a newer push fixes.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
