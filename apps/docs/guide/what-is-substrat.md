@@ -91,6 +91,8 @@ Substrat is pre-release (0.x). What exists today:
 | Absence engine | [`@substrat-run/engine-absence`](/engines/absence/) | Seed |
 | Metering engine | [`@substrat-run/engine-metering`](/engines/metering/) | Seed |
 | Scrive connector (e-signing, BankID) | [`@substrat-run/connector-scrive`](/connectors/scrive) | Published |
+| Fortnox connector (accounting, SIE4 on a poll) | [`@substrat-run/connector-fortnox`](/connectors/fortnox) | Published |
+| Planima connector (planned facility maintenance, read-only) | [`@substrat-run/connector-planima`](/connectors/planima) | Published |
 | The `substrat` CLI — authenticated deploy (`login`, `push`) | [`@substrat-run/cli`](/guide/deploying) | Working |
 | Platform surfaces — [control plane](/platform/control-plane), [console](/platform/console), [router](/platform/router), [dashboard](/platform/dashboard) | private deployments | Working (self-serve deploy foundation) |
 | Callout (field service) — the canonical composition; first CP-less pushable vertical | [`demos/callout`](/verticals/callout) | Working |
@@ -101,7 +103,7 @@ Substrat is pre-release (0.x). What exists today:
 | Manyfold (headless CMS) — multi-scope, *site = scope*; the editorial lifecycle as the invariant | [`demos/manyfold`](/verticals/manyfold) | Working |
 | Todo (shared lists) — user-initiated sharing on a record app; no engine, by design | [`demos/todo`](/verticals/todo) | Working |
 | ticket0 (support desk) — a public, unauthenticated surface; the assistant as a member of staff | [`demos/ticket0`](/verticals/ticket0) | Working |
-| Tock (measured file loads) — a runtime schema the data may disagree with; corrections that supersede without destroying | [`demos/tock`](/verticals/tock) | Model declared — no handlers yet |
+| Tock (measured file loads) — a runtime schema the data may disagree with; corrections that supersede without destroying | [`demos/tock`](/verticals/tock) | Runs locally — not deployed |
 
 Interfaces change without notice until the first vertical ships.
 
