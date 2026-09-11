@@ -30,6 +30,7 @@ import {
   RouterAssertionError,
   assertPlatformCall,
   PlatformCallError,
+  invocationLog,
 } from '@substrat-run/kernel';
 import type { AuthServerStub } from './do-contract.js';
 import { serveAsset } from './assets.js';
@@ -106,6 +107,21 @@ const configureInstanceBody = z.object({
 });
 
 const app = new Hono<{ Bindings: Env }>();
+
+// FIRST, before any route: Hono composes handlers in registration order and stops at the
+// one that answers, so a route registered above this line would never be logged. The line
+// it writes is what attributes this vertical's invocations to the tenant they served —
+// see `invocationLog`'s header for why the router cannot supply that from its side.
+app.use(
+  '*',
+  invocationLog<Env>({
+    // The same answer this worker gives `readRoutedNode` in `nodeFor`: the line is written
+    // from a VERIFIED assertion, never from the header. No ALLOW_DEV_NODE here — a
+    // standalone issuer with no ROUTER_SECRET serves one node and asserts no tenant, so
+    // it writes no lines, which is the honest answer rather than a forgeable one.
+    routerSecret: (env) => env.ROUTER_SECRET,
+  }),
+);
 
 /**
  * Pre-auth state: is the issuer awaiting its first administrator, and is self-service

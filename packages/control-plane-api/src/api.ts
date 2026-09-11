@@ -915,6 +915,13 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // go. Tenant-narrowed in the handler (the forced-filter pattern); the allowlist
     // alone is not authz.
     { method: 'GET', re: /\/sweep-runs$/ },
+    // MY traffic and MY logs — the tenant grain (observability.md §3 view 4). The only
+    // observability routes a non-staff caller may reach, and safe to reach precisely
+    // because they are a different grain: their backends are keyed on the tenant, so
+    // there is no fleet-wide answer for a forgotten filter to fall back to. Narrowed in
+    // the handler by the forced-filter pattern; the allowlist alone is not authz.
+    { method: 'GET', re: /\/observability\/tenant-metrics$/ },
+    { method: 'GET', re: /\/observability\/tenant-logs$/ },
   ];
   app.use('*', async (c, next) => {
     if (c.get('principal').kind === 'builder') {
@@ -4266,6 +4273,76 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         limit: c.req.query('limit'),
       });
     return c.json(await options.observability.recentLogs(input));
+  });
+
+  // -- the TENANT grain (observability.md §3 view 4, §4.2) -----------------------
+  //
+  // Everything above is script grain: one deployed unit, which serves every tenant that
+  // installed the vertical. Safe for staff and for the vertical's builder, forbidden to
+  // an installer — §3 is explicit that per-tenant numbers from script-grain data leak.
+  // These two routes are the other grain, and the difference is not a filter over the
+  // same data: they read the router's own tenant-stamped datapoints and the verticals'
+  // stamped log lines, which is the only place the tenant dimension exists at all.
+  //
+  // Unlike their neighbours these ARE in BUILDER_ROUTES, because the whole point is that
+  // an installer may read them — about themselves. The tenant comes from the principal
+  // for a builder and must be named explicitly by a staff/service caller: the
+  // `/service-refs` forced-filter pattern, for its reason, since answering fleet-wide on
+  // a forgotten parameter is the exact leak being closed here.
+
+  app.get('/observability/tenant-metrics', async (c) => {
+    if (!options.observability?.tenantMetrics) {
+      return c.json({ error: 'tenant-grain observability is not configured on this control plane' }, 501);
+    }
+    const p = c.get('principal');
+    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
+    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
+    const input = z
+      .object({
+        tenantId: tenantIdSchema,
+        // Narrowing WITHIN the tenant. Neither can widen the answer — the reader always
+        // applies the tenant predicate — so a foreign scope id yields zero rows rather
+        // than somebody else's, and needs no ownership check of its own to be safe.
+        scopeId: z.string().min(1).max(64).optional(),
+        vertical: z.string().min(1).max(200).optional(),
+        hours: z.coerce.number().int().min(1).max(72).default(24),
+      })
+      .parse({
+        tenantId,
+        scopeId: c.req.query('scopeId') || undefined,
+        vertical: c.req.query('vertical') || undefined,
+        hours: c.req.query('hours'),
+      });
+    return c.json(await options.observability.tenantMetrics(input));
+  });
+
+  app.get('/observability/tenant-logs', async (c) => {
+    if (!options.observability?.tenantLogs) {
+      return c.json({ error: 'tenant-grain observability is not configured on this control plane' }, 501);
+    }
+    const p = c.get('principal');
+    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
+    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
+    const input = z
+      .object({
+        tenantId: tenantIdSchema,
+        scopeId: z.string().min(1).max(64).optional(),
+        vertical: z.string().min(1).max(200).optional(),
+        level: z.enum(['log', 'info', 'warn', 'error', 'debug']).optional(),
+        search: z.string().min(1).max(200).optional(),
+        hours: z.coerce.number().int().min(1).max(72).default(24),
+        limit: z.coerce.number().int().min(1).max(200).default(100),
+      })
+      .parse({
+        tenantId,
+        scopeId: c.req.query('scopeId') || undefined,
+        vertical: c.req.query('vertical') || undefined,
+        level: c.req.query('level') || undefined,
+        search: c.req.query('search') || undefined,
+        hours: c.req.query('hours'),
+        limit: c.req.query('limit'),
+      });
+    return c.json(await options.observability.tenantLogs(input));
   });
 
   /**

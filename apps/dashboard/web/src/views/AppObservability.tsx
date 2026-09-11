@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { AppSchedules } from './AppSchedules';
-import { type AppMigrationsView, type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
-import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_RELEASE_COMPARISON, MOCK_APP_MIGRATIONS } from '../lib/mock';
+import { type AppMigrationsView, type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow, type TenantMetricsRow } from '../lib/api';
+import { DEV_MOCK, MOCK_INSTALLED_APP_SCOPE, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_TENANT_METRICS, MOCK_RELEASE_COMPARISON, MOCK_APP_MIGRATIONS } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
@@ -49,7 +49,10 @@ function AppTelemetry({ app }: { app: AppRow }) {
 
   useEffect(() => {
     if (DEV_MOCK) {
-      setOwned(true);
+      // Fixture-driven rather than a flat `true`: one mock scope runs another team's
+      // vertical (`MOCK_INSTALLED_APP_SCOPE`), which is the only way the dev preview can
+      // open the installed-app view below at all.
+      setOwned(app.app_scope_id !== MOCK_INSTALLED_APP_SCOPE);
       return;
     }
     let live = true;
@@ -161,15 +164,12 @@ function AppTelemetry({ app }: { app: AppRow }) {
     );
   }
 
-  if (owned === false) {
-    return (
-      <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
-        Observability covers the verticals your team builds. This app runs{' '}
-        <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span>, which is published by another team —
-        its logs and metrics stay with its builder.
-      </div>
-    );
-  }
+  // An app running somebody else's vertical gets the TENANT grain instead of this one.
+  // Not a consolation prize: it is narrower and more accurate here, because it is keyed
+  // on this installation rather than on a script shared with every other team that
+  // installed the same vertical. What it cannot show is the per-version breakdown, since
+  // versions are a fact about the code and the code is not this team's.
+  if (owned === false) return <InstalledAppTelemetry app={app} />;
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -288,6 +288,208 @@ function AppTelemetry({ app }: { app: AppRow }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Telemetry for an app running a vertical ANOTHER team publishes — the tenant grain
+ * (observability.md §3 view 4).
+ *
+ * `AppTelemetry` above is the builder's view: it resolves the scripts this team pushed
+ * and reads Cloudflare's per-script numbers. An installed vertical resolves to none of
+ * those, which is why this tab used to end at a sentence explaining that the logs stayed
+ * with the vertical's builder.
+ *
+ * They still do, and that is the point rather than the limitation. A script serves every
+ * team that installed the vertical, so its numbers are the builder's to read and nobody
+ * else's. What this shows instead is narrower and belongs entirely to the viewing team:
+ * the requests the router dispatched to THIS app scope, and the log lines the vertical
+ * wrote while serving them. Two teams running the same vertical see two different pages.
+ *
+ * What is deliberately absent is the per-version breakdown the builder view leads with.
+ * A version is a fact about the code, and the code is not this team's — the Deployments
+ * tab already says which version they run, which is the part that is theirs to know.
+ */
+function InstalledAppTelemetry({ app }: { app: AppRow }) {
+  const [hours, setHours] = useState<(typeof RANGES)[number]['hours']>(24);
+  const [rows, setRows] = useState<TenantMetricsRow[] | null>(null);
+  const [state, setState] = useState<'loading' | 'ready' | 'absent' | 'error'>('loading');
+  const [level, setLevel] = useState(LEVELS[0]);
+  const [query, setQuery] = useState('');
+  const [search, setSearch] = useState('');
+  const [logs, setLogs] = useState<ObservabilityLogEvent[] | null>(null);
+  const [logsError, setLogsError] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    setState('loading');
+    void (async () => {
+      try {
+        const r = DEV_MOCK ? MOCK_TENANT_METRICS : await api.appTenantMetrics(app.app_scope_id, hours);
+        if (!live) return;
+        setRows(r);
+        setState('ready');
+      } catch (e) {
+        if (!live) return;
+        setState(e instanceof ApiError && e.status === 501 ? 'absent' : 'error');
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, hours, nonce]);
+
+  useEffect(() => {
+    let live = true;
+    setLogs(null);
+    setLogsError(null);
+    void (async () => {
+      try {
+        const events = DEV_MOCK
+          ? MOCK_OBSERVABILITY_LOGS.filter(
+              (l) => (level === LEVELS[0] || l.level === level) && (!search || (l.message ?? '').includes(search)),
+            )
+          : await api.appTenantLogs(app.app_scope_id, {
+              level: level === LEVELS[0] ? undefined : level,
+              search: search || undefined,
+              hours,
+              limit: 100,
+            });
+        if (live) setLogs(events);
+      } catch (e) {
+        if (!live) return;
+        setLogsError(
+          e instanceof ApiError
+            ? e.status === 501
+              ? 'Log streaming is not configured on this platform.'
+              : `Logs are unavailable (${e.status}): ${e.message}`
+            : 'Logs are unavailable right now.',
+        );
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, level, search, hours, nonce]);
+
+  const range = RANGES.find((r) => r.hours === hours) ?? RANGES[1];
+  const totals = (rows ?? []).reduce(
+    (acc, r) => ({ requests: acc.requests + r.requests, errors: acc.errors + r.errors }),
+    { requests: 0, errors: 0 },
+  );
+
+  if (state === 'absent') {
+    return (
+      <div style={{ padding: '24px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
+        Observability is not configured on this platform.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          Traffic to this app — approximate, sampled at high volume.{' '}
+          <span style={{ fontFamily: 'var(--font-mono)' }}>{app.vertical_slug}</span> is published by another team, so
+          this covers your installation only, not the vertical.
+        </span>
+        <div style={{ flex: 1 }} />
+        <Select
+          aria-label="Time range"
+          options={RANGES.map((r) => r.label)}
+          value={range.label}
+          onChange={(e) => setHours(RANGES.find((r) => r.label === e.target.value)?.hours ?? 24)}
+          style={{ width: 150 }}
+        />
+        <Button variant="ghost" size="sm" onClick={() => setNonce((n) => n + 1)}>
+          Refresh
+        </Button>
+      </div>
+
+      {state === 'error' ? (
+        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
+          Traffic data is unavailable right now.
+        </div>
+      ) : state === 'loading' && rows === null ? (
+        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>Loading…</div>
+      ) : rows && rows.length === 0 ? (
+        <div style={{ padding: '12px 0', color: 'var(--text-tertiary)', fontSize: 13 }}>
+          No traffic recorded in this window.
+        </div>
+      ) : (
+        <GridTable
+          columns="0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr"
+          header={['Surface', 'Requests', 'Errors', 'Error rate', 'P50', 'P95']}
+        >
+          {(rows ?? []).map((r, i) => (
+            <Row key={`${r.scopeId}:${r.surface}`} columns="0.8fr 1fr 0.8fr 0.9fr 0.9fr 0.9fr" last={i === (rows ?? []).length - 1}>
+              <MonoTag>{r.surface ?? '—'}</MonoTag>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{r.requests.toLocaleString('en-US')}</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5, color: r.errors > 0 ? 'var(--status-danger-fg)' : undefined }}>
+                {r.errors.toLocaleString('en-US')}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>
+                {r.requests === 0 ? '—' : `${((r.errors / r.requests) * 100).toFixed(2)}%`}
+              </span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{Math.round(r.durationP50)} ms</span>
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{Math.round(r.durationP95)} ms</span>
+            </Row>
+          ))}
+        </GridTable>
+      )}
+
+      <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderBottom: '1px solid var(--border-subtle)', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>Logs</span>
+          <MonoTag>this app</MonoTag>
+          <Select
+            aria-label="Level"
+            options={LEVELS}
+            value={level}
+            onChange={(e) => setLevel(e.target.value)}
+            style={{ width: 110 }}
+          />
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              setSearch(query.trim());
+            }}
+            style={{ display: 'flex', gap: 8, flex: 1, minWidth: 220 }}
+          >
+            <Input
+              aria-label="Search messages"
+              placeholder="Filter messages…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <Button variant="ghost" size="sm">
+              Search
+            </Button>
+          </form>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{range.label.toLowerCase()}, newest 100</span>
+        </div>
+        {logsError ? (
+          <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>{logsError}</div>
+        ) : logs === null ? (
+          <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>Loading…</div>
+        ) : logs.length === 0 ? (
+          <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>
+            {/* Two very different reasons for an empty list, and conflating them sent the
+                last reader looking in the wrong place. Traffic with no lines means the
+                version serving this app predates the stamped invocation line, so there is
+                nothing to correlate — a re-push fixes it. No traffic means no traffic. */}
+            {totals.requests > 0
+              ? 'No log events in this window. If this app’s version was deployed before per-request logging, its lines are not attributed to your team yet — a new deploy of the vertical starts that.'
+              : 'No log events in this window.'}
+          </div>
+        ) : (
+          <LogList events={logs} />
+        )}
+      </div>
     </div>
   );
 }

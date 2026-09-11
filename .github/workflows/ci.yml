@@ -61,6 +61,13 @@ jobs:
       # sign-in and every suite was green: a scenario drives the module and never
       # reaches `server.ts` (#1388). Only a source check can see this.
       - run: pnpm lint:vite-proxy
+      # A deployable vertical mounts `invocationLog()` as its FIRST middleware, or its
+      # tenant-facing logs are partly or wholly empty. Hono composes handlers in
+      # registration order and stops at the first that answers, so a mount below a route
+      # never wraps that route — and the resulting silence is indistinguishable from no
+      # traffic. Same shape as the two checks above: no suite drives the mounted app, so
+      # the source is the only place this can be caught.
+      - run: pnpm lint:invocation-log
       # The permission-diff human checkpoint (CLAUDE.md). Re-emit every vertical's
       # snapshot and fail if it drifts from what is checked in — an agent that
       # widened a role must show it in the PR diff, not in a console nobody opens.

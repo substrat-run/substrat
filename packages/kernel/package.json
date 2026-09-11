@@ -1,7 +1,7 @@
 {
   "name": "@substrat-run/kernel",
   "version": "0.108.0",
-  "description": "Substrat kernel contracts and services — pure TypeScript, no platform imports (D-14)",
+  "description": "Substrat kernel contracts and services \u2014 pure TypeScript, no platform imports (D-14)",
   "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "hono": "^4.6.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

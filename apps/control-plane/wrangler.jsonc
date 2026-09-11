@@ -67,7 +67,15 @@
 		// address BY NAME — must match the `dispatch_namespaces` binding below. Stated in
 		// both envs and defaulted nowhere (#962): TEST once inherited prod's name through
 		// a code default and pushed every vertical into prod's namespace.
-		"DISPATCH_NAMESPACE": "substrat-verticals"
+		"DISPATCH_NAMESPACE": "substrat-verticals",
+		// The router’s Analytics Engine dataset — the ONLY place a per-tenant request
+		// number exists (observability.md §4.2), read by the installed-app traffic view.
+		// Must match this environment’s router binding (apps/router/wrangler.jsonc), and is
+		// stated in both envs and defaulted nowhere for exactly DISPATCH_NAMESPACE’s reason:
+		// a code default makes an unset var read as "production", so a TEST control plane
+		// would answer questions about prod traffic with no error to notice. Unset ⇒ the
+		// tenant-metrics route 501s.
+		"ROUTER_ANALYTICS_DATASET": "substrat_router"
 	},
 	// Staff sign-in is OIDC against AuthHero (jose + Web Crypto) — no Node built-ins.
 	// OIDC config is entirely secrets, nothing checked in (locally: .dev.vars):
@@ -218,7 +226,10 @@
 				// every span is an observability event sharing quota with Workers Logs.
 				"VERTICAL_TRACE_SAMPLING": "1",
 				// Must match the test `dispatch_namespaces` binding below — see its hazard note.
-				"DISPATCH_NAMESPACE": "substrat-verticals-test"
+				"DISPATCH_NAMESPACE": "substrat-verticals-test",
+				// The TEST router’s own dataset — see the prod entry for why this is stated and
+				// never defaulted.
+				"ROUTER_ANALYTICS_DATASET": "substrat_router_test" // differs
 			}, // differs
 			"durable_objects": {
 				"bindings": [
