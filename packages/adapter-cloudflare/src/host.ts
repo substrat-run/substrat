@@ -70,6 +70,8 @@ import {
   type OpsFailureEntry,
   type IssueEntry,
   type EntityHistoryInput,
+  type EventFacetInput,
+  type EventFacetResult,
   type HistoryEntry,
   type Page,
   type SweepRunEntry,
@@ -933,6 +935,7 @@ interface ScopeStubRpc {
     limit?: number;
     cursor?: string;
   }): Promise<Page<HistoryEntry>>;
+  facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1678,6 +1681,11 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async exportScopeLocal(scopeId: ScopeId): Promise<ScopeDumpTable[]> {
     return this.scopeStub(scopeId).exportDump();
+  }
+
+  /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */
+  async facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
+    return this.scopeStub(scopeId).facetEvents(input);
   }
 
   /** One record's event history (#1235) on this host's own scope — the vertical-host read. */
@@ -3873,11 +3881,16 @@ export class CloudflareScopeHost implements ScopeHost {
       listScopeTables: async (actor, tenantId, scopeId): Promise<ScopeTable[]> => {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO: a pair
         // that does not resolve is unreachable, never another tenant's database.
-        const row = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeRecordForRead(tenantId, scopeId);
         const tables = await this.scopeStub(scopeId).introspectTables();
         await this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
+      },
+      facetEvents: async (actor, tenantId, scopeId, input: EventFacetInput): Promise<EventFacetResult> => {
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const result = await this.scopeStub(scopeId).facetEvents(input);
+        await this.recordAccess(actor, 'facetEvents', { tenantId, scopeId }, input, result.buckets.length);
+        return result;
       },
       entityHistory: async (
         actor,
@@ -3886,8 +3899,7 @@ export class CloudflareScopeHost implements ScopeHost {
         input: EntityHistoryInput,
       ): Promise<Page<HistoryEntry>> => {
         // K-3 cross-check on the directory BEFORE the scope DO, like every read here.
-        const row = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeRecordForRead(tenantId, scopeId);
         const page = await this.scopeStub(scopeId).entityHistory(input);
         await this.recordAccess(
           actor,
@@ -3904,8 +3916,7 @@ export class CloudflareScopeHost implements ScopeHost {
         scopeId,
         input: ReadScopeTableInput,
       ): Promise<ScopeTablePage> => {
-        const row = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeRecordForRead(tenantId, scopeId);
         const page = await this.scopeStub(scopeId).introspectTable(input.table, input.limit, input.offset);
         await this.recordAccess(
           actor,
@@ -3925,8 +3936,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // K-3 cross-check on the shared directory BEFORE reaching the scope DO, as
         // every read here does: an unresolved pair is unreachable, never another
         // tenant's log.
-        const row = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeRecordForRead(tenantId, scopeId);
         const rows = await this.scopeStub(scopeId).listDenials(filter);
         await this.recordAccess(actor, 'listDenials', { tenantId, scopeId }, filter ?? null, rows.length);
         return rows;
@@ -3937,8 +3947,7 @@ export class CloudflareScopeHost implements ScopeHost {
         scopeId,
         filter?: DenialFilter,
       ): Promise<DenialSummary> => {
-        const row = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeRecordForRead(tenantId, scopeId);
         const summary = await this.scopeStub(scopeId).summarizeDenials(filter);
         await this.recordAccess(
           actor,
@@ -3955,8 +3964,7 @@ export class CloudflareScopeHost implements ScopeHost {
         scopeId,
         input: QueryScopeInput,
       ): Promise<ScopeQueryResult> => {
-        const row = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeRecordForRead(tenantId, scopeId);
         const result = await this.scopeStub(scopeId).introspectQuery(input.sql);
         // The statement is the logged argument: the access log is the evidence trail,
         // and for a console read the SQL is the whole story.
@@ -3968,8 +3976,7 @@ export class CloudflareScopeHost implements ScopeHost {
         // as the introspection reads: an unresolved pair is unreachable, never another
         // tenant's database. The DO returns the tables; the coordinator, which knows the
         // scope's identity, stamps the dump.
-        const row = await this.cp.getScopeRecord(tenantId, scopeId);
-        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeRecordForRead(tenantId, scopeId);
         const tables = await this.scopeStub(scopeId).exportDump();
         await this.recordAccess(actor, 'exportScope', { tenantId, scopeId }, null, tables.length);
         return { tenantId, scopeId, capturedAt: new Date().toISOString(), tables };
@@ -4808,6 +4815,24 @@ export class CloudflareScopeHost implements ScopeHost {
   private async assertScope(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
     const rec = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!rec) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+  }
+
+  /**
+   * The same K-3 cross-check, for a read that then opens the scope's STORAGE — every
+   * introspection verb below. It adds one refusal the bare existence check cannot make:
+   * a REAPED scope keeps its directory row as a tombstone (§4.4) while its storage is
+   * gone, so the row resolves and the read looks legal. Addressing the DO anyway
+   * CONSTRUCTS an empty one, and the answer comes back as a scope with no tables, no
+   * events and no denials rather than as a scope that no longer exists — the read
+   * quietly contradicting the reap that was meant to be irreversible. `archived` still
+   * reads: its bytes are there, which is the whole distinction between the two states.
+   */
+  private async scopeRecordForRead(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+    const row = await this.cp.getScopeRecord(tenantId, scopeId);
+    if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+    if (row.status === 'reaped') {
+      throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
+    }
   }
 
   /**

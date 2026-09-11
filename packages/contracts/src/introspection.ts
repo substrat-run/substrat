@@ -71,6 +71,72 @@ export const entityHistoryInput = z.object({
 });
 export type EntityHistoryInput = z.infer<typeof entityHistoryInput>;
 
+/**
+ * What to group an event facet by (#1239 stage 1). Either an envelope column —
+ * facts the kernel stamps and can never be erased — or one field of the fat
+ * payload, which CAN be erased and is therefore counted differently (see
+ * `eventFacetResult.erased`).
+ *
+ * A payload field is a single name, validated rather than interpolated: it
+ * reaches SQLite as a bound JSON path, so the pattern here is what keeps the
+ * query shape fixed. Nested paths are a deliberate v1 omission, not an oversight
+ * — one level answers "which currency", and deeper paths want their own thought
+ * about arrays.
+ */
+export const eventFacetGroupBy = z.union([
+  z.object({ kind: z.enum(['type', 'actor', 'operation', 'version', 'entityType', 'piiClass']) }),
+  z.object({ kind: z.literal('payload'), field: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/) }),
+]);
+export type EventFacetGroupBy = z.infer<typeof eventFacetGroupBy>;
+
+/** The outbox slice to facet (#1239). Narrow first, then group. */
+export const eventFacetInput = z.object({
+  groupBy: eventFacetGroupBy,
+  /** Narrow to one event type before grouping — the common first move. */
+  type: z.string().min(1).optional(),
+  since: z.string().min(1).optional(),
+  until: z.string().min(1).optional(),
+  /** Buckets returned, largest first. Bounded like every other spine read. */
+  limit: z.number().int().positive().max(SCOPE_TABLE_PAGE_MAX).optional(),
+});
+export type EventFacetInput = z.infer<typeof eventFacetInput>;
+
+/** One grouped value and how many events carried it. */
+export const eventFacetBucket = z.object({
+  /**
+   * The value events were grouped under, as SQLite rendered it — the query casts
+   * the extracted value to text so that the group key and this string are one
+   * representation, never two that collapse into duplicate buckets.
+   *
+   * `null` is the EXTRACTION-NULL bucket. `json_extract` returns SQL NULL both
+   * for a key the payload does not carry and for a key it carries with a JSON
+   * `null` value, and nothing downstream can tell those apart — so read it as
+   * "no value extracted", not as proof of absence. What it is NOT is an erased
+   * payload: those never reach a bucket and are counted separately below.
+   */
+  value: z.string().nullable(),
+  count: z.number().int().nonnegative(),
+});
+export type EventFacetBucket = z.infer<typeof eventFacetBucket>;
+
+export const eventFacetResult = z.object({
+  buckets: z.array(eventFacetBucket),
+  /**
+   * Events matching the filter whose PAYLOAD WAS ERASED, counted apart and never
+   * folded into a null bucket (§5.3: a shred keeps the row and drops the content).
+   * Grouping by a payload field over erased rows would otherwise report "no value"
+   * for events that certainly had one — the reader would see a clean distribution
+   * and never learn that part of it was redacted. Always 0 for an envelope
+   * grouping, where erasure cannot affect the answer.
+   */
+  erased: z.number().int().nonnegative(),
+  /** Events matching the filter before grouping — the denominator. */
+  total: z.number().int().nonnegative(),
+  /** True when `buckets` was cut at `limit`; the tail exists and is not shown. */
+  truncated: z.boolean(),
+});
+export type EventFacetResult = z.infer<typeof eventFacetResult>;
+
 // The hard ceiling on a console query's result — same order as a table page. The cap
 // (with the single-statement rule) is also the time bound: there is no per-query
 // timeout on either adapter, so "bounded rows out" is what keeps the read cheap.

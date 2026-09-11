@@ -13,8 +13,10 @@ import {
   type Page,
   type PiiClass,
   type TimelineEntry,
+  type EventFacetInput,
+  type EventFacetResult,
 } from '@substrat-run/contracts';
-import type { ScopedSql } from './scope-host.js';
+import type { ScopedSql, SqlValue } from './scope-host.js';
 
 /**
  * Reading an entity's history out of the spine (#800).
@@ -234,3 +236,112 @@ export function readHistory(
   const rows = ctx.sql.query<HistoryRow>(sql, params);
   return pageOf(rows.map(mapHistoryRow), limit, (entry) => entry.id);
 }
+
+/**
+ * Facet a scope's own outbox (#1239 stage 1): narrow by type and window, group by
+ * one envelope column or one payload field, count.
+ *
+ * The sanctioned read, for the same reason `readHistory` is: the spine has rules a
+ * hand-rolled `SELECT` does not know, and this one is load-bearing —
+ *
+ * **an erased payload is not a missing value.** A shred keeps the row and drops
+ * the content (§5.3), so `json_extract(payload, '$.x')` over a shredded event
+ * yields NULL exactly as it does for an event that never carried `x`. Grouped
+ * naively, redacted history disappears into a "no value" bucket and the reader
+ * sees a clean distribution with no hint that part of it was erased. So erased
+ * rows are counted in their own total and kept out of the buckets entirely.
+ *
+ * A bare `payload IS NULL` is NOT that predicate, which is the subtlety here.
+ * `DomainEvent.payload` is `unknown`, so `payload: undefined` is a legal thing to
+ * emit, and `emit` stores it as the same SQL NULL a shred writes — so the naive
+ * predicate calls every payload-less event erased. The shred only ever nulls rows whose
+ * `pii_class` is not `'none'` (it needs a data subject to key the erasure, which
+ * `piiInvariant` guarantees such a row has), so that is the condition carried
+ * here: it admits every erased row and excludes the ordinary payload-less one.
+ * What it cannot separate is an event that declares PII and then carries nothing
+ * — indistinguishable from a shredded row in this schema, and counted as erased,
+ * which is the safe direction to be wrong in: over-reporting redaction tells a
+ * reader to go and look, under-reporting it does not. The exact answer wants a
+ * persisted erasure state on the spine and a migration for existing scopes; the
+ * reader cannot invent one.
+ *
+ * The group-by is a fixed shape, never interpolated SQL: an envelope grouping
+ * selects a known column, and a payload grouping binds `'$.<field>'` as a
+ * parameter, with the field's own pattern enforced by `eventFacetGroupBy`.
+ */
+export function facetEvents(ctx: TimelineReader, input: EventFacetInput): EventFacetResult {
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const where: string[] = [];
+  const params: SqlValue[] = [];
+  if (input.type !== undefined) {
+    where.push('type = ?');
+    params.push(input.type);
+  }
+  if (input.since !== undefined) {
+    where.push('occurred_at >= ?');
+    params.push(input.since);
+  }
+  if (input.until !== undefined) {
+    where.push('occurred_at < ?');
+    params.push(input.until);
+  }
+  const filter = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '';
+
+  const total =
+    ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM _substrat_outbox${filter}`, params)[0]?.n ?? 0;
+
+  // An envelope column cannot be erased, so the erased count is structurally zero
+  // and every matching row is groupable.
+  if (input.groupBy.kind !== 'payload') {
+    const column = ENVELOPE_COLUMN[input.groupBy.kind];
+    const rows = ctx.sql.query<{ value: string | null; n: number }>(
+      `SELECT ${column} AS value, COUNT(*) AS n FROM _substrat_outbox${filter}
+        GROUP BY ${column} ORDER BY n DESC, value LIMIT ?`,
+      [...params, limit + 1],
+    );
+    return {
+      buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n })),
+      erased: 0,
+      total,
+      truncated: rows.length > limit,
+    };
+  }
+
+  // Erased rows are counted, then excluded — the whole point of this branch. See the
+  // docstring for why the predicate carries `pii_class` rather than testing the payload
+  // alone: an omitted payload is stored as the same NULL a shred writes.
+  const ERASED = `payload IS NULL AND pii_class != 'none'`;
+  const erasedFilter = filter === '' ? ` WHERE ${ERASED}` : `${filter} AND ${ERASED}`;
+  const erased =
+    ctx.sql.query<{ n: number }>(`SELECT COUNT(*) AS n FROM _substrat_outbox${erasedFilter}`, params)[0]?.n ?? 0;
+
+  const liveFilter = filter === '' ? ` WHERE NOT (${ERASED})` : `${filter} AND NOT (${ERASED})`;
+  // CAST to TEXT so the grouping and the value the caller reads are the SAME
+  // representation. SQLite keeps `json_extract`'s storage classes apart — a JSON `1`
+  // comes back INTEGER, a JSON `"1"` TEXT, and they land in separate groups — while
+  // the bucket contract is `string | null`, so stringifying afterwards would collapse
+  // the two groups into two buckets with the same `value` and split counts. Casting in
+  // SQL makes the group key the rendered value, so one bucket per rendered value is a
+  // property of the query rather than a hope about the data.
+  const rows = ctx.sql.query<{ value: string | null; n: number }>(
+    `SELECT CAST(json_extract(payload, ?) AS TEXT) AS value, COUNT(*) AS n FROM _substrat_outbox${liveFilter}
+      GROUP BY value ORDER BY n DESC, value LIMIT ?`,
+    [`$.${input.groupBy.field}`, ...params, limit + 1],
+  );
+  return {
+    buckets: rows.slice(0, limit).map((r) => ({ value: r.value, count: r.n })),
+    erased,
+    total,
+    truncated: rows.length > limit,
+  };
+}
+
+/** The envelope columns a facet may group by — a fixed map, never a caller's string. */
+const ENVELOPE_COLUMN: Record<string, string> = {
+  type: 'type',
+  actor: 'actor',
+  operation: 'operation',
+  version: 'version',
+  entityType: 'entity_type',
+  piiClass: 'pii_class',
+};
