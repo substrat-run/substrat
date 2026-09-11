@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { AppSchedules } from './AppSchedules';
 import { type AppMigrationsView, type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow, type TenantMetricsRow } from '../lib/api';
-import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_TENANT_METRICS, MOCK_RELEASE_COMPARISON, MOCK_APP_MIGRATIONS } from '../lib/mock';
+import { DEV_MOCK, MOCK_INSTALLED_APP_SCOPE, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_TENANT_METRICS, MOCK_RELEASE_COMPARISON, MOCK_APP_MIGRATIONS } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { LogList } from '../components/LogList';
@@ -49,7 +49,10 @@ function AppTelemetry({ app }: { app: AppRow }) {
 
   useEffect(() => {
     if (DEV_MOCK) {
-      setOwned(true);
+      // Fixture-driven rather than a flat `true`: one mock scope runs another team's
+      // vertical (`MOCK_INSTALLED_APP_SCOPE`), which is the only way the dev preview can
+      // open the installed-app view below at all.
+      setOwned(app.app_scope_id !== MOCK_INSTALLED_APP_SCOPE);
       return;
     }
     let live = true;

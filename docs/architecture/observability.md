@@ -144,7 +144,13 @@ Namespace-wide enablement via the router covers the rest.
 **4.5 The tenant read path (view 4), as built.** Two backends, because the tenant
 dimension lives in neither of the ones views 1–2 read.
 
-*Metrics* are one SQL read of the §4.2 dataset: `WHERE index1 = <tenant>`, optionally
+*Metrics* are one SQL read of the §4.2 dataset — **named per environment, defaulted
+nowhere**. Production's router writes `substrat_router` and TEST's writes
+`substrat_router_test`, so a dataset name baked into the reader is a TEST control plane
+charting production's traffic as a tenant's own, with a successful query and no error to
+notice (the same silent inheritance as #962's dispatch namespace). It is a checked-in
+`vars` entry on the control plane, `ROUTER_ANALYTICS_DATASET`; unset ⇒ the reader carries
+no `tenantMetrics` and the route 501s. The read is `WHERE index1 = <tenant>`, optionally
 narrowed by `blob2` (scope) and `blob1` (vertical), grouped by scope and surface. Counts
 are **`sum(_sample_interval)`, never `count()`** — Analytics Engine head-samples under
 load and reports each surviving row's weight, so `count()` undercounts a busy tenant by
@@ -167,6 +173,27 @@ sharing their `$metadata.requestId`, which is what attributes a vertical's *own*
 an exception, a `console.log` inside a handler — to the tenant whose request produced it,
 since those lines carry no tenant of their own. The walk is capped (40 invocations × 20
 lines): under-reporting a very busy window is survivable, a page that times out is not.
+
+**An `error` read selects its own invocations**, because a level filter cannot: stamped
+lines are pure JSON, so Cloudflare leaves `$metadata.level` unset on them and a level
+filter drops every one — an error would then only ever arrive as a sibling of whichever 40
+invocations phase two happened to expand. "An error" also arrives in three shapes, and no
+one filter spans them:
+
+| Shape | How the stamped line reads | How it is found |
+|---|---|---|
+| A failed response | `status >= 500` | tenant-filtered query |
+| A crash that escaped `onError` | `threw: true`, `status: null` | tenant-filtered query — no comparison on `status` can match it |
+| A `console.error` during a request that answered 200 | `status: 200` — nothing marks it | error-level query, searched account-wide |
+
+The first two are the tenant's by construction. The third cannot be: an error-level line
+carries no tenant, so its invocation is admitted only once phase two produces a stamped
+line naming *this* tenant (and scope, and vertical, when the caller narrowed by them).
+No stamped line, or somebody else's, and the whole invocation is dropped — the
+conservative direction is the only allowed one here, since a line shown to the wrong
+tenant is exactly what the grain decision exists to prevent. The trusted invocations also
+spend the 40-invocation budget first, so a noisy neighbour's error lines cannot crowd a
+tenant's own failures off their page.
 
 Two details that are easy to get wrong and fail silently:
 

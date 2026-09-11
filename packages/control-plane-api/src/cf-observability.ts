@@ -27,6 +27,28 @@ function isFailedInvocation(e: RecentLogEvent): boolean {
 }
 
 /**
+ * The event is a stamped invocation line belonging to the tenant (and the narrowing) that
+ * was asked about — the proof an account-wide error line may be shown to this caller.
+ *
+ * Read off the RAW event rather than a projected one, because it runs on phase two's
+ * output before anything else touches it, and the fields it reads are the ones the
+ * stamped line publishes (`invocation-log.ts`). A missing or mismatched tenant is a
+ * refusal, never a shrug: this predicate is the whole isolation boundary for correlated
+ * lines, which carry no tenant of their own.
+ */
+function ownsInvocation(
+  e: Record<string, unknown>,
+  input: { tenantId: string; scopeId?: string; vertical?: string },
+): boolean {
+  const source = (e['source'] ?? {}) as Record<string, unknown>;
+  if (source['substrat'] !== 'invocation') return false;
+  if (source['tenantId'] !== input.tenantId) return false;
+  if (input.scopeId && source['scopeId'] !== input.scopeId) return false;
+  if (input.vertical && source['vertical'] !== input.vertical) return false;
+  return true;
+}
+
+/**
  * Give a stamped invocation line a human message.
  *
  * Cloudflare populates `$metadata.message` for a STRING log and leaves it unset for a pure
@@ -106,6 +128,24 @@ export interface CfObservabilityOptions {
    * permissions grow with the platform's needs — but nothing here assumes that.
    */
   apiToken: string;
+  /**
+   * The Analytics Engine dataset the ROUTER writes its per-request datapoints into —
+   * the only place the tenant dimension exists (§4.2), and therefore the only source
+   * `tenantMetrics` can read.
+   *
+   * Stated by the caller and defaulted NOWHERE, for the reason `DISPATCH_NAMESPACE`
+   * is (#962): the environments write to different datasets (`substrat_router` in
+   * production, `substrat_router_test` on TEST — `apps/router/wrangler.jsonc`), a
+   * code default is inherited silently by whichever environment forgets to override
+   * it, and the failure is a TEST control plane answering questions about production
+   * traffic. There is no error to notice: the query succeeds and the numbers are
+   * somebody else's.
+   *
+   * Absent ⇒ `tenantMetrics` is not exposed at all, so the route answers 501 — the
+   * platform's shape for an unconfigured capability — rather than a wrong number or
+   * an empty array that reads as "your app served nothing".
+   */
+  routerDataset?: string;
 }
 
 const GRAPHQL_URL = 'https://api.cloudflare.com/client/v4/graphql';
@@ -325,9 +365,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return queryEvents(services?.[0], level, search, hours, limit);
     },
 
-    async tenantMetrics(input) {
-      return queryTenantMetrics(input);
-    },
+    // Present only when the caller named the router's dataset: with no dataset there is
+    // no honest answer, and the route's 501 says so. See `routerDataset`.
+    ...(opts.routerDataset
+      ? {
+          tenantMetrics: (input: Parameters<NonNullable<ObservabilityReader['tenantMetrics']>>[0]) =>
+            queryTenantMetrics(opts.routerDataset!, input),
+        }
+      : {}),
 
     async tenantLogs(input) {
       return queryTenantLogs(input);
@@ -387,8 +432,10 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    * Cloudflare records invocations per SCRIPT, and a script serves every tenant that
    * installed the vertical, so no amount of filtering on the GraphQL dataset can produce
    * a per-tenant number. The tenant dimension exists only because the router writes it:
-   * one datapoint per dispatched request into the `substrat_router` dataset, `index1` =
-   * the tenant. That dataset is read with SQL, not GraphQL — hence a third endpoint.
+   * one datapoint per dispatched request into the router's dataset (`substrat_router` in
+   * production, `substrat_router_test` on TEST — hence `routerDataset`, named by the
+   * caller), `index1` = the tenant. That dataset is read with SQL, not GraphQL — hence a
+   * third endpoint.
    *
    * ## Counts are sampling-weighted, and `count()` would be a silent lie
    *
@@ -403,12 +450,22 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
    * `quantile(q)(value)`, or the surviving rows are each counted once regardless of how
    * many requests they stand for.
    */
-  async function queryTenantMetrics(input: {
-    tenantId: string;
-    scopeId?: string;
-    vertical?: string;
-    hours: number;
-  }): Promise<TenantMetricsRow[]> {
+  async function queryTenantMetrics(
+    dataset: string,
+    input: {
+      tenantId: string;
+      scopeId?: string;
+      vertical?: string;
+      hours: number;
+    },
+  ): Promise<TenantMetricsRow[]> {
+    // The dataset name is an IDENTIFIER, not a bound value — it cannot be quoted into
+    // place, so the only defence is refusing anything that is not a bare name. Checked
+    // here rather than at construction so a mistyped var costs this one route a 500
+    // instead of taking every other observability read down with it.
+    if (!/^[A-Za-z0-9_]{1,64}$/.test(dataset)) {
+      throw new Error('observability: refusing a router dataset name that is not a bare identifier');
+    }
     // The tenant is bound, never interpolated: this is SQL built in a string, and the
     // value arrives from a session. Ids are opaque ULIDs, so the escape is a whitelist
     // rather than a quote-doubling dance — anything that is not ULID-shaped is not an
@@ -439,7 +496,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
         quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
         quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
-      FROM substrat_router
+      FROM ${dataset}
       WHERE ${where.join(' AND ')}
       GROUP BY scopeId, vertical, surface
       ORDER BY requests DESC
@@ -508,44 +565,84 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
     if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });
 
-    // An `error` read narrows phase one to the invocations that FAILED, using the status
-    // the stamped line carries.
+    // Phase one. For every read but `error` this is one query: the tenant's stamped
+    // lines, newest first.
     //
-    // Without this the filter is a trap. Stamped lines are level `log`, so a level filter
-    // drops every one of them, which means an error can only arrive as a sibling — and
-    // siblings exist only for the invocations phase two expanded. Asking for errors over
-    // 24h would search the 40 most recent invocations and answer "none" if the error was
-    // the 41st: an empty page that reads as "nothing is wrong" and means "I did not look".
-    // Narrowing here makes those 40 the 40 most recent FAILURES instead, which is the set
-    // the caller was asking about.
-    const failures =
-      input.level === 'error'
-        ? [...base, { key: 'status', operation: 'gte', type: 'number', value: 500 }]
-        : base;
+    // A level filter cannot do that job. Stamped lines are pure JSON, so Cloudflare
+    // leaves `$metadata.level` unset on them and a level filter drops every one — which
+    // means an error could only ever arrive as a SIBLING, and siblings exist only for the
+    // invocations phase two expanded. Asking for errors over 24h would search the 40 most
+    // recent invocations and answer "none" if the error was the 41st: an empty page that
+    // reads as "nothing is wrong" and means "I did not look".
+    //
+    // So an error read selects the invocations to expand itself. It takes three queries,
+    // because "an error" arrives in three shapes and no single filter spans them:
+    //
+    //   1. a FAILED response — the stamped line carries `status >= 500`;
+    //   2. an ESCAPE — the error got past `onError` itself, so the line carries
+    //      `threw: true` and `status: null`, which no comparison on `status` can match.
+    //      These are the rarest lines and the most interesting ones on the page;
+    //   3. a `console.error` the vertical wrote during a request that SUCCEEDED — a line
+    //      with no tenant on it, on an invocation the tenant filter has no reason to
+    //      select, since its stamped line says 200.
+    //
+    // (1) and (2) are tenant-filtered, so their invocations are trusted on sight. (3)
+    // cannot be: an error-level query has no tenant to filter on and is searched
+    // account-wide, so each of its invocations is admitted only once phase two shows a
+    // stamped line for THIS tenant on it — `ownsInvocation` below. Narrowing to (1)
+    // alone, which is what this did first, silently dropped every crash that escaped the
+    // envelope and every error logged by a request that went on to answer 200.
+    const isErrorRead = input.level?.toLowerCase() === 'error';
+    // Over-fetched relative to `limit`, because each invocation may pull siblings in
+    // phase two and the cap belongs on the merged answer.
+    const phaseOneLimit = Math.min(input.limit * 2, 200);
+    const [stamped, errorLines] = isErrorRead
+      ? await Promise.all([
+          Promise.all([
+            queryRaw(
+              [...base, { key: 'status', operation: 'gte', type: 'number', value: 500 }],
+              input.hours,
+              phaseOneLimit,
+            ),
+            queryRaw(
+              [...base, { key: 'threw', operation: 'eq', type: 'boolean', value: true }],
+              input.hours,
+              phaseOneLimit,
+            ),
+          ]).then((pages) => pages.flat()),
+          queryRaw(
+            [{ key: '$metadata.level', operation: 'eq', type: 'string', value: 'error' }],
+            input.hours,
+            phaseOneLimit,
+          ),
+        ])
+      : [await queryRaw(base, input.hours, phaseOneLimit), []];
 
-    // Phase one: the stamped lines. Over-fetched relative to `limit`, because each one
-    // may pull siblings in phase two and the cap belongs on the merged answer.
-    const stamped = await queryRaw(failures, input.hours, Math.min(input.limit * 2, 200));
-    if (stamped.length === 0) return [];
+    const trusted = invocationIds(stamped);
+    const trustedIds = new Set(trusted);
+    const candidates = invocationIds(errorLines).filter((id) => !trustedIds.has(id));
+    if (trusted.length === 0 && candidates.length === 0) return [];
 
     // Phase two: everything sharing those invocations. One query per request id — the
     // telemetry API's filters are single-valued equality, the same constraint
-    // `recentLogs` batches around — so this is capped rather than unbounded.
-    const requestIds = [
-      ...new Set(
-        stamped
-          .map((e) => idOf(e))
-          .filter((id): id is string => typeof id === 'string' && id !== ''),
-      ),
-    ].slice(0, MAX_CORRELATED_INVOCATIONS);
+    // `recentLogs` batches around — so this is capped rather than unbounded. The cap is a
+    // budget, and the trusted ids spend it first: this tenant's own failures must not be
+    // crowded out of the page by a noisy neighbour's error lines.
+    const requestIds = [...trusted, ...candidates].slice(0, MAX_CORRELATED_INVOCATIONS);
     const sibling = await Promise.all(
-      requestIds.map((id) =>
-        queryRaw(
+      requestIds.map(async (id) => {
+        const events = await queryRaw(
           [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }],
           input.hours,
           MAX_LINES_PER_INVOCATION,
-        ),
-      ),
+        );
+        // An account-wide candidate earns its place only by producing this tenant's
+        // stamped line. No stamped line, or somebody else's, and the whole invocation is
+        // dropped — a line shown to the wrong tenant is exactly the leak the tenant grain
+        // exists to prevent, so the conservative direction is the only allowed one.
+        if (!trustedIds.has(id) && !events.some((e) => ownsInvocation(e, input))) return [];
+        return events;
+      }),
     );
 
     // Merge, de-duplicate, drop the router's own access log, then apply the caller's
@@ -577,6 +674,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       .slice(0, input.limit);
   }
 
+  /** The de-duplicated, order-preserving request ids of a page of events. */
+  function invocationIds(events: Array<Record<string, unknown>>): string[] {
+    return [
+      ...new Set(
+        events.map((e) => idOf(e)).filter((id): id is string => typeof id === 'string' && id !== ''),
+      ),
+    ];
+  }
+
   /** `$metadata.requestId`, the key every line of one invocation shares. */
   function idOf(e: Record<string, unknown>): string | null {
     const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
@@ -587,9 +693,10 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
 
   /** A telemetry `events` query returning the raw events, filters passed through. */
   async function queryRaw(
-    // `value` is `string | number`: every filter was an equality on an id until the error
-    // read needed `status >= 500`, which is the one numeric comparison in this file.
-    filters: Array<{ key: string; operation: string; type: string; value: string | number }>,
+    // `value` is `string | number | boolean`: every filter was an equality on an id until
+    // the error read needed `status >= 500` (the one numeric comparison in this file) and
+    // `threw = true` (the one boolean).
+    filters: Array<{ key: string; operation: string; type: string; value: string | number | boolean }>,
     hours: number,
     limit: number,
   ): Promise<Array<Record<string, unknown>>> {

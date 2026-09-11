@@ -48,7 +48,10 @@ function readerOver(handler: (filters: Array<Record<string, unknown>>) => unknow
       });
     }),
   );
-  return { reader: createCfObservabilityReader({ accountId: 'acct', apiToken: 't' }), sent };
+  return {
+    reader: createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'substrat_router_test' }),
+    sent,
+  };
 }
 
 const keyed = (filters: Array<Record<string, unknown>>, key: string) => filters.find((f) => f['key'] === key);
@@ -89,14 +92,84 @@ describe('cf tenant logs', () => {
   it('narrows phase one to failing invocations when asked for errors', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
-    const phaseOne = sent[0]!;
-    expect(keyed(phaseOne, 'status')).toEqual({ key: 'status', operation: 'gte', type: 'number', value: 500 });
+    const failed = sent.find((f) => keyed(f, 'status'));
+    expect(failed).toBeDefined();
+    expect(keyed(failed!, 'status')).toEqual({ key: 'status', operation: 'gte', type: 'number', value: 500 });
+  });
+
+  /**
+   * An escape — the error got past `onError` — carries `threw: true` and `status: null`,
+   * which `status >= 500` can never match. Selecting on the status ALONE dropped the
+   * rarest and most interesting failure a vertical has from the one view that exists to
+   * find it.
+   */
+  it('also selects invocations that escaped the envelope, which carry no status', async () => {
+    const { reader, sent } = readerOver(() => []);
+    await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    const escapes = sent.find((f) => keyed(f, 'threw'));
+    expect(escapes).toBeDefined();
+    expect(keyed(escapes!, 'threw')).toEqual({ key: 'threw', operation: 'eq', type: 'boolean', value: true });
+    // Still the tenant's own — an escape query that forgot the tenant is a fleet read.
+    expect(keyed(escapes!, 'tenantId')).toMatchObject({ value: '01TENANT' });
   });
 
   it('does not narrow to failures for any other level', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', level: 'info', hours: 24, limit: 10 });
-    expect(keyed(sent[0]!, 'status')).toBeUndefined();
+    expect(sent.some((f) => keyed(f, 'status') || keyed(f, 'threw'))).toBe(false);
+  });
+
+  /**
+   * The third shape of "an error": a `console.error` written during a request that went
+   * on to answer 200. Its stamped line says 200, so no tenant-filtered failure query
+   * selects that invocation — the line is reachable only by searching error-level lines
+   * account-wide and then proving the invocation was this tenant's.
+   */
+  it('finds an error logged by a request that still succeeded', async () => {
+    const { reader } = readerOver((f) => {
+      if (keyed(f, 'status') || keyed(f, 'threw')) return []; // no failed invocations at all
+      if (keyed(f, '$metadata.level')) return [ownLine('error', 'charge declined', 'req-01OK', '01ERR')];
+      if (keyed(f, '$metadata.requestId')) {
+        return [invocation({ status: 200 }, '01OK'), ownLine('error', 'charge declined', 'req-01OK', '01ERR')];
+      }
+      return [];
+    });
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    expect(events.map((e) => e.message)).toContain('charge declined');
+  });
+
+  /**
+   * …and the isolation half of that: an error-level line found account-wide belongs to
+   * whoever ran the invocation, which the stamped line is the only proof of. A line whose
+   * invocation carries ANOTHER tenant's stamp is dropped whole — showing it here is
+   * precisely the leak the tenant grain exists to prevent.
+   */
+  it('refuses an account-wide error line whose invocation is another tenant’s', async () => {
+    const { reader } = readerOver((f) => {
+      if (keyed(f, 'status') || keyed(f, 'threw')) return [];
+      if (keyed(f, '$metadata.level')) return [ownLine('error', 'someone else’s crash', 'req-01FOREIGN', '01X')];
+      if (keyed(f, '$metadata.requestId')) {
+        return [
+          invocation({ tenantId: '01OTHER', status: 500 }, '01FOREIGN'),
+          ownLine('error', 'someone else’s crash', 'req-01FOREIGN', '01X'),
+        ];
+      }
+      return [];
+    });
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    expect(events).toEqual([]);
+  });
+
+  /** Same refusal for a line correlated to an invocation with no stamp at all. */
+  it('refuses an account-wide error line with no stamped invocation behind it', async () => {
+    const { reader } = readerOver((f) => {
+      if (keyed(f, 'status') || keyed(f, 'threw')) return [];
+      if (keyed(f, '$metadata.level')) return [ownLine('error', 'a platform worker’s crash', 'req-01NONE', '01Y')];
+      if (keyed(f, '$metadata.requestId')) return [ownLine('error', 'a platform worker’s crash', 'req-01NONE', '01Y')];
+      return [];
+    });
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    expect(events).toEqual([]);
   });
 
   /**
@@ -167,7 +240,11 @@ describe('cf tenant metrics', () => {
         return new Response(JSON.stringify({ data: [] }), { status: 200 });
       }),
     );
-    const reader = createCfObservabilityReader({ accountId: 'acct', apiToken: 't' });
+    const reader = createCfObservabilityReader({
+      accountId: 'acct',
+      apiToken: 't',
+      routerDataset: 'substrat_router_test',
+    });
     await reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24 });
     expect(sql).toContain('sum(_sample_interval)');
     expect(sql).toContain('quantileWeighted(0.5)(double1, _sample_interval)');
@@ -176,10 +253,58 @@ describe('cf tenant metrics', () => {
     expect(sql).toContain("index1 = '01TENANT'");
   });
 
+  /**
+   * The environments write to DIFFERENT router datasets, and a hard-coded name meant a
+   * TEST control plane answering questions about production traffic — a query that
+   * succeeds, with somebody else's numbers in it (the same class of silent inheritance
+   * as #962's dispatch namespace).
+   */
+  it('reads the dataset it was given, not a hard-coded one', async () => {
+    let sql = '';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        sql = init.body;
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      }),
+    );
+    const reader = createCfObservabilityReader({
+      accountId: 'acct',
+      apiToken: 't',
+      routerDataset: 'substrat_router_test',
+    });
+    await reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24 });
+    expect(sql).toContain('FROM substrat_router_test');
+    expect(sql).not.toContain('FROM substrat_router\n');
+  });
+
+  /** No dataset ⇒ no capability, so the route 501s rather than inventing a source. */
+  it('exposes no tenant metrics at all when no dataset was named', () => {
+    const reader = createCfObservabilityReader({ accountId: 'acct', apiToken: 't' });
+    expect(reader.tenantMetrics).toBeUndefined();
+    // The log half needs no dataset — it reads Workers Logs — and stays available.
+    expect(reader.tenantLogs).toBeTypeOf('function');
+  });
+
+  /** The name is an identifier spliced into SQL, so anything but a bare name is refused. */
+  it('refuses a dataset name that is not a bare identifier', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })));
+    const reader = createCfObservabilityReader({
+      accountId: 'acct',
+      apiToken: 't',
+      routerDataset: 'substrat_router WHERE 1=1 --',
+    });
+    await expect(reader.tenantMetrics!({ tenantId: '01TENANT', hours: 24 })).rejects.toThrow(/bare identifier/);
+  });
+
   /** A value that is not id-shaped never reaches a query built by string concatenation. */
   it('refuses a dimension value that could not be an id', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })));
-    const reader = createCfObservabilityReader({ accountId: 'acct', apiToken: 't' });
+    const reader = createCfObservabilityReader({
+      accountId: 'acct',
+      apiToken: 't',
+      routerDataset: 'substrat_router_test',
+    });
     await expect(
       reader.tenantMetrics!({ tenantId: "01T' OR 1=1 --", hours: 24 }),
     ).rejects.toThrow(/unexpected characters/);

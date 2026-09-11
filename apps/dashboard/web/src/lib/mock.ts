@@ -496,6 +496,18 @@ export const MOCK_APP_HOSTNAMES: AppHostnamesView = {
   defaultHostname: 'acme-hr.substrat.run',
 };
 
+/**
+ * The one mock app running a vertical ANOTHER team publishes — `MOCK_APPS[1]`, Acme Legal.
+ *
+ * The Observability tab has two shapes, and which one renders is decided by a live
+ * `appDeployments` read the dev preview never makes. Answering "owned" for every app —
+ * which is what the preview did — left the installed-app view and `MOCK_TENANT_METRICS`
+ * with no way to be opened at all, so half the tab could not be looked at before it
+ * shipped. Naming one scope here is what gives the preview both views: every other mock
+ * app stays the builder's own.
+ */
+export const MOCK_INSTALLED_APP_SCOPE = '01J2Q8Z3V9K4W7X2M5N6P7LEGA';
+
 export const MOCK_APPS: AppRow[] = [
   { id: '1', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical_slug: 'protocol', name: 'Acme HR', status: 'active', hostname: 'acme-hr.substrat.run', created_by: 'dana@acme.com', created_at: ago(2 * 3600e3) },
   { id: '2', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7LEGA', vertical_slug: 'protocol', name: 'Acme Legal', status: 'active', hostname: 'acme-legal.substrat.run', created_by: 'dana@acme.com', created_at: ago(30 * 3600e3) },
@@ -516,8 +528,8 @@ export const MOCK_OBSERVABILITY: ObservabilityRow[] = [
  * publishes, and a version is a fact about code that is not the viewing team's.
  */
 export const MOCK_TENANT_METRICS: TenantMetricsRow[] = [
-  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'acme/helpdesk', surface: 'app', requests: 4210, errors: 6, durationP50: 84, durationP95: 689 },
-  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'acme/helpdesk', surface: 'api', requests: 912, errors: 0, durationP50: 31, durationP95: 210 },
+  { scopeId: MOCK_INSTALLED_APP_SCOPE, vertical: 'protocol', surface: 'app', requests: 4210, errors: 6, durationP50: 84, durationP95: 689 },
+  { scopeId: MOCK_INSTALLED_APP_SCOPE, vertical: 'protocol', surface: 'api', requests: 912, errors: 0, durationP50: 31, durationP95: 210 },
 ];
 
 /**

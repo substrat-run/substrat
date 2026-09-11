@@ -28,6 +28,17 @@ Two pieces:
   a caller would draw as "your app served nothing". `tenantId` is not a widenable filter:
   it is the narrowing, and the seam has no "all tenants" spelling.
 
+The Cloudflare reader takes the router's Analytics Engine dataset as `routerDataset`, with
+no default: the environments write to different datasets, and a default is the spelling
+that has one of them quietly reading the other's traffic. Naming none leaves `tenantMetrics`
+off the reader entirely, so the route says 501 instead of answering with the wrong numbers.
+
+An error read looks for all three shapes an error arrives in — a failed response, a crash
+that escaped the error envelope (which carries no status at all), and an error logged by a
+request that still answered 200. The last of those is found by searching error lines
+account-wide and keeping only the invocations whose stamped line names this tenant, so it
+widens what a team can find about their own app without widening what they can see.
+
 A vertical picks this up on its next push. Until then its app shows traffic (which comes
 from the router and needs nothing from the vertical) and no logs; the empty state says
 which of the two it is looking at.
