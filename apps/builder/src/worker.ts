@@ -36,6 +36,10 @@ import { Hono, type Context } from 'hono';
 import { defineScopeDO } from '@substrat-run/adapter-cloudflare';
 import { meteringModule } from '@substrat-run/engine-metering';
 import { studioUsage } from './metering.js';
+// The membership read and its per-isolate cache — parsed against the schema the
+// control plane's directory answer is declared as (teams.ts, part of #971).
+import { teamsFor, type Team } from './teams.js';
+export type { Team } from './teams.js';
 import {
 	mountOidcRoutes,
 	SESSION_COOKIE,
@@ -67,54 +71,6 @@ export interface Env extends OidcEnv {
 
 /** The tenant-selection header — same name, same meaning as the CP API's. */
 const TENANT_HEADER = 'x-substrat-tenant';
-
-export interface Team {
-	id: string;
-	slug: string;
-	name: string;
-	/** Whether the tenant holds the `builder` entitlement (CP applies expiry at read). */
-	entitled: boolean;
-}
-
-/**
- * The teams (= tenants, dashboard-teams.md) this login builds for, from the
- * shared directory — each flagged with the `builder` entitlement (the studio's
- * gate). One subrequest per request that needs it; the CP answers from its own
- * DO, so this is a directory read, not a fan-out.
- */
-/** Per-isolate membership cache — the trade the gate comment below names:
- * every file-tree click was paying a CP subrequest, so memberships are held
- * for TEAMS_TTL_MS and revocation lags by at most that. Isolate-local by
- * design: no cross-user leakage beyond what teamsFor itself returns per sub. */
-const TEAMS_TTL_MS = 60_000;
-const teamsCache = new Map<string, { teams: Team[]; until: number }>();
-
-async function teamsFor(env: Env, sub: string): Promise<Team[]> {
-	const hit = teamsCache.get(sub);
-	if (hit && hit.until > Date.now()) return hit.teams;
-	const teams = await teamsForUncached(env, sub);
-	teamsCache.set(sub, { teams, until: Date.now() + TEAMS_TTL_MS });
-	return teams;
-}
-
-async function teamsForUncached(env: Env, sub: string): Promise<Team[]> {
-	const res = await env.CONTROL_PLANE_SVC.fetch(
-		'https://control-plane/internal/builder/identity-tenants',
-		{
-			method: 'POST',
-			headers: {
-				'content-type': 'application/json',
-				'x-service-token': env.CP_SERVICE_TOKEN ?? '',
-			},
-			body: JSON.stringify({ externalId: sub }),
-		},
-	);
-	if (!res.ok) {
-		throw new Error(`membership lookup failed: ${res.status} ${await res.text().catch(() => '')}`);
-	}
-	const body = (await res.json()) as { tenants: Team[] };
-	return body.tenants;
-}
 
 function readCookie(header: string | null, name: string): string | undefined {
 	if (!header) return undefined;
@@ -200,8 +156,8 @@ app.get('/api/auth/denied', (c) =>
  * dispatch reuse it). For a NON-staff user this is one directory lookup per
  * request, assets included — acceptable at studio scale (the alternative, an
  * ungated shell, would leak the app to any authenticated account); lookups go
- * through the TEAMS_TTL_MS cache above, so the CP subrequest is paid once per
- * isolate per TTL, traded against revocation lag of the same TTL.
+ * through the TEAMS_TTL_MS cache in teams.ts, so the CP subrequest is paid once
+ * per isolate per TTL, traded against revocation lag of the same TTL.
  */
 app.use('*', async (c, next) => {
 	const token = readCookie(c.req.header('cookie') ?? null, SESSION_COOKIE);
