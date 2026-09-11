@@ -34,6 +34,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     appliedMigrationsLocal: async () => note('appliedMigrationsLocal', []),
     entityHistoryLocal: async (_s: unknown, input?: unknown) =>
       note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
+    facetEventsLocal: async (_s: unknown, input?: unknown) =>
+      note('facetEventsLocal', { buckets: [{ value: JSON.stringify(input), count: 1 }], erased: 0, total: 1, truncated: false }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),

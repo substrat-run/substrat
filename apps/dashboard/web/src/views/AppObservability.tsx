@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import { AppSchedules } from './AppSchedules';
-import { type AppMigrationsView, type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
+import { type EventFacetResult, type AppMigrationsView, type AppliedMigration, type ReleaseComparison, api, ApiError, type AppRow, type ObservabilityLogEvent, type ObservabilityRow } from '../lib/api';
 import { DEV_MOCK, MOCK_OBSERVABILITY, MOCK_OBSERVABILITY_LOGS, MOCK_RELEASE_COMPARISON, MOCK_APP_MIGRATIONS } from '../lib/mock';
 import { GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
@@ -466,10 +466,126 @@ function SchemaHistoryCard({ app }: { app: AppRow }) {
   );
 }
 
+
+/**
+ * The event explorer (#1239 stage 1): narrow this app's outbox, group it, count.
+ * "Which operation emits most of this?", "which version were these under?" —
+ * the questions nobody predicted, answered on what the spine already holds.
+ *
+ * Two things the UI is careful to say rather than imply:
+ *
+ * **An erased payload is not a missing value.** Grouping by a payload field over
+ * a shredded event yields the same null a never-present key does, so the reader
+ * counts them apart and this shows the erased count beside the buckets. Without
+ * it a distribution over redacted history looks complete.
+ *
+ * **A truncated result says so.** Buckets are capped; a tail that exists and is
+ * not shown must not read as a tail that does not exist.
+ */
+function EventExplorer({ app }: { app: AppRow }) {
+  const [groupBy, setGroupBy] = useState('type');
+  const [field, setField] = useState('');
+  const [type, setType] = useState('');
+  const [result, setResult] = useState<EventFacetResult | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  // The payload field is applied on submit rather than per keystroke: each query
+  // is a scope read, and a half-typed field name is a query nobody asked for.
+  const [applied, setApplied] = useState({ groupBy: 'type', field: '', type: '' });
+
+  useEffect(() => {
+    let live = true;
+    setErr(null);
+    api
+      .appFacets(app.app_scope_id, {
+        groupBy: applied.field ? undefined : applied.groupBy,
+        field: applied.field || undefined,
+        type: applied.type || undefined,
+      })
+      .then((r) => live && setResult(r))
+      .catch((e) => live && (setResult(null), setErr(e instanceof Error ? e.message : String(e))));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id, applied]);
+
+  const widest = Math.max(1, ...(result?.buckets ?? []).map((b) => b.count));
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Events</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Group this app&rsquo;s events by a dimension or a payload field, and count them.
+        </p>
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Select
+          options={[
+            { value: 'type', label: 'Event type' },
+            { value: 'operation', label: 'Operation' },
+            { value: 'actor', label: 'Actor' },
+            { value: 'version', label: 'Version' },
+            { value: 'entityType', label: 'Entity type' },
+            { value: 'piiClass', label: 'PII class' },
+          ]}
+          value={groupBy}
+          onChange={(e) => setGroupBy(e.target.value)}
+          style={{ width: 150 }}
+        />
+        <Input mono value={field} onChange={(e) => setField(e.target.value)} placeholder="…or a payload field" style={{ width: 190 }} />
+        <Input mono value={type} onChange={(e) => setType(e.target.value)} placeholder="event type (optional)" style={{ width: 200 }} />
+        <Button size="sm" variant="ghost" onClick={() => setApplied({ groupBy, field: field.trim(), type: type.trim() })}>
+          Group
+        </Button>
+      </div>
+
+      {err && <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>{err}</div>}
+
+      {result && (
+        <>
+          <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+            {result.total.toLocaleString()} event{result.total === 1 ? '' : 's'} matched
+            {result.erased > 0 && (
+              <span style={{ color: 'var(--status-warning-fg)' }}>
+                {' '}· {result.erased.toLocaleString()} with an erased payload, counted apart and not grouped
+              </span>
+            )}
+            {result.truncated && <span> · showing the largest buckets only</span>}
+          </div>
+          {result.buckets.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Nothing matched this filter.</div>
+          ) : (
+            <div style={{ display: 'grid', gap: 4 }}>
+              {result.buckets.map((b) => (
+                <div key={b.value ?? '\u0000null'} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12.5 }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', minWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: b.value === null ? 'var(--text-tertiary)' : 'var(--text-primary)' }}>
+                    {/* Absent, not erased — the two are different answers and the
+                        count above carries the other one. */}
+                    {b.value ?? 'no value'}
+                  </span>
+                  <span style={{ flex: 1, height: 6, background: 'var(--surface-inset)', borderRadius: 3, overflow: 'hidden' }}>
+                    <span style={{ display: 'block', width: `${(b.count / widest) * 100}%`, height: '100%', background: 'var(--brand-500)' }} />
+                  </span>
+                  <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', minWidth: 56, textAlign: 'right' }}>
+                    {b.count.toLocaleString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function AppObservability({ app }: { app: AppRow }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <AppSchedules scopeId={app.app_scope_id} />
+      <EventExplorer app={app} />
       <ReleaseComparisonCard app={app} />
       <SchemaHistoryCard app={app} />
       <AppTelemetry app={app} />

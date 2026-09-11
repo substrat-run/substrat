@@ -440,6 +440,24 @@ export interface AppHealthRow {
   lastSweepAt: string | null;
 }
 
+/** One grouped value and how many events carried it (#1239). */
+export interface EventFacetBucket {
+  /** Null = the field was genuinely ABSENT, which is not the same as erased. */
+  value: string | null;
+  count: number;
+}
+
+export interface EventFacetResult {
+  buckets: EventFacetBucket[];
+  /**
+   * Events whose payload was ERASED, counted apart and never folded into a null
+   * bucket — otherwise a reader sees a clean distribution over redacted history.
+   */
+  erased: number;
+  total: number;
+  truncated: boolean;
+}
+
 /** One declared field and whether anything declares it as output (#1321). */
 export interface FieldCoverageRow {
   field: string;
@@ -1438,6 +1456,14 @@ export const api = {
    * a page at a time, so dropping `nextCursor` would show a long-lived record's
    * OLDEST events and silently hide everything since.
    */
+  /** Facets over an app's events (#1239) — narrow, group, count. */
+  appFacets: (scopeId: string, q: { groupBy?: string; field?: string; type?: string; since?: string }) =>
+    call<EventFacetResult>(
+      `/apps/${encodeURIComponent(scopeId)}/facets?${new URLSearchParams(
+        Object.fromEntries(Object.entries(q).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string>,
+      )}`,
+    ),
+
   appEntityHistory: (scopeId: string, entityType: string, entityId: string, cursor?: string) =>
     call<Page<HistoryEntry>>(
       `/apps/${encodeURIComponent(scopeId)}/history?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}` +

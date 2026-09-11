@@ -16,6 +16,7 @@ import type {
   SweepRunEntry,
   Page,
   HistoryEntry,
+  EventFacetResult,
   PermissionRegistry,
   PlatformRequest,
   PrincipalId,
@@ -1433,6 +1434,24 @@ export class TenantNarrowedControlPlane {
   /** Every table in the scope's own database, with row counts. */
   listScopeTables(scopeId: ScopeId): Promise<ScopeTable[]> {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/tables`);
+  }
+
+  /**
+   * Facets over one app's outbox (#1239) — narrow, group, count. The erased-payload
+   * rule lives in the kernel helper below the seam: a shredded event is counted
+   * apart rather than folded into a "no value" bucket.
+   */
+  facetEvents(
+    scopeId: ScopeId,
+    input: { groupBy: string; field?: string; type?: string; since?: string; limit?: number },
+  ): Promise<EventFacetResult> {
+    const q = new URLSearchParams();
+    if (input.field !== undefined) q.set('field', input.field);
+    else q.set('groupBy', input.groupBy);
+    if (input.type !== undefined) q.set('type', input.type);
+    if (input.since !== undefined) q.set('since', input.since);
+    if (input.limit !== undefined) q.set('limit', String(input.limit));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/facets?${q}`);
   }
 
   /**
