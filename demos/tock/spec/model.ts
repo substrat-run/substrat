@@ -28,8 +28,58 @@ export const RUN_STATUSES = ['received', 'profiled', 'mapped', 'counted', 'faile
 /**
  * What a captured rule is. `salt` is here because a re-run's de-duplication is only
  * comparable to the original if it used the same salt, and that is a fact about the run.
+ *
+ * Every kind a `tock_rule_state` row may carry, DERIVED ONES INCLUDED — this is the
+ * storage vocabulary, not the request one.
  */
 export const RULE_KINDS = ['bot_list', 'threshold', 'dedup_window', 'salt', 'mapping'] as const;
+
+/**
+ * The kinds a CALLER may declare — everything the run cannot work out for itself.
+ *
+ * `salt` and `mapping` are derived by `count-run` from what it actually did, and they are
+ * the two rows whose whole value is that nobody dictated them: a mapping's identifier
+ * names every mapping version in force, which is what makes a corrected number explainable
+ * rather than merely different. Accepting them here undid that. The caller's loop runs
+ * AFTER the derived insert and its `ON CONFLICT … DO UPDATE` rewrites both the identifier
+ * and the content hash, so one request could make a run claim it counted under a mapping it
+ * never used — an audit record saying whatever its subject preferred.
+ *
+ * Split rather than filtered in the handler, because a request that names a derived kind is
+ * refused at the boundary with a message, instead of being silently dropped by code a
+ * reader has to find.
+ */
+/** The kinds `count-run` works out for itself, and therefore refuses to be told. */
+export const DERIVED_RULE_KINDS = ['salt', 'mapping'] as const;
+
+export const CALLER_RULE_KINDS = ['bot_list', 'threshold', 'dedup_window'] as const;
+
+/**
+ * The two lists are one list, checked by the compiler rather than by whoever edits next: a
+ * new kind added to `RULE_KINDS` has to be placed on one side or the other, and a derived
+ * kind that leaked into the caller's list is a type error here rather than a forgeable
+ * audit row found later.
+ */
+type _CallerKindsAreStorageKinds = (typeof CALLER_RULE_KINDS)[number] extends (typeof RULE_KINDS)[number]
+  ? true
+  : never;
+type _EveryKindIsAccountedFor = (typeof RULE_KINDS)[number] extends
+  | (typeof CALLER_RULE_KINDS)[number]
+  | (typeof DERIVED_RULE_KINDS)[number]
+  ? true
+  : never;
+type _NoDerivedKindIsCallerDeclarable = Extract<
+  (typeof CALLER_RULE_KINDS)[number],
+  (typeof DERIVED_RULE_KINDS)[number]
+> extends never
+  ? true
+  : never;
+const _ruleKindsPartition: [_CallerKindsAreStorageKinds, _EveryKindIsAccountedFor, _NoDerivedKindIsCallerDeclarable] = [
+  true,
+  true,
+  true,
+];
+void _ruleKindsPartition;
 
 /**
  * Two dimension slots, and the schema editor refuses a third (concept section 7). A limit
@@ -948,7 +998,11 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       rules: z
         .array(
           z.object({
-            kind: z.enum(RULE_KINDS),
+            /**
+             * Never `salt` or `mapping`: those are DERIVED from what this run actually did,
+             * and a caller that could name them could rewrite the record of it.
+             */
+            kind: z.enum(CALLER_RULE_KINDS),
             /** Which list we MEANT — a name that can be edited upstream without changing. */
             identifier: z.string().min(1),
             /** Which rules we APPLIED. This is the half that actually holds. */

@@ -413,6 +413,7 @@ const saveOutputSchemaOp: OperationHandler<
       `an output shape may declare at most ${MAX_GROUPING_DIMENSIONS} grouping dimensions; this one declares ${dims.length} (${dims.map(([n]) => n).join(', ')})`,
     );
 
+
   /**
    * Additive only, and refused by name when it is not.
    *
@@ -437,6 +438,25 @@ const saveOutputSchemaOp: OperationHandler<
         );
     }
   }
+
+  /**
+   * One measure, for the same reason `save-schema` refuses a second: `groupingsOf` takes
+   * `.find()` over the declared fields, so every measure after the first is silently
+   * dropped at count time. The shape would look accepted while the number was quietly
+   * about one column — a rollup row holds a single `measure` and a single `unit` and has
+   * nowhere to put a second.
+   *
+   * AFTER the additive check on purpose. An edit that turns a dimension into a measure
+   * beside an existing one trips both, and "a field never changes meaning" is the more
+   * useful of the two answers: it names the field and the edit, where this one would only
+   * report the count.
+   */
+  const measures = Object.entries(input.fields).filter(([, f]) => f.role === 'measure');
+  if (measures.length > 1)
+    throw substratError(
+      'validation_failed',
+      `an output shape may declare at most 1 measure; this one declares ${measures.length} (${measures.map(([n]) => n).join(', ')}). A rollup row holds one measure and one unit, so a second could be declared and never counted.`,
+    );
 
   const version = (prior?.version ?? 0) + 1;
   const id = ulid();
@@ -1032,11 +1052,21 @@ const countRunOp: OperationHandler<
    * With no output shapes declared it is the envelope under `output_key = ''` — byte for byte
    * what every run counted before outputs existed, which is what keeps a source that never
    * adopts them working exactly as it did.
+   *
+   * With outputs declared the envelope STAYS, and that is not a leftover. A record matching
+   * no declared kind is counted under the envelope and never dropped — the deviations view
+   * says so in as many words, and it is the promise that makes an undeclared kind cost
+   * nothing. Replacing the envelope with the outputs quietly broke it in both directions:
+   * with no root-level mapping the record fell out of counting altogether, and with one it
+   * was counted INTO an output whose shape says nothing about it. So the envelope is a
+   * target for the unmatched, and only for them — a matched kind that no output maps is a
+   * different and ordinary answer, since an output shape describes some of a stream.
    */
-  const targets =
-    outputs.length === 0
-      ? [{ key: ROOT, shape: fields }]
-      : outputs.map((o) => ({ key: o.key, shape: JSON.parse(o.fields_json) as FieldDefs }));
+  const envelopeTakesEverything = outputs.length === 0;
+  const targets = [
+    { key: ROOT, shape: fields },
+    ...outputs.map((o) => ({ key: o.key, shape: JSON.parse(o.fields_json) as FieldDefs })),
+  ];
   const plans = new Map(targets.map((t) => [t.key, { ...groupingsOf(t.shape), shape: t.shape }]));
 
   interface Cell {
@@ -1073,7 +1103,12 @@ const countRunOp: OperationHandler<
     for (const target of targets) {
       const plan = plans.get(target.key)!;
       let values = raw;
-      if (target.key !== ROOT) {
+      if (target.key === ROOT) {
+        // Once outputs exist the envelope holds the UNMATCHED only — see `targets`. Without
+        // this the same record would be counted twice where a root mapping happened to reach
+        // it: once under the envelope and once under the output.
+        if (!envelopeTakesEverything && row.variant_key !== ROOT) continue;
+      } else {
         const rules = rulesFor(target.key, row.variant_key);
         // No rule reaches this kind, so this record is simply not part of this output. That is
         // an ordinary answer — an output shape describes some of a stream, rarely all of it.
