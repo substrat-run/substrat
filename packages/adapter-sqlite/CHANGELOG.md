@@ -1,5 +1,95 @@
 # @substrat-run/adapter-sqlite
 
+## 0.109.0
+
+### Minor Changes
+
+- 7aa3ea5: The outbox can be drained (#1334, the scope-side half of Tier 2). Two new
+  `HostAdmin` verbs on both adapters: `readUndrainedEvents` reads the events a
+  scope has not shipped yet — `drained_at IS NULL`, the column the spine has
+  carried since the outbox shipped and nothing has ever written — and
+  `markEventsDrained` stamps them once a sink has accepted them.
+
+  They are separate verbs deliberately. Marking before shipping loses events when
+  the sink fails; shipping before marking can repeat them, and a repeat is
+  harmless — the lake is keyed by event id and every consumer here is already
+  required-idempotent. At-least-once is the only one of the two that cannot
+  silently lose exact history, which is the whole point of the tier.
+
+  A drained event carries the full envelope plus the two dimensions that live only
+  on the column: the emitting `operation` and the `version` the code ran as, which
+  #1250 keeps off the envelope on purpose. It also carries `subjectId`, the
+  pseudonymous erasure key — shipping payloads out of the scope without the key
+  that can find them again would put personal data somewhere an erasure cannot
+  follow.
+
+  Marking only ever stamps an UNDRAINED row, so a replayed batch cannot move an
+  earlier drain's timestamp forward and misreport when a lake row shipped. It
+  returns how many rows it actually stamped, which is what makes that idempotence
+  observable — and what the receipt below is written from.
+
+  Declaring a batch shipped is now audited. Domain payloads leaving the platform
+  are an egress, and a larger one than the access log's metadata, so the admin log
+  gains a `drainEvents` action recording who declared it, for which scope, and how
+  many rows it covered — the same evidence `drainAccessLog` already carries one
+  tier up. A retried pass that re-marks a batch it already shipped changes nothing
+  and records nothing, so the log never grows a row claiming an egress that never
+  happened.
+
+  The spine gains an index on `(drained_at, id)`. The drain reads
+  `WHERE drained_at IS NULL ORDER BY id`, and no existing index started with that
+  column, so SQLite walked the primary key from the oldest event forward. A drain
+  retains what it marks, so that prefix only grows: finding the next batch would
+  have cost more as a scope aged, regardless of how far behind the drain was.
+
+  No sink yet, and nothing is wired into a sweep: this is the half that needs no
+  infrastructure.
+
+- 1e175ce: The outbox can be faceted (#1239 stage 1, the reader). `facetEvents` narrows a
+  scope's own events by type and window, groups them by one envelope column
+  (`type`, `actor`, `operation`, `version`, `entityType`, `piiClass`) or one
+  payload field, and counts — "which currency do the failing pushes carry",
+  answered on what the spine already holds, with no new storage.
+
+  **An erased payload is not a missing value, and this is the whole reason it is a
+  helper.** A shred keeps the row and drops the content (§5.3), so
+  `json_extract(payload, '$.x')` over a shredded event yields exactly the NULL an
+  event that never carried `x` yields. Grouped naively, redacted history vanishes
+  into a "no value" bucket and a reader sees a clean distribution with no hint
+  that part of it was erased. So erased rows are counted in their own total, kept
+  out of the buckets, and still counted in the denominator — the event happened,
+  whatever it said. A contract test on both adapters shreds a subject mid-test and
+  asserts the null bucket does not grow.
+
+  The group-by is a fixed shape rather than interpolated SQL: an envelope grouping
+  selects from a known column map, and a payload grouping binds its JSON path as a
+  parameter with the field's pattern enforced by the contract.
+
+### Patch Changes
+
+- 5200b90: Each hand-written copy of the `_substrat_*` spine DDL now names its counterpart in the
+  other adapter, says that a new spine table or column has to be added on both sides, and
+  points at `pnpm lint:spine-ddl` as the gate that refuses a divergence — along with what
+  that gate does not judge: a table present on a single side, which it reports as a note
+  because the adapters legitimately partition the spine differently, and triggers or CHECK
+  constraints, which it does not compare at all. Comments only in the adapters; no behaviour
+  change.
+
+  The gate itself grew the dimension those comments were overstating. It compared columns and
+  nothing else, while the DDL blocks it reads carry about twenty-five `CREATE INDEX`
+  statements each — so an index built on one side and not the other passed green, and so did a
+  `UNIQUE` constraint, which `PRAGMA table_info` cannot see. It now compares indexes and
+  foreign keys as well, read through `PRAGMA index_list`/`index_info` so the comparison is of
+  what the query planner has rather than of how the two files spell it, and its self-check
+  perturbs the new dimensions on every run like the existing ones.
+
+- Updated dependencies [7aa3ea5]
+- Updated dependencies [1e175ce]
+- Updated dependencies [4fc7db2]
+- Updated dependencies [62f4e87]
+  - @substrat-run/contracts@0.109.0
+  - @substrat-run/kernel@0.109.0
+
 ## 0.108.0
 
 ### Minor Changes
@@ -4248,7 +4338,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,5 +1,129 @@
 # @substrat-run/dashboard
 
+## 0.35.0
+
+### Minor Changes
+
+- ed015b3: The dashboard can evaluate permissions from its scopes' own storage (#1343,
+  scope-local-permissions.md Phase 2), behind `SCOPE_LOCAL_PERMISSIONS` — enabled
+  on TEST, absent in production.
+
+  On, the host projects the tenant's roles, tenant-level tuples, entitlements and
+  identity links into its scopes on every tenant-level write, and those scopes
+  stop reading the shared control-plane Durable Object on every `ctx.check`. That
+  single global DO is on the permission hot path of every authenticated dashboard
+  request today, which is the design's own founding complaint about it.
+
+  A flag rather than a constant because flipping it changes how a live app answers
+  a permission check. Off is exactly today's behaviour. On is still incremental: a
+  scope keeps using the RPC path until a projection actually reaches it, and what
+  reaches it is a complete tenant snapshot, so no scope is ever flipped-but-empty.
+  New scopes project at provision; existing ones convert on their tenant's next
+  tenant-level write. Scopes that see neither stay on the RPC path indefinitely —
+  converting those wants a deliberate back-fill (`reconcileTenantProjection`),
+  which has no production trigger yet and is not part of this change.
+
+- c63a685: One record's story is on screen (#1235, completing it). Clicking a row's `id`
+  in an app's Data tab opens its history: every event, with the payload, who
+  acted, the permission that authorized it, the staff member behind an
+  impersonation, the PII class, the operation it was emitted from and the version
+  that code was deployed as.
+
+  `readHistory` has carried all of this since #800 and no screen rendered it. The
+  renderer keeps its three nullables apart, because each is a fact rather than a
+  gap: a null payload reads "payload erased" (a shred keeps the row and drops the
+  content), a null authorization reads "authorization unrecorded" — distinct from
+  an empty list, which reads "no permission checked" — and a null impersonation
+  simply shows nothing, because nobody impersonating is the ordinary case.
+
+  The entity type is derived from the emitted model's table mapping, so the id
+  column only becomes clickable for a table the model names. An empty history
+  states the type and id it looked under, so a vertical whose events name a
+  different entity type than its model reads as "no events recorded for X" rather
+  than the confident and wrong "nothing ever happened to this record".
+
+- 6999cad: The event explorer is on screen (#1239 stage 1). An Events panel on the app's
+  Observability tab groups the app's own events by a dimension — type, operation,
+  actor, version, entity type, PII class — or by any top-level payload field
+  (nested paths are a deliberate v1 omission), narrows them to one event type and
+  a window, and counts them. "Which operation emits most of
+  this", "which version were these under", answered on what the spine already
+  holds.
+
+  `facetEvents` landed as a kernel helper with no caller; this is the path to it:
+  the vertical's `/internal/facets`, a control-plane route delegating like the
+  history read, and the dashboard's own read.
+
+  Two things the view states rather than implies. **An erased payload is not a
+  missing value** — grouping by a payload field over a shredded event yields the
+  same null a never-present key does, so the erased count is shown beside the
+  buckets instead of folded into a "no value" row, and a distribution over
+  redacted history cannot read as complete. **A truncated result says so** — the
+  bucket list is capped, and a tail that exists but is not shown must not read as
+  a tail that does not exist.
+
+  Grouping applies on submit rather than per keystroke: every query is a scope
+  read, and a half-typed field name is a query nobody asked for. The chosen window
+  is resolved at submit too, so the counts on screen stay an answer to the question
+  that was asked.
+
+  What stage 1 does not yet carry, and #1239 stays open for: filtering by a
+  dimension's or a payload field's VALUE (the narrowing today is event type plus
+  the window), and counts over time — a facet is one total per bucket, not a
+  series.
+
+- dd8ff5d: The fleet rollup (#1238): a "Needs attention" panel on the Apps page answering
+  "is this group healthy" before any drill-down, worst first.
+
+  Composition rather than new observation — failures come from the ops-failure
+  record and sweep and freshness verdicts from the sweep record, both read once
+  for the tenant and grouped per scope, so thirty apps do not mean sixty reads.
+  Only apps that are not `ok` are listed, which is the right density for the
+  motivating user: a firm running one vertical for thirty clients gets the two
+  that need them, not thirty cards to scan past. A clean fleet gets one green line.
+
+  Two distinctions the rollup refuses to blur. An app no sweep has reached is
+  `silent`, never `ok` — nothing having checked it is not the same as nothing
+  being wrong with it, and rendering silence as success is the failure this whole
+  view set exists to prevent. And a freshness row reading `failed` is a working
+  sweep reporting an absence (`stale`), not a broken sweep (`failing`) — counting
+  it as both would let "an event is overdue" masquerade as "the machinery broke"
+  and lose the more specific answer.
+
+  Each row names the app and its vertical, not only its scope id: the operator this
+  panel is for reads it to find out WHOSE app is broken, and an opaque id makes them
+  open every row to find out.
+
+  A read that fails answers `unknown` for every app rather than a cheerful `ok`, and
+  so does a read that was TRUNCATED — the reads are bounded (this runs inside a page
+  paint, and a tenant-wide record has no ceiling), so each one reports whether it
+  reached the end of its window and the verdict degrades accordingly. "Nothing found"
+  is never rendered as "nothing there". The failure questions and the "has anything
+  checked this app at all" question get separate narrowed reads, so the broad one
+  running out of room costs the `silent` verdict alone and not the panel.
+
+### Patch Changes
+
+- Updated dependencies [7aa3ea5]
+- Updated dependencies [1e175ce]
+- Updated dependencies [4fc7db2]
+- Updated dependencies [bb942a5]
+- Updated dependencies [00c0f8d]
+- Updated dependencies [5200b90]
+- Updated dependencies [62f4e87]
+- Updated dependencies [c22e0f3]
+  - @substrat-run/contracts@0.109.0
+  - @substrat-run/kernel@0.109.0
+  - @substrat-run/adapter-cloudflare@0.109.0
+  - @substrat-run/adapter-email@0.2.1
+  - @substrat-run/oidc-rp@0.9.0
+  - @substrat-run/connector-fortnox@0.4.11
+  - @substrat-run/demo-callout@0.3.27
+  - @substrat-run/engine-invites@0.7.8
+  - @substrat-run/engine-invoicing@0.9.25
+  - @substrat-run/engine-protocol@0.12.14
+  - @substrat-run/engine-workorder@0.11.8
+
 ## 0.34.1
 
 ### Patch Changes
