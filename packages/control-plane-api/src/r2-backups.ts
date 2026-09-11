@@ -18,7 +18,7 @@ import {
   type ScopeBackup,
   type ScopeDump,
 } from '@substrat-run/contracts';
-import type { AccessLogSink } from '@substrat-run/kernel';
+import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
 import type { DirectoryBackupStore, ScopeBackupStore } from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
@@ -226,6 +226,71 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
  */
 function accessLogKey(firstId: string, lastId: string): string {
   return `access-log/${firstId}-${lastId}.ndjson`;
+}
+
+/**
+ * Where one scope's drained events land. Partitioned by **tenant, scope and day**,
+ * because those are the three narrowings every Tier 2 query starts from —
+ * reporting is per tenant, isolation is per scope, and reconciliation is per
+ * period. A query engine that understands Hive-style paths prunes on all three
+ * without reading a byte of the objects it skips.
+ *
+ * The id range closes the key, so a replayed batch overwrites its own object
+ * rather than appending a duplicate beside it: the drain is at-least-once, and
+ * this is where that stops being visible.
+ */
+function eventLogKey(tenantId: string, scopeId: string, day: string, firstId: string, lastId: string): string {
+  return `events/tenant=${tenantId}/scope=${scopeId}/day=${day}/${firstId}-${lastId}.ndjson`;
+}
+
+/**
+ * The R2 implementation of the `EventSink` seam (#1334) — Tier 2 ingest, master-plan
+ * §5.3's "exact history", landing as objects an engine can read.
+ *
+ * **NDJSON to R2, not Pipelines-to-Iceberg, for v1 — and that is a deliberate
+ * staging choice rather than a shortcut.** §5.3 settles the architecture as
+ * *"Iceberg is the contract, the query engine is replaceable"*, and the same
+ * paragraph leaves R2 SQL's fitness explicitly open pending a benchmark. Writing
+ * partitioned NDJSON to a bucket the platform already operates gets the events out
+ * of the scope — which is what bounds an outbox that is never pruned — without
+ * committing the ingest path to a product decision nobody has made yet. A
+ * compaction step turns these objects into Iceberg later, and the seam means the
+ * drain never learns which happened.
+ *
+ * The same line-format reasoning as the access-log sink applies: one event per
+ * line, so a truncated object still parses up to its last newline, and `jq`,
+ * DuckDB and any lake loader all read it unaided.
+ */
+export function createR2EventSink(bucket: unknown): EventSink {
+  const r2 = bucket as R2BucketLike;
+  return {
+    async ship(scope, events) {
+      const first = events[0];
+      const last = events[events.length - 1];
+      if (!first || !last) {
+        // The sweep never ships an empty batch; returning a ref to an object that
+        // was never written would be a lie, and the stamp it licenses would be one.
+        throw new Error('event sink: refusing to ship an empty batch');
+      }
+      // The batch's own oldest event decides the partition, so a late-draining
+      // scope files its events under the day they HAPPENED rather than the day
+      // they shipped — which is the only reading that makes a period query honest.
+      const day = first.occurredAt.slice(0, 10);
+      const key = eventLogKey(scope.tenantId, scope.scopeId, day, first.id, last.id);
+      const body = `${events.map((e) => JSON.stringify(e)).join('\n')}\n`;
+      await r2.put(key, body, {
+        httpMetadata: { contentType: 'application/x-ndjson' },
+        customMetadata: {
+          tenantId: scope.tenantId,
+          scopeId: scope.scopeId,
+          firstId: first.id,
+          lastId: last.id,
+          rows: String(events.length),
+        },
+      });
+      return { ref: key };
+    },
+  };
 }
 
 /**

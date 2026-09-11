@@ -8,6 +8,7 @@ import type {
   Scope,
   ScopeId,
   TenantId,
+  DrainedEvent,
 } from '@substrat-run/contracts';
 import type { ExecutorDrainReport, FetchLike, ScopeHost, SweepRunInput } from './scope-host.js';
 import { backoffAt } from './scope-host.js';
@@ -55,8 +56,40 @@ export interface AccessLogSink {
   ship(entries: AccessLogEntry[]): Promise<{ ref: string }>;
 }
 
+/**
+ * Where a scope's drained domain events go — Tier 2 proper (#1334, master-plan
+ * §5.3: "domain events → Pipelines → Iceberg on R2, queried via R2 SQL").
+ *
+ * The `AccessLogSink` twin, and injected for the same reason: the kernel names the
+ * seam and knows nothing about the target. The control plane binds an R2
+ * implementation; a self-host may bind a file, an object store, or nothing at all
+ * — and nothing at all is supported, it just means the outbox is never drained.
+ *
+ * `ship` MUST be durable before it resolves, and the stakes are higher here than
+ * for the access log: a resolved `ship` is what licenses stamping `drainedAt`, and
+ * the whole promise of Tier 2 is EXACT history. A sink that buffers and returns
+ * early turns "the lake has everything" into a claim nobody can check.
+ *
+ * Unlike the access log, a drained event is NOT pruned from the scope afterwards.
+ * Pruning the outbox is its own decision — consumers, replay and `readHistory` all
+ * read it — so this seam only ever ships and stamps. What the stamp buys today is
+ * knowing what has left; what it licenses later is a retention policy that does
+ * not exist yet.
+ */
+export interface EventSink {
+  /**
+   * Ship one scope's batch and return an opaque reference to where it landed. The
+   * scope is passed alongside because a lake partitions by it — the sink decides
+   * how, the kernel only reports the reference back.
+   */
+  ship(scope: { tenantId: TenantId; scopeId: ScopeId }, events: DrainedEvent[]): Promise<{ ref: string }>;
+}
+
 /** How many access rows one pass ships, and one pass prunes, by default. */
 const ACCESS_LOG_BATCH = 500;
+
+/** How many events one pass drains PER SCOPE by default. */
+const EVENT_DRAIN_BATCH = 200;
 
 export interface PlatformSweepOptions {
   /**
@@ -155,6 +188,14 @@ export interface PlatformSweepOptions {
    * incident. The window closes over several ticks instead of one.
    */
   accessLogSink?: AccessLogSink;
+  /**
+   * Where each scope's domain events are shipped (#1334). UNSET ⇒ no scope is
+   * drained, exactly as before the seam existed — the same "absent is a supported
+   * answer" shape `accessLogSink` and `recordSweepRun` already have.
+   */
+  eventSink?: EventSink;
+  /** Events drained per scope per pass. Default 200. */
+  eventDrainBatch?: number;
   /** Rows shipped (and pruned) per pass. Default 500. */
   accessLogBatch?: number;
   /**
@@ -306,6 +347,8 @@ export interface PlatformSweepReport {
    * nothing and its log grows by design", zeros is "shipped, nothing was waiting".
    */
   accessLog: AccessLogSweepReport | null;
+  /** What the event drain shipped this pass (#1334). Null when no sink is bound. */
+  eventDrain: EventDrainReport | null;
   /** Per-unit failures; the pass records and steps over each rather than aborting. */
   errors: {
     kind:
@@ -319,13 +362,28 @@ export interface PlatformSweepReport {
       | 'provision-reconcile'
       | 'schedule'
       | 'freshness'
-      | 'access-log';
+      | 'access-log'
+      // #1334: one scope's event drain failed — its events stay undrained.
+      | 'event-drain';
     id: string;
     error: string;
   }[];
 }
 
 /** One pass of the access-log drain (K-24, control-plane.md §4.4). */
+/** What one pass drained, across every scope it reached. */
+export interface EventDrainReport {
+  /** Scopes that had at least one undrained event and were shipped. */
+  scopes: number;
+  /** Events handed to the sink and confirmed durable. */
+  shipped: number;
+  /**
+   * Scopes whose batch filled the budget — more remains, and the next tick takes
+   * it. Reported rather than looped, so one busy scope cannot starve the pass.
+   */
+  incomplete: number;
+}
+
 export interface AccessLogSweepReport {
   /** Rows handed to the sink and confirmed durable. */
   shipped: number;
@@ -408,6 +466,7 @@ export async function runPlatformSweep(
     migrations: null,
     schedules: null,
     accessLog: null,
+    eventDrain: null,
     errors: [],
   };
 
@@ -853,6 +912,37 @@ export async function runPlatformSweep(
     }
   });
 
+  // -- drain each scope's domain events to Tier 2 (#1334, master-plan §5.3) ---
+  // Before the access-log drain below, which is deliberately last: this phase
+  // reads the directory (and so writes access rows), and the log drain ships a
+  // pass's own evidence rather than leaving it for the next tick.
+  if (options.eventSink) {
+    report.eventDrain = { scopes: 0, shipped: 0, incomplete: 0 };
+    const sink = options.eventSink;
+    const budget = options.eventDrainBatch ?? EVENT_DRAIN_BATCH;
+    const drainable = await host.admin.listScopes(options.actor, { status: 'active' });
+    await mapBounded(drainable, concurrency, async (s) => {
+      try {
+        const shipped = await drainScopeEvents(host, options, sink, {
+          tenantId: s.tenantId,
+          scopeId: s.id,
+          budget,
+        });
+        if (shipped === 0) return;
+        report.eventDrain!.scopes += 1;
+        report.eventDrain!.shipped += shipped;
+        // A full batch means the scope has more waiting. Reported, never looped:
+        // one busy scope must not starve every other scope in the pass.
+        if (shipped === budget) report.eventDrain!.incomplete += 1;
+      } catch (err) {
+        // One scope's failure never sinks the sweep, and never stamps: a throw
+        // anywhere in read→ship→mark leaves its events exactly where they were,
+        // to be taken again next tick.
+        report.errors.push({ kind: 'event-drain', id: s.id, error: message(err) });
+      }
+    });
+  }
+
   // -- drain the staff access log to Tier 2, then prune it (K-24, §4.4) --------
   // LAST, deliberately: every phase above reads the directory through the audited
   // seam, so each one writes access rows. Running the drain last means a pass ships
@@ -869,6 +959,49 @@ export async function runPlatformSweep(
   }
 
   return report;
+}
+
+/**
+ * One read→ship→stamp cycle over ONE scope's outbox (#1334). Returns how many
+ * events shipped, so the caller can tell a full batch (more waiting) from a
+ * partial one (caught up).
+ *
+ * The order is the safety property, exactly as it is for the access log, and the
+ * reason the two verbs are separate:
+ *
+ *   1. read the oldest undrained events (bounded — a tick has a budget);
+ *   2. ship them, and let the sink confirm durability before returning;
+ *   3. only then stamp `drainedAt`.
+ *
+ * Reversing 2 and 3 would let one failed upload mark events as shipped that never
+ * left — and unlike the access log, nothing downstream would ever notice, because
+ * the stamp is the only record of what the lake is supposed to hold. A repeat is
+ * the acceptable failure here; a silent hole is not.
+ *
+ * Nothing is pruned. The outbox is still read by consumers, replay and
+ * `readHistory`; what the stamp buys today is knowing what has left.
+ */
+async function drainScopeEvents(
+  host: ScopeHost,
+  options: PlatformSweepOptions,
+  sink: EventSink,
+  input: { tenantId: TenantId; scopeId: ScopeId; budget: number },
+): Promise<number> {
+  const events = await host.admin.readUndrainedEvents(
+    options.actor,
+    input.tenantId,
+    input.scopeId,
+    input.budget,
+  );
+  if (events.length === 0) return 0;
+  await sink.ship({ tenantId: input.tenantId, scopeId: input.scopeId }, events);
+  await host.admin.markEventsDrained(
+    options.actor,
+    input.tenantId,
+    input.scopeId,
+    events.map((e) => e.id),
+  );
+  return events.length;
 }
 
 /**

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { platformActorId, type AccessLogEntry, type ScopeDump } from '@substrat-run/contracts';
 import {
   createR2AccessLogSink,
+  createR2EventSink,
   createR2BackupStore,
   pruneAccessLogBatches,
   pruneScopeBackups,
@@ -172,6 +173,56 @@ describe('r2 access-log sink (K-24)', () => {
     resultCount: 3,
     drainedAt: null,
     at,
+  });
+
+  it('partitions events by tenant, scope and the day they HAPPENED (#1334)', async () => {
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2EventSink(bucket);
+    const scope = { tenantId: 'T1', scopeId: 'S1' } as never;
+    const ev = (id: string, occurredAt: string) =>
+      ({ id, type: 'thing.happened', occurredAt, operation: 'mod/op', version: null }) as never;
+
+    const batch = [ev(ulidLike('1'), '2026-08-01T23:30:00.000Z'), ev(ulidLike('2'), '2026-08-02T00:10:00.000Z')];
+    const { ref } = await sink.ship(scope, batch);
+
+    // Hive-style partitions: the three narrowings every Tier 2 query starts from,
+    // so an engine prunes on all of them without reading the objects it skips.
+    expect(ref).toBe(`events/tenant=T1/scope=S1/day=2026-08-01/${ulidLike('1')}-${ulidLike('2')}.ndjson`);
+
+    // The day comes from the batch's OLDEST event, not the clock: a scope that
+    // drains late files its events under the day they happened, which is the only
+    // reading that makes a period query honest. Note the batch straddles midnight
+    // and still files under the first event's day — the id range in the key is what
+    // keeps it findable.
+    const stored = objects.get(ref)!;
+    expect(stored.body.endsWith('\n')).toBe(true);
+    expect(stored.body.trimEnd().split('\n')).toHaveLength(2);
+    expect(stored.customMetadata).toMatchObject({ tenantId: 'T1', scopeId: 'S1', rows: '2' });
+  });
+
+  it('overwrites its own object when a batch is replayed, rather than duplicating it', async () => {
+    // The drain is at-least-once by design — ship, then stamp — so a crash between
+    // the two replays the batch. The id range in the key is where that stops being
+    // visible: the same events land on the same object.
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2EventSink(bucket);
+    const scope = { tenantId: 'T1', scopeId: 'S1' } as never;
+    const batch = [
+      ({ id: ulidLike('1'), type: 't', occurredAt: '2026-08-01T00:00:00.000Z', operation: null, version: null }) as never,
+    ];
+    const a = await sink.ship(scope, batch);
+    const b = await sink.ship(scope, batch);
+    expect(b.ref).toBe(a.ref);
+    expect(objects.size).toBe(1);
+  });
+
+  it('refuses an empty batch rather than returning a ref to nothing', async () => {
+    // A ref the caller records for an object that was never written would be a lie,
+    // and the `drainedAt` stamp it licenses would be one too.
+    const { bucket } = fakeBucket();
+    await expect(createR2EventSink(bucket).ship({ tenantId: 'T1', scopeId: 'S1' } as never, [])).rejects.toThrow(
+      /empty batch/,
+    );
   });
 
   it('writes one JSON object per line, keyed by the batch it holds', async () => {
