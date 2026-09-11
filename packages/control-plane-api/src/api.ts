@@ -3512,6 +3512,11 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       // a manifest that says it was truncated.
       declaredEventsTruncated: parsed?.declaredEventsTruncated ?? false,
       requires: parsed?.requires ?? [],
+      // The other two bands of the flow map (#1234), off the same parse. `schedules`
+      // also has its own route, which answers a different question — did the run
+      // happen — while this one wants the declaration as a node.
+      schedules: parsed?.schedules ?? [],
+      outbound: parsed?.outbound ?? [],
     });
   });
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type FieldCoverageView, type FlowFindingsView, type FlowFinding, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type FieldCoverageView, type FlowFindingsView, type FlowFinding, type FlowView, type FlowGraph, type FlowNode, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
@@ -10,7 +10,7 @@ import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
 import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, OriginTag, Pill, RowActions } from '../components/ui';
 import { AppIntegrations } from './Integrations';
-import { navigate } from '../lib/router';
+import { teamPath, navigate } from '../lib/router';
 import { DnsRecords } from './Domains';
 import { AppObservability } from './AppObservability';
 
@@ -180,10 +180,14 @@ export function AppDetail({
         </div>
       )}
       {main === 'deployments' && <Deployments app={app} />}
-      {main === 'observability' && <AppObservability app={app} />}
+      {/* The sub-segment is a deep link from the flow map: an event type to open the
+          Events panel already grouped on. Decoded here, since the map percent-encodes it. */}
+      {main === 'observability' && (
+        <AppObservability app={app} focusEventType={sub ? decodeURIComponent(sub) : undefined} />
+      )}
       {main === 'model' && (
         <div style={{ display: 'grid', gap: 16 }}>
-          <FlowFindings app={app} />
+          <Flow app={app} onTab={onTab} />
           <FieldCoverage app={app} />
           <Model app={app} />
         </div>
@@ -943,8 +947,244 @@ function diffRegistries(from: PermissionRegistry, to: PermissionRegistry): Regis
  * withholds the event findings (rather than calling a type dead because its bucket
  * fell off the tail).
  */
-function FlowFindings({ app }: { app: AppRow }) {
-  const [view, setView] = useState<FlowFindingsView | null>(null);
+/**
+ * The flow map (#1234): the declared app drawn as a layered graph, coloured by what
+ * the scope has recorded.
+ *
+ * Drawn here rather than inside `@substrat-run/model-view` because its colour comes
+ * from live per-scope facts, and because a no-script `srcdoc` iframe — the right shape
+ * for the ER diagram, which is one self-contained artifact — could never link a node to
+ * its exemplars the way #1231 asks every aggregate in this cluster to.
+ *
+ * Read-only, always. There is no drag, no save, and no input of any kind: the moment a
+ * node became editable this would be flows-as-data, outside every gate the platform is
+ * built on.
+ */
+function FlowMap({ graph, app, onTab }: { graph: FlowGraph; app: AppRow; onTab: (t: string) => void }) {
+  if (!graph.available || graph.nodes.length === 0) return null;
+
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  /** Where an event node goes: the Events panel, already grouped on that type. */
+  const eventPath = (type: string) => `/apps/${app.app_scope_id}/observability/${encodeURIComponent(type)}`;
+  const STROKE: Record<FlowNode['status'], string> = {
+    ok: 'var(--border-default)',
+    warn: 'var(--status-warning-fg)',
+    danger: 'var(--status-danger-fg)',
+  };
+  const FILL: Record<FlowNode['kind'], string> = {
+    trigger: 'var(--surface-inset)',
+    module: 'var(--surface-card)',
+    event: 'var(--surface-card)',
+    connection: 'var(--surface-inset)',
+    egress: 'var(--surface-inset)',
+  };
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Flow map</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          What this app declares, top to bottom: what starts work, the modules that do it, the events
+          they carry, and what they are permitted to reach. Event counts are what this app has actually
+          recorded.
+        </p>
+      </div>
+
+      {graph.partialObservation && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          Some events could not be counted in one pass, so they are marked &ldquo;not counted&rdquo;
+          &mdash; which is not the same as none.
+        </p>
+      )}
+
+      {/* A truncated DECLARATION drops whole nodes, and unlike a missing count a missing
+          node leaves nothing on screen to notice — so the heading's "what this app
+          declares" has to be qualified rather than quietly narrowed. */}
+      {!graph.declaredComplete && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          This app declares more than the platform carries with a version, so this is part of the map
+          rather than all of it &mdash; there may be modules and event types that are not drawn here.
+        </p>
+      )}
+
+      <div style={{ overflowX: 'auto' }}>
+        <svg
+          viewBox={`0 0 ${graph.width} ${graph.height}`}
+          width={graph.width}
+          height={graph.height}
+          role="img"
+          aria-label="Flow map of this app's declared triggers, modules, events and connections"
+          style={{ maxWidth: '100%', height: 'auto' }}
+        >
+          <defs>
+            <marker id="flow-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M 0 0 L 8 4 L 0 8 z" fill="var(--text-tertiary)" />
+            </marker>
+          </defs>
+          {graph.edges.map((e) => {
+            const from = byId.get(e.from);
+            const to = byId.get(e.to);
+            if (!from || !to) return null;
+            const x1 = from.x + from.w / 2;
+            const x2 = to.x + to.w / 2;
+            // Leave from whichever side actually faces the target, so a consume edge
+            // pointing back up a band reads as going up rather than through its own box.
+            const down = to.y > from.y;
+            const y1 = down ? from.y + from.h : from.y;
+            const y2 = down ? to.y : to.y + to.h;
+            const mid = (y1 + y2) / 2;
+            return (
+              <path
+                key={`${e.from}->${e.to}:${e.kind}`}
+                d={`M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`}
+                fill="none"
+                stroke="var(--text-tertiary)"
+                strokeWidth={1}
+                strokeOpacity={0.55}
+                strokeDasharray={e.kind === 'consumes' ? '4 3' : undefined}
+                markerEnd="url(#flow-arrow)"
+              >
+                <title>{e.title}</title>
+              </path>
+            );
+          })}
+          {graph.nodes.map((n) => {
+            // An event node LINKS to its exemplars — #1231's rule for every aggregate in
+            // this cluster, and half the reason this graph lives in the dashboard instead
+            // of a no-script model-view page. A real SVG anchor rather than an onClick
+            // handler: it is keyboard-reachable, it middle-clicks into a new tab, and it
+            // reads as a link to a screen reader. The left-click is intercepted so the
+            // client router handles it, exactly as `lib/router` prescribes for anchors.
+            const href = n.kind === 'event' ? eventPath(n.label) : null;
+            const Wrapper = ({ children }: { children: React.ReactNode }) =>
+              href === null ? (
+                <g>{children}</g>
+              ) : (
+                <a
+                  href={teamPath(href)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                    e.preventDefault();
+                    onTab(`observability/${encodeURIComponent(n.label)}`);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  {children}
+                </a>
+              );
+            return (
+            <Wrapper key={n.id}>
+              <title>
+                {n.title}
+                {href === null ? '' : ' Opens this type in the event explorer.'}
+              </title>
+              <rect
+                x={n.x}
+                y={n.y}
+                width={n.w}
+                height={n.h}
+                rx={8}
+                fill={FILL[n.kind]}
+                stroke={STROKE[n.status]}
+                strokeWidth={n.status === 'ok' ? 1 : 1.5}
+                // A declared event nothing has recorded is the finding this view exists
+                // to draw, so it is dashed: present, wired, and never yet used.
+                strokeDasharray={n.silent ? '5 3' : undefined}
+              />
+              <text
+                x={n.x + n.w / 2}
+                y={n.y + 19}
+                textAnchor="middle"
+                fontSize={11.5}
+                fontFamily="var(--font-mono)"
+                fill="var(--text-primary)"
+              >
+                {n.label.length > 28 ? `${n.label.slice(0, 27)}…` : n.label}
+              </text>
+              {n.sublabel && (
+                <text
+                  x={n.x + n.w / 2}
+                  y={n.y + 34}
+                  textAnchor="middle"
+                  fontSize={10.5}
+                  fill={n.silent ? 'var(--status-warning-fg)' : 'var(--text-tertiary)'}
+                >
+                  {n.sublabel}
+                </text>
+              )}
+            </Wrapper>
+            );
+          })}
+        </svg>
+      </div>
+
+      {/*
+        The picture's content, as text.
+
+        `role="img"` collapses the whole SVG to its single `aria-label`, so every node
+        label, count, silence marker, schedule and connection status inside it is
+        unreachable — a screen-reader user got the heading of a diagram and nothing in it.
+        This list is the same facts in reading order, and it carries the event links too,
+        so the deep link is not a mouse-only affordance. Visually hidden rather than
+        conditionally rendered: it must stay in the accessibility tree.
+      */}
+      <ul
+        style={{
+          position: 'absolute',
+          width: 1,
+          height: 1,
+          margin: -1,
+          padding: 0,
+          overflow: 'hidden',
+          clip: 'rect(0 0 0 0)',
+          clipPath: 'inset(50%)',
+          whiteSpace: 'nowrap',
+          border: 0,
+        }}
+      >
+        {graph.nodes.map((n) => {
+          const href = n.kind === 'event' ? eventPath(n.label) : null;
+          const reaches = graph.edges.filter((e) => e.from === n.id).map((e) => byId.get(e.to)?.label ?? e.to);
+          const text = `${n.kind}: ${n.label}${n.sublabel ? `, ${n.sublabel}` : ''}${
+            n.silent ? ', never recorded' : ''
+          }${reaches.length > 0 ? `. Reaches ${reaches.join(', ')}` : '. Reaches nothing declared'}.`;
+          return (
+            <li key={`sr:${n.id}`}>
+              {href === null ? (
+                text
+              ) : (
+                <a
+                  href={teamPath(href)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                    e.preventDefault();
+                    onTab(`observability/${encodeURIComponent(n.label)}`);
+                  }}
+                >
+                  {text} Open in the event explorer.
+                </a>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+        <span>solid arrow &mdash; emits</span>
+        <span>dashed arrow &mdash; handles</span>
+        <span>dashed outline &mdash; declared, nothing recorded</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The flow read, rendered as both a map and a list from ONE request. They are two
+ * resolutions of the same join, and fetching twice would let them disagree about what
+ * was observed — the map showing a count for a type the list called silent.
+ */
+function Flow({ app, onTab }: { app: AppRow; onTab: (t: string) => void }) {
+  const [view, setView] = useState<FlowView | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -952,7 +1192,7 @@ function FlowFindings({ app }: { app: AppRow }) {
     api
       .appFlow(app.app_scope_id)
       .then((v) => live && setView(v))
-      // A worker predating the route: the card cannot say anything true, so it says nothing.
+      // A worker predating the route: nothing here can say anything true, so it says nothing.
       .catch(() => live && setView(null));
     return () => {
       live = false;
@@ -960,7 +1200,15 @@ function FlowFindings({ app }: { app: AppRow }) {
   }, [app.app_scope_id]);
 
   if (!view) return null;
+  return (
+    <>
+      <FlowMap graph={view.graph} app={app} onTab={onTab} />
+      <FlowFindings view={view.findings} />
+    </>
+  );
+}
 
+function FlowFindings({ view }: { view: FlowFindingsView }) {
   if (!view.available) {
     return (
       <div style={{ ...card, padding: 14, display: 'grid', gap: 6 }}>

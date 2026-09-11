@@ -456,6 +456,50 @@ export interface AppHealthRow {
 export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts';
 
 /** One declared field and whether anything declares it as output (#1321). */
+/** One node of the flow map (#1234), already laid out. */
+export interface FlowNode {
+  id: string;
+  kind: 'trigger' | 'module' | 'event' | 'connection' | 'egress';
+  label: string;
+  sublabel: string | null;
+  /** Event nodes only; null when the observation could not be completed. */
+  observed: number | null;
+  /** True only when the observation is trustworthy AND found nothing. */
+  silent: boolean;
+  status: 'ok' | 'warn' | 'danger';
+  title: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface FlowEdge {
+  from: string;
+  to: string;
+  kind: 'triggers' | 'emits' | 'consumes' | 'uses';
+  title: string;
+}
+
+export interface FlowGraph {
+  available: boolean;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
+  width: number;
+  height: number;
+  /** True when some event node has no count because the facet was truncated. */
+  partialObservation: boolean;
+  /** False when the DECLARED surface was cut at the cap, so whole nodes are missing —
+   *  and a missing node, unlike a missing count, leaves nothing on screen to notice. */
+  declaredComplete: boolean;
+}
+
+/** The flow read: the same declarations projected as a list and as a map. */
+export interface FlowView {
+  findings: FlowFindingsView;
+  graph: FlowGraph;
+}
+
 /** One declared-vs-observed finding (#1234). */
 export interface FlowFinding {
   kind: 'unemitted' | 'unconsumed' | 'unconnected-provider' | 'unhealthy-provider';
@@ -1537,7 +1581,7 @@ export const api = {
 
   /** Field coverage for the running version (#1321) — declared vs returnable. */
   /** Declared-vs-observed findings (#1234) — what this app promises against what it has done. */
-  appFlow: (scopeId: string) => call<FlowFindingsView>(`/apps/${encodeURIComponent(scopeId)}/flow`),
+  appFlow: (scopeId: string) => call<FlowView>(`/apps/${encodeURIComponent(scopeId)}/flow`),
 
   appFieldCoverage: (scopeId: string) =>
     call<FieldCoverageView>(`/apps/${encodeURIComponent(scopeId)}/field-coverage`),
