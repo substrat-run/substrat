@@ -11,6 +11,7 @@ import { BankIdDetailView } from '../views/BankIdDetail';
 import { IssuerPanel } from '../views/Issuer';
 import { ProviderDetailView } from '../views/ProviderDetail';
 import { ProvidersPanel } from '../views/Providers';
+import { SignInLogView } from '../views/SignInLog';
 import { UserDetailView } from '../views/UserDetail';
 import { UsersView } from '../views/Users';
 import { navigate, usePathname } from './router';
@@ -238,6 +239,8 @@ export function Console({ session, admin, onSignOut }: { session: Session; admin
             <BankIdPanel />
           ) : active.path === '/access' ? (
             <AccessPanel />
+          ) : active.path === '/sign-in-log' ? (
+            <SignInLogView />
           ) : active.path === '/issuer' ? (
             <IssuerPanel disc={disc} />
           ) : (

@@ -1,5 +1,6 @@
 import { createAuthClient } from 'better-auth/client';
 import { adminClient } from 'better-auth/client/plugins';
+import { isIssuerState, isSessionOrNull, readIssuerJson } from './wire';
 
 /**
  * The Better Auth browser client, pointed at THIS issuer (same origin, `/api/auth`). The
@@ -48,8 +49,9 @@ export interface PublicProvider {
 }
 
 export async function setupState(): Promise<IssuerState> {
-  const res = await fetch('/api/setup-state');
-  return res.json();
+  // Checked rather than trusted — see `wire.ts`. This read gates every screen, so an answer
+  // that is not an answer has to become a sentence instead of an eternal "Loading…".
+  return readIssuerJson(await fetch('/api/setup-state'), 'The issuer state', isIssuerState);
 }
 
 /** Create the first administrator (only possible while there are no users). */
@@ -62,10 +64,17 @@ export async function createFirstAdmin(body: { email: string; password: string; 
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? 'setup failed');
 }
 
-/** The current session (subject + role), or null. */
+/**
+ * The current session (subject + role), or null for nobody signed in.
+ *
+ * `null` and "the read failed" are held apart on purpose (`wire.ts`): they used to be the same
+ * answer, and collapsing them is worse than it sounds. A failed read read as "signed out" sends
+ * a signed-in person to the login screen — which, for a client restricted to one provider,
+ * redirects them straight back out to it. And an `{ error }` envelope read as a session told an
+ * administrator they were not one, because the envelope is a truthy object with no `role`.
+ */
 export async function currentSession(): Promise<Session | null> {
-  const res = await fetch('/api/session');
-  return res.json();
+  return readIssuerJson(await fetch('/api/session'), 'The current session', isSessionOrNull);
 }
 
 /** The plugin's own name for the parameter that lists which parameters the signature covers.
@@ -1000,4 +1009,60 @@ export async function saveBankidSettings(draft: BankIdDraft): Promise<BankIdSett
 
 export async function removeBankid(): Promise<void> {
   await admin('/bankid', { method: 'DELETE' });
+}
+
+/* ---- what happened when people tried to sign in (`/api/admin/sign-in-log`) ---- */
+
+/**
+ * One hop of a federated sign-in, as the issuer recorded it (`src/sign-in-log.ts`).
+ *
+ * Two rows per attempt, and the PAIR is the diagnosis. A `started` with no `callback` beside it
+ * is the most telling shape there is: the person was sent to the upstream and never came back,
+ * so whatever refused them did so on the provider's own screen — and `authority` is then the
+ * only thing that can say why, because a single-tenant app registration addressed through
+ * Microsoft's `common` authority fails exactly like this.
+ */
+export interface SignInAttempt {
+  id: number;
+  at: number;
+  method: string;
+  outcome: 'started' | 'succeeded' | 'failed';
+  phase: string;
+  authority: string | null;
+  error: string | null;
+  errorDescription: string | null;
+  clientId: string | null;
+  userId: string | null;
+  /** Which ATTEMPT this hop belongs to — the two rows of one round trip share it. */
+  correlation: string | null;
+}
+
+export interface SignInLogPage {
+  attempts: SignInAttempt[];
+  total: number;
+  /** How many rows the issuer keeps at all — the log is a ring, and the screen says so. */
+  retained: number;
+}
+
+export interface SignInLogFilter {
+  method?: string;
+  outcome?: 'started' | 'succeeded' | 'failed';
+  limit?: number;
+  /**
+   * The `id` of the oldest row already shown — ask for what comes BEFORE it.
+   *
+   * Keyset, not offset, and the server is built that way for a reason the screen inherits: the
+   * table is a ring pruned on write, so rows shift out from under a reader and an offset would
+   * silently skip whatever moved. An id cannot.
+   */
+  before?: number;
+}
+
+export async function signInLog(filter: SignInLogFilter = {}): Promise<SignInLogPage> {
+  const query = new URLSearchParams();
+  if (filter.method) query.set('method', filter.method);
+  if (filter.outcome) query.set('outcome', filter.outcome);
+  if (filter.before !== undefined) query.set('before', String(filter.before));
+  query.set('limit', String(filter.limit ?? 50));
+  return admin(`/sign-in-log?${query}`);
 }

@@ -30,6 +30,7 @@ import { bankIdApiUrl, publicBankIdFrom, readBankIdConfig, type BankIdConfig } f
 import { clientBranding } from './branding.js';
 import { CONSOLE_CLIENT_ID, clientIdOrConsole, ensureConsoleClient } from './console-client.js';
 import { clientSignIn, readSignInPolicy } from './sign-in-policy.js';
+import { signInLoggerFor } from './sign-in-log.js';
 import { nodeBankIdTransport } from './bankid-transport-node.js';
 
 /**
@@ -156,6 +157,15 @@ const authFor = (overrides?: { allowSignup?: boolean }): Auth => {
     // Read per request like everything else here, so narrowing a client in the dashboard
     // decides the very next authorize request rather than the next restart.
     signInPolicyFor: (clientId) => readSignInPolicy(sql, clientId),
+    // The same sign-in log the deployed issuer keeps, over the dev database — so a provider
+    // misconfiguration is debugged the same way locally as in production.
+    recordSignIn: signInLoggerFor(sql),
+    // The same promise the worker hands to `ctx.waitUntil`. Node has nothing to hand it to, so
+    // it is simply not awaited — which is the behaviour being mirrored: a verification email
+    // must not hold up the redirect that a new user's first sign-in ends with.
+    runInBackground: (promise) => {
+      void promise.catch((e: unknown) => console.error('auth-server: background task failed', e));
+    },
   });
 };
 

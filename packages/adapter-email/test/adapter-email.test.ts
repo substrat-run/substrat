@@ -132,8 +132,9 @@ describe('the platform email relay transport (#303)', () => {
 
   /** A `FetchLike` double that records the one call and returns a scripted response. */
   function fakeFetch(res: { ok: boolean; status: number; body: unknown }) {
-    const calls: { url: string; init: { method: string; headers: Record<string, string>; body: string } }[] = [];
-    const fetchImpl = async (url: string, init: { method: string; headers: Record<string, string>; body: string }) => {
+    type Init = { method: string; headers: Record<string, string>; body: string; signal?: { aborted: boolean } };
+    const calls: { url: string; init: Init }[] = [];
+    const fetchImpl = async (url: string, init: Init) => {
       calls.push({ url, init });
       return { ok: res.ok, status: res.status, json: async () => res.body };
     };
@@ -146,6 +147,41 @@ describe('the platform email relay transport (#303)', () => {
     tenantId: '01TENANT',
     scopeId: '01SCOPE',
     fetchImpl,
+  });
+
+  /**
+   * The relay POST is bounded, and the bound is not tuning.
+   *
+   * This fetch is made from inside whatever request asked for the mail, and the caller is often
+   * not in a position to know that — Better Auth awaits a sign-up's verification email inline
+   * unless a background-tasks handler is configured, so an unbounded send sat in the middle of a
+   * browser's redirect chain and the person watching saw a page that never finished. Two more
+   * services are behind this hop, which is two more things that can be slow.
+   */
+  it('passes an abort signal, so a slow relay cannot hang whoever is waiting on it', async () => {
+    const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
+
+    await new PlatformRelayEmailTransport(opts(fetchImpl)).send(relayInvite());
+
+    const signal = calls[0]?.init.signal;
+    expect(signal).toBeDefined();
+    // Not yet aborted — the bound is a deadline handed to `fetch`, not a pre-cancelled call.
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it('sends anyway in a runtime with no AbortSignal.timeout — the bound is lost, never the mail', async () => {
+    const { calls, fetchImpl } = fakeFetch({ ok: true, status: 200, body: { sent: true } });
+    const real = (globalThis as { AbortSignal?: unknown }).AbortSignal;
+    // An old runtime, or one where the static is absent: the send must still happen.
+    (globalThis as { AbortSignal?: unknown }).AbortSignal = {};
+    try {
+      await new PlatformRelayEmailTransport(opts(fetchImpl)).send(relayInvite());
+    } finally {
+      (globalThis as { AbortSignal?: unknown }).AbortSignal = real;
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.init.signal).toBeUndefined();
   });
 
   it('POSTs {tenant, scope, message} to the relay with the platform-secret header', async () => {

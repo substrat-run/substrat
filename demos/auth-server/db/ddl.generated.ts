@@ -218,4 +218,28 @@ export const SCHEMA_STATEMENTS: string[] = [
     trust_email INTEGER NOT NULL DEFAULT 0,
     disabled INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)))`,
+  // WHAT HAPPENED when someone tried to sign in (`src/sign-in-log.ts`). Not a Better Auth
+  // table and deliberately not one: the library keeps no record of a refused federated
+  // sign-in — the reason goes onto a redirect and is gone — so an operator debugging
+  // "Microsoft does not work" had only the browser's address bar to go on. A RING, pruned on
+  // write to `SIGN_IN_LOG_LIMIT`, so a debugging aid cannot grow without bound. `id` is the
+  // rowid, which is what makes the ring trim by identity rather than by clock.
+  `CREATE TABLE IF NOT EXISTS sign_in_attempt (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL DEFAULT (cast(unixepoch('subsecond') * 1000 as integer)),
+    method TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    authority TEXT,
+    error TEXT,
+    error_description TEXT,
+    client_id TEXT,
+    user_id TEXT,
+    correlation TEXT)`,
+  // The two reads the console makes: the newest page, and the newest page for one method.
+  `CREATE INDEX IF NOT EXISTS sign_in_attempt_method_idx ON sign_in_attempt (method, id)`,
+  // Finding the OTHER hop of one attempt. Without this join two people signing in at once
+  // produce two `started` rows and one answer, and nothing says which of them is still
+  // missing — which is the single inference the table exists to support.
+  `CREATE INDEX IF NOT EXISTS sign_in_attempt_correlation_idx ON sign_in_attempt (correlation)`,
 ];

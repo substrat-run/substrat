@@ -11,6 +11,16 @@ import { resetPasswordEmail, verifyEmail } from './email.js';
 import { bankidPlugin, type BankIdPluginOptions } from './bankid-plugin.js';
 import { supabasePlugin, type SupabaseBridgeOptions } from './supabase-plugin.js';
 import { policyAdmits, signInMethodOfPath, type SignInPolicy } from './sign-in-policy.js';
+import {
+  authorityOf,
+  callbackProviderOf,
+  clientIdOfSignedQuery,
+  correlationOfState,
+  errorOfRedirect,
+  refusalOf,
+  stateOfAuthorizationUrl,
+  type SignInLogger,
+} from './sign-in-log.js';
 
 /**
  * The Better Auth instance that IS this standalone OIDC provider. Runtime-agnostic: the
@@ -131,6 +141,34 @@ export interface AuthDeps {
    * better-sqlite3. Undefined ⇒ no client is restricted, and the hook below never runs.
    */
   signInPolicyFor?: (clientId: string) => SignInPolicy | undefined;
+  /**
+   * Record one federated sign-in hop (`src/sign-in-log.ts`) — what makes a refused Microsoft
+   * sign-in a row an operator can read instead of a sentence in somebody else's browser.
+   *
+   * A callback for the same reason `signInPolicyFor` is one: this module is runtime-agnostic
+   * and the two stores are not. Undefined ⇒ nothing is recorded and the hook below does not
+   * run, which is what the schema-generation config and a test that does not care pass.
+   */
+  recordSignIn?: SignInLogger;
+  /**
+   * Where work that must not hold up a RESPONSE goes — Better Auth's
+   * `advanced.backgroundTasks.handler`.
+   *
+   * This is not an optimisation. Better Auth awaits a new user's verification email INLINE
+   * unless this is set (`runInBackgroundOrAwait`: with no handler, `else await promise`), and
+   * for a federated sign-up that await sits in the middle of the browser's redirect chain —
+   * `/callback/:id` has not answered yet, so the person is looking at a page that is still
+   * loading while two more services decide how long the mail takes. On this issuer both
+   * conditions that trigger it hold: `emailVerification.sendOnSignUp` is on, and Entra does not
+   * publish `email_verified`, which Better Auth maps to `false` — so EVERY brand-new Microsoft
+   * user paid for it and no returning one did. That asymmetry is what it looks like from the
+   * outside: sign-in works, except for people who have never signed in before.
+   *
+   * Undefined ⇒ Better Auth awaits, which is what the tests want: a suite asserting that a
+   * verification mail was sent must not race the assertion against a floating promise. So the
+   * runtimes opt in and the tests stay deterministic.
+   */
+  runInBackground?: (promise: Promise<unknown>) => void;
 }
 
 /**
@@ -408,7 +446,92 @@ export function buildAuth(deps: AuthDeps) {
         if (policyAdmits(policy, typeof method === 'string' ? method : null)) return;
         return { context: { query: { ...query, max_age: '0' } } };
       }),
+      /**
+       * THE SIGN-IN LOG (`src/sign-in-log.ts`) — both ends of a federated round trip, recorded.
+       *
+       * An after-hook is the only place either end is observable, and the reason is Better
+       * Auth's control flow: `/callback/:id` finishes by THROWING `c.redirect(…)` on every path
+       * it has, success and refusal alike. `dispatchAuthEndpoint` catches that `APIError` and
+       * hands it to the after-hooks as `context.returned` with its `location` header in
+       * `context.responseHeaders` — so a hook here sees outcomes that never become a return
+       * value and that no wrapper around `auth.handler` could tell apart (both are a 302).
+       *
+       * Which is also why the OUTCOME is read off that `location` rather than from the error:
+       * the refusal is `?error=…&error_description=…` on the redirect, and for a provider that
+       * refused at its own end — Entra's `AADSTS…` — the description is the upstream's own
+       * sentence about what is wrong. That sentence is usually the entire diagnosis, and this
+       * is the only moment it exists anywhere in this process.
+       *
+       * It records and returns nothing: an after-hook that returns a value REPLACES the
+       * response (`runAfterHooks` assigns `context.returned`), so a logging hook must fall off
+       * the end. `recordSignInAttempt` swallows its own errors for the matching reason — a
+       * debugging aid must not be able to cost anyone a login.
+       */
+      after: createAuthMiddleware(async (ctx) => {
+        const record = deps.recordSignIn;
+        if (!record) return;
+        // `/sign-in/social` serves BOTH kinds of upstream: `genericOAuth` registers its
+        // providers as first-class social providers, so there is no second path to match.
+        if (ctx.path === '/sign-in/social') {
+          // The RAW body, which is what a hook is handed — the endpoint's own schema strips
+          // `oauth_query` inside the handler, and `oauthProvider`'s own before-hook reads it
+          // from here for exactly that reason.
+          const body = ctx.body as { provider?: unknown; oauth_query?: unknown } | undefined;
+          const method = typeof body?.provider === 'string' ? body.provider : 'unknown';
+          const clientId = clientIdOfSignedQuery(body?.oauth_query);
+          const returned = ctx.context.returned as { url?: unknown } | undefined;
+          // An `APIError` here is a refusal BEFORE anyone left — the provider is not
+          // configured, or is disabled — which is worth a row: it is the shape of "the button
+          // does nothing", and it never reaches a callback to be recorded there.
+          if (returned instanceof Error) {
+            record({ method, outcome: 'failed', phase: 'sign-in', clientId, ...refusalOf(returned) });
+            return;
+          }
+          const url = typeof returned?.url === 'string' ? returned.url : null;
+          record({
+            method,
+            outcome: 'started',
+            phase: 'sign-in',
+            clientId,
+            authority: authorityOf(url),
+            // The `state` is the only thing that survives the trip to the provider and back, so
+            // a digest of it is what lets the callback's row find this one.
+            correlation: await correlationOfState(stateOfAuthorizationUrl(url)),
+          });
+          return;
+        }
+        const method = callbackProviderOf(ctx.path, ctx.params);
+        if (!method) return;
+        // The redirect target IS the outcome — see the header. No location at all means the
+        // endpoint did not finish the way any of its paths do, which is worth a row saying so
+        // rather than silence.
+        const location = ctx.context.responseHeaders?.get('location');
+        // The same digest the outbound hop recorded — the provider hands the `state` back, which
+        // is what makes these two rows one attempt even when several are in flight.
+        const correlation = await correlationOfState(
+          (ctx.query as Record<string, string | undefined> | undefined)?.state,
+        );
+        const refusal = errorOfRedirect(location);
+        if (refusal) {
+          record({ method, outcome: 'failed', phase: 'callback', correlation, ...refusal });
+          return;
+        }
+        record({
+          method,
+          outcome: 'succeeded',
+          phase: 'callback',
+          correlation,
+          // Set by `setSessionCookie`, so present on a sign-in and absent on a LINK — which
+          // redirects to the same callback URL with no new session. Both are successes.
+          userId: (ctx.context.newSession as { user?: { id?: string } } | null | undefined)?.user?.id ?? null,
+        });
+      }),
     },
+    // See `runInBackground` above — the difference between a new user's first sign-in finishing
+    // and a redirect that waits on an email.
+    ...(deps.runInBackground
+      ? { advanced: { backgroundTasks: { handler: deps.runInBackground } } }
+      : {}),
     disabledPaths: ['/token'],
     secret: deps.secret,
     baseURL: deps.baseURL,
