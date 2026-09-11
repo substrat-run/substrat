@@ -18,6 +18,44 @@ import type {
 const MAX_CORRELATED_INVOCATIONS = 40;
 const MAX_LINES_PER_INVOCATION = 20;
 
+/** The event is a stamped invocation line whose request FAILED. */
+function isFailedInvocation(e: RecentLogEvent): boolean {
+  const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
+  if (source['substrat'] !== 'invocation') return false;
+  const status = source['status'];
+  return source['threw'] === true || (typeof status === 'number' && status >= 500);
+}
+
+/**
+ * Give a stamped invocation line a human message.
+ *
+ * Cloudflare populates `$metadata.message` for a STRING log and leaves it unset for a pure
+ * JSON one, so every stamped line arrives with `message: null` and would render as a blank
+ * row — which is most of the default view, since one is written per request. The fields to
+ * say it with are all already on the line, so this composes them on read rather than the
+ * vertical logging a redundant string: a read-side fix reaches versions that are already
+ * deployed, where changing what is logged would not.
+ *
+ * Everything else passes through untouched — a vertical's own output already has a message,
+ * and it is theirs to word.
+ */
+function describeInvocation(e: RecentLogEvent): RecentLogEvent {
+  const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
+  if (source['substrat'] !== 'invocation') return e;
+  const method = typeof source['method'] === 'string' ? source['method'] : '?';
+  const path = typeof source['path'] === 'string' ? source['path'] : '?';
+  const status = typeof source['status'] === 'number' ? source['status'] : null;
+  const ms = typeof source['durationMs'] === 'number' ? source['durationMs'] : null;
+  const outcome = source['threw'] === true ? 'threw' : (status ?? '—');
+  return {
+    ...e,
+    message: `${method} ${path} → ${outcome}${ms === null ? '' : ` (${ms} ms)`}`,
+    // Surfaced as the level it reads as, so the list's own colouring is honest about
+    // which rows are failures without the caller having to filter for them.
+    level: e.level ?? (isFailedInvocation(e) ? 'error' : 'info'),
+  };
+}
+
 /**
  * One backend event → the seam's neutral `RecentLogEvent`.
  *
@@ -470,9 +508,24 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
     if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });
 
+    // An `error` read narrows phase one to the invocations that FAILED, using the status
+    // the stamped line carries.
+    //
+    // Without this the filter is a trap. Stamped lines are level `log`, so a level filter
+    // drops every one of them, which means an error can only arrive as a sibling — and
+    // siblings exist only for the invocations phase two expanded. Asking for errors over
+    // 24h would search the 40 most recent invocations and answer "none" if the error was
+    // the 41st: an empty page that reads as "nothing is wrong" and means "I did not look".
+    // Narrowing here makes those 40 the 40 most recent FAILURES instead, which is the set
+    // the caller was asking about.
+    const failures =
+      input.level === 'error'
+        ? [...base, { key: 'status', operation: 'gte', type: 'number', value: 500 }]
+        : base;
+
     // Phase one: the stamped lines. Over-fetched relative to `limit`, because each one
     // may pull siblings in phase two and the cap belongs on the merged answer.
-    const stamped = await queryRaw(base, input.hours, Math.min(input.limit * 2, 200));
+    const stamped = await queryRaw(failures, input.hours, Math.min(input.limit * 2, 200));
     if (stamped.length === 0) return [];
 
     // Phase two: everything sharing those invocations. One query per request id — the
@@ -511,6 +564,13 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const search = input.search;
     return [...byId.values()]
       .map((e) => projectEvent(e))
+      .map((e) => describeInvocation(e))
+      // A plain comparison is enough only because `describeInvocation` ran first: a stamped
+      // line has no level of its own (Cloudflare sets `$metadata.level` for a string log
+      // and leaves it unset for a pure JSON one), so without that step every one of them
+      // would be dropped here — and for `error` that would be actively wrong, since a
+      // failing invocation that wrote no console.error of its own is exactly the row being
+      // looked for, and phase one selected it BECAUSE it failed.
       .filter((e) => (level ? e.level?.toLowerCase() === level : true))
       .filter((e) => (search ? (e.message ?? '').includes(search) : true))
       .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
@@ -527,7 +587,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
 
   /** A telemetry `events` query returning the raw events, filters passed through. */
   async function queryRaw(
-    filters: Array<{ key: string; operation: string; type: string; value: string }>,
+    // `value` is `string | number`: every filter was an equality on an id until the error
+    // read needed `status >= 500`, which is the one numeric comparison in this file.
+    filters: Array<{ key: string; operation: string; type: string; value: string | number }>,
     hours: number,
     limit: number,
   ): Promise<Array<Record<string, unknown>>> {
