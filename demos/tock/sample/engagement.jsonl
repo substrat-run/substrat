@@ -1,0 +1,4 @@
+{"type":"track","event":"activeDuration","occurred_at":"2026-07-01T08:00:00Z","subject":"u-1","country":"SE","duration":"30"}
+{"type":"track","event":"idleDuration","occurred_at":"2026-07-01T08:05:00Z","subject":"u-2","country":"SE","duration":"12"}
+{"type":"track","event":"activeDuration","occurred_at":"2026-07-01T08:10:00Z","subject":"u-3","country":"NO","duration":"45"}
+{"type":"track","event":"idleDuration","occurred_at":"2026-07-01T08:15:00Z","subject":"u-4","country":"NO","duration":"8"}
