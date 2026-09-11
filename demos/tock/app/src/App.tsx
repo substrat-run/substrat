@@ -22,9 +22,9 @@ import {
   type Session,
   type Source,
 } from './api.js';
-import { previewFile, readHead, type Preview } from './preview.js';
+import { observedKinds, previewFile, readHead, type Preview } from './preview.js';
 
-type Pane = 'ingest' | 'schema' | 'runs' | 'findings' | 'report';
+type Pane = 'ingest' | 'kinds' | 'schema' | 'runs' | 'findings' | 'report';
 type FieldRole = 'dimension' | 'measure' | 'ignored';
 type FieldType = 'text' | 'int' | 'decimal' | 'timestamp' | 'bool';
 interface FieldDraft { type: FieldType; role: FieldRole; labelField?: string }
@@ -113,7 +113,7 @@ export function App() {
       </header>
 
       <nav>
-        {(['ingest', 'schema', 'runs', 'findings', 'report'] as Pane[]).map((p) => (
+        {(['ingest', 'kinds', 'schema', 'runs', 'findings', 'report'] as Pane[]).map((p) => (
           <button key={p} className={p === pane ? 'on' : ''} onClick={() => setPane(p)}>
             {p === 'ingest' ? 'Drop a file' : p[0]!.toUpperCase() + p.slice(1)}
           </button>
@@ -122,6 +122,7 @@ export function App() {
 
       <main>
         {pane === 'ingest' && <Ingest sourceKey={sourceKey} sources={sources} onDone={refresh} />}
+        {pane === 'kinds' && <Kinds sourceKey={sourceKey} onDone={refresh} />}
         {pane === 'schema' && <SchemaPane sourceKey={sourceKey} onDone={refresh} />}
         {pane === 'runs' && <Runs sourceKey={sourceKey} runs={runs} onDone={refresh} />}
         {pane === 'findings' && <Findings sourceKey={sourceKey} />}
@@ -254,6 +255,21 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
               where the same listener appearing twice should count once.
             </p>
           )}
+          {preview.columns.some((c) => c.values && c.values.length > 1 && c.values.length <= 12) && (
+            <p className="note">
+              Columns that look like <strong>kinds</strong> rather than data:{' '}
+              {preview.columns
+                .filter((c) => c.values && c.values.length > 1 && c.values.length <= 12)
+                .map((c) => (
+                  <span key={c.name} className="chip-static">
+                    <code>{c.name}</code> ({c.values!.length})
+                  </span>
+                ))}
+              . Declare them under <strong>Kinds</strong> and this file's records get classified
+              as they are read; leave it and every record is one shape, which is fine for a
+              stream that is.
+            </p>
+          )}
           <p className="note">
             This is what <strong>your browser</strong> sees in the first {preview.sampled} row
             {preview.sampled === 1 ? '' : 's'}
@@ -309,21 +325,185 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
   );
 }
 
+// ── Kinds ───────────────────────────────────────────────────────────────────
+
+/**
+ * Declaring which fields tell record kinds apart, and the kinds themselves.
+ *
+ * The proposal comes from a file you drop here — the same browser-side read the ingest pane
+ * does, and authoritative for nothing. What gets declared is what a person confirms, because
+ * "these two values are different kinds of record" is a judgement about the stream rather
+ * than a fact in it: a source whose every request id is distinct would otherwise acquire
+ * eleven thousand kinds.
+ */
+function Kinds({ sourceKey, onDone }: { sourceKey: string; onDone: () => void }) {
+  const [declared, setDeclared] = useState<{ discriminators: string[]; variants: { key: string }[] }>({
+    discriminators: [],
+    variants: [],
+  });
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const { error, busy, run } = useAction();
+
+  useEffect(() => {
+    if (!sourceKey) return;
+    void api
+      .listVariants({ sourceKey })
+      .then((v) => {
+        setDeclared(v);
+        setPicked(v.discriminators);
+      })
+      .catch(() => undefined);
+  }, [sourceKey]);
+
+  const take = async (f: File) => {
+    const head = await readHead(f);
+    const p = previewFile(head.text, head.truncated);
+    setPreview(p);
+    setChosen(new Set());
+  };
+
+  /**
+   * A kind REPEATS. A column whose every value is distinct is an identifier or a timestamp,
+   * and offering it would invite a source with one kind per record — so the test is not
+   * merely "few values" but "few relative to how many rows were read".
+   */
+  const candidates = (preview?.columns ?? []).filter(
+    (c) => c.values && c.values.length > 1 && c.values.length <= Math.max(2, Math.floor(preview!.sampled / 2)),
+  );
+  const seen = preview ? observedKinds(preview, picked) : [];
+
+  return (
+    <section>
+      <h2>Kinds</h2>
+      <p className="note">
+        A file rarely holds one shape. Declare the fields whose values tell kinds apart — in
+        order, outermost first — and each record is classified as it is read. A value nobody
+        declared is <strong>kept and reported</strong>, never dropped.
+      </p>
+
+      {declared.discriminators.length > 0 && (
+        <p className="note">
+          Declared now: <code>{declared.discriminators.join(' → ')}</code> ·{' '}
+          {declared.variants.length} kind{declared.variants.length === 1 ? '' : 's'} (
+          {declared.variants.map((v) => v.key).join(', ')})
+        </p>
+      )}
+
+      <label className="drop">
+        <input
+          type="file"
+          accept=".csv,text/csv,.jsonl,application/json"
+          className="sr-only"
+          onChange={(e) => { const f = e.target.files?.[0]; if (f) void take(f); }}
+        />
+        <span>Drop a file to see what kinds it contains</span>
+      </label>
+
+      {preview && !preview.problem && (
+        <>
+          <h3>Which fields tell kinds apart?</h3>
+          <div className="row">
+            {candidates.map((c) => {
+              const at = picked.indexOf(c.name);
+              return (
+                <button
+                  key={c.name}
+                  className={at >= 0 ? 'chip on' : 'chip'}
+                  onClick={() => setPicked(at >= 0 ? picked.filter((n) => n !== c.name) : [...picked, c.name])}
+                >
+                  {at >= 0 ? `${at + 1}. ` : ''}
+                  {c.name} ({c.values!.length})
+                </button>
+              );
+            })}
+            {candidates.length === 0 && <span className="muted">Nothing in the sample looks like a kind.</span>}
+          </div>
+
+          {picked.length > 0 && (
+            <>
+              <h3>The kinds this file contains</h3>
+              <p className="note">
+                Counts are from the sample, not the file. A combination seen twice in{' '}
+                {preview.sampled} rows is probably not a kind — which is why this proposes and
+                you decide.
+              </p>
+              <table>
+                <thead><tr><th>Declare</th><th>Kind</th><th>In sample</th></tr></thead>
+                <tbody>
+                  {seen.map((k) => {
+                    const key = k.selector.join('/');
+                    return (
+                      <tr key={key}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            checked={chosen.has(key)}
+                            onChange={(e) => {
+                              const next = new Set(chosen);
+                              if (e.target.checked) next.add(key); else next.delete(key);
+                              setChosen(next);
+                            }}
+                          />
+                        </td>
+                        <td><code>{key}</code></td>
+                        <td>{k.n}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <button
+                disabled={busy || chosen.size === 0}
+                onClick={() => run(async () => {
+                  await api.declareVariants({
+                    sourceKey,
+                    discriminators: picked,
+                    variants: seen.filter((k) => chosen.has(k.selector.join('/'))).map((k) => ({ selector: k.selector })),
+                  });
+                  const v = await api.listVariants({ sourceKey });
+                  setDeclared(v);
+                  onDone();
+                })}
+              >
+                {busy ? 'Declaring…' : `Declare ${chosen.size} kind${chosen.size === 1 ? '' : 's'}`}
+              </button>
+            </>
+          )}
+        </>
+      )}
+      {preview?.problem && <p className="error">{preview.problem}</p>}
+      {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
 // ── Schema ──────────────────────────────────────────────────────────────────
 
 function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => void }) {
   const [fields, setFields] = useState<Record<string, FieldDraft>>({});
   const [version, setVersion] = useState<number | null>(null);
+  /** Which kind this shape describes. Empty is the envelope every record carries. */
+  const [variantKey, setVariantKey] = useState('');
+  const [kinds, setKinds] = useState<string[]>([]);
   const [suggest, setSuggest] = useState<string[]>([]);
   const { error, busy, run } = useAction();
+
+  useEffect(() => {
+    if (!sourceKey) return;
+    setVariantKey('');
+    void api.listVariants({ sourceKey }).then((v) => setKinds(v.variants.map((x) => x.key))).catch(() => setKinds([]));
+  }, [sourceKey]);
 
   useEffect(() => {
     if (!sourceKey) return;
     // Cleared on BOTH branches. Leaving the previous source's draft in place when the new one
     // has no schemas is not a cosmetic bug: the editor then shows fields that belong to another
     // source and will happily save them as its v1.
-    void all(api.listSchemas({ sourceKey })).then((entries) => {
-      const latest = entries[entries.length - 1];
+    void all(api.listSchemas({ sourceKey, variantKey })).then((entries) => {
+      const mine = entries.filter((e) => e.variant_key === variantKey);
+      const latest = mine[mine.length - 1];
       setVersion(latest ? latest.version : null);
       setFields(latest ? (JSON.parse(latest.fields_json) as Record<string, FieldDraft>) : {});
     }).catch(() => { setVersion(null); setFields({}); });
@@ -331,7 +511,7 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
     void api.fieldHistory({ sourceKey }).then((h) => {
       setSuggest([...new Set(h.entries.map((e) => e.field))]);
     }).catch(() => setSuggest([]));
-  }, [sourceKey]);
+  }, [sourceKey, variantKey]);
 
   const dimensions = Object.values(fields).filter((f) => f.role === 'dimension').length;
   const names = Object.keys(fields);
@@ -339,6 +519,22 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
   return (
     <section>
       <h2>Schema {version === null ? '(none yet)' : `v${version}`}</h2>
+      {kinds.length > 0 && (
+        <div className="row">
+          <label className="check">
+            describing
+            <select value={variantKey} onChange={(e) => setVariantKey(e.target.value)}>
+              <option value="">the envelope — every record</option>
+              {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
+            </select>
+          </label>
+          <span className="muted">
+            {variantKey
+              ? 'Declare only what this kind ADDS. A record carries the envelope as well.'
+              : 'The fields every record carries, whatever its kind. Declared once.'}
+          </span>
+        </div>
+      )}
       <p className="note">
         Saving never edits a version; it writes the next one. A run counted under v{version ?? 1} stays
         explainable after v{(version ?? 0) + 1} exists.
@@ -415,7 +611,7 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
 
       <button
         disabled={busy || names.length === 0}
-        onClick={() => run(async () => { await api.saveSchema({ sourceKey, fields }); onDone(); setVersion((v) => (v ?? 0) + 1); })}
+        onClick={() => run(async () => { await api.saveSchema({ sourceKey, variantKey, fields }); onDone(); setVersion((v) => (v ?? 0) + 1); })}
       >
         {busy ? 'Saving…' : `Save v${(version ?? 0) + 1}`}
       </button>
@@ -506,6 +702,7 @@ const FINDING_LABEL: Record<string, string> = {
   declared_never_arrived: 'Declared, never arrived',
   type_mismatch: 'Type disagrees',
   cardinality_spike: 'Field explosion',
+  unmatched_records: 'Kind not declared',
 };
 
 function Findings({ sourceKey }: { sourceKey: string }) {
@@ -562,6 +759,8 @@ function Findings({ sourceKey }: { sourceKey: string }) {
 
 function Report({ sourceKey }: { sourceKey: string }) {
   const [grain, setGrain] = useState<'hour' | 'day' | 'month'>('day');
+  const [outputKey, setOutputKey] = useState('');
+  const [outputs, setOutputs] = useState<string[]>([]);
   const [dimSet, setDimSet] = useState('total');
   const [unknown, setUnknown] = useState(false);
   const [rows, setRows] = useState<{ periodStart: string; dim1: string; dim2: string; label1: string | null; label2: string | null; events: number; measure: string | null; runId: string }[]>([]);
@@ -574,6 +773,10 @@ function Report({ sourceKey }: { sourceKey: string }) {
     // is a request the server has no rows for, rendered as an empty report that looks like an
     // answer — and the select would show no matching option while doing it.
     setDimSet('total');
+    setOutputKey('');
+    void all(api.listOutputSchemas({ sourceKey }))
+      .then((entries) => setOutputs([...new Set(entries.map((o) => o.key))]))
+      .catch(() => setOutputs([]));
     void all(api.listSchemas({ sourceKey })).then((entries) => {
       const latest = entries[entries.length - 1];
       const fields = latest ? (JSON.parse(latest.fields_json) as Record<string, FieldDraft>) : {};
@@ -592,13 +795,14 @@ function Report({ sourceKey }: { sourceKey: string }) {
         sourceKey,
         grain,
         dimSet,
+        outputKey,
         from: '2000-01-01T00:00:00.000Z',
         to: '2100-01-01T00:00:00.000Z',
         includeUnknown: unknown,
       })
       .then((r) => setRows(r.rows))
       .catch((e) => { setRows([]); setNote(e instanceof ApiError && e.status === 403 ? 'Refused — your role does not hold report:read.' : (e as Error).message); });
-  }, [sourceKey, grain, dimSet, unknown]);
+  }, [sourceKey, outputKey, grain, dimSet, unknown]);
 
   /** Which slots this grouping uses — `total` uses none, a pair uses both. */
   const dims = dimSet === 'total' ? [] : dimSet.split('+');
@@ -607,6 +811,12 @@ function Report({ sourceKey }: { sourceKey: string }) {
     <section>
       <h2>Report</h2>
       <div className="row">
+        {outputs.length > 0 && (
+          <select value={outputKey} onChange={(e) => setOutputKey(e.target.value)}>
+            <option value="">the envelope</option>
+            {outputs.map((o) => <option key={o}>{o}</option>)}
+          </select>
+        )}
         <select value={grain} onChange={(e) => setGrain(e.target.value as 'hour' | 'day' | 'month')}>
           <option value="day">day</option>
           <option value="month">month</option>
