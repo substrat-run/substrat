@@ -124,9 +124,81 @@ export interface ObservedEgressReport {
   hours: number;
 }
 
+/**
+ * One tenant's traffic through ONE of their installed apps, over the queried window.
+ *
+ * The counterpart to `ServiceMetricsRow`, and the distinction is the whole reason this
+ * exists. A service row is keyed on the deployed unit — a script — which serves every
+ * tenant that installed the vertical, so handing one to an installer leaks the others'
+ * volume (§3, "Forbidden — it leaks"). This row is keyed on `(tenant, scope)`: the
+ * installation, not the code. Two tenants running the same vertical are two rows here
+ * and one indistinguishable row there.
+ *
+ * Tier-3 (master-plan §5.3): sampled, approximate, ops-only — never money, and never
+ * shown to a customer as an authoritative count.
+ */
+export interface TenantMetricsRow {
+  /** The app scope these requests were routed to — the installation's identity. */
+  scopeId: string;
+  /** The vertical serving them, as the registry slugs it. */
+  vertical: string | null;
+  /** Which declared surface answered (`app`, `api`, …) — a K-26 dimension. */
+  surface: string | null;
+  requests: number;
+  errors: number;
+  /** Router-observed duration quantiles, milliseconds. */
+  durationP50: number;
+  durationP95: number;
+}
+
 export interface ObservabilityReader {
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */
   serviceMetrics(input: { hours: number }): Promise<ServiceMetricsRow[]>;
+
+  /**
+   * ONE tenant's traffic, grouped by the app scope it reached (view 4, §4.2).
+   *
+   * OPTIONAL for the same honest reason `observedEgress` and `serviceMetricsSeries` are:
+   * a backend can answer everything else here and still have no tenant dimension at all,
+   * because the tenant is the one fact a runtime cannot record by itself — somebody has
+   * to have stamped it at dispatch time. Absent ⇒ the route 501s, the platform's shape
+   * for an unconfigured capability, never an empty array, which a caller would render as
+   * "your app served nothing" — a claim this seam must not make by accident.
+   *
+   * `tenantId` is not a filter a caller may widen: it IS the narrowing, applied by the
+   * implementation against the backend, and there is deliberately no "all tenants"
+   * spelling. `scopeId` and `vertical` narrow further WITHIN that tenant. The type is
+   * what keeps a fleet-wide read from being one forgotten parameter away.
+   */
+  tenantMetrics?(input: {
+    tenantId: string;
+    scopeId?: string;
+    vertical?: string;
+    hours: number;
+  }): Promise<TenantMetricsRow[]>;
+
+  /**
+   * ONE tenant's recent log events — the lines their own installations produced (§4.3).
+   *
+   * Same optionality, and the same non-widenable `tenantId`, as `tenantMetrics`.
+   *
+   * The answer includes lines a vertical's own code wrote, which carry no tenant of their
+   * own: those are reached by correlation, out from the stamped invocation line to
+   * everything sharing its invocation. An implementation that cannot correlate returns
+   * only the stamped lines rather than guessing — under-reporting is survivable here and
+   * misattribution is not, since a line shown to the wrong tenant is precisely the leak
+   * the grain decision exists to prevent.
+   */
+  tenantLogs?(input: {
+    tenantId: string;
+    scopeId?: string;
+    vertical?: string;
+    level?: string;
+    search?: string;
+    hours: number;
+    limit: number;
+  }): Promise<RecentLogEvent[]>;
+
   /**
    * Recent log events, optionally narrowed to a set of services and/or a level.
    * `services` is a set because a caller's unit of interest is rarely one deployed

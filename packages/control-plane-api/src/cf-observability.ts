@@ -1,4 +1,54 @@
-import type { ObservabilityReader, ObservedEgressRow } from './observability.js';
+import type {
+  ObservabilityReader,
+  ObservedEgressRow,
+  RecentLogEvent,
+  TenantMetricsRow,
+} from './observability.js';
+
+/**
+ * Caps on the tenant-log correlation walk (`queryTenantLogs`).
+ *
+ * Phase two is one query per invocation, so an uncapped walk turns a busy tenant's log
+ * page into hundreds of backend queries. These bound it: at most this many invocations
+ * are expanded, and at most this many lines are taken from each. The consequence is
+ * under-reporting on a very busy window — a tenant sees a recent slice rather than every
+ * line — which is the right direction to fail, since the alternative is a page that times
+ * out and shows nothing.
+ */
+const MAX_CORRELATED_INVOCATIONS = 40;
+const MAX_LINES_PER_INVOCATION = 20;
+
+/**
+ * One backend event → the seam's neutral `RecentLogEvent`.
+ *
+ * Shared by the service-grain and tenant-grain readers so a field learned in one is not
+ * missing from the other: they query different filters over the same dataset, and the
+ * projection is the part that has nothing to do with which filter asked.
+ */
+function projectEvent(e: Record<string, unknown>): RecentLogEvent {
+  const str = (v: unknown) => (typeof v === 'string' ? v : null);
+  const num = (v: unknown) => (typeof v === 'number' ? v : null);
+  const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+  const workers = (e['$workers'] ?? {}) as Record<string, unknown>;
+  return {
+    timestamp: num(e['timestamp']),
+    level: str(metadata['level']),
+    message: str(metadata['message']),
+    service: str(metadata['service']) ?? str(workers['scriptName']),
+    outcome: str(workers['outcome']),
+    // `$metadata.trigger` reads like `<entrypoint>.<method>` (e.g. `default.importDump`);
+    // fall back to the `$workers.event` sub-shape (`rpcMethod`) when it is absent.
+    trigger:
+      str(metadata['trigger']) ??
+      str((workers['event'] as Record<string, unknown> | undefined)?.['rpcMethod']),
+    invocation: str(workers['eventType']),
+    entrypoint: str(workers['entrypoint']),
+    requestId: str(metadata['requestId']) ?? str(workers['requestId']),
+    cpuTimeMs: num(workers['cpuTimeMs']),
+    wallTimeMs: num(workers['wallTimeMs']),
+    raw: e,
+  };
+}
 
 /**
  * The Cloudflare implementation of the observability seam (`observability.ts`) —
@@ -237,6 +287,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       return queryEvents(services?.[0], level, search, hours, limit);
     },
 
+    async tenantMetrics(input) {
+      return queryTenantMetrics(input);
+    },
+
+    async tenantLogs(input) {
+      return queryTenantLogs(input);
+    },
+
     async observedEgress({ services, hours, limit }) {
       // One query per service, like recentLogs and for the same reason: the telemetry
       // API's filters are single-valued equality, and an OR across script names is not
@@ -282,6 +340,220 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       };
     },
   };
+
+  /**
+   * One Analytics Engine SQL read — the tenant grain (§4.2).
+   *
+   * ## Why this is a different API from everything else in this file
+   *
+   * Cloudflare records invocations per SCRIPT, and a script serves every tenant that
+   * installed the vertical, so no amount of filtering on the GraphQL dataset can produce
+   * a per-tenant number. The tenant dimension exists only because the router writes it:
+   * one datapoint per dispatched request into the `substrat_router` dataset, `index1` =
+   * the tenant. That dataset is read with SQL, not GraphQL — hence a third endpoint.
+   *
+   * ## Counts are sampling-weighted, and `count()` would be a silent lie
+   *
+   * Analytics Engine head-samples under load and reports the weight of each surviving
+   * row in `_sample_interval`. A row that stood for 40 requests arrives once with
+   * `_sample_interval = 40`. So `sum(_sample_interval)` is the request count and
+   * `count()` is the number of rows that survived sampling — which at low volume are
+   * equal, and at exactly the volume anyone cares about are not. The failure is silent
+   * and in the flattering direction: a busy tenant reads quiet.
+   *
+   * The same reasoning governs the quantiles: `quantileWeighted(q)(value, weight)`, not
+   * `quantile(q)(value)`, or the surviving rows are each counted once regardless of how
+   * many requests they stand for.
+   */
+  async function queryTenantMetrics(input: {
+    tenantId: string;
+    scopeId?: string;
+    vertical?: string;
+    hours: number;
+  }): Promise<TenantMetricsRow[]> {
+    // The tenant is bound, never interpolated: this is SQL built in a string, and the
+    // value arrives from a session. Ids are opaque ULIDs, so the escape is a whitelist
+    // rather than a quote-doubling dance — anything that is not ULID-shaped is not an
+    // id and has no business reaching the query.
+    const literal = (v: string) => {
+      if (!/^[A-Za-z0-9_\-./]{1,128}$/.test(v)) {
+        throw new Error('observability: refusing a dimension value with unexpected characters');
+      }
+      return `'${v}'`;
+    };
+    const where = [
+      `index1 = ${literal(input.tenantId)}`,
+      `timestamp > now() - INTERVAL '${Math.max(1, Math.floor(input.hours))}' HOUR`,
+    ];
+    if (input.scopeId) where.push(`blob2 = ${literal(input.scopeId)}`);
+    if (input.vertical) where.push(`blob1 = ${literal(input.vertical)}`);
+
+    // Blob/double positions are the router's published shape (`apps/router/src/worker.ts`
+    // `record`): index1 tenant; blob1 vertical, blob2 scope, blob3 surface, blob4 status
+    // class; double1 duration ms, double2 status. That shape only ever grows, never
+    // reorders — which is what lets these ordinals be written down here at all.
+    const sql = `
+      SELECT
+        blob2 AS scopeId,
+        blob1 AS vertical,
+        blob3 AS surface,
+        sum(_sample_interval) AS requests,
+        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
+        quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
+        quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
+      FROM substrat_router
+      WHERE ${where.join(' AND ')}
+      GROUP BY scopeId, vertical, surface
+      ORDER BY requests DESC
+      LIMIT 200
+      FORMAT JSON`;
+
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/analytics_engine/sql`,
+      { method: 'POST', headers: { authorization: `Bearer ${opts.apiToken}` }, body: sql },
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Cloudflare Analytics Engine query failed: HTTP ${res.status} ${text.slice(0, 200)}`);
+    }
+    const json = JSON.parse(text) as { data?: Array<Record<string, unknown>> };
+    // AE returns aggregate sums as STRINGS (they are 64-bit), quantiles as numbers.
+    const num = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : 0);
+    const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
+    return (json.data ?? []).map((r) => ({
+      scopeId: String(r['scopeId'] ?? ''),
+      vertical: str(r['vertical']),
+      surface: str(r['surface']),
+      requests: num(r['requests']),
+      errors: num(r['errors']),
+      durationP50: num(r['durationP50']),
+      durationP95: num(r['durationP95']),
+    }));
+  }
+
+  /**
+   * One tenant's log events, in two phases (§4.3).
+   *
+   * ## Why two phases and not one filter
+   *
+   * The stamped invocation line carries `tenantId`, so phase one finds it with a single
+   * equality filter — Workers Logs indexes a `JSON.stringify`ed `console.log` as
+   * queryable TOP-LEVEL fields, so the key is `tenantId`, not `$metadata.tenantId` nor
+   * `source.tenantId`. (Verified against the live API. A filter on a key that does not
+   * exist returns `success: true` with zero events, so the wrong spelling here is
+   * indistinguishable from a tenant with no traffic — the same silent-empty trap the
+   * `otel` dataset sets for `observedEgress` below.)
+   *
+   * But a vertical's OWN output — the exception, the `console.log` inside a handler —
+   * carries no tenant at all. Those lines are reachable only by correlation: every line
+   * emitted during one invocation shares `$metadata.requestId`. So phase two takes the
+   * request ids phase one found and fetches everything sharing them.
+   *
+   * The router's own lines are deliberately EXCLUDED. They carry the right tenant and
+   * would pass the filter, but they are the router's access log for every vertical that
+   * tenant runs, and mixing them into one app's log view answers a question nobody asked
+   * while burying the app's own output.
+   */
+  async function queryTenantLogs(input: {
+    tenantId: string;
+    scopeId?: string;
+    vertical?: string;
+    level?: string;
+    search?: string;
+    hours: number;
+    limit: number;
+  }): Promise<RecentLogEvent[]> {
+    const base = [
+      { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
+      { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
+    ];
+    if (input.scopeId) base.push({ key: 'scopeId', operation: 'eq', type: 'string', value: input.scopeId });
+    if (input.vertical) base.push({ key: 'vertical', operation: 'eq', type: 'string', value: input.vertical });
+
+    // Phase one: the stamped lines. Over-fetched relative to `limit`, because each one
+    // may pull siblings in phase two and the cap belongs on the merged answer.
+    const stamped = await queryRaw(base, input.hours, Math.min(input.limit * 2, 200));
+    if (stamped.length === 0) return [];
+
+    // Phase two: everything sharing those invocations. One query per request id — the
+    // telemetry API's filters are single-valued equality, the same constraint
+    // `recentLogs` batches around — so this is capped rather than unbounded.
+    const requestIds = [
+      ...new Set(
+        stamped
+          .map((e) => idOf(e))
+          .filter((id): id is string => typeof id === 'string' && id !== ''),
+      ),
+    ].slice(0, MAX_CORRELATED_INVOCATIONS);
+    const sibling = await Promise.all(
+      requestIds.map((id) =>
+        queryRaw(
+          [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }],
+          input.hours,
+          MAX_LINES_PER_INVOCATION,
+        ),
+      ),
+    );
+
+    // Merge, de-duplicate, drop the router's own access log, then apply the caller's
+    // level/search filters HERE rather than in phase one — a filter pushed into phase one
+    // would have hidden the stamped line whose request id is the only way to reach the
+    // line the caller is actually looking for.
+    const byId = new Map<string, Record<string, unknown>>();
+    for (const e of [...stamped, ...sibling.flat()]) {
+      const source = (e['source'] ?? {}) as Record<string, unknown>;
+      if (source['router'] === 'request') continue;
+      const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+      const id = typeof metadata['id'] === 'string' ? metadata['id'] : JSON.stringify(e);
+      byId.set(id, e);
+    }
+    const level = input.level?.toLowerCase();
+    const search = input.search;
+    return [...byId.values()]
+      .map((e) => projectEvent(e))
+      .filter((e) => (level ? e.level?.toLowerCase() === level : true))
+      .filter((e) => (search ? (e.message ?? '').includes(search) : true))
+      .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0))
+      .slice(0, input.limit);
+  }
+
+  /** `$metadata.requestId`, the key every line of one invocation shares. */
+  function idOf(e: Record<string, unknown>): string | null {
+    const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
+    const workers = (e['$workers'] ?? {}) as Record<string, unknown>;
+    const from = metadata['requestId'] ?? workers['requestId'];
+    return typeof from === 'string' ? from : null;
+  }
+
+  /** A telemetry `events` query returning the raw events, filters passed through. */
+  async function queryRaw(
+    filters: Array<{ key: string; operation: string; type: string; value: string }>,
+    hours: number,
+    limit: number,
+  ): Promise<Array<Record<string, unknown>>> {
+    const to = Date.now();
+    const res = await authed(
+      `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
+      {
+        queryId: 'substrat-tenant-logs',
+        view: 'events',
+        timeframe: { from: to - hours * 3_600_000, to },
+        parameters: { datasets: ['cloudflare-workers'], filters, limit },
+        limit,
+      },
+    );
+    const json = (await res.json()) as {
+      success?: boolean;
+      errors?: Array<{ message?: string }>;
+      result?: { events?: { events?: unknown[] } | unknown[] };
+    };
+    if (!res.ok || json.success === false) {
+      const message = json.errors?.map((e) => e.message).join('; ') || `HTTP ${res.status}`;
+      throw new Error(`Cloudflare telemetry query failed: ${message}`);
+    }
+    const outer = json.result?.events;
+    return (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<Record<string, unknown>>;
+  }
 
   /** One telemetry query — narrowed to a single service, or to none (the fleet view). */
   async function queryEvents(
@@ -329,30 +601,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     const events = (Array.isArray(outer) ? outer : (outer?.events ?? [])) as Array<
       Record<string, unknown>
     >;
-    const str = (v: unknown) => (typeof v === 'string' ? v : null);
-    const num = (v: unknown) => (typeof v === 'number' ? v : null);
-    return events.map((e) => {
-      const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
-      const workers = (e['$workers'] ?? {}) as Record<string, unknown>;
-      return {
-        timestamp: num(e['timestamp']),
-        level: str(metadata['level']),
-        message: str(metadata['message']),
-        service: str(metadata['service']) ?? str(workers['scriptName']),
-        outcome: str(workers['outcome']),
-        // `$metadata.trigger` reads like `<entrypoint>.<method>` (e.g. `default.importDump`);
-        // fall back to the `$workers.event` sub-shape (`rpcMethod`) when it is absent.
-        trigger:
-          str(metadata['trigger']) ??
-          str((workers['event'] as Record<string, unknown> | undefined)?.['rpcMethod']),
-        invocation: str(workers['eventType']),
-        entrypoint: str(workers['entrypoint']),
-        requestId: str(metadata['requestId']) ?? str(workers['requestId']),
-        cpuTimeMs: num(workers['cpuTimeMs']),
-        wallTimeMs: num(workers['wallTimeMs']),
-        raw: e,
-      };
-    });
+    return events.map((e) => projectEvent(e));
   }
 
   /**

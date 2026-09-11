@@ -36,6 +36,8 @@
  * headers and therefore emits no line — there is no tenant it could be attributed to, and
  * inventing one is the only way this could ever leak.
  */
+import type { HeaderReader } from './routed-node.js';
+
 /**
  * The middleware's context, taken STRUCTURALLY — kernel depends on no web framework,
  * not even for a type. The shape below is the subset of a Hono context this reads, so
@@ -51,9 +53,16 @@
  * Living here means a lean vertical picks it up without also taking on an AI SDK.
  */
 export interface InvocationLogContext {
-  req: { method: string; raw: Request };
-  res?: Response;
+  req: { method: string; raw: { url: string; headers: HeaderReader } };
+  res?: { status: number };
 }
+
+// Runtime globals, declared rather than imported: this package compiles against
+// `lib: ["ES2023"]` with no DOM and no workers types, deliberately, so that nothing here
+// assumes a browser. Both are web-standard and present in Node, Workers and browsers
+// alike — the same posture `secret-box.ts` takes for `crypto` and `TextEncoder`.
+declare const console: { log(message: string): void };
+declare const URL: new (input: string) => { pathname: string };
 
 /**
  * The shape of the emitted line. Deliberately a published contract rather than an
