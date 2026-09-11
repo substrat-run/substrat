@@ -9,7 +9,7 @@ An operation handler receives exactly one thing.
 
 ```ts
 async function createWorkOrder(ctx: OperationContext, input: CreateInput) {
-  assertAllowed(await ctx.check('workorder.create'));
+  assertAllowed(await ctx.check('workorder:create'));
 
   const id = ulid();
   ctx.sql.exec(
@@ -109,7 +109,7 @@ Timestamps are stored as **ISO 8601 text**, never epoch integers.
 Every operation's first line is a permission check:
 
 ```ts
-assertAllowed(await ctx.check('workorder.create'));
+assertAllowed(await ctx.check('workorder:create'));
 ```
 
 Not "usually". The reason to make it unconditional is that the alternative is a judgement

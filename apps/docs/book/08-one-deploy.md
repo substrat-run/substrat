@@ -7,7 +7,7 @@ acts, deliberately not fused.**
 
 ## Push uploads a version. It serves nothing.
 
-```
+```sh
 substrat push
 ```
 

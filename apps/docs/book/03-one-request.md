@@ -24,7 +24,7 @@ browser
 [4] CloudflareScopeHost      lifecycle gates → lazy migrate → mint stub
   │  stub.invoke('workorder/create', input)
   ▼
-[5] ScopeDO                  queue → transaction → guards → parse → handler
+[5] ScopeDO                  queue → transaction → parse → guards → handler
   │
   ▼
 [6] post-commit              outbox → consumers
@@ -48,8 +48,9 @@ Only `active` hostname bindings resolve. A domain still validating its DNS, or o
 certificate failed, is simply unknown and gets "No application is configured for this
 hostname."
 
-Notice what the router deliberately cannot do. It binds `CONTROL_PLANE` and nothing else
-— **no `SCOPE` namespace**. It resolves names; it has no way to open a scope's database.
+Notice what the router deliberately cannot do. It binds what forwarding needs — the
+control-plane directory it reads, the dispatch namespace it forwards into — and **no
+`SCOPE` namespace**. It resolves names; it has no way to open a scope's database.
 That boundary is a deployment fact written into its wrangler config rather than a rule
 somebody follows. Handing the router the full scope host would have saved a file and
 given the name-resolution worker authority over every tenant's data.

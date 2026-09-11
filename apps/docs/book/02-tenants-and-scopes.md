@@ -53,9 +53,12 @@ tenants because there is no shared lock.
 environments (chapter 8) are cheap because a scope's entire state is one self-contained
 thing. On a shared cluster this is a export-filter-import project; here it is a copy.
 
-**Deleting a customer is deleting a database.** Which is a real property when somebody
-invokes a right to erasure, and a real hazard too — chapter 10 covers what actually
-frees those bytes, because the answer is less automatic than you would expect.
+**Deleting a customer is deleting databases.** Reaping one scope destroys one file;
+reaping a tenant walks every scope beneath it and then clears the tenant's own PII and
+configuration rows. Which is a real property when somebody invokes a right to erasure, and
+a real hazard too — chapter 10 covers what actually frees those bytes, because the answer
+is less automatic than you would expect, and because the tombstones and the admin log are
+built to survive it.
 
 The cost is equally real: **you cannot join across scopes**. A question like "how many
 work orders did this tenant complete this quarter, across all forty branches" is forty

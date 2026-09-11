@@ -74,7 +74,10 @@ Entity-narrowed grants are how a customer, a board member or a subcontractor see
 *their* things inside a shared scope. A grant can also target an organization, and members
 reach it through membership.
 
-That is the entire authored surface. There is no fourth kind.
+That is the entire *administrative* surface, and there is no fourth kind of thing to
+author. What arrives later in this chapter is not a fourth kind but a fourth *author*: a
+user sharing one record from inside an operation, which mints a capability grant of exactly
+the shape above.
 
 ## How a check is answered
 
@@ -134,6 +137,10 @@ A tuple that once granted access is the evidence of *why* an access was allowed.
 it destroys the audit trail exactly where it is most needed — a deleted row can show
 neither that access was revoked nor that it was ever granted.
 
+"Ever" means for as long as the scope does. Reaping is the one thing that takes a tuple
+away, because reaping takes the whole database the projection lives in; what outlives it is
+the admin log, which is never swept (chapter 10).
+
 Liveness is therefore one predicate applied identically everywhere: a tuple grants only
 while it is **unexpired and unrevoked**. Expiry and revocation are siblings, not separate
 mechanisms.
@@ -177,8 +184,9 @@ is left alone.
 
 ## Sharing at runtime
 
-Everything above is administrative. There is a fourth thing, and it belongs to the user
-rather than the admin: **`ctx.grant` and `ctx.revoke`**, called from inside an operation.
+Everything above is administrative. The same capability grant has a second author, and it
+is the user rather than the admin: **`ctx.grant` and `ctx.revoke`**, called from inside an
+operation.
 
 ```ts
 await ctx.grant(theirPrincipal, 'todo:read', { entityType: 'list', entityId: listId });

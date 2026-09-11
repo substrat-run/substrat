@@ -9,8 +9,8 @@ them straight is most of understanding how Substrat behaves when nobody is looki
 
 ## Why an alarm and not a cron
 
-Both clocks are Durable Object **alarms**. Neither is a `wrangler` cron. Three reasons, and
-the first one is decisive:
+Both clocks ship as Durable Object **alarms**. Three reasons, and the first one is
+decisive:
 
 **A dispatch-namespace script gets no crons.** A hosted vertical pushed into
 Workers-for-Platforms does not honour `triggers.crons`. A DO alarm is the only timer such a
@@ -23,6 +23,14 @@ pass delays the next one rather than racing it.
 
 **No configuration.** An alarm self-arms from code. There is no `wrangler.toml` entry to
 forget in one environment and remember in another.
+
+The first reason is also the limit of the argument, and it is worth being exact about which
+clock it binds. Clock one runs inside a dispatched vertical, so the alarm is the only timer
+available to it and there is no choice to make. Clock two runs on the platform's own
+deployment, which is an ordinary worker and *can* hold a cron — and the hosted control
+plane uses one, firing the same pass every fifteen minutes. So the no-overlap property
+above is the alarm's, not the pass's: on the cron path a long pass can still meet the next
+tick, and it is the pass itself that has to tolerate that.
 
 And the loop is built never to die. A pass that throws whole is still caught, still reported
 through `onPass`, and the alarm is **still re-armed** — the alternative being workerd's own
@@ -78,7 +86,10 @@ the loop when the first scope arrives. A vertical with no scopes burns no alarms
 ## Clock two: the platform sweeper
 
 **Where:** the platform's own deployment.
-**Singleton name:** `platform-sweeper`.
+**What fires it:** either trigger, over the same `runPlatformSweep`. The adapter ships
+`definePlatformSweeperDO` — singleton `platform-sweeper`, the alarm loop clock one uses —
+for a deployment that wants one. The hosted control plane instead points its `scheduled()`
+handler straight at the pass, on a fifteen-minute cron.
 **What it holds:** nothing — it reads the directory.
 
 This is the fleet-wide maintenance pass. One pass, in this order, each phase recording
