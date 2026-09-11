@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_DENIAL_LIMIT, denialFilter, denialQuery } from '../src/denial.js';
+import {
+  DEFAULT_DENIAL_LIMIT,
+  denialFilter,
+  denialFilterParams,
+  denialQuery,
+} from '../src/denial.js';
 
 /**
  * The denial filter's wire form (#971). The encoder was copy-pasted into every client
@@ -45,5 +50,14 @@ describe('denialQuery', () => {
 
   it('stringifies the numeric limit', () => {
     expect(denialQuery({ limit: 25 })).toBe('?limit=25');
+  });
+
+  it('leaves room for a caller with more to say than the filter', () => {
+    // The platform's vertical client adds `scopeId`, because the internal route is not
+    // scope-addressed in its path. It must get the filter's fields from here rather
+    // than restating them — that copy was the fourth one.
+    const params = denialFilterParams({ permission: 'perm:use' });
+    params.set('scopeId', '01J0SCOPE');
+    expect(Object.fromEntries(params)).toEqual({ permission: 'perm:use', scopeId: '01J0SCOPE' });
   });
 });

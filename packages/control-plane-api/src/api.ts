@@ -662,8 +662,15 @@ const auditLogQuery = z.object({
  * The K-35 denial-log filter (#867). Bounded by default like every other HTTP read
  * here: the log's volume is attacker-influenceable by design (a probing client mints
  * rows), so an unbounded `GET` is exactly the wrong default.
+ *
+ * The DECODER half of contracts' `denialFilterParams` (#971), and deliberately not the
+ * same schema: a query param arrives as a string, so `limit` is coerced here and given
+ * this route's own default, which the filter itself must not carry. What the two DO owe
+ * each other is the field set — Zod strips an unknown key, so a field added to the
+ * filter and sent by every client would be dropped here in silence. Exported (not from
+ * `index.ts` — this is not public surface) so `api.test.ts` can pin that.
  */
-const denialLogQuery = z.object({
+export const denialLogQuery = z.object({
   actor: z.string().optional(),
   permission: z.string().optional(),
   operation: z.string().optional(),

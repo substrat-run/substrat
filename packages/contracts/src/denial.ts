@@ -89,22 +89,24 @@ export type DenialFilter = z.infer<typeof denialFilter>;
 /**
  * The filter's wire form — the ONE encoder every denial-log caller uses (#971).
  *
- * Both denial reads (`/denials` and `/denials/summary`) take the same filter, and
- * every client that reaches them has to turn it into a query string. That spelling
- * was copy-pasted verbatim into each one, which is how the fields and the route's
- * decoder drift apart without anything going red: the decoder still accepts
- * `until`, the caller that forgot to copy the line simply stops sending it, and the
- * screen silently reads an unbounded window.
+ * Both denial reads (`/denials` and `/denials/summary`) take the same filter, on both
+ * branches of the route (a co-located scope answered locally, a hosted one asked
+ * through its vertical), and every client that reaches them has to turn the filter
+ * into a query string. That spelling was copy-pasted verbatim into each one, which is
+ * how the fields and the route's decoder drift apart without anything going red: the
+ * decoder still accepts `until`, the caller that never got the copy simply stops
+ * sending it, and the screen silently reads an unbounded window.
  *
  * It lives here, beside `denialFilter`, rather than in the control-plane API package
  * — the callers include a BROWSER console, and a serializer is not worth pulling a
  * Hono server's module graph into a SPA bundle for. The schema is already the thing
  * both sides share; its encoding belongs with it.
  *
- * Returns a `?`-prefixed suffix, or `''` when nothing is narrowed, so a call site is
- * `` `${path}${denialQuery(filter)}` `` and never grows a dangling `?`.
+ * This is the form for a caller that has more to say than the filter — the platform's
+ * vertical client adds `scopeId`, since the internal route is not scope-addressed in
+ * its path. Callers that send the filter alone want `denialQuery` below.
  */
-export function denialQuery(filter?: DenialFilter): string {
+export function denialFilterParams(filter?: DenialFilter): URLSearchParams {
   const q = new URLSearchParams();
   if (filter?.actor) q.set('actor', filter.actor);
   if (filter?.permission) q.set('permission', filter.permission);
@@ -112,7 +114,16 @@ export function denialQuery(filter?: DenialFilter): string {
   if (filter?.since) q.set('since', filter.since);
   if (filter?.until) q.set('until', filter.until);
   if (filter?.limit) q.set('limit', String(filter.limit));
-  const qs = q.toString();
+  return q;
+}
+
+/**
+ * `denialFilterParams` as a URL suffix: `?`-prefixed, or `''` when nothing is
+ * narrowed — so a call site is `` `${path}${denialQuery(filter)}` `` and an
+ * unnarrowed read never grows a dangling `?`.
+ */
+export function denialQuery(filter?: DenialFilter): string {
+  const qs = denialFilterParams(filter).toString();
   return qs ? `?${qs}` : '';
 }
 

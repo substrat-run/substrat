@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { ulid, webCryptoSecretBox } from '@substrat-run/kernel';
-import { assetHash, connectionId, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { assetHash, connectionId, denialFilter, orgId, permissionKey, platformActorId, principalId, scopeId, tenantId, type EntitlementGrant, type ScopeBackup, type ScopeDump, type ScopeDumpTable } from '@substrat-run/contracts';
+import { denialLogQuery } from '../src/api.js';
 import {
   createControlPlaneApi,
   ControlPlaneError,
@@ -408,6 +409,16 @@ describe('control-plane API', () => {
     // Cross-tenant fails closed (K-3): another tenant's pair reads as absent.
     expect((await req(`/tenants/${t2}/scopes/${s1}/denials`)).status).toBe(404);
     expect((await req(`/tenants/${t2}/scopes/${s1}/denials/summary`)).status).toBe(404);
+  });
+
+  it('decodes exactly the fields the contracts filter encodes (#971)', () => {
+    // The encoder (`denialFilterParams`) and this decoder are the two ends of one
+    // wire format, and Zod STRIPS an unknown key rather than refusing it — so a field
+    // added to `denialFilter`, sent by every client, would arrive here and vanish
+    // without a single test going red. The field sets are what the two owe each other;
+    // the per-field schemas legitimately differ (a query param is a string, and the
+    // default `limit` is this route's bound, not the filter's).
+    expect(Object.keys(denialLogQuery.shape).sort()).toEqual(Object.keys(denialFilter.shape).sort());
   });
 
   it('runs a read-only console query and maps the gate refusal to 400 (#219)', async () => {
