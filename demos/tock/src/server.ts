@@ -22,7 +22,7 @@ import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
 import { API_DOCUMENT } from './api.js';
-import { contentHashOf, PROFILE_BATCH, parseDeliveredFile } from './ingest.js';
+import { contentHashOf, PROFILE_BATCH, parseDeliveredFile, sniffDelimiter, sniffFormat, type ReadPlan } from './ingest.js';
 import { DEV_PROVIDER } from './personas.js';
 import { mountApi } from './routes.js';
 import { buildHost, linkDevPersonas, seed, type World } from './seed.js';
@@ -37,6 +37,16 @@ interface Run {
   row_count: number | null;
   complete?: boolean;
 }
+
+/**
+ * The plan the old code hardcoded, for a run recorded before the mapping was stored.
+ *
+ * A null `format` on a run is not missing data: it says this run predates the mapping being
+ * recorded, and every such run was read exactly this way. Reading it back through this
+ * constant is how an old run stays profilable without any row being rewritten to claim a
+ * choice nobody made.
+ */
+const LEGACY_PLAN: ReadPlan = { format: 'csv', delimiter: ',', timeField: 'occurred_at', subjectField: 'subject' };
 
 async function boot() {
   mkdirSync(FILES, { recursive: true });
@@ -92,9 +102,25 @@ async function boot() {
     if (bytes.byteLength === 0) return c.json({ error: 'the upload is empty' }, 400);
 
     const text = new TextDecoder().decode(bytes);
+
+    /**
+     * The caller says which columns are structural; the server still decides the FORMAT.
+     *
+     * Shape is a property of the bytes and is therefore the server's to read, while which
+     * column means "when" is a judgement only a person looking at the file can make. Taking
+     * the format on trust would let a caller claim `jsonl` for a semicolon CSV and get a file
+     * of unreadable lines instead of an error naming the real problem.
+     */
+    const format = sniffFormat(text);
+    const delimiter = format === 'csv' ? sniffDelimiter(text.split(/\r?\n/).find((l) => l.trim() !== '') ?? '') : null;
+    const timeField = c.req.query('timeField');
+    if (!timeField) return c.json({ error: 'name the column carrying the instant (timeField)' }, 400);
+    const subjectField = c.req.query('subjectField') || null;
+    const plan: ReadPlan = { format, delimiter, timeField, subjectField };
+
     let parsed;
     try {
-      parsed = parseDeliveredFile(text);
+      parsed = parseDeliveredFile(text, plan);
     } catch (e) {
       // A file we cannot read is a 400 naming why, never a run left half-open.
       return c.json({ error: (e as Error).message }, 400);
@@ -110,6 +136,10 @@ async function boot() {
       byteSize: bytes.byteLength,
       contentHash,
       storageKey,
+      format,
+      delimiter,
+      timeField,
+      subjectField,
       periodFrom: parsed.periodFrom,
       periodTo: parsed.periodTo,
     });
@@ -133,6 +163,12 @@ async function boot() {
     // `read-source-file` is `row:read`, and deliberately so: the bytes ARE raw rows. A caller
     // who may not read the rows may not drive this either.
     const stored = await scope.invoke<{ storage_key: string; content_hash: string }>('tock/read-source-file', { runId });
+    const opened = await scope.invoke<{
+      format: 'csv' | 'jsonl' | null;
+      delimiter: string | null;
+      time_field: string | null;
+      subject_field: string | null;
+    }>('tock/get-run', { runId });
 
     /**
      * The stored key becomes a PATH, so it is checked before it is used.
@@ -159,7 +195,17 @@ async function boot() {
       // file the caller cannot otherwise read.
       return c.json({ error: "the stored file does not match this run's content hash" }, 409);
 
-    const parsed = parseDeliveredFile(new TextDecoder().decode(bytes));
+    // The run's own plan, or the legacy one when it recorded none.
+    const plan: ReadPlan =
+      opened.format === null
+        ? LEGACY_PLAN
+        : {
+            format: opened.format,
+            delimiter: opened.delimiter,
+            timeField: opened.time_field ?? '',
+            subjectField: opened.subject_field,
+          };
+    const parsed = parseDeliveredFile(new TextDecoder().decode(bytes), plan);
     let run: Run | undefined;
     for (let i = 0; i < parsed.records.length; i += PROFILE_BATCH) {
       const batch = parsed.records.slice(i, i + PROFILE_BATCH);

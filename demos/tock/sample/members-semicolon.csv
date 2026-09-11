@@ -1,0 +1,6 @@
+Member id;Joined on;Country;Plan;Invoices paid;Total paid;Notes
+m-1001;2026-03-14T08:00:00Z;SE;standard;3;450;
+m-1002;2026-03-14T09:30:00Z;NO;premium;5;1250;renewed early
+m-1003;2026-03-14T11:00:00Z;SE;standard;1;150;
+m-1004;2026-03-14T12:00:00Z;;premium;2;500;"moved, address pending"
+m-1005;2026-03-15T07:45:00Z;DK;standard;4;600;

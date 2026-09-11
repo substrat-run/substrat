@@ -139,6 +139,9 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
   const [result, setResult] = useState<string | null>(null);
   /** An uploaded run whose profiling has not succeeded yet. */
   const [pending, setPending] = useState<string | null>(null);
+  /** The structural mapping — which column is the instant, and which the subject. */
+  const [timeField, setTimeField] = useState('');
+  const [subjectField, setSubjectField] = useState('');
   const { error, busy, run } = useAction();
   const [newKey, setNewKey] = useState('');
 
@@ -149,7 +152,12 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
     // A byte slice, never `f.text()`: the preview needs a shape, and reading a month of logs
     // into the tab to show six rows of it would freeze the very screen it is meant to speed up.
     const head = await readHead(f);
-    setPreview(previewFile(head.text, head.truncated));
+    const p = previewFile(head.text, head.truncated);
+    setPreview(p);
+    // A proposal the person confirms. Nothing is sent until they do, because which column
+    // means "when" is a judgement about the export rather than something in the bytes.
+    setTimeField(p.suggestedTime ?? '');
+    setSubjectField('');
   };
 
   /**
@@ -220,6 +228,32 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
 
       {preview && !preview.problem && (
         <>
+          <div className="row">
+            <label className="check">
+              instant column
+              <select value={timeField} onChange={(e) => setTimeField(e.target.value)}>
+                <option value="">— pick one —</option>
+                {preview.columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+              </select>
+            </label>
+            <label className="check">
+              subject column
+              <select value={subjectField} onChange={(e) => setSubjectField(e.target.value)}>
+                <option value="">none — every row counts once</option>
+                {preview.columns.map((c) => <option key={c.name} value={c.name}>{c.name}</option>)}
+              </select>
+            </label>
+            <span className="muted">
+              read as {preview.format === 'jsonl' ? 'JSON lines' : `CSV, ${preview.delimiter === '\t' ? 'tab' : preview.delimiter}-separated`}
+            </span>
+          </div>
+          {!subjectField && (
+            <p className="note">
+              With no subject column there is nothing to de-duplicate on, so every row counts once.
+              That is a legitimate answer for a file of facts; it is the wrong one for request logs,
+              where the same listener appearing twice should count once.
+            </p>
+          )}
           <p className="note">
             This is what <strong>your browser</strong> sees in the first {preview.sampled} row
             {preview.sampled === 1 ? '' : 's'}
@@ -253,9 +287,12 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
             </>
           ) : (
             <button
-              disabled={busy || !file}
+              disabled={busy || !file || !timeField}
               onClick={() => run(async () => {
-                const up = await upload(sourceKey, file!.name, file!);
+                const up = await upload(sourceKey, file!.name, file!, {
+                timeField,
+                subjectField: subjectField || null,
+              });
                 setPending(up.run.id);
                 await profileRun(up.run.id);
               })}

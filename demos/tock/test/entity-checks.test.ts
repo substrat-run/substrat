@@ -64,6 +64,13 @@ entityCheckConformanceSuite(
         byteSize: 64,
         contentHash: `sha256:conformance-${made}`,
         storageKey: `runs/conformance-${made}.log`,
+        // The structural mapping a run now records. Literals here rather than derived from
+        // the model: the fixture stands for a file, and which column carries the instant is
+        // a fact about a file that no schema implies.
+        format: 'csv',
+        delimiter: ',',
+        timeField: 'occurred_at',
+        subjectField: 'subject',
         periodFrom: '2026-03-14T00:00:00.000Z',
         periodTo: '2026-03-15T00:00:00.000Z',
       });

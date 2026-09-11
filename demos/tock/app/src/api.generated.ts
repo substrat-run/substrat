@@ -90,6 +90,10 @@ export interface Run {
   filename: string;
   byte_size: number;
   content_hash: string;
+  format: "csv" | "jsonl" | null;
+  delimiter: string | null;
+  time_field: string | null;
+  subject_field: string | null;
   status: "received" | "profiled" | "mapped" | "counted" | "failed";
   period_from: string;
   period_to: string;
@@ -191,7 +195,7 @@ export interface TockClient {
    *
    * `POST /runs/{runId}/count` — `tock/count-run`
    */
-  countRun(input: { runId: string; rules?: ({ kind: "bot_list" | "threshold" | "dedup_window" | "salt"; identifier: string; contentHash: string })[] }): Promise<{ id: string; source_key: string; schema_version: number | null; filename: string; byte_size: number; content_hash: string; status: "received" | "profiled" | "mapped" | "counted" | "failed"; period_from: string; period_to: string; row_count: number | null; rejected_count: number | null; received_at: string; received_by: string; counted_at: string | null; complete: boolean }>;
+  countRun(input: { runId: string; rules?: ({ kind: "bot_list" | "threshold" | "dedup_window" | "salt"; identifier: string; contentHash: string })[] }): Promise<{ id: string; source_key: string; schema_version: number | null; filename: string; byte_size: number; content_hash: string; format: "csv" | "jsonl" | null; delimiter: string | null; time_field: string | null; subject_field: string | null; status: "received" | "profiled" | "mapped" | "counted" | "failed"; period_from: string; period_to: string; row_count: number | null; rejected_count: number | null; received_at: string; received_by: string; counted_at: string | null; complete: boolean }>;
 
   /**
    * Declare a named stream of files
@@ -285,7 +289,7 @@ export interface TockClient {
    *
    * `POST /sources/{sourceKey}/runs` — `tock/receive-run`
    */
-  receiveRun(input: { sourceKey: string; filename: string; byteSize: number; contentHash: string; storageKey: string; periodFrom: string; periodTo: string }): Promise<Run>;
+  receiveRun(input: { sourceKey: string; filename: string; byteSize: number; format: "csv" | "jsonl"; delimiter: string | null; timeField: string; subjectField: string | null; contentHash: string; storageKey: string; periodFrom: string; periodTo: string }): Promise<Run>;
 
   /**
    * Counts for one grain and grouping over a period

@@ -117,7 +117,21 @@ POST /api/runs/:runId/profile      reads those bytes back, re-checks the hash, p
 
 That split is the whole trust boundary. `tock/profile-run` declares no HTTP route, so nothing
 mounts it and a browser cannot hand records in — the parsing happens on the server, over bytes
-the server stored. `demos/tock/sample/2026-03-14.csv` is a day of logs to drive it with.
+the server stored.
+
+**Nothing about a file's shape is assumed.** The server sniffs the format (CSV or JSON lines)
+and, for CSV, the delimiter — comma, semicolon, tab or pipe — because shape is a property of
+the bytes. Which column carries the instant, and which the subject, is a judgement only a
+person looking at the file can make, so the app proposes and you confirm. Nested JSON is
+flattened to dotted paths (`customer.billing.city`), and an array becomes one field holding
+its JSON rather than one field per index — indexing would manufacture the field explosion the
+findings view exists to report.
+
+A subject column is optional. Without one there is nothing to de-duplicate on, so every row
+counts once — the right answer for a file of facts, the wrong one for request logs.
+
+Three samples to drive it with: `sample/2026-03-14.csv` (comma), `sample/members-semicolon.csv`
+(semicolon, spaces in its column names) and `sample/orders.jsonl` (nested JSON).
 
 `test/scenario.test.ts` replays the concept's section 8 headlessly, and
 `test/entity-checks.test.ts` generates, from the declared model, the behavioural pair that

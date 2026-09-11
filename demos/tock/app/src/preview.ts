@@ -40,6 +40,11 @@ export interface PreviewColumn {
 }
 
 export interface Preview {
+  /** What the browser thinks this file is. The server sniffs it again and decides. */
+  format: 'csv' | 'jsonl';
+  delimiter: string | null;
+  /** The column the app proposes as the instant, or null when nothing looks like one. */
+  suggestedTime: string | null;
   columns: PreviewColumn[];
   rows: Record<string, string>[];
   sampled: number;
@@ -51,7 +56,59 @@ export interface Preview {
 
 const SAMPLE_ROWS = 50;
 
-function splitCsvLine(line: string): string[] {
+const DELIMITERS = [',', ';', '\t', '|'];
+
+/** Whichever delimiter yields the most cells in the header — counted outside quotes, so a
+ *  comma inside `"Doe, Jane"` cannot make the comma win in a semicolon file. */
+function sniffDelimiter(headerLine: string): string {
+  let best = ',';
+  let bestCount = 0;
+  for (const d of DELIMITERS) {
+    const n = splitCsvLine(headerLine, d).length;
+    if (n > bestCount) { best = d; bestCount = n; }
+  }
+  return best;
+}
+
+const MAX_DEPTH = 8;
+
+/** A nested value flattened to dotted paths. An array is ONE field holding its JSON — see
+ *  `src/ingest.ts` for why indexing it would manufacture a field explosion. */
+function flatten(value: unknown, prefix = '', depth = 0, out: Record<string, string> = {}): Record<string, string> {
+  if (value === null || value === undefined) { out[prefix || 'value'] = ''; return out; }
+  if (depth > MAX_DEPTH || Array.isArray(value)) { out[prefix || 'value'] = JSON.stringify(value); return out; }
+  if (typeof value === 'object') {
+    // An empty object contributes nothing — see `src/ingest.ts`: a `{}` leaf would make a path
+    // a leaf on one record and a branch on the next, which no schema can declare once.
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      flatten(v, prefix ? `${prefix}.${k}` : k, depth + 1, out);
+    }
+    return out;
+  }
+  out[prefix || 'value'] = String(value);
+  return out;
+}
+
+/**
+ * Which column most looks like the instant.
+ *
+ * A proposal, never a decision — the person confirms it, because "which column is when" is a
+ * judgement about the export rather than a property of the bytes. Name first (a column called
+ * `created_at` is a better guess than one that merely parses), then anything whose sampled
+ * values all read as dates.
+ */
+function suggestTime(columns: string[], rows: Record<string, string>[]): string | null {
+  const byName = columns.find((c) => /(date|time|stamp|created|occurred)/i.test(c));
+  if (byName) return byName;
+  return (
+    columns.find((c) => {
+      const seen = rows.map((r) => r[c] ?? '').filter((v) => v !== '');
+      return seen.length > 0 && seen.every((v) => !Number.isNaN(Date.parse(v)));
+    }) ?? null
+  );
+}
+
+function splitCsvLine(line: string, delimiter = ','): string[] {
   const out: string[] = [];
   let field = '';
   let quoted = false;
@@ -64,7 +121,7 @@ function splitCsvLine(line: string): string[] {
       } else if (ch === '"') quoted = false;
       else field += ch;
     } else if (ch === '"') quoted = true;
-    else if (ch === ',') {
+    else if (ch === delimiter) {
       out.push(field);
       field = '';
     } else field += ch;
@@ -85,36 +142,59 @@ function inferType(values: string[]): PreviewColumn['inferred'] {
 
 export function previewFile(text: string, truncatedBytes = false): Preview {
   const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
-  if (lines.length < 2) return { columns: [], rows: [], sampled: 0, truncated: false, problem: 'the file has no rows under its header' };
+  const empty = (problem: string, format: 'csv' | 'jsonl' = 'csv', delimiter: string | null = null): Preview =>
+    ({ format, delimiter, suggestedTime: null, columns: [], rows: [], sampled: 0, truncated: truncatedBytes, problem });
+  if (lines.length === 0) return empty('the file is empty');
 
-  const header = splitCsvLine(lines[0]!).map((h) => h.trim());
-  if (!header.includes('occurred_at') || !header.includes('subject'))
-    return {
-      columns: [],
-      rows: [],
-      sampled: 0,
-      truncated: false,
-      problem: `a delivered file needs an 'occurred_at' and a 'subject' column; this one has: ${header.join(', ')}`,
-    };
+  const format: 'csv' | 'jsonl' = /^[[{]/.test(text.trimStart()) ? 'jsonl' : 'csv';
+  let rows: Record<string, string>[] = [];
+  let columns: string[] = [];
+  let delimiter: string | null = null;
 
-  const body = lines.slice(1, SAMPLE_ROWS + 1);
-  const rows = body
-    .map((l) => splitCsvLine(l))
-    .filter((cells) => cells.length === header.length)
-    .map((cells) => Object.fromEntries(header.map((h, i) => [h, cells[i] ?? ''])));
+  if (format === 'csv') {
+    delimiter = sniffDelimiter(lines[0]!);
+    columns = splitCsvLine(lines[0]!, delimiter).map((h) => h.trim());
+    rows = lines
+      .slice(1, SAMPLE_ROWS + 1)
+      .map((l) => splitCsvLine(l, delimiter!))
+      .filter((cells) => cells.length === columns.length)
+      .map((cells) => Object.fromEntries(columns.map((h, i) => [h, cells[i] ?? ''])));
+  } else {
+    const seen = new Set<string>();
+    for (const line of lines.slice(0, SAMPLE_ROWS)) {
+      try {
+        const value: unknown = JSON.parse(line);
+        for (const item of Array.isArray(value) ? value : [value]) {
+          if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+          const flat = flatten(item);
+          Object.keys(flat).forEach((k) => seen.add(k));
+          rows.push(flat);
+        }
+      } catch {
+        /* an unreadable line contributes no names; the server reports it as malformed */
+      }
+    }
+    columns = [...seen];
+  }
 
-  const columns = header
-    // The two structural columns are not fields a schema models; they are how a record is
-    // addressed. Showing them as modellable would invite someone to mark `subject` a dimension,
-    // which is the one value this design never stores.
-    .filter((h) => h !== 'occurred_at' && h !== 'subject')
-    .map((name) => ({
-      name,
-      inferred: inferType(rows.map((r) => r[name] ?? '')),
-      empty: rows.filter((r) => (r[name] ?? '') === '').length,
-    }));
+  if (columns.length === 0) return empty('no readable records in the sample', format, delimiter);
 
-  // Truncated when the sample ran out of ROWS or when the byte slice ran out of FILE — a
-  // reader only needs to know the preview is partial, not which limit stopped it.
-  return { columns, rows, sampled: rows.length, truncated: truncatedBytes || lines.length - 1 > body.length };
+  const cols = columns.map((name) => ({
+    name,
+    inferred: inferType(rows.map((r) => r[name] ?? '')),
+    empty: rows.filter((r) => (r[name] ?? '') === '').length,
+  }));
+
+  return {
+    format,
+    delimiter,
+    suggestedTime: suggestTime(columns, rows),
+    columns: cols,
+    rows,
+    sampled: rows.length,
+    // Truncated when the sample ran out of ROWS or the byte slice ran out of FILE — a reader
+    // needs to know the preview is partial, not which limit stopped it.
+    truncated: truncatedBytes || (format === 'csv' ? lines.length - 1 > rows.length : lines.length > rows.length),
+  };
 }
+

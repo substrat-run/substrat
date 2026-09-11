@@ -38,7 +38,15 @@ export const conformance = declareEntityChecks({
     // `storageKey` is shape-refined (no absolute paths, no `..`), and the kit cannot invent a
     // value that satisfies a refinement — so the fixture is supplied here rather than the
     // constraint being loosened to keep a generator happy.
-    'tock/receive-run': { storageKey: 'files/conformance-fixture' },
+    'tock/receive-run': {
+      storageKey: 'files/conformance-fixture',
+      // The structural mapping is required now, and the kit cannot invent one: which column
+      // carries the instant is a judgement about a file, not something a schema implies.
+      format: 'csv',
+      delimiter: ',',
+      timeField: 'occurred_at',
+      subjectField: 'subject',
+    },
     'tock/map-run': { schemaVersion: 1 },
   },
   uncovered: {},
