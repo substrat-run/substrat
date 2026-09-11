@@ -314,6 +314,10 @@ export function emitHeaders(outDir: string, srcDir: string, siteWideWidget?: str
     // likely to want it.
     '/book.epub',
     '  Content-Type: application/epub+zip',
+    // The site names the file `book.epub`, which is right in a URL and poor in a phone's
+    // Files app next to everything else called book-something. Books takes its library
+    // title from the package metadata either way, so this only ever names the download.
+    '  Content-Disposition: attachment; filename="substrat-end-to-end.epub"',
     '',
   ].join('\n');
   writeFileSync(resolve(outDir, '_headers'), body);

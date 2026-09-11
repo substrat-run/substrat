@@ -51,8 +51,10 @@ The whole book is also published as a single document, three ways:
 All three are generated from these chapters at build time, so they cannot fall behind.
 
 ::: tip Reading it on a phone
-On iOS, tapping **book.epub** in Safari offers to open it in Books. On a Mac, downloading
-it and double-clicking does the same — and Books syncs it to your phone from there.
+There is no URL that opens Books directly — iOS decides that from the file itself. Tapping
+**book.epub** in Safari downloads it; opening it from Files then offers Books, which syncs
+it to your other devices. On a Mac, double-clicking the download does the same thing in one
+step.
 :::
 
 If you want the *reference* in one file instead — every page on this site, not just the
