@@ -15,8 +15,10 @@ import {
   authorityOf,
   callbackProviderOf,
   clientIdOfSignedQuery,
+  correlationOfState,
   errorOfRedirect,
   refusalOf,
+  stateOfAuthorizationUrl,
   type SignInLogger,
 } from './sign-in-log.js';
 
@@ -485,12 +487,16 @@ export function buildAuth(deps: AuthDeps) {
             record({ method, outcome: 'failed', phase: 'sign-in', clientId, ...refusalOf(returned) });
             return;
           }
+          const url = typeof returned?.url === 'string' ? returned.url : null;
           record({
             method,
             outcome: 'started',
             phase: 'sign-in',
             clientId,
-            authority: authorityOf(typeof returned?.url === 'string' ? returned.url : null),
+            authority: authorityOf(url),
+            // The `state` is the only thing that survives the trip to the provider and back, so
+            // a digest of it is what lets the callback's row find this one.
+            correlation: await correlationOfState(stateOfAuthorizationUrl(url)),
           });
           return;
         }
@@ -500,15 +506,21 @@ export function buildAuth(deps: AuthDeps) {
         // endpoint did not finish the way any of its paths do, which is worth a row saying so
         // rather than silence.
         const location = ctx.context.responseHeaders?.get('location');
+        // The same digest the outbound hop recorded — the provider hands the `state` back, which
+        // is what makes these two rows one attempt even when several are in flight.
+        const correlation = await correlationOfState(
+          (ctx.query as Record<string, string | undefined> | undefined)?.state,
+        );
         const refusal = errorOfRedirect(location);
         if (refusal) {
-          record({ method, outcome: 'failed', phase: 'callback', ...refusal });
+          record({ method, outcome: 'failed', phase: 'callback', correlation, ...refusal });
           return;
         }
         record({
           method,
           outcome: 'succeeded',
           phase: 'callback',
+          correlation,
           // Set by `setSessionCookie`, so present on a sign-in and absent on a LINK — which
           // redirects to the same callback URL with no new session. Both are successes.
           userId: (ctx.context.newSession as { user?: { id?: string } } | null | undefined)?.user?.id ?? null,

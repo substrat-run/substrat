@@ -242,9 +242,14 @@ ${models
     error TEXT,
     error_description TEXT,
     client_id TEXT,
-    user_id TEXT)\`,
+    user_id TEXT,
+    correlation TEXT)\`,
   // The two reads the console makes: the newest page, and the newest page for one method.
   \`CREATE INDEX IF NOT EXISTS sign_in_attempt_method_idx ON sign_in_attempt (method, id)\`,
+  // Finding the OTHER hop of one attempt. Without this join two people signing in at once
+  // produce two \`started\` rows and one answer, and nothing says which of them is still
+  // missing — which is the single inference the table exists to support.
+  \`CREATE INDEX IF NOT EXISTS sign_in_attempt_correlation_idx ON sign_in_attempt (correlation)\`,
 ];
 `;
 

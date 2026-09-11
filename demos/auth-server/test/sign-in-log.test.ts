@@ -10,6 +10,7 @@ import { genericProvidersFrom, readProviders, socialProvidersFrom, trustedProvid
 import {
   SIGN_IN_LOG_LIMIT,
   authorityOf,
+  correlationOfState,
   readSignInLog,
   recordSignInAttempt,
   signInLoggerFor,
@@ -305,6 +306,59 @@ describe('which application the person was trying to reach', () => {
     await startSignIn({ oauth_query: oauthQuery });
 
     expect(log()[0]).toMatchObject({ method: 'acme', outcome: 'started', clientId });
+  });
+});
+
+describe('which hops belong to one attempt', () => {
+  /**
+   * The log's headline reading — "a `started` with nothing after it means they never came back"
+   * — is an inference over two rows, and two people signing in at once is all it takes to make
+   * that inference wrong: `started, started, succeeded` says nothing about WHICH of them is
+   * still missing. So the rows are joined, and this is the test that the join survives exactly
+   * that interleaving.
+   */
+  it('joins the two halves even when several sign-ins are in flight at once', async () => {
+    saveAcme({ trust_email: 1 });
+
+    // Two people press the button before either comes back.
+    const first = await startSignIn();
+    const second = await startSignIn();
+    const stateOf = (url: string) => new URL(url).searchParams.get('state');
+
+    // The SECOND one finishes; the first never does.
+    await call(`/api/auth/callback/acme?code=an-authorization-code&state=${stateOf(second.url)}`, {
+      headers: { cookie: second.cookie },
+    });
+
+    const rows = log();
+    expect(rows).toHaveLength(3);
+    const answered = rows.find((r) => r.phase === 'callback');
+    expect(answered?.outcome).toBe('succeeded');
+    // The answer is joined to the SECOND start, and the first is identifiably the one left
+    // hanging — which is the whole claim, and is pure guesswork without the join.
+    expect(answered?.correlation).toBe(await correlationOfState(stateOf(second.url)));
+    expect(answered?.correlation).not.toBe(await correlationOfState(stateOf(first.url)));
+    const unanswered = rows.filter(
+      (r) => r.outcome === 'started' && !rows.some((o) => o.phase === 'callback' && o.correlation === r.correlation),
+    );
+    expect(unanswered).toHaveLength(1);
+    expect(unanswered[0]?.correlation).toBe(await correlationOfState(stateOf(first.url)));
+  });
+
+  it('is a digest, never the state itself — the log must hold no live single-use token', async () => {
+    saveAcme();
+    const { url } = await startSignIn();
+    const state = new URL(url).searchParams.get('state');
+
+    const stored = JSON.stringify(db.prepare('SELECT * FROM sign_in_attempt').all());
+
+    expect(stored).not.toContain(state);
+    expect(log()[0]?.correlation).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('answers null rather than throwing when there is no state to join on', async () => {
+    expect(await correlationOfState(null)).toBeNull();
+    expect(await correlationOfState('')).toBeNull();
   });
 });
 

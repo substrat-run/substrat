@@ -40,6 +40,11 @@ import type { SqlExec } from './introspect.js';
  * consent denied, an account outside the directory, a tenant that does not know this app — and
  * no amount of logging on this side will say more than the authority they were sent to.
  *
+ * That reading only holds because the two rows are JOINED (`correlation`, below). Without it,
+ * two people signing in through the same provider at once produce `started, started, succeeded`
+ * and nothing says which of them is still missing — so the one inference this table exists to
+ * support would have been wrong exactly when the issuer was busy.
+ *
  * ## What is NOT here
  *
  * No tokens, no codes, no `state`, no authorization URL in full (its query carries the PKCE
@@ -88,6 +93,12 @@ export interface SignInAttempt {
   clientId: string | null;
   /** The account this resolved to, once there is one. Null on a refusal — by definition. */
   userId: string | null;
+  /**
+   * Which ATTEMPT this hop belongs to — see `correlationOfState`. The two rows of one round trip
+   * carry the same value, and it is what makes "a `started` with nothing after it" a fact rather
+   * than an inference that two people signing in at once would break.
+   */
+  correlation: string | null;
 }
 
 /** What a writer supplies. Fixed and narrow on purpose — see the module header. */
@@ -100,6 +111,7 @@ export interface SignInAttemptInput {
   errorDescription?: string | null;
   clientId?: string | null;
   userId?: string | null;
+  correlation?: string | null;
 }
 
 /** The recorder `buildAuth` is handed. A no-op is a legitimate implementation (see `auth.ts`). */
@@ -121,7 +133,7 @@ export const SIGN_IN_LOG_LIMIT = 500;
 export const SIGN_IN_LOG_PAGE_MAX = 100;
 
 const COLUMNS =
-  'id, at, method, outcome, phase, authority, error, error_description, client_id, user_id';
+  'id, at, method, outcome, phase, authority, error, error_description, client_id, user_id, correlation';
 
 /**
  * Where a person was sent, from the authorization URL: everything EXCEPT the query.
@@ -163,8 +175,8 @@ export function recordSignInAttempt(sql: SqlExec, attempt: SignInAttemptInput): 
   try {
     sql.exec(
       `INSERT INTO sign_in_attempt
-         (at, method, outcome, phase, authority, error, error_description, client_id, user_id)
-       VALUES (cast(unixepoch('subsecond') * 1000 as integer), ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (at, method, outcome, phase, authority, error, error_description, client_id, user_id, correlation)
+       VALUES (cast(unixepoch('subsecond') * 1000 as integer), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       attempt.method,
       attempt.outcome,
       attempt.phase,
@@ -173,6 +185,7 @@ export function recordSignInAttempt(sql: SqlExec, attempt: SignInAttemptInput): 
       attempt.errorDescription ?? null,
       attempt.clientId ?? null,
       attempt.userId ?? null,
+      attempt.correlation ?? null,
     );
     // `id` is the rowid, so "the newest N" is an id comparison rather than a sort: the ring
     // trims by identity and cannot be confused by two rows landing in the same millisecond.
@@ -273,6 +286,47 @@ export function clientIdOfSignedQuery(value: unknown): string | null {
   }
 }
 
+/**
+ * The value that JOINS the two rows of one attempt: a short digest of the OAuth `state`.
+ *
+ * The state is the only thing that survives the round trip — it goes out in the authorization
+ * URL and comes back on the callback — so it is the one handle both hops can independently
+ * derive the same id from. Nothing else is available: the issuer stores no server-side record of
+ * a pending sign-in (that is the whole point of the signed state), and a cookie is not readable
+ * from a hook in a shape that would survive the provider's redirect.
+ *
+ * Hashed rather than stored, and that is not decoration. The raw `state` is what the callback
+ * checks the returning request against — it is the CSRF defence of the flow — so a log holding
+ * it in plaintext would be a log of live single-use tokens, which is precisely the class of
+ * thing this table refuses to carry. SHA-256 truncated to 16 hex characters is 64 bits: far too
+ * much to collide across a 500-row ring, and not reversible to the value it came from.
+ *
+ * Web Crypto — the same API in Node, workerd and a browser — which is what lets one function
+ * serve both runtimes with no import. Spelled as the bare `crypto`, as `bankid.ts` and
+ * `supabase-token.ts` beside it are: `globalThis.crypto` is not a typed property in this
+ * package's node program, and both spellings reach the same Web Crypto global.
+ */
+export async function correlationOfState(state: string | null | undefined): Promise<string | null> {
+  if (!state) return null;
+  try {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(state));
+    return Array.from(new Uint8Array(digest).slice(0, 8), (b) => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    // A runtime without Web Crypto loses the join, never the row.
+    return null;
+  }
+}
+
+/** The `state` in an authorization URL — the outbound half of the pair above. */
+export function stateOfAuthorizationUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).searchParams.get('state');
+  } catch {
+    return null;
+  }
+}
+
 /** A `SignInLogger` over one store. What both runtimes hand to `buildAuth`. */
 export function signInLoggerFor(sql: SqlExec): SignInLogger {
   return (attempt) => recordSignInAttempt(sql, attempt);
@@ -320,6 +374,7 @@ export function readSignInLog(sql: SqlExec, query: SignInLogQuery): { attempts: 
     error_description: string | null;
     client_id: string | null;
     user_id: string | null;
+    correlation: string | null;
   }[];
   const total = Number(
     (sql.exec('SELECT count(*) AS n FROM sign_in_attempt').toArray()[0] as { n: number }).n,
@@ -336,6 +391,7 @@ export function readSignInLog(sql: SqlExec, query: SignInLogQuery): { attempts: 
       errorDescription: row.error_description,
       clientId: row.client_id,
       userId: row.user_id,
+      correlation: row.correlation,
     })),
     total,
   };

@@ -1033,6 +1033,8 @@ export interface SignInAttempt {
   errorDescription: string | null;
   clientId: string | null;
   userId: string | null;
+  /** Which ATTEMPT this hop belongs to — the two rows of one round trip share it. */
+  correlation: string | null;
 }
 
 export interface SignInLogPage {
@@ -1046,12 +1048,21 @@ export interface SignInLogFilter {
   method?: string;
   outcome?: 'started' | 'succeeded' | 'failed';
   limit?: number;
+  /**
+   * The `id` of the oldest row already shown — ask for what comes BEFORE it.
+   *
+   * Keyset, not offset, and the server is built that way for a reason the screen inherits: the
+   * table is a ring pruned on write, so rows shift out from under a reader and an offset would
+   * silently skip whatever moved. An id cannot.
+   */
+  before?: number;
 }
 
 export async function signInLog(filter: SignInLogFilter = {}): Promise<SignInLogPage> {
   const query = new URLSearchParams();
   if (filter.method) query.set('method', filter.method);
   if (filter.outcome) query.set('outcome', filter.outcome);
+  if (filter.before !== undefined) query.set('before', String(filter.before));
   query.set('limit', String(filter.limit ?? 50));
   return admin(`/sign-in-log?${query}`);
 }

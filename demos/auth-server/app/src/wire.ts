@@ -29,6 +29,15 @@
  * `clientOptions` deliberately does NOT: a client's theme and sign-in narrowing have a correct
  * fallback (the issuer's own plain defaults), so that read degrades instead of failing, and it
  * already did. These two have no fallback — there is no honest "probably signed in".
+ *
+ * ## What a failure is allowed to SAY
+ *
+ * The status, and nothing the issuer wrote. These screens are pre-auth and themed as the
+ * relying party that sent the person here, so their reader is a stranger signing into somebody
+ * else's app — and `routes.ts` answers a failure with the raw `.message` of whatever threw
+ * inside the issuer. That text belongs in a console, not on a vendor's login screen, and it
+ * would not help the person reading it anyway. `IssuerUnreachable` therefore carries the two
+ * apart: a generic `message` for the screen, the issuer's own words in `detail` for the log.
  */
 
 /**
@@ -38,9 +47,29 @@
  */
 export class IssuerUnreachable extends Error {
   constructor(
+    /**
+     * What a SCREEN may say. Generic by construction — see `detail` for why — and safe to
+     * render to anyone, because anyone is who reads it.
+     */
     message: string,
     /** The HTTP status, when there was one — `0` for an answer that never parsed. */
     readonly status: number,
+    /**
+     * What the issuer actually said, for a console and nothing else.
+     *
+     * Held apart from `message` rather than folded into it, because the two have different
+     * audiences and only one of them is trusted. The failed screen is PRE-AUTH: it is drawn
+     * for whoever opened the login page of whichever relying party sent them, signed in or
+     * not, and it is themed as that vendor's own. `routes.ts` answers a failure with
+     * `{ error: err.message }` — the raw text of whatever threw inside the issuer — so folding
+     * it into what the page prints puts internal machinery in front of a stranger on a
+     * customer's branded sign-in screen. It also tells them nothing: a person trying to sign
+     * into an app cannot act on a message about this issuer's internals.
+     *
+     * It is still worth keeping. An operator debugging the same screen wants exactly this, so
+     * it rides on the exception and `App.tsx` logs it.
+     */
+    readonly detail?: string,
   ) {
     super(message);
     this.name = 'IssuerUnreachable';
@@ -86,11 +115,13 @@ export async function readIssuerJson<T>(
   shape: (value: unknown) => boolean,
 ): Promise<T> {
   const body = await res.text().catch(() => '');
+  // The status is said out loud and the issuer's own words are not: a number is a fact about
+  // the round trip that helps whoever is reading and discloses nothing about what is behind it.
   if (!res.ok) {
-    const said = errorTextOf(body);
     throw new IssuerUnreachable(
-      said ? `${what} could not be read: ${said}` : `${what} could not be read (the issuer answered ${res.status}).`,
+      `${what} could not be read (the issuer answered ${res.status}).`,
       res.status,
+      errorTextOf(body) ?? undefined,
     );
   }
   let parsed: unknown;
@@ -103,10 +134,10 @@ export async function readIssuerJson<T>(
     );
   }
   if (!shape(parsed)) {
-    const said = errorTextOf(body);
     throw new IssuerUnreachable(
-      said ? `${what} could not be read: ${said}` : `${what} came back in a shape this screen does not recognise.`,
+      `${what} came back in a shape this screen does not recognise.`,
       res.status,
+      errorTextOf(body) ?? undefined,
     );
   }
   return parsed as T;

@@ -20,6 +20,7 @@ import { SignUp } from './auth/SignUp';
 import { Console } from './console/Console';
 import { returnTarget } from './console/routes';
 import { Card, Centered } from './primitives';
+import { IssuerUnreachable } from './wire';
 
 type Phase =
   | { t: 'loading' }
@@ -178,6 +179,10 @@ export default function App() {
    */
   const run = useCallback(() => {
     refresh().catch((e: unknown) => {
+      // The issuer's own words go to the console and never to the page — `wire.ts` carries the
+      // two apart, and this is the half that is allowed to be specific.
+      const detail = e instanceof IssuerUnreachable ? e.detail : undefined;
+      if (detail) console.error('auth-server: the issuer said:', detail);
       setPhase({ t: 'failed', message: e instanceof Error ? e.message : String(e) });
     });
   }, [refresh]);

@@ -87,3 +87,32 @@ reason, the fact that it is the issuer's problem rather than the person's, and a
 button. `clientOptions` is deliberately left alone — a theme and a sign-in narrowing have an
 honest fallback in the issuer's own defaults, so that read degrades rather than failing.
 These two have no fallback; there is no honest “probably signed in”.
+
+## From review
+
+Three things the first cut got wrong, all worth the fix:
+
+**The two halves of one attempt were not joined.** "A hop out with nothing after it means they
+never came back" is an inference over two rows, and two people signing in at once is all it takes
+to break it: `started, started, succeeded` says nothing about which of them is still missing — so
+the inference the table exists to support would have been wrong exactly when the issuer was busy.
+The rows now carry a `correlation`, derived independently at both ends from the OAuth `state`,
+which is the only thing that survives the round trip. Hashed, truncated to 64 bits, never stored
+raw: the state is what the callback checks the returning request against, so a log holding it in
+plaintext would be a log of live single-use tokens — the exact class of thing this table refuses
+to carry. The screen uses it to mark an unanswered hop itself rather than asking a reader to pair
+rows up by eye.
+
+**The failed screen printed the issuer's own error text.** That screen is pre-auth and themed as
+whichever relying party sent the person there, so its reader is a stranger signing into somebody
+else's app — and `routes.ts` answers a failure with the raw `.message` of whatever threw inside
+the issuer. `IssuerUnreachable` now carries the two apart: a generic `message` with the status for
+the page, the issuer's own words in `detail`, which `App.tsx` logs to the console and never
+renders.
+
+**The screen claimed to page and did not.** The read was keyset-paged server-side and the view
+only ever asked for the newest page, so on a busy issuer the older four-fifths of the ring were
+unreachable from the one screen built to read it. There is now a Load older control, keyed on the
+oldest row's id — keyset rather than offset, for the reason the server is: the ring is pruned
+under a reader and an offset steps over whatever moved.
+

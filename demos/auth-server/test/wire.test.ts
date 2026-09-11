@@ -57,10 +57,20 @@ describe('an answer that is not an answer', () => {
 });
 
 describe("the issuer's own error envelope", () => {
-  it('is reported with the words it carries, never passed on as data', async () => {
+  /**
+   * The failed screen is PRE-AUTH and themed as whichever relying party sent the person here,
+   * so its reader is a stranger signing into somebody else's app — and `routes.ts` answers a
+   * failure with the raw `.message` of whatever threw inside the issuer. That text goes to a
+   * console; the page gets the status and nothing else.
+   */
+  it("keeps the issuer's words off the screen and on the exception", async () => {
     const res = answer(400, JSON.stringify({ error: "unknown table 'x'" }));
 
-    await expect(readSession(res)).rejects.toThrow(/unknown table 'x'/);
+    // What a screen would print says the status and names nothing internal.
+    await expect(readSession(res)).rejects.toThrow(/answered 400/);
+    await expect(readSession(res)).rejects.not.toThrow(/unknown table/);
+    // What a console can print is the whole of it.
+    await expect(readSession(res)).rejects.toMatchObject({ detail: "unknown table 'x'" });
   });
 
   it('is not mistaken for a session — the mistake that told an administrator they were not one', async () => {
