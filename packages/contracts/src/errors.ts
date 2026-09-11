@@ -225,9 +225,10 @@ export type Problem = z.infer<typeof problem>;
  *
  * Returns `undefined` — not a fabricated sentence — when the body said nothing readable.
  * The caller owns the fallback, because only it knows what it was doing: a status line,
- * a raw slice, the name of the command. Takes the PARSED body, so a caller that already
- * has one (and every one of them does, to read `probe` or `issues` beside the sentence)
- * does not parse it twice.
+ * a raw slice, the name of the command. Takes the PARSED body rather than the response,
+ * so the callers that read a member BESIDE the sentence — the dashboard's `probe`, the
+ * CLI's `issues` — do not parse it twice, and a caller with no `Response` at all (a
+ * service-binding reply, a test) can still use it.
  */
 export function problemDetail(body: unknown): string | undefined {
   if (body === null || typeof body !== 'object') return undefined;
