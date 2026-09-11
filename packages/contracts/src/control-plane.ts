@@ -75,6 +75,11 @@ export const adminAction = z.enum([
   // object" is recorded. It is also what licenses the prune below — nothing may be deleted
   // that this action did not first place somewhere durable.
   'drainAccessLog',
+  // #1334 — the same reasoning one tier down. Shipping DOMAIN payloads to Tier 2 is
+  // a larger egress than the access log's metadata, not a smaller one, so declaring
+  // a batch shipped is evidence in its own right: without this action nothing durable
+  // says who marked a customer's events as having left the platform, or when.
+  'drainEvents',
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
   // §4.1/§4.8 — before/after carry the transitioned status. Starting the delete grace

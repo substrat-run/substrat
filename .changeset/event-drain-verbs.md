@@ -26,7 +26,23 @@ that can find them again would put personal data somewhere an erasure cannot
 follow.
 
 Marking only ever stamps an UNDRAINED row, so a replayed batch cannot move an
-earlier drain's timestamp forward and misreport when a lake row shipped.
+earlier drain's timestamp forward and misreport when a lake row shipped. It
+returns how many rows it actually stamped, which is what makes that idempotence
+observable — and what the receipt below is written from.
+
+Declaring a batch shipped is now audited. Domain payloads leaving the platform
+are an egress, and a larger one than the access log's metadata, so the admin log
+gains a `drainEvents` action recording who declared it, for which scope, and how
+many rows it covered — the same evidence `drainAccessLog` already carries one
+tier up. A retried pass that re-marks a batch it already shipped changes nothing
+and records nothing, so the log never grows a row claiming an egress that never
+happened.
+
+The spine gains an index on `(drained_at, id)`. The drain reads
+`WHERE drained_at IS NULL ORDER BY id`, and no existing index started with that
+column, so SQLite walked the primary key from the oldest event forward. A drain
+retains what it marks, so that prefix only grows: finding the next batch would
+have cost more as a scope aged, regardless of how far behind the drain was.
 
 No sink yet, and nothing is wired into a sweep: this is the half that needs no
 infrastructure.

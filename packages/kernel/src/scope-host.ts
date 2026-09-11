@@ -2003,13 +2003,18 @@ export interface HostAdmin {
   /**
    * Stamp `drained_at` on events the sink accepted (#1334). Idempotent: marking a
    * row already marked changes nothing, so a retry after a partial ship is safe.
+   *
+   * Returns how many rows this call actually stamped — which is what makes the
+   * idempotence observable, and what the `drainEvents` admin receipt is written
+   * from. A pass that re-marks a batch it already shipped changes 0 and records
+   * nothing, so the log never grows a row claiming an egress that never happened.
    */
   markEventsDrained(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
     eventIds: readonly string[],
-  ): Promise<void>;
+  ): Promise<number>;
 
   /**
    * One record's event history (#1235) on a CO-LOCATED scope — `readHistory`'s

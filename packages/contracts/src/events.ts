@@ -89,8 +89,17 @@ export const domainEventInput = z
   .superRefine(piiInvariant);
 export type DomainEventInput = z.infer<typeof domainEventInput>;
 
-// The full envelope as it enters the spine.
-export const domainEvent = z
+/**
+ * The envelope's SHAPE, unrefined — the one place its fields are written down.
+ *
+ * `domainEvent` below is this plus the PII rule, and `drainedEvent` is this with
+ * two columns swapped in plus the SAME rule. Keeping the shape separate is what
+ * lets the second exist: the two schemas disagree about `operation` (optional in
+ * the envelope, nullable on the way out of the spine), so neither can be built
+ * from the other by extension, and intersecting them would demand a value satisfy
+ * both — which `null` cannot.
+ */
+const domainEventShape = z
   .object({
     id: eventId, // ULID; idempotency key downstream (consumers are required-idempotent)
     type: eventType,
@@ -122,8 +131,10 @@ export const domainEvent = z
     // things that are not operations — and absent on rows that predate the field.
     operation: z.string().min(1).optional(),
     payload: z.unknown(),
-  })
-  .superRefine(piiInvariant);
+  });
+
+// The full envelope as it enters the spine.
+export const domainEvent = domainEventShape.superRefine(piiInvariant);
 export type DomainEvent = z.infer<typeof domainEvent>;
 
 /**
@@ -229,14 +240,14 @@ export type HistoryEntry = z.infer<typeof historyEntry>;
  *   the K-42 stamp and the signals dimensions, whose nulls stay facts on the way
  *   out exactly as `historyEntry` documents them.
  */
-// An INTERSECTION rather than `.extend`: `domainEvent` carries refinements (the
-// PII rule — a `direct` class must name a subject), and zod refuses to extend a
-// refined object, while `.safeExtend` only overrides keys that already exist.
-// Intersecting keeps the refinement applying to the envelope it was written for
-// and adds the two column-only dimensions beside it.
-export const drainedEvent = z.intersection(
-  domainEvent,
-  z.object({
+// Built from the SHAPE, not from `domainEvent` — and deliberately not as an
+// intersection of the two. `operation` is `.optional()` on the envelope and
+// nullable here, and an intersection requires a value to satisfy BOTH sides: the
+// one thing this schema exists to carry, a drained row whose `operation` is null,
+// is exactly what such a schema would reject. Re-applying `piiInvariant` keeps the
+// PII rule the envelope's own — a `direct` class must still name a subject.
+export const drainedEvent = domainEventShape
+  .extend({
     /**
      * The `invoke()` string this event was emitted from (#1231), or null — two
      * facts the spine cannot separate afterwards: a consumer emitted it (no
@@ -250,6 +261,6 @@ export const drainedEvent = z.intersection(
      * few sanctioned joins from an event to its push.
      */
     version: z.string().nullable(),
-  }),
-);
+  })
+  .superRefine(piiInvariant);
 export type DrainedEvent = z.infer<typeof drainedEvent>;

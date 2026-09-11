@@ -427,6 +427,15 @@ const KERNEL_DDL = `
   -- #1232: the freshness evaluator's read — MAX(occurred_at) per type, every pass,
   -- over a table that is never pruned. Unindexed, that is a full history scan.
   CREATE INDEX IF NOT EXISTS _substrat_outbox_type_at ON _substrat_outbox (type, occurred_at);
+  -- #1334: the drain's read — WHERE drained_at IS NULL ORDER BY id. No existing index
+  -- starts with drained_at, so without this one SQLite walks the PRIMARY KEY from the
+  -- oldest event forward, stepping over every row a previous pass already shipped. A
+  -- drain RETAINS what it marks, so that prefix only grows: the cost of finding the next
+  -- batch would rise with the scope's lifetime event count rather than with how far
+  -- behind the drain is. Leading with drained_at makes the undrained rows a seekable
+  -- range, and the trailing id gives the ORDER BY for free. IF NOT EXISTS in
+  -- KERNEL_DDL, which every runtime() re-runs, so existing scopes get it on next wake.
+  CREATE INDEX IF NOT EXISTS _substrat_outbox_drained ON _substrat_outbox (drained_at, id);
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
   -- to drain and execute with HostAdmin authority — the sandbox-clean way a vertical asks for a
   -- privileged action. Written by the kernel (spine), settled by the platform drain.
@@ -5609,8 +5618,8 @@ export class SqliteScopeHost implements ScopeHost {
           version: (r.version as string | null) ?? null,
         })) as never;
       },
-      markEventsDrained: async (_actor, tenantId, scopeId, eventIds) => {
-        if (eventIds.length === 0) return;
+      markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {
+        if (eventIds.length === 0) return 0;
         const db = this.scopeDbFor(tenantId, scopeId);
         const at = new Date().toISOString();
         // Only an UNDRAINED row is stamped, so a replayed batch cannot move an
@@ -5618,7 +5627,24 @@ export class SqliteScopeHost implements ScopeHost {
         const stmt = db.prepare(
           `UPDATE _substrat_outbox SET drained_at = ? WHERE id = ? AND drained_at IS NULL`,
         );
-        for (const id of eventIds) stmt.run(at, id);
+        let drained = 0;
+        for (const id of eventIds) drained += stmt.run(at, id).changes;
+        // K-24's rule, one tier down (#1334): declaring domain payloads shipped is an
+        // EGRESS, and the admin log is where "these events left the platform, at this
+        // time, on this actor's say-so" is recorded. `drainAccessLog` audits the same
+        // act for the smaller class of data; this one carries the larger. Only a
+        // NONZERO change is recorded, so a retried pass that re-marks a batch it
+        // already shipped writes no row claiming an egress that never happened.
+        if (drained > 0) {
+          this.recordAdmin(
+            actor,
+            'drainEvents',
+            { tenantId, scopeId },
+            null,
+            { drained, requested: eventIds.length, drainedAt: at },
+          );
+        }
+        return drained;
       },
       entityHistory: async (actor, tenantId, scopeId, input) => {
         // `readHistory` over this scope's own outbox — the sanctioned read, and the

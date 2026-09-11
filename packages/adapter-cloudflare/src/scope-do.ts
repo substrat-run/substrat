@@ -241,6 +241,15 @@ const KERNEL_DDL = `
   -- #1232: the freshness evaluator's read - MAX(occurred_at) per type, every pass,
   -- over a table that is never pruned. Unindexed, that is a full history scan.
   CREATE INDEX IF NOT EXISTS _substrat_outbox_type_at ON _substrat_outbox (type, occurred_at);
+  -- #1334: the drain's read - WHERE drained_at IS NULL ORDER BY id. No existing index
+  -- starts with drained_at, so without this one SQLite walks the PRIMARY KEY from the
+  -- oldest event forward, stepping over every row a previous pass already shipped. A
+  -- drain RETAINS what it marks, so that prefix only grows: the cost of finding the next
+  -- batch would rise with the scope's lifetime event count rather than with how far
+  -- behind the drain is. Leading with drained_at makes the undrained rows a seekable
+  -- range, and the trailing id gives the ORDER BY for free. IF NOT EXISTS in the spine
+  -- DDL, which every wake re-runs, so existing scopes get it too.
+  CREATE INDEX IF NOT EXISTS _substrat_outbox_drained ON _substrat_outbox (drained_at, id);
   -- platform-intents.md: durable intents a vertical enqueues (ctx.requestPlatform) for the platform
   -- to drain and execute with HostAdmin authority -- the sandbox-clean way a vertical asks for a
   -- privileged action. Written by the kernel (spine), settled by the platform drain.
@@ -981,10 +990,31 @@ export function defineScopeDO(
       })) as DrainedEvent[];
     }
 
-    /** Stamp `drained_at` on shipped events (#1334). Idempotent — a re-mark is a no-op. */
-    async markEventsDrained(eventIds: readonly string[], at: string): Promise<void> {
-      if (eventIds.length === 0) return;
-      await this.queue.enqueue(() => {
+    /**
+     * Stamp `drained_at` on shipped events (#1334). Idempotent — a re-mark is a no-op,
+     * and the returned count is how that becomes observable: the coordinator writes its
+     * `drainEvents` admin receipt only when this is nonzero, so a retried pass records
+     * no egress it did not actually perform.
+     */
+    async markEventsDrained(eventIds: readonly string[], at: string): Promise<number> {
+      if (eventIds.length === 0) return 0;
+      return await this.queue.enqueue(() => {
+        // Counted BEFORE the stamps, not from the cursors after them. `rowsWritten`
+        // is what workerd physically wrote, INDEX entries included, so stamping two
+        // rows reports four once `_substrat_outbox_drained` exists — a receipt built
+        // on it would claim twice the egress it performed, and would drift again
+        // with any future index. The queue has this scope to itself, so a count
+        // taken here is the count the loop below goes on to change.
+        const placeholders = eventIds.map(() => '?').join(',');
+        const drained = (
+          this.sql
+            .exec(
+              `SELECT COUNT(*) AS c FROM _substrat_outbox
+                WHERE drained_at IS NULL AND id IN (${placeholders})`,
+              ...eventIds,
+            )
+            .toArray()[0] as { c: number }
+        ).c;
         for (const id of eventIds) {
           // Only an UNDRAINED row is stamped, so a replayed batch cannot move an
           // earlier drain's timestamp forward and misreport when it shipped.
@@ -994,6 +1024,7 @@ export function defineScopeDO(
             id,
           );
         }
+        return drained;
       });
     }
 

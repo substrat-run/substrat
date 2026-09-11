@@ -935,7 +935,7 @@ interface ScopeStubRpc {
     cursor?: string;
   }): Promise<Page<HistoryEntry>>;
   undrainedEvents(limit: number): Promise<DrainedEvent[]>;
-  markEventsDrained(eventIds: readonly string[], at: string): Promise<void>;
+  markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -3889,10 +3889,28 @@ export class CloudflareScopeHost implements ScopeHost {
         await this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, events.length);
         return events;
       },
-      markEventsDrained: async (actor, tenantId, scopeId, eventIds): Promise<void> => {
+      markEventsDrained: async (actor, tenantId, scopeId, eventIds): Promise<number> => {
         const row = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
-        await this.scopeStub(scopeId).markEventsDrained(eventIds, new Date().toISOString());
+        if (eventIds.length === 0) return 0;
+        const drainedAt = new Date().toISOString();
+        const drained = await this.scopeStub(scopeId).markEventsDrained(eventIds, drainedAt);
+        // K-24's rule, one tier down (#1334): declaring domain payloads shipped is an
+        // EGRESS, and the admin log is where "these events left the platform, at this
+        // time, on this actor's say-so" is recorded. `drainAccessLog` audits the same
+        // act for the smaller class of data; this one carries the larger. Only a
+        // NONZERO change is recorded, so a retried pass that re-marks a batch it
+        // already shipped writes no row claiming an egress that never happened.
+        if (drained > 0) {
+          await this.recordAdmin(
+            actor,
+            'drainEvents',
+            { tenantId, scopeId },
+            null,
+            { drained, requested: eventIds.length, drainedAt },
+          );
+        }
+        return drained;
       },
       entityHistory: async (
         actor,
