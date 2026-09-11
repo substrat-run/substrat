@@ -55,15 +55,22 @@ export type FigureSet = Map<string, string>;
  * Props are part of it because a component that takes them draws a different picture
  * for each (`<StateMachine engine="booking" />`). Sorted, so two spellings of the
  * same props are one entry.
+ *
+ * JSON rather than the query string it looks like it wants to be: a prop value is
+ * `[^"]*` in `COMPONENT_LINE`, so it may contain `&` and `=` — and `x="a&y=b"` would
+ * then key the same as `x="a" y="b"`, which is one render silently answering for two
+ * different pictures. The separator has to be one the values cannot contain.
  */
 export function figureKey(name: string, props: Record<string, string> = {}): string {
   const entries = Object.entries(props).sort(([a], [b]) => a.localeCompare(b));
-  return entries.length === 0
-    ? name
-    : `${name}?${entries.map(([k, v]) => `${k}=${v}`).join('&')}`;
+  return entries.length === 0 ? name : `${name}?${JSON.stringify(entries)}`;
 }
 
-/** The component half of a `figureKey` — `StateMachine?engine=booking` → `StateMachine`. */
+/**
+ * The component half of a `figureKey` — `StateMachine?[["engine","booking"]]` →
+ * `StateMachine`. A component name is `[A-Z]\w*`, so the first `?` is always the
+ * separator whatever the props encode to.
+ */
 export const componentOf = (key: string): string => key.split('?')[0]!;
 
 const componentFile = (name: string): string =>

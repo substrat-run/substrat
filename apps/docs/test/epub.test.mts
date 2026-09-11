@@ -13,7 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { unzipSync, strFromU8 } from 'fflate';
 import { parseXml } from '@rgrove/parse-xml';
 import { buildEpub, figureRequests, readCover } from '../.vitepress/epub.mjs';
-import { renderFigures } from '../.vitepress/figures.mjs';
+import { componentOf, figureKey, renderFigures } from '../.vitepress/figures.mjs';
 import { bookChapters } from '../.vitepress/sidebar.mjs';
 
 const SRC = resolve(fileURLToPath(import.meta.url), '../..');
@@ -124,13 +124,39 @@ describe('the figures', () => {
     ]);
   });
 
+  /**
+   * Asking for a figure is not getting one: `buildEpub` falls back to the prose twin
+   * for anything `renderFigures` did not return, and a twin is prose a chapter is
+   * entitled to have — so nothing above this would go red if a component stopped
+   * rendering. The wrapper is the proof that the picture, not the paragraph, is what
+   * shipped.
+   */
+  it('ships a wrapper for every one of them', () => {
+    const book = chapterDocs.map((doc) => text(doc)).join('\n');
+    for (const { name } of requests) {
+      expect(book).toContain(`class="figure figure--${name}"`);
+    }
+  });
+
+  /**
+   * A prop value is `[^"]*`, so it may contain the characters a query string uses as
+   * separators. The book passes no props today; the key has to survive the first one
+   * that does, because the failure is silent — one render answering for two pictures.
+   */
+  it('keys two different prop sets apart when the values carry separators', () => {
+    expect(figureKey('StateMachine', { x: 'a&y=b' })).not.toBe(
+      figureKey('StateMachine', { x: 'a', y: 'b' }),
+    );
+    expect(componentOf(figureKey('StateMachine', { x: 'a&y=b' }))).toBe('StateMachine');
+  });
+
   it('leaves no chapter holding a pointer at the web page instead', () => {
     for (const doc of chapterDocs) {
       expect(text(doc)).not.toContain('rendered at the HTML page');
     }
   });
 
-  it('puts the components own markup in the chapter', () => {
+  it('puts each one in the chapter that asks for it', () => {
     const ch2 = text('EPUB/text/02-tenants-and-scopes.xhtml');
     expect(ch2).toContain('class="figure figure--TenancyTree"');
     expect(ch2).toContain('class="figure figure--ScopeTopology"');
