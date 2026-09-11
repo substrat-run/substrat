@@ -429,6 +429,9 @@ export type { HistoryEntry } from '@substrat-run/contracts';
  */
 export interface AppHealthRow {
   scopeId: string;
+  /** The app's own name and vertical slug — whose app this is, on the row itself. */
+  name: string;
+  vertical: string;
   state: 'failing' | 'stale' | 'silent' | 'ok' | 'unknown';
   reason: string;
   failures: number;

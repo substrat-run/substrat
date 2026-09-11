@@ -42,6 +42,40 @@ import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 const SERIES_URL_BUDGET = 4096;
 
 /**
+ * One list read, with the two facts about the READ that its rows cannot state.
+ *
+ * Every consumer of a bounded list read has to decide what the absence of a row
+ * means, and only these flags answer it: rows + `complete: true` is the record;
+ * rows + `complete: false` is a window with older rows behind it; `failed: true` is
+ * no answer at all. The fleet rollup (#1238) turns each of those into a different
+ * verdict, because rendering "I could not see" as "nothing is wrong" is the one
+ * mistake the signals views exist to refuse.
+ */
+export interface ListRead<T> {
+  entries: T[];
+  complete: boolean;
+  failed: boolean;
+}
+
+/** Filter for the ops-failure record. `since` windows it; the plane matches `at >= since`. */
+export interface OpsFailureRead {
+  vertical?: string;
+  since?: string;
+  limit?: number;
+}
+
+/** Filter for the sweep record (#1232). */
+export interface SweepRunRead {
+  kind?: 'connector' | 'schedule' | 'freshness';
+  connectionId?: string;
+  scopeId?: string;
+  unit?: string;
+  outcome?: 'ok' | 'failed' | 'skipped';
+  since?: string;
+  limit?: number;
+}
+
+/**
  * The tenant-narrowed platform authority — the crux of docs/architecture/dashboard.md §4.
  *
  * A customer's tenant-admin must be able to provision an app on the SHARED control
@@ -227,6 +261,51 @@ export class TenantNarrowedControlPlane {
       cursor = nextCursor ?? undefined;
     } while (cursor !== undefined);
     return all;
+  }
+
+  /**
+   * One FILTERED CP list read, walked as capped pages — and honest about what it saw.
+   *
+   * The route caps a page at `LIST_PAGE_MAX`, and a limit past the cap is a 400 the
+   * skew guard below would swallow into `[]` — a panel silently blank, the exact
+   * failure class these records exist to surface. So a larger ask is a CURSOR WALK of
+   * capped pages, never one oversized request.
+   *
+   * The two facts beside the rows are what a plain array cannot carry, and what a
+   * derivation that RANKS apps by these rows needs (#1238): `complete` is false when
+   * the walk stopped at `limit` with a cursor still pending — there are older rows it
+   * did not fetch, so its silence about an app means nothing. `failed` is the read
+   * itself not happening, which is distinct from an empty window and the only case in
+   * which zero rows may not be read as "nothing recorded".
+   */
+  private async walkList<T>(
+    path: string,
+    params: Record<string, string | undefined>,
+    limit?: number,
+  ): Promise<ListRead<T>> {
+    const wanted = limit ?? LIST_PAGE_MAX;
+    const entries: T[] = [];
+    let cursor: string | undefined;
+    try {
+      while (entries.length < wanted) {
+        const q = new URLSearchParams({ tenantId: this.tenantId });
+        for (const [k, v] of Object.entries(params)) if (v !== undefined) q.set(k, v);
+        q.set('limit', String(Math.min(wanted - entries.length, LIST_PAGE_MAX)));
+        if (cursor !== undefined) q.set('cursor', cursor);
+        const page = await this.call<Page<T> | T[] | undefined>(`${path}?${q.toString()}`);
+        // A bare array is a pre-envelope plane (deploy skew): one exhausted page.
+        if (Array.isArray(page)) return { entries: [...entries, ...page], complete: true, failed: false };
+        entries.push(...(page?.entries ?? []));
+        if (!page?.nextCursor) return { entries, complete: true, failed: false };
+        cursor = page.nextCursor;
+      }
+      // `limit` reached with a cursor still pending: this read is a window, not the record.
+      return { entries, complete: false, failed: false };
+    } catch {
+      // Deploy skew (a plane predating the route): no panel, never an error — and
+      // never a clean bill of health either, which is what `failed` is for.
+      return { entries, complete: false, failed: true };
+    }
   }
 
   /** Ensure the caller's tenant exists in the shared directory (idempotent). */
@@ -967,32 +1046,21 @@ export class TenantNarrowedControlPlane {
    * forced `tenantId` is this seam's narrowing, not the CP's builder rule. Tolerated
    * to empty against a plane predating the route (deploy skew).
    */
-  async listOpsFailures(filter: { vertical?: string; limit?: number } = {}): Promise<OpsFailureEntry[]> {
-    // A limit past the plane's page cap must not become one oversized request —
-    // so a larger ask is a CURSOR WALK of capped pages, the listSweepRuns pattern.
-    const wanted = filter.limit ?? LIST_PAGE_MAX;
-    const out: OpsFailureEntry[] = [];
-    let cursor: string | undefined;
-    try {
-      while (out.length < wanted) {
-        const q = new URLSearchParams({ tenantId: this.tenantId });
-        if (filter.vertical !== undefined) q.set('vertical', filter.vertical);
-        q.set('limit', String(Math.min(wanted - out.length, LIST_PAGE_MAX)));
-        if (cursor !== undefined) q.set('cursor', cursor);
-        const page = await this.call<Page<OpsFailureEntry> | OpsFailureEntry[] | undefined>(
-          `/ops-failures?${q.toString()}`,
-        );
-        // A bare array is a pre-envelope plane (deploy skew): one exhausted page.
-        if (Array.isArray(page)) return [...out, ...page];
-        out.push(...(page?.entries ?? []));
-        if (!page?.nextCursor) return out;
-        cursor = page.nextCursor;
-      }
-      return out;
-    } catch {
-      // Deploy skew (a plane predating the route): no panel, never an error.
-      return out.length > 0 ? out : [];
-    }
+  async listOpsFailures(filter: OpsFailureRead = {}): Promise<OpsFailureEntry[]> {
+    return (await this.readOpsFailures(filter)).entries;
+  }
+
+  /**
+   * The same read, carrying whether it saw everything (`walkList`). A caller that
+   * RANKS apps by what these rows say — the fleet rollup (#1238) — must be able to
+   * tell "nothing is recorded" from "I did not reach the end of the record".
+   */
+  readOpsFailures(filter: OpsFailureRead = {}): Promise<ListRead<OpsFailureEntry>> {
+    return this.walkList<OpsFailureEntry>(
+      '/ops-failures',
+      { vertical: filter.vertical, since: filter.since },
+      filter.limit,
+    );
   }
 
   /**
@@ -1000,49 +1068,24 @@ export class TenantNarrowedControlPlane {
    * last swept and how it went, the recent-runs strip's data. Tenant-pinned and
    * deploy-skew-tolerant exactly as `listOpsFailures` above.
    */
-  async listSweepRuns(
-    filter: {
-      kind?: 'connector' | 'schedule' | 'freshness';
-      connectionId?: string;
-      scopeId?: string;
-      unit?: string;
-      outcome?: 'ok' | 'failed' | 'skipped';
-      since?: string;
-      limit?: number;
-    } = {},
-  ): Promise<SweepRunEntry[]> {
-    // The route caps a page at LIST_PAGE_MAX, and a limit past the cap is a 400 the
-    // skew guard below would swallow into [] — the account page's strips silently
-    // blank, the exact failure class this record exists to surface. So a larger ask
-    // is a CURSOR WALK of capped pages, never one oversized request.
-    const wanted = filter.limit ?? LIST_PAGE_MAX;
-    const out: SweepRunEntry[] = [];
-    let cursor: string | undefined;
-    try {
-      while (out.length < wanted) {
-        const q = new URLSearchParams({ tenantId: this.tenantId });
-        if (filter.kind !== undefined) q.set('kind', filter.kind);
-        if (filter.connectionId !== undefined) q.set('connectionId', filter.connectionId);
-        if (filter.scopeId !== undefined) q.set('scopeId', filter.scopeId);
-        if (filter.unit !== undefined) q.set('unit', filter.unit);
-        if (filter.outcome !== undefined) q.set('outcome', filter.outcome);
-        if (filter.since !== undefined) q.set('since', filter.since);
-        q.set('limit', String(Math.min(wanted - out.length, LIST_PAGE_MAX)));
-        if (cursor !== undefined) q.set('cursor', cursor);
-        const page = await this.call<Page<SweepRunEntry> | SweepRunEntry[] | undefined>(
-          `/sweep-runs?${q.toString()}`,
-        );
-        // A bare array is a pre-envelope plane (deploy skew): one exhausted page.
-        if (Array.isArray(page)) return [...out, ...page];
-        out.push(...(page?.entries ?? []));
-        if (!page?.nextCursor) return out;
-        cursor = page.nextCursor;
-      }
-      return out;
-    } catch {
-      // Deploy skew (a plane predating the route): no strip, never an error.
-      return out.length > 0 ? out : [];
-    }
+  async listSweepRuns(filter: SweepRunRead = {}): Promise<SweepRunEntry[]> {
+    return (await this.readSweepRuns(filter)).entries;
+  }
+
+  /** The same read, carrying whether it saw everything — `readOpsFailures`'s reason. */
+  readSweepRuns(filter: SweepRunRead = {}): Promise<ListRead<SweepRunEntry>> {
+    return this.walkList<SweepRunEntry>(
+      '/sweep-runs',
+      {
+        kind: filter.kind,
+        connectionId: filter.connectionId,
+        scopeId: filter.scopeId,
+        unit: filter.unit,
+        outcome: filter.outcome,
+        since: filter.since,
+      },
+      filter.limit,
+    );
   }
 
   /** One channel's promotion timeline, newest first — the rollback picker's data. */

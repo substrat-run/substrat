@@ -20,4 +20,14 @@ sweep reporting an absence (`stale`), not a broken sweep (`failing`) — countin
 it as both would let "an event is overdue" masquerade as "the machinery broke"
 and lose the more specific answer.
 
-A read that fails answers `unknown` for every app rather than a cheerful `ok`.
+Each row names the app and its vertical, not only its scope id: the operator this
+panel is for reads it to find out WHOSE app is broken, and an opaque id makes them
+open every row to find out.
+
+A read that fails answers `unknown` for every app rather than a cheerful `ok`, and
+so does a read that was TRUNCATED — the reads are bounded (this runs inside a page
+paint, and a tenant-wide record has no ceiling), so each one reports whether it
+reached the end of its window and the verdict degrades accordingly. "Nothing found"
+is never rendered as "nothing there". The failure questions and the "has anything
+checked this app at all" question get separate narrowed reads, so the broad one
+running out of room costs the `silent` verdict alone and not the panel.

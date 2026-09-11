@@ -1859,17 +1859,34 @@ app.get('/api/apps/:scopeId/tables', async (c) => {
  * can browse. The nulls it carries are FACTS the renderer must not flatten — an
  * erased payload, an unrecorded authorization chain, nobody impersonating.
  */
+/** The rollup's window: "lately", the same 24 hours the account page's strips read. */
+const FLEET_HEALTH_WINDOW_MS = 24 * 3_600_000;
+
+/**
+ * Rows one of the rollup's reads will fetch before it calls itself a window.
+ *
+ * Deliberately a cap and not an unbounded walk: this runs inside a page paint, and a
+ * tenant-wide record has no ceiling a request may assume. The honesty is in reporting
+ * the truncation (`ListRead.complete`) rather than in pretending it cannot happen —
+ * 400 rows is two capped pages, and what lies past them degrades one verdict instead
+ * of blanking the panel.
+ */
+const FLEET_HEALTH_ROW_MAX = 400;
+
 /**
  * The fleet rollup (#1238): one health verdict per app, worst first — "is this
  * group healthy" answered before any drill-down, which is the question a
  * multi-client operator opens the dashboard to ask.
  *
  * Composition, not new observation: failures come from the ops-failure record and
- * sweep/freshness verdicts from the sweep record, both read ONCE for the tenant
- * and grouped per scope here rather than fetched per app — the shape the account
- * integrations page already uses, because N apps must not mean 2N reads.
+ * sweep/freshness verdicts from the sweep record, read for the TENANT — a fixed
+ * number of reads, grouped per scope here rather than fetched per app, which is the
+ * shape the account integrations page already uses because N apps must not mean 2N
+ * reads.
  *
- * A read that fails answers `unknown` for every app rather than a cheerful `ok`.
+ * A read that fails answers `unknown` for every app rather than a cheerful `ok`, and
+ * so does a read that stopped at its cap: each read reports whether it reached the
+ * end of the window, and a verdict is only as strong as the read behind it.
  */
 // Deliberately NOT `/api/apps/health`: no bare `/api/apps/:scopeId` route exists
 // today, but adding one later would silently capture `health` as a scope id.
@@ -1879,23 +1896,45 @@ app.get('/api/fleet-health', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const scopeIds = apps.map((a) => a.app_scope_id);
-  if (scopeIds.length === 0) return c.json({ rows: [] });
+  // The verdict carries the app's own name and vertical: the operator this view is
+  // for runs one vertical for thirty clients, and a scope id does not tell them whose
+  // app is broken.
+  const fleet = apps.map((a) => ({ scopeId: a.app_scope_id, name: a.name, vertical: a.vertical_slug }));
+  if (fleet.length === 0) return c.json({ rows: [] });
 
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const since = new Date(Date.now() - 24 * 3_600_000).toISOString();
-  // `null` is "the read failed", which the derivation renders as unknown — distinct
-  // from an empty list, which honestly means "nothing recorded in the window".
-  const [failures, sweeps] = await Promise.all([
-    cp.listOpsFailures({ limit: 400 }).catch(() => null),
-    cp.listSweepRuns({ since, limit: 400 }).catch(() => null),
+  const since = new Date(Date.now() - FLEET_HEALTH_WINDOW_MS).toISOString();
+  // THREE narrowed reads, not one broad one — still O(1) in apps, and each bounded
+  // read reports whether it reached the end of the record (`ListRead.complete`).
+  //
+  // The failure questions get their OWN reads, narrowed to what a failure is, because
+  // they must survive a busy fleet: the all-sweeps read below is the one that
+  // truncates first (every pass of every unit lands in it), and if "is anything
+  // broken" rode on that read, a chatty tenant would lose the answer it most needs.
+  // Failures are rare by construction, so these two reach the end of the window even
+  // when the third does not.
+  //
+  // The third answers only "has anything checked this app at all" — the `silent`
+  // verdict — and a truncated one costs exactly that verdict and nothing else.
+  const [failures, failedSweeps, sweeps] = await Promise.all([
+    cp.readOpsFailures({ since, limit: FLEET_HEALTH_ROW_MAX }),
+    cp.readSweepRuns({ since, outcome: 'failed', limit: FLEET_HEALTH_ROW_MAX }),
+    cp.readSweepRuns({ since, limit: FLEET_HEALTH_ROW_MAX }),
   ]);
   return c.json({
     rows: deriveFleetHealth({
-      scopeIds,
-      failures: failures ?? [],
-      sweeps: sweeps ?? [],
-      available: failures !== null && sweeps !== null,
+      apps: fleet,
+      failures: failures.entries,
+      // The failed rows come from the narrow read; the broad read contributes only
+      // `lastSweepAt`, so a row appearing in both is not double-counted as a failure.
+      sweeps: [...failedSweeps.entries, ...sweeps.entries.filter((s) => s.outcome !== 'failed')],
+      // A read that did not happen is not an empty window: every app reads `unknown`
+      // rather than a cheerful `ok`.
+      available: !failures.failed && !failedSweeps.failed && !sweeps.failed,
+      coverage: {
+        failures: failures.complete && failedSweeps.complete,
+        sweeps: sweeps.complete,
+      },
     }),
   });
 });

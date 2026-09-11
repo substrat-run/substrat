@@ -75,6 +75,16 @@ function FleetHealth({ onOpen }: { onOpen: (scopeId: string) => void }) {
           }}
         >
           <Pill kind={tone[r.state] ?? 'neutral'}>{r.state}</Pill>
+          {/*
+            Whose app, then what is wrong. The scope suffix stays as the last column
+            because two clients may share a name, but it is no longer the only
+            identity on the row: an operator running one vertical for thirty clients
+            reads this line to know who to call.
+          */}
+          <span style={{ fontSize: 12.5, fontWeight: 550, whiteSpace: 'nowrap' }}>{r.name}</span>
+          <span style={{ fontSize: 12, color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>
+            {verticalMeta(r.vertical).label}
+          </span>
           <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{r.reason}</span>
           <div style={{ flex: 1 }} />
           <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11.5, color: 'var(--text-tertiary)' }}>

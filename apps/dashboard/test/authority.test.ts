@@ -183,6 +183,43 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     expect(urls[1]).toContain(`cursor=${pageA[199]!.id}`);
   });
 
+  it('a bounded list read says whether it reached the end — the fact the rollup ranks on (#1238)', async () => {
+    // `listOpsFailures`/`listSweepRuns` return rows and swallow a skew error, so zero
+    // rows has three causes a caller cannot tell apart: an empty window, a window
+    // with older rows behind it, and no read at all. The fleet rollup turns each into
+    // a different verdict, so the read has to state which one happened.
+    const page = (n: number, cursor: string | null) => ({
+      entries: Array.from({ length: n }, (_, i) => ({ id: `F${String(i).padStart(4, '0')}` })),
+      nextCursor: cursor,
+    });
+
+    // Reached the end: the plane answered with no cursor left.
+    const done = harness(200, page(3, null));
+    await expect(done.cp.readOpsFailures({ since: '2026-09-10T00:00:00.000Z', limit: 400 })).resolves.toMatchObject({
+      complete: true,
+      failed: false,
+    });
+    // `since` is forwarded — the window the rollup asked for, not the whole record.
+    expect(done.calls[0]!.url).toBe(
+      `https://cp/api/ops-failures?tenantId=${T}&since=${encodeURIComponent('2026-09-10T00:00:00.000Z')}&limit=200`,
+    );
+
+    // Stopped at the cap with a cursor still pending: a window, not the record.
+    const truncated = harness(200, page(200, 'MORE'));
+    const cut = await truncated.cp.readOpsFailures({ limit: 400 });
+    expect(cut.entries).toHaveLength(400);
+    expect(cut).toMatchObject({ complete: false, failed: false });
+
+    // The read did not happen at all (a plane predating the route) — still no throw,
+    // but never mistakable for an empty window.
+    const broken = harness(404, { error: 'not found' });
+    await expect(broken.cp.readSweepRuns({ limit: 400 })).resolves.toEqual({
+      entries: [],
+      complete: false,
+      failed: true,
+    });
+  });
+
   // #618: the platform runs a hosted vertical's connectors, so the record of what it sent
   // and what came back is an INTENT journal on the scope — not anything the connection row
   // holds. This is the read that reaches it, pinned to the tenant like every other.
