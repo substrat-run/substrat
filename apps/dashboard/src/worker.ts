@@ -35,6 +35,7 @@ import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './releases.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
+import { deriveFlowGraph } from './flow-graph.js';
 import { deriveFleetHealth } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
@@ -2153,20 +2154,31 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
     cp.boundVersionId(scope),
   ]);
   const { runningId } = versionPair(deployment, boundVersionId);
+  const knownProviders = Object.keys(PROVIDERS);
   if (runningId === null) {
-    return c.json(
-      deriveFlowFindings({
+    return c.json({
+      findings: deriveFlowFindings({
         declaredEvents: null,
         requires: [],
-        knownProviders: Object.keys(PROVIDERS),
+        knownProviders,
         observedTypes: [],
         observedComplete: true,
         declaredComplete: true,
         connections: [],
       }),
-    );
+      graph: deriveFlowGraph({
+        declaredEvents: null,
+        schedules: [],
+        requires: [],
+        knownProviders,
+        connections: [],
+        outbound: [],
+        observed: [],
+        observedComplete: true,
+      }),
+    });
   }
-  const [flow, facets, connections] = await Promise.all([
+  const [flow, facets, connectionRows] = await Promise.all([
     cp.versionFlow(slug, runningId),
     cp.facetEvents(scope, { groupBy: 'type', limit: FLOW_TYPE_LIMIT }),
     // Revoked ones included deliberately: a revoked connection is a DIFFERENT
@@ -2174,19 +2186,37 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
     // wrong one.
     cp.listConnections({ vertical: slug, includeRevoked: true }),
   ]);
-  return c.json(
-    deriveFlowFindings({
+  // A null bucket cannot happen grouping by `type` (the envelope always has one), and
+  // is dropped rather than joined against a declared type named "null".
+  const observed = facets.buckets
+    .filter((b): b is { value: string; count: number } => b.value !== null)
+    .map((b) => ({ type: b.value, count: b.count }));
+  const connections = connectionRows.map((conn) => ({ provider: conn.provider, status: conn.status }));
+  const observedComplete = !facets.truncated;
+  // One read, two projections of it: the findings list and the graph answer the same
+  // question at different resolutions, and paying for the facet twice to serve them
+  // separately would also let the two disagree about what was observed.
+  return c.json({
+    findings: deriveFlowFindings({
       declaredEvents: flow.declaredEvents,
       requires: flow.requires,
-      knownProviders: Object.keys(PROVIDERS),
-      // A null bucket cannot happen grouping by `type` (the envelope always has one),
-      // and is dropped rather than joined against a declared type named "null".
-      observedTypes: facets.buckets.map((b) => b.value).filter((v): v is string => v !== null),
-      observedComplete: !facets.truncated,
+      knownProviders,
+      observedTypes: observed.map((o) => o.type),
+      observedComplete,
       declaredComplete: !flow.declaredEventsTruncated,
-      connections: connections.map((conn) => ({ provider: conn.provider, status: conn.status })),
+      connections,
     }),
-  );
+    graph: deriveFlowGraph({
+      declaredEvents: flow.declaredEvents,
+      schedules: flow.schedules,
+      requires: flow.requires,
+      knownProviders,
+      connections,
+      outbound: flow.outbound,
+      observed,
+      observedComplete,
+    }),
+  });
 });
 
 app.get('/api/apps/:scopeId/field-coverage', async (c) => {

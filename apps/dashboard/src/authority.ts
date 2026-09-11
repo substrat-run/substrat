@@ -33,6 +33,7 @@ import type {
   OwnerSeat,
   OwnerClaimLink,
 } from '@substrat-run/contracts';
+import type { DeclaredSchedule } from './flow-graph.js';
 import { LIST_PAGE_MAX } from '@substrat-run/contracts';
 
 /**
@@ -711,20 +712,32 @@ export class TenantNarrowedControlPlane {
   async versionFlow(
     verticalSlug: string,
     versionId: string,
-  ): Promise<{ declaredEvents: DeclaredEventSurface[] | null; declaredEventsTruncated: boolean; requires: string[] }> {
+  ): Promise<{
+    declaredEvents: DeclaredEventSurface[] | null;
+    declaredEventsTruncated: boolean;
+    requires: string[];
+    schedules: DeclaredSchedule[];
+    outbound: string[];
+  }> {
     try {
       const res = await this.call<{
         declaredEvents?: DeclaredEventSurface[] | null;
         declaredEventsTruncated?: boolean;
         requires?: string[];
+        schedules?: DeclaredSchedule[];
+        outbound?: string[];
       }>(`/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/flow`);
       return {
         declaredEvents: res?.declaredEvents ?? null,
         declaredEventsTruncated: res?.declaredEventsTruncated ?? false,
         requires: res?.requires ?? [],
+        schedules: res?.schedules ?? [],
+        outbound: res?.outbound ?? [],
       };
     } catch {
-      return { declaredEvents: null, declaredEventsTruncated: false, requires: [] };
+      // Every field degrades to "nothing declared" EXCEPT declaredEvents, whose null
+      // is what stops the caller drawing a graph it cannot stand behind.
+      return { declaredEvents: null, declaredEventsTruncated: false, requires: [], schedules: [], outbound: [] };
     }
   }
 
