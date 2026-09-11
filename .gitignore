@@ -56,3 +56,16 @@ demos/*/.env
 examples/external-vertical/package-lock.json
 examples/external-vertical/pnpm-lock.yaml
 examples/external-vertical/pnpm-workspace.yaml
+
+# A scratch drawer for things that must never be committed: production exports, customer
+# files, design archives, anything dropped here to look at locally.
+#
+# ANCHORED with a leading slash, deliberately. A bare `data/` would ignore a directory of
+# that name ANYWHERE in the tree, so a vertical that one day keeps real source files in
+# `demos/x/data/` would have them silently vanish from every diff — an ignore rule that
+# hides code is worse than the exposure it was written to prevent.
+#
+# This repo is public. A production dump landing in it is readable the moment it is pushed
+# and stays readable in the history after it is removed, which is why the drawer exists at
+# all rather than people keeping such files loose in the root.
+/data/
