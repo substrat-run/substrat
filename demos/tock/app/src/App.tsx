@@ -6,7 +6,7 @@
  * anywhere in here. A 403 is rendered as a 403 — the wall is the point, and hiding the button
  * would turn a refusal a person could learn from into a feature that appears not to exist.
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ApiError,
   all,
@@ -22,7 +22,7 @@ import {
   type Session,
   type Source,
 } from './api.js';
-import { observedKinds, previewFile, readHead, type Preview } from './preview.js';
+import { kindCandidates, observedKinds, previewFile, readHead, type Preview } from './preview.js';
 
 type Pane = 'ingest' | 'kinds' | 'schema' | 'runs' | 'findings' | 'report';
 type FieldRole = 'dimension' | 'measure' | 'ignored';
@@ -30,6 +30,25 @@ type FieldType = 'text' | 'int' | 'decimal' | 'timestamp' | 'bool';
 interface FieldDraft { type: FieldType; role: FieldRole; labelField?: string }
 
 const MAX_DIMENSIONS = 2;
+
+/**
+ * A token that invalidates in-flight loads when what they were loading FOR has changed.
+ *
+ * Two panes load asynchronously keyed on a selection a person can change mid-flight — the
+ * source, and which kind a schema describes. Without this, a slow response for the previous
+ * selection lands after a fast one for the current and silently overwrites it, which is worse
+ * than a slow screen because the result looks like an answer.
+ */
+function useFreshness(): [() => number, (n: number) => boolean] {
+  const ref = useRef(0);
+  return [
+    () => {
+      ref.current += 1;
+      return ref.current;
+    },
+    (n: number) => n === ref.current,
+  ];
+}
 
 /** A refusal is rendered, never swallowed: 403 is the permission model answering. */
 function useAction() {
@@ -255,11 +274,10 @@ function Ingest({ sourceKey, sources, onDone }: { sourceKey: string; sources: So
               where the same listener appearing twice should count once.
             </p>
           )}
-          {preview.columns.some((c) => c.values && c.values.length > 1 && c.values.length <= 12) && (
+          {kindCandidates(preview).length > 0 && (
             <p className="note">
               Columns that look like <strong>kinds</strong> rather than data:{' '}
-              {preview.columns
-                .filter((c) => c.values && c.values.length > 1 && c.values.length <= 12)
+              {kindCandidates(preview)
                 .map((c) => (
                   <span key={c.name} className="chip-static">
                     <code>{c.name}</code> ({c.values!.length})
@@ -345,17 +363,37 @@ function Kinds({ sourceKey, onDone }: { sourceKey: string; onDone: () => void })
   const [picked, setPicked] = useState<string[]>([]);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const { error, busy, run } = useAction();
+  const [nextLoad, isCurrent] = useFreshness();
 
   useEffect(() => {
     if (!sourceKey) return;
+    // Cleared SYNCHRONOUSLY, before the load. The dropped file and the ticked kinds belong to
+    // the source that was selected when they were chosen; leaving them up means Declare can
+    // submit one source's proposal to another.
+    setPreview(null);
+    setPicked([]);
+    setChosen(new Set());
+    setDeclared({ discriminators: [], variants: [] });
+    const token = nextLoad();
     void api
       .listVariants({ sourceKey })
       .then((v) => {
+        if (!isCurrent(token)) return;
         setDeclared(v);
         setPicked(v.discriminators);
       })
       .catch(() => undefined);
   }, [sourceKey]);
+
+  /**
+   * Which kinds are ticked is only meaningful under the discriminators they were computed
+   * from. Change those and a ticked `track/scroll` may name a combination the new list cannot
+   * produce — Declare would light up and submit nothing.
+   */
+  const repick = (next: string[]) => {
+    setPicked(next);
+    setChosen(new Set());
+  };
 
   const take = async (f: File) => {
     const head = await readHead(f);
@@ -364,14 +402,7 @@ function Kinds({ sourceKey, onDone }: { sourceKey: string; onDone: () => void })
     setChosen(new Set());
   };
 
-  /**
-   * A kind REPEATS. A column whose every value is distinct is an identifier or a timestamp,
-   * and offering it would invite a source with one kind per record — so the test is not
-   * merely "few values" but "few relative to how many rows were read".
-   */
-  const candidates = (preview?.columns ?? []).filter(
-    (c) => c.values && c.values.length > 1 && c.values.length <= Math.max(2, Math.floor(preview!.sampled / 2)),
-  );
+  const candidates = preview ? kindCandidates(preview) : [];
   const seen = preview ? observedKinds(preview, picked) : [];
 
   return (
@@ -391,7 +422,17 @@ function Kinds({ sourceKey, onDone }: { sourceKey: string; onDone: () => void })
         </p>
       )}
 
-      <label className="drop">
+      {/* The handlers are what make the words true: the input is visually 1x1, so without
+          them a drop onto this label does nothing and only clicking works. */}
+      <label
+        className="drop"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          const f = e.dataTransfer.files[0];
+          if (f) void take(f);
+        }}
+      >
         <input
           type="file"
           accept=".csv,text/csv,.jsonl,application/json"
@@ -411,7 +452,7 @@ function Kinds({ sourceKey, onDone }: { sourceKey: string; onDone: () => void })
                 <button
                   key={c.name}
                   className={at >= 0 ? 'chip on' : 'chip'}
-                  onClick={() => setPicked(at >= 0 ? picked.filter((n) => n !== c.name) : [...picked, c.name])}
+                  onClick={() => repick(at >= 0 ? picked.filter((n) => n !== c.name) : [...picked, c.name])}
                 >
                   {at >= 0 ? `${at + 1}. ` : ''}
                   {c.name} ({c.values!.length})
@@ -487,6 +528,7 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
   /** Which kind this shape describes. Empty is the envelope every record carries. */
   const [variantKey, setVariantKey] = useState('');
   const [kinds, setKinds] = useState<string[]>([]);
+  const [nextLoad, isCurrent] = useFreshness();
   const [suggest, setSuggest] = useState<string[]>([]);
   const { error, busy, run } = useAction();
 
@@ -501,12 +543,24 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
     // Cleared on BOTH branches. Leaving the previous source's draft in place when the new one
     // has no schemas is not a cosmetic bug: the editor then shows fields that belong to another
     // source and will happily save them as its v1.
+    /**
+     * Cleared before the load, not inside it.
+     *
+     * The draft belongs to the kind it was loaded for. Leaving the previous one editable
+     * while this settles means a quick switch followed by Save writes one kind's fields under
+     * another's name — and a slow response for the kind you just left would overwrite the one
+     * you are looking at.
+     */
+    setVersion(null);
+    setFields({});
+    const token = nextLoad();
     void all(api.listSchemas({ sourceKey, variantKey })).then((entries) => {
+      if (!isCurrent(token)) return;
       const mine = entries.filter((e) => e.variant_key === variantKey);
       const latest = mine[mine.length - 1];
       setVersion(latest ? latest.version : null);
       setFields(latest ? (JSON.parse(latest.fields_json) as Record<string, FieldDraft>) : {});
-    }).catch(() => { setVersion(null); setFields({}); });
+    }).catch(() => { if (isCurrent(token)) { setVersion(null); setFields({}); } });
     // Fields that have arrived — so modelling starts from what the data actually contains.
     void api.fieldHistory({ sourceKey }).then((h) => {
       setSuggest([...new Set(h.entries.map((e) => e.field))]);
@@ -760,12 +814,15 @@ function Findings({ sourceKey }: { sourceKey: string }) {
 function Report({ sourceKey }: { sourceKey: string }) {
   const [grain, setGrain] = useState<'hour' | 'day' | 'month'>('day');
   const [outputKey, setOutputKey] = useState('');
-  const [outputs, setOutputs] = useState<string[]>([]);
+  /** The full records, not just their keys: the grouping choices come from their fields. */
+  const [outputs, setOutputs] = useState<{ key: string; fields_json: string }[]>([]);
   const [dimSet, setDimSet] = useState('total');
   const [unknown, setUnknown] = useState(false);
   const [rows, setRows] = useState<{ periodStart: string; dim1: string; dim2: string; label1: string | null; label2: string | null; events: number; measure: string | null; runId: string }[]>([]);
   const [note, setNote] = useState<string | null>(null);
   const [choices, setChoices] = useState<string[]>(['total']);
+  /** The input envelope's fields, for when no output is selected. */
+  const [envelope, setEnvelope] = useState('{}');
 
   useEffect(() => {
     if (!sourceKey) return;
@@ -775,17 +832,35 @@ function Report({ sourceKey }: { sourceKey: string }) {
     setDimSet('total');
     setOutputKey('');
     void all(api.listOutputSchemas({ sourceKey }))
-      .then((entries) => setOutputs([...new Set(entries.map((o) => o.key))]))
+      .then((entries) => {
+        // The latest version of each key; earlier ones describe shapes nothing is counted under.
+        const latest = new Map<string, { key: string; fields_json: string }>();
+        for (const o of entries) latest.set(o.key, o);
+        setOutputs([...latest.values()]);
+      })
       .catch(() => setOutputs([]));
-    void all(api.listSchemas({ sourceKey })).then((entries) => {
-      const latest = entries[entries.length - 1];
-      const fields = latest ? (JSON.parse(latest.fields_json) as Record<string, FieldDraft>) : {};
-      const dims = Object.entries(fields).filter(([, f]) => f.role === 'dimension').map(([n]) => n);
-      // Counting materialises the PAIR as well as each single dimension, in the order the
-      // schema declares them. Offering only the singles left rows nothing could ask for.
-      setChoices(['total', ...dims, ...(dims.length === 2 ? [dims.join('+')] : [])]);
-    }).catch(() => undefined);
+    void all(api.listSchemas({ sourceKey }))
+      .then((entries) => setEnvelope(entries[entries.length - 1]?.fields_json ?? '{}'))
+      .catch(() => undefined);
   }, [sourceKey]);
+
+  /**
+   * The groupings come from whatever is being COUNTED — the selected output, or the envelope.
+   *
+   * They used to come from the input schema always, so an output renaming `country` to
+   * `market` still offered `country`: the request then named a `dim_set` nothing had ever
+   * materialised and the report came back empty, which reads as an answer rather than as a
+   * mistake.
+   */
+  useEffect(() => {
+    const source = outputKey ? outputs.find((o) => o.key === outputKey)?.fields_json : envelope;
+    const fields = JSON.parse(source ?? '{}') as Record<string, FieldDraft>;
+    const dims = Object.entries(fields).filter(([, f]) => f.role === 'dimension').map(([n]) => n);
+    // Counting materialises the PAIR as well as each single dimension, in the order the shape
+    // declares them. Offering only the singles left rows nothing could ask for.
+    setChoices(['total', ...dims, ...(dims.length === 2 ? [dims.join('+')] : [])]);
+    setDimSet('total');
+  }, [outputKey, outputs, envelope]);
 
   useEffect(() => {
     if (!sourceKey) return;
@@ -814,7 +889,7 @@ function Report({ sourceKey }: { sourceKey: string }) {
         {outputs.length > 0 && (
           <select value={outputKey} onChange={(e) => setOutputKey(e.target.value)}>
             <option value="">the envelope</option>
-            {outputs.map((o) => <option key={o}>{o}</option>)}
+            {outputs.map((o) => <option key={o.key}>{o.key}</option>)}
           </select>
         )}
         <select value={grain} onChange={(e) => setGrain(e.target.value as 'hour' | 'day' | 'month')}>

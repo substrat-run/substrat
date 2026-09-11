@@ -105,6 +105,22 @@ function flatten(value: unknown, prefix = '', depth = 0, out: Record<string, str
 }
 
 /**
+ * The columns that could be a KIND, by one rule used everywhere.
+ *
+ * A kind REPEATS. A column whose every value is distinct is an identifier or a timestamp and
+ * can never be one, so the test is few values RELATIVE to rows read rather than few values —
+ * `occurred_at` with six distinct values in six rows is not a candidate however small six is.
+ *
+ * Exported because two panes ask the question and they must not answer it differently: the
+ * ingest pane once hinted that a column looked like a kind while the Kinds pane refused to
+ * offer it, which is worse than either answer alone.
+ */
+export function kindCandidates(preview: Preview): PreviewColumn[] {
+  const ceiling = Math.max(2, Math.floor(preview.sampled / 2));
+  return preview.columns.filter((c) => c.values && c.values.length > 1 && c.values.length <= ceiling);
+}
+
+/**
  * The combinations of discriminator values the sample actually contains.
  *
  * A PROPOSAL, and the count beside each one is why it is worth reading rather than
