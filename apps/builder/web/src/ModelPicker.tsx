@@ -60,6 +60,12 @@ export function ModelPicker(props: {
 				{providers === null && <div>loading…</div>}
 				{providers?.map((p) => {
 					const list = models[p.name];
+					// A row whose credential is absent cannot run a turn, so it is not offered
+					// for selection either — the listing half was already gated (`expand`), and a
+					// pick that needs a key nobody set only fails later, inside the run. The badge
+					// names the missing variable; a disabled button says it again where the click
+					// would have been.
+					const runnable = p.credential.set;
 					return (
 						<div className="provider" key={p.name}>
 							<div className="provider-head" onClick={() => void expand(p)}>
@@ -81,6 +87,7 @@ export function ModelPicker(props: {
 										<div className="auto-pair">
 											<button
 												className={`${p.name}:auto` === props.current ? 'current' : ''}
+												disabled={!runnable}
 												onClick={() => void pick(`${p.name}:auto`)}
 											>
 												auto — {p.pair.fast} <span className="role">interview</span> ·{' '}
@@ -103,6 +110,7 @@ export function ModelPicker(props: {
 													<button
 														key={id}
 														className={spec === props.current ? 'current' : ''}
+														disabled={!runnable}
 														onClick={() => void pick(spec)}
 													>
 														{id}
@@ -123,6 +131,7 @@ export function ModelPicker(props: {
 														<button
 															key={id}
 															className={spec === props.current ? 'current' : ''}
+															disabled={!runnable}
 															onClick={() => void pick(spec)}
 														>
 															{id}
@@ -133,10 +142,19 @@ export function ModelPicker(props: {
 										</>
 									)}
 
+									{!runnable && (
+										<div className="loc">
+											{p.credential.envVar
+												? `no credential — set ${p.credential.envVar} to pick a model here`
+												: 'no credential — this provider cannot run here'}
+										</div>
+									)}
+
 									<div className="free">
 										<input
 											placeholder={`model id for ${p.name}…`}
 											value={free}
+											disabled={!runnable}
 											onChange={(e) => setFree(e.target.value)}
 											onKeyDown={(e) => {
 												if (e.key === 'Enter' && free.trim())
@@ -145,7 +163,7 @@ export function ModelPicker(props: {
 										/>
 										<button
 											className="pill"
-											disabled={!free.trim()}
+											disabled={!runnable || !free.trim()}
 											onClick={() => void pick(`${p.name}:${free.trim()}`)}
 										>
 											use
