@@ -34,6 +34,7 @@ import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './releases.js';
 import { deriveFieldCoverage } from './field-coverage.js';
+import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFleetHealth } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
@@ -2116,6 +2117,76 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
  * answers `available: false` — never an empty surface, which would report the
  * app's entire schema as dead.
  */
+/**
+ * How many distinct event types the flow join asks the facet for — the kernel's own
+ * ceiling (`timeline.ts` clamps to 200), because a type missing only because its
+ * bucket fell off the tail would read as "never emitted".
+ *
+ * Asking for more would not help: the clamp would cut it back silently. So the join
+ * also carries the facet's `truncated` flag, and withholds the event findings when it
+ * is set rather than reporting ones it cannot stand behind.
+ */
+const FLOW_TYPE_LIMIT = 200;
+
+/**
+ * Declared-vs-observed findings (#1234): what this app says it emits, consumes and
+ * requires, joined against what its scope has actually carried.
+ *
+ * The declared half rides the retained manifest; the observed half is the same
+ * outbox facet the event explorer runs (#1239), grouped by `type` with the bucket
+ * cap raised so the join sees every type rather than the largest few — a type
+ * missing only because it fell off the tail would read as a finding.
+ */
+app.get('/api/apps/:scopeId/flow', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const slug = appRow.vertical_slug;
+  const [deployment, boundVersionId] = await Promise.all([
+    verticalDeploymentFromCp(cp, slug),
+    cp.boundVersionId(scope),
+  ]);
+  const { runningId } = versionPair(deployment, boundVersionId);
+  if (runningId === null) {
+    return c.json(
+      deriveFlowFindings({
+        declaredEvents: null,
+        requires: [],
+        knownProviders: Object.keys(PROVIDERS),
+        observedTypes: [],
+        observedComplete: true,
+        connections: [],
+      }),
+    );
+  }
+  const [flow, facets, connections] = await Promise.all([
+    cp.versionFlow(slug, runningId),
+    cp.facetEvents(scope, { groupBy: 'type', limit: FLOW_TYPE_LIMIT }),
+    // Revoked ones included deliberately: a revoked connection is a DIFFERENT
+    // finding from none at all, and the default filter would hide it behind the
+    // wrong one.
+    cp.listConnections({ vertical: slug, includeRevoked: true }),
+  ]);
+  return c.json(
+    deriveFlowFindings({
+      declaredEvents: flow.declaredEvents,
+      requires: flow.requires,
+      knownProviders: Object.keys(PROVIDERS),
+      // A null bucket cannot happen grouping by `type` (the envelope always has one),
+      // and is dropped rather than joined against a declared type named "null".
+      observedTypes: facets.buckets.map((b) => b.value).filter((v): v is string => v !== null),
+      observedComplete: !facets.truncated,
+      connections: connections.map((conn) => ({ provider: conn.provider, status: conn.status })),
+    }),
+  );
+});
+
 app.get('/api/apps/:scopeId/field-coverage', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

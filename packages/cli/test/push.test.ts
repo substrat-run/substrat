@@ -15,7 +15,7 @@ import {
   type PermissionRegistry,
 } from '@substrat-run/contracts';
 import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules,
-  flattenDeclaredFreshness, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
+  flattenDeclaredFreshness, flattenDeclaredEvents, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -861,6 +861,40 @@ export const permissions = {
     ]);
     expect(
       flattenDeclaredFreshness({ modules: [{ manifest: { id: '@x/y', permissions: [] } }], roles: [] } as never),
+    ).toBeUndefined();
+  });
+
+  it("flattens each module's declared emits and consumes, tagged with the owner (#1234)", () => {
+    const withEvents = {
+      modules: [
+        {
+          manifest: {
+            id: '@substrat-run/engine-invoicing',
+            permissions: [],
+            events: {
+              emits: [{ type: 'invoice.exported' }],
+              consumes: [{ type: 'timesheet.period-closed' }, { type: 'timesheet.period-closed' }],
+            },
+          },
+        },
+        { manifest: { id: '@x/y', permissions: [], events: { emits: [], consumes: [] } } },
+      ],
+      roles: [],
+    } as never;
+    // Both directions, each tagged with the module that declared it — and the
+    // duplicate collapses, since a type listed twice is still one declaration.
+    expect(flattenDeclaredEvents(withEvents)).toEqual([
+      { moduleId: '@substrat-run/engine-invoicing', type: 'invoice.exported', direction: 'emits' },
+      { moduleId: '@substrat-run/engine-invoicing', type: 'timesheet.period-closed', direction: 'consumes' },
+    ]);
+    // A surface declaring none stays undefined, so the manifest field stays absent —
+    // which the dashboard reads as "declares nothing", distinct from the null a
+    // pre-#1234 push leaves behind.
+    expect(
+      flattenDeclaredEvents({
+        modules: [{ manifest: { id: '@x/y', permissions: [], events: { emits: [], consumes: [] } } }],
+        roles: [],
+      } as never),
     ).toBeUndefined();
   });
 

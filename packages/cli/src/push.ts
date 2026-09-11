@@ -107,6 +107,37 @@ export function flattenDeclaredSchedules(
   return schedules.length > 0 ? schedules : undefined;
 }
 
+/** Matches `declaredEventSurface`'s `.max(500)` on the manifest schema. */
+const DECLARED_EVENTS_CAP = 500;
+
+/**
+ * The declared event surface (#1234) — every type each module says it emits or
+ * consumes, flattened with its module beside it. The declared half of a
+ * declared-vs-observed finding: the platform can see which types an app's outbox
+ * actually carries, and nothing tells it which ones were promised.
+ */
+export function flattenDeclaredEvents(
+  permissions: PermissionsInput,
+): DeployManifest['declaredEvents'] | undefined {
+  const events = permissions.modules.flatMap((m) => [
+    ...(m.manifest.events?.emits ?? []).map((e) => ({ moduleId: m.manifest.id, type: e.type, direction: 'emits' as const })),
+    ...(m.manifest.events?.consumes ?? []).map((e) => ({ moduleId: m.manifest.id, type: e.type, direction: 'consumes' as const })),
+  ]);
+  // Deduplicated: a module listing a type twice is one declaration, and a duplicate
+  // would spend the cap below without telling the reader anything new.
+  const seen = new Set<string>();
+  const unique = events.filter((e) => {
+    const key = `${e.moduleId}\u001f${e.type}\u001f${e.direction}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  // The schema's ceiling, applied here so an extraordinary surface still PUSHES —
+  // metadata must never be what fails a deploy. Truncation only ever means fewer
+  // declarations are checked later, never a finding about one that does not exist.
+  return unique.length > 0 ? unique.slice(0, DECLARED_EVENTS_CAP) : undefined;
+}
+
 /** The freshness twin of `flattenDeclaredSchedules` (#1232) — `within.hours` exists
  *  nowhere off the manifest, and the dashboard's declared-vs-observed read needs it. */
 export function flattenDeclaredFreshness(
@@ -127,6 +158,9 @@ export interface DeclaredSurface {
   readonly schedules: DeployManifest['schedules'] | undefined;
   /** Every module's freshness expectations, flattened the same way (#1232). */
   readonly freshness: DeployManifest['freshness'] | undefined;
+  /** Every module's declared emits/consumes, flattened the same way (#1234) — the
+   *  declared half of a declared-vs-observed finding. */
+  readonly declaredEvents: DeployManifest['declaredEvents'] | undefined;
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -215,6 +249,9 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       // module manifest — the schedules ride out of it with zero extra reads.
       schedules: flattenDeclaredSchedules(mod.permissions),
       freshness: flattenDeclaredFreshness(mod.permissions),
+      // #1234: the declared half of a declared-vs-observed finding — what the
+      // modules say they emit and consume, which exists nowhere off their manifests.
+      declaredEvents: flattenDeclaredEvents(mod.permissions),
     };
   } finally {
     rmSync(out, { force: true });
@@ -1099,7 +1136,8 @@ export async function push(
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
   // The same import reads the entry's `envSpec` export (#1206); when it exists it is the copy
   // that ships, and a drifted package.json duplicate refuses the push.
-  const { registry, envSpec: derivedEnvSpec, schedules, freshness } = await deriveDeclaredSurface(opts.dir);
+  const { registry, envSpec: derivedEnvSpec, schedules, freshness, declaredEvents } =
+    await deriveDeclaredSurface(opts.dir);
   const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);
 
   // The emitted entity model (#1214), read from the checked-in `model.json` beside
@@ -1186,6 +1224,7 @@ export async function push(
     // schedule-health view needs `everyMinutes`, which exists nowhere off the manifest.
     ...(schedules ? { schedules } : {}),
     ...(freshness ? { freshness } : {}),
+    ...(declaredEvents ? { declaredEvents } : {}),
     // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
     // because absence means "pre-#303 push" to the egress worker (unenforced, metered
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is

@@ -641,6 +641,20 @@ export const declaredOperationOutput = z.object({
 });
 export type DeclaredOperationOutput = z.infer<typeof declaredOperationOutput>;
 
+/**
+ * One event type a module declares, and which side of the seam it sits on
+ * (#1234). `emits` and `consumes` are kept apart because the findings differ: an
+ * unemitted type may be a dead code path, while an unconsumed one is a consumer
+ * that never runs — and the star topology means the two are declared by
+ * different modules that never import each other.
+ */
+export const declaredEventSurface = z.object({
+  moduleId,
+  type: z.string().min(1),
+  direction: z.enum(['emits', 'consumes']),
+});
+export type DeclaredEventSurface = z.infer<typeof declaredEventSurface>;
+
 export const deployManifest = z.object({
   version: z.string().min(1),
   /** Display name for a first-time register; defaults to the slug. */
@@ -733,6 +747,21 @@ export const deployManifest = z.object({
    * carrying the shapes again would duplicate `model` at several times the size.
    */
   outputSurface: z.array(declaredOperationOutput).max(500).optional(),
+  /**
+   * What each module DECLARES it emits and consumes (#1234), flattened across
+   * modules with the owning module beside each type.
+   *
+   * Carried for the reason `schedules` and `freshness` are: the fact lives only in
+   * a module manifest inside the bundle, and the platform has no other way to ask
+   * "what is this app supposed to produce" — which is the declared half of every
+   * declared-vs-observed finding. A consumer that has not fired in thirty days is
+   * only a finding if something knew it was supposed to.
+   *
+   * Metadata, in no digest, and optional twice over: a vertical whose modules
+   * declare no events pushes without it, and a version pushed by an earlier CLI
+   * stays readable.
+   */
+  declaredEvents: z.array(declaredEventSurface).max(500).optional(),
   /** The vertical's declared schedules (#1232), flattened across modules with each
    *  spec's owning module beside it — carried so the dashboard can render the DEPLOYED
    *  version's schedule health (next due needs `everyMinutes`, and the manifest is the

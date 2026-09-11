@@ -9,6 +9,7 @@ import type {
   DeployAssets,
   DeployManifest,
   DeclaredOperationOutput,
+  DeclaredEventSurface,
   EmittedModel,
   IdentityLink,
   ListPage,
@@ -697,6 +698,28 @@ export class TenantNarrowedControlPlane {
 
   async versionModel(verticalSlug: string, versionId: string): Promise<EmittedModel | null> {
     return (await this.versionModelSurface(verticalSlug, versionId)).model;
+  }
+
+  /**
+   * What one version DECLARES it emits, consumes and requires (#1234) — the declared
+   * half of a flow finding, off the retained manifest.
+   *
+   * `declaredEvents: null` survives the whole way to the view on purpose: it means
+   * the version predates the field, which is not the same as declaring no events.
+   * Folding the two would report a pre-#1234 app as emitting nothing at all.
+   */
+  async versionFlow(
+    verticalSlug: string,
+    versionId: string,
+  ): Promise<{ declaredEvents: DeclaredEventSurface[] | null; requires: string[] }> {
+    try {
+      const res = await this.call<{ declaredEvents?: DeclaredEventSurface[] | null; requires?: string[] }>(
+        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/flow`,
+      );
+      return { declaredEvents: res?.declaredEvents ?? null, requires: res?.requires ?? [] };
+    } catch {
+      return { declaredEvents: null, requires: [] };
+    }
   }
 
   /**

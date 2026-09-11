@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type FieldCoverageView, type FlowFindingsView, type FlowFinding, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
@@ -183,6 +183,7 @@ export function AppDetail({
       {main === 'observability' && <AppObservability app={app} />}
       {main === 'model' && (
         <div style={{ display: 'grid', gap: 16 }}>
+          <FlowFindings app={app} />
           <FieldCoverage app={app} />
           <Model app={app} />
         </div>
@@ -929,6 +930,105 @@ function diffRegistries(from: PermissionRegistry, to: PermissionRegistry): Regis
     changedKeys: [...toKeys.entries()].filter(([k, d]) => fromKeys.has(k) && fromKeys.get(k) !== d).map(([k]) => k),
     roleChanges,
   };
+}
+
+/**
+ * Declared-vs-observed findings (#1234) — the gap between what this app's modules
+ * SAY they do and what its scope has actually carried.
+ *
+ * The claim every finding makes is about declarations against a bounded window of
+ * observation, and the copy says so. Two states are deliberately not silence:
+ * a version pushed before the declared-event surface existed says it cannot answer
+ * (rather than reporting the app as emitting nothing), and a truncated observation
+ * withholds the event findings (rather than calling a type dead because its bucket
+ * fell off the tail).
+ */
+function FlowFindings({ app }: { app: AppRow }) {
+  const [view, setView] = useState<FlowFindingsView | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setView(null);
+    api
+      .appFlow(app.app_scope_id)
+      .then((v) => live && setView(v))
+      // A worker predating the route: the card cannot say anything true, so it says nothing.
+      .catch(() => live && setView(null));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  if (!view) return null;
+
+  if (!view.available) {
+    return (
+      <div style={{ ...card, padding: 14, display: 'grid', gap: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Declared vs. observed</h3>
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Not available for the version this app runs &mdash; it was pushed before the platform
+          carried which events each module declares. It appears after the next push.
+        </p>
+      </div>
+    );
+  }
+
+  const TONE: Record<FlowFinding['kind'], { label: string; fg: string; bg: string }> = {
+    unemitted: { label: 'never emitted', fg: 'var(--text-secondary)', bg: 'var(--surface-inset)' },
+    unconsumed: { label: 'nothing to handle', fg: 'var(--text-secondary)', bg: 'var(--surface-inset)' },
+    'unconnected-provider': { label: 'not connected', fg: 'var(--status-warning-fg)', bg: 'var(--status-warning-bg)' },
+    'unhealthy-provider': { label: 'needs reconnecting', fg: 'var(--status-danger-fg)', bg: 'var(--status-danger-bg)' },
+  };
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Declared vs. observed</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          This app declares {view.declaredTypes} event {view.declaredTypes === 1 ? 'type' : 'types'} and has
+          recorded {view.observedTypes}. Everything below is a gap between the two &mdash; a statement about
+          what was declared, not a fault.
+        </p>
+      </div>
+
+      {!view.observedComplete && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          This app has recorded more event types than can be compared at once, so the event findings are
+          withheld &mdash; a type missing from a shortened list is not evidence that it never happened.
+        </p>
+      )}
+
+      {view.findings.length === 0 ? (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-secondary)' }}>
+          {view.observedComplete
+            ? 'Everything this app declares has happened at least once, and every provider it uses is connected.'
+            : 'Every provider this app uses is connected.'}
+        </p>
+      ) : (
+        <div style={{ display: 'grid', gap: 8 }}>
+          {view.findings.map((f) => (
+            <div key={`${f.kind}:${f.subject}:${f.moduleId ?? ''}`} style={{ display: 'grid', gap: 3 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12.5 }}>{f.subject}</span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    background: TONE[f.kind].bg,
+                    color: TONE[f.kind].fg,
+                  }}
+                >
+                  {TONE[f.kind].label}
+                </span>
+              </div>
+              <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-tertiary)' }}>{f.detail}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
