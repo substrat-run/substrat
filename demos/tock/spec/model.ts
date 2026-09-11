@@ -481,8 +481,29 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       sourceKey: z.string(),
       /** Ordered. `["type","event"]` splits twice; `[]` is a stream of one shape. */
       discriminators: z.array(z.string().min(1)).max(4),
-      /** Each selector is a PREFIX of the discriminator values, shortest first. */
-      variants: z.array(z.object({ selector: z.array(z.string()).min(1) })),
+      /**
+       * Each selector is a PREFIX of the discriminator values, shortest first.
+       *
+       * A component may carry no `/` and may not be empty, because the selector is joined
+       * with `/` into the variant key and that key is then read back as a PATH — every
+       * prefix of it is a schema level a record inherits from. A value like `ui/click`
+       * would make a one-level kind look two levels deep and inherit from a `ui` nobody
+       * declared; an empty value would join to `''`, which IS the envelope's key, making
+       * the kind indistinguishable from an unclassified record. Refused here, where the
+       * person can fix it, rather than silently mis-shaping every row of that kind.
+       */
+      variants: z.array(
+        z.object({
+          selector: z
+            .array(
+              z
+                .string()
+                .min(1, 'a selector value may not be empty')
+                .refine((v) => !v.includes('/'), 'a selector value may not contain "/"'),
+            )
+            .min(1),
+        }),
+      ),
     }),
     output: z.object({
       sourceKey: z.string(),
@@ -862,6 +883,13 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
        * parameter therefore did nothing at all: every ask came back with every field.
        */
       declared: z.boolean().optional(),
+      /**
+       * Which kind's fields to show. `variant_key` was named `filterable` with no input
+       * field to carry it and no handler to apply it — the same defect `declared` had
+       * directly above, arriving again in the same place. An empty string is meaningful
+       * rather than absent: it is the ENVELOPE, the fields every record carries.
+       */
+      variantKey: z.string().optional(),
     }),
     output: tockEntities.observation.fields,
     paged: {

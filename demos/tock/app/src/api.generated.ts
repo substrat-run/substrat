@@ -252,7 +252,7 @@ export interface TockClient {
    *
    * Paged: walk it with `follow(page.next)` until `next` is `null`.
    */
-  listObservations(input: { runId: string; declared?: boolean }): Promise<Paged<Observation>>;
+  listObservations(input: { runId: string; declared?: boolean; variantKey?: string }): Promise<Paged<Observation>>;
 
   /**
    * The mapped rows of one run

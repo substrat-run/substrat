@@ -565,7 +565,8 @@
                           "minItems": 1,
                           "type": "array",
                           "items": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
                           }
                         }
                       },
@@ -1275,6 +1276,14 @@
             "in": "query",
             "required": false,
             "description": "Only entries whose `variant_key` equals this.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "variantKey",
+            "in": "query",
+            "required": false,
             "schema": {
               "type": "string"
             }

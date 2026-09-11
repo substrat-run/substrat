@@ -56,7 +56,16 @@ type VariantRow = EntityRow<typeof tockEntities, 'variant'>;
 /** The envelope every record carries, whatever its kind. A real value, never a null. */
 const ROOT = '';
 
-/** A variant's key is its selector joined — `track/scroll`. Readable, and its own path. */
+/**
+ * A variant's key is its selector joined — `track/scroll`. Readable, and its own path.
+ *
+ * The join is only reversible because `tock/declare-variants` refuses a selector value that
+ * is empty or contains `/`. That refusal is what lets `pathOf` read a key back as the list
+ * of levels a record inherits from; without it `ui/click` would be one kind that reads as
+ * two, inheriting from a `ui` nobody declared, and `''` would be a kind that reads as the
+ * envelope. The constraint lives at declaration because that is the only place a person can
+ * still fix it.
+ */
 const keyOf = (selector: readonly string[]) => selector.join('/');
 
 /**
@@ -85,13 +94,21 @@ function classify(
   fields: Record<string, string | null>,
 ): string {
   let best = ROOT;
+  // The depth is carried, never re-derived from the key: `best.split('/')` asks the key how
+  // deep it is, which is a second, weaker answer to a question the selector already answered
+  // exactly. They agree only while every selector value is `/`-free — true today because
+  // declaration refuses otherwise, and not a thing this loop should depend on.
+  let bestDepth = 0;
   for (const v of variants) {
-    if (v.selector.length <= best.split('/').filter(Boolean).length) continue;
+    if (v.selector.length <= bestDepth) continue;
     const holds = v.selector.every((want, i) => {
       const field = discriminators[i];
       return field !== undefined && fields[field] === want;
     });
-    if (holds) best = v.key;
+    if (holds) {
+      best = v.key;
+      bestDepth = v.selector.length;
+    }
   }
   return best;
 }
@@ -435,8 +452,14 @@ const saveSchemaOp: OperationHandler<
       `a schema may declare at most 1 measure; this one declares ${measures.length} (${measures.map(([n]) => n).join(', ')}). A rollup row holds one measure and one unit, so a second could be declared and never counted.`,
     );
   for (const [name, f] of Object.entries(input.fields)) {
-    if (f.labelField && !input.fields[f.labelField])
-      throw substratError('validation_failed', `field '${name}' names a labelField '${f.labelField}' that is not a field of this schema`);
+    // Against the EFFECTIVE shape, like the dimension cap above: a kind's label field
+    // routinely lives in the envelope — that is what declaring the envelope once is for —
+    // and resolving against this file alone refused a schema whose record does carry it.
+    if (f.labelField && !effective.has(f.labelField))
+      throw substratError(
+        'validation_failed',
+        `field '${name}' names a labelField '${f.labelField}' that is not a field of this schema or of the ones it inherits`,
+      );
   }
 
   // Versions run per VARIANT: the envelope and a kind evolve at their own paces, and one
@@ -453,7 +476,12 @@ const saveSchemaOp: OperationHandler<
   );
   ctx.link({ entityType: 'schema', entityId: id }, sourceRef(input.sourceKey));
 
-  const row = schemaOrThrow(ctx, input.sourceKey, version);
+  // The variant is NOT optional here: versions run per variant, so version 3 of
+  // `track/scroll` and version 3 of the envelope are different rows. Reading back at the
+  // default ROOT either threw `not_found` for a kind the envelope had not reached yet, or —
+  // worse — returned the ENVELOPE's row of the same number, so the operation answered with
+  // another schema's id and the event announced a save that did not happen.
+  const row = schemaOrThrow(ctx, input.sourceKey, version, input.variantKey);
   ctx.emit({
     type: 'tock.schema-saved',
     schemaVersion: 1,
@@ -469,7 +497,16 @@ const listSchemasOp: OperationHandler<
   HandlerOutput<(typeof tockOperations)['tock/list-schemas']>
 > = async (ctx, input) => {
   assertAllowed(await ctx.check(TOCK_PERM.reportRead));
-  return ctx.page<SchemaRow>('schema', { ...input, filters: { source_key: input.sourceKey } });
+  // `variant_key` travels only when asked for, and `''` IS an ask — it names the envelope.
+  // An absent one must not become `WHERE variant_key = ''`, which would answer every
+  // question about a kind with the envelope's versions.
+  return ctx.page<SchemaRow>('schema', {
+    ...input,
+    filters: {
+      ...(input.variantKey === undefined ? {} : { variant_key: input.variantKey }),
+      source_key: input.sourceKey,
+    },
+  });
 };
 
 // ── the lifecycle ───────────────────────────────────────────────────────────
@@ -1036,6 +1073,7 @@ const listObservationsOp: OperationHandler<
     ...input,
     filters: {
       ...(input.declared === undefined ? {} : { declared: input.declared ? 1 : 0 }),
+      ...(input.variantKey === undefined ? {} : { variant_key: input.variantKey }),
       run_id: run.id,
     },
   });

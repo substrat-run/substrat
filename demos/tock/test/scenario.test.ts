@@ -994,4 +994,127 @@ describe('one file, several kinds of record', () => {
       ines.invoke('tock/declare-variants', { sourceKey: SRC, discriminators: ['type'], variants: [{ selector: ['page'] }] }),
     ).rejects.toThrow(/counted runs/);
   });
+
+  /**
+   * Versions run PER KIND, so the row a save reads back must name the kind it just wrote.
+   *
+   * It defaulted to the envelope, which is the same read with a different answer: `track/scroll`
+   * v2 and the envelope's v2 are different rows, and the operation returned whichever one the
+   * envelope happened to have — so the caller got another schema's id and the event announced a
+   * save that had not happened. Test 23 saved a variant schema and never looked at the returned
+   * row, which is exactly how this survived a green suite.
+   */
+  it('25 — saving a kind’s schema answers with THAT kind’s row, not the envelope’s', async () => {
+    const ines = await as('ines');
+    const saved = await ines.invoke<{ id: string; variant_key: string; version: number }>('tock/save-schema', {
+      sourceKey: SRC,
+      variantKey: 'track/scroll',
+      fields: { depth: { type: 'int', role: 'measure' } },
+    });
+    expect(saved.variant_key).toBe('track/scroll');
+    expect(saved.version).toBe(2);
+    // …and it is a different row from the envelope's version of the same number.
+    const envelope = await ines.invoke<{ id: string }>('tock/save-schema', {
+      sourceKey: SRC,
+      fields: { country: { type: 'text', role: 'dimension' } },
+    });
+    expect(envelope.id).not.toBe(saved.id);
+  });
+
+  /**
+   * A declared filter that reaches no handler is worse than an undeclared one: it is a
+   * documented parameter that answers every question with everything. `declared` had this
+   * defect on `list-observations` and `variant_key` arrived with it on both paged reads.
+   */
+  it('26 — the kind filters actually narrow, and the empty key means the envelope', async () => {
+    const ines = await as('ines');
+    const all = await ines.invoke<{ entries: { variant_key: string }[] }>('tock/list-schemas', { sourceKey: SRC });
+    expect(new Set(all.entries.map((e) => e.variant_key))).toEqual(new Set(['', 'track/scroll']));
+
+    const scroll = await ines.invoke<{ entries: { variant_key: string }[] }>('tock/list-schemas', {
+      sourceKey: SRC,
+      variantKey: 'track/scroll',
+    });
+    expect(scroll.entries.length).toBeGreaterThan(0);
+    expect(scroll.entries.every((e) => e.variant_key === 'track/scroll')).toBe(true);
+
+    // `''` is an ASK, not an absence — it names the envelope, whose fields every record carries.
+    const envelope = await ines.invoke<{ entries: { variant_key: string }[] }>('tock/list-schemas', {
+      sourceKey: SRC,
+      variantKey: '',
+    });
+    expect(envelope.entries.length).toBeGreaterThan(0);
+    expect(envelope.entries.every((e) => e.variant_key === '')).toBe(true);
+  });
+
+  it('27 — and the same filter narrows the observations', async () => {
+    const tomas = await as('tomas');
+    const run = (await tomas.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC })).entries[0]!;
+    const scroll = await tomas.invoke<{ entries: { variant_key: string; field: string }[] }>('tock/list-observations', {
+      runId: run.id,
+      variantKey: 'track/scroll',
+    });
+    expect(scroll.entries.length).toBeGreaterThan(0);
+    expect(scroll.entries.every((o) => o.variant_key === 'track/scroll')).toBe(true);
+    expect(scroll.entries.map((o) => o.field)).toContain('depth');
+  });
+
+  /**
+   * The key is a PATH, and `pathOf` reads it back as one. A selector value carrying the
+   * delimiter would make a one-level kind read as two — inheriting from a prefix nobody
+   * declared — and an empty one would join to `''`, which IS the envelope's key, so the kind
+   * would be indistinguishable from a record that matched nothing.
+   */
+  it('28 — a selector value may not carry the key delimiter, nor be empty', async () => {
+    const ines = await as('ines');
+    // A source of its own: SRC has a counted run by now, and its freeze would refuse these
+    // for the wrong reason — a test that cannot fail for the reason it names is not a test.
+    const FRESH = 'firehose-2';
+    await ines.invoke('tock/declare-source', { key: FRESH, title: 'Firehose II', expectedCadence: 'daily' });
+    await expect(
+      ines.invoke('tock/declare-variants', {
+        sourceKey: FRESH,
+        discriminators: ['type'],
+        variants: [{ selector: ['ui/click'] }],
+      }),
+    ).rejects.toThrow(/may not contain/);
+    await expect(
+      ines.invoke('tock/declare-variants', {
+        sourceKey: FRESH,
+        discriminators: ['type'],
+        variants: [{ selector: [''] }],
+      }),
+    ).rejects.toThrow(/may not be empty/);
+    // The same declaration with key-safe values is accepted, so the refusal is about the
+    // VALUES and not about this source.
+    await ines.invoke('tock/declare-variants', {
+      sourceKey: FRESH,
+      discriminators: ['type'],
+      variants: [{ selector: ['click'] }],
+    });
+  });
+
+  /**
+   * A kind's label field routinely lives in the envelope — that is what declaring the envelope
+   * once is for. Resolving it against the file in front of you refused a schema whose record
+   * does carry the field, while the dimension cap directly above already used the effective shape.
+   */
+  it('29 — a kind may label a dimension with a field the envelope declares', async () => {
+    const ines = await as('ines');
+    // `country` is the envelope's; the kind declares only the dimension that points at it.
+    const saved = await ines.invoke<{ variant_key: string }>('tock/save-schema', {
+      sourceKey: SRC,
+      variantKey: 'track/scroll',
+      fields: { country_id: { type: 'text', role: 'dimension', labelField: 'country' } },
+    });
+    expect(saved.variant_key).toBe('track/scroll');
+    // A label field nothing declares, at any level, is still refused.
+    await expect(
+      ines.invoke('tock/save-schema', {
+        sourceKey: SRC,
+        variantKey: 'track/scroll',
+        fields: { x: { type: 'text', role: 'dimension', labelField: 'nowhere' } },
+      }),
+    ).rejects.toThrow(/inherits/);
+  });
 });
