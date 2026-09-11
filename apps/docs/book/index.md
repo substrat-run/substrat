@@ -40,9 +40,10 @@ event](/book/05-one-event) and [The two clocks](/book/09-the-two-clocks).
 
 The whole book is also published as a single document, three ways:
 
-- **[book.epub](/book.epub)** — a real EPUB 3, with a cover and a table of contents.
-  Open it on a phone and it lands in Apple Books (or Kobo, or anything else that reads
-  EPUB), remembers where you got to, and lets you set the type the way you like it.
+- **[book.epub](/book.epub)** — a real EPUB 3, with a cover and a table of contents. The
+  link downloads the file; open it from there in Apple Books, Kobo, or anything else that
+  reads EPUB, and it remembers where you got to and lets you set the type the way you like
+  it. On a phone that is one step more than tapping a link — see below.
 - **[book.txt](/book.txt)** — every chapter concatenated, plain markdown. Good for
   printing, for `pandoc`, or for handing to a model in one shot.
 - **[book/read.html](/book/read.html)** — the same thing as one scrolling, printable
