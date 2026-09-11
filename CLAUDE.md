@@ -67,7 +67,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
 | `engines/*` | The seven domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence` | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. All three (`scrive`, `fortnox`, `planima`) are published | AGPL + commercial |
-| `demos/*` | The ten demo verticals — `callout`, `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `rally`, `handlebar`, `tock`, and `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
+| `demos/*` | Ten directories: the nine demo verticals — `callout`, `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `rally`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
 | `apps/control-plane` | The control plane, and the worker that serves the console | private |
 | `apps/console` | Control-plane admin console (tenants, fleet, admin log, permissions) | private |
@@ -149,8 +149,8 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 - `pnpm callout-demo dev` — run the Callout demo (issuer :8879 + API :8871 + web :5271).
   Demo dev ports live in a private `887x`/`527x` block to stay clear of the Vite (5173) and
   Wrangler (8787) defaults; `PORT=… WEB_PORT=… ISSUER_PORT=…` overrides all three. That block
-  is full — `8871`–`8878` are taken and `8879` is the issuer — so `tock`, the tenth demo, sits
-  just above it at `8880`/`5280`. The Vite
+  is full — `8871`–`8878` are taken and `8879` is the issuer — so `tock`, the newest demo,
+  sits just above it at `8880`/`5280`. The Vite
   proxy must set **`changeOrigin: false`, written out**: the API derives its OIDC
   `redirect_uri` from the forwarded Host header, and rewriting it sends the login callback
   to the wrong port. Writing nothing is not the same as writing `false` — Vite's string

@@ -83,9 +83,9 @@ their surfaces evolve additively only; the rules a module must follow are in
 
 ## Demos
 
-Ten reference verticals, each the same kernel under a different shape of app. They run
-locally on SQLite and deploy unchanged to Cloudflare; several are installable from the
-hosted marketplace.
+Nine reference verticals, each the same kernel under a different shape of app, plus a
+standalone OIDC issuer. They run locally on SQLite and deploy unchanged to Cloudflare;
+several are installable from the hosted marketplace.
 
 - **[Callout](demos/callout/)** — field service: work orders, time and material,
   self-inspection protocols, invoice basis. The engine-composing reference, and the first
