@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { moneyOf, type DomainEventInput, type Page } from '@substrat-run/contracts';
+import { errorCodeOf, moneyOf, type DomainEventInput, type Page } from '@substrat-run/contracts';
 import { engineHarness, type EngineHarness } from '@substrat-run/engine-test-kit';
 import { invoicingModule, INVOICING_PERM as PERM, type UnderlagLine, type UnderlagRow } from '../src/index.js';
 
@@ -312,6 +312,88 @@ describe('engine-invoicing', () => {
     const evts = h.eventsOfType('invoicing.underlag-exported');
     expect(evts).toHaveLength(1);
     expect(evts.map((e) => e.schemaVersion)).toEqual([2]);
+  });
+
+  // -- the currency of an EMPTY basis (#967) --------------------------------
+
+  /**
+   * An empty underlag is unreachable through the consumers — every one of them
+   * returns early on `billable.length === 0`, and find-or-create shares its
+   * transaction with the line inserts. So the row is built by hand here, which
+   * is the only honest way to reach the branch that used to invent `SEK`.
+   */
+  const emptyUnderlag = async (): Promise<string> => {
+    const id = '01JEXAMPLEEMPTYUNDERLAG000';
+    await h.run(
+      (ctx) =>
+        void ctx.sql.exec(
+          `INSERT INTO invoicing_underlag (id, number, customer_type, customer_id, status, created_at)
+           VALUES (?, 99, ?, ?, 'open', ?)`,
+          [id, CUSTOMER.entityType, CUSTOMER.entityId, ctx.now()],
+        ),
+      [PERM.read],
+    );
+    return id;
+  };
+
+  it('an empty basis exports in the caller-declared currency, not SEK', async () => {
+    const id = await emptyUnderlag();
+    await exporter.invoke('invoicing/export', { underlagId: id, currency: 'EUR' });
+
+    // The consumer of this event is by design an accounting connector, so a
+    // zero labelled SEK is a Swedish answer on a EUR vertical's real document.
+    const [evt] = h.eventsOfType('invoicing.underlag-exported');
+    expect(evt!.payload).toMatchObject({ total: { amount: '0', currency: 'EUR' } });
+  });
+
+  it('an empty basis still falls back to SEK when nobody declares one', async () => {
+    const id = await emptyUnderlag();
+    await exporter.invoke('invoicing/export', { underlagId: id });
+
+    const [evt] = h.eventsOfType('invoicing.underlag-exported');
+    expect(evt!.payload).toMatchObject({ total: { amount: '0', currency: 'SEK' } });
+  });
+
+  it('the lines win: a declared currency that contradicts them is refused, before the write', async () => {
+    await h.emit(completed('wo-1', [line('arbete', '100', 'SEK')]));
+    const [u] = await list();
+    const err = await exporter
+      .invoke('invoicing/export', { underlagId: u!.id, currency: 'EUR' })
+      .catch((e: unknown) => e);
+
+    // The CODE, not just the prose: a vertical branches on `conflict` +
+    // `currency_mismatch`, and a generic Error saying the same thing is not the
+    // same refusal.
+    expect(errorCodeOf(err)).toBe('conflict');
+    expect((err as Error).message).toMatch(/currency mismatch/i);
+    // Refused before it mutated: the basis is still open, and nothing was
+    // announced to a connector.
+    expect((await list())[0]!.status).toBe('open');
+    expect(h.eventsOfType('invoicing.underlag-exported')).toHaveLength(0);
+  });
+
+  it('a declared currency that agrees with the lines changes nothing — the lines still total', async () => {
+    await h.emit(completed('wo-1', [line('arbete', '100', 'EUR'), line('material', '50', 'EUR')]));
+    const [u] = await list();
+    await exporter.invoke('invoicing/export', { underlagId: u!.id, currency: 'EUR' });
+
+    const evts = h.eventsOfType('invoicing.underlag-exported');
+    // Still exactly one emission: the optional input is an input, not a second
+    // event (K-39 — dual-emit is not available to this engine).
+    expect(evts).toHaveLength(1);
+    expect(evts[0]!.payload).toMatchObject({ total: { amount: '150', currency: 'EUR' } });
+  });
+
+  it('refuses a currency that is not an ISO-4217 code, at the host boundary', async () => {
+    const id = await emptyUnderlag();
+    const err = await exporter
+      .invoke('invoicing/export', { underlagId: id, currency: 'euro' })
+      .catch((e: unknown) => e);
+
+    // The host parses declared inputs before the handler runs (#953), so this
+    // never reaches `moneyOf` as a raw Zod issue naming `amount`.
+    expect(errorCodeOf(err)).toBe('validation_failed');
+    expect(h.eventsOfType('invoicing.underlag-exported')).toHaveLength(0);
   });
 
   it('exporting something that does not exist throws, not silently succeeds', async () => {

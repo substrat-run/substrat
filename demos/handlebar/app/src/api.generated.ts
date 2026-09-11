@@ -386,7 +386,7 @@ export interface HandlebarClient {
    *
    * `POST /invoicing/{underlagId}/export` — `invoicing/export`
    */
-  invoicingExport(input: { underlagId: string }): Promise<Underlag>;
+  invoicingExport(input: { underlagId: string; currency?: string }): Promise<Underlag>;
 
   /**
    * One invoice basis with its lines and total
