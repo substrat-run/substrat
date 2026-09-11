@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -507,6 +507,17 @@ export const MOCK_APPS: AppRow[] = [
 export const MOCK_OBSERVABILITY: ObservabilityRow[] = [
   { vertical: 'acme/helpdesk', version: '0.3.0', versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', requests: 12840, errors: 23, subrequests: 31200, cpuTimeP50: 2400, cpuTimeP99: 18200 },
   { vertical: 'acme/helpdesk', version: '0.2.0', versionId: '01J2Q8Z3V9K4W7X2M5N6P7V200', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', requests: 3120, errors: 1, subrequests: 7400, cpuTimeP50: 2100, cpuTimeP99: 15400 },
+];
+
+/**
+ * Dev-preview sample for the tenant grain — one installed app's own traffic, split by
+ * the surface that answered. Deliberately NOT split by version the way
+ * `MOCK_OBSERVABILITY` is: this view is for an app whose vertical another team
+ * publishes, and a version is a fact about code that is not the viewing team's.
+ */
+export const MOCK_TENANT_METRICS: TenantMetricsRow[] = [
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'acme/helpdesk', surface: 'app', requests: 4210, errors: 6, durationP50: 84, durationP95: 689 },
+  { scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB', vertical: 'acme/helpdesk', surface: 'api', requests: 912, errors: 0, durationP50: 31, durationP95: 210 },
 ];
 
 /**
