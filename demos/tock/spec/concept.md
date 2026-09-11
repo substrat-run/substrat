@@ -65,6 +65,70 @@ received ──▶ profiled ──▶ mapped ──▶ counted
   publishes its own rollup rows tagged with its own id, in the transaction that counts it,
   so a report never reads half of one run's numbers beside half of another's.
 
+### One file, several kinds of record
+
+A delivered file rarely holds one shape. An analytics firehose holds page views beside
+tracked events beside identifications, each with different fields, told apart by a value in
+the record itself. Modelling that as one schema means modelling the union of everything —
+a shape where almost every field is absent almost always, and no reader can tell a missing
+value from a value that does not apply to this kind of record.
+
+So a source declares its **discriminators**: an ordered list of fields whose values tell
+record kinds apart. A **variant** is then identified by a *prefix* of those values.
+
+```
+discriminators: [ "type", "event" ]
+
+variant                    selector                    what it adds
+──────────────────────────────────────────────────────────────────────────
+(every record)             []                          the common envelope
+page                       [page]                      —
+identify                   [identify]                  —
+track                      [track]                     — (its events share nothing)
+track / scroll             [track, scroll]             scroll
+track / view-article       [track, viewArticle]        itemSrc, name, state, …
+```
+
+A record belongs to the **longest** variant whose selector values all hold. `page` stops at
+one level because it carries no `event`; a track record goes to two. Nothing special-cases
+depth, and a third discriminator later is one more value in the list rather than a new idea.
+
+**Schemas attach to prefixes and stack.** A record's shape is the union along its path —
+the envelope, plus what its kind adds, plus what its sub-kind adds. That is what stops the
+sixteen envelope fields being declared once per variant, and it makes an *empty* middle
+level a readable fact rather than an omission: a stream whose kinds share nothing says so.
+
+**A list of known values is a declaration, not a constraint.** When a value nobody declared
+arrives, the record is kept, classified as **unmatched**, and reported as a finding. It is
+never rejected. The first time a producer ships a new event name, a design that validated
+here would lose the data — which is the one thing an archive may not do. A record matching
+two equally specific variants is a finding too: an ambiguity a person resolves, rather than
+one the system settles quietly by picking an order.
+
+### The shapes counts are built over
+
+Variants describe what **arrives**, and what arrives drifts: a producer renames a field,
+changes a unit, splits one event into two. Counting directly over variants would make every
+such change a break in the numbers.
+
+So a source also declares **output schemas** — the stable shapes counts are built over —
+and a **mapping** from each variant into one of them. When the input moves, the mapping
+moves and the output schema does not. Two variants can share one output: `activeDuration`
+and `idleDuration` carry the same two fields and are the same measurement, so they map to
+one shape with the event name as a dimension.
+
+**A mapping is data a reviewer can read as a table**, and that bound is the whole of its
+design. A field may be renamed, retyped, scaled by a declared factor, or have its values
+remapped through a declared list of pairs. Each of those is a *datum*. What a mapping may
+never contain is an expression — no arithmetic on other fields, no conditionals, no
+functions. The moment it needs a parser it has become a small programming language living
+inside a schema editor, and a value that genuinely needs computing belongs in the producer,
+where someone can test it.
+
+Mappings are versioned like schemas, and which version was in force is captured on the run
+beside the other rules — so a corrected number can be explained by the mapping that made it,
+not merely by the file it came from.
+
 ## 3. What already exists vs. what's yours
 
 **Free from the platform** — not built here, not designed here:
@@ -167,11 +231,34 @@ All tables prefixed `tock_`. This previews the migration review, and these shape
 append-only once shipped, so this is the cheap moment to argue about them.
 
 - **`tock_source`** — a named stream of files. `key`, `title`, `expected_cadence`,
-  `created_at`. "Fjord CDN logs" is one source.
-- **`tock_schema`** — one **version** of a source's declared shape. `source_key`,
-  `version`, `fields_json`, `created_by`, `created_at`. A save never edits a version; it
-  writes the next one. `fields_json` holds, per field: its type, whether it is a dimension,
-  a measure or ignored, and whether it is required.
+  `discriminators` (the ordered field list, empty for a stream of one shape), `created_at`.
+- **`tock_variant`** — one record kind. `source_key`, `key`, `selector` (the ordered prefix
+  of discriminator values), `created_at`. A source with no discriminators has exactly one
+  variant with an empty selector, which is how a single-shape stream stays the simple case
+  rather than a special case.
+- **`tock_schema`** — one **version** of a declared shape, attached to a *variant* rather
+  than to the source as a whole. `source_key`, `variant_key` (empty for the envelope every
+  record shares), `version`, `fields_json`, `created_by`, `created_at`. A save never edits a
+  version; it writes the next one. `fields_json` holds, per field: its type, whether it is a
+  dimension, a measure or ignored, and whether it is required.
+
+  A record's effective shape is the **union along its path** — the envelope, then its kind,
+  then its sub-kind. Declaring the envelope once is the point; fourteen variants repeating
+  sixteen identical fields would be fourteen places for them to drift apart.
+- **`tock_output_schema`** — a stable shape counts are built over. `source_key`, `key`,
+  `version`, `fields_json`, `created_at`. Versioned and **additive only**, by the same rule
+  the rest of the design runs on: a field never changes meaning, because a field that does
+  turns every historical number into a silent lie.
+- **`tock_mapping`** — how one variant becomes one output shape. `source_key`,
+  `variant_key`, `output_key`, `version`, `rules_json`, `created_by`, `created_at`.
+  `rules_json` is a list of correspondences — source field, output field, and optionally a
+  declared type, a numeric scale, or a list of value pairs to remap through.
+
+  **It holds no expressions, and that is the design rather than a limitation.** Every rule
+  is a datum a person can read in a table and check against the file. Admit arithmetic and
+  you have a programming language inside a schema editor, untested and unversioned against
+  anything but itself; a value that needs computing belongs in the producer. The bound is
+  what keeps "which mapping produced this number" an answerable question.
 - **`tock_run`** — one file taken through the lifecycle. `id`, `source_key`,
   `schema_version`, `filename`, `byte_size`, `content_hash`, `status`, `period_from`,
   `period_to`, `row_count`, `rejected_count`, `received_at`, `counted_at`, `received_by`.
@@ -179,7 +266,8 @@ append-only once shipped, so this is the cheap moment to argue about them.
   counted run is immutable, so it cannot carry a field that a later run has to write.
   Which run is current for a period is derived — the latest counted one covering it.
 - **`tock_rule_state`** — the rules in force for a run, captured when it was counted:
-  `run_id`, `rule_kind` (`bot_list`, `threshold`, `dedup_window`, `salt`), `identifier`,
+  `run_id`, `rule_kind` (`bot_list`, `threshold`, `dedup_window`, `salt`, `mapping`),
+  `identifier`,
   **`content_hash`**, `captured_at`. This is what makes a superseded run explainable a year
   later; without it the old numbers are preserved and unaccountable, which is barely better
   than losing them. The `content_hash` is the part that actually holds: a bot list called
@@ -202,7 +290,8 @@ append-only once shipped, so this is the cheap moment to argue about them.
 - **`tock_source_file`** — the delivered bytes and what identifies them: `run_id`,
   `content_hash`, `byte_size`, `stored_at`, `purge_after`. Reading one back is guarded like
   a raw row, because that is what it contains.
-- **`tock_row`** — the mapped rows a run produced. `id`, `run_id`, `occurred_at`,
+- **`tock_row`** — the mapped rows a run produced. `id`, `run_id`, `variant_key` (empty
+  when the record matched none — kept and reported, never dropped), `occurred_at`,
   `subject_key`, `dims_json`, `metrics_json`. The personal-data table, and the one the
   `read raw rows` permission guards. `subject_key` is the day-salted hash, never a raw
   identifier, and it is erasable — which also means no event may carry it.
@@ -278,6 +367,33 @@ Two rules the storage enforces rather than merely intends:
     sum unchanged rather than pulling it down; a report grouped by `campaign` over the
     first day shows an unknown bucket rather than a fabricated one.
 
+### A file of several kinds
+
+These replay the same discipline one level up — what arrives is recorded, what was declared
+is separate, and a disagreement between them is a finding rather than a loss.
+
+12. **Profiling proposes the kinds.** A file holding four values of `type`, and eleven
+    values of `event` within one of them, is reported as such. Nothing is created from that
+    automatically: Ines confirms which fields are discriminators, because "these two values
+    are different kinds of record" is a judgement about the stream and not a fact in it.
+13. **The envelope is declared once.** The sixteen fields every record carries are the
+    root schema; a variant declares only what it adds. A variant that adds nothing — a kind
+    whose records are pure envelope — is legitimate and says so.
+14. **An undeclared kind is kept.** A file arrives carrying a `type` nobody listed. Its
+    records are stored, marked unmatched, and reported as a finding naming the value and the
+    count. Nothing is rejected, and the count for every declared kind is unaffected.
+15. **Two variants collapse into one output.** `activeDuration` and `idleDuration` carry
+    the same two fields and are the same measurement; both map to one output shape with the
+    kind as a dimension. The report groups by it and the two are comparable, which they
+    would not be as separate shapes.
+16. **A renamed input does not move the output.** The producer renames a field. A new
+    mapping version says so, the output schema is untouched, and a period re-run under the
+    new mapping supersedes the old one — with `tock_rule_state` naming which mapping each
+    run used, so the two numbers are explainable side by side rather than merely different.
+17. **A mapping cannot compute.** Attempting a rule that derives a value from another
+    field is refused at save time, naming the reason. The refusal is the feature: a
+    computed value belongs in the producer, where it can be tested.
+
 ## 9. Open decisions — each with a default
 
 1. **The name.** `tock` — **settled**, recorded here so the reasoning survives. A tock is
@@ -344,6 +460,14 @@ Named so the review is about a bounded thing:
 - **Certification** against any measurement guideline. See section 5.
 - **A general query surface.** The report answers a defined set of questions. Arbitrary
   querying by end users is a different product.
+- **A transformation language.** A mapping renames, retypes, scales by a declared factor
+  and remaps values through a declared list. It holds no expressions, no conditionals and
+  no references to other fields, and it never will: that is the line between a reviewable
+  table and a programming language nobody tests. Deriving a value is the producer's job.
+- **Inferring the kinds.** Profiling *proposes* discriminators and reports the values it
+  saw; a person decides which of them mean "a different kind of record". A stream where
+  every request id is technically a distinct value would otherwise become a source with
+  eleven thousand variants.
 - **Anything real-time.** A run is a batch over a delivered period, and the counts it
   produces are as fresh as the last file that arrived — minutes to a day behind, by
   design. "What happened just now" is a different read path over a different store, and
@@ -361,7 +485,12 @@ Named so the review is about a bounded thing:
    defensible, and it is also the part that will feel like overhead every time a run
    executes. Is "what did we report, and on what basis" a question you actually expect to
    be asked — or are we building an audit trail nobody will open?
-3. **Section 9's retention defaults.** 90 days of rows and a salt destroyed at 35 are
+3. **How much the mapping layer should carry.** Rename, retype, scale and value-remap are
+   four capabilities, and each is a place someone will ask for a fifth. Scale exists because
+   a unit change (milliseconds to seconds) is the drift I expect most; value-remap because a
+   renamed enum is the second. If neither is a real case for Fjord, both should go — every
+   capability here is a thing a reviewer has to read and a mapping can get wrong.
+4. **Section 9's retention defaults.** 90 days of rows and a salt destroyed at 35 are
    numbers I picked to be defensible, not ones derived from how Fjord actually works. The
    35 has a rule behind it — past every de-duplication window — but the 90 is a guess at
    how far back a correction is ever re-run. If corrections routinely reach further back
