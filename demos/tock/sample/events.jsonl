@@ -1,0 +1,6 @@
+{"type":"page","occurred_at":"2026-06-01T08:00:00Z","subject":"u-1","country":"SE","url":"/home"}
+{"type":"page","occurred_at":"2026-06-01T08:05:00Z","subject":"u-2","country":"NO","url":"/pricing"}
+{"type":"track","event":"scroll","occurred_at":"2026-06-01T08:10:00Z","subject":"u-1","country":"SE","depth":"80"}
+{"type":"track","event":"scroll","occurred_at":"2026-06-01T08:12:00Z","subject":"u-3","country":"DK","depth":"40"}
+{"type":"track","event":"viewArticle","occurred_at":"2026-06-01T09:00:00Z","subject":"u-2","country":"NO","name":"Tide"}
+{"type":"identify","occurred_at":"2026-06-01T09:30:00Z","subject":"u-4","country":"SE"}

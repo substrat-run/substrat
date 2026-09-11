@@ -33,6 +33,14 @@ export async function readHead(file: File): Promise<{ text: string; truncated: b
 
 export interface PreviewColumn {
   name: string;
+  /**
+   * The distinct values seen, when there are few enough to be a KIND rather than data.
+   *
+   * Null once a column exceeds the cap: a column with thousands of distinct values is data,
+   * and offering it as a discriminator would invite a source with one variant per request id.
+   * The cap is what makes the proposal safe to accept without thinking about it.
+   */
+  values: string[] | null;
   /** What the sampled values look like. The schema editor offers this as a starting point. */
   inferred: 'text' | 'int' | 'decimal' | 'timestamp' | 'bool';
   /** How many sampled rows had no value — the unknown bucket, visible before anything is saved. */
@@ -55,6 +63,13 @@ export interface Preview {
 }
 
 const SAMPLE_ROWS = 50;
+
+/**
+ * Above this many distinct values a column stops looking like a kind and starts looking like
+ * data. Deliberately small: the kinds in a real stream are a handful, and a generous cap would
+ * propose `sessionId` as cheerfully as `type`.
+ */
+const MAX_KIND_VALUES = 25;
 
 const DELIMITERS = [',', ';', '\t', '|'];
 
@@ -87,6 +102,50 @@ function flatten(value: unknown, prefix = '', depth = 0, out: Record<string, str
   }
   out[prefix || 'value'] = String(value);
   return out;
+}
+
+/**
+ * The columns that could be a KIND, by one rule used everywhere.
+ *
+ * A kind REPEATS. A column whose every value is distinct is an identifier or a timestamp and
+ * can never be one, so the test is few values RELATIVE to rows read rather than few values —
+ * `occurred_at` with six distinct values in six rows is not a candidate however small six is.
+ *
+ * Exported because two panes ask the question and they must not answer it differently: the
+ * ingest pane once hinted that a column looked like a kind while the Kinds pane refused to
+ * offer it, which is worse than either answer alone.
+ */
+export function kindCandidates(preview: Preview): PreviewColumn[] {
+  const ceiling = Math.max(2, Math.floor(preview.sampled / 2));
+  return preview.columns.filter((c) => c.values && c.values.length > 1 && c.values.length <= ceiling);
+}
+
+/**
+ * The combinations of discriminator values the sample actually contains.
+ *
+ * A PROPOSAL, and the count beside each one is why it is worth reading rather than
+ * accepting: a combination seen twice in fifty rows is probably not a kind, and the person
+ * looking at the file is the one who can tell.
+ */
+export function observedKinds(preview: Preview, discriminators: string[]): { selector: string[]; n: number }[] {
+  if (discriminators.length === 0) return [];
+  const counts = new Map<string, { selector: string[]; n: number }>();
+  for (const row of preview.rows) {
+    // Trailing levels a record does not reach are dropped, which is what makes the selector a
+    // PREFIX: a page record carrying no `event` proposes `[page]` and not `[page, '']`.
+    const selector: string[] = [];
+    for (const d of discriminators) {
+      const v = row[d] ?? '';
+      if (v === '') break;
+      selector.push(v);
+    }
+    if (selector.length === 0) continue;
+    const key = JSON.stringify(selector);
+    const hit = counts.get(key) ?? { selector, n: 0 };
+    hit.n += 1;
+    counts.set(key, hit);
+  }
+  return [...counts.values()].sort((a, b) => b.n - a.n);
 }
 
 /**
@@ -179,11 +238,25 @@ export function previewFile(text: string, truncatedBytes = false): Preview {
 
   if (columns.length === 0) return empty('no readable records in the sample', format, delimiter);
 
-  const cols = columns.map((name) => ({
-    name,
-    inferred: inferType(rows.map((r) => r[name] ?? '')),
-    empty: rows.filter((r) => (r[name] ?? '') === '').length,
-  }));
+  const cols = columns.map((name) => {
+    const seen = new Set<string>();
+    let tooMany = false;
+    for (const r of rows) {
+      const v = r[name] ?? '';
+      if (v === '') continue;
+      seen.add(v);
+      if (seen.size > MAX_KIND_VALUES) {
+        tooMany = true;
+        break;
+      }
+    }
+    return {
+      name,
+      inferred: inferType(rows.map((r) => r[name] ?? '')),
+      empty: rows.filter((r) => (r[name] ?? '') === '').length,
+      values: tooMany ? null : [...seen].sort(),
+    };
+  });
 
   return {
     format,
