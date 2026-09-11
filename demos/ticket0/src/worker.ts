@@ -919,7 +919,18 @@ app.post('/api/conversations/:conversationId/replies', async (c, next) => {
   await next();
   if (c.res.status >= 400) return;
   const env = c.env as Env;
-  c.executionCtx.waitUntil(sweepFor(env, c.req.raw));
+  // The getter THROWS when there is no execution context — a direct `app.request(…)`,
+  // which is how a test drives this app. Reading it after `await next()` has already
+  // set a successful response would turn that into a 500 from `app.onError`, so the
+  // absence is caught and nothing else is: `sweepFor` logs its own failures, and a
+  // sweep that never ran loses nothing, because the message is still on the list.
+  let post: typeof c.executionCtx;
+  try {
+    post = c.executionCtx;
+  } catch {
+    return;
+  }
+  post.waitUntil(sweepFor(env, c.req.raw));
 });
 
 /**

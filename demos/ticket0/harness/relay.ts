@@ -59,9 +59,10 @@ export interface OutboundMessage {
  * reason the seam is shaped this way. That id is what `record-delivery` stores and
  * what a later inbound `In-Reply-To` matches against, so a provider that cannot
  * name what it just sent cannot thread, and the desk would answer the same customer
- * in a new conversation every time. Providers that hand back a bare id rather than
- * an RFC 5322 `Message-ID` are normalised here, at the connector, so every provider
- * gives the desk one shape (concept §3).
+ * in a new conversation every time. It is the RFC 5322 `Message-ID` that went out on
+ * the wire, NOT the provider's own handle for the row — the two differ at Resend and
+ * at most providers — and reconciling the two is the connector's job, so every
+ * provider gives the desk one shape (concept §3).
  */
 export interface OutboundSender {
   /** A name for the log, and for `sweepOutbound`'s report. */
@@ -198,14 +199,69 @@ interface ResendAccepted {
 }
 
 /**
+ * What `GET /emails/{id}` answers with — the part of it this cares about.
+ *
+ * `message_id` is the RFC 5322 header the recipient's mail client will quote back in
+ * `In-Reply-To`, and it is a DIFFERENT value from the `id` the send returned, which is
+ * Resend's own handle for the row. Threading on the wrong one of the two is silent: the
+ * mail goes, the customer answers, and their answer opens a new conversation.
+ */
+interface ResendSent {
+  message_id?: string;
+}
+
+/**
+ * The abort signal, structurally.
+ *
+ * Declared rather than imported for the reason `FetchLike` gives: nothing here reads
+ * the signal, it is only handed to `fetch`, and `ConnectorRequestInit.signal` is
+ * `unknown` for exactly that reason.
+ */
+interface AbortSignalLike {
+  readonly aborted: boolean;
+}
+
+/** How long one provider call may take before the sweep gives up on it. */
+const SEND_TIMEOUT_MS = 10_000;
+
+/**
+ * A deadline for one provider call, when the runtime has one to give.
+ *
+ * `AbortSignal.timeout` is web-standard and present in Node 18+, workerd and browsers.
+ * Reached through `globalThis` with a structural type and feature-checked anyway, the
+ * same way `@substrat-run/adapter-email`'s relay reaches it: an environment without it
+ * must lose the BOUND rather than the send, and a `fetch` a test supplies need not
+ * honour a signal at all.
+ */
+function deadline(ms: number): AbortSignalLike | undefined {
+  const timeouts = (
+    globalThis as unknown as { AbortSignal?: { timeout?: (ms: number) => AbortSignalLike } }
+  ).AbortSignal;
+  return typeof timeouts?.timeout === 'function' ? timeouts.timeout(ms) : undefined;
+}
+
+/**
  * Resend, behind the seam.
  *
  * The threading headers are set HERE rather than by the desk, because they are the
  * part every provider spells differently and the desk must not learn three spellings:
  * `In-Reply-To` and `References` both carry the message this one answers, which is
- * what a mail client reads to keep the customer's thread together. Resend returns its
- * own id rather than a `Message-ID`, so it is normalised into one — the same shape
- * `ticket0/ingest-message` will match an inbound `In-Reply-To` against.
+ * what a mail client reads to keep the customer's thread together.
+ *
+ * ── Two calls, and why the second is not optional ────────────────────────────
+ * `POST /emails` answers with Resend's OWN id, which is not the `Message-ID` that
+ * went out on the wire — Resend mints that itself and will not take one from the
+ * `headers` bag. So the id the send hands back cannot thread anything, and deriving
+ * a plausible-looking `<id@resend.com>` out of it would be worse than useless: it
+ * would record a delivery that looks right, and the customer's reply would open a new
+ * conversation every single time, silently. The sent mail is retrieved for its real
+ * `message_id`, and a retrieve that does not carry one throws rather than recording a
+ * value that cannot match.
+ *
+ * ── The deadline ────────────────────────────────────────────────────────────
+ * Both calls are bounded. `sweepOutbound` sends serially, so one stalled provider call
+ * would otherwise hold up every message behind it — and in the node host, where the
+ * loop is an interval, let the next sweep start on top of it.
  *
  * `fetch` is injected as a `FetchLike` and never reached for globally: workerd checks
  * the receiver, and a bare global called as `options.fetch(…)` throws there and
@@ -216,8 +272,12 @@ export function resendSender(options: {
   fetch: FetchLike;
   /** Override for a test double. Defaults to Resend's own. */
   endpoint?: string;
+  /** Per-call deadline. Defaults to `SEND_TIMEOUT_MS`. */
+  timeoutMs?: number;
 }): OutboundSender {
-  const endpoint = options.endpoint ?? 'https://api.resend.com/emails';
+  const endpoint = (options.endpoint ?? 'https://api.resend.com/emails').replace(/\/$/, '');
+  const timeoutMs = options.timeoutMs ?? SEND_TIMEOUT_MS;
+  const authorization = `Bearer ${options.apiKey}`;
   return {
     name: 'resend',
     async send(message) {
@@ -227,12 +287,11 @@ export function resendSender(options: {
       const headers: Record<string, string> = message.emailInReplyTo
         ? { 'In-Reply-To': message.emailInReplyTo, References: message.emailInReplyTo }
         : {};
+      const sending = deadline(timeoutMs);
       const response = await options.fetch(endpoint, {
         method: 'POST',
-        headers: {
-          authorization: `Bearer ${options.apiKey}`,
-          'content-type': 'application/json',
-        },
+        headers: { authorization, 'content-type': 'application/json' },
+        ...(sending ? { signal: sending } : {}),
         body: JSON.stringify({
           from,
           to: [message.toEmail],
@@ -250,16 +309,62 @@ export function resendSender(options: {
       const accepted = (await response.json()) as ResendAccepted;
       if (!accepted.id) {
         // Accepted with no id is worse than a refusal: the mail went, and nothing can
-        // thread the customer's answer back to this conversation. Loud, not silent.
-        throw new Error('resend accepted the send but named no message id');
+        // even ask what it was sent as. Loud, not silent.
+        throw new Error('resend accepted the send but named no id');
       }
-      // Normalised to an RFC 5322 Message-ID, because that is what an inbound
-      // `In-Reply-To` will look like when the customer answers.
-      return {
-        emailMessageId: accepted.id.startsWith('<') ? accepted.id : `<${accepted.id}@resend.com>`,
-      };
+
+      // The real `Message-ID`, which only the retrieve carries.
+      const messageId = await retrieveMessageId(options.fetch, endpoint, authorization, accepted.id, timeoutMs);
+      if (!messageId) {
+        // The mail HAS gone. Throwing here would leave the row pending and the next
+        // sweep would send it a second time — a customer reading the same reply twice
+        // is a worse outcome than a thread that does not stitch. So the delivery is
+        // recorded against Resend's own id, which is a true and traceable handle even
+        // though no inbound `In-Reply-To` will ever equal it, and the degradation is
+        // said out loud rather than inferred later from a conversation that split.
+        console.warn('ticket0: resend sent the mail but named no Message-ID — recording its own id instead', {
+          messageId: message.messageId,
+          conversationId: message.conversationId,
+          resendId: accepted.id,
+        });
+        return { emailMessageId: accepted.id };
+      }
+      // Angle brackets, because that is how an inbound `In-Reply-To` will carry it and
+      // `ticket0/ingest-message` matches the two exactly. Resend answers with them;
+      // this only holds the shape if a future version stops.
+      return { emailMessageId: messageId.startsWith('<') ? messageId : `<${messageId}>` };
     },
   };
+}
+
+/**
+ * What Resend says it actually sent, or nothing.
+ *
+ * Null rather than a throw for every failure here, because by the time this runs the
+ * mail has left — see the caller. A retrieve that 404s because the row has not
+ * appeared yet, a network blip, a body that parses to nothing: all of them mean "no
+ * Message-ID", and none of them mean "do not record the delivery".
+ */
+async function retrieveMessageId(
+  fetchImpl: FetchLike,
+  endpoint: string,
+  authorization: string,
+  id: string,
+  timeoutMs: number,
+): Promise<string | null> {
+  try {
+    const signal = deadline(timeoutMs);
+    const sent = await fetchImpl(`${endpoint}/${encodeURIComponent(id)}`, {
+      method: 'GET',
+      headers: { authorization },
+      ...(signal ? { signal } : {}),
+    });
+    if (!sent.ok) return null;
+    const { message_id: messageId } = (await sent.json()) as ResendSent;
+    return messageId ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**

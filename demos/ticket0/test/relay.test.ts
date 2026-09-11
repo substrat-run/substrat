@@ -250,43 +250,86 @@ describe('the provider seam, as Resend sees it', () => {
     emailInReplyTo: '<their-question@mail.example>',
   };
 
-  it('threads the customer’s message and signs it with the agent’s name', async () => {
-    let body: Record<string, unknown> = {};
-    const sender = resendSender({
-      apiKey: 're_test',
-      fetch: (_url, init) => {
-        body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+  /** Resend's two calls: accept the send, then say what it was actually sent as. */
+  function fakeResend(retrieve: { ok: boolean; body: unknown }) {
+    const calls: { url: string; method: string; body?: Record<string, unknown> }[] = [];
+    const fetchImpl = (url: string, init?: { method?: string; body?: unknown }) => {
+      const method = init?.method ?? 'GET';
+      calls.push({
+        url,
+        method,
+        ...(init?.body ? { body: JSON.parse(String(init.body)) as Record<string, unknown> } : {}),
+      });
+      if (method === 'POST') {
         return Promise.resolve({
           ok: true,
           status: 200,
           json: () => Promise.resolve({ id: 'abc123' }),
         } as never);
-      },
+      }
+      return Promise.resolve({
+        ok: retrieve.ok,
+        status: retrieve.ok ? 200 : 404,
+        json: () => Promise.resolve(retrieve.body),
+      } as never);
+    };
+    return { calls, fetchImpl };
+  }
+
+  it('threads the customer’s message and signs it with the agent’s name', async () => {
+    const { calls, fetchImpl } = fakeResend({
+      ok: true,
+      body: { message_id: '<real-wire-id@desk.example>' },
     });
+    await resendSender({ apiKey: 're_test', fetch: fetchImpl }).send(message);
 
-    const { emailMessageId } = await sender.send(message);
-
-    expect(body['from']).toBe('Robin <support@desk.example>');
-    expect(body['to']).toEqual(['customer@example.com']);
+    const posted = calls[0]!.body!;
+    expect(posted['from']).toBe('Robin <support@desk.example>');
+    expect(posted['to']).toEqual(['customer@example.com']);
     // Both headers, because a mail client reads one or the other depending on who
     // wrote it — a reply that carries neither starts a new thread in the customer's
     // inbox, which is the failure this whole seam exists to prevent.
-    expect(body['headers']).toEqual({
+    expect(posted['headers']).toEqual({
       'In-Reply-To': '<their-question@mail.example>',
       References: '<their-question@mail.example>',
     });
-    // Normalised into the shape an inbound `In-Reply-To` will carry when the customer
-    // answers — a bare provider id would never match.
-    expect(emailMessageId).toBe('<abc123@resend.com>');
   });
 
-  it('refuses an accepted send that named no id, rather than recording an unthreadable delivery', async () => {
+  it('records the Message-ID that went out on the wire, never Resend’s own row id', async () => {
+    const { calls, fetchImpl } = fakeResend({
+      ok: true,
+      body: { message_id: '<real-wire-id@desk.example>' },
+    });
+    const { emailMessageId } = await resendSender({ apiKey: 're_test', fetch: fetchImpl }).send(
+      message,
+    );
+
+    // The retrieve is what the second call is FOR: `POST /emails` answers with Resend's
+    // handle for the row, and an inbound `In-Reply-To` will never equal it. Recording
+    // that instead would split every customer's reply into a new conversation, silently.
+    expect(calls.map((c) => c.method)).toEqual(['POST', 'GET']);
+    expect(calls[1]!.url).toMatch(/\/emails\/abc123$/);
+    expect(emailMessageId).toBe('<real-wire-id@desk.example>');
+    expect(emailMessageId).not.toContain('abc123');
+  });
+
+  it('still records a delivery when the retrieve comes back empty — sending twice is worse', async () => {
+    const { fetchImpl } = fakeResend({ ok: false, body: {} });
+    const { emailMessageId } = await resendSender({ apiKey: 're_test', fetch: fetchImpl }).send(
+      message,
+    );
+    // The mail HAS gone. Throwing would leave the row pending and the next sweep would
+    // send it again, so the provider's own id is recorded and the degradation logged.
+    expect(emailMessageId).toBe('abc123');
+  });
+
+  it('refuses a send the provider accepted without naming anything at all', async () => {
     const sender = resendSender({
       apiKey: 're_test',
       fetch: () =>
         Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) } as never),
     });
-    await expect(sender.send(message)).rejects.toThrow(/named no message id/i);
+    await expect(sender.send(message)).rejects.toThrow(/named no id/i);
   });
 
   it('says only the status when the provider refuses — an error body can quote the recipient', async () => {
@@ -301,5 +344,26 @@ describe('the provider seam, as Resend sees it', () => {
     });
     await expect(sender.send(message)).rejects.toThrow(/HTTP 422/);
     await expect(sender.send(message)).rejects.not.toThrow(/customer@example\.com/);
+  });
+
+  it('bounds every provider call, so one stalled send cannot hold up the queue behind it', async () => {
+    const signals: unknown[] = [];
+    await resendSender({
+      apiKey: 're_test',
+      fetch: (_url, init) => {
+        signals.push((init as { signal?: unknown } | undefined)?.signal);
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ id: 'abc123', message_id: '<wire@desk.example>' }),
+        } as never);
+      },
+      timeoutMs: 50,
+    }).send(message);
+
+    // Both of them: `sweepOutbound` sends serially, and the retrieve stalling would
+    // block the queue exactly as the send stalling would.
+    expect(signals).toHaveLength(2);
+    expect(signals.every((s) => s !== undefined)).toBe(true);
   });
 });

@@ -232,6 +232,13 @@ The trigger differs by host for the reason everything else in `src/worker.ts` vs
 isolate does not, so the worker hangs the sweep off `executionCtx.waitUntil` on the reply
 request that created the work. Neither is load-bearing — a missed sweep loses nothing.
 
+What gets recorded is the **`Message-ID` that went out on the wire**, not the provider's
+own handle for the row — at Resend those are two different values, and threading on the
+wrong one is silent: the mail goes, the customer answers, and their answer opens a new
+conversation. So the connector asks the provider what it actually sent, and only falls
+back to the provider's id (loudly) when it will not say, because sending the same reply
+twice is the worse of the two.
+
 Sending needs a provider. `RESEND_API_KEY` in the dashboard's Env tab selects Resend;
 absent, the relay refuses each send **loudly** rather than stamping a delivery nobody
 made, because a desk that looks answered and is not is the worse failure. Locally the
