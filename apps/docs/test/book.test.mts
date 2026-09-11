@@ -8,7 +8,8 @@
  * live: nothing about a book with two `h1`s or a stray "Next →" fails a build.
  */
 import { describe, expect, it } from 'vitest';
-import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bookChapters } from '../.vitepress/sidebar.mjs';
 import { bookMarkdown, bookHtml } from '../.vitepress/book.mjs';
@@ -73,5 +74,29 @@ describe('the printable edition', () => {
       // markdown-it slugs nothing by default, so match the rendered text.
       expect(html).toContain(chapter.text.replace(/&/g, '&amp;'));
     }
+  });
+});
+
+/**
+ * The printable edition is written in `buildEnd`, so VitePress has no route for it.
+ * Its router intercepts every same-origin link whose extension it does not recognise
+ * as a file — `.html` is one of those — and a link it intercepts but cannot resolve
+ * renders the 404 page. The one anchor the router skips is one carrying `target`, so
+ * the link on the book's front page is raw HTML, and that is load-bearing rather than
+ * stylistic. Nothing else in this repo would notice it turning back into `[…](…)`.
+ */
+describe('the link to the printable edition', () => {
+  const source = readFileSync(join(SRC, 'book/index.md'), 'utf8');
+
+  it('is a raw anchor with a target, which is what makes the SPA router leave it alone', () => {
+    expect(source).toContain('<a href="/book/read.html" target="_self">');
+    expect(source).not.toContain('](/book/read.html)');
+  });
+
+  it('is a plain markdown link again in the twin, which has no router', () => {
+    // `toTwin` unwraps the anchor and then absolutizes it, exactly as it would have
+    // done for a markdown link — a reader of book.txt is offline and wants both.
+    expect(md).toContain('[book/read.html](https://substrat.net/book/read.html)');
+    expect(md).not.toContain('<a href=');
   });
 });
