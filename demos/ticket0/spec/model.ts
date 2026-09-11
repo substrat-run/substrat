@@ -2308,6 +2308,43 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   /**
+   * The relay's worklist: what this desk has decided to send and nobody has sent yet.
+   *
+   * A public reply on an EMAIL conversation with no `delivered_at` is, by definition,
+   * a message the desk promised a customer and did not keep. Widget conversations are
+   * excluded because the widget IS the delivery — the visitor reads the reply in the
+   * thread, and emailing it as well would be a second copy nobody asked for.
+   *
+   * IDS ONLY, deliberately: the body is erasable and this read is a LIST, so carrying
+   * it here would put every waiting customer's words in one response, which is the
+   * exact copy `read-outbound` exists to avoid. The relay picks a row, comes back
+   * through `read-outbound` for the body, sends, and records — and an erasure in
+   * between makes the send find nothing, which stays true with this read in front.
+   *
+   * Idempotence lives in the DATA rather than in the runner: a delivered message
+   * leaves this list because `record-delivery` stamped `delivered_at`, so a sweep
+   * that ran twice, or two relays running at once, converge on sending each message
+   * once rather than on a lock somebody has to hold.
+   */
+  'ticket0/list-pending-outbound': {
+    // Not a tool: the email relay's own surface — it brings mail in and reports what it sent.
+    mcp: false,
+    summary: 'Public replies on email conversations that have not been sent yet',
+    permission: 'conversation:relay',
+    output: z.object({
+      messageId: z.string(),
+      conversationId: z.string(),
+      createdAt: z.string(),
+    }),
+    // `sortKey`, because the handler composes its own SQL: the predicate spans two
+    // tables (the conversation's channel, the message's delivery) and neither is a
+    // `filterable` column on a single entity. Oldest first — a queue, not an inbox:
+    // the reply that has been waiting longest is the one a customer is waiting on.
+    paged: { sortKey: 'messageId', order: 'asc' },
+    http: { method: 'GET', path: '/relay/outbound' },
+  },
+
+  /**
    * Read an outbound message's body, at send time.
    *
    * This exists because `ticket0.reply-requested` carries ids and no body — the body

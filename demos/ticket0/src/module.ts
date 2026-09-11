@@ -3106,6 +3106,41 @@ const operations = {
     return row;
   },
 
+  /**
+   * What is waiting to go out. Named columns and nothing else — see the declaration
+   * for why a list of outbound mail must not carry the bodies.
+   *
+   * `author_kind <> 'contact'` and not `IN ('agent','assistant')`: what makes a
+   * message outbound is that the DESK wrote it, and a `system` message on an email
+   * conversation is the desk speaking too. The one kind that can never be sent back
+   * to where it came from is the customer's own, which is what this excludes.
+   */
+  'ticket0/list-pending-outbound': async (ctx, input) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationRelay));
+    const limit = input.limit ?? LIST_PAGE_DEFAULT;
+    const desc = (input.order ?? 'asc') === 'desc';
+    const params: SqlValue[] = [];
+    let sql = `SELECT m.id AS messageId, m.conversation_id AS conversationId,
+                      m.created_at AS createdAt
+                 FROM ticket0_messages m
+                 JOIN ticket0_conversations c ON c.id = m.conversation_id
+                WHERE m.visibility = 'public'
+                  AND m.author_kind <> 'contact'
+                  AND m.delivered_at IS NULL
+                  AND c.channel = 'email'`;
+    if (input.cursor) {
+      sql += desc ? ' AND m.id < ?' : ' AND m.id > ?';
+      params.push(input.cursor);
+    }
+    sql += ` ORDER BY m.id ${desc ? 'DESC' : 'ASC'} LIMIT ?`;
+    params.push(limit);
+    return pageOf(
+      ctx.sql.query<{ messageId: string; conversationId: string; createdAt: string }>(sql, params),
+      limit,
+      (row) => row.messageId,
+    );
+  },
+
   'ticket0/read-outbound': async (ctx, input) => {
     assertAllowed(await ctx.check(T0_PERM.conversationRelay));
     const message = messageOrThrow(ctx, input.messageId);

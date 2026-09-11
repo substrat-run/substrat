@@ -23,7 +23,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { Context } from 'hono';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
-import type { ScopeHost } from '@substrat-run/kernel';
+import { globalFetch, type ScopeHost } from '@substrat-run/kernel';
 import { createModelHost, type ModelAttribution, type ModelHost } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { T0_PERM, ticket0Manifest } from './manifest.js';
@@ -37,6 +37,7 @@ import {
 } from '../harness/assistant.js';
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh, readSource } from '../harness/kb-refresh.js';
+import { senderFor, sweepOutbound, type OutboundSender } from '../harness/relay.js';
 import { buildHost, linkDevPersonas, seed, type Desk, type World } from './seed.js';
 import { CONTACT_BOUND_ROLE, HUMAN_ROLES, STAFF_ROLES } from './provision.js';
 import { DEV_PROVIDER } from './personas.js';
@@ -351,6 +352,61 @@ async function boot() {
   if (process.env.TICKET0_SKIP_INGEST !== '1') {
     process.stdout.write('\ningesting knowledge bases…\n');
     for (const desk of desks) void ingestFor(host, desk);
+  }
+
+  // ── The relay ─────────────────────────────────────────────────────────────
+  /**
+   * The email relay's loop (#935) — what turns a public reply into mail.
+   *
+   * A TIMER here and `executionCtx.waitUntil` in the worker, which is the one
+   * difference this file's header already names: node keeps the process up, a
+   * Workers isolate does not. Both drive the same `sweepOutbound` against the same
+   * `relay` principal, so what is exercised locally is what runs hosted.
+   *
+   * Off by default, and that is deliberate rather than shy. Without a provider
+   * credential the sweep can only refuse each message loudly — see
+   * `unconfiguredSender` — so a demo that boots with no `RESEND_API_KEY` would fill
+   * the terminal with failures for every reply an agent sent. `TICKET0_RELAY=1`
+   * turns it on; a key alone does not, so nothing starts mailing customers because
+   * an environment file happened to carry one.
+   */
+  if (process.env.TICKET0_RELAY === '1') {
+    const sender = senderFor(process.env, globalFetch);
+    process.stdout.write(`\nemail relay: on, every ${RELAY_SWEEP_SECONDS}s via ${sender.name}\n`);
+    const tick = () => {
+      for (const desk of desks) void sweepFor(host, desk, sender);
+    };
+    tick();
+    // `unref`, so a sweep that is merely waiting never holds the process open —
+    // Ctrl-C ends the dev server rather than waiting out the interval.
+    setInterval(tick, RELAY_SWEEP_SECONDS * 1_000).unref();
+  }
+}
+
+/** How often the node dev server's relay looks for something to send. */
+const RELAY_SWEEP_SECONDS = 15;
+
+/**
+ * Send one desk's waiting replies, out of band.
+ *
+ * As the desk's own `relay` principal, which holds `conversation:relay` and nothing
+ * else: the runner can read a message that is going out and record that it went, and
+ * it cannot read the inbox, assign anything or write a reply of its own.
+ */
+async function sweepFor(host: ScopeHost, desk: Desk, sender: OutboundSender): Promise<void> {
+  try {
+    const stub = await host.getScope(desk.relay.principal, desk.tenant, desk.scope);
+    const report = await sweepOutbound({
+      invoke: <T,>(op: string, input: unknown) => stub.invoke(op, input) as Promise<T>,
+      sender,
+    });
+    if (report.pending > 0) {
+      process.stdout.write(
+        `relay · ${desk.origin} · ${report.sent} sent, ${report.skipped} skipped, ${report.failed} failed\n`,
+      );
+    }
+  } catch (err) {
+    process.stdout.write(`relay · ${desk.origin} · sweep failed — ${errorText(err)}\n`);
   }
 }
 
