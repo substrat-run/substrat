@@ -1,4 +1,4 @@
-import { denialQuery, LIST_PAGE_MAX } from '@substrat-run/contracts';
+import { denialQuery, LIST_PAGE_MAX, problemDetail } from '@substrat-run/contracts';
 import type {
   AdminAction,
   AdminLogEntry,
@@ -245,17 +245,12 @@ export function createApi(actor: string | null, baseUrl = '/api') {
       headers,
     });
     if (!res.ok) {
-      // The API answers errors as RFC 9457 problem bodies (#113): `detail` is the
-      // sentence, `error` the deprecated duplicate kept for one migration window. A proxy
-      // or crash answers neither, so fall back to the status rather than throwing while
-      // handling a throw.
-      const body = (await res.json().catch(() => null)) as
-        | { detail?: string; error?: string }
-        | null;
-      throw new ApiError(
-        res.status,
-        body?.detail ?? body?.error ?? `${res.status} ${res.statusText}`,
-      );
+      // The API answers errors as RFC 9457 problem bodies (#113). `problemDetail` is
+      // the one reading of one (#971) — `detail` the sentence, `error` the deprecated
+      // duplicate kept for one migration window. A proxy or crash answers neither, so
+      // fall back to the status rather than throwing while handling a throw.
+      const body = await res.json().catch(() => null);
+      throw new ApiError(res.status, problemDetail(body) ?? `${res.status} ${res.statusText}`);
     }
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
   }

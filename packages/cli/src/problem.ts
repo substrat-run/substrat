@@ -19,7 +19,7 @@
  *    alone names nothing a builder can fix);
  * 3. anything else — a slice of the raw body, which is at least the truth.
  */
-import { problem as problemSchema } from '@substrat-run/contracts';
+import { problem as problemSchema, problemDetail } from '@substrat-run/contracts';
 import { explainPlatformFault } from './http.js';
 
 /** How much of an unrecognised body is worth printing before it stops being a message. */
@@ -84,25 +84,30 @@ export function readProblem(body: string): ProblemSummary {
   // contract's member, `issues` the pre-#113 one, and a body may carry either.
   const issues = legacyIssues(parsed);
 
+  // The sentence itself comes from `problemDetail` in contracts, whichever branch we are
+  // in (#971): that fallback was restated in four clients and they did not agree, so the
+  // CLI reads it from the same place the console, the dashboard and the vertical client
+  // now do. What stays here is what only the CLI has to say — the code, the field errors,
+  // and the pre-#113 `issues` array.
+  const detail = problemDetail(parsed);
+
   const strict = problemSchema.safeParse(parsed);
   if (strict.success) {
     const p = strict.data;
     const errors = p.errors && p.errors.length > 0 ? p.errors : issues;
     return {
-      detail: p.detail ?? p.error ?? p.title,
+      // `title` is required by the schema, so a strict parse always yields a sentence.
+      detail: detail ?? p.title,
       code: p.code,
       title: p.title,
       ...(errors ? { errors } : {}),
     };
   }
 
-  // Not a whole problem document. Read the members that ARE there, in the order of
-  // how specific they are: `detail` is about this occurrence, `error` is the
-  // deprecated duplicate of it, `title` is the class of failure.
+  // Not a whole problem document. Read the members that ARE there.
   if (parsed !== null && typeof parsed === 'object') {
     const o = parsed as Record<string, unknown>;
     const str = (k: string): string | undefined => (typeof o[k] === 'string' && o[k] ? (o[k] as string) : undefined);
-    const detail = str('detail') ?? str('error') ?? str('message') ?? str('title');
     if (detail !== undefined || issues) {
       return {
         detail: detail ?? '',
