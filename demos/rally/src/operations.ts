@@ -99,23 +99,48 @@ import {
 import { money } from '@substrat-run/contracts';
 
 /**
- * Every key these operations check — rally's own, plus engine-booking's.
+ * Every permission key a RallyPoint scope declares — rally's own five, plus every key
+ * the three engines it composes bring with them.
  *
- * `booking:*` belongs to engine-booking (aliased as `BK` at its reference sites,
- * so the ownership is visible). The keys appear here because `defineOperations`
- * checks each declared `permission` against this list; the MANIFEST still
- * declares only the five keys rally owns.
+ * This is the vocabulary an operation's `permission` may name, not a second declaration
+ * of who owns the key: the MANIFEST still declares only the five `rally:*` keys, and
+ * `booking:*`, `invoicing:*` and `invites:*` are owned by their engines (aliased `BK`,
+ * `INV` and `INVITE` at their reference sites, so the ownership stays visible). Keys no
+ * rally operation checks today are in the list because a Rally scope declares them —
+ * `MODULES` in `seed.ts` registers all three engines — and an operation gated on one had
+ * no way to say so while the list held only the subset rally happened to check.
+ *
+ * One array, two readers, and that is what makes it checked (#1208). `defineOperations`
+ * takes it below as the union a mistyped `permission:` fails against; `definePermissions`
+ * in `seed.ts` takes the SAME array as `keys` and throws at module load if it and
+ * `MODULES` disagree in either direction. It has to be written out as literals — a
+ * manifest's keys are branded `PermissionKey`s by the time anything could read them back,
+ * so the union cannot be derived from `MODULES` — but "written once and checked" is a
+ * different thing from "hand-maintained".
  */
 export const RALLY_PERMISSIONS = [
+  // Rally's own — `RALLY_PERM` in module.ts.
   'rally:browse',
   'rally:wallet',
   'rally:manage-members',
   'rally:manage-pricing',
   'rally:manage-venue',
+  // @substrat-run/engine-booking
   'booking:read',
   'booking:hold',
   'booking:create',
   'booking:confirm',
+  'booking:cancel',
+  'booking:move',
+  'booking:complete',
+  'booking:manage-resources',
+  // @substrat-run/engine-invoicing
+  'invoicing:read',
+  'invoicing:export',
+  // @substrat-run/engine-invites
+  'invites:send',
+  'invites:read',
+  'invites:revoke',
 ] as const;
 
 /** The narrowed check three member-facing reads share. */

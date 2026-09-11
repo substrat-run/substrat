@@ -10,6 +10,7 @@ import {
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import { manyfoldModule } from './module.js';
 import { MF_PERM } from './manifest.js';
+import { MANYFOLD_PERMISSIONS } from './operations.js';
 
 // The manifest's config surface rides the same import `substrat push` already makes for
 // `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
@@ -73,8 +74,18 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
  * The single typed source for this vertical's permission surface — what the permission
  * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
  * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ *
+ * `keys` is `MANYFOLD_PERMISSIONS` — the array `defineOperations` already takes as the union a
+ * mistyped `permission:` fails against — which is what makes that restatement checked (#1208):
+ * `definePermissions` throws at load if this vertical ever declares a key the array does not
+ * name, or the other way round. Manyfold composes no engine, so the array is its own six keys.
  */
-export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
+export const permissions = definePermissions({
+  modules: MODULES,
+  roles: ROLES,
+  entityGrants: ENTITY_GRANTS,
+  keys: MANYFOLD_PERMISSIONS,
+});
 
 /** Idempotent-ish provisioning of one Manyfold instance. */
 export async function provisionManyfold(

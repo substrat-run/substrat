@@ -20,7 +20,7 @@ import { SqliteScopeHost } from '@substrat-run/adapter-sqlite';
 import { bookingModule, PERM as BK } from '@substrat-run/engine-booking';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { invitesModule, INVITES_PERM as INVITE } from '@substrat-run/engine-invites';
-import { rallyModule, RALLY_PERM as RP } from './module.js';
+import { rallyModule, RALLY_PERM as RP, RALLY_PERMISSIONS } from './module.js';
 import { DEV_PROVIDER, PERSONAS, PERSONA_PRINCIPALS } from './personas.js';
 
 /**
@@ -160,8 +160,19 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
  * The single typed source for this vertical's permission surface — what the permission
  * checkpoint and `substrat push` read (discovered via `package.json` `substrat.permissions`).
  * Derived from the same `MODULES`/`ROLES` the host registers, so it cannot drift from what runs.
+ *
+ * `keys` is `RALLY_PERMISSIONS` — the array `defineOperations` already takes as the union a
+ * mistyped `permission:` fails against — which is what makes that restatement checked (#1208):
+ * `definePermissions` throws at load if this vertical ever declares a key the array does not
+ * name, or the other way round. `booking:*`, `invoicing:*` and `invites:*` are in it because a
+ * Rally scope declares them — `MODULES` registers all three engines.
  */
-export const permissions = definePermissions({ modules: MODULES, roles: ROLES, entityGrants: ENTITY_GRANTS });
+export const permissions = definePermissions({
+  modules: MODULES,
+  roles: ROLES,
+  entityGrants: ENTITY_GRANTS,
+  keys: RALLY_PERMISSIONS,
+});
 
 /**
  * Seed one venue. Each scope is its own database, so hours, courts, tiers and
