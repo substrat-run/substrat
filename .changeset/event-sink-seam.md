@@ -22,11 +22,17 @@ whose batch fills the budget is reported rather than looped so one busy scope
 cannot starve the pass. Nothing is pruned: the outbox still serves consumers,
 replay and `readHistory`, so the stamp buys knowing what has left, not deletion.
 
+This establishes durable Tier 2 ingestion. It does **not** bound scope storage:
+nothing is deleted from `_substrat_outbox`, which still serves consumers, replay
+and `readHistory`, so a scope's events keep accumulating exactly as before. What
+the stamp buys is knowing what has left; a retention policy is a separate
+decision that has not been made.
+
 **NDJSON to R2 rather than Pipelines-to-Iceberg for v1, deliberately.** §5.3
 settles that "Iceberg is the contract, the query engine is replaceable" and
-leaves R2 SQL's fitness open pending a benchmark, so this gets events out of the
-scope — which is what bounds an outbox that is never pruned — using a bucket the
-platform already operates, without committing the ingest path to a product
-decision nobody has made. Objects are partitioned by tenant, scope and the day
-the events HAPPENED, and keyed by their id range so a replayed batch overwrites
-its own object instead of duplicating beside it.
+leaves R2 SQL's fitness open pending a benchmark, so this uses a bucket the
+platform already operates without committing the ingest path to a product
+decision nobody has made. Objects are partitioned by tenant, scope and the UTC
+day each event OCCURRED — a batch spanning midnight is split, so a `day=`
+partition never contains another day's events. The drain is at-least-once by
+design, so a reader deduplicates on event id.

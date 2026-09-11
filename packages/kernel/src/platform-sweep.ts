@@ -919,7 +919,14 @@ export async function runPlatformSweep(
   if (options.eventSink) {
     report.eventDrain = { scopes: 0, shipped: 0, incomplete: 0 };
     const sink = options.eventSink;
-    const budget = options.eventDrainBatch ?? EVENT_DRAIN_BATCH;
+    // Normalized, not trusted: a fractional or NaN budget reaches the adapters'
+    // SQL `LIMIT` and SQLite rejects it — which the per-scope catch below would
+    // then report as an event-drain error on every scope, every tick, while
+    // draining nothing. Normalizing keeps a misconfiguration from looking like a
+    // fleet-wide fault.
+    const configured = options.eventDrainBatch ?? EVENT_DRAIN_BATCH;
+    const budget =
+      Number.isFinite(configured) && configured >= 1 ? Math.floor(configured) : EVENT_DRAIN_BATCH;
     const drainable = await host.admin.listScopes(options.actor, { status: 'active' });
     await mapBounded(drainable, concurrency, async (s) => {
       try {

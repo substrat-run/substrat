@@ -182,28 +182,49 @@ describe('r2 access-log sink (K-24)', () => {
     const ev = (id: string, occurredAt: string) =>
       ({ id, type: 'thing.happened', occurredAt, operation: 'mod/op', version: null }) as never;
 
+    // A batch that crosses midnight is SPLIT: each event files under the UTC day it
+    // occurred, so a `day=` partition never holds another day's events — which is
+    // what a period query reads it to mean.
     const batch = [ev(ulidLike('1'), '2026-08-01T23:30:00.000Z'), ev(ulidLike('2'), '2026-08-02T00:10:00.000Z')];
-    const { ref } = await sink.ship(scope, batch);
+    await sink.ship(scope, batch);
 
-    // Hive-style partitions: the three narrowings every Tier 2 query starts from,
-    // so an engine prunes on all of them without reading the objects it skips.
-    expect(ref).toBe(`events/tenant=T1/scope=S1/day=2026-08-01/${ulidLike('1')}-${ulidLike('2')}.ndjson`);
+    const first = `events/tenant=T1/scope=S1/day=2026-08-01/${ulidLike('1')}.ndjson`;
+    const second = `events/tenant=T1/scope=S1/day=2026-08-02/${ulidLike('2')}.ndjson`;
+    expect([...objects.keys()].sort()).toEqual([first, second].sort());
+    for (const key of [first, second]) {
+      const stored = objects.get(key)!;
+      expect(stored.body.endsWith('\n')).toBe(true);
+      expect(stored.body.trimEnd().split('\n')).toHaveLength(1);
+      expect(stored.customMetadata).toMatchObject({ tenantId: 'T1', scopeId: 'S1', rows: '1' });
+    }
+  });
 
-    // The day comes from the batch's OLDEST event, not the clock: a scope that
-    // drains late files its events under the day they happened, which is the only
-    // reading that makes a period query honest. Note the batch straddles midnight
-    // and still files under the first event's day — the id range in the key is what
-    // keeps it findable.
-    const stored = objects.get(ref)!;
-    expect(stored.body.endsWith('\n')).toBe(true);
-    expect(stored.body.trimEnd().split('\n')).toHaveLength(2);
-    expect(stored.customMetadata).toMatchObject({ tenantId: 'T1', scopeId: 'S1', rows: '2' });
+  it('a resend after a failed mark overwrites rather than overlapping (#1334)', async () => {
+    // The drain ships before it stamps, so a failed mark resends from the SAME
+    // first event — but with a different last one, once new events have landed or
+    // the budget moved. A range-keyed object would leave both versions in the
+    // bucket, overlapping, and a prefix scan would count the shared events twice.
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2EventSink(bucket);
+    const scope = { tenantId: 'T1', scopeId: 'S1' } as never;
+    const ev = (id: string) =>
+      ({ id, type: 't', occurredAt: '2026-08-01T00:00:00.000Z', operation: null, version: null }) as never;
+
+    const a = await sink.ship(scope, [ev(ulidLike('1')), ev(ulidLike('2'))]);
+    // The resend covers the same events plus two that arrived meanwhile.
+    const b = await sink.ship(scope, [ev(ulidLike('1')), ev(ulidLike('2')), ev(ulidLike('3')), ev(ulidLike('4'))]);
+
+    expect(b.ref).toBe(a.ref);
+    expect(objects.size).toBe(1);
+    // The superseding write holds everything; nothing is stranded in a sibling.
+    expect(objects.get(b.ref)!.body.trimEnd().split('\n')).toHaveLength(4);
   });
 
   it('overwrites its own object when a batch is replayed, rather than duplicating it', async () => {
     // The drain is at-least-once by design — ship, then stamp — so a crash between
-    // the two replays the batch. The id range in the key is where that stops being
-    // visible: the same events land on the same object.
+    // the two replays the batch. Keying by the group's FIRST event id is where that
+    // stops being visible: the same events land on the same object. (The harder
+    // case, a resend whose tail has grown, is the test below.)
     const { bucket, objects } = fakeBucket();
     const sink = createR2EventSink(bucket);
     const scope = { tenantId: 'T1', scopeId: 'S1' } as never;

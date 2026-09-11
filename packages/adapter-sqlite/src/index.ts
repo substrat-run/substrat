@@ -5635,8 +5635,15 @@ export class SqliteScopeHost implements ScopeHost {
         const stmt = db.prepare(
           `UPDATE _substrat_outbox SET drained_at = ? WHERE id = ? AND drained_at IS NULL`,
         );
-        let drained = 0;
-        for (const id of eventIds) drained += stmt.run(at, id).changes;
+        // All-or-nothing. A PARTIAL mark is the one failure the ship→stamp order
+        // cannot absorb: the next read resumes from the middle of a batch already
+        // in the lake, and the object it writes overlaps the one already there —
+        // the duplication the first-id object key exists to prevent.
+        const drained = db.transaction(() => {
+          let n = 0;
+          for (const id of eventIds) n += stmt.run(at, id).changes;
+          return n;
+        })();
         // K-24's rule, one tier down (#1334): declaring domain payloads shipped is an
         // EGRESS, and the admin log is where "these events left the platform, at this
         // time, on this actor's say-so" is recorded. `drainAccessLog` audits the same
