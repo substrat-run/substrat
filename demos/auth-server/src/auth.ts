@@ -148,6 +148,25 @@ export interface AuthDeps {
    * run, which is what the schema-generation config and a test that does not care pass.
    */
   recordSignIn?: SignInLogger;
+  /**
+   * Where work that must not hold up a RESPONSE goes — Better Auth's
+   * `advanced.backgroundTasks.handler`.
+   *
+   * This is not an optimisation. Better Auth awaits a new user's verification email INLINE
+   * unless this is set (`runInBackgroundOrAwait`: with no handler, `else await promise`), and
+   * for a federated sign-up that await sits in the middle of the browser's redirect chain —
+   * `/callback/:id` has not answered yet, so the person is looking at a page that is still
+   * loading while two more services decide how long the mail takes. On this issuer both
+   * conditions that trigger it hold: `emailVerification.sendOnSignUp` is on, and Entra does not
+   * publish `email_verified`, which Better Auth maps to `false` — so EVERY brand-new Microsoft
+   * user paid for it and no returning one did. That asymmetry is what it looks like from the
+   * outside: sign-in works, except for people who have never signed in before.
+   *
+   * Undefined ⇒ Better Auth awaits, which is what the tests want: a suite asserting that a
+   * verification mail was sent must not race the assertion against a floating promise. So the
+   * runtimes opt in and the tests stay deterministic.
+   */
+  runInBackground?: (promise: Promise<unknown>) => void;
 }
 
 /**
@@ -496,6 +515,11 @@ export function buildAuth(deps: AuthDeps) {
         });
       }),
     },
+    // See `runInBackground` above — the difference between a new user's first sign-in finishing
+    // and a redirect that waits on an email.
+    ...(deps.runInBackground
+      ? { advanced: { backgroundTasks: { handler: deps.runInBackground } } }
+      : {}),
     disabledPaths: ['/token'],
     secret: deps.secret,
     baseURL: deps.baseURL,

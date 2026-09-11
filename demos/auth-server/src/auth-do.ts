@@ -187,6 +187,13 @@ export class AuthServerDO extends DurableObject<AuthServerDoEnv> {
       // tab, and `/internal/export`. A dispatch-namespace script's `console.log` is none of
       // those.
       recordSignIn: signInLoggerFor(this.ctx.storage.sql),
+      // `ctx.waitUntil`, which is the DO's own way of saying "finish this, but not before the
+      // response". Better Auth cannot find it by itself — it is handed a `Request` and nothing
+      // else — so without this line a new user's verification email is awaited inside the
+      // callback and the browser's redirect waits on the platform mail relay.
+      runInBackground: (promise) => {
+        this.ctx.waitUntil(promise.catch((e: unknown) => console.error('auth-server: background task failed', e)));
+      },
     });
   }
 
