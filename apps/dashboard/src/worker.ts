@@ -2130,6 +2130,15 @@ app.post('/api/apps/:scopeId/bind', async (c) => {
 const FLOW_TYPE_LIMIT = 200;
 
 /**
+ * How long a declared event type may go unseen before the flow read calls it stale.
+ *
+ * Thirty days is the number #1234 names, and it is a threshold rather than a
+ * measurement — which is why it lives here as a constant a reader can find, instead
+ * of being spelled into the copy at each site.
+ */
+const FLOW_STALE_DAYS = 30;
+
+/**
  * Declared-vs-observed findings (#1234): what this app says it emits, consumes and
  * requires, joined against what its scope has actually carried.
  *
@@ -2161,7 +2170,9 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         declaredEvents: null,
         requires: [],
         knownProviders,
-        observedTypes: [],
+        observed: [],
+        now: new Date().toISOString(),
+        staleAfterDays: FLOW_STALE_DAYS,
         observedComplete: true,
         declaredComplete: true,
         connections: [],
@@ -2175,6 +2186,8 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         outbound: [],
         observed: [],
         observedComplete: true,
+        now: new Date().toISOString(),
+        staleAfterDays: FLOW_STALE_DAYS,
         declaredComplete: true,
       }),
     });
@@ -2190,10 +2203,13 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
   // A null bucket cannot happen grouping by `type` (the envelope always has one), and
   // is dropped rather than joined against a declared type named "null".
   const observed = facets.buckets
-    .filter((b): b is { value: string; count: number } => b.value !== null)
-    .map((b) => ({ type: b.value, count: b.count }));
+    .filter((b): b is { value: string; count: number; lastSeen: string | null } => b.value !== null)
+    .map((b) => ({ type: b.value, count: b.count, lastSeen: b.lastSeen }));
   const connections = connectionRows.map((conn) => ({ provider: conn.provider, status: conn.status }));
   const observedComplete = !facets.truncated;
+  // ONE instant for both projections. Reading the clock twice would let the map and
+  // the list land on opposite sides of the staleness cutoff for the same event.
+  const now = new Date().toISOString();
   // One read, two projections of it: the findings list and the graph answer the same
   // question at different resolutions, and paying for the facet twice to serve them
   // separately would also let the two disagree about what was observed.
@@ -2202,7 +2218,9 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       declaredEvents: flow.declaredEvents,
       requires: flow.requires,
       knownProviders,
-      observedTypes: observed.map((o) => o.type),
+      observed,
+      now,
+      staleAfterDays: FLOW_STALE_DAYS,
       observedComplete,
       declaredComplete: !flow.declaredEventsTruncated,
       connections,
@@ -2220,6 +2238,8 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       // declaration, and a missing node leaves nothing behind to notice — so a header
       // reading "what this app declares" has to be qualified rather than trusted.
       declaredComplete: !flow.declaredEventsTruncated,
+      now,
+      staleAfterDays: FLOW_STALE_DAYS,
     }),
   });
 });

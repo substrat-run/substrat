@@ -116,6 +116,20 @@ export const eventFacetBucket = z.object({
    */
   value: z.string().nullable(),
   count: z.number().int().nonnegative(),
+  /**
+   * When this bucket last saw an event — `MAX(occurred_at)` over its rows.
+   *
+   * Recency is a different question from volume and neither answers the other: a
+   * consumer with a large count that stopped three months ago is the failure a
+   * count alone hides, and it is the one #1234 names ("a consumer that hasn't
+   * fired in 30 days"). A count says something ran; only this says lately.
+   *
+   * Read it against the window the facet was given, not against all of history:
+   * `since`/`until` bound the rows, and the outbox is a window in its own right.
+   * `null` only for a bucket with no rows, which the grouping cannot produce —
+   * it is nullable because the aggregate's type is, not because it is expected.
+   */
+  lastSeen: z.string().nullable(),
 });
 export type EventFacetBucket = z.infer<typeof eventFacetBucket>;
 

@@ -5,11 +5,19 @@ import { deriveFlowFindings } from '../src/flow-findings.js';
 const decl = (type: string, direction: 'emits' | 'consumes', moduleId = 'crm'): DeclaredEventSurface =>
   ({ moduleId, type, direction }) as DeclaredEventSurface;
 
+const NOW = '2026-05-01T00:00:00.000Z';
+/** `daysAgo(n)` — a timestamp n days before NOW, so staleness reads as a date. */
+const daysAgo = (n: number) => new Date(Date.parse(NOW) - n * 86_400_000).toISOString();
+/** An observation: seen `count` times, most recently `n` days ago. */
+const seen = (type: string, n: number, count = 1) => ({ type, count, lastSeen: daysAgo(n) });
+
 const base = {
   declaredEvents: [] as DeclaredEventSurface[],
   requires: [] as string[],
   knownProviders: ['scrive', 'fortnox'],
-  observedTypes: [] as string[],
+  observed: [] as { type: string; count: number; lastSeen: string | null }[],
+  now: NOW,
+  staleAfterDays: 30,
   observedComplete: true,
   declaredComplete: true,
   connections: [] as { provider: string; status: string }[],
@@ -60,7 +68,7 @@ describe('deriveFlowFindings (#1234)', () => {
     const v = deriveFlowFindings({
       ...base,
       declaredEvents: [decl('receipt.landed', 'emits'), decl('invoice.sent', 'emits')],
-      observedTypes: ['invoice.sent'],
+      observed: [seen('invoice.sent', 0)],
     });
     expect(v.findings.map((f) => f.subject)).toEqual(['receipt.landed']);
     expect(v.findings[0]!.kind).toBe('unemitted');
@@ -85,7 +93,7 @@ describe('deriveFlowFindings (#1234)', () => {
     const v = deriveFlowFindings({
       ...base,
       declaredEvents: [decl('a.thing', 'emits'), decl('a.thing', 'consumes', 'other')],
-      observedTypes: ['a.thing'],
+      observed: [seen('a.thing', 0)],
     });
     expect(v.available).toBe(true);
     expect(v.findings).toEqual([]);
@@ -100,7 +108,7 @@ describe('deriveFlowFindings (#1234)', () => {
       ...base,
       declaredEvents: null,
       requires: ['scrive'],
-      observedTypes: ['a.thing'],
+      observed: [seen('a.thing', 0)],
     });
     expect(v.available).toBe(false);
     expect(v.findings).toEqual([]);
@@ -164,5 +172,77 @@ describe('deriveFlowFindings (#1234)', () => {
     expect(v.findings.map((f) => f.kind)).toEqual(['unconnected-provider']);
     // Counted even so: the "N of M" line stays true whether or not it can report.
     expect(v.declaredTypes).toBe(1);
+  });
+  it('reports a type that ran and STOPPED, which a count alone hides', () => {
+    // The finding #1234 names. A consumer with thousands of events that fell silent
+    // two months ago looks perfectly healthy on volume — recency is the only thing
+    // that separates "busy" from "was busy".
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('receipt.landed', 'emits', 'sync')],
+      observed: [seen('receipt.landed', 61, 4210)],
+    });
+    expect(v.findings.map((f) => f.kind)).toEqual(['stale']);
+    expect(v.findings[0]!.detail).toMatch(/last emitted this 61 days ago, after 4,210 in all/);
+    // NOT "never": the path demonstrably works, which is a different conversation.
+    expect(v.findings[0]!.detail).not.toMatch(/never/);
+  });
+
+  it('says nothing about a type seen inside the window', () => {
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('receipt.landed', 'emits')],
+      observed: [seen('receipt.landed', 29, 3)],
+    });
+    expect(v.findings).toEqual([]);
+  });
+
+  it('keeps "stopped" and "never ran" as separate findings', () => {
+    // Different fixes: one is a regression to investigate, the other may be a feature
+    // nobody built yet. A view that merged them would send someone to the wrong place.
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('stopped.type', 'emits'), decl('never.type', 'emits')],
+      observed: [seen('stopped.type', 90, 12)],
+    });
+    expect(v.findings.map((f) => `${f.kind}:${f.subject}`).sort()).toEqual([
+      'stale:stopped.type',
+      'unemitted:never.type',
+    ]);
+  });
+
+  it('words a stopped HANDLER as the producer having stopped, not the handler failing', () => {
+    // The handler is fine; nothing is feeding it. Blaming the consumer would point the
+    // reader at the one component that is behaving correctly.
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('invoice.sent', 'consumes', 'billing')],
+      observed: [seen('invoice.sent', 45, 900)],
+    });
+    expect(v.findings[0]!.kind).toBe('stale');
+    expect(v.findings[0]!.detail).toMatch(/whatever produces them stopped/);
+  });
+
+  it('withholds staleness too when the observation was cut short', () => {
+    // A truncated facet may simply not have returned this type's bucket. Reporting it
+    // stale would be the same fabrication as reporting it never seen.
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('a.thing', 'emits')],
+      observed: [],
+      observedComplete: false,
+    });
+    expect(v.findings).toEqual([]);
+  });
+
+  it('will not call a type stale on a recency the facet could not supply', () => {
+    // `lastSeen: null` is "not known", never "long ago". A count with no timestamp
+    // says the type exists and says nothing about when — so nothing is claimed.
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('a.thing', 'emits')],
+      observed: [{ type: 'a.thing', count: 5, lastSeen: null }],
+    });
+    expect(v.findings).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import type { DeclaredEventSurface } from '@substrat-run/contracts';
+import type { ObservedType } from './flow-graph.js';
 
 /**
  * Declared-vs-observed findings (#1234) — the half of a flow map that no
@@ -14,7 +15,12 @@ import type { DeclaredEventSurface } from '@substrat-run/contracts';
  * Every finding is a statement about DECLARATIONS against a bounded window of
  * observation — never "this is broken". The copy is written to say which.
  */
-export type FlowFindingKind = 'unemitted' | 'unconsumed' | 'unconnected-provider' | 'unhealthy-provider';
+export type FlowFindingKind =
+  | 'unemitted'
+  | 'unconsumed'
+  | 'stale'
+  | 'unconnected-provider'
+  | 'unhealthy-provider';
 
 export interface FlowFinding {
   kind: FlowFindingKind;
@@ -101,8 +107,18 @@ export function deriveFlowFindings(input: {
    * unconnected would put a false finding on every app that declares one.
    */
   knownProviders: readonly string[];
-  /** Event types the scope's outbox actually carries. */
-  observedTypes: readonly string[];
+  /**
+   * What the scope's outbox actually carries: each type, and when it was last seen.
+   *
+   * Recency is the half a count cannot supply, and the finding #1234 asks for — "a
+   * consumer that hasn't fired in 30 days" — is unreachable without it. A type with
+   * a large count that stopped months ago is precisely the failure volume hides.
+   */
+  observed: readonly ObservedType[];
+  /** Now, as the caller reads it — so staleness is judged against one instant. */
+  now: string;
+  /** How long without an event makes a declared type stale. */
+  staleAfterDays: number;
   /** False when the facet was truncated, so absence from `observedTypes` proves nothing. */
   observedComplete: boolean;
   /** False when the manifest says its declared surface was cut at the cap. */
@@ -110,8 +126,17 @@ export function deriveFlowFindings(input: {
   /** This app's provider connections, live and lapsed alike. */
   connections: readonly ConnectionState[];
 }): FlowFindingsView {
-  const { declaredEvents, requires, knownProviders, observedTypes, observedComplete, declaredComplete, connections } =
-    input;
+  const {
+    declaredEvents,
+    requires,
+    knownProviders,
+    observed,
+    now,
+    staleAfterDays,
+    observedComplete,
+    declaredComplete,
+    connections,
+  } = input;
   if (declaredEvents === null) {
     return {
       available: false,
@@ -119,11 +144,14 @@ export function deriveFlowFindings(input: {
       declaredComplete,
       findings: [],
       declaredTypes: 0,
-      observedTypes: new Set(observedTypes).size,
+      observedTypes: new Set(observed.map((o) => o.type)).size,
     };
   }
 
-  const seen = new Set(observedTypes);
+  const seen = new Map(observed.map((o) => [o.type, o]));
+  // One cutoff for the whole pass, from the caller's instant: deriving it per finding
+  // would let two findings in the same render disagree about where the line is.
+  const staleBefore = new Date(Date.parse(now) - staleAfterDays * 86_400_000).toISOString();
   const known = new Set(knownProviders);
   const findings: FlowFinding[] = [];
 
@@ -135,22 +163,42 @@ export function deriveFlowFindings(input: {
     declaredTypes.add(d.type);
     // Still counted, never reported: with a truncated observation, absence is not
     // evidence, and the "N of M" line stays true either way.
-    if (seen.has(d.type) || !observedComplete) continue;
-    findings.push(
-      d.direction === 'emits'
-        ? {
-            kind: 'unemitted',
-            subject: d.type,
-            moduleId: d.moduleId,
-            detail: `${d.moduleId} declares this event, and none has been recorded — a path that never runs, or one nobody has exercised yet.`,
-          }
-        : {
-            kind: 'unconsumed',
-            subject: d.type,
-            moduleId: d.moduleId,
-            detail: `${d.moduleId} handles this event, and nothing in this app has produced one — the handler has never had anything to do.`,
-          },
-    );
+    if (!observedComplete) continue;
+    const hit = seen.get(d.type);
+    if (hit === undefined) {
+      findings.push(
+        d.direction === 'emits'
+          ? {
+              kind: 'unemitted',
+              subject: d.type,
+              moduleId: d.moduleId,
+              detail: `${d.moduleId} declares this event, and none has been recorded — a path that never runs, or one nobody has exercised yet.`,
+            }
+          : {
+              kind: 'unconsumed',
+              subject: d.type,
+              moduleId: d.moduleId,
+              detail: `${d.moduleId} handles this event, and nothing in this app has produced one — the handler has never had anything to do.`,
+            },
+      );
+      continue;
+    }
+    // STOPPED is not the same as never, and it is the one a count hides: a type with
+    // thousands of events that fell silent looks healthy on volume alone. Reported once
+    // per declaring module, because "the handler stopped" and "the producer stopped"
+    // are read by different people.
+    if (hit.lastSeen !== null && hit.lastSeen < staleBefore) {
+      const days = Math.floor((Date.parse(now) - Date.parse(hit.lastSeen)) / 86_400_000);
+      findings.push({
+        kind: 'stale',
+        subject: d.type,
+        moduleId: d.moduleId,
+        detail:
+          d.direction === 'emits'
+            ? `${d.moduleId} last emitted this ${days} days ago, after ${hit.count.toLocaleString()} in all. Either the work stopped or nothing is asking for it.`
+            : `${d.moduleId} last had one of these to handle ${days} days ago, after ${hit.count.toLocaleString()} in all — whatever produces them stopped.`,
+      });
+    }
   }
 
   for (const provider of new Set(requires)) {
