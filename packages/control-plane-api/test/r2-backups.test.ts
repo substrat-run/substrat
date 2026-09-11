@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { platformActorId, type AccessLogEntry, type ScopeDump } from '@substrat-run/contracts';
 import {
   createR2AccessLogSink,
+  createR2EventSink,
   createR2BackupStore,
   pruneAccessLogBatches,
   pruneScopeBackups,
@@ -172,6 +173,77 @@ describe('r2 access-log sink (K-24)', () => {
     resultCount: 3,
     drainedAt: null,
     at,
+  });
+
+  it('partitions events by tenant, scope and the day they HAPPENED (#1334)', async () => {
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2EventSink(bucket);
+    const scope = { tenantId: 'T1', scopeId: 'S1' } as never;
+    const ev = (id: string, occurredAt: string) =>
+      ({ id, type: 'thing.happened', occurredAt, operation: 'mod/op', version: null }) as never;
+
+    // A batch that crosses midnight is SPLIT: each event files under the UTC day it
+    // occurred, so a `day=` partition never holds another day's events — which is
+    // what a period query reads it to mean.
+    const batch = [ev(ulidLike('1'), '2026-08-01T23:30:00.000Z'), ev(ulidLike('2'), '2026-08-02T00:10:00.000Z')];
+    await sink.ship(scope, batch);
+
+    const first = `events/tenant=T1/scope=S1/day=2026-08-01/${ulidLike('1')}.ndjson`;
+    const second = `events/tenant=T1/scope=S1/day=2026-08-02/${ulidLike('2')}.ndjson`;
+    expect([...objects.keys()].sort()).toEqual([first, second].sort());
+    for (const key of [first, second]) {
+      const stored = objects.get(key)!;
+      expect(stored.body.endsWith('\n')).toBe(true);
+      expect(stored.body.trimEnd().split('\n')).toHaveLength(1);
+      expect(stored.customMetadata).toMatchObject({ tenantId: 'T1', scopeId: 'S1', rows: '1' });
+    }
+  });
+
+  it('a resend after a failed mark overwrites rather than overlapping (#1334)', async () => {
+    // The drain ships before it stamps, so a failed mark resends from the SAME
+    // first event — but with a different last one, once new events have landed or
+    // the budget moved. A range-keyed object would leave both versions in the
+    // bucket, overlapping, and a prefix scan would count the shared events twice.
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2EventSink(bucket);
+    const scope = { tenantId: 'T1', scopeId: 'S1' } as never;
+    const ev = (id: string) =>
+      ({ id, type: 't', occurredAt: '2026-08-01T00:00:00.000Z', operation: null, version: null }) as never;
+
+    const a = await sink.ship(scope, [ev(ulidLike('1')), ev(ulidLike('2'))]);
+    // The resend covers the same events plus two that arrived meanwhile.
+    const b = await sink.ship(scope, [ev(ulidLike('1')), ev(ulidLike('2')), ev(ulidLike('3')), ev(ulidLike('4'))]);
+
+    expect(b.ref).toBe(a.ref);
+    expect(objects.size).toBe(1);
+    // The superseding write holds everything; nothing is stranded in a sibling.
+    expect(objects.get(b.ref)!.body.trimEnd().split('\n')).toHaveLength(4);
+  });
+
+  it('overwrites its own object when a batch is replayed, rather than duplicating it', async () => {
+    // The drain is at-least-once by design — ship, then stamp — so a crash between
+    // the two replays the batch. Keying by the group's FIRST event id is where that
+    // stops being visible: the same events land on the same object. (The harder
+    // case, a resend whose tail has grown, is the test below.)
+    const { bucket, objects } = fakeBucket();
+    const sink = createR2EventSink(bucket);
+    const scope = { tenantId: 'T1', scopeId: 'S1' } as never;
+    const batch = [
+      ({ id: ulidLike('1'), type: 't', occurredAt: '2026-08-01T00:00:00.000Z', operation: null, version: null }) as never,
+    ];
+    const a = await sink.ship(scope, batch);
+    const b = await sink.ship(scope, batch);
+    expect(b.ref).toBe(a.ref);
+    expect(objects.size).toBe(1);
+  });
+
+  it('refuses an empty batch rather than returning a ref to nothing', async () => {
+    // A ref the caller records for an object that was never written would be a lie,
+    // and the `drainedAt` stamp it licenses would be one too.
+    const { bucket } = fakeBucket();
+    await expect(createR2EventSink(bucket).ship({ tenantId: 'T1', scopeId: 'S1' } as never, [])).rejects.toThrow(
+      /empty batch/,
+    );
   });
 
   it('writes one JSON object per line, keyed by the batch it holds', async () => {

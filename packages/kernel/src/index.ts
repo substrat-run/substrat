@@ -234,6 +234,8 @@ export {
 export { runPlatformSweep, startPlatformSweeper } from './platform-sweep.js';
 export type {
   AccessLogSink,
+  EventSink,
+  EventDrainReport,
   AccessLogSweepReport,
   ConnectorSweeper,
   MigrationSweepReport,

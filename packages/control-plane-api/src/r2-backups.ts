@@ -1,3 +1,4 @@
+import type { DrainedEvent } from '@substrat-run/contracts';
 /**
  * The Cloudflare R2 implementation of the `ScopeBackupStore` seam (#493) — the platform's
  * own backup bucket, bound on the control-plane worker.
@@ -18,7 +19,7 @@ import {
   type ScopeBackup,
   type ScopeDump,
 } from '@substrat-run/contracts';
-import type { AccessLogSink } from '@substrat-run/kernel';
+import type { EventSink, AccessLogSink } from '@substrat-run/kernel';
 import type { DirectoryBackupStore, ScopeBackupStore } from './backups.js';
 
 /** The minimal slice of a worker `R2Bucket` binding this store relies on. */
@@ -226,6 +227,98 @@ export function createR2DirectoryBackupStore(bucket: unknown): DirectoryBackupSt
  */
 function accessLogKey(firstId: string, lastId: string): string {
   return `access-log/${firstId}-${lastId}.ndjson`;
+}
+
+/**
+ * Where one scope's drained events land. Partitioned by **tenant, scope and day**,
+ * because those are the three narrowings every Tier 2 query starts from —
+ * reporting is per tenant, isolation is per scope, and reconciliation is per
+ * period. A query engine that understands Hive-style paths prunes on all three
+ * without reading a byte of the objects it skips.
+ *
+ * Keyed by the group's FIRST event id, not its id range. A range key looked
+ * idempotent and is not: the drain ships before it stamps, so a failed mark
+ * resends from the same first event — but with a different last one, once new
+ * events have landed or the batch budget moved. Two range-keyed objects would
+ * then both exist, overlapping, and a prefix scan would count the shared events
+ * twice. Keyed by the start alone, the resend overwrites what it supersedes.
+ *
+ * That narrows duplication; it does not abolish it, and the contract does not
+ * pretend otherwise. The drain is at-least-once by construction, so a reader
+ * deduplicates on event id — which a lake keyed by event id does anyway.
+ */
+function eventLogKey(tenantId: string, scopeId: string, day: string, firstId: string): string {
+  return `events/tenant=${tenantId}/scope=${scopeId}/day=${day}/${firstId}.ndjson`;
+}
+
+/** The UTC day an event occurred — the partition it belongs in, whatever day it shipped. */
+function occurrenceDay(occurredAt: string): string {
+  return occurredAt.slice(0, 10);
+}
+
+/**
+ * The R2 implementation of the `EventSink` seam (#1334) — Tier 2 ingest, master-plan
+ * §5.3's "exact history", landing as objects an engine can read.
+ *
+ * **NDJSON to R2, not Pipelines-to-Iceberg, for v1 — and that is a deliberate
+ * staging choice rather than a shortcut.** §5.3 settles the architecture as
+ * *"Iceberg is the contract, the query engine is replaceable"*, and the same
+ * paragraph leaves R2 SQL's fitness explicitly open pending a benchmark. Writing
+ * partitioned NDJSON to a bucket the platform already operates gets the events out
+ * of the scope — which is what bounds an outbox that is never pruned — without
+ * committing the ingest path to a product decision nobody has made yet. A
+ * compaction step turns these objects into Iceberg later, and the seam means the
+ * drain never learns which happened.
+ *
+ * The same line-format reasoning as the access-log sink applies: one event per
+ * line, so a truncated object still parses up to its last newline, and `jq`,
+ * DuckDB and any lake loader all read it unaided.
+ */
+export function createR2EventSink(bucket: unknown): EventSink {
+  const r2 = bucket as R2BucketLike;
+  return {
+    async ship(scope, events) {
+      const first = events[0];
+      if (!first) {
+        // The sweep never ships an empty batch; returning a ref to an object that
+        // was never written would be a lie, and the stamp it licenses would be one.
+        throw new Error('event sink: refusing to ship an empty batch');
+      }
+      // Split by the day each event OCCURRED, not the batch's first — a drain that
+      // crosses midnight otherwise files the later day's events under the earlier
+      // partition, and `day=` stops meaning what a period query reads it to mean.
+      // A late-draining scope still files by occurrence, never by ship time.
+      const byDay = new Map<string, DrainedEvent[]>();
+      for (const e of events) {
+        const day = occurrenceDay(e.occurredAt);
+        const group = byDay.get(day);
+        if (group) group.push(e);
+        else byDay.set(day, [e]);
+      }
+
+      const refs: string[] = [];
+      for (const [day, group] of byDay) {
+        const head = group[0]!;
+        const tail = group[group.length - 1]!;
+        const key = eventLogKey(scope.tenantId, scope.scopeId, day, head.id);
+        const body = `${group.map((e) => JSON.stringify(e)).join('\n')}\n`;
+        await r2.put(key, body, {
+          httpMetadata: { contentType: 'application/x-ndjson' },
+          customMetadata: {
+            tenantId: scope.tenantId,
+            scopeId: scope.scopeId,
+            firstId: head.id,
+            lastId: tail.id,
+            rows: String(group.length),
+          },
+        });
+        refs.push(key);
+      }
+      // One ref for the caller's report; a midnight-crossing batch wrote several,
+      // and the metadata on each says what it holds.
+      return { ref: refs[0]! };
+    },
+  };
 }
 
 /**
