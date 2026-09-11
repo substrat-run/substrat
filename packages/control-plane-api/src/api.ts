@@ -33,6 +33,7 @@ import {
   queryScopeInput,
   readScopeTableInput,
   entityHistoryInput,
+  eventFacetInput,
   createOrgInput,
   roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
@@ -2036,6 +2037,32 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       }
       throw e;
     }
+  });
+
+  // #1239: facets over one scope's outbox — narrow, group, count. Delegated like
+  // the history read below: through the vertical that holds the data when one
+  // resolves, the co-located host otherwise.
+  app.get('/tenants/:tenantId/scopes/:scopeId/facets', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = eventFacetInput.parse({
+      groupBy:
+        c.req.query('field') !== undefined
+          ? { kind: 'payload', field: c.req.query('field') }
+          : { kind: c.req.query('groupBy') },
+      type: c.req.query('type') ?? undefined,
+      since: c.req.query('since') ?? undefined,
+      until: c.req.query('until') ?? undefined,
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    });
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.facetEvents(scopeId, input)
+        : await admin.facetEvents(c.get('actor'), tenantId, scopeId, input),
+    );
   });
 
   // #1235: one record's event history — the per-entity pivot of the audit spine.

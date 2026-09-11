@@ -1939,6 +1939,35 @@ app.get('/api/fleet-health', async (c) => {
   });
 });
 
+/**
+ * Facets over an app's own events (#1239 stage 1): narrow by type and window,
+ * group by an envelope dimension or one payload field, count.
+ *
+ * The honest half is in the answer, not here — an ERASED payload is counted apart
+ * from a genuinely absent field, because `json_extract` over a shredded event
+ * returns the same NULL a missing key does, and folding them would show a clean
+ * distribution over redacted history.
+ */
+app.get('/api/apps/:scopeId/facets', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.facetEvents(scope, {
+      groupBy: c.req.query('groupBy') ?? 'type',
+      field: c.req.query('field') ?? undefined,
+      type: c.req.query('type') ?? undefined,
+      since: c.req.query('since') ?? undefined,
+      until: c.req.query('until') ?? undefined,
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    }),
+  );
+});
+
 app.get('/api/apps/:scopeId/history', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

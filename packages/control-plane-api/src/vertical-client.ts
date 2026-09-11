@@ -19,6 +19,8 @@ import type {
   QueryScopeInput,
   ReadScopeTableInput,
   EntityHistoryInput,
+  EventFacetInput,
+  EventFacetResult,
   HistoryEntry,
   Page,
   ScopeDumpTable,
@@ -640,6 +642,18 @@ export class VerticalClient {
     tables: ScopeDumpTable[],
   ): Promise<{ tables: number }> {
     return this.postInternal<{ tables: number }>('/internal/restore', { tenantId, scopeId, tables }, 'restore');
+  }
+
+  /** Facets over one scope's outbox (#1239) — through the vertical that holds the data. */
+  async facetEvents(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
+    const q = new URLSearchParams({ scopeId });
+    if (input.groupBy.kind === 'payload') q.set('field', input.groupBy.field);
+    else q.set('groupBy', input.groupBy.kind);
+    if (input.type !== undefined) q.set('type', input.type);
+    if (input.since !== undefined) q.set('since', input.since);
+    if (input.until !== undefined) q.set('until', input.until);
+    if (input.limit !== undefined) q.set('limit', String(input.limit));
+    return this.getInternal<EventFacetResult>(`/internal/facets?${q.toString()}`);
   }
 
   /** One record's event history (#1235) — `readHistory`'s answer, through the vertical that holds the data. */

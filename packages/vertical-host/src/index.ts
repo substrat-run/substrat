@@ -58,7 +58,10 @@ import {
   platformRequestFailure,
   readScopeTableInput,
   entityHistoryInput,
+  eventFacetInput,
   type EntityHistoryInput,
+  type EventFacetInput,
+  type EventFacetResult,
   type HistoryEntry,
   type Page,
   queryScopeInput,
@@ -115,6 +118,7 @@ export interface VerticalScopeHost {
     scopeId: ScopeId,
   ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
+  facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -407,6 +411,28 @@ export function mountPlatformSurface<Env extends object>(
     if (body.tenantId) await host.projectRolesLocal(body.tenantId, body.scopeId, deps.roles);
     return c.json(result);
   });
+
+  // #1239: facets over this scope's own outbox — narrow, group, count. Counts and
+  // grouped VALUES cross here, which is less than the history route below sends,
+  // but a payload field's values are still the tenant's own data on the tenant's
+  // own dashboard, through the platform's tenant-scoped read.
+  app.get('/internal/facets', async (c) =>
+    c.json(
+      await deps.hostFor(c.env).facetEventsLocal(
+        scopeIdOf.parse(c.req.query('scopeId')),
+        eventFacetInput.parse({
+          groupBy:
+            c.req.query('field') !== undefined
+              ? { kind: 'payload', field: c.req.query('field') }
+              : { kind: c.req.query('groupBy') },
+          type: c.req.query('type') ?? undefined,
+          since: c.req.query('since') ?? undefined,
+          until: c.req.query('until') ?? undefined,
+          limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+        }),
+      ),
+    ),
+  );
 
   // #1235: one record's event history — payloads, the K-34 chain, impersonation, the
   // PII class. Scope bytes DO cross here, exactly as the table reads do, and for the

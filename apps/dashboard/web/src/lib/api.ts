@@ -1,4 +1,4 @@
-import type { EmittedModel, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -439,6 +439,21 @@ export interface AppHealthRow {
   stale: number;
   lastSweepAt: string | null;
 }
+
+/**
+ * A facet over the outbox (#1239) — re-exported from the contract rather than
+ * restated here, exactly as `HistoryEntry` above is. A second copy of a shape the
+ * kernel derives is a place for the two to drift, and the drift would be silent:
+ * the wire carries whatever the helper returns either way.
+ *
+ * Two of its nullables are FACTS. A bucket's `value` of `null` is the
+ * EXTRACTION-NULL bucket, which is weaker than "absent" — SQLite returns the same
+ * NULL for a key the payload does not carry and for a key carrying an explicit
+ * JSON `null`. And what it is NOT is an erased payload: those never reach a bucket
+ * at all and are counted in `erased`, so a distribution over redacted history
+ * cannot read as complete.
+ */
+export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts';
 
 /** One declared field and whether anything declares it as output (#1321). */
 export interface FieldCoverageRow {
@@ -1476,6 +1491,19 @@ export const api = {
    * a page at a time, so dropping `nextCursor` would show a long-lived record's
    * OLDEST events and silently hide everything since.
    */
+  /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
+   *  cross: a dropped `until` answers about a wider slice than was asked for, and
+   *  nothing about the answer says so. */
+  appFacets: (
+    scopeId: string,
+    q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string },
+  ) =>
+    call<EventFacetResult>(
+      `/apps/${encodeURIComponent(scopeId)}/facets?${new URLSearchParams(
+        Object.fromEntries(Object.entries(q).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string>,
+      )}`,
+    ),
+
   appEntityHistory: (scopeId: string, entityType: string, entityId: string, cursor?: string) =>
     call<Page<HistoryEntry>>(
       `/apps/${encodeURIComponent(scopeId)}/history?entityType=${encodeURIComponent(entityType)}&entityId=${encodeURIComponent(entityId)}` +
