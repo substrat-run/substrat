@@ -70,9 +70,10 @@ platform's own applications are source-available but not licensed for reuse.
 | `packages/create-substrat` | `npm create substrat` — the scaffolder | Apache-2.0 |
 | `packages/boundary-lint` | The layer rules (R1–R7) as static analysis, runnable outside this repo | Apache-2.0 |
 | `packages/model-emit` | Build-time tooling over a declared model — DDL, migrations, the client | Apache-2.0 |
+| `packages/model-view` | A declared model rendered as one self-contained HTML page — ER diagram, entity cards, lifecycles | Apache-2.0 |
 | `packages/psl`, `packages/dev-issuer` | The public suffix list behind the domain guards; a local OIDC provider for dev | AGPL-3.0 + commercial |
 | `engines/*` | `workorder`, `invoicing`, `protocol`, `booking`, `invites`, `absence`, `metering` | AGPL-3.0 + commercial |
-| `connectors/*` | `scrive` — e-signature (Swedish BankID) over the connector runtime | AGPL-3.0 + commercial |
+| `connectors/*` | `scrive` — e-signature (Swedish BankID); `fortnox` — accounting; `planima` — maintenance planning | AGPL-3.0 + commercial |
 | `demos/*` | Reference verticals (below) | Apache-2.0, not published |
 | `apps/*` | The control plane, router, dashboard, console, builder studio, egress hop and docs site | source-available, no grant |
 
@@ -82,7 +83,7 @@ their surfaces evolve additively only; the rules a module must follow are in
 
 ## Demos
 
-Nine reference verticals, each the same kernel under a different shape of app. They run
+Ten reference verticals, each the same kernel under a different shape of app. They run
 locally on SQLite and deploy unchanged to Cloudflare; several are installable from the
 hosted marketplace.
 
@@ -107,6 +108,9 @@ hosted marketplace.
   end-to-end walk of invites.
 - **[Handlebar](demos/handlebar/)** — Callout's engines re-vocabularied to a bike
   workshop; what `npm create substrat` scaffolds is a smaller cousin.
+- **[Tock](demos/tock/)** — measured file loads: a schema the user edits at runtime and data
+  that is allowed to disagree with it, so declared-but-absent and observed-but-undeclared are
+  both findings. Corrections supersede without destroying. Runs locally, not deployed.
 - **[Auth Server](demos/auth-server/)** — a standalone OIDC issuer you can host and point
   any application at, inside Substrat or outside it.
 
