@@ -1,4 +1,4 @@
-import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, FieldCoverageView as WireFieldCoverageView, AppHealthRow as WireAppHealthRow, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, SweepRunView } from './api';
+import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, FieldCoverageView as WireFieldCoverageView, FlowFindingsView as WireFlowFindingsView, FlowFinding as WireFlowFinding, AppHealthRow as WireAppHealthRow, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, SweepRunView } from './api';
 // Type-only reach into the worker: schedules.ts is environment-free (contracts types
 // only), so it compiles under the DOM tsconfig, where the worker program could never
 // swallow this file's DOM-typed sibling. Never imported at runtime — the two bundles
@@ -14,6 +14,7 @@ import type {
   EntityCoverage as WorkerEntityCoverage,
   FieldCoverageRow as WorkerFieldCoverageRow,
 } from '../../../src/field-coverage';
+import type { FlowFindingsView as WorkerFlowFindingsView, FlowFinding as WorkerFlowFinding } from '../../../src/flow-findings';
 import type { AppHealthRow as WorkerAppHealthRow } from '../../../src/fleet-health';
 import type { ReleaseRow as WorkerReleaseRow, ReleasesView as WorkerReleasesView, ReleaseComparison as WorkerReleaseComparison, ReleaseSide as WorkerReleaseSide, TrafficSeries as WorkerTrafficSeries, TrafficBucket as WorkerTrafficBucket, ReleaseMarker as WorkerReleaseMarker } from '../../../src/releases';
 
@@ -52,3 +53,5 @@ export const FIELD_COVERAGE_ROW_PARITY: Equal<WireFieldCoverageRow, WorkerFieldC
 export const ENTITY_COVERAGE_PARITY: Equal<WireEntityCoverage, WorkerEntityCoverage> = true;
 export const FIELD_COVERAGE_VIEW_PARITY: Equal<WireFieldCoverageView, WorkerFieldCoverageView> = true;
 export const APP_HEALTH_ROW_PARITY: Equal<WireAppHealthRow, WorkerAppHealthRow> = true;
+export const FLOW_FINDING_PARITY: Equal<WireFlowFinding, WorkerFlowFinding> = true;
+export const FLOW_FINDINGS_VIEW_PARITY: Equal<WireFlowFindingsView, WorkerFlowFindingsView> = true;

@@ -3479,6 +3479,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     return c.json({ schedules: parsed?.schedules ?? null, freshness: parsed?.freshness ?? null });
   });
 
+  /**
+   * The declared FLOW of one version (#1234): every event type its modules say they
+   * emit or consume, and the providers the vertical requires — the declared half of
+   * a declared-vs-observed finding.
+   *
+   * Its own route rather than a ride on `/model`, unlike freshness on `/schedules`:
+   * the model is the largest thing on a manifest, and the flow card needs none of it.
+   * `declaredEvents` is null for a version pushed before the field existed, which the
+   * caller must keep apart from a version that declares no events at all — the second
+   * is a finding, the first is nothing to say.
+   */
+  app.get('/verticals/:slug/versions/:id/flow', async (c) => {
+    const p = c.get('principal');
+    const slug = await resolveVerticalId(c, c.req.param('slug'));
+    if (p.kind === 'builder' && (await ownerOf(p.actor, slug)) !== p.tenantId) {
+      return c.json({ error: 'not found' }, 404);
+    }
+    const json = await admin.versionManifest(c.get('actor'), slug, c.req.param('id'));
+    const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
+    return c.json({
+      declaredEvents: parsed?.declaredEvents ?? null,
+      // Whether that surface is the whole declaration or a sample cut at the cap. The
+      // reader's "N of M checked" is a completeness claim, and it may not be made about
+      // a manifest that says it was truncated.
+      declaredEventsTruncated: parsed?.declaredEventsTruncated ?? false,
+      requires: parsed?.requires ?? [],
+    });
+  });
+
   app.get('/verticals/:slug/versions/:id/model', async (c) => {
     const p = c.get('principal');
     const slug = await resolveVerticalId(c, c.req.param('slug'));

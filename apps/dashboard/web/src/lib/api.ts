@@ -456,6 +456,28 @@ export interface AppHealthRow {
 export type { EventFacetBucket, EventFacetResult } from '@substrat-run/contracts';
 
 /** One declared field and whether anything declares it as output (#1321). */
+/** One declared-vs-observed finding (#1234). */
+export interface FlowFinding {
+  kind: 'unemitted' | 'unconsumed' | 'unconnected-provider' | 'unhealthy-provider';
+  subject: string;
+  moduleId: string | null;
+  detail: string;
+}
+
+export interface FlowFindingsView {
+  /** False when the running version predates the declared-event surface. */
+  available: boolean;
+  /** False when the observed side was truncated, so the event findings are withheld. */
+  observedComplete: boolean;
+  /** False when the DECLARED side was cut at the manifest's cap — the findings shown are
+   *  real, but they are not everything, and the count line must say so. */
+  declaredComplete: boolean;
+  findings: FlowFinding[];
+  declaredTypes: number;
+  /** Under a truncated observation this is the number RETURNED, never a total. */
+  observedTypes: number;
+}
+
 export interface FieldCoverageRow {
   field: string;
   returned: boolean;
@@ -1514,6 +1536,9 @@ export const api = {
   fleetHealth: () => call<{ rows: AppHealthRow[] }>('/fleet-health'),
 
   /** Field coverage for the running version (#1321) — declared vs returnable. */
+  /** Declared-vs-observed findings (#1234) — what this app promises against what it has done. */
+  appFlow: (scopeId: string) => call<FlowFindingsView>(`/apps/${encodeURIComponent(scopeId)}/flow`),
+
   appFieldCoverage: (scopeId: string) =>
     call<FieldCoverageView>(`/apps/${encodeURIComponent(scopeId)}/field-coverage`),
 

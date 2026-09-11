@@ -15,7 +15,7 @@ import {
   type PermissionRegistry,
 } from '@substrat-run/contracts';
 import { wranglerConfigFor, readRuntimeNeeds, resolveWranglerConfig, deriveRegistry, permissionDigest, checkPermissionSurface, flattenDeclaredSchedules,
-  flattenDeclaredFreshness, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
+  flattenDeclaredFreshness, flattenDeclaredEvents, formatPermissionSurface, readVerticalMeta, resolveDeclaredEnvSpec, previewVersion, collectAssets, readAssetsNeed, assertUiIsServed, generatedConfigPath } from '../src/push.js';
 
 describe('previewVersion — a FREE prerelease label, never a registry coordinate (#509 (e))', () => {
   const orig = globalThis.fetch;
@@ -862,6 +862,70 @@ export const permissions = {
     expect(
       flattenDeclaredFreshness({ modules: [{ manifest: { id: '@x/y', permissions: [] } }], roles: [] } as never),
     ).toBeUndefined();
+  });
+
+  it("flattens each module's declared emits and consumes, tagged with the owner (#1234)", () => {
+    const withEvents = {
+      modules: [
+        {
+          manifest: {
+            id: '@substrat-run/engine-invoicing',
+            permissions: [],
+            events: {
+              emits: [{ type: 'invoice.exported' }],
+              consumes: [{ type: 'timesheet.period-closed' }, { type: 'timesheet.period-closed' }],
+            },
+          },
+        },
+        { manifest: { id: '@x/y', permissions: [], events: { emits: [], consumes: [] } } },
+      ],
+      roles: [],
+    } as never;
+    // Both directions, each tagged with the module that declared it — and the
+    // duplicate collapses, since a type listed twice is still one declaration.
+    expect(flattenDeclaredEvents(withEvents)).toEqual({
+      events: [
+        { moduleId: '@substrat-run/engine-invoicing', type: 'invoice.exported', direction: 'emits' },
+        { moduleId: '@substrat-run/engine-invoicing', type: 'timesheet.period-closed', direction: 'consumes' },
+      ],
+      truncated: false,
+    });
+    // A surface declaring none is `[]`, NOT undefined. The manifest field then travels as
+    // an empty array, which the dashboard reads as "these modules declare no events" — a
+    // fact — where an absent field means "pushed before #1234" and has nothing to say.
+    // Returning undefined here made every event-less vertical read as the second, which
+    // also withheld its provider findings, and those need no declared events at all.
+    expect(
+      flattenDeclaredEvents({
+        modules: [{ manifest: { id: '@x/y', permissions: [], events: { emits: [], consumes: [] } } }],
+        roles: [],
+      } as never),
+    ).toEqual({ events: [], truncated: false });
+  });
+
+  /**
+   * An extraordinary surface still PUSHES — metadata must never fail a deploy — but the
+   * cut is REPORTED, because the reader's own sentence is a completeness claim and it may
+   * not be made about declarations nobody received.
+   */
+  it('reports a declared surface cut at the cap rather than silently sampling it', () => {
+    const many = (n: number) => ({
+      modules: [
+        {
+          manifest: {
+            id: '@x/y',
+            permissions: [],
+            events: { emits: Array.from({ length: n }, (_, i) => ({ type: `x.e${i}` })), consumes: [] },
+          },
+        },
+      ],
+      roles: [],
+    });
+    const cut = flattenDeclaredEvents(many(501) as never);
+    expect(cut.events).toHaveLength(500);
+    expect(cut.truncated).toBe(true);
+    // Exactly at the cap is complete — the flag means "there were more", not "it is full".
+    expect(flattenDeclaredEvents(many(500) as never).truncated).toBe(false);
   });
 
   it('names the directory when there is no package.json at all, not an ENOENT trace', async () => {
