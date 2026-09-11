@@ -34,10 +34,15 @@ function cpStub(answer: () => { status?: number; body: unknown }): TeamsEnv & { 
 	return env;
 }
 
+// Real ULIDs: the schema parses the id with the same `tenantId` the `tenant`
+// record publishes, so a placeholder that merely looks id-shaped is refused.
+const TEN1 = '01J8ZQ4T9XK2V7NH3M5PBRWY6C';
+const TEN2 = '01J8ZQ4T9XK2V7NH3M5PBRWY7D';
+
 const GOOD = {
 	tenants: [
-		{ id: '01J000000000000000000TEN1', slug: 'acme', name: 'Acme', entitled: true },
-		{ id: '01J000000000000000000TEN2', slug: 'tenant-a', name: 'Tenant A', entitled: false },
+		{ id: TEN1, slug: 'acme', name: 'Acme', entitled: true },
+		{ id: TEN2, slug: 'tenant-a', name: 'Tenant A', entitled: false },
 	],
 };
 
@@ -65,7 +70,7 @@ describe('teamsFor', () => {
 		// The failure this file exists for: `entitled: undefined` is falsy, so the
 		// gate used to deny an entitled tenant and say nothing about the shape.
 		const env = cpStub(() => ({
-			body: { tenants: [{ id: '01J000000000000000000TEN1', slug: 'acme', name: 'Acme' }] },
+			body: { tenants: [{ id: TEN1, slug: 'acme', name: 'Acme' }] },
 		}));
 		await expect(teamsFor(env, 'sub-1')).rejects.toThrow(/unexpected shape/);
 	});
@@ -77,6 +82,11 @@ describe('teamsFor', () => {
 		['a tenant with no id', { tenants: [{ ...GOOD.tenants[0], id: '' }] }],
 		['a bare array', GOOD.tenants],
 		['a non-JSON body', 'not json at all'],
+		// The three the `tenant` record's own schemas catch and a generic
+		// `z.string().min(1)` would not — each is non-empty and still wrong.
+		['an id that is not a ULID', { tenants: [{ ...GOOD.tenants[0], id: 'tenant-acme' }] }],
+		['a slug with a capital and a space', { tenants: [{ ...GOOD.tenants[0], slug: 'Acme Inc' }] }],
+		['an empty name', { tenants: [{ ...GOOD.tenants[0], name: '' }] }],
 	])('refuses %s', async (_label, body) => {
 		const env = cpStub(() => ({ body }));
 		await expect(teamsFor(env, 'sub-1')).rejects.toThrow(/unexpected shape/);
