@@ -1,0 +1,64 @@
+/*
+ * Geist and Geist Mono, SELF-HOSTED — the follow-up console.css named, done (#1278
+ * constraint 7).
+ *
+ * `@substrat-run/ui/tokens/fonts.css` reaches Google Fonts over a CDN. This SPA is one
+ * bundle serving two audiences, so an unscoped import of that file would put a
+ * third-party request on the /login path of every relying party — a person signing into
+ * a customer's app, being announced to fonts.googleapis.com on the way through. These
+ * faces are served from the issuer's own origin instead: the built woff2 rides along in
+ * `src/assets.generated.ts` like every other asset, so there is no external hop at all.
+ *
+ * Three choices worth stating, because each one is paid for in worker-bundle bytes — the
+ * whole SPA is inlined into the pushed worker (constraint 6):
+ *
+ * 1. VARIABLE, not five static weights. One file covers 100–900, so `--weight-regular`
+ *    through `--weight-bold` all resolve to a real face. `@fontsource/geist-sans` at
+ *    400/500/600 plus `@fontsource/geist-mono` at 400/500 — the five faces the console
+ *    actually asks for — is 129 KB of woff2; the two variable faces below are 52 KB, and
+ *    they cover the weights those five do not.
+ * 2. LATIN subset only, and UPRIGHT only. The packages ship cyrillic, latin-ext,
+ *    vietnamese and an italic axis as separate files; importing their `wght.css` would
+ *    pull all five subsets. The `@font-face` rules are written out here rather than
+ *    imported so the choice is visible and the other subsets stay out of the bundle. The
+ *    `unicode-range` is the one fontsource ships for this subset, kept verbatim: without
+ *    it a Cyrillic name in the user list would render in Geist's fallback glyphs instead
+ *    of falling through to a system face that has them.
+ * 3. `font-display: swap` — text is readable on the system stack from the first paint,
+ *    which is what the fallback lists in `console.css` are for.
+ *
+ * This file is imported ONLY from `console/console.css`, and nothing outside
+ * `.console-root` ever names these families. That scoping is what keeps the promise
+ * above honest at runtime as well as on the wire: a browser fetches a font file when a
+ * rule USES the family, so on /login, /signup, /consent and /reset-password — which take
+ * their type from `tokens.css` and are themed per relying party — neither face is
+ * requested at all.
+ *
+ * Licence: both faces are Vercel's Geist under the SIL Open Font License 1.1, vendored
+ * through `@fontsource-variable/geist` and `@fontsource-variable/geist-mono`
+ * (devDependencies of this app; `apps/docs` already self-hosts the same family from the
+ * static fontsource packages). OFL permits redistribution, which is what inlining them
+ * into the worker bundle is — #1278 constraint 8.
+ */
+
+@font-face {
+  font-family: 'Geist Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(@fontsource-variable/geist/files/geist-latin-wght-normal.woff2) format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Geist Mono Variable';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url(@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2) format('woff2-variations');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC,
+    U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
