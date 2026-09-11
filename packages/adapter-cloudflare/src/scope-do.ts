@@ -117,7 +117,7 @@ import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
 import { readHistory } from '@substrat-run/kernel';
-import type { HistoryEntry, Page } from '@substrat-run/contracts';
+import type { DrainedEvent, HistoryEntry, Page } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
 
 /**
@@ -964,6 +964,37 @@ export function defineScopeDO(
           version: r.version as string,
           appliedAt: (r.applied_at as string | null) ?? null,
         }));
+    }
+
+    /**
+     * The events not yet shipped to Tier 2 (#1334), oldest first. `ORDER BY id`
+     * is chronological (ULID) and stable, so a drain resumes where it stopped.
+     */
+    undrainedEvents(limit: number): DrainedEvent[] {
+      const rows = this.sql
+        .exec(`SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ?`, limit)
+        .toArray() as unknown as OutboxRow[];
+      return rows.map((r) => ({
+        ...this.parseOutboxRow(r),
+        operation: r.operation ?? null,
+        version: r.version ?? null,
+      })) as DrainedEvent[];
+    }
+
+    /** Stamp `drained_at` on shipped events (#1334). Idempotent — a re-mark is a no-op. */
+    async markEventsDrained(eventIds: readonly string[], at: string): Promise<void> {
+      if (eventIds.length === 0) return;
+      await this.queue.enqueue(() => {
+        for (const id of eventIds) {
+          // Only an UNDRAINED row is stamped, so a replayed batch cannot move an
+          // earlier drain's timestamp forward and misreport when it shipped.
+          this.sql.exec(
+            `UPDATE _substrat_outbox SET drained_at = ? WHERE id = ? AND drained_at IS NULL`,
+            at,
+            id,
+          );
+        }
+      });
     }
 
     /**

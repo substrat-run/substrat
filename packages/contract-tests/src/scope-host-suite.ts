@@ -540,6 +540,56 @@ export function scopeHostContractSuite(
       expect(journal2.filter((r) => r.module_id === '@test/mod')).toHaveLength(1);
     });
 
+    it('drains events at-least-once, and a re-mark cannot rewrite when they shipped (#1334)', async () => {
+      // Tier 2 (master-plan §5.3) is fed exclusively by this stream, and
+      // `drained_at` has been on the outbox since it shipped with nothing writing
+      // it. These two verbs are what a drain is built from.
+      const stub = await host.getScope(alice, t1, s1);
+      const subject = ulid();
+      await stub.invoke('test/emit-event');
+      await stub.invoke('test/emit-event', { subject });
+
+      const first = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      expect(first.length).toBeGreaterThanOrEqual(2);
+      // Oldest first and stable — a drain resumes where it stopped rather than
+      // re-reading from the top.
+      expect([...first].sort((a, b) => (a.id < b.id ? -1 : 1)).map((e) => e.id)).toEqual(first.map((e) => e.id));
+      // The dimensions the lake exists to carry ride along: the emitting operation
+      // and the version, which #1250 deliberately keeps OFF the envelope.
+      const emitted = first.find((e) => e.type === 'test.happened')!;
+      expect(emitted.operation).toBe('test/emit-event');
+      expect('version' in emitted).toBe(true);
+      // And the erasure key rides along, so a shred can still reach the copy that
+      // left the scope. Absent on an event with no data subject — the key is a
+      // fact about the event, not a field the drain invents.
+      expect(first.find((e) => e.subjectId === subject)).toBeDefined();
+
+      // Reading does NOT mark: a sink that fails must leave the events replayable,
+      // which is the whole reason read and mark are separate verbs.
+      const again = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      expect(again.map((e) => e.id)).toEqual(first.map((e) => e.id));
+
+      await host.admin.markEventsDrained(staff, t1, s1, first.map((e) => e.id));
+      const afterMark = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      expect(afterMark.map((e) => e.id)).not.toEqual(expect.arrayContaining(first.map((e) => e.id)));
+
+      // Marking is idempotent, and a replayed batch must not move an earlier
+      // drain's timestamp forward — a lake row's "when did this ship" would
+      // otherwise drift every time a retry passed over it.
+      await expect(
+        host.admin.markEventsDrained(staff, t1, s1, first.map((e) => e.id)),
+      ).resolves.toBeUndefined();
+
+      // A new event after the drain is picked up; the drained ones are not.
+      await stub.invoke('test/emit-event');
+      const next = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      expect(next.length).toBe(1);
+      expect(first.map((e) => e.id)).not.toContain(next[0]!.id);
+
+      // An empty mark is a no-op, not an error — a drain with nothing to ship.
+      await expect(host.admin.markEventsDrained(staff, t1, s1, [])).resolves.toBeUndefined();
+    });
+
     it('answers one record’s history through the platform (#1235)', async () => {
       // `readHistory` has been the sanctioned read since #800 and, until this
       // verb, nothing above the scope could call it — the whole point of #1235.

@@ -5597,6 +5597,29 @@ export class SqliteScopeHost implements ScopeHost {
           { expiresAt },
         );
       },
+      readUndrainedEvents: async (actor, tenantId, scopeId, limit) => {
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const rows = db
+          .prepare(`SELECT * FROM _substrat_outbox WHERE drained_at IS NULL ORDER BY id LIMIT ?`)
+          .all(Math.min(Math.max(limit ?? 200, 1), 1000)) as Array<Record<string, unknown>>;
+        this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, rows.length);
+        return rows.map((r) => ({
+          ...this.parseOutboxRow(r as never),
+          operation: (r.operation as string | null) ?? null,
+          version: (r.version as string | null) ?? null,
+        })) as never;
+      },
+      markEventsDrained: async (_actor, tenantId, scopeId, eventIds) => {
+        if (eventIds.length === 0) return;
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const at = new Date().toISOString();
+        // Only an UNDRAINED row is stamped, so a replayed batch cannot move an
+        // earlier drain's timestamp forward and misreport when it shipped.
+        const stmt = db.prepare(
+          `UPDATE _substrat_outbox SET drained_at = ? WHERE id = ? AND drained_at IS NULL`,
+        );
+        for (const id of eventIds) stmt.run(at, id);
+      },
       entityHistory: async (actor, tenantId, scopeId, input) => {
         // `readHistory` over this scope's own outbox — the sanctioned read, and the
         // only one that decodes the envelope's nullable facts (an erased payload, an

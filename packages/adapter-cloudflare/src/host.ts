@@ -69,6 +69,7 @@ import {
   type AdminLogEntry,
   type OpsFailureEntry,
   type IssueEntry,
+  type DrainedEvent,
   type EntityHistoryInput,
   type HistoryEntry,
   type Page,
@@ -933,6 +934,8 @@ interface ScopeStubRpc {
     limit?: number;
     cursor?: string;
   }): Promise<Page<HistoryEntry>>;
+  undrainedEvents(limit: number): Promise<DrainedEvent[]>;
+  markEventsDrained(eventIds: readonly string[], at: string): Promise<void>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -3878,6 +3881,18 @@ export class CloudflareScopeHost implements ScopeHost {
         const tables = await this.scopeStub(scopeId).introspectTables();
         await this.recordAccess(actor, 'listScopeTables', { tenantId, scopeId }, null, tables.length);
         return tables;
+      },
+      readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<DrainedEvent[]> => {
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        const events = await this.scopeStub(scopeId).undrainedEvents(Math.min(Math.max(limit ?? 200, 1), 1000));
+        await this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, events.length);
+        return events;
+      },
+      markEventsDrained: async (actor, tenantId, scopeId, eventIds): Promise<void> => {
+        const row = await this.cp.getScopeRecord(tenantId, scopeId);
+        if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
+        await this.scopeStub(scopeId).markEventsDrained(eventIds, new Date().toISOString());
       },
       entityHistory: async (
         actor,

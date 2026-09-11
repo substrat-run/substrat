@@ -99,6 +99,7 @@ import type {
   Page,
   CountedPage,
   FreshnessSpec,
+  DrainedEvent,
   EntityHistoryInput,
   HistoryEntry,
   ErrorCode,
@@ -1980,6 +1981,35 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: ReadScopeTableInput,
   ): Promise<ScopeTablePage>;
+
+  /**
+   * The events this scope has not yet shipped to Tier 2 (#1334), oldest first —
+   * `drained_at IS NULL`, the column the spine has carried since the outbox
+   * shipped and nothing has ever written.
+   *
+   * Read and mark are SEPARATE verbs, deliberately. Marking before shipping loses
+   * events when the sink fails; shipping before marking can repeat them, and a
+   * repeat is harmless — the lake is keyed by event id and every consumer in this
+   * platform is already required-idempotent. At-least-once is the only one of the
+   * two that cannot silently lose exact history, which is the point of the tier.
+   */
+  readUndrainedEvents(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    limit?: number,
+  ): Promise<DrainedEvent[]>;
+
+  /**
+   * Stamp `drained_at` on events the sink accepted (#1334). Idempotent: marking a
+   * row already marked changes nothing, so a retry after a partial ship is safe.
+   */
+  markEventsDrained(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    eventIds: readonly string[],
+  ): Promise<void>;
 
   /**
    * One record's event history (#1235) on a CO-LOCATED scope — `readHistory`'s

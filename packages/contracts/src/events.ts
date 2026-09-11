@@ -211,3 +211,45 @@ export const historyEntry = timelineEntry.extend({
   version: z.string().nullable(),
 });
 export type HistoryEntry = z.infer<typeof historyEntry>;
+
+/**
+ * One event as it leaves the scope for Tier 2 (#1334) — the exact-history lake
+ * the master plan commits to (§5.3: "domain events → Pipelines → Iceberg on R2").
+ *
+ * Everything the envelope holds, because the lake is where reporting,
+ * reconciliation and audit are answered and a field dropped here cannot be
+ * recovered later. In particular it carries:
+ *
+ * - **`subjectId`**, the pseudonymous erasure key. A shred erases Tier 1's
+ *   payload; the lake copy has to be reachable too, and this is the column that
+ *   makes "delete every row for this subject" expressible there. Shipping
+ *   payloads without it would put personal data somewhere an erasure cannot
+ *   follow — so the key travels with them, always.
+ * - **`authorization`, `impersonation`, `operation`, `version`** — the K-34 chain,
+ *   the K-42 stamp and the signals dimensions, whose nulls stay facts on the way
+ *   out exactly as `historyEntry` documents them.
+ */
+// An INTERSECTION rather than `.extend`: `domainEvent` carries refinements (the
+// PII rule — a `direct` class must name a subject), and zod refuses to extend a
+// refined object, while `.safeExtend` only overrides keys that already exist.
+// Intersecting keeps the refinement applying to the envelope it was written for
+// and adds the two column-only dimensions beside it.
+export const drainedEvent = z.intersection(
+  domainEvent,
+  z.object({
+    /**
+     * The `invoke()` string this event was emitted from (#1231), or null — two
+     * facts the spine cannot separate afterwards: a consumer emitted it (no
+     * operation ran), or the row predates the column.
+     */
+    operation: z.string().nullable(),
+    /**
+     * The version the emitting code was deployed as (#1242), or null. Read from
+     * the outbox COLUMN, never the envelope — #1250 kept it off `domainEvent` on
+     * purpose (script configuration, not event data), so a drain is one of the
+     * few sanctioned joins from an event to its push.
+     */
+    version: z.string().nullable(),
+  }),
+);
+export type DrainedEvent = z.infer<typeof drainedEvent>;
