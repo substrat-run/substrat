@@ -252,15 +252,22 @@ export const drainedEvent = domainEventShape
      * The `invoke()` string this event was emitted from (#1231), or null — two
      * facts the spine cannot separate afterwards: a consumer emitted it (no
      * operation ran), or the row predates the column.
+     *
+     * `.min(1)` because the envelope's own `operation` carries it: the drain
+     * WIDENS absent to null, and widening that far would also admit `''`, which
+     * is neither a fact nor an operation — just a row nothing can be grouped by.
      */
-    operation: z.string().nullable(),
+    operation: z.string().min(1).nullable(),
     /**
      * The version the emitting code was deployed as (#1242), or null. Read from
      * the outbox COLUMN, never the envelope — #1250 kept it off `domainEvent` on
      * purpose (script configuration, not event data), so a drain is one of the
-     * few sanctioned joins from an event to its push.
+     * few sanctioned joins from an event to its push. `.min(1)` for the reason
+     * `operation` carries it: "no version identity was present" is spelled null,
+     * and an empty string is a third spelling of it that nothing should have to
+     * handle.
      */
-    version: z.string().nullable(),
+    version: z.string().min(1).nullable(),
   })
   .superRefine(piiInvariant);
 export type DrainedEvent = z.infer<typeof drainedEvent>;

@@ -544,12 +544,29 @@ export function scopeHostContractSuite(
       // Tier 2 (master-plan §5.3) is fed exclusively by this stream, and
       // `drained_at` has been on the outbox since it shipped with nothing writing
       // it. These two verbs are what a drain is built from.
-      const stub = await host.getScope(alice, t1, s1);
+      //
+      // Its OWN scope, not the shared `s1`. A drain read is "everything undrained,
+      // up to a limit", so every event any earlier test left behind is part of this
+      // test's input — and the closing assertion, that exactly one event is
+      // undrained after a new emit, is only true while that backlog stays under the
+      // page size. Nothing about this test's subject needs the shared fixture, and
+      // depending on how full it is makes the failure arrive later, in someone
+      // else's PR.
+      const sDrain = scopeId.parse(ulid());
+      await host.provisionScope(staff, {
+        tenantId: t1,
+        scopeId: sDrain,
+        jurisdiction: 'eu',
+        vertical: 'connector-vertical',
+      });
+      await host.admin.activateScope(staff, t1, sDrain);
+
+      const stub = await host.getScope(alice, t1, sDrain);
       const subject = ulid();
       await stub.invoke('test/emit-event');
       await stub.invoke('test/emit-event', { subject });
 
-      const first = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      const first = await host.admin.readUndrainedEvents(staff, t1, sDrain, 200);
       expect(first.length).toBeGreaterThanOrEqual(2);
       // Oldest first and stable — a drain resumes where it stopped rather than
       // re-reading from the top.
@@ -566,12 +583,12 @@ export function scopeHostContractSuite(
 
       // Reading does NOT mark: a sink that fails must leave the events replayable,
       // which is the whole reason read and mark are separate verbs.
-      const again = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      const again = await host.admin.readUndrainedEvents(staff, t1, sDrain, 200);
       expect(again.map((e) => e.id)).toEqual(first.map((e) => e.id));
 
-      const marked = await host.admin.markEventsDrained(staff, t1, s1, first.map((e) => e.id));
+      const marked = await host.admin.markEventsDrained(staff, t1, sDrain, first.map((e) => e.id));
       expect(marked).toBe(first.length);
-      const afterMark = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      const afterMark = await host.admin.readUndrainedEvents(staff, t1, sDrain, 200);
       expect(afterMark.map((e) => e.id)).not.toEqual(expect.arrayContaining(first.map((e) => e.id)));
 
       // K-24's rule one tier down: domain payloads leaving the platform are an
@@ -579,7 +596,7 @@ export function scopeHostContractSuite(
       // many rows it covered. Without one there is no durable record of who shipped
       // a customer's events off the platform.
       const receipt = (await host.admin.auditLog(staff, { tenantId: t1 })).find(
-        (r) => r.action === 'drainEvents' && r.scopeId === s1,
+        (r) => r.action === 'drainEvents' && r.scopeId === sDrain,
       );
       expect(receipt?.actor).toBe(staff);
       expect((receipt?.after as { drained: number }).drained).toBe(first.length);
@@ -588,25 +605,34 @@ export function scopeHostContractSuite(
       // drain's timestamp forward — a lake row's "when did this ship" would
       // otherwise drift every time a retry passed over it.
       await expect(
-        host.admin.markEventsDrained(staff, t1, s1, first.map((e) => e.id)),
+        host.admin.markEventsDrained(staff, t1, sDrain, first.map((e) => e.id)),
       ).resolves.toBe(0);
 
       // …and the re-mark writes NO second receipt. An admin log that grows a row
       // per retry claims egresses that never happened, which is worse than silence:
       // the log is the evidence, and inflated evidence is not evidence.
       const receipts = (await host.admin.auditLog(staff, { tenantId: t1 })).filter(
-        (r) => r.action === 'drainEvents' && r.scopeId === s1,
+        (r) => r.action === 'drainEvents' && r.scopeId === sDrain,
       );
       expect(receipts).toHaveLength(1);
 
       // A new event after the drain is picked up; the drained ones are not.
       await stub.invoke('test/emit-event');
-      const next = await host.admin.readUndrainedEvents(staff, t1, s1, 200);
+      const next = await host.admin.readUndrainedEvents(staff, t1, sDrain, 200);
       expect(next.length).toBe(1);
       expect(first.map((e) => e.id)).not.toContain(next[0]!.id);
 
       // An empty mark is a no-op, not an error — a drain with nothing to ship.
-      await expect(host.admin.markEventsDrained(staff, t1, s1, [])).resolves.toBe(0);
+      await expect(host.admin.markEventsDrained(staff, t1, sDrain, [])).resolves.toBe(0);
+      // But "nothing to mark" and "you may not address this scope" stay different
+      // answers. The empty batch must not become a shortcut past K-3: a mismatched
+      // pair that quietly returns 0 makes a caller's typo read as a successful drain.
+      await expect(host.admin.markEventsDrained(staff, t2, sDrain, [])).rejects.toThrow(
+        /unknown scope/,
+      );
+      await expect(
+        host.admin.markEventsDrained(staff, t1, scopeId.parse(ulid()), []),
+      ).rejects.toThrow(/unknown scope/);
     });
 
     it('facets the outbox, and keeps an ERASED payload out of the null bucket (#1239)', async () => {

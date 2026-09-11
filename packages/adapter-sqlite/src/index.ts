@@ -5620,6 +5620,13 @@ export class SqliteScopeHost implements ScopeHost {
         })) as never;
       },
       markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {
+        // BEFORE the empty-batch shortcut, not after. "Nothing to mark" and "you may
+        // not address this scope" are different answers, and returning 0 for an
+        // unknown pair would make a caller's typo look like a successful no-op —
+        // while the Cloudflare host, which resolves the record first, throws. An
+        // empty batch must not open the scope file either, which is why this is the
+        // directory-only check rather than `scopeDbFor`.
+        this.assertScopeReachable(tenantId, scopeId);
         if (eventIds.length === 0) return 0;
         const db = this.scopeDbFor(tenantId, scopeId);
         const at = new Date().toISOString();
@@ -8390,21 +8397,32 @@ export class SqliteScopeHost implements ScopeHost {
    * DIFFERENT tenant, throws — the introspection reads never open another tenant's
    * DB, and never CREATE one for an id that was never provisioned.
    */
-  private scopeDbFor(tenantId: TenantId, scopeId: ScopeId): Database.Database {
+  /**
+   * Whether this (tenant, scope) pair may be reached at all — the DIRECTORY half of
+   * `scopeDbFor`, split out so a call that ends up touching no rows still answers the
+   * question. K-3 first: a scope under another tenant is indistinguishable from one
+   * that does not exist. Then the reap.
+   *
+   * A reaped scope keeps its directory row as a tombstone while `reapScope` deletes
+   * the file (§4.4). `runtime()` opens a database by CREATING it when absent, so
+   * reading one would not merely answer emptily — it would put the file back,
+   * resurrecting storage an irreversible reap destroyed, and every later read would
+   * report a scope with no events rather than a scope that is gone. `archived` is
+   * deliberately still reachable: its bytes exist, and that is the whole point of the
+   * state.
+   */
+  private assertScopeReachable(tenantId: TenantId, scopeId: ScopeId): void {
     const r = this.directory.prepare('SELECT tenant_id, status FROM scopes WHERE scope_id = ?').get(scopeId) as
       | { tenant_id: string; status: string }
       | undefined;
     if (!r || r.tenant_id !== tenantId) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
-    // A reaped scope keeps its directory row as a tombstone while `reapScope` deletes
-    // the file (§4.4). `runtime()` opens a database by CREATING it when absent, so
-    // reading one here would not merely answer emptily — it would put the file back,
-    // resurrecting storage an irreversible reap destroyed, and every later read would
-    // report a scope with no events rather than a scope that is gone. `archived` is
-    // deliberately still readable: its bytes exist, and that is the whole point of the
-    // state.
     if (r.status === 'reaped') {
       throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
     }
+  }
+
+  private scopeDbFor(tenantId: TenantId, scopeId: ScopeId): Database.Database {
+    this.assertScopeReachable(tenantId, scopeId);
     return this.runtime(tenantId, scopeId).db;
   }
 

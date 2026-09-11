@@ -56,6 +56,14 @@ describe('drainedEvent', () => {
     ).toBe('01J0000000000000000000000E');
   });
 
+  it('refuses an empty operation or version — null is how absence is spelled', () => {
+    // The drain WIDENS `operation` from absent to null; widening past that would
+    // admit `''`, which is neither a fact about the event nor a value anything can
+    // group by, and which `domainEvent` has always rejected.
+    expect(() => drainedEvent.parse({ ...base, operation: '', version: null })).toThrow();
+    expect(() => drainedEvent.parse({ ...base, operation: null, version: '' })).toThrow();
+  });
+
   it('leaves the envelope itself unchanged — operation stays optional there', () => {
     // `domainEvent` is the shape as it ENTERS the spine, where an operation is
     // absent rather than null. The two schemas disagree on this field on purpose,
