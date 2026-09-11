@@ -80,6 +80,16 @@ describe('the content documents', () => {
     expect(ch5).not.toContain('.md"');
   });
 
+  it('does not double the numbering on the contents page', () => {
+    // Every chapter title already opens with its number, and EPUB 3 requires the toc
+    // to be an ordered list — whose markers a reader draws too. The class is what the
+    // stylesheet suppresses them through; an `epub|type` selector is not reliably
+    // supported, so the hook has to be a plain class.
+    const nav = text('EPUB/nav.xhtml');
+    expect(nav).toContain('class="toc"');
+    expect(text('EPUB/style.css')).toContain('.toc ol { list-style: none;');
+  });
+
   it('invents no links — linkify would read PERMISSIONS.md as a hostname', () => {
     for (const doc of docs.filter((d) => d.endsWith('.xhtml'))) {
       expect(text(doc)).not.toMatch(/href="http:\/\/[A-Z]/);
@@ -104,7 +114,9 @@ describe('the package document', () => {
   });
 
   it('places every chapter in the spine, in reading order', () => {
-    const chapters = bookChapters().map((c) => c.link.replace(/^\/book\/?/, '') || 'index');
+    const chapters = bookChapters().map(
+      (c) => `ch-${c.link.replace(/^\/book\/?/, '') || 'index'}`,
+    );
     expect(spine.slice(2)).toEqual(chapters);
     expect(spine.slice(0, 2)).toEqual(['titlepage', 'nav']);
   });
@@ -114,6 +126,31 @@ describe('the package document', () => {
     const cover = items.find((i) => (i.properties ?? '').includes('cover-image'));
     expect(cover?.['media-type']).toBe('image/png');
     expect(files[`EPUB/${cover!.href}`]!.length).toBeGreaterThan(1000);
+  });
+
+  /**
+   * The bug that made the first cut of this file unopenable, and the reason this
+   * assertion exists rather than a comment: an OPF `id` is an XML `ID`, whose name
+   * production forbids a LEADING DIGIT. The obvious id for a chapter is its slug, and
+   * ten of eleven slugs start with one — so `01-why-a-substrate` produced a package
+   * document that would not parse, and Apple Books declined the file with no reason
+   * given. A strict XML parser does not catch it: well-formedness has nothing to say
+   * about the `ID` datatype, which only the OPF schema imposes.
+   */
+  const XML_NAME = /^[A-Za-z_][A-Za-z0-9._-]*$/;
+
+  it('gives every manifest item an id that is a valid XML name', () => {
+    const bad = items.map((i) => i.id).filter((id) => !XML_NAME.test(id!));
+    expect(bad).toEqual([]);
+  });
+
+  it('references only valid XML names from the spine', () => {
+    expect(spine.filter((ref) => !XML_NAME.test(ref!))).toEqual([]);
+  });
+
+  it('gives every item a distinct id', () => {
+    const ids = items.map((i) => i.id);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it('keeps a stable identifier so a re-download is not a second book', () => {
