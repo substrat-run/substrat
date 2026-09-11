@@ -515,9 +515,28 @@ function writeMessage(ctx: OperationContext, m: WriteMessage): MessageRow {
 export const ATTACHMENTS_NOT_STORED =
   'Files came with this message and were not stored — this desk has nowhere to put them yet.';
 
+/** The longest a filename or a content type is allowed to be before it is cut short. */
+const ATTACHMENT_FIELD_MAX = 200;
+
+/**
+ * One field of one file, flattened to a single line.
+ *
+ * A filename is the SENDER's text — anyone who can email this desk chooses it — and the
+ * relay is a courier rather than a filter, so it arrives here untrusted. A newline in it
+ * would forge a second bullet in the note and an agent would read a file that was never
+ * sent; a filename the length of a novel would be the whole thread. So control
+ * characters become spaces and the rest is cut to a length a person can read.
+ */
+function oneLine(value: string): string {
+  const flat = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return flat.length > ATTACHMENT_FIELD_MAX ? `${flat.slice(0, ATTACHMENT_FIELD_MAX)}…` : flat;
+}
+
 /** How one dropped file reads. Exact bytes: a rounded size is a number nobody can act on. */
 function attachmentLine(a: { filename: string; contentType: string; sizeBytes: number }): string {
-  return `- ${a.filename} (${a.contentType}, ${a.sizeBytes} bytes)`;
+  const name = oneLine(a.filename) || '(unnamed)';
+  const type = oneLine(a.contentType) || '(unknown type)';
+  return `- ${name} (${type}, ${a.sizeBytes} bytes)`;
 }
 
 /**
