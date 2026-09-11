@@ -734,10 +734,13 @@ interface AppliedFacet {
  * **A truncated result says so.** Buckets are capped; a tail that exists and is
  * not shown must not read as a tail that does not exist.
  */
-function EventExplorer({ app }: { app: AppRow }) {
+function EventExplorer({ app, focusEventType }: { app: AppRow; focusEventType?: string }) {
   const [groupBy, setGroupBy] = useState('type');
   const [field, setField] = useState('');
-  const [type, setType] = useState('');
+  // Seeded from the flow map's deep link when there is one. A type arriving this way is
+  // ALREADY applied — the reader asked for it by following the link, so making them press
+  // Group again would be asking the same question twice.
+  const [type, setType] = useState(focusEventType ?? '');
   const [windowLabel, setWindowLabel] = useState<string>(FACET_WINDOWS[1]!.label);
   const [result, setResult] = useState<EventFacetResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -750,7 +753,7 @@ function EventExplorer({ app }: { app: AppRow }) {
   const [applied, setApplied] = useState<AppliedFacet>(() => ({
     groupBy: 'type',
     field: '',
-    type: '',
+    type: focusEventType ?? '',
     ...facetWindow(FACET_WINDOWS[1]!.label),
   }));
   const submit = () =>
@@ -760,6 +763,14 @@ function EventExplorer({ app }: { app: AppRow }) {
       type: type.trim(),
       ...facetWindow(windowLabel),
     });
+
+  // A second link followed while the panel is open changes the prop and nothing else —
+  // without this the controls would update and the counts would stay the first type's.
+  useEffect(() => {
+    if (focusEventType === undefined) return;
+    setType(focusEventType);
+    setApplied((a) => (a.type === focusEventType ? a : { ...a, type: focusEventType, field: '' }));
+  }, [focusEventType]);
 
   useEffect(() => {
     let live = true;
@@ -901,11 +912,11 @@ function EventExplorer({ app }: { app: AppRow }) {
   );
 }
 
-export function AppObservability({ app }: { app: AppRow }) {
+export function AppObservability({ app, focusEventType }: { app: AppRow; focusEventType?: string }) {
   return (
     <div style={{ display: 'grid', gap: 16 }}>
       <AppSchedules scopeId={app.app_scope_id} />
-      <EventExplorer app={app} />
+      <EventExplorer app={app} focusEventType={focusEventType} />
       <ReleaseComparisonCard app={app} />
       <SchemaHistoryCard app={app} />
       <AppTelemetry app={app} />

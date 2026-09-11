@@ -90,6 +90,17 @@ export interface FlowGraph {
    * The legend has to say so — otherwise an uncounted node reads as a quiet one.
    */
   partialObservation: boolean;
+  /**
+   * True when the DECLARED surface was cut at the manifest's cap, so the map is a
+   * sample of the app rather than the app.
+   *
+   * The header on this card claims to draw "what this app declares", which under a
+   * truncated declaration is a claim about modules and event types that are simply not
+   * in the picture — and unlike a missing count, a missing NODE leaves nothing behind to
+   * notice. Carried so the view can say so; the drawing itself is unaffected, since every
+   * node it does draw was really declared.
+   */
+  declaredComplete: boolean;
 }
 
 const BAND_GAP = 108;
@@ -159,11 +170,30 @@ export function deriveFlowGraph(input: {
   observed: readonly ObservedType[];
   /** False when the facet was truncated, so a missing type proves nothing. */
   observedComplete: boolean;
+  /** False when the manifest says its declared surface was cut at the cap (#1234). */
+  declaredComplete: boolean;
 }): FlowGraph {
-  const { declaredEvents, schedules, requires, knownProviders, connections, outbound, observed, observedComplete } =
-    input;
+  const {
+    declaredEvents,
+    schedules,
+    requires,
+    knownProviders,
+    connections,
+    outbound,
+    observed,
+    observedComplete,
+    declaredComplete,
+  } = input;
   if (declaredEvents === null) {
-    return { available: false, nodes: [], edges: [], width: 0, height: 0, partialObservation: false };
+    return {
+      available: false,
+      nodes: [],
+      edges: [],
+      width: 0,
+      height: 0,
+      partialObservation: false,
+      declaredComplete,
+    };
   }
 
   const counts = new Map(observed.map((o) => [o.type, o.count]));
@@ -182,7 +212,8 @@ export function deriveFlowGraph(input: {
       observed: null,
       silent: false,
       status: 'ok',
-      title: 'Requests to this app’s own routes. Not a declaration — every app with routes has this path.',
+      title:
+        'Requests to this app’s own routes. Drawn unattached on purpose: which module serves a request is an operation-level fact, and the push does not declare operations — so there is no edge here that could be checked.',
     },
     ...schedules.map((s) => ({
       id: `trigger:schedule:${s.moduleId}:${s.operation}`,
@@ -222,12 +253,18 @@ export function deriveFlowGraph(input: {
       title: `${s.operation} runs inside ${s.moduleId}`,
     });
   }
-  // Requests reach every module, so the edge goes to every module. Drawing it to one
-  // would be tidier and would be a claim about which module serves requests — a fact
-  // the manifest does not carry, and this graph does not invent.
-  for (const m of modules) {
-    edges.push({ from: 'trigger:http', to: m.id, kind: 'triggers', title: `Requests can reach ${m.label}` });
-  }
+  // The HTTP trigger is deliberately UNCONNECTED.
+  //
+  // It used to draw an edge to every module, on the reasoning that requests reach them
+  // all. They do not: `ModuleRegistration.operations` is optional, and a consumer-only or
+  // schedule-only module is reached by an event or the clock and never by a request. The
+  // edge was therefore the plausible-looking-but-uncheckable line this file's header
+  // disavows, drawn `modules.length` times.
+  //
+  // Which module serves a request is an OPERATION fact, and operations are exactly what
+  // the manifest does not carry (header, "the one honest gap"). So the node stays, because
+  // requests really do arrive, and it stays unattached until something declares where they
+  // land — the node's own title says so rather than a line implying an answer.
 
   // Band 3 — events. The declared types, each carrying what the scope has recorded.
   const types = [...new Set(declaredEvents.map((d) => d.type))].sort();
@@ -304,7 +341,7 @@ export function deriveFlowGraph(input: {
   // answerable from a trace, not from a manifest.
 
   const { nodes, width, height } = layout([triggers, modules, events, outside]);
-  return { available: true, nodes, edges, width, height, partialObservation };
+  return { available: true, nodes, edges, width, height, partialObservation, declaredComplete };
 }
 
 function cadenceLabel(everyMinutes: number): string {

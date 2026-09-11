@@ -14,9 +14,46 @@ const base = {
   outbound: [] as string[],
   observed: [] as { type: string; count: number }[],
   observedComplete: true,
+  declaredComplete: true,
 };
 
 describe('deriveFlowGraph (#1234)', () => {
+  /**
+   * The HTTP trigger draws NO edges. It used to draw one to every module, which reads as
+   * "requests reach all of these" — and `ModuleRegistration.operations` is optional, so a
+   * consumer-only or schedule-only module is reached by an event or the clock and never by
+   * a request. Which module serves a request is an operation fact, and operations are the
+   * one thing this manifest does not carry; the header disavows exactly this kind of
+   * uncheckable line, and the graph was drawing `modules.length` of them.
+   */
+  it('leaves the HTTP trigger unattached rather than claiming requests reach every module', () => {
+    const g = deriveFlowGraph({
+      ...base,
+      declaredEvents: [decl('invoice.sent', 'emits', 'billing'), decl('receipt.landed', 'consumes', 'ledger')],
+    });
+    expect(g.nodes.find((n) => n.id === 'trigger:http')).toBeDefined();
+    expect(g.edges.filter((e) => e.from === 'trigger:http')).toEqual([]);
+    // A DECLARED trigger still connects — the schedule says which module it runs in.
+    const withSchedule = deriveFlowGraph({
+      ...base,
+      declaredEvents: [decl('invoice.sent', 'emits', 'billing')],
+      schedules: [{ operation: 'billing/sweep', cadence: { everyMinutes: 60 }, moduleId: 'billing' }],
+    });
+    expect(withSchedule.edges.some((e) => e.to === 'module:billing' && e.kind === 'triggers')).toBe(true);
+  });
+
+  /**
+   * A truncated declaration drops NODES, and unlike a missing count a missing node leaves
+   * nothing behind to notice — so the flag has to reach the view, whose header otherwise
+   * claims to draw "what this app declares".
+   */
+  it('carries a truncated declaration through, including when the version is too old', () => {
+    expect(deriveFlowGraph({ ...base, declaredComplete: false }).declaredComplete).toBe(false);
+    expect(
+      deriveFlowGraph({ ...base, declaredEvents: null, declaredComplete: false }),
+    ).toMatchObject({ available: false, declaredComplete: false });
+  });
+
   it('lays the declared app out in bands, triggers above modules above events', () => {
     const g = deriveFlowGraph({
       ...base,
@@ -45,17 +82,6 @@ describe('deriveFlowGraph (#1234)', () => {
     expect(g.nodes.map((n) => n.id)).toContain('connection:scrive');
     expect(g.nodes.map((n) => n.id)).toContain('egress:api.example.com');
     expect(g.edges.filter((e) => e.to.startsWith('connection:') || e.to.startsWith('egress:'))).toEqual([]);
-  });
-
-  it('points the request path at every module rather than picking one', () => {
-    // Tidier to draw one edge; that would be a claim about which module serves requests,
-    // and the manifest carries no such fact.
-    const g = deriveFlowGraph({
-      ...base,
-      declaredEvents: [decl('a', 'emits', 'mod-a'), decl('b', 'emits', 'mod-b')],
-    });
-    const http = g.edges.filter((e) => e.from === 'trigger:http');
-    expect(http.map((e) => e.to).sort()).toEqual(['module:mod-a', 'module:mod-b']);
   });
 
   it('marks a declared event nothing has recorded as silent, and carries counts for the rest', () => {

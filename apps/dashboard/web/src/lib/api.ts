@@ -489,6 +489,9 @@ export interface FlowGraph {
   height: number;
   /** True when some event node has no count because the facet was truncated. */
   partialObservation: boolean;
+  /** False when the DECLARED surface was cut at the cap, so whole nodes are missing —
+   *  and a missing node, unlike a missing count, leaves nothing on screen to notice. */
+  declaredComplete: boolean;
 }
 
 /** The flow read: the same declarations projected as a list and as a map. */

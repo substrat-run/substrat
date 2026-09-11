@@ -10,7 +10,7 @@ import { Ic } from '../lib/icons';
 import { Page } from '../components/layout';
 import { card, CopyButton, Eyebrow, HonestyBanner, MonoTag, OriginTag, Pill, RowActions } from '../components/ui';
 import { AppIntegrations } from './Integrations';
-import { navigate } from '../lib/router';
+import { teamPath, navigate } from '../lib/router';
 import { DnsRecords } from './Domains';
 import { AppObservability } from './AppObservability';
 
@@ -180,10 +180,14 @@ export function AppDetail({
         </div>
       )}
       {main === 'deployments' && <Deployments app={app} />}
-      {main === 'observability' && <AppObservability app={app} />}
+      {/* The sub-segment is a deep link from the flow map: an event type to open the
+          Events panel already grouped on. Decoded here, since the map percent-encodes it. */}
+      {main === 'observability' && (
+        <AppObservability app={app} focusEventType={sub ? decodeURIComponent(sub) : undefined} />
+      )}
       {main === 'model' && (
         <div style={{ display: 'grid', gap: 16 }}>
-          <Flow app={app} />
+          <Flow app={app} onTab={onTab} />
           <FieldCoverage app={app} />
           <Model app={app} />
         </div>
@@ -956,10 +960,12 @@ function diffRegistries(from: PermissionRegistry, to: PermissionRegistry): Regis
  * node became editable this would be flows-as-data, outside every gate the platform is
  * built on.
  */
-function FlowMap({ graph }: { graph: FlowGraph }) {
+function FlowMap({ graph, app, onTab }: { graph: FlowGraph; app: AppRow; onTab: (t: string) => void }) {
   if (!graph.available || graph.nodes.length === 0) return null;
 
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  /** Where an event node goes: the Events panel, already grouped on that type. */
+  const eventPath = (type: string) => `/apps/${app.app_scope_id}/observability/${encodeURIComponent(type)}`;
   const STROKE: Record<FlowNode['status'], string> = {
     ok: 'var(--border-default)',
     warn: 'var(--status-warning-fg)',
@@ -988,6 +994,16 @@ function FlowMap({ graph }: { graph: FlowGraph }) {
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
           Some events could not be counted in one pass, so they are marked &ldquo;not counted&rdquo;
           &mdash; which is not the same as none.
+        </p>
+      )}
+
+      {/* A truncated DECLARATION drops whole nodes, and unlike a missing count a missing
+          node leaves nothing on screen to notice — so the heading's "what this app
+          declares" has to be qualified rather than quietly narrowed. */}
+      {!graph.declaredComplete && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          This app declares more than the platform carries with a version, so this is part of the map
+          rather than all of it &mdash; there may be modules and event types that are not drawn here.
         </p>
       )}
 
@@ -1032,9 +1048,36 @@ function FlowMap({ graph }: { graph: FlowGraph }) {
               </path>
             );
           })}
-          {graph.nodes.map((n) => (
-            <g key={n.id}>
-              <title>{n.title}</title>
+          {graph.nodes.map((n) => {
+            // An event node LINKS to its exemplars — #1231's rule for every aggregate in
+            // this cluster, and half the reason this graph lives in the dashboard instead
+            // of a no-script model-view page. A real SVG anchor rather than an onClick
+            // handler: it is keyboard-reachable, it middle-clicks into a new tab, and it
+            // reads as a link to a screen reader. The left-click is intercepted so the
+            // client router handles it, exactly as `lib/router` prescribes for anchors.
+            const href = n.kind === 'event' ? eventPath(n.label) : null;
+            const Wrapper = ({ children }: { children: React.ReactNode }) =>
+              href === null ? (
+                <g>{children}</g>
+              ) : (
+                <a
+                  href={teamPath(href)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                    e.preventDefault();
+                    onTab(`observability/${encodeURIComponent(n.label)}`);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  {children}
+                </a>
+              );
+            return (
+            <Wrapper key={n.id}>
+              <title>
+                {n.title}
+                {href === null ? '' : ' Opens this type in the event explorer.'}
+              </title>
               <rect
                 x={n.x}
                 y={n.y}
@@ -1069,10 +1112,62 @@ function FlowMap({ graph }: { graph: FlowGraph }) {
                   {n.sublabel}
                 </text>
               )}
-            </g>
-          ))}
+            </Wrapper>
+            );
+          })}
         </svg>
       </div>
+
+      {/*
+        The picture's content, as text.
+
+        `role="img"` collapses the whole SVG to its single `aria-label`, so every node
+        label, count, silence marker, schedule and connection status inside it is
+        unreachable — a screen-reader user got the heading of a diagram and nothing in it.
+        This list is the same facts in reading order, and it carries the event links too,
+        so the deep link is not a mouse-only affordance. Visually hidden rather than
+        conditionally rendered: it must stay in the accessibility tree.
+      */}
+      <ul
+        style={{
+          position: 'absolute',
+          width: 1,
+          height: 1,
+          margin: -1,
+          padding: 0,
+          overflow: 'hidden',
+          clip: 'rect(0 0 0 0)',
+          clipPath: 'inset(50%)',
+          whiteSpace: 'nowrap',
+          border: 0,
+        }}
+      >
+        {graph.nodes.map((n) => {
+          const href = n.kind === 'event' ? eventPath(n.label) : null;
+          const reaches = graph.edges.filter((e) => e.from === n.id).map((e) => byId.get(e.to)?.label ?? e.to);
+          const text = `${n.kind}: ${n.label}${n.sublabel ? `, ${n.sublabel}` : ''}${
+            n.silent ? ', never recorded' : ''
+          }${reaches.length > 0 ? `. Reaches ${reaches.join(', ')}` : '. Reaches nothing declared'}.`;
+          return (
+            <li key={`sr:${n.id}`}>
+              {href === null ? (
+                text
+              ) : (
+                <a
+                  href={teamPath(href)}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                    e.preventDefault();
+                    onTab(`observability/${encodeURIComponent(n.label)}`);
+                  }}
+                >
+                  {text} Open in the event explorer.
+                </a>
+              )}
+            </li>
+          );
+        })}
+      </ul>
 
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 11.5, color: 'var(--text-tertiary)' }}>
         <span>solid arrow &mdash; emits</span>
@@ -1088,7 +1183,7 @@ function FlowMap({ graph }: { graph: FlowGraph }) {
  * resolutions of the same join, and fetching twice would let them disagree about what
  * was observed — the map showing a count for a type the list called silent.
  */
-function Flow({ app }: { app: AppRow }) {
+function Flow({ app, onTab }: { app: AppRow; onTab: (t: string) => void }) {
   const [view, setView] = useState<FlowView | null>(null);
 
   useEffect(() => {
@@ -1107,7 +1202,7 @@ function Flow({ app }: { app: AppRow }) {
   if (!view) return null;
   return (
     <>
-      <FlowMap graph={view.graph} />
+      <FlowMap graph={view.graph} app={app} onTab={onTab} />
       <FlowFindings view={view.findings} />
     </>
   );

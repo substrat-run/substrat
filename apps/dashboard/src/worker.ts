@@ -2175,6 +2175,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         outbound: [],
         observed: [],
         observedComplete: true,
+        declaredComplete: true,
       }),
     });
   }
@@ -2215,6 +2216,10 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       outbound: flow.outbound,
       observed,
       observedComplete,
+      // The same flag the findings carry. The map drops NODES under a truncated
+      // declaration, and a missing node leaves nothing behind to notice — so a header
+      // reading "what this app declares" has to be qualified rather than trusted.
+      declaredComplete: !flow.declaredEventsTruncated,
     }),
   });
 });
