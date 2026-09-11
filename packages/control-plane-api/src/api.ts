@@ -3500,6 +3500,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const parsed = json ? storedDeployManifest.parse(JSON.parse(json)) : null;
     return c.json({
       declaredEvents: parsed?.declaredEvents ?? null,
+      // Whether that surface is the whole declaration or a sample cut at the cap. The
+      // reader's "N of M checked" is a completeness claim, and it may not be made about
+      // a manifest that says it was truncated.
+      declaredEventsTruncated: parsed?.declaredEventsTruncated ?? false,
       requires: parsed?.requires ?? [],
     });
   });

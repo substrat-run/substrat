@@ -3409,6 +3409,77 @@ describe('control-plane API — vertical registry', () => {
     expect(await without.json()).toEqual({ schedules: null, freshness: null });
   });
 
+  /**
+   * The three answers `/flow` has to keep apart (#1234). They look alike on the wire and
+   * mean entirely different things to the card that reads them: a version pushed before
+   * the field existed has NOTHING to say, while one that declares no events is saying
+   * something — and conflating the two withheld the provider findings as well, which do
+   * not depend on declared events at all.
+   */
+  it("reads a version's declared flow, keeping absent, empty and truncated apart (#1234)", async () => {
+    const registry = {
+      permissions: [{ key: 'fsm:job-create', description: 'Open a job', declaredBy: ['fsm'] }],
+      roles: [{ key: 'agent', permissions: ['fsm:job-create'], source: 'vertical' }],
+      entityGrants: [],
+    };
+    const manifest = (extra: Record<string, unknown>) =>
+      JSON.stringify({
+        version: 'flow',
+        entry: 'index.js',
+        compatibilityDate: '2026-07-01',
+        registry,
+        digests: { manifest: 'm', permission: 'p', migration: 'g' },
+        ...extra,
+      });
+
+    const declaredEvents = [
+      { moduleId: 'fsm', type: 'receipt.landed', direction: 'emits' },
+      { moduleId: 'fsm', type: 'invoice.sent', direction: 'consumes' },
+    ];
+    const vDeclared = ulid();
+    await json(
+      '/verticals/fsm/versions',
+      'POST',
+      version(vDeclared, { manifestJson: manifest({ declaredEvents, requires: ['scrive'] }) }),
+    );
+    const declared = await get(`/verticals/fsm/versions/${vDeclared}/flow`);
+    expect(declared.status).toBe(200);
+    expect(await declared.json()).toEqual({ declaredEvents, declaredEventsTruncated: false, requires: ['scrive'] });
+
+    // EMPTY: the modules declare no events. `[]`, never null — the card renders, and its
+    // provider findings render with it.
+    const vEmpty = ulid();
+    await json(
+      '/verticals/fsm/versions',
+      'POST',
+      version(vEmpty, { manifestJson: manifest({ declaredEvents: [], requires: ['scrive'] }) }),
+    );
+    expect(await (await get(`/verticals/fsm/versions/${vEmpty}/flow`)).json()).toEqual({
+      declaredEvents: [],
+      declaredEventsTruncated: false,
+      requires: ['scrive'],
+    });
+
+    // TRUNCATED: a surface cut at the cap is a sample, and the flag is what stops the
+    // reader claiming it checked declarations it never received.
+    const vCut = ulid();
+    await json(
+      '/verticals/fsm/versions',
+      'POST',
+      version(vCut, { manifestJson: manifest({ declaredEvents, declaredEventsTruncated: true }) }),
+    );
+    expect(await (await get(`/verticals/fsm/versions/${vCut}/flow`)).json()).toMatchObject({
+      declaredEventsTruncated: true,
+    });
+
+    // ABSENT: v1 retained no manifest at all — null, never an invented empty list.
+    expect(await (await get(`/verticals/fsm/versions/${v1}/flow`)).json()).toEqual({
+      declaredEvents: null,
+      declaredEventsTruncated: false,
+      requires: [],
+    });
+  });
+
   it('returns a null registry for a version that retained no manifest (pre-#286)', async () => {
     // v1 was published from the bare `version()` fixture — no manifestJson.
     const res = await get(`/verticals/fsm/versions/${v1}/registry`);

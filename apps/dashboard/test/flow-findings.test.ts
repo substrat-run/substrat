@@ -11,10 +11,51 @@ const base = {
   knownProviders: ['scrive', 'fortnox'],
   observedTypes: [] as string[],
   observedComplete: true,
+  declaredComplete: true,
   connections: [] as { provider: string; status: string }[],
 };
 
 describe('deriveFlowFindings (#1234)', () => {
+  /**
+   * `[]` and "absent" are different answers, and collapsing them cost the PROVIDER
+   * findings too — which need no declared events at all. A vertical whose modules emit
+   * nothing used to read as "pushed before this feature existed", so its unconnected
+   * provider went unreported on a card that said it had nothing to say.
+   */
+  it('an empty declared surface is a fact, not an unavailable view', () => {
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [],
+      requires: ['scrive'],
+      connections: [],
+    });
+    expect(v.available).toBe(true);
+    expect(v.declaredTypes).toBe(0);
+    expect(v.findings.map((f) => f.kind)).toEqual(['unconnected-provider']);
+  });
+
+  /** Absent — and ONLY absent — is the version that predates the surface. */
+  it('a missing declared surface is the only thing that makes the view unavailable', () => {
+    const v = deriveFlowFindings({ ...base, declaredEvents: null, requires: ['scrive'] });
+    expect(v.available).toBe(false);
+    expect(v.findings).toEqual([]);
+  });
+
+  /**
+   * A cut declaration still yields real findings — a declared type that was never
+   * observed is one whether or not other declarations were omitted — but the view has to
+   * carry the fact, because the card's count line is a completeness claim.
+   */
+  it('carries a truncated declaration through without withholding its findings', () => {
+    const v = deriveFlowFindings({
+      ...base,
+      declaredEvents: [decl('receipt.landed', 'emits')],
+      declaredComplete: false,
+    });
+    expect(v.declaredComplete).toBe(false);
+    expect(v.findings.map((f) => f.subject)).toEqual(['receipt.landed']);
+  });
+
   it('names a declared emit that has never been seen', () => {
     const v = deriveFlowFindings({
       ...base,

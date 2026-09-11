@@ -985,9 +985,14 @@ function FlowFindings({ app }: { app: AppRow }) {
       <div>
         <h3 style={{ margin: 0, fontSize: 15 }}>Declared vs. observed</h3>
         <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          This app declares {view.declaredTypes} event {view.declaredTypes === 1 ? 'type' : 'types'} and has
-          recorded {view.observedTypes}. Everything below is a gap between the two &mdash; a statement about
-          what was declared, not a fault.
+          {/* Both counts are qualified when their side was cut, because each number is a
+              claim about what was looked at. `observedTypes` under a truncated facet is
+              the number RETURNED, not the number recorded — printing it as a total would
+              contradict the warning directly below it. */}
+          This app declares {view.declaredComplete ? '' : 'at least '}
+          {view.declaredTypes} event {view.declaredTypes === 1 ? 'type' : 'types'} and has recorded{' '}
+          {view.observedComplete ? view.observedTypes : `more than ${view.observedTypes}`}. Everything below is
+          a gap between the two &mdash; a statement about what was declared, not a fault.
         </p>
       </div>
 
@@ -995,6 +1000,13 @@ function FlowFindings({ app }: { app: AppRow }) {
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
           This app has recorded more event types than can be compared at once, so the event findings are
           withheld &mdash; a type missing from a shortened list is not evidence that it never happened.
+        </p>
+      )}
+
+      {!view.declaredComplete && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          This app declares more event types than the platform carries with a version, so the declarations
+          below are a sample. The findings shown are real; there may be others nobody checked.
         </p>
       )}
 

@@ -883,19 +883,49 @@ export const permissions = {
     } as never;
     // Both directions, each tagged with the module that declared it — and the
     // duplicate collapses, since a type listed twice is still one declaration.
-    expect(flattenDeclaredEvents(withEvents)).toEqual([
-      { moduleId: '@substrat-run/engine-invoicing', type: 'invoice.exported', direction: 'emits' },
-      { moduleId: '@substrat-run/engine-invoicing', type: 'timesheet.period-closed', direction: 'consumes' },
-    ]);
-    // A surface declaring none stays undefined, so the manifest field stays absent —
-    // which the dashboard reads as "declares nothing", distinct from the null a
-    // pre-#1234 push leaves behind.
+    expect(flattenDeclaredEvents(withEvents)).toEqual({
+      events: [
+        { moduleId: '@substrat-run/engine-invoicing', type: 'invoice.exported', direction: 'emits' },
+        { moduleId: '@substrat-run/engine-invoicing', type: 'timesheet.period-closed', direction: 'consumes' },
+      ],
+      truncated: false,
+    });
+    // A surface declaring none is `[]`, NOT undefined. The manifest field then travels as
+    // an empty array, which the dashboard reads as "these modules declare no events" — a
+    // fact — where an absent field means "pushed before #1234" and has nothing to say.
+    // Returning undefined here made every event-less vertical read as the second, which
+    // also withheld its provider findings, and those need no declared events at all.
     expect(
       flattenDeclaredEvents({
         modules: [{ manifest: { id: '@x/y', permissions: [], events: { emits: [], consumes: [] } } }],
         roles: [],
       } as never),
-    ).toBeUndefined();
+    ).toEqual({ events: [], truncated: false });
+  });
+
+  /**
+   * An extraordinary surface still PUSHES — metadata must never fail a deploy — but the
+   * cut is REPORTED, because the reader's own sentence is a completeness claim and it may
+   * not be made about declarations nobody received.
+   */
+  it('reports a declared surface cut at the cap rather than silently sampling it', () => {
+    const many = (n: number) => ({
+      modules: [
+        {
+          manifest: {
+            id: '@x/y',
+            permissions: [],
+            events: { emits: Array.from({ length: n }, (_, i) => ({ type: `x.e${i}` })), consumes: [] },
+          },
+        },
+      ],
+      roles: [],
+    });
+    const cut = flattenDeclaredEvents(many(501) as never);
+    expect(cut.events).toHaveLength(500);
+    expect(cut.truncated).toBe(true);
+    // Exactly at the cap is complete — the flag means "there were more", not "it is full".
+    expect(flattenDeclaredEvents(many(500) as never).truncated).toBe(false);
   });
 
   it('names the directory when there is no package.json at all, not an ENOENT trace', async () => {

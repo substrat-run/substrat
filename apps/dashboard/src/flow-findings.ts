@@ -28,7 +28,14 @@ export interface FlowFinding {
 
 export interface FlowFindingsView {
   /**
-   * False when the running version predates the declared-event surface (#1234).
+   * False when the running version predates the declared-event surface (#1234) — the
+   * manifest field ABSENT, which is the only thing that means this.
+   *
+   * An empty surface is `[]` and is available: "these modules declare no events" is a
+   * fact the reader can act on, and conflating it with "pushed too long ago" cost the
+   * provider findings too, which need no declared events at all. The CLI therefore
+   * always sends the field, `[]` included, exactly as it always sends `outbound`.
+   *
    * THE load-bearing flag: with no declarations there is nothing to compare, and a
    * view that rendered anyway would report the app as declaring nothing at all.
    *
@@ -45,10 +52,25 @@ export interface FlowFindingsView {
    * findings are unaffected and still render.
    */
   observedComplete: boolean;
+  /**
+   * False when the DECLARED side was cut at the manifest's cap, so `declaredTypes` is a
+   * sample rather than the whole surface.
+   *
+   * Findings still render — a declared type that was never observed is a genuine finding
+   * whether or not other declarations were omitted — but the count line stops being a
+   * completeness claim, because a view may not say it checked what it never saw.
+   */
+  declaredComplete: boolean;
   findings: FlowFinding[];
   /** Distinct declared event types checked, for the "N of M" line. */
   declaredTypes: number;
-  /** Distinct event types actually observed in the window. */
+  /**
+   * Distinct event types actually observed in the window.
+   *
+   * When `observedComplete` is false this is the number the facet RETURNED, not the
+   * number the app recorded — there are more, and how many more is a fact nothing here
+   * has. The copy has to say so rather than print it as a total.
+   */
   observedTypes: number;
 }
 
@@ -83,14 +105,18 @@ export function deriveFlowFindings(input: {
   observedTypes: readonly string[];
   /** False when the facet was truncated, so absence from `observedTypes` proves nothing. */
   observedComplete: boolean;
+  /** False when the manifest says its declared surface was cut at the cap. */
+  declaredComplete: boolean;
   /** This app's provider connections, live and lapsed alike. */
   connections: readonly ConnectionState[];
 }): FlowFindingsView {
-  const { declaredEvents, requires, knownProviders, observedTypes, observedComplete, connections } = input;
+  const { declaredEvents, requires, knownProviders, observedTypes, observedComplete, declaredComplete, connections } =
+    input;
   if (declaredEvents === null) {
     return {
       available: false,
       observedComplete,
+      declaredComplete,
       findings: [],
       declaredTypes: 0,
       observedTypes: new Set(observedTypes).size,
@@ -156,5 +182,12 @@ export function deriveFlowFindings(input: {
 
   findings.sort((a, b) => a.kind.localeCompare(b.kind) || a.subject.localeCompare(b.subject));
 
-  return { available: true, observedComplete, findings, declaredTypes: declaredTypes.size, observedTypes: seen.size };
+  return {
+    available: true,
+    observedComplete,
+    declaredComplete,
+    findings,
+    declaredTypes: declaredTypes.size,
+    observedTypes: seen.size,
+  };
 }

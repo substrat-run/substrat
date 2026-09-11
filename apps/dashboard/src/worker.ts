@@ -2161,6 +2161,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         knownProviders: Object.keys(PROVIDERS),
         observedTypes: [],
         observedComplete: true,
+        declaredComplete: true,
         connections: [],
       }),
     );
@@ -2182,6 +2183,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       // and is dropped rather than joined against a declared type named "null".
       observedTypes: facets.buckets.map((b) => b.value).filter((v): v is string => v !== null),
       observedComplete: !facets.truncated,
+      declaredComplete: !flow.declaredEventsTruncated,
       connections: connections.map((conn) => ({ provider: conn.provider, status: conn.status })),
     }),
   );

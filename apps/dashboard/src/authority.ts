@@ -711,14 +711,20 @@ export class TenantNarrowedControlPlane {
   async versionFlow(
     verticalSlug: string,
     versionId: string,
-  ): Promise<{ declaredEvents: DeclaredEventSurface[] | null; requires: string[] }> {
+  ): Promise<{ declaredEvents: DeclaredEventSurface[] | null; declaredEventsTruncated: boolean; requires: string[] }> {
     try {
-      const res = await this.call<{ declaredEvents?: DeclaredEventSurface[] | null; requires?: string[] }>(
-        `/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/flow`,
-      );
-      return { declaredEvents: res?.declaredEvents ?? null, requires: res?.requires ?? [] };
+      const res = await this.call<{
+        declaredEvents?: DeclaredEventSurface[] | null;
+        declaredEventsTruncated?: boolean;
+        requires?: string[];
+      }>(`/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/flow`);
+      return {
+        declaredEvents: res?.declaredEvents ?? null,
+        declaredEventsTruncated: res?.declaredEventsTruncated ?? false,
+        requires: res?.requires ?? [],
+      };
     } catch {
-      return { declaredEvents: null, requires: [] };
+      return { declaredEvents: null, declaredEventsTruncated: false, requires: [] };
     }
   }
 

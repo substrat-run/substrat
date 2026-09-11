@@ -118,7 +118,7 @@ const DECLARED_EVENTS_CAP = 500;
  */
 export function flattenDeclaredEvents(
   permissions: PermissionsInput,
-): DeployManifest['declaredEvents'] | undefined {
+): { events: NonNullable<DeployManifest['declaredEvents']>; truncated: boolean } {
   const events = permissions.modules.flatMap((m) => [
     ...(m.manifest.events?.emits ?? []).map((e) => ({ moduleId: m.manifest.id, type: e.type, direction: 'emits' as const })),
     ...(m.manifest.events?.consumes ?? []).map((e) => ({ moduleId: m.manifest.id, type: e.type, direction: 'consumes' as const })),
@@ -135,7 +135,11 @@ export function flattenDeclaredEvents(
   // The schema's ceiling, applied here so an extraordinary surface still PUSHES —
   // metadata must never be what fails a deploy. Truncation only ever means fewer
   // declarations are checked later, never a finding about one that does not exist.
-  return unique.length > 0 ? unique.slice(0, DECLARED_EVENTS_CAP) : undefined;
+  //
+  // It is REPORTED rather than swallowed, because the reader's sentence is a
+  // completeness claim: "N of M declared types checked" must not be said about a
+  // surface that was cut.
+  return { events: unique.slice(0, DECLARED_EVENTS_CAP), truncated: unique.length > DECLARED_EVENTS_CAP };
 }
 
 /** The freshness twin of `flattenDeclaredSchedules` (#1232) — `within.hours` exists
@@ -158,9 +162,19 @@ export interface DeclaredSurface {
   readonly schedules: DeployManifest['schedules'] | undefined;
   /** Every module's freshness expectations, flattened the same way (#1232). */
   readonly freshness: DeployManifest['freshness'] | undefined;
-  /** Every module's declared emits/consumes, flattened the same way (#1234) — the
-   *  declared half of a declared-vs-observed finding. */
-  readonly declaredEvents: DeployManifest['declaredEvents'] | undefined;
+  /**
+   * Every module's declared emits/consumes, flattened the same way (#1234) — the
+   * declared half of a declared-vs-observed finding.
+   *
+   * Unlike its neighbours this is never `undefined`: `[]` is a FACT ("these modules
+   * declare no events") and the manifest field being absent is a different one ("this
+   * version predates the field"). The reader turns the second into "nothing to say"
+   * and would have turned the first into it too, hiding the provider findings it could
+   * perfectly well have made.
+   */
+  readonly declaredEvents: NonNullable<DeployManifest['declaredEvents']>;
+  /** True when the surface above hit its cap and is a sample — see the manifest field. */
+  readonly declaredEventsTruncated: boolean;
 }
 
 export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurface> {
@@ -242,6 +256,9 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
         );
       }
     }
+    // #1234: the declared half of a declared-vs-observed finding — what the modules say
+    // they emit and consume, which exists nowhere off their manifests.
+    const declaredEvents = flattenDeclaredEvents(mod.permissions);
     return {
       registry: buildPermissionRegistry(mod.permissions),
       envSpec: spec,
@@ -249,9 +266,8 @@ export async function deriveDeclaredSurface(dir: string): Promise<DeclaredSurfac
       // module manifest — the schedules ride out of it with zero extra reads.
       schedules: flattenDeclaredSchedules(mod.permissions),
       freshness: flattenDeclaredFreshness(mod.permissions),
-      // #1234: the declared half of a declared-vs-observed finding — what the
-      // modules say they emit and consume, which exists nowhere off their manifests.
-      declaredEvents: flattenDeclaredEvents(mod.permissions),
+      declaredEvents: declaredEvents.events,
+      declaredEventsTruncated: declaredEvents.truncated,
     };
   } finally {
     rmSync(out, { force: true });
@@ -1136,7 +1152,7 @@ export async function push(
   // below. Throws if the vertical declares no surface: absence is never a silent empty registry.
   // The same import reads the entry's `envSpec` export (#1206); when it exists it is the copy
   // that ships, and a drifted package.json duplicate refuses the push.
-  const { registry, envSpec: derivedEnvSpec, schedules, freshness, declaredEvents } =
+  const { registry, envSpec: derivedEnvSpec, schedules, freshness, declaredEvents, declaredEventsTruncated } =
     await deriveDeclaredSurface(opts.dir);
   const envSpec = resolveDeclaredEnvSpec(derivedEnvSpec, opts.envSpec);
 
@@ -1224,7 +1240,12 @@ export async function push(
     // schedule-health view needs `everyMinutes`, which exists nowhere off the manifest.
     ...(schedules ? { schedules } : {}),
     ...(freshness ? { freshness } : {}),
-    ...(declaredEvents ? { declaredEvents } : {}),
+    // ALWAYS sent, `[]` when the modules declare none — the same reasoning `outbound`
+    // below carries. Absence means "pushed before this field existed", which the flow
+    // view reads as "nothing to compare"; a new-CLI push with no events must not read
+    // as that, or an app that declares none loses its provider findings too.
+    declaredEvents,
+    ...(declaredEventsTruncated ? { declaredEventsTruncated: true } : {}),
     // The declared outbound surface (#303, D-46) — ALWAYS sent, `[]` when undeclared,
     // because absence means "pre-#303 push" to the egress worker (unenforced, metered
     // only) and a new-CLI push must not read as that. Unlike the metadata above it is

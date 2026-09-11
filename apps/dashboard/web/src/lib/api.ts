@@ -469,8 +469,12 @@ export interface FlowFindingsView {
   available: boolean;
   /** False when the observed side was truncated, so the event findings are withheld. */
   observedComplete: boolean;
+  /** False when the DECLARED side was cut at the manifest's cap — the findings shown are
+   *  real, but they are not everything, and the count line must say so. */
+  declaredComplete: boolean;
   findings: FlowFinding[];
   declaredTypes: number;
+  /** Under a truncated observation this is the number RETURNED, never a total. */
   observedTypes: number;
 }
 

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { moduleId, permissionKey, verticalSlug } from './ids.js';
 import { envVarSpec, capability, freshnessSpec, scheduleSpec, type ModuleManifest } from './manifest.js';
+import { eventType } from './events.js';
 import { roleDefinition, type RoleDefinition } from './permission.js';
 import { declaredSurface } from './routing.js';
 import { emittedModel } from './model.js';
@@ -650,7 +651,14 @@ export type DeclaredOperationOutput = z.infer<typeof declaredOperationOutput>;
  */
 export const declaredEventSurface = z.object({
   moduleId,
-  type: z.string().min(1),
+  /**
+   * The canonical `eventType` grammar, not a looser `min(1)`. A deploy manifest is
+   * REPARSED at the control-plane trust boundary, where the pusher is whoever holds a
+   * token rather than necessarily this CLI, so a weaker grammar here is a name a module
+   * manifest could never carry being persisted and then reported as a finding about an
+   * event that cannot exist.
+   */
+  type: eventType,
   direction: z.enum(['emits', 'consumes']),
 });
 export type DeclaredEventSurface = z.infer<typeof declaredEventSurface>;
@@ -762,6 +770,22 @@ export const deployManifest = z.object({
    * stays readable.
    */
   declaredEvents: z.array(declaredEventSurface).max(500).optional(),
+  /**
+   * True when the surface above was CUT at its cap, so it is a sample rather than the
+   * whole declaration (#1234).
+   *
+   * Absent means complete, which is the ordinary case and keeps the field off almost
+   * every manifest. It matters because the reader's own sentence is a completeness
+   * claim: "N of M declared types checked" is a different statement from "N of the M we
+   * could carry". Without this a truncated push reads as an exhaustive check, and the
+   * one thing a findings view may never do is claim to have looked at something it did
+   * not.
+   *
+   * Distinct from an EMPTY surface, which is `[]` and says the modules declare no
+   * events — a fact, and not the same as a version pushed before the field existed
+   * (the field absent entirely).
+   */
+  declaredEventsTruncated: z.boolean().optional(),
   /** The vertical's declared schedules (#1232), flattened across modules with each
    *  spec's owning module beside it — carried so the dashboard can render the DEPLOYED
    *  version's schedule health (next due needs `everyMinutes`, and the manifest is the
