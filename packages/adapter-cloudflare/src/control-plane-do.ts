@@ -481,6 +481,25 @@ export interface AdminEntryInput {
   at: string;
 }
 
+/**
+ * The directory spine, as this adapter builds it — one of two hand-written copies (#969).
+ *
+ * The other is `applyDirectorySchema()` in `adapter-sqlite/src/index.ts`, and the two must
+ * describe the same schema: this side is production, that side is dev, CI, self-host and
+ * escrow. So a new directory or `_substrat_*` table both adapters need, or a new column on
+ * a table they both build, is added HERE and THERE — and for a directory created before it,
+ * to both column-addition lists as well (`ensureDirectoryColumns` below, and the pure
+ * adapter's method of the same name).
+ *
+ * `pnpm lint:spine-ddl` (`tools/spine-ddl-drift.mjs`) is what refuses a divergence: it
+ * executes each side's DDL plus those later ALTERs and compares the schemas a query would
+ * actually meet, so only a real difference is red. Note the one thing it cannot see — a
+ * table present on one side only is a note, not a failure, because the adapters
+ * legitimately partition the spine differently (this one projects tenant tuples, roles and
+ * entitlements into each scope where the pure adapter keeps one shared directory). Keeping
+ * the copies and gating them, rather than moving the DDL into the kernel, is the recorded
+ * answer to #969; `docs/architecture/kernel-design.md` §8 says why.
+ */
 const DIRECTORY_DDL = `
   -- The ';' in this comment is a deliberate tripwire; the DDL must go through
   -- splitSqlStatements, and a naive split(';') fails the directory at construction.

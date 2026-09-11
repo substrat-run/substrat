@@ -950,6 +950,29 @@ remember. Two consequences worth carrying:
   rebuilds the whole index from the content tables it just loaded. Derived data is
   recomputed, never carried.
 
+**The spine schema, as built (#969).** "Same code (it's pure)" is now literally true of the
+permission row: the four-rule algebra lives once, in `packages/kernel/src/permission-eval.ts`,
+and each adapter's checker is reduced to how it fetches tuples, so the contract suite tests
+one evaluator. The `_substrat_*` DDL went the other way, deliberately. Each adapter still
+spells the spine out for itself — `adapter-sqlite/src/index.ts` for both the scope and the
+directory, `scope-do.ts` and `control-plane-do.ts` on the hosted side — and what keeps the
+copies honest is a gate rather than a shared source: `pnpm lint:spine-ddl`
+(`tools/spine-ddl-drift.mjs`, CI) executes each side's DDL *plus* the columns it ALTERs in
+afterwards and compares the schemas a query would actually meet, so a real divergence
+between what self-host runs and what production runs is red.
+
+Kernel-owned DDL was the original ask and is not off the table; it is a bigger change than
+it looks. It has to survive two dialects — `better-sqlite3` and Durable Object SQLite, which
+restricts PRAGMA and rejects statements the pure adapter accepts — and it would make the
+spine schema part of the kernel's *published* surface, so it is a contract change and the
+migration checkpoint rather than a refactor. Three fragments that are already dialect-neutral
+are shared from the kernel today (`IMPERSONATION_DDL`, `OUTBOX_ENTITY_INDEX`,
+`IDEMPOTENCY_DDL`, which the drift tool resolves and inlines), so the door is open one table
+at a time. The price of stopping here is the one the gate cannot pay: a table present on a
+single side is a note rather than a failure — the adapters really do partition the spine
+differently — so a *new* spine table still has to be added on both sides by hand. Each DDL
+site carries a header naming its counterpart for that reason.
+
 ## 9. Repository and package layout (§5.8)
 
 pnpm monorepo, published as:
