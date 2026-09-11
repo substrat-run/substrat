@@ -348,7 +348,11 @@ function titleOf(raw: string, fallback: string): string {
 export interface Artifact {
   /** Path relative to the site root: `llms.txt`, `concepts/model.md`. */
   path: string;
-  contents: string;
+  /**
+   * What to write. `Uint8Array` for a binary artifact — the EPUB edition of the book
+   * (epub.mts) is a zip, and `writeFileSync` takes either without a branch here.
+   */
+  contents: string | Uint8Array;
 }
 
 /** The full name of a page in the index: `Work orders › Events`. */

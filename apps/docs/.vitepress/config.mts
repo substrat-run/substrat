@@ -2,6 +2,8 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 import { buildArtifacts, emitInto } from './llms.mjs';
+import { bookArtifacts } from './book.mjs';
+import { epubArtifacts } from './epub.mjs';
 import { emitHeaders } from './headers.mjs';
 import { changelogSidebar, guideSidebar } from './sidebar.mjs';
 
@@ -27,6 +29,15 @@ export default withMermaid(defineConfig({
   description:
     'The hard parts, hosted. A runtime-enforced substrate for building vertical B2B SaaS.',
   lastUpdated: true,
+
+  /**
+   * `/book/read.html` is written in `buildEnd` (book.mts), so the page that links to
+   * it does not exist yet when the dead-link check runs — and VitePress strips the
+   * `.html` before comparing, which is why it reads as `/book/read`. Scoped to that
+   * one artifact rather than switching the check off: every other dead link in this
+   * site should still fail the build.
+   */
+  ignoreDeadLinks: [/^\/book\/read(\.html)?$/],
 
   /**
    * The ticket0 support widget, in every page's `<head>` (see `WIDGET_API`).
@@ -58,6 +69,14 @@ export default withMermaid(defineConfig({
   buildEnd(siteConfig) {
     const repoRoot = resolve(siteConfig.srcDir, '../..');
     emitInto(siteConfig.outDir, buildArtifacts(siteConfig.srcDir, repoRoot));
+    // The book's single-file editions (#1401): /book.txt and /book/read.html, the
+    // same eleven chapters concatenated for printing, pandoc, or one-shot ingestion.
+    // Emitted rather than checked in, so there is no second copy to drift — see book.mts.
+    emitInto(siteConfig.outDir, bookArtifacts(siteConfig.srcDir));
+    // And /book.epub — the same chapters packaged for a phone: a real EPUB 3 with a
+    // cover, a table of contents and one file per chapter, so Apple Books and the rest
+    // can remember where the reader got to. See epub.mts for the zip's own rules.
+    emitInto(siteConfig.outDir, epubArtifacts(siteConfig.srcDir));
     // The `_headers` Cloudflare Pages serves the site with, including a CSP
     // whose script hashes are read back out of the HTML this build just wrote
     // (headers.mts explains why they cannot be written down). Emitted last: it
@@ -70,6 +89,9 @@ export default withMermaid(defineConfig({
 
   themeConfig: {
     nav: [
+      // First in the nav for the same reason it is first in the sidebar: it is the
+      // only section with a reading order, and it is what a newcomer wants.
+      { text: 'Book', link: '/book/', activeMatch: '/book/' },
       { text: 'Guide', link: '/guide/what-is-substrat', activeMatch: '/guide/' },
       { text: 'Concepts', link: '/concepts/tenancy', activeMatch: '/concepts/' },
       { text: 'Engines', link: '/engines/', activeMatch: '/engines/' },
@@ -84,6 +106,7 @@ export default withMermaid(defineConfig({
     ],
 
     sidebar: {
+      '/book/': guideSidebar(),
       '/guide/': guideSidebar(),
       '/concepts/': guideSidebar(),
       '/engines/': guideSidebar(),

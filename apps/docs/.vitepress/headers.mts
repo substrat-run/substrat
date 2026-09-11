@@ -306,6 +306,15 @@ export function emitHeaders(outDir: string, srcDir: string, siteWideWidget?: str
     '  Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
     '  Strict-Transport-Security: max-age=31536000; includeSubDomains',
     '',
+    // The EPUB edition of the book (epub.mts). Pages guesses a content type from the
+    // extension and does not know this one, so it would serve `application/octet-stream`
+    // — and with `nosniff` set above, nothing downstream is allowed to correct that. iOS
+    // Safari decides whether to offer "Open in Books" from the content type alone, so
+    // without this line the file downloads as an anonymous blob on the one device most
+    // likely to want it.
+    '/book.epub',
+    '  Content-Type: application/epub+zip',
+    '',
   ].join('\n');
   writeFileSync(resolve(outDir, '_headers'), body);
   return policy;

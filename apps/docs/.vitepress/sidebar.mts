@@ -82,8 +82,40 @@ export function changelogSidebar() {
   ];
 }
 
+/**
+ * The book (#1401) — the one section of this site meant to be read front to back.
+ *
+ * Exported on its own, not just inlined into `guideSidebar()`, because it has a
+ * second reader: `book.mts` concatenates exactly these chapters, in exactly this
+ * order, into the single-file editions. One list, so the printed book and the
+ * navigated book can never disagree about what is in it or what order it goes in.
+ */
+export function bookChapters(): { text: string; link: string }[] {
+  return [
+    { text: 'How to read this', link: '/book/' },
+    { text: '1. Why a substrate at all', link: '/book/01-why-a-substrate' },
+    { text: '2. Tenants, scopes, and one database each', link: '/book/02-tenants-and-scopes' },
+    { text: '3. The path of one request', link: '/book/03-one-request' },
+    { text: '4. What a handler can and cannot do', link: '/book/04-inside-an-operation' },
+    { text: '5. The life of one event', link: '/book/05-one-event' },
+    { text: '6. Permissions and identity', link: '/book/06-permissions-and-identity' },
+    { text: '7. Engines, verticals, composition', link: '/book/07-engines-and-verticals' },
+    { text: '8. The life of one deploy', link: '/book/08-one-deploy' },
+    { text: '9. The two clocks', link: '/book/09-the-two-clocks' },
+    { text: '10. Operating it', link: '/book/10-operating-it' },
+  ];
+}
+
 export function guideSidebar() {
   return [
+    // The book comes first because it is the only section with a reading ORDER —
+    // ten chapters, front to back. Everything below it is a reference a reader
+    // arrives at with a question. Putting it last would bury the one part that
+    // answers "how does this thing actually work" for someone who has not used it.
+    {
+      text: 'The book',
+      items: bookChapters(),
+    },
     // The guide is three groups a reader takes in order: what Substrat is, how to
     // build on it, how to ship what was built. The two halves of the AI-agent story
     // (`ai-agents` and `ai-guardrails` each call the other "the other half") sit
