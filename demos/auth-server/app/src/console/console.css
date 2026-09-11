@@ -9,9 +9,10 @@
  *    `tokens/fonts.css` (Geist from the Google Fonts CDN) and `tokens/typography.css`
  *    (a `body` rule). An unscoped import would put a third-party font request on the login
  *    path of every relying party and restyle the hand-off screens — so the three token
- *    files that only declare custom properties are imported, the typography scale is
- *    restated below over the system stack, and no webfont is fetched at all. Self-hosting
- *    Geist is the follow-up; a CDN request on a customer's sign-in path is not.
+ *    files that only declare custom properties are imported, and the typography scale is
+ *    restated below. The webfont this comment used to defer is now here: `./fonts.css`
+ *    serves both faces from the issuer's own origin, so the console is on Geist and no
+ *    request leaves for a CDN on anyone's sign-in path.
  * 2. `tokens.css` is loaded AFTER this file (see main.tsx), so on the one name the two sets
  *    share — `--radius-lg` — the themed vocabulary wins. That vocabulary is an API for every
  *    client's stored `metadata.theme`; adopting these tokens has to be additive or it is a
@@ -20,11 +21,15 @@
 @import "@substrat-run/ui/tokens/colors.css";
 @import "@substrat-run/ui/tokens/spacing.css";
 @import "@substrat-run/ui/tokens/effects.css";
+@import "./fonts.css";
 
-/* `@substrat-run/ui`'s typography scale, minus its webfont and its `body` rule. */
+/* `@substrat-run/ui`'s typography scale, minus its CDN webfont and its `body` rule.
+   The two families come from `./fonts.css`, served from this issuer's own origin; the
+   system stack stays behind each as the `font-display: swap` fallback, so the console is
+   readable before either file lands and identical to today's rendering if one never does. */
 :root {
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: 'Geist Mono Variable', ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --text-xs: 11px;   --lh-xs: 16px;
   --text-sm: 12.5px; --lh-sm: 18px;
@@ -105,6 +110,12 @@
 .console-root .panel-head h2 { font-size: var(--text-md); font-weight: var(--weight-semibold); }
 .console-root .grid th { border-bottom-color: var(--border-default); color: var(--text-tertiary); }
 .console-root .grid td { border-bottom-color: var(--border-subtle); }
+/* `tokens.css` gives every `code` the system mono stack, and it loads after this file — so
+   without this rule `--font-mono` would be a token nothing reads, and the client ids, issuer
+   URLs and `AADSTS…` codes the console renders in `<code>` would stay on the system face
+   while everything around them was Geist. Scoped to the console root for the usual reason:
+   the `<code>` on the themed consent screen is not ours to restyle. */
+.console-root code { font-family: var(--font-mono); }
 .console-root .editor,
 .console-root .new-user { background: var(--surface-inset); border-color: var(--border-default); }
 .console-root .btn { border-color: var(--border-strong); background: var(--surface-raised); color: var(--text-primary); }
