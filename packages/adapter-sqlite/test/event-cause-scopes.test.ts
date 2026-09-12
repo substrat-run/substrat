@@ -114,8 +114,11 @@ describe('the delivery cause belongs to one scope (#1237)', () => {
   const sA = scopeId.parse(ulid());
   const sB = scopeId.parse(ulid());
   const anna: PrincipalId = principalId.parse(ulid());
+  /** Scope A's parked invocation, held here so teardown can settle it. */
+  let inFlight: Promise<unknown> = Promise.resolve();
 
   beforeEach(async () => {
+    inFlight = Promise.resolve();
     parkedOnce = false;
     hasEntered = new Promise<void>((resolve) => (entered = resolve));
     parked = new Promise<void>((resolve) => (release = resolve));
@@ -131,7 +134,11 @@ describe('the delivery cause belongs to one scope (#1237)', () => {
   });
 
   afterEach(async () => {
+    // Release and SETTLE before closing. A parked consumer resumes into `ctx.emit`, and
+    // closing the scope databases under it would fail the teardown on a path where the
+    // test itself had already failed — burying the real assertion under a SQLite error.
     release();
+    await Promise.allSettled([inFlight]);
     await host.close();
     rmSync(dir, { recursive: true, force: true });
   });
@@ -141,13 +148,18 @@ describe('the delivery cause belongs to one scope (#1237)', () => {
     const b = await host.getScope(anna, t1, sB);
 
     // Scope A parks INSIDE its consumer, mid-delivery, holding a cause.
-    const inFlight = a.invoke('cause/produce');
+    inFlight = a.invoke('cause/produce');
     await hasEntered;
-    // Scope B emits in that window — a plain operation emit, caused by nothing. Its
-    // actor is a different one, so nothing serializes it behind A.
-    await b.invoke('cause/produce');
-    release();
-    await inFlight;
+    try {
+      // Scope B emits in that window — a plain operation emit, caused by nothing. Its
+      // actor is a different one, so nothing serializes it behind A.
+      await b.invoke('cause/produce');
+    } finally {
+      // In `finally`, so a failing B still unparks A rather than leaving it holding a
+      // transaction open into the teardown.
+      release();
+      await inFlight;
+    }
 
     const inB = (await b.invoke('cause/read')) as CauseRow[];
     const first = inB.find((r) => r.type === 'cause.first')!;
