@@ -7,6 +7,7 @@ import { workorderModule, PERM as WO } from '@substrat-run/engine-workorder';
 import { invoicingModule, INVOICING_PERM as INV } from '@substrat-run/engine-invoicing';
 import { bikeShopModule } from './module.js';
 import { SHOP_PERM } from './manifest.js';
+import { SHOP_PERMISSIONS } from './operations.js';
 
 // The manifest's config surface rides the same import `substrat push` already makes for
 // `permissions` (#1206): this export is what the push uploads, so `src/manifest.ts` is the
@@ -73,9 +74,16 @@ export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }
  * The single typed source for this vertical's permission surface — what the
  * permission checkpoint and `substrat push` read (via package.json
  * `substrat.permissions`).
+ *
+ * `keys` is `SHOP_PERMISSIONS` — the array `src/operations.ts` already hands
+ * `defineOperations` as the union a mistyped `permission:` fails against — which
+ * is what makes that restatement checked (#1208): `definePermissions` throws at
+ * module load if it and `MODULES` disagree in either direction. Keep handing
+ * both readers the SAME array; a second copy is the thing this removes.
  */
 export const permissions = definePermissions({
   modules: MODULES,
   roles: ROLES,
   entityGrants: ENTITY_GRANTS,
+  keys: SHOP_PERMISSIONS,
 });
