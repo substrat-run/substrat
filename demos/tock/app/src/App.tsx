@@ -530,6 +530,15 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
   const [variantKey, setVariantKey] = useState('');
   const [kinds, setKinds] = useState<string[]>([]);
   const [nextLoad, isCurrent] = useFreshness();
+  /**
+   * Its OWN token, not the schema load's.
+   *
+   * Sharing one would couple two independent requests: picking a second field would silently
+   * invalidate an in-flight schema load, and a schema load would invalidate a coverage answer
+   * the person is waiting to read. They are asked at different moments and answer different
+   * questions, so they get separate freshness.
+   */
+  const [nextCoverage, coverageIsCurrent] = useFreshness();
   const [suggest, setSuggest] = useState<string[]>([]);
   /** What adding a field would mean for the history already stored. */
   const [coverage, setCoverage] = useState<{
@@ -541,6 +550,10 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
   useEffect(() => {
     if (!sourceKey) return;
     setVariantKey('');
+    // The panel describes a field of THIS source. Carrying it across a switch would show one
+    // source's history — filenames included — under another source's field name.
+    setCoverage(null);
+    nextCoverage();
     void api.listVariants({ sourceKey }).then((v) => setKinds(v.variants.map((x) => x.key))).catch(() => setKinds([]));
   }, [sourceKey]);
 
@@ -559,6 +572,8 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
      */
     setVersion(null);
     setFields({});
+    setCoverage(null);
+    nextCoverage();
     const token = nextLoad();
     void all(api.listSchemas({ sourceKey, variantKey })).then((entries) => {
       if (!isCurrent(token)) return;
@@ -613,7 +628,16 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
                 // alternative every tool reaches for is asking for a default, which invents a
                 // value for records that never carried one and buries it in a chart a year later.
                 setCoverage(null);
-                void api.fieldCoverage({ sourceKey, field: s }).then(setCoverage).catch(() => undefined);
+                const token = nextCoverage();
+                void api
+                  .fieldCoverage({ sourceKey, field: s })
+                  // Guarded twice, because the token alone is not enough: it survives a source
+                  // change that happens to issue no coverage request of its own, and the field
+                  // name is what a reader is actually matching the panel against.
+                  .then((c) => {
+                    if (coverageIsCurrent(token) && c.field === s) setCoverage(c);
+                  })
+                  .catch(() => undefined);
               }}
             >
               + {s}
