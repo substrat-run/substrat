@@ -1,5 +1,35 @@
 # @substrat-run/cli
 
+## 0.32.0
+
+### Minor Changes
+
+- d05689d: Declared-vs-observed findings: the platform now knows what an app **promised** to do, and can say where that differs from what it has actually done.
+
+  A push carries a new piece of metadata — every event type each module declares it emits or consumes, tagged with the module that declared it. That fact previously existed only inside a module manifest in the bundle, so nothing outside the running code could ask "what is this app supposed to produce". With it, an app's dashboard reports a handful of gaps that no traffic-sampling tool can find, because they are gaps where nothing happened: an event type a module declares and has never recorded, a handler that has never had anything to do, a provider the app is set up to use that nobody has connected, and one that is connected but no longer usable.
+
+  Every one of these is a statement about declarations, not a fault, and the wording says so. A provider with no connection is described as work that waits rather than work that fails, because that is what actually happens — connecting it later releases whatever has queued up behind it. Required capabilities the platform binds itself, like an OIDC issuer, are not reported as unconnected providers.
+
+  Two cases deliberately report that they cannot answer instead of answering wrongly. An app running a version pushed before this metadata existed says so, rather than appearing to declare nothing at all; and if an app has recorded more distinct event types than can be compared in one pass, the event findings are withheld rather than calling a type dead because it fell off the end of a list.
+
+  An app whose modules declare no events at all is a third thing, and it now reads as itself: it declares none, which is a fact, rather than as a version too old to ask. It keeps its provider findings, which never depended on declared events. And where either side of the comparison had to be cut short, the card's counts say so rather than printing a partial number as a total — a findings view may not claim to have checked what it never saw.
+
+### Patch Changes
+
+- cb88aa1: One reading of a failed control-plane response. `problemDetail` in `@substrat-run/contracts`
+  reads the sentence a failure carried — the RFC 9457 `detail`, the deprecated `error`
+  duplicate, a relayed `message`, then the stable `title` — and answers `undefined` rather
+  than a fabricated one, so the caller keeps its own fallback. The four clients that each
+  restated that fallback now share it; the one that read the deprecated duplicate alone no
+  longer shows a status line in place of the reason a request was refused.
+- Updated dependencies [a195037]
+- Updated dependencies [8758949]
+- Updated dependencies [d05689d]
+- Updated dependencies [0257dbd]
+- Updated dependencies [cb88aa1]
+  - @substrat-run/contracts@0.110.0
+  - @substrat-run/model-view@0.2.11
+
 ## 0.31.2
 
 ### Patch Changes

@@ -1,5 +1,53 @@
 # @substrat-run/contracts
 
+## 0.110.0
+
+### Minor Changes
+
+- a195037: The denial-log filter has one encoder. `denialFilterParams(filter)` and its URL-suffix
+  form `denialQuery(filter)` now ship from `@substrat-run/contracts`, beside the
+  `denialFilter` schema they serialize, and every client uses them instead of its own copy
+  — the control-plane client, the platform's vertical client (the hosted branch of the same
+  two reads, which adds `scopeId`), and the admin console. A field added to the filter now
+  reaches every caller instead of only the ones that remembered to copy the line. The
+  control-plane client also drops the dangling `?` it appended to an unnarrowed denial read.
+- 8758949: An event now records _why_ it exists, so the trail from a record back to whatever set it off can actually be followed.
+
+  The audit spine already recorded a great deal about every event: who raised it, what authority they held, which invocation it came from, which deployed version was running. None of that is cause. An event raised by a consumer reacting to another event runs on behalf of no invocation at all, so the single most useful question — "this invoice exists; what started that?" — ran out of trail at the first automatic step. The answer existed only in the moment, and was never written down.
+
+  Events raised while another is being handled now carry the id of the event being handled. Following a chain backwards is therefore reading recorded fact, not reconstruction: each step names the one before it, all the way back to the request or the scheduled run that began it.
+
+  Two things this deliberately does not do. It records nothing where there is no cause — an event raised directly by an operation has none, and says so, rather than pointing at whatever happened most recently. And it invents nothing for events already stored: those keep an empty cause, which honestly means unrecorded, because nothing can go back and decide what a past reaction was reacting to.
+
+  Existing apps pick the change up on their own; nothing needs redeploying for the record to start being kept.
+
+- d05689d: Declared-vs-observed findings: the platform now knows what an app **promised** to do, and can say where that differs from what it has actually done.
+
+  A push carries a new piece of metadata — every event type each module declares it emits or consumes, tagged with the module that declared it. That fact previously existed only inside a module manifest in the bundle, so nothing outside the running code could ask "what is this app supposed to produce". With it, an app's dashboard reports a handful of gaps that no traffic-sampling tool can find, because they are gaps where nothing happened: an event type a module declares and has never recorded, a handler that has never had anything to do, a provider the app is set up to use that nobody has connected, and one that is connected but no longer usable.
+
+  Every one of these is a statement about declarations, not a fault, and the wording says so. A provider with no connection is described as work that waits rather than work that fails, because that is what actually happens — connecting it later releases whatever has queued up behind it. Required capabilities the platform binds itself, like an OIDC issuer, are not reported as unconnected providers.
+
+  Two cases deliberately report that they cannot answer instead of answering wrongly. An app running a version pushed before this metadata existed says so, rather than appearing to declare nothing at all; and if an app has recorded more distinct event types than can be compared in one pass, the event findings are withheld rather than calling a type dead because it fell off the end of a list.
+
+  An app whose modules declare no events at all is a third thing, and it now reads as itself: it declares none, which is a fact, rather than as a version too old to ask. It keeps its provider findings, which never depended on declared events. And where either side of the comparison had to be cut short, the card's counts say so rather than printing a partial number as a total — a findings view may not claim to have checked what it never saw.
+
+- 0257dbd: Events now carry when they last happened, not only how many there were — and the flow map can tell a path that stopped from one that never ran.
+
+  A count answers "did this ever work". It cannot answer "is it working now", and the difference is where the interesting failures live: a sync that fired four thousand times and went quiet two months ago looks perfectly healthy on volume alone. Every grouped event count is now accompanied by when that group last saw an event, so the question has an answer.
+
+  On an app's flow map, an event that has been recorded but not in the last thirty days is marked and says how long it has been — visibly different from one that has never been recorded at all, which stays drawn as an outline. The two are kept apart deliberately: a path that never ran may simply not be built yet, while one that ran and stopped means something changed. The findings list makes the same distinction, and words a stopped handler as the thing feeding it having stopped rather than the handler failing, because the handler is the component behaving correctly.
+
+  Nothing is claimed where nothing is known, and the line falls between what was seen and what was not. A type whose recency could not be read is not called stale. Where an app has more kinds of event than can be counted in one pass, nothing is reported as never recorded — a type missing from a shortened list is not evidence that it never happened — while the events that were counted are still judged on how recently they ran.
+
+  Staleness is reported for the event type rather than for a module: the counts are grouped by type, so saying a particular module emitted all of them would be a claim the numbers do not support, and plainly wrong where two modules carry the same type. The modules are named as having declared it, which is what a deploy actually records.
+
+- cb88aa1: One reading of a failed control-plane response. `problemDetail` in `@substrat-run/contracts`
+  reads the sentence a failure carried — the RFC 9457 `detail`, the deprecated `error`
+  duplicate, a relayed `message`, then the stable `title` — and answers `undefined` rather
+  than a fabricated one, so the caller keeps its own fallback. The four clients that each
+  restated that fallback now share it; the one that read the deprecated duplicate alone no
+  longer shows a status line in place of the reason a request was refused.
+
 ## 0.109.0
 
 ### Minor Changes
@@ -5007,7 +5055,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

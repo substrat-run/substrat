@@ -1,5 +1,56 @@
 # @substrat-run/control-plane-api
 
+## 0.110.0
+
+### Minor Changes
+
+- d05689d: Declared-vs-observed findings: the platform now knows what an app **promised** to do, and can say where that differs from what it has actually done.
+
+  A push carries a new piece of metadata — every event type each module declares it emits or consumes, tagged with the module that declared it. That fact previously existed only inside a module manifest in the bundle, so nothing outside the running code could ask "what is this app supposed to produce". With it, an app's dashboard reports a handful of gaps that no traffic-sampling tool can find, because they are gaps where nothing happened: an event type a module declares and has never recorded, a handler that has never had anything to do, a provider the app is set up to use that nobody has connected, and one that is connected but no longer usable.
+
+  Every one of these is a statement about declarations, not a fault, and the wording says so. A provider with no connection is described as work that waits rather than work that fails, because that is what actually happens — connecting it later releases whatever has queued up behind it. Required capabilities the platform binds itself, like an OIDC issuer, are not reported as unconnected providers.
+
+  Two cases deliberately report that they cannot answer instead of answering wrongly. An app running a version pushed before this metadata existed says so, rather than appearing to declare nothing at all; and if an app has recorded more distinct event types than can be compared in one pass, the event findings are withheld rather than calling a type dead because it fell off the end of a list.
+
+  An app whose modules declare no events at all is a third thing, and it now reads as itself: it declares none, which is a fact, rather than as a version too old to ask. It keeps its provider findings, which never depended on declared events. And where either side of the comparison had to be cut short, the card's counts say so rather than printing a partial number as a total — a findings view may not claim to have checked what it never saw.
+
+- 44e13d2: The flow map: an app's Model tab now draws the whole wired app, not just its entities.
+
+  Top to bottom: what starts work (the request path, and each declared schedule with its cadence), the modules that do it, the events they carry, and the providers and hosts they are permitted to reach. The arrows are declarations — which module emits a type, which one handles it — so a path that exists and has never run is drawn rather than missing. That is the inversion worth having: a map inferred from traffic can only show what has happened, and the interesting thing is usually what has not.
+
+  Event nodes carry what the app has actually recorded, so the map is read at a glance: a number, or a dashed outline meaning declared and never yet seen. Connections are coloured by whether they are usable, keeping a lapsed credential apart from one that was never created — different fixes.
+
+  Four things the map declines to draw, because nothing it reads can support them. There is no operation band: a push declares which _module_ emits a type, never which operation inside it, so the map does not invent one. For the same reason the request path is drawn unattached — which module answers a request is an operation-level fact, and an arrow to every module would say requests reach them all, which is untrue of a module that only handles events or only runs on a schedule. Nothing links a provider or an outbound host to a particular module, because those are declared by the app as a whole — membership of the band is the whole fact. And where an app has recorded more kinds of event than can be counted in one pass, the uncounted ones say "not counted" rather than showing a zero that would read as silence.
+
+  Where an app declares more than the platform carries with a version, the map says so: whole nodes are then missing, and unlike a missing count a missing node leaves nothing on screen to notice.
+
+  Every event node is a link into the event explorer, already grouped on that type — the picture is a way into the data, not a picture of it. And the whole map has a text equivalent for screen readers: every node with its counts, its silence and what it reaches, carrying the same links, because an SVG announced only by its heading is a diagram nobody can read.
+
+  The map is a projection and stays one: nothing on it can be moved, edited or saved.
+
+### Patch Changes
+
+- a195037: The denial-log filter has one encoder. `denialFilterParams(filter)` and its URL-suffix
+  form `denialQuery(filter)` now ship from `@substrat-run/contracts`, beside the
+  `denialFilter` schema they serialize, and every client uses them instead of its own copy
+  — the control-plane client, the platform's vertical client (the hosted branch of the same
+  two reads, which adds `scopeId`), and the admin console. A field added to the filter now
+  reaches every caller instead of only the ones that remembered to copy the line. The
+  control-plane client also drops the dangling `?` it appended to an unnarrowed denial read.
+- cb88aa1: One reading of a failed control-plane response. `problemDetail` in `@substrat-run/contracts`
+  reads the sentence a failure carried — the RFC 9457 `detail`, the deprecated `error`
+  duplicate, a relayed `message`, then the stable `title` — and answers `undefined` rather
+  than a fabricated one, so the caller keeps its own fallback. The four clients that each
+  restated that fallback now share it; the one that read the deprecated duplicate alone no
+  longer shows a status line in place of the reason a request was refused.
+- Updated dependencies [a195037]
+- Updated dependencies [8758949]
+- Updated dependencies [d05689d]
+- Updated dependencies [0257dbd]
+- Updated dependencies [cb88aa1]
+  - @substrat-run/contracts@0.110.0
+  - @substrat-run/kernel@0.110.0
+
 ## 0.109.0
 
 ### Minor Changes

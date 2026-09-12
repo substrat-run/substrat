@@ -1,5 +1,39 @@
 # @substrat-run/contract-tests
 
+## 0.110.0
+
+### Minor Changes
+
+- 8758949: An event now records _why_ it exists, so the trail from a record back to whatever set it off can actually be followed.
+
+  The audit spine already recorded a great deal about every event: who raised it, what authority they held, which invocation it came from, which deployed version was running. None of that is cause. An event raised by a consumer reacting to another event runs on behalf of no invocation at all, so the single most useful question — "this invoice exists; what started that?" — ran out of trail at the first automatic step. The answer existed only in the moment, and was never written down.
+
+  Events raised while another is being handled now carry the id of the event being handled. Following a chain backwards is therefore reading recorded fact, not reconstruction: each step names the one before it, all the way back to the request or the scheduled run that began it.
+
+  Two things this deliberately does not do. It records nothing where there is no cause — an event raised directly by an operation has none, and says so, rather than pointing at whatever happened most recently. And it invents nothing for events already stored: those keep an empty cause, which honestly means unrecorded, because nothing can go back and decide what a past reaction was reacting to.
+
+  Existing apps pick the change up on their own; nothing needs redeploying for the record to start being kept.
+
+- 0257dbd: Events now carry when they last happened, not only how many there were — and the flow map can tell a path that stopped from one that never ran.
+
+  A count answers "did this ever work". It cannot answer "is it working now", and the difference is where the interesting failures live: a sync that fired four thousand times and went quiet two months ago looks perfectly healthy on volume alone. Every grouped event count is now accompanied by when that group last saw an event, so the question has an answer.
+
+  On an app's flow map, an event that has been recorded but not in the last thirty days is marked and says how long it has been — visibly different from one that has never been recorded at all, which stays drawn as an outline. The two are kept apart deliberately: a path that never ran may simply not be built yet, while one that ran and stopped means something changed. The findings list makes the same distinction, and words a stopped handler as the thing feeding it having stopped rather than the handler failing, because the handler is the component behaving correctly.
+
+  Nothing is claimed where nothing is known, and the line falls between what was seen and what was not. A type whose recency could not be read is not called stale. Where an app has more kinds of event than can be counted in one pass, nothing is reported as never recorded — a type missing from a shortened list is not evidence that it never happened — while the events that were counted are still judged on how recently they ran.
+
+  Staleness is reported for the event type rather than for a module: the counts are grouped by type, so saying a particular module emitted all of them would be a claim the numbers do not support, and plainly wrong where two modules carry the same type. The modules are named as having declared it, which is what a deploy actually records.
+
+### Patch Changes
+
+- Updated dependencies [a195037]
+- Updated dependencies [8758949]
+- Updated dependencies [d05689d]
+- Updated dependencies [0257dbd]
+- Updated dependencies [cb88aa1]
+  - @substrat-run/contracts@0.110.0
+  - @substrat-run/kernel@0.110.0
+
 ## 0.109.0
 
 ### Minor Changes
@@ -3917,7 +3951,7 @@ ago: HTTP 409 from scrive`. The real message was nine words longer and contained
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

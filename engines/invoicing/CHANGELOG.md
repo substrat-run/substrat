@@ -1,5 +1,21 @@
 # @substrat-run/engine-invoicing
 
+## 0.10.0
+
+### Minor Changes
+
+- 5b299fe: `invoicing/export` takes an optional `currency`, so exporting a basis with no lines no longer invents `SEK` on the `invoicing.underlag-exported` total an accounting connector reads. Omitting it keeps today's answer; declaring one that contradicts the basis's lines is refused with `currency_mismatch` instead of ignored.
+
+### Patch Changes
+
+- Updated dependencies [a195037]
+- Updated dependencies [8758949]
+- Updated dependencies [d05689d]
+- Updated dependencies [0257dbd]
+- Updated dependencies [cb88aa1]
+  - @substrat-run/contracts@0.110.0
+  - @substrat-run/kernel@0.110.0
+
 ## 0.9.25
 
 ### Patch Changes
@@ -1393,7 +1409,7 @@ immutable)` instead of naming the Swedish _fakturaunderlag_, and the protocol
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                              z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

@@ -1,5 +1,26 @@
 # @substrat-run/model-providers
 
+## 0.5.0
+
+### Minor Changes
+
+- d8a9873: The Cloudflare model list now offers only models that can run a tool call. A build turn is a tool
+  loop from end to end, so a model without function calling could be picked and then fail mid-run.
+  The account catalog is asked for the filters it applies itself — a text-generation task, no
+  experimental rows, no deprecated ones — and the per-row `function_calling` flag decides the rest.
+  It fails soft in both directions: a row carrying no capability data at all is kept, and if the
+  filter would empty an answer that was not empty, the unfiltered list is returned rather than a
+  picker that reads as an outage.
+
+### Patch Changes
+
+- Updated dependencies [a195037]
+- Updated dependencies [8758949]
+- Updated dependencies [d05689d]
+- Updated dependencies [0257dbd]
+- Updated dependencies [cb88aa1]
+  - @substrat-run/contracts@0.110.0
+
 ## 0.4.12
 
 ### Patch Changes
