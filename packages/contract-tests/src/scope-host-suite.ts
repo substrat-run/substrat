@@ -4319,6 +4319,71 @@ export function scopeHostContractSuite(
 
     // -- tenant registry + lifecycle (control-plane.md §4.1) -----------------
 
+    /**
+     * #1237 — placed at the end of the flow cases deliberately. These provision their
+     * own scopes (the shared one is where the dispatch cases assert exact row counts),
+     * and a scope provisioned earlier adds directory audit rows that push an older
+     * entry out of a bounded `auditLog` window upstream.
+     */
+    it('records WHY a consumer-emitted event exists, and nothing where there is no cause (#1237)', async () => {
+      // Its own scope: the shared one is where the dispatch tests assert exact row
+      // counts, and an extra `flow/produce` there would move them.
+      const sCause = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sCause, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sCause);
+      const stub = await host.getScope(alice, t1, sCause);
+      await stub.invoke('flow/produce');
+
+      const rows = (await stub.invoke('flow/causes')) as {
+        id: string;
+        type: string;
+        operation: string | null;
+        caused_by: string | null;
+      }[];
+      const step1 = rows.find((r) => r.type === 'flow.step1')!;
+      const step2 = rows.find((r) => r.type === 'flow.step2')!;
+
+      // The operation's own event has no cause. Null here is the ordinary case — an
+      // operation emitted it directly — not a gap in the recording.
+      expect(step1.operation).toBe('flow/produce');
+      expect(step1.caused_by).toBeNull();
+
+      // THE EDGE. A consumer emit records no operation, so before this column the
+      // trail from step2 back to step1 was simply not written down and a backwards
+      // walk stopped at the first consumer hop.
+      expect(step2.operation).toBeNull();
+      expect(step2.caused_by).toBe(step1.id);
+
+      // And the pair is what identifies a consumer emit at all: `operation` alone is
+      // null both for a consumer and for a row written before that column existed.
+      expect(step2.operation === null && step2.caused_by !== null).toBe(true);
+    });
+
+    it('does not leak a delivered event\'s id onto a later unrelated emit (#1237)', async () => {
+      // The failure mode of a field held on the host across a dispatch: left set, the
+      // next operation's own event is stamped as caused by whatever was delivered
+      // last — a recorded fact that is false, which is worse than recording nothing.
+      const sLeak = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sLeak, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sLeak);
+      const stub = await host.getScope(alice, t1, sLeak);
+      await stub.invoke('flow/produce'); // runs consumers, which set the field
+      await stub.invoke('flow/produce'); // must not inherit it
+
+      const rows = (await stub.invoke('flow/causes')) as {
+        type: string;
+        caused_by: string | null;
+      }[];
+      const producedDirectly = rows.filter((r) => r.type === 'flow.step1');
+      expect(producedDirectly).toHaveLength(2);
+      for (const row of producedDirectly) expect(row.caused_by).toBeNull();
+      // …and both consumer emits still name their own cause, so clearing the field
+      // did not simply turn the whole feature off.
+      const reactions = rows.filter((r) => r.type === 'flow.step2');
+      expect(reactions).toHaveLength(2);
+      expect(new Set(reactions.map((r) => r.caused_by)).size).toBe(2);
+    });
+
     it('creates a tenant record, idempotently; only real creates are audited', async () => {
       await host.admin.createTenant(staff, { id: t3, slug: 'acme-co', name: 'Acme Co' });
       await host.admin.createTenant(staff, { id: t3, slug: 'acme-co', name: 'Acme Co' }); // no-op
