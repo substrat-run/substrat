@@ -266,12 +266,12 @@ const KERNEL_DDL = `
     -- script was deployed without the binding, or the row predates the column.
     version TEXT,
     -- #1237: the event this one was emitted in REACTION to — set whenever an emit
-    -- happens while a delivery is in flight (a module consumer, or a connector /
-    -- platform executor handling an event). The spine already recorded what
-    -- authority an operation held and what invocation it ran under; neither is
-    -- cause, and a consumer emit has no operation at all, so a backwards walk used
-    -- to stop dead at the first consumer hop. NULL = nothing was being delivered
-    -- (an operation emitted it directly), or the row predates the column.
+    -- happens while this scope is delivering an event to a module consumer. The
+    -- spine already recorded what authority an operation held and what invocation
+    -- it ran under; neither is cause, and a consumer emit has no operation at all,
+    -- so a backwards walk used to stop dead at the first consumer hop. NULL =
+    -- nothing was being delivered (an operation emitted it directly), or the row
+    -- predates the column.
     caused_by TEXT,
     drained_at TEXT
   );
@@ -2762,6 +2762,11 @@ export function defineScopeDO(
      * unreachable from here — it lives in the worker that holds the stub, while every
      * emit runs inside this Durable Object. So the DO keeps its own, and the two are
      * deliberately separate rather than one passed across the hop.
+     *
+     * One instance IS one scope, so this field is per-scope by construction. The
+     * SQLite twin has to say so explicitly (`ScopeRuntime.causedBy`): that host holds
+     * every scope in the process, so the same field on the host would be read by
+     * another scope's emit the moment a consumer awaits.
      */
     private causedBy: string | null = null;
 

@@ -313,6 +313,19 @@ interface ScopeRuntime {
    * in `runtime()`, which is what carries the floor across a `close()`/reopen.
    */
   mintEventId: UlidMint;
+  /**
+   * #1237: the event this scope is currently delivering to a consumer, or null —
+   * stamped onto whatever that consumer emits.
+   *
+   * Per scope, not per host, for the same reason the mint is: `SqliteScopeHost`
+   * serves every scope in the process, and a consumer that awaits hands the loop to
+   * another scope's `ScopeActor`. A host-wide field would then be overwritten (or
+   * cleared) under the first consumer's feet, and the row it emits on resuming would
+   * carry another scope's cause — a wrong fact, which is worse than the honest NULL
+   * this column uses for "unrecorded". Within one scope nothing can interleave: the
+   * actor serializes invoke and dispatch alike.
+   */
+  causedBy: string | null;
 }
 
 /** One `_substrat_attachments` row (#473), as SELECTed. */
@@ -444,12 +457,12 @@ const KERNEL_DDL = `
     -- handed no version id, or the row predates the column.
     version TEXT,
     -- #1237: the event this one was emitted in REACTION to — set whenever an emit
-    -- happens while a delivery is in flight (a module consumer, or a connector /
-    -- platform executor handling an event). The spine already recorded what
-    -- authority an operation held and what invocation it ran under; neither is
-    -- cause, and a consumer emit has no operation at all, so a backwards walk used
-    -- to stop dead at the first consumer hop. NULL = nothing was being delivered
-    -- (an operation emitted it directly), or the row predates the column.
+    -- happens while this scope is delivering an event to a module consumer. The
+    -- spine already recorded what authority an operation held and what invocation
+    -- it ran under; neither is cause, and a consumer emit has no operation at all,
+    -- so a backwards walk used to stop dead at the first consumer hop. NULL =
+    -- nothing was being delivered (an operation emitted it directly), or the row
+    -- predates the column.
     caused_by TEXT,
     drained_at TEXT
   );
@@ -3923,7 +3936,8 @@ export class SqliteScopeHost implements ScopeHost {
             // #1237: anything this consumer emits was emitted BECAUSE of this event.
             // `dispatchExecutors` already did this for the admin log; the module
             // consumers never did, which is exactly where a backwards walk stopped.
-            this.causedBy = event.id;
+            // On the runtime rather than the host — see `ScopeRuntime.causedBy`.
+            rt.causedBy = event.id;
             rt.db.exec('BEGIN IMMEDIATE');
             try {
               await consumer.handler(ctx, event);
@@ -3947,10 +3961,10 @@ export class SqliteScopeHost implements ScopeHost {
                 .run(event.id, mod.id, new Date().toISOString(), String(err));
             } finally {
               // Cleared on BOTH paths. Left set, the id would leak onto every later
-              // emit in this process — an operation's own event stamped as caused by
+              // emit in this scope — an operation's own event stamped as caused by
               // whatever happened to be delivered last, which is worse than no cause
               // at all, because it reads as a recorded fact.
-              this.causedBy = null;
+              rt.causedBy = null;
             }
           }
         }
@@ -8106,10 +8120,11 @@ export class SqliteScopeHost implements ScopeHost {
             // about the process, so it never rides `DomainEvent` for module code to
             // branch on; it exists for the observability joins the column serves.
             this.versionId,
-            // #1237: whatever delivery is in flight, if any. Read off the host the
-            // same way `versionId` is — it is a fact about the surrounding dispatch,
-            // never envelope data module code could set or branch on.
-            this.causedBy,
+            // #1237: whatever delivery is in flight FOR THIS SCOPE, if any — read off
+            // the runtime, not the host, because the host serves every scope at once
+            // and this context outlives an `await`. A fact about the surrounding
+            // dispatch, never envelope data module code could set or branch on.
+            rt.causedBy,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
@@ -8571,6 +8586,7 @@ export class SqliteScopeHost implements ScopeHost {
       actor: new ScopeActor(),
       appliedMigrations,
       mintEventId,
+      causedBy: null,
     };
     this.scopes.set(key, created);
     this.scopesById.set(scopeId, created);
