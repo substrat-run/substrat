@@ -19,8 +19,9 @@ The views map onto the directory the control plane owns:
   (actor, permission) first so a probing client's volume cannot push a quiet actor off the
   screen, with the rows as the drill-down behind one bucket.
 - **Verticals** — the registered vertical versions, including the ones pushed by
-  [`substrat push`](/guide/deploying) that are **pending admission**. Admitting a version here is
-  the human gate that lets a scope bind and serve it. Each version's **Outbound** column
+  [`substrat push`](/guide/deploying). A **listed** vertical's pushes land **pending** and are
+  admitted here; a **private** vertical's pushes land **admitted automatically**.
+  See [the deploy model](/concepts/deploying). Each version's **Outbound** column
   shows the third-party hosts it *declared* ([D-46](/platform/control-plane)) beside the
   ones it was *observed* reaching, with the sampling window stated every time — the admit
   decision is about the difference, and an absent host is not proof it was never called.

@@ -22,7 +22,8 @@ are how the platform actually runs — the same architecture the [concepts](/con
 [reference](/reference/adapter-cloudflare) sections describe, made concrete.
 
 ::: tip Where deploy fits
-A vertical reaches these surfaces via [`substrat push`](/guide/deploying): the push lands a
-pending version in the control plane, an operator admits it in the Console, and the Router serves
-it once a scope is bound.
+A vertical reaches these surfaces via [`substrat push`](/guide/deploying): a **listed** vertical's
+pushes land **pending** in the control plane and an operator admits them in the Console; a
+**private** vertical's pushes land **admitted automatically**. See [the deploy model](/concepts/deploying).
+The Router serves an admitted version once a scope is bound.
 :::
