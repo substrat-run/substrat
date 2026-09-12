@@ -531,6 +531,11 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
   const [kinds, setKinds] = useState<string[]>([]);
   const [nextLoad, isCurrent] = useFreshness();
   const [suggest, setSuggest] = useState<string[]>([]);
+  /** What adding a field would mean for the history already stored. */
+  const [coverage, setCoverage] = useState<{
+    field: string; firstSeen: string | null; rowsWith: number; rowsBefore: number;
+    earliest: string | null; runsBefore: { filename: string; periodFrom: string }[];
+  } | null>(null);
   const { error, busy, run } = useAction();
 
   useEffect(() => {
@@ -599,11 +604,72 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
         <p className="note">
           Arrived but not declared:{' '}
           {suggest.filter((s) => !names.includes(s)).map((s) => (
-            <button key={s} className="chip" onClick={() => setFields({ ...fields, [s]: { type: 'text', role: 'ignored' } })}>
+            <button
+              key={s}
+              className="chip"
+              onClick={() => {
+                setFields({ ...fields, [s]: { type: 'text', role: 'ignored' } });
+                // Adding a field is exactly the moment to say what history it has. The
+                // alternative every tool reaches for is asking for a default, which invents a
+                // value for records that never carried one and buries it in a chart a year later.
+                setCoverage(null);
+                void api.fieldCoverage({ sourceKey, field: s }).then(setCoverage).catch(() => undefined);
+              }}
+            >
               + {s}
             </button>
           ))}
         </p>
+      )}
+
+      {coverage && (
+        <div className="detail">
+          <h3>What <code>{coverage.field}</code> already has</h3>
+          {coverage.firstSeen === null ? (
+            <p className="muted">
+              It has never arrived. Declaring it is a statement about what you expect, and the
+              findings view will report it as declared-and-never-arrived until it does.
+            </p>
+          ) : (
+            <>
+              <p>
+                Data from <strong>{coverage.firstSeen.slice(0, 10)}</strong> ·{' '}
+                {coverage.rowsWith} row{coverage.rowsWith === 1 ? ' carries' : 's carry'} a value.
+                {coverage.rowsBefore > 0 && (
+                  <>
+                    {' '}Before that: <strong className="warn">{coverage.rowsBefore} row
+                    {coverage.rowsBefore === 1 ? '' : 's'} without one</strong>
+                    {coverage.earliest && <>, back to {coverage.earliest.slice(0, 10)}</>}.
+                  </>
+                )}
+              </p>
+              {coverage.rowsBefore > 0 && (
+                <>
+                  <p className="note">
+                    Those rows stay empty. Nothing is back-filled with a placeholder, and you are
+                    not asked for a default — a value invented here is indistinguishable from a
+                    real one in every chart afterwards, and nobody reading it later will know.
+                    An empty value reports as its own bucket instead.
+                  </p>
+                  <p className="note">
+                    To fill them in, re-send the {coverage.runsBefore.length} file
+                    {coverage.runsBefore.length === 1 ? '' : 's'} covering that period — a new run
+                    supersedes the old one and keeps both explainable:{' '}
+                    {coverage.runsBefore.slice(0, 6).map((r) => (
+                      <span key={r.filename + r.periodFrom} className="chip-static">
+                        {r.filename} ({r.periodFrom.slice(0, 10)})
+                      </span>
+                    ))}
+                    {coverage.runsBefore.length > 6 && <> and {coverage.runsBefore.length - 6} more</>}
+                    . If that file no longer carries the field either, leaving history as it
+                    stands is the honest answer.
+                  </p>
+                </>
+              )}
+            </>
+          )}
+          <button className="link" onClick={() => setCoverage(null)}>dismiss</button>
+        </div>
       )}
 
       <table>
