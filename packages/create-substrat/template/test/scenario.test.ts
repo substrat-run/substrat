@@ -365,11 +365,33 @@ describe('bike-shop scenario', () => {
     const mounted = mountApi(app, async () => greta);
 
     // Ten of this vertical's own, six of the work-order engine's, three of the
-    // invoicing engine's — every operation that declares a URL, and no more. A
-    // derived table that mounted nothing would otherwise 404 its way through the
-    // walks below with the same message for every route.
-    expect(mounted).toHaveLength(19);
-    expect(mounted.map((r) => `${r.method} ${r.path}`)).toContain('GET /api/repairs/:entityId/timeline');
+    // invoicing engine's — every operation that declares a URL, and no more.
+    // Pinned as the complete method/path set rather than a count: this table is
+    // the public route table the hand-written one used to publish, and a count
+    // would let a wrong verb or a moved path leave nineteen entries and every
+    // walk below green. A derived table that mounted nothing would otherwise
+    // 404 its way through those walks with the same message for every route.
+    expect(mounted.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
+      'GET /api/customers',
+      'GET /api/invoicing',
+      'GET /api/invoicing/:underlagId',
+      'GET /api/portal/repairs',
+      'GET /api/prices',
+      'GET /api/repairs',
+      'GET /api/repairs/:entityId/timeline',
+      'GET /api/repairs/:orderId',
+      'POST /api/customers',
+      'POST /api/customers/:customerId/bikes',
+      'POST /api/invoicing/:underlagId/export',
+      'POST /api/prices',
+      'POST /api/repairs',
+      'POST /api/repairs/:orderId/assign',
+      'POST /api/repairs/:orderId/close',
+      'POST /api/repairs/:orderId/complete',
+      'POST /api/repairs/:orderId/material',
+      'POST /api/repairs/:orderId/start',
+      'POST /api/repairs/:orderId/time',
+    ]);
 
     const nextOf = (res: Response): string | null => {
       // `<http://localhost/api/prices?limit=1&cursor=labor>; rel="next"` — the
