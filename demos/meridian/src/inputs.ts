@@ -1,4 +1,4 @@
-import { z } from '@substrat-run/contracts';
+import { calendarDate, z } from '@substrat-run/contracts';
 
 /**
  * What Meridian's operations ACCEPT (#707/#865/#891).
@@ -11,7 +11,13 @@ import { z } from '@substrat-run/contracts';
  */
 
 const posDecimal = z.string().regex(/^\d+(\.\d{1,6})?$/, 'must be a non-negative decimal');
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}/, 'must be an ISO date');
+/**
+ * Every date Meridian accepts is a CALENDAR date — a start day, a leave day, a
+ * work day, a payroll period edge — so it is the platform's `calendarDate` (#117):
+ * a real month/day check, and no instant. This was a prefix-only regex, which
+ * let `2030-07-01T00:00:00Z` and `2030-13-45` through to the engine's own check.
+ */
+const isoDate = calendarDate;
 
 export const createEmployeeInput = z.object({
   number: z.string().min(1),

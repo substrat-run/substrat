@@ -1,4 +1,4 @@
-import { compareDecimal, dataSubjectId, entityRef, z } from '@substrat-run/contracts';
+import { calendarDate, compareDecimal, dataSubjectId, entityRef, z } from '@substrat-run/contracts';
 
 /**
  * engine-absence' schemas — what it ACCEPTS and what it ANSWERS (#707/#896).
@@ -25,7 +25,14 @@ import { compareDecimal, dataSubjectId, entityRef, z } from '@substrat-run/contr
 // Primitives
 // ---------------------------------------------------------------------------
 
-export const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD');
+/**
+ * A leave day is a CALENDAR date, never an instant: the platform's `calendarDate`
+ * (#117) — `YYYY-MM-DD`, no time, no zone, and a real month/day check rather
+ * than the shape regex this used to be (`2026-13-45` passed it). It holds in
+ * both directions: what is accepted below AND the date fields this engine
+ * answers, so the published shape carries `format: date` too.
+ */
+export const isoDate = calendarDate;
 export const posDecimal = z.string().regex(/^\d+(\.\d{1,6})?$/, 'must be a non-negative decimal');
 export const signedDecimal = z.string().regex(/^-?\d+(\.\d{1,6})?$/, 'must be a decimal');
 
@@ -64,7 +71,7 @@ export const absenceEntry = z.object({
   leaveTypeKey: z.string(),
   entryKind,
   delta: z.string(),
-  effectiveDate: z.string(),
+  effectiveDate: isoDate,
   requestId: z.string().nullable(),
   note: z.string().nullable(),
   createdBy: z.string(),
@@ -78,8 +85,8 @@ export const absenceRequest = z.object({
   id: z.string(),
   subject: entityRef,
   leaveTypeKey: z.string(),
-  startDate: z.string(),
-  endDate: z.string(),
+  startDate: isoDate,
+  endDate: isoDate,
   days: z.string(),
   status: requestStatus,
   note: z.string().nullable(),
@@ -92,7 +99,7 @@ export type AbsenceRequest = z.infer<typeof absenceRequest>;
 
 /** One calendar day an approved request covers (D-C). */
 export const absenceDay = z.object({
-  date: z.string(),
+  date: isoDate,
   leaveTypeKey: z.string(),
   requestId: z.string(),
 });
