@@ -4,9 +4,10 @@ import { calendarDate, instant } from '../src/ids.js';
 /**
  * `calendarDate` is the other half of the time contract `instant` opens (#117):
  * a day on a wall calendar, with no time and no zone. It is a REAL date check,
- * not a shape check — the engine it replaces a hand-rolled regex in accepted
- * `2026-13-45` — and it refuses anything that carries a time or a zone, because
- * a value that does is an instant, and the two must never be coerced.
+ * not a shape check — the hand-rolled regex it replaces in engine-absence
+ * accepted `2026-13-45` — and it refuses anything that carries a time or a
+ * zone, because a value that does is an instant, and the two must never be
+ * coerced.
  */
 describe('calendarDate', () => {
   it('accepts a real YYYY-MM-DD day, verbatim', () => {
