@@ -225,10 +225,13 @@ export async function followUpUnsweptApps(input: {
  * for runs one vertical for thirty clients, so that is three or four reads, not
  * ninety.
  *
- * `null` for an app whose running version could not be named. A declaration read
- * that comes back empty is taken as "declares neither", exactly as the schedules
- * view takes it — the read cannot tell a pre-field push from a vertical with no
- * schedules, and both write no per-scope rows.
+ * `null` for an app whose running version could not be named, and `null` again
+ * when the declaration read itself failed — a transient fault must fall back to
+ * the sweep record, not become "nothing will ever sweep this app" and an `ok`.
+ * A declaration read that SUCCEEDS and comes back empty is taken as "declares
+ * neither", exactly as the schedules view takes it — the read cannot tell a
+ * pre-field push from a vertical with no schedules, and both write no per-scope
+ * rows.
  */
 export async function resolveSweepable(
   cp: Pick<TenantNarrowedControlPlane, 'listScopes' | 'listChannels' | 'versionSchedules'>,
@@ -262,6 +265,9 @@ export async function resolveSweepable(
       versions.map(async (versionId) => {
         const slug = apps.find((a) => running.get(a.scopeId) === versionId)!.vertical;
         const d = await cp.versionSchedules(slug, versionId);
+        // Two nulls from a read that failed are not an absence; only a read that
+        // happened may answer `false`.
+        if (d.failed) return [versionId, null] as const;
         return [versionId, (d.schedules?.length ?? 0) > 0 || (d.freshness?.length ?? 0) > 0] as const;
       }),
     ),

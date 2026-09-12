@@ -268,4 +268,17 @@ describe('resolveSweepable', () => {
     const out = await resolveSweepable(broken, [app(B)]);
     expect(out.get(B)).toBeNull();
   });
+
+  it('answers null, not false, when the declaration read itself failed', async () => {
+    // `versionSchedules` hands back the same two nulls for a non-200 as for a
+    // pre-field push; only the second is an absence. A transient fault answered
+    // `false` would turn an unswept app into an `ok` "nothing to sweep".
+    const flaky = {
+      ...cp,
+      versionSchedules: async () => ({ schedules: null, freshness: null, failed: true }),
+    } as unknown as Parameters<typeof resolveSweepable>[0];
+    const out = await resolveSweepable(flaky, [app(A), app(B)]);
+    expect(out.get(A)).toBeNull();
+    expect(out.get(B)).toBeNull();
+  });
 });

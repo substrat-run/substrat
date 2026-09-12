@@ -682,13 +682,21 @@ export class TenantNarrowedControlPlane {
    * `null` for a version pushed by a pre-#1214 CLI or a vertical with no model.json;
    * `null` on any non-200, so the caller treats "unknown" and "none" the same.
    */
-  /** The declared schedules of one version (#1232) — null on skew or a pre-field push. */
+  /**
+   * The declared schedules of one version (#1232) — null on skew or a pre-field push.
+   *
+   * `failed` marks the read that did not happen (a non-200, the plane away) apart
+   * from the read that answered "declares neither": both hand back two nulls, and
+   * a caller concluding "nothing will ever sweep this app" from the first would be
+   * turning a transient fault into a verdict.
+   */
   async versionSchedules(
     verticalSlug: string,
     versionId: string,
   ): Promise<{
     schedules: DeployManifest['schedules'] | null;
     freshness: DeployManifest['freshness'] | null;
+    failed?: true;
   }> {
     try {
       const res = await this.call<{
@@ -697,7 +705,7 @@ export class TenantNarrowedControlPlane {
       }>(`/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/schedules`);
       return { schedules: res?.schedules ?? null, freshness: res?.freshness ?? null };
     } catch {
-      return { schedules: null, freshness: null };
+      return { schedules: null, freshness: null, failed: true };
     }
   }
 

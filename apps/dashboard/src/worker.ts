@@ -1938,7 +1938,11 @@ app.get('/api/fleet-health', async (c) => {
   // One read narrowed to that scope can — the same `limit: 1` liveness probe the
   // per-app schedules view uses — so the apps it missed get one each, bounded, and
   // only when the cap was actually hit. Its newest row of any outcome is the
-  // liveness answer; a failed row would already be in the narrow read above.
+  // liveness answer — and it is kept whatever the outcome: it can only be `failed`
+  // when the failed-sweep read above was itself truncated, in which case it is a
+  // confirmed failure that read missed, and dropping it would leave the app
+  // `unknown` through the gap. It cannot double-count one: the follow-up runs only
+  // for scopes absent from `merged`.
   const followUp = sweeps.complete
     ? { sweeps: [], confirmed: new Set<string>() }
     : await followUpUnsweptApps({
@@ -1952,7 +1956,7 @@ app.get('/api/fleet-health', async (c) => {
     rows: deriveFleetHealth({
       apps: fleet,
       failures: failures.entries,
-      sweeps: [...merged, ...followUp.sweeps.filter((s) => s.outcome !== 'failed')],
+      sweeps: [...merged, ...followUp.sweeps],
       // A read that did not happen is not an empty window: every app reads `unknown`
       // rather than a cheerful `ok`.
       available: !failures.failed && !failedSweeps.failed && !sweeps.failed,
