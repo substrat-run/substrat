@@ -137,6 +137,25 @@ Three samples to drive it with: `sample/2026-03-14.csv` (comma), `sample/members
 `test/entity-checks.test.ts` generates, from the declared model, the behavioural pair that
 proves each entity-scoped handler honours its permission.
 
+## Modelling a stream that holds several shapes
+
+A delivered file rarely holds one kind of record. Declare the fields whose values tell kinds
+apart — in order, outermost first — and each record is classified as it is read, by the
+**longest** matching prefix. A kind nobody declared is kept and reported, never dropped.
+
+Schemas **stack**: the envelope is declared once and a kind declares only what it adds. So a
+stream with sixteen common fields and eleven sub-kinds describes them once, and an empty
+middle level reads as a fact about the stream rather than an omission.
+
+What you **count** is separate from what arrives. A source declares stable **output shapes**
+and a mapping carries each kind into one, so a producer renaming a field costs a new mapping
+version rather than a break in the numbers — and two kinds that measure the same thing
+collapse into one shape whose counts are comparable.
+
+A mapping is a **correspondence table** and deliberately nothing more: an output field, and
+which arriving field becomes it. No expressions, no conditionals, no arithmetic. A value that
+needs computing belongs in the producer, where it can be tested.
+
 ## Deliberately out of scope
 
 Any second store — no object storage, no external query engine, no long-term archive;

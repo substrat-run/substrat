@@ -24,7 +24,7 @@ import {
 } from './api.js';
 import { kindCandidates, observedKinds, previewFile, readHead, type Preview } from './preview.js';
 
-type Pane = 'ingest' | 'kinds' | 'schema' | 'runs' | 'findings' | 'report';
+type Pane = 'ingest' | 'kinds' | 'schema' | 'outputs' | 'runs' | 'findings' | 'report';
 type FieldRole = 'dimension' | 'measure' | 'ignored';
 type FieldType = 'text' | 'int' | 'decimal' | 'timestamp' | 'bool';
 interface FieldDraft { type: FieldType; role: FieldRole; labelField?: string }
@@ -132,7 +132,7 @@ export function App() {
       </header>
 
       <nav>
-        {(['ingest', 'kinds', 'schema', 'runs', 'findings', 'report'] as Pane[]).map((p) => (
+        {(['ingest', 'kinds', 'schema', 'outputs', 'runs', 'findings', 'report'] as Pane[]).map((p) => (
           <button key={p} className={p === pane ? 'on' : ''} onClick={() => setPane(p)}>
             {p === 'ingest' ? 'Drop a file' : p[0]!.toUpperCase() + p.slice(1)}
           </button>
@@ -143,6 +143,7 @@ export function App() {
         {pane === 'ingest' && <Ingest sourceKey={sourceKey} sources={sources} onDone={refresh} />}
         {pane === 'kinds' && <Kinds sourceKey={sourceKey} onDone={refresh} />}
         {pane === 'schema' && <SchemaPane sourceKey={sourceKey} onDone={refresh} />}
+        {pane === 'outputs' && <Outputs sourceKey={sourceKey} onDone={refresh} />}
         {pane === 'runs' && <Runs sourceKey={sourceKey} runs={runs} onDone={refresh} />}
         {pane === 'findings' && <Findings sourceKey={sourceKey} />}
         {pane === 'report' && <Report sourceKey={sourceKey} />}
@@ -669,6 +670,232 @@ function SchemaPane({ sourceKey, onDone }: { sourceKey: string; onDone: () => vo
       >
         {busy ? 'Saving…' : `Save v${(version ?? 0) + 1}`}
       </button>
+      {error && <p className="error">{error}</p>}
+    </section>
+  );
+}
+
+// ── Outputs and mappings ────────────────────────────────────────────────────
+
+/**
+ * The shapes counts are built over, and how each arriving kind reaches them.
+ *
+ * Two halves of one screen because they are two halves of one decision: an output shape with
+ * nothing mapped into it counts nothing, and a mapping needs an output to land in.
+ *
+ * The right-hand side is a correspondence table and deliberately nothing more — an output
+ * field, and which arriving field becomes it. No expression box, because the moment one
+ * exists this is a programming language inside a schema editor, untested against anything but
+ * itself. A value that needs computing belongs in the producer.
+ */
+function Outputs({ sourceKey, onDone }: { sourceKey: string; onDone: () => void }) {
+  const [outputs, setOutputs] = useState<{ key: string; version: number; fields_json: string }[]>([]);
+  const [mappings, setMappings] = useState<{ variant_key: string; output_key: string; version: number; rules_json: string }[]>([]);
+  const [kinds, setKinds] = useState<string[]>([]);
+  const [sourceFields, setSourceFields] = useState<string[]>([]);
+  const [selected, setSelected] = useState('');
+  const [variantKey, setVariantKey] = useState('');
+  /** The draft correspondence: output field → arriving field. */
+  const [rules, setRules] = useState<Record<string, string>>({});
+  const [newKey, setNewKey] = useState('');
+  const [draft, setDraft] = useState<Record<string, FieldDraft>>({});
+  const { error, busy, run } = useAction();
+  const [nextLoad, isCurrent] = useFreshness();
+
+  const reload = useCallback(async () => {
+    const token = nextLoad();
+    const [outs, maps, vars, hist] = await Promise.all([
+      all(api.listOutputSchemas({ sourceKey })),
+      all(api.listMappings({ sourceKey })),
+      api.listVariants({ sourceKey }),
+      api.fieldHistory({ sourceKey }),
+    ]);
+    if (!isCurrent(token)) return;
+    // Latest version per key; earlier ones describe shapes nothing is counted under now.
+    // Reduced BY VERSION, not by arrival order: the page comes back ordered by `key`, the
+    // first declared sortable column, so "the last row for a key wins" is the newest one
+    // only by way of the id tiebreak underneath it — a coincidence the screen should not
+    // be reading a shape's fields out of.
+    const latest = new Map<string, { key: string; version: number; fields_json: string }>();
+    for (const o of outs) {
+      const held = latest.get(o.key);
+      if (!held || o.version > held.version) latest.set(o.key, o);
+    }
+    setOutputs([...latest.values()]);
+    // Same reduction for mappings, and here the ordering genuinely bites: the page is
+    // ordered by `variant_key`, so picking a (kind, output) pair out of it with `find`
+    // lands on v1 — reopening an edited mapping would show rules that were superseded
+    // and save them forward as a new version. The count beside each shape counted every
+    // historical row too. The server keeps the whole history and still allocates the
+    // next version from MAX(version); the screen shows what is in force.
+    const inForce = new Map<string, (typeof maps)[number]>();
+    for (const m of maps) {
+      const at = JSON.stringify([m.variant_key, m.output_key]);
+      const held = inForce.get(at);
+      if (!held || m.version > held.version) inForce.set(at, m);
+    }
+    setMappings([...inForce.values()]);
+    setKinds(vars.variants.map((v) => v.key));
+    // What has actually ARRIVED, which is a better offer than what someone declared: you map
+    // from the file, and a field nobody modelled is exactly the one worth mapping.
+    setSourceFields([...new Set(hist.entries.map((e) => e.field))].sort());
+  }, [sourceKey]);
+
+  useEffect(() => {
+    if (!sourceKey) return;
+    setSelected('');
+    setVariantKey('');
+    setRules({});
+    setOutputs([]);
+    // The half-built declaration goes with the source it was being built from. Left
+    // standing, the next `Declare shape` press would send the previous source's fields
+    // under this source's key — fields this source may never have seen arrive.
+    setDraft({});
+    setNewKey('');
+    void reload().catch(() => undefined);
+  }, [sourceKey, reload]);
+
+  // The draft follows whichever (output, kind) pair is on screen.
+  useEffect(() => {
+    if (!selected) return setRules({});
+    const m = mappings.find((x) => x.output_key === selected && x.variant_key === variantKey);
+    const existing = m ? (JSON.parse(m.rules_json) as { from: string; to: string }[]) : [];
+    setRules(Object.fromEntries(existing.map((r) => [r.to, r.from])));
+  }, [selected, variantKey, mappings]);
+
+  const outFields = selected
+    ? (JSON.parse(outputs.find((o) => o.key === selected)?.fields_json ?? '{}') as Record<string, FieldDraft>)
+    : {};
+
+  return (
+    <section>
+      <h2>Output shapes</h2>
+      <p className="note">
+        What arrives drifts; what you count should not. An output shape is declared once and
+        stays put, and a mapping absorbs the movement — so a producer renaming a field costs a
+        new mapping version rather than a break in the numbers.
+      </p>
+
+      <table>
+        <thead><tr><th>Shape</th><th>Version</th><th>Fields</th><th /></tr></thead>
+        <tbody>
+          {outputs.map((o) => (
+            <tr key={o.key} className={selected === o.key ? 'open' : ''}>
+              <td><button className="link" onClick={() => setSelected(selected === o.key ? '' : o.key)}><code>{o.key}</code></button></td>
+              <td>v{o.version}</td>
+              <td className="muted">{Object.keys(JSON.parse(o.fields_json) as object).join(', ')}</td>
+              <td className="muted">
+                {mappings.filter((m) => m.output_key === o.key).length} mapping(s)
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h3>Declare a shape</h3>
+      <div className="row">
+        <input placeholder="engagement" value={newKey} onChange={(e) => setNewKey(e.target.value)} />
+        {sourceFields.slice(0, 14).map((f) => (
+          <button
+            key={f}
+            className={draft[f] ? 'chip on' : 'chip'}
+            onClick={() => {
+              const next = { ...draft };
+              if (next[f]) delete next[f];
+              else next[f] = { type: 'text', role: 'dimension' };
+              setDraft(next);
+            }}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+      {Object.keys(draft).length > 0 && (
+        <table>
+          <thead><tr><th>Field</th><th>Type</th><th>Role</th></tr></thead>
+          <tbody>
+            {Object.keys(draft).map((f) => (
+              <tr key={f}>
+                <td><code>{f}</code></td>
+                <td>
+                  <select value={draft[f]!.type} onChange={(e) => setDraft({ ...draft, [f]: { ...draft[f]!, type: e.target.value as FieldType } })}>
+                    {(['text', 'int', 'decimal', 'timestamp', 'bool'] as FieldType[]).map((t) => <option key={t}>{t}</option>)}
+                  </select>
+                </td>
+                <td>
+                  <select value={draft[f]!.role} onChange={(e) => setDraft({ ...draft, [f]: { ...draft[f]!, role: e.target.value as FieldRole } })}>
+                    {(['dimension', 'measure', 'ignored'] as FieldRole[]).map((r) => <option key={r}>{r}</option>)}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <button
+        disabled={busy || !newKey || Object.keys(draft).length === 0}
+        onClick={() => run(async () => {
+          await api.saveOutputSchema({ sourceKey, key: newKey, fields: draft });
+          setNewKey(''); setDraft({}); await reload(); onDone();
+        })}
+      >
+        {busy ? 'Saving…' : 'Declare shape'}
+      </button>
+
+      {selected && (
+        <>
+          <h3>What becomes <code>{selected}</code></h3>
+          <div className="row">
+            <label className="check">
+              from
+              <select value={variantKey} onChange={(e) => setVariantKey(e.target.value)}>
+                <option value="">the envelope — every record</option>
+                {kinds.map((k) => <option key={k} value={k}>{k}</option>)}
+              </select>
+            </label>
+            <span className="muted">
+              {variantKey
+                ? 'Rules here apply to this kind only, on top of the envelope\u2019s.'
+                : 'Rules here apply to every record, whatever its kind. Written once.'}
+            </span>
+          </div>
+          <table>
+            <thead><tr><th>Output field</th><th>Role</th><th>Comes from</th></tr></thead>
+            <tbody>
+              {Object.entries(outFields).map(([name, f]) => (
+                <tr key={name}>
+                  <td><code>{name}</code></td>
+                  <td className="muted">{f.role}</td>
+                  <td>
+                    <select value={rules[name] ?? ''} onChange={(e) => setRules({ ...rules, [name]: e.target.value })}>
+                      <option value="">— not from this kind —</option>
+                      {sourceFields.map((sf) => <option key={sf}>{sf}</option>)}
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="note">
+            A field left unmapped here is simply not supplied by this kind — the envelope may
+            still supply it, and a rule nearer the kind wins over one at the envelope.
+          </p>
+          <button
+            disabled={busy || Object.values(rules).every((v) => !v)}
+            onClick={() => run(async () => {
+              await api.saveMapping({
+                sourceKey,
+                variantKey,
+                outputKey: selected,
+                rules: Object.entries(rules).filter(([, from]) => from).map(([to, from]) => ({ from, to })),
+              });
+              await reload(); onDone();
+            })}
+          >
+            {busy ? 'Saving…' : 'Save mapping'}
+          </button>
+        </>
+      )}
       {error && <p className="error">{error}</p>}
     </section>
   );
