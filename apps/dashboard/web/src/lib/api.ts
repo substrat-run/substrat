@@ -1,3 +1,4 @@
+import { problemDetail } from '@substrat-run/contracts';
 import type { EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
@@ -1126,16 +1127,11 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
   });
   if (!res.ok) {
-    // `detail` first, `error` second (#113 phase 4) — the problem body's sentence, then
-    // the deprecated duplicate every SPA read before it.
-    const body = (await res.json().catch(() => null)) as
-      | { detail?: string; error?: string; probe?: ConnectionProbeView }
-      | null;
-    throw new ApiError(
-      res.status,
-      body?.detail ?? body?.error ?? `${res.status} ${res.statusText}`,
-      body?.probe,
-    );
+    // `problemDetail` is the one reading of a failed body (#971) — the problem body's
+    // sentence, then the deprecated duplicate every SPA read before it. The `probe`
+    // beside it is the dashboard's own extension (#605) and stays read here.
+    const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbeView } | null;
+    throw new ApiError(res.status, problemDetail(body) ?? `${res.status} ${res.statusText}`, body?.probe);
   }
   return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
 }

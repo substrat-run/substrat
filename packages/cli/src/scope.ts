@@ -1,4 +1,4 @@
-import { assertReplayableDump, assertSqlIdentifier } from '@substrat-run/contracts';
+import { assertReplayableDump, assertSqlIdentifier, problemDetail } from '@substrat-run/contracts';
 /**
  * `substrat scope pull <scopeId>` — bring a scope's data to the local inner loop
  * (preview-and-snapshots.md §8; the substrat analog of `vercel env pull`).
@@ -113,8 +113,8 @@ export async function pullScope(opts: {
     `/scopes/${encodeURIComponent(opts.scopeId)}/export${opts.full ? '?full=true' : ''}`;
   const res = await fetch(url, { headers: opts.header });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `pull refused: ${res.status} ${res.statusText}`);
+    const body = await res.json().catch(() => null);
+    throw new Error(problemDetail(body) ?? `pull refused: ${res.status} ${res.statusText}`);
   }
   const dump = await readJson<PulledDump>(res, url);
   // The WHOLE rule, checked before EITHER writer, so the node-<22.13 JSON fallback
@@ -228,6 +228,11 @@ export async function restoreScope(opts: {
   if (!res.ok) {
     // The CP shapes an unloadable-dump failure as `{ error, detail }` (#321); surface the detail
     // too, or the builder sees only a generic message and can't act on it (#332).
+    //
+    // Deliberately NOT on `problemDetail` (#971), which is the only read in this file that
+    // is not: here `detail` is ADDITIONAL to `error` — the loader's complaint beside the
+    // refusal — where everywhere else it is the RFC 9457 duplicate OF it. Reading one in
+    // place of the other would drop half of the only message that says what to fix.
     const body = (await res.json().catch(() => null)) as { error?: string; detail?: string } | null;
     const base = body?.error ?? `restore refused: ${res.status} ${res.statusText}`;
     throw new Error(body?.detail ? `${base} — ${body.detail}` : base);
@@ -254,8 +259,8 @@ export async function adoptScopeServing(opts: {
     { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
   );
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `adopt-serving refused: ${res.status} ${res.statusText}`);
+    const body = await res.json().catch(() => null);
+    throw new Error(problemDetail(body) ?? `adopt-serving refused: ${res.status} ${res.statusText}`);
   }
   const body = await readJson<{ servingRef?: string; alreadyAdopted?: boolean; tables?: number }>(res, res.url);
   if (body.alreadyAdopted) {
@@ -285,8 +290,8 @@ export async function provisionScope(opts: {
     { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
   );
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `provision refused: ${res.status} ${res.statusText}`);
+    const body = await res.json().catch(() => null);
+    throw new Error(problemDetail(body) ?? `provision refused: ${res.status} ${res.statusText}`);
   }
   const body = await readJson<{ owner?: string; storeError?: string }>(res, res.url);
   console.log(`✓ reconciled scope ${opts.scopeId} — owner ${body.owner ?? '(unknown)'} re-granted; logins restored.`);
@@ -318,8 +323,8 @@ export async function scopeStatus(opts: {
   const base = `${opts.controlPlaneUrl}/tenants/${encodeURIComponent(opts.tenantId)}/scopes/${encodeURIComponent(opts.scopeId)}`;
   const res = await fetch(base, { headers: opts.header });
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `scope status refused: ${res.status} ${res.statusText}`);
+    const body = await res.json().catch(() => null);
+    throw new Error(problemDetail(body) ?? `scope status refused: ${res.status} ${res.statusText}`);
   }
   const record = await readJson<{
     slug: string;
@@ -401,8 +406,8 @@ export async function bindScopeVersion(opts: {
     },
   );
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `bind refused: ${res.status} ${res.statusText}`);
+    const body = await res.json().catch(() => null);
+    throw new Error(problemDetail(body) ?? `bind refused: ${res.status} ${res.statusText}`);
   }
   const record = await readJson<{ verticalVersionId: string | null; vertical: string | null; servingRef?: string | null }>(
     res,
@@ -443,8 +448,8 @@ export async function rebindScopeVertical(opts: {
     },
   );
   if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as { error?: string } | null;
-    throw new Error(body?.error ?? `rebind refused: ${res.status} ${res.statusText}`);
+    const body = await res.json().catch(() => null);
+    throw new Error(problemDetail(body) ?? `rebind refused: ${res.status} ${res.statusText}`);
   }
   const body = await readJson<{
     servingRef?: string;
@@ -479,12 +484,12 @@ export async function adoptVerticalServing(opts: {
     { method: 'POST', headers: { ...opts.header, 'content-type': 'application/json' } },
   );
   const body = (await res.json().catch(() => null)) as
-    | { adopted?: string[]; alreadyAdopted?: string[]; error?: string }
+    | { adopted?: string[]; alreadyAdopted?: string[] }
     | null;
   if (!res.ok) {
     // A per-scope failure reports what it managed before stopping — a re-run resumes.
     const done = (body?.adopted?.length ?? 0) + (body?.alreadyAdopted?.length ?? 0);
-    throw new Error(`${body?.error ?? `adopt-serving refused: ${res.status}`}${done ? ` (adopted ${done} before stopping)` : ''}`);
+    throw new Error(`${problemDetail(body) ?? `adopt-serving refused: ${res.status}`}${done ? ` (adopted ${done} before stopping)` : ''}`);
   }
   const adopted = body?.adopted ?? [];
   const already = body?.alreadyAdopted ?? [];

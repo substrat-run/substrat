@@ -199,6 +199,48 @@ export const problem = z.object({
 export type Problem = z.infer<typeof problem>;
 
 /**
+ * The sentence a FAILED response carried, whatever shape the body arrived in (#971).
+ *
+ * Four hand-rolled control-plane clients restated this fallback, and they did not agree:
+ * the console and the vertical client read `detail ?? error`, the CLI read four members
+ * against the published schema, and the DASHBOARD read `error` ALONE — so against a
+ * transport that had adopted `toProblem` and dropped the deprecated duplicate, the
+ * dashboard would throw away the sentence written for the occurrence and show
+ * `409 Conflict` instead. That is the failure mode worth naming: not a crash, a message
+ * that says nothing, on the screen where somebody is trying to find out why.
+ *
+ * The order is how specific each member is, and it is the union of what the four readers
+ * separately reached for. `detail` is about THIS occurrence (RFC 9457 §3.1.4). `error` is
+ * the deprecated duplicate of it, still what an older deployed control plane and several
+ * hand-rolled `onError`s answer with. `message` is neither, but a relayed fault from
+ * something in front of the control plane writes it and the CLI already read it. `title`
+ * is last because it is stable per code — a class of failure, not an instance.
+ *
+ * It deliberately does NOT validate the body against `problem` first. Every member it
+ * reads is an optional string under the same name either way, so a strict pass would
+ * narrow nothing — and it would REFUSE the bodies this helper exists for: the relayed
+ * fault with no `type`, the pre-#113 `{ error }`, the `onError` that never adopted
+ * `toProblem`. A caller that needs the `code` or the field errors does parse strictly
+ * (the CLI's `readProblem`), because for THOSE the schema is what makes the answer safe.
+ *
+ * Returns `undefined` — not a fabricated sentence — when the body said nothing readable.
+ * The caller owns the fallback, because only it knows what it was doing: a status line,
+ * a raw slice, the name of the command. Takes the PARSED body rather than the response,
+ * so the callers that read a member BESIDE the sentence — the dashboard's `probe`, the
+ * CLI's `issues` — do not parse it twice, and a caller with no `Response` at all (a
+ * service-binding reply, a test) can still use it.
+ */
+export function problemDetail(body: unknown): string | undefined {
+  if (body === null || typeof body !== 'object') return undefined;
+  const o = body as Record<string, unknown>;
+  // An EMPTY string is absent, not a sentence — `detail: ''` is the one shape that would
+  // otherwise satisfy the caller's `?? fallback` and render a failure with no message.
+  const str = (k: string): string | undefined =>
+    typeof o[k] === 'string' && o[k] !== '' ? (o[k] as string) : undefined;
+  return str('detail') ?? str('error') ?? str('message') ?? str('title');
+}
+
+/**
  * Where a `SubstratError` keeps its code when the class itself is unavailable.
  *
  * `name` is a SECOND reading of the code, not a transport for it. Phase 2 proposed it

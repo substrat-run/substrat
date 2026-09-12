@@ -34,7 +34,7 @@ import type {
   OwnerClaimLink,
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
-import { LIST_PAGE_MAX } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, problemDetail } from '@substrat-run/contracts';
 
 /**
  * Bytes of `&service=…` params one bucketed-metrics request may carry (#1236). A Workers
@@ -215,12 +215,16 @@ export class TenantNarrowedControlPlane {
       // A tenant/entitlement that already exists is fine on an idempotent step
       // (re-provisioning, a retried create) — the directory already reflects it.
       if (init.idempotent && (res.status === 409 || res.status === 422)) return undefined as T;
-      const body = (await res.json().catch(() => null)) as
-        | { error?: string; probe?: ConnectionProbe }
-        | null;
+      // `problemDetail` is the one reading of a failed body (#971). This call site read
+      // the deprecated `{ error }` duplicate ALONE, so a plane answering a pure RFC 9457
+      // document handed the dashboard `409 Conflict` in place of the sentence saying
+      // which name was taken. The `probe` beside it is the dashboard's own extension
+      // (#605) — the provider's answer when a connect was refused upstream — and stays
+      // read here, because no other client asks for it.
+      const body = (await res.json().catch(() => null)) as { probe?: ConnectionProbe } | null;
       throw new ControlPlaneError(
         res.status,
-        body?.error ?? `${res.status} ${res.statusText}`,
+        problemDetail(body) ?? `${res.status} ${res.statusText}`,
         body?.probe,
       );
     }

@@ -14,6 +14,7 @@ import {
   problemForStatus,
   PROBLEM_EXTENSIONS,
   problem,
+  problemDetail,
   problemTypeFor,
   SubstratError,
   substratError,
@@ -403,5 +404,78 @@ describe('problemForStatus — the about:blank form', () => {
 
   it('serves under the RFC media type, never application/json', () => {
     expect(PROBLEM_CONTENT_TYPE).toBe('application/problem+json');
+  });
+});
+
+/**
+ * The one reading of a failed response body (#971).
+ *
+ * Four control-plane clients restated `detail ?? error` separately and they did not
+ * agree — the dashboard read the deprecated duplicate ALONE, so a plane answering a
+ * pure RFC 9457 document would have shown it a status line in place of the sentence.
+ * These cases pin what every caller is now entitled to assume.
+ */
+describe('problemDetail', () => {
+  it('prefers the sentence written for this occurrence', () => {
+    const body = toProblem(
+      substratError('conflict', 'a tenant with the slug `acme` already exists'),
+      '/tenants',
+    );
+    expect(problemDetail(body)).toBe('a tenant with the slug `acme` already exists');
+  });
+
+  it('reads the deprecated `{ error }` duplicate an older plane still answers with', () => {
+    expect(problemDetail({ error: 'scope is suspended' })).toBe('scope is suspended');
+  });
+
+  // The cases above each expose ONE candidate, so they pin that every member is reachable
+  // and nothing about the order between them: `error ?? detail` would pass all of them.
+  // This body carries all four at once, with DIFFERENT values, and then removes them from
+  // the front one at a time — which is the only shape that pins the precedence itself.
+  it('pins the precedence when the members disagree', () => {
+    const all = {
+      detail: 'this occurrence',
+      error: 'the deprecated duplicate',
+      message: 'a relayed fault',
+      title: 'the class of failure',
+    };
+    expect(problemDetail(all)).toBe('this occurrence');
+    expect(problemDetail({ ...all, detail: undefined })).toBe('the deprecated duplicate');
+    expect(problemDetail({ ...all, detail: undefined, error: undefined })).toBe('a relayed fault');
+    expect(problemDetail({ ...all, detail: undefined, error: undefined, message: undefined })).toBe(
+      'the class of failure',
+    );
+    // An empty member is skipped rather than returned, at every position — otherwise a
+    // `detail: ''` would satisfy the caller's `?? fallback` and render a blank failure.
+    expect(problemDetail({ ...all, detail: '' })).toBe('the deprecated duplicate');
+    expect(problemDetail({ ...all, detail: '', error: '' })).toBe('a relayed fault');
+    expect(problemDetail({ ...all, detail: '', error: '', message: '' })).toBe(
+      'the class of failure',
+    );
+  });
+
+  it('reads `detail` from a body the strict schema refuses', () => {
+    // A relayed fault from something in front of the control plane: no `type`, no
+    // `title`, so `problem.safeParse` fails — and the sentence is still right there.
+    expect(problemDetail({ status: 502, detail: 'origin unreachable' })).toBe('origin unreachable');
+    expect(problemDetail({ message: 'worker threw' })).toBe('worker threw');
+  });
+
+  it('falls back to the stable per-code title only when there is no sentence', () => {
+    // A `problemForStatus` body carries no `detail` — the class of failure is then the
+    // whole truth, and it beats printing the status line the caller already has.
+    const body = problemForStatus(503);
+    expect(body.detail).toBeUndefined();
+    expect(problemDetail(body)).toBe(body.title);
+  });
+
+  it('answers undefined — never a fabricated sentence — when the body says nothing', () => {
+    // The caller owns the fallback, because only it knows what it was doing.
+    expect(problemDetail(null)).toBeUndefined();
+    expect(problemDetail(undefined)).toBeUndefined();
+    expect(problemDetail({})).toBeUndefined();
+    expect(problemDetail('not json at all')).toBeUndefined();
+    // An empty string is not a sentence; it would render as a blank failure.
+    expect(problemDetail({ detail: '' })).toBeUndefined();
   });
 });

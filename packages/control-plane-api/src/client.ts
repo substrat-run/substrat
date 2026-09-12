@@ -1,4 +1,4 @@
-import { denialQuery } from '@substrat-run/contracts';
+import { denialQuery, problemDetail } from '@substrat-run/contracts';
 import type {
   EntitlementGrant,
   EntitlementGrantInput,
@@ -122,16 +122,15 @@ export class ControlPlaneClient {
     }
     if (res.status === 404 && allow404) return undefined as T;
     if (!res.ok) {
-      // `detail` first, `error` second (#113 phase 4): the plane answers RFC 9457
-      // problem bodies now, where `detail` is the sentence and `error` is the deprecated
-      // duplicate kept for one window. Reading both means this works either way, and
-      // keeps working the day the duplicate is deleted.
-      const body = (await res.json().catch(() => null)) as
-        | { detail?: string; error?: string }
-        | null;
+      // `problemDetail` is the one reading of a failed body (#971): the RFC 9457
+      // `detail` first, the deprecated `error` duplicate second, both against the
+      // published schema — so this works either way, and keeps working the day the
+      // duplicate is deleted. The status line is the fallback only when the body
+      // said nothing readable.
+      const body = await res.json().catch(() => null);
       throw new ControlPlaneError(
         res.status,
-        body?.detail ?? body?.error ?? `${res.status} ${res.statusText}`,
+        problemDetail(body) ?? `${res.status} ${res.statusText}`,
       );
     }
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
