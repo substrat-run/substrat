@@ -242,6 +242,48 @@ export const historyEntry = timelineEntry.extend({
 export type HistoryEntry = z.infer<typeof historyEntry>;
 
 /**
+ * Why a causal walk stopped (#1237). The whole value of the view is in telling these
+ * apart, so it is a named reason rather than the absence of a next step.
+ */
+export const causeTerminal = z.enum([
+  /**
+   * The chain is complete: an operation emitted the first event directly, and the
+   * walk can name the invocation and the actor that began everything downstream.
+   */
+  'operation',
+  /**
+   * The trail runs out. The first event carries neither a cause nor an operation,
+   * which means something emitted it — a consumer — before the cause was recorded
+   * (pre-#1237). NOT the same as `operation`, and rendering it as one would present
+   * a truncated chain as a whole story, which is the one thing this view must not do.
+   */
+  'unrecorded',
+  /** The cap was reached. More chain exists above; ask for it with a higher limit. */
+  'depth',
+  /**
+   * A cause named an event this scope's outbox does not hold. Should not happen —
+   * the spine is append-only and never pruned — so it is reported rather than
+   * smoothed over: silently stopping here would look exactly like a complete chain.
+   */
+  'missing',
+]);
+export type CauseTerminal = z.infer<typeof causeTerminal>;
+
+/**
+ * One event's causal chain, newest first (#1237) — the walk backwards this whole
+ * feature exists for: "this invoice exists; what started that?"
+ *
+ * `chain[0]` is the event asked about and each entry caused the one before it, so the
+ * last entry is as far back as the spine can say. `terminal` says WHY it is the last,
+ * and a reader must not treat the four reasons alike.
+ */
+export const causeChain = z.object({
+  chain: z.array(historyEntry),
+  terminal: causeTerminal,
+});
+export type CauseChain = z.infer<typeof causeChain>;
+
+/**
  * One event as it leaves the scope for Tier 2 (#1334) — the exact-history lake
  * the master plan commits to (§5.3: "domain events → Pipelines → Iceberg on R2").
  *

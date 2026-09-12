@@ -34,6 +34,7 @@ import {
   readScopeTableInput,
   entityHistoryInput,
   eventFacetInput,
+  eventCauseInput,
   createOrgInput,
   roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
@@ -2069,6 +2070,26 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       vertical
         ? await vertical.facetEvents(scopeId, input)
         : await admin.facetEvents(c.get('actor'), tenantId, scopeId, input),
+    );
+  });
+
+  // #1237: one event's causal chain, walked backwards. Delegated exactly like the
+  // history read below — through the vertical holding the scope's data when one
+  // resolves, the co-located host otherwise.
+  app.get('/tenants/:tenantId/scopes/:scopeId/cause', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = eventCauseInput.parse({
+      eventId: c.req.query('eventId'),
+      maxDepth: c.req.query('maxDepth') ? Number(c.req.query('maxDepth')) : undefined,
+    });
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.eventCause(scopeId, input)
+        : await admin.eventCause(c.get('actor'), tenantId, scopeId, input),
     );
   });
 

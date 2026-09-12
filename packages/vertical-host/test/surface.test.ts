@@ -36,6 +36,10 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
       note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
     facetEventsLocal: async (_s: unknown, input?: unknown) =>
       note('facetEventsLocal', { buckets: [{ value: JSON.stringify(input), count: 1 }], erased: 0, total: 1, truncated: false }) as never,
+    // #1237: echoes the parsed input back, like the two around it — the point of this
+    // surface suite is that the route parses and forwards, not what the walk answers.
+    eventCauseLocal: async (_s: unknown, input?: unknown) =>
+      note('eventCauseLocal', { chain: [], terminal: JSON.stringify(input) }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),

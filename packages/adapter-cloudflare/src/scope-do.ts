@@ -116,12 +116,14 @@ import {
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
-import { facetEvents, readHistory } from '@substrat-run/kernel';
+import { facetEvents, readHistory, walkEventCause } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
   EventFacetInput,
   EventFacetResult,
   HistoryEntry,
+  EventId,
+  CauseChain,
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
@@ -1093,6 +1095,16 @@ export function defineScopeDO(
         { entityType: input.entityType, entityId: input.entityId },
         { limit: input.limit, cursor: input.cursor },
       );
+    }
+
+    /**
+     * #1237: walk one event's causal chain backwards, inside the DO where the outbox
+     * lives. The kernel helper owns every judgement — most of all that a null cause
+     * WITH an operation is the beginning of the chain while a null cause without one
+     * is the trail running out.
+     */
+    eventCause(input: { eventId: EventId; maxDepth?: number }): CauseChain {
+      return walkEventCause({ sql: doScopedSql(this.sql) }, input.eventId, input.maxDepth);
     }
 
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {

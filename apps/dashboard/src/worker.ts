@@ -1988,6 +1988,30 @@ app.get('/api/apps/:scopeId/history', async (c) => {
   );
 });
 
+/**
+ * #1237: why one event exists — the chain walked backwards, newest first.
+ *
+ * The honest part is `terminal`, and it is the answer's own field rather than
+ * something the screen infers from the chain's length: a chain that reached the
+ * operation that started it and one that ran out of recorded trail are the same
+ * shape, and telling them apart is the whole point of the view.
+ */
+app.get('/api/apps/:scopeId/cause', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.eventCause(scope, {
+      eventId: c.req.query('eventId') ?? '',
+      maxDepth: c.req.query('maxDepth') ? Number(c.req.query('maxDepth')) : undefined,
+    }),
+  );
+});
+
 app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
