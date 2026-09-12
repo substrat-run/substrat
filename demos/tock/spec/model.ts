@@ -1161,6 +1161,39 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
     http: { method: 'GET', path: '/sources/{sourceKey}/fields' },
   },
 
+  /**
+   * What a field's history actually is, for the moment someone adds it to a schema.
+   *
+   * The design's rule is that adding a field never back-fills history with a placeholder, and
+   * that nobody is asked for a default. This is the read that makes the alternative possible:
+   * show what the data contains and let the person decide, rather than asking them to invent
+   * a value and calling it a migration.
+   *
+   * `rowsBefore` is the number this exists for — records that already existed when the field
+   * did not. It is the size of the hole, and seeing it is what turns "add a default" from an
+   * obvious convenience into an obviously bad idea.
+   */
+  'tock/field-coverage': {
+    summary: 'When a field started arriving, and how much history predates it',
+    permission: 'report:read',
+    input: z.object({ sourceKey: z.string(), field: z.string().min(1) }),
+    output: z.object({
+      field: z.string(),
+      /** Null when the field has never arrived at all — a declaration with no evidence yet. */
+      firstSeen: z.string().nullable(),
+      lastSeen: z.string().nullable(),
+      /** Rows carrying a value for it. */
+      rowsWith: z.number().int(),
+      /** Rows older than its first appearance: the hole a default would paper over. */
+      rowsBefore: z.number().int(),
+      /** The oldest record this source holds, so the hole has a far edge as well as a near one. */
+      earliest: z.string().nullable(),
+      /** The runs whose periods predate the field — what re-sending would have to cover. */
+      runsBefore: z.array(z.object({ id: z.string(), filename: z.string(), periodFrom: z.string() })),
+    }),
+    http: { method: 'GET', path: '/sources/{sourceKey}/fields/coverage' },
+  },
+
   /** The rows one run produced. `row:read`, and the reason the role list has four entries. */
   'tock/list-rows': {
     summary: 'The mapped rows of one run',

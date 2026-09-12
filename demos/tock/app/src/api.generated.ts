@@ -256,6 +256,13 @@ export interface TockClient {
   deviations(input: { sourceKey: string; schemaVersion?: number }): Promise<{ sourceKey: string; schemaVersion: number; findings: ({ kind: "undeclared_field" | "declared_never_arrived" | "type_mismatch" | "cardinality_spike" | "unmatched_records"; field: string; detail: string; firstSeen: string | null; lastSeen: string | null; runs: number })[] }>;
 
   /**
+   * When a field started arriving, and how much history predates it
+   *
+   * `GET /sources/{sourceKey}/fields/coverage` — `tock/field-coverage`
+   */
+  fieldCoverage(input: { sourceKey: string; field: string }): Promise<{ field: string; firstSeen: string | null; lastSeen: string | null; rowsWith: number; rowsBefore: number; earliest: string | null; runsBefore: { id: string; filename: string; periodFrom: string }[] }>;
+
+  /**
    * When a field first and last arrived, across every run
    *
    * `GET /sources/{sourceKey}/fields` — `tock/field-history`
@@ -503,6 +510,8 @@ export function createClient(options: ClientOptions = {}): TockClient {
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/variants`, "POST", omit(input, ["sourceKey"]), undefined),
     deviations: (input: Args) =>
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/deviations`, "GET", undefined, omit(input, ["sourceKey"])),
+    fieldCoverage: (input: Args) =>
+      send(`/sources/${encodeURIComponent(String(input.sourceKey))}/fields/coverage`, "GET", undefined, omit(input, ["sourceKey"])),
     fieldHistory: (input: Args) =>
       send(`/sources/${encodeURIComponent(String(input.sourceKey))}/fields`, "GET", undefined, omit(input, ["sourceKey"])),
     getRun: (input: Args) =>

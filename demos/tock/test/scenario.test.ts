@@ -40,6 +40,7 @@ const outbox = (type: string, entityId: string) => {
 
 interface Run {
   id: string;
+  filename: string;
   status: string;
   row_count: number | null;
   rejected_count: number | null;
@@ -1393,5 +1394,120 @@ describe('two kinds collapse into one thing you count', () => {
     );
     const keys = outs.entries.map((o) => o.key);
     expect(keys).toEqual([...keys].sort());
+  });
+});
+
+describe('the back-fill affordance, and drift the mapping absorbs', () => {
+  const SRC = 'drift-src';
+  const day1 = [
+    { occurredAt: '2026-08-01T08:00:00.000Z', subject: 'a', fields: { country: 'SE', duration: '10' } },
+    { occurredAt: '2026-08-01T09:00:00.000Z', subject: 'b', fields: { country: 'NO', duration: '20' } },
+  ];
+  /** The producer renamed `duration` and added `campaign`. Same events, different words. */
+  const day2 = [
+    { occurredAt: '2026-08-02T08:00:00.000Z', subject: 'c', fields: { country: 'SE', duration_ms: '30', campaign: 'spring' } },
+  ];
+
+  const openAndProfile = async (filename: string, batch: typeof day1) => {
+    const tomas = await as('tomas');
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename, byteSize: 64, contentHash: `sha256:${filename}`, storageKey: `runs/${filename}`,
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: batch[0]!.occurredAt.slice(0, 10) + 'T00:00:00.000Z',
+      periodTo: '2026-09-01T00:00:00.000Z',
+    });
+    await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: true });
+    return run;
+  };
+
+  it('30 — a field that arrived late reports the hole rather than offering a default', async () => {
+    const ines = await as('ines');
+    await ines.invoke('tock/declare-source', { key: SRC, title: 'Drift', expectedCadence: 'daily' });
+    await openAndProfile('aug-1.jsonl', day1);
+    await openAndProfile('aug-2.jsonl', day2 as unknown as typeof day1);
+
+    const cov = await ines.invoke<{
+      firstSeen: string | null; rowsWith: number; rowsBefore: number; earliest: string | null;
+      runsBefore: { filename: string }[];
+    }>('tock/field-coverage', { sourceKey: SRC, field: 'campaign' });
+
+    // The whole point: the size of the hole is COUNTED, so "add a default" stops looking free.
+    expect(cov.firstSeen?.slice(0, 10)).toBe('2026-08-02');
+    expect(cov.rowsWith).toBe(1);
+    expect(cov.rowsBefore).toBe(2);
+    expect(cov.earliest?.slice(0, 10)).toBe('2026-08-01');
+    // And which files would have to be re-sent to fill it, rather than a vague instruction.
+    expect(cov.runsBefore.map((r) => r.filename)).toEqual(['aug-1.jsonl']);
+  });
+
+  it('31 — a field nobody has ever sent says so, instead of reporting every row as a hole', async () => {
+    const ines = await as('ines');
+    const cov = await ines.invoke<{ firstSeen: string | null; rowsBefore: number }>('tock/field-coverage', {
+      sourceKey: SRC,
+      field: 'never-sent',
+    });
+    expect(cov.firstSeen).toBeNull();
+    // Not 3. With no first appearance there is nothing to be older than, and calling every
+    // row "before" would be a different lie.
+    expect(cov.rowsBefore).toBe(0);
+  });
+
+  it('32 — a renamed input moves the mapping, and the output shape does not move', async () => {
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    await ines.invoke('tock/declare-variants', {
+      sourceKey: SRC,
+      discriminators: ['country'],
+      variants: [{ selector: ['SE'] }, { selector: ['NO'] }],
+    });
+    await ines.invoke('tock/save-output-schema', {
+      sourceKey: SRC,
+      key: 'engagement',
+      fields: { seconds: { type: 'int', role: 'measure' }, market: { type: 'text', role: 'dimension' } },
+    });
+    await ines.invoke('tock/save-mapping', {
+      sourceKey: SRC,
+      outputKey: 'engagement',
+      rules: [{ from: 'duration', to: 'seconds' }, { from: 'country', to: 'market' }],
+    });
+    await ines.invoke('tock/save-schema', { sourceKey: SRC, fields: { country: { type: 'text', role: 'dimension' } } });
+
+    const runs = await tomas.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC });
+    const aug1 = runs.entries.find((r) => r.filename === 'aug-1.jsonl')!;
+    await tomas.invoke('tock/map-run', { runId: aug1.id, schemaVersion: 1 });
+    await tomas.invoke('tock/count-run', { runId: aug1.id });
+
+    const window = {
+      sourceKey: SRC, outputKey: 'engagement', grain: 'day', dimSet: 'market',
+      from: '2026-08-01T00:00:00.000Z', to: '2026-08-02T00:00:00.000Z',
+    };
+    const before = await ines.invoke<{ rows: { dim1: string; measure: string | null }[] }>('tock/report', window);
+    expect(before.rows.map((r) => r.dim1).sort()).toEqual(['NO', 'SE']);
+    expect(before.rows.find((r) => r.dim1 === 'SE')?.measure).toBe('10');
+
+    // The producer renamed the field. A NEW MAPPING VERSION says so; the output shape is
+    // untouched, and `seconds` still means what it meant.
+    const v2 = await ines.invoke<{ version: number }>('tock/save-mapping', {
+      sourceKey: SRC,
+      outputKey: 'engagement',
+      rules: [{ from: 'duration_ms', to: 'seconds' }, { from: 'country', to: 'market' }],
+    });
+    expect(v2.version).toBe(2);
+
+    const aug2 = runs.entries.find((r) => r.filename === 'aug-2.jsonl')!;
+    await tomas.invoke('tock/map-run', { runId: aug2.id, schemaVersion: 1 });
+    await tomas.invoke('tock/count-run', { runId: aug2.id });
+
+    // The day the producer renamed on counts into the SAME shape, under the same field name.
+    const after = await ines.invoke<{ rows: { dim1: string; measure: string | null }[] }>('tock/report', {
+      ...window,
+      from: '2026-08-02T00:00:00.000Z',
+      to: '2026-08-03T00:00:00.000Z',
+    });
+    expect(after.rows.find((r) => r.dim1 === 'SE')?.measure).toBe('30');
+
+    // And the run says which mapping made it, so the two days are explainable side by side.
+    const rules = await ines.invoke<{ entries: { rule_kind: string; identifier: string }[] }>('tock/run-rules', { runId: aug2.id });
+    expect(rules.entries.find((r) => r.rule_kind === 'mapping')?.identifier).toMatch(/@v2/);
   });
 });

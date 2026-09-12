@@ -1501,6 +1501,61 @@ const fieldHistoryOp: OperationHandler<
   return { entries: capped ? entries.slice(0, limit) : entries, limit, capped };
 };
 
+/**
+ * The truth about a field's history, for the screen that refuses to ask for a default.
+ *
+ * Every number here is counted rather than estimated, and `rowsBefore` is the one that
+ * matters: records that already existed when the field did not. A default would fill those
+ * with an invented value, and the argument against doing that is far easier to make with the
+ * number on screen than in prose.
+ */
+const fieldCoverageOp: OperationHandler<
+  HandlerInput<(typeof tockOperations)['tock/field-coverage']>,
+  HandlerOutput<(typeof tockOperations)['tock/field-coverage']>
+> = async (ctx, input) => {
+  assertAllowed(await ctx.check(TOCK_PERM.reportRead));
+  sourceOrThrow(ctx, input.sourceKey);
+
+  const seen = ctx.sql.query<{ first: string | null; last: string | null; n: number | null }>(
+    'SELECT MIN(first_seen) AS first, MAX(last_seen) AS last, SUM(n) AS n FROM tock_field_history WHERE source_key = ? AND field = ?',
+    [input.sourceKey, input.field],
+  )[0];
+  const earliest = ctx.sql.query<{ at: string | null }>(
+    'SELECT MIN(w.occurred_at) AS at FROM tock_rows w JOIN tock_runs r ON r.id = w.run_id WHERE r.source_key = ?',
+    [input.sourceKey],
+  )[0];
+
+  const firstSeen = seen?.first ?? null;
+  // Rows OLDER than the field's first appearance. With no first appearance there is nothing
+  // to be older than, and calling every row "before" would be a lie of a different kind.
+  const before = firstSeen
+    ? ctx.sql.query<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM tock_rows w JOIN tock_runs r ON r.id = w.run_id
+          WHERE r.source_key = ? AND w.occurred_at < ?`,
+        [input.sourceKey, firstSeen],
+      )[0]
+    : undefined;
+  const runsBefore = firstSeen
+    ? ctx.sql.query<{ id: string; filename: string; period_from: string }>(
+        `SELECT DISTINCT r.id, r.filename, r.period_from FROM tock_runs r
+           JOIN tock_rows w ON w.run_id = r.id
+          WHERE r.source_key = ? AND w.occurred_at < ?
+          ORDER BY r.period_from`,
+        [input.sourceKey, firstSeen],
+      )
+    : [];
+
+  return {
+    field: input.field,
+    firstSeen,
+    lastSeen: seen?.last ?? null,
+    rowsWith: seen?.n ?? 0,
+    rowsBefore: before?.n ?? 0,
+    earliest: earliest?.at ?? null,
+    runsBefore: runsBefore.map((r) => ({ id: r.id, filename: r.filename, periodFrom: r.period_from })),
+  };
+};
+
 const listRowsOp: OperationHandler<
   HandlerInput<(typeof tockOperations)['tock/list-rows']>,
   HandlerOutput<(typeof tockOperations)['tock/list-rows']>
@@ -1628,6 +1683,7 @@ const operations = {
   'tock/list-observations': listObservationsOp,
   'tock/deviations': deviationsOp,
   'tock/field-history': fieldHistoryOp,
+  'tock/field-coverage': fieldCoverageOp,
   'tock/list-rows': listRowsOp,
   'tock/read-source-file': readSourceFileOp,
   'tock/report': reportOp,

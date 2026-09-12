@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-tock
 
-23 operations · 8 narrowed checks · 8 conformance pairs driven
+24 operations · 8 narrowed checks · 8 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -68,7 +68,7 @@ as an assessment rather than as silence.
 
 | Kind | Count | Operations |
 | --- | --- | --- |
-| Node-level check | 15 | `tock/declare-source`, `tock/declare-variants`, `tock/deviations`, `tock/field-history`, `tock/list-mappings`, `tock/list-output-schemas`, `tock/list-runs`, `tock/list-schemas`, `tock/list-sources`, `tock/list-variants`, `tock/receive-run`, `tock/report`, `tock/save-mapping`, `tock/save-output-schema`, `tock/save-schema` |
+| Node-level check | 16 | `tock/declare-source`, `tock/declare-variants`, `tock/deviations`, `tock/field-coverage`, `tock/field-history`, `tock/list-mappings`, `tock/list-output-schemas`, `tock/list-runs`, `tock/list-schemas`, `tock/list-sources`, `tock/list-variants`, `tock/receive-run`, `tock/report`, `tock/save-mapping`, `tock/save-output-schema`, `tock/save-schema` |
 | Per-entity proof walk (`narrows`) | 0 | — |
 
 ## 5. Not covered by this artifact
