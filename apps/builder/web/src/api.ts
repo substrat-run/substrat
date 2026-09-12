@@ -45,7 +45,11 @@ export interface ProviderEntry {
 	name: string;
 	kind: 'direct' | 'compatible';
 	hosting: { vendor: string; location: string; host: string; dataNote: string };
-	credential: { envVar: string | null; set: boolean };
+	/**
+	 * `missing` names the variables this environment actually lacks — the endpoint as
+	 * well as the key, and `envVar` alone can name a secret that is already set.
+	 */
+	credential: { envVar: string | null; set: boolean; missing: string[] };
 	listable: boolean;
 	suggested: string[];
 	/** The `<provider>:auto` pair — fast (interview) + strong (build) — when declared. */

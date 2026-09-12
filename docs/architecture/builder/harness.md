@@ -1,13 +1,14 @@
 ---
 status: building
 layer: plan
-description: Model catalog and harness efficiency. Rows 6-7 open (#663).
+description: Model catalog and harness efficiency. Row 7 open (#663).
 ---
 
 # Builder model catalog & harness efficiency
 
 **Status:** **partly built** — the two-source rate card, retries, the edit tool and
-condensation landed (#661, #664); rows 6–7 of §4 remain open (#663). Written from a research
+condensation landed (#661, #664), and the picker no longer offers a model that cannot run a
+tool call (#663); row 7 of §4 remains open. Written from a research
 pass over opencode/models.dev (2026-08-15). · **Depends on:** [builder-studio.md](./studio.md) (§5.3 the
 provider seam, §5.4 prompt caching — this doc is the concrete follow-through on both),
 [engine-metering.md](../../engines/metering.md) (quantities vs pricing; the studio's rate card is
@@ -284,7 +285,7 @@ Order chosen so billing correctness lands before optimisation, and each step fee
 | 3 | H1 edit tool: strict apply + structured reflection (aider shape), format-per-model | biggest bill lever; weak models keep `write_file` by declaration, not by failure | ☑ |
 | 4 | H4 cache key + qwen temperature | one-liners, default-provider quality | ☑ |
 | 5 | H3 overflow → condense-and-retry (one code path), eager only off-Anthropic | needs `limit.context` from 1; cache-invalidation tradeoff says measure before defaulting on | ☑ (reactive-only: mechanical condenser fires on actual overflow — maximal reluctance on every dialect; proactive token-threshold trigger deferred until evals can weigh it against the cache cost) |
-| 6 | §2.3 credential-gated picker; `tool_call` filter on the Cloudflare list | UX correctness, not cost | ☐ |
+| 6 | §2.3 credential-gated picker; `tool_call` filter on the Cloudflare list | UX correctness, not cost | ☑ (the account API applies `task`, `hide_experimental` and `include_deprecated`; the per-row `function_calling` flag is applied here, failing soft — a row with no `properties` is kept) |
 | 7 | §2.3 family-based pairs | wait until the model list outgrows hand-editing | ☐ |
 | 8 | H5 gate feedback: report into next-turn context + capped repair loop | the oracle must reach the model; step 1 was a live defect, not an optimisation | ☑ |
 
