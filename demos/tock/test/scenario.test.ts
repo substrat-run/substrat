@@ -1377,9 +1377,14 @@ describe('two kinds collapse into one thing you count', () => {
     const pair = maps.entries.filter(
       (m) => m.variant_key === 'track/activeDuration' && m.output_key === 'engagement',
     );
-    expect(pair.map((m) => m.version)).toEqual([1, 2]);
+    // Ascending, and more than one — stated as a shape rather than as `[1, 2]` so a case
+    // added between 27 and here can save another version without this becoming its problem.
+    const versions = pair.map((m) => m.version);
+    expect(versions.length).toBeGreaterThan(1);
+    expect(versions).toEqual([...versions].sort((x, y) => x - y));
     // Spelled out because it is the trap: the FIRST match is the superseded one.
-    expect(pair[0]!.version).toBe(1);
+    expect(versions[0]).toBe(Math.min(...versions));
+    expect(versions[0]).toBeLessThan(versions[versions.length - 1]!);
 
     // The shapes page is ordered by key, not by recency, for the same reason.
     const outs = await ines.invoke<{ entries: { key: string; version: number }[] }>(
