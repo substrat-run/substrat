@@ -74,6 +74,28 @@ export const instant = z
   .brand<'Instant'>();
 export type Instant = z.infer<typeof instant>;
 
+/**
+ * A calendar date — `YYYY-MM-DD`, no time, no zone (#117).
+ *
+ * The other half of the platform's time contract. An `instant` is a moment,
+ * stored as UTC ISO 8601 text; a `calendarDate` is a day on a wall calendar —
+ * a leave day, a due date, an accounting period boundary — and it carries NO
+ * implicit midnight: the same date is a different instant in every zone, and
+ * which one is a question for the screen rendering it, never for storage.
+ * The two must never be compared with, or coerced into, each other: an instant
+ * truncated to its first ten characters is the UTC day, which is the wrong
+ * day for every user east or west of Greenwich part of the time.
+ *
+ * `z.iso.date()` rather than a shape regex: it checks the month and the day,
+ * so `2026-02-30` is refused, and it emits `format: date` in the OpenAPI a
+ * vertical publishes. Deliberately UNBRANDED, unlike `instant`: a date is
+ * already its own shape, a `"2026-02-28"` cannot be mistaken for an instant
+ * or an id, and staying a plain `string` lets an engine adopt this for a
+ * field it already exposes without changing any caller's type.
+ */
+export const calendarDate = z.iso.date();
+export type CalendarDate = z.infer<typeof calendarDate>;
+
 // Module-namespaced permission key, e.g. 'workorder:create'
 export const permissionKey = z
   .string()

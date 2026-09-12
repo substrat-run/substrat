@@ -355,6 +355,23 @@ describe('engine-absence', () => {
     ).rejects.toThrow();
   });
 
+  it('a leave day is a calendar date, not a shape — an impossible day is refused (#117)', async () => {
+    await h.run((ctx) => accrue(ctx), ALL);
+    const requester = await h.as([PERM.request, PERM.read]);
+    const request = (startDate: string) =>
+      requester.invoke('absence/request', {
+        subject: subj(1),
+        leaveTypeKey: 'vacation',
+        startDate,
+        endDate: '2030-07-05',
+        days: '1',
+      });
+    await expect(request('2030-13-45')).rejects.toThrow(); // the old regex took this
+    await expect(request('2030-02-30')).rejects.toThrow();
+    await expect(request('2030-07-01T00:00:00Z')).rejects.toThrow(); // an instant is not a day
+    await expect(request('2030-07-01')).resolves.toMatchObject({ status: 'requested' });
+  });
+
   it('a requester cannot decide; an approver can', async () => {
     await h.run((ctx) => accrue(ctx), ALL);
     const requester = await h.as([PERM.request, PERM.read]);

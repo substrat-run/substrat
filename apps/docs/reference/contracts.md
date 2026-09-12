@@ -22,7 +22,8 @@ Branded ULID types — opaque, sortable, no PII, and unmixable at compile time:
 | `eventId` | `EventId` | |
 | `dataSubjectId` | `DataSubjectId` | keys crypto-shredding erasure |
 | `moduleId` | `ModuleId` | npm-package-shaped: `@substrat-run/engine-workorder` |
-| `instant` | `Instant` | ISO 8601 with timezone; stamped kernel-side |
+| `instant` | `Instant` | ISO 8601 with timezone, normalised to UTC; stamped kernel-side |
+| `calendarDate` | — | `YYYY-MM-DD`, a real month/day check, no time and no zone — a day, never an implicit midnight; never compared with or coerced into an `instant` |
 | `permissionKey` | `PermissionKey` | module-namespaced: `workorder:create` |
 | `slug` | — | URL-safe identifier |
 
