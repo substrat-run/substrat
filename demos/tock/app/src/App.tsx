@@ -712,10 +712,29 @@ function Outputs({ sourceKey, onDone }: { sourceKey: string; onDone: () => void 
     ]);
     if (!isCurrent(token)) return;
     // Latest version per key; earlier ones describe shapes nothing is counted under now.
+    // Reduced BY VERSION, not by arrival order: the page comes back ordered by `key`, the
+    // first declared sortable column, so "the last row for a key wins" is the newest one
+    // only by way of the id tiebreak underneath it — a coincidence the screen should not
+    // be reading a shape's fields out of.
     const latest = new Map<string, { key: string; version: number; fields_json: string }>();
-    for (const o of outs) latest.set(o.key, o);
+    for (const o of outs) {
+      const held = latest.get(o.key);
+      if (!held || o.version > held.version) latest.set(o.key, o);
+    }
     setOutputs([...latest.values()]);
-    setMappings(maps);
+    // Same reduction for mappings, and here the ordering genuinely bites: the page is
+    // ordered by `variant_key`, so picking a (kind, output) pair out of it with `find`
+    // lands on v1 — reopening an edited mapping would show rules that were superseded
+    // and save them forward as a new version. The count beside each shape counted every
+    // historical row too. The server keeps the whole history and still allocates the
+    // next version from MAX(version); the screen shows what is in force.
+    const inForce = new Map<string, (typeof maps)[number]>();
+    for (const m of maps) {
+      const at = JSON.stringify([m.variant_key, m.output_key]);
+      const held = inForce.get(at);
+      if (!held || m.version > held.version) inForce.set(at, m);
+    }
+    setMappings([...inForce.values()]);
     setKinds(vars.variants.map((v) => v.key));
     // What has actually ARRIVED, which is a better offer than what someone declared: you map
     // from the file, and a field nobody modelled is exactly the one worth mapping.
@@ -728,6 +747,11 @@ function Outputs({ sourceKey, onDone }: { sourceKey: string; onDone: () => void 
     setVariantKey('');
     setRules({});
     setOutputs([]);
+    // The half-built declaration goes with the source it was being built from. Left
+    // standing, the next `Declare shape` press would send the previous source's fields
+    // under this source's key — fields this source may never have seen arrive.
+    setDraft({});
+    setNewKey('');
     void reload().catch(() => undefined);
   }, [sourceKey, reload]);
 

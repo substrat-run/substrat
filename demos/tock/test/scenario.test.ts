@@ -1348,4 +1348,45 @@ describe('two kinds collapse into one thing you count', () => {
       }),
     ).rejects.toThrow(/at most 1 measure/);
   });
+  /**
+   * What a LISTING hands back, as opposed to what is in force — the distinction any screen
+   * over these two operations has to make for itself.
+   *
+   * Both keep every version: that is the point of them, and the run in test 28 is
+   * explainable only because the superseded rows are still there. But neither listing puts
+   * the newest first — `list-mappings` is ordered by `variant_key` and `list-output-schemas`
+   * by `key`, each the first column its paged read declares sortable — so pulling a pair out
+   * of a page with `find` lands on v1, and counting the rows for a shape counts its history.
+   * Asserted here because the Outputs screen reduces by version to avoid exactly that, and
+   * nothing else would notice if the ordering quietly changed underneath it.
+   */
+  it('33 — the listings return every version, oldest first, so a reader must reduce by version', async () => {
+    const ines = await as('ines');
+    // A second version of one pair, so there is a history to be wrong about.
+    await ines.invoke('tock/save-mapping', {
+      sourceKey: SRC,
+      variantKey: 'track/activeDuration',
+      outputKey: 'engagement',
+      rules: [{ from: 'duration', to: 'seconds' }, { from: 'country', to: 'country' }],
+    });
+
+    const maps = await ines.invoke<{ entries: { variant_key: string; output_key: string; version: number }[] }>(
+      'tock/list-mappings',
+      { sourceKey: SRC },
+    );
+    const pair = maps.entries.filter(
+      (m) => m.variant_key === 'track/activeDuration' && m.output_key === 'engagement',
+    );
+    expect(pair.map((m) => m.version)).toEqual([1, 2]);
+    // Spelled out because it is the trap: the FIRST match is the superseded one.
+    expect(pair[0]!.version).toBe(1);
+
+    // The shapes page is ordered by key, not by recency, for the same reason.
+    const outs = await ines.invoke<{ entries: { key: string; version: number }[] }>(
+      'tock/list-output-schemas',
+      { sourceKey: SRC },
+    );
+    const keys = outs.entries.map((o) => o.key);
+    expect(keys).toEqual([...keys].sort());
+  });
 });
