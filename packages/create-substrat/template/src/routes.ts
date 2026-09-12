@@ -1,92 +1,53 @@
 import type { Context, Hono } from 'hono';
-import { problemResponse } from '@substrat-run/vertical-host';
-import {
-  isPage,
-  listPageQuery,
-  LIST_SORT_PARAM,
-  nextPageLink,
-  PAGE_LINK_HEADER,
-  PAGE_TOTAL_HEADER,
-} from '@substrat-run/contracts';
-import type { ScopeStub } from '@substrat-run/kernel';
+import { mountOperations, problemResponse, type ResolveStub } from '@substrat-run/vertical-host';
+import { bikeShopEngineRoutes, bikeShopInvoicingRoutes, bikeShopOperations } from './operations.js';
 
 /**
- * The bike shop's HTTP API — ONE route table, adapter- and auth-agnostic.
+ * The bike shop's HTTP API — derived from the declared operations, adapter- and
+ * auth-agnostic.
  *
  * Both entrypoints mount this: `server.ts` (node, pure-SQLite adapter, OIDC against the
  * local dev issuer) and `worker.ts` (Cloudflare, Durable-Object adapter, the auth seam). Each
  * supplies a `resolveStub` that authenticates the caller its own way and returns a
- * capability `ScopeStub`; every route here is a thin wrapper over ONE operation, with
- * no business logic — the rules live in an operation or an engine.
+ * capability `ScopeStub`; every route is a thin wrapper over ONE operation, with no
+ * business logic — the rules live in an operation or an engine.
  *
  * Sharing the table is the point. A route added to only one entrypoint is a surface
  * that exists in dev and 404s in production (or the reverse), and nothing catches it
  * until deploy: the scenario tests call operations directly and never boot either host.
- * Add a route HERE and it is live on both.
- *
  * What each entrypoint still owns is only what is genuinely its own: how it builds a
- * host, how it resolves a caller, and its own auth-shaped routes (`/api/cast` in dev,
- * `/api/me` in the worker) — those answer "who am I on THIS host" and cannot be shared.
+ * host, how it resolves a caller, and its own auth-shaped routes (`/api/auth/*` and
+ * `/api/me` in dev, `/api/me` in the worker) — those answer "who am I on THIS host"
+ * and cannot be shared.
+ *
+ * ## Why there is no table here
+ *
+ * There was one, and every line of it restated something the operations already
+ * declare: the method, the path, which input fields the path carries, and — for a
+ * paged read — that the page trio must be forwarded in and the entries handed back
+ * as the body with the walk in a `Link` header. Two helpers held that last part
+ * together by hand, and every route that invoked a paged operation had to remember
+ * to call both. `mountOperations` derives all of it from the `http` each operation
+ * declares in `src/operations.ts`: it orders static path segments ahead of their
+ * parameter siblings, coerces query values per the declared shape, pins a
+ * `z.literal` input the caller must not choose, projects a `Page<T>` onto the wire,
+ * and turns the kernel's own refusals into their status. A new operation is on
+ * both hosts the moment it declares `http`, and there is no second list to drift.
  */
-export type ResolveStub = (c: Context) => Promise<ScopeStub>;
+export type { ResolveStub };
 
-/**
- * The page trio, off the query string — what a route hands a PAGED operation.
- *
- * A paged read takes `limit`/`cursor` (and, where its declaration offers them,
- * `order`/`sort`) as ordinary input, so a route that forwards nothing pins its
- * endpoint to page one forever: the operation still pages, the caller just has
- * no way to say which page it wants. Parsed with the platform's own
- * `listPageQuery`, so this endpoint's default page size and its ceiling are the
- * same numbers every other list read on the platform uses — a hand-written route
- * table is not a licence to invent a second convention.
- *
- * `order` and `sort` travel only when asked for, so the DECLARATION's own
- * defaults stay the answer when a caller says nothing.
- */
-function pageInput(c: Context): Record<string, unknown> {
-  const q = c.req.query();
-  const page = listPageQuery.parse({ limit: q['limit'], cursor: q['cursor'], order: q['order'] });
-  return {
-    limit: page.limit,
-    ...(page.cursor === undefined ? {} : { cursor: page.cursor }),
-    ...(page.order === undefined ? {} : { order: page.order }),
-    ...(q[LIST_SORT_PARAM] === undefined ? {} : { sort: q[LIST_SORT_PARAM] }),
-  };
-}
+/** Every operation that carries a URL: this vertical's own, and the two engines it composes. */
+const ROUTED = {
+  ...bikeShopOperations,
+  ...bikeShopEngineRoutes,
+  ...bikeShopInvoicingRoutes,
+};
 
-/**
- * A page's answer on the WIRE: the entries are the body, the walk rides in
- * headers (`Link: <…?cursor=…>; rel="next"`, RFC 8288).
- *
- * The operation's own shape stays `Page<T>` — a test, a seed or another
- * operation must be able to walk a list with no HTTP response to read headers
- * off — so this is a projection at the edge, not a change to what the operation
- * returns. Adopting paging then costs a client nothing: a list endpoint returns
- * the array it always returned and gains a walk it did not have.
- *
- * `isPage` is CHECKED rather than assumed, so an operation that has not adopted
- * `pageOf` yet reaches the client unchanged instead of being emptied into a body
- * of `undefined`.
- *
- * This is the same projection `mountOperations` (@substrat-run/vertical-host)
- * performs for a declared surface. This route table is hand-written, so it does
- * it here — one helper, used by every paged read below.
- */
-function pageJson(c: Context, result: unknown): Response {
-  if (!isPage(result)) return c.json(result as never);
-  const link = nextPageLink(c.req.url, result.nextCursor);
-  if (link) c.header(PAGE_LINK_HEADER, link);
-  const total = (result as { total?: unknown }).total;
-  if (typeof total === 'number') c.header(PAGE_TOTAL_HEADER, String(total));
-  return c.json(result.entries as never);
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): void {
-  const S = resolveStub;
-  const body = (c: Context) => c.req.json<Record<string, unknown>>();
-
+export function mountApi(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  app: Hono<any, any, any>,
+  resolveStub: ResolveStub,
+): { operation: string; method: string; path: string }[] {
   /**
    * One error vocabulary, shared with the platform surface: `problemResponse`
    * (@substrat-run/vertical-host) is built on the same `classifyError` that
@@ -105,115 +66,21 @@ export function mountApi(app: Hono<any, any, any>, resolveStub: ResolveStub): vo
    * it here is what gives `server.ts`, which mounts no platform surface, the same
    * behaviour.
    */
-  app.onError((err, c) => problemResponse(c, err));
+  app.onError((err, c: Context) => problemResponse(c, err));
 
-  // -- generic invoke ---------------------------------------------------------
-  // The kernel checks a permission inside EVERY operation, so a generic route is
-  // exactly as safe as one route per operation. It is the escape hatch that keeps a
-  // new operation reachable before it has a named route — on BOTH hosts, deliberately.
+  // The one hand-written route, registered BEFORE the derived table so the
+  // exception always wins. The kernel checks a permission inside EVERY operation,
+  // so a generic route is exactly as safe as one route per operation — and it is
+  // what keeps an operation reachable that has no URL of its own: an engine
+  // operation this vertical deliberately did not bind (`workorder/complete`, which
+  // `shop/complete-repair` wraps) is still callable here, on BOTH hosts.
   app.post('/api/invoke', async (c) => {
     const { op, input } = await c.req.json<{ op: string; input?: unknown }>();
-    return c.json((await (await S(c)).invoke(op, input)) ?? null);
+    return c.json((await (await resolveStub(c)).invoke(op, input)) ?? null);
   });
 
-  // -- customers, bikes, price list (the vertical's own tables) ---------------
-  app.get('/api/customers', async (c) =>
-    pageJson(c, await (await S(c)).invoke('shop/list-customers', pageInput(c))),
-  );
-  app.post('/api/customers', async (c) =>
-    c.json(await (await S(c)).invoke('shop/create-customer', await c.req.json())),
-  );
-  app.post('/api/customers/:id/bikes', async (c) =>
-    c.json(
-      await (await S(c)).invoke('shop/register-bike', {
-        customerId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.get('/api/prices', async (c) =>
-    pageJson(c, await (await S(c)).invoke('shop/price-list', pageInput(c))),
-  );
-  app.post('/api/prices', async (c) =>
-    c.json(await (await S(c)).invoke('shop/upsert-price', await c.req.json())),
-  );
-
-  // -- repairs ---------------------------------------------------------------
-  // create/complete/close are the VERTICAL's operations (they wrap the engine and own
-  // the pricing moment); assign/start/report/get/list are the ENGINE's own, invoked
-  // directly. Which is which is the composition boundary, visible right here.
-  app.get('/api/repairs', async (c) =>
-    pageJson(
-      c,
-      await (await S(c)).invoke('workorder/list', {
-        status: c.req.query('status'),
-        ...pageInput(c),
-      }),
-    ),
-  );
-  app.post('/api/repairs', async (c) =>
-    c.json(await (await S(c)).invoke('shop/create-repair', await c.req.json())),
-  );
-  app.get('/api/repairs/:id', async (c) =>
-    c.json(await (await S(c)).invoke('workorder/get', { orderId: c.req.param('id') })),
-  );
-  app.get('/api/repairs/:id/timeline', async (c) =>
-    pageJson(
-      c,
-      await (await S(c)).invoke('shop/timeline', {
-        entityType: 'workorder',
-        entityId: c.req.param('id'),
-        ...pageInput(c),
-      }),
-    ),
-  );
-  app.post('/api/repairs/:id/assign', async (c) =>
-    c.json(
-      await (await S(c)).invoke('workorder/assign', {
-        orderId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.post('/api/repairs/:id/start', async (c) =>
-    c.json(await (await S(c)).invoke('workorder/start', { orderId: c.req.param('id') })),
-  );
-  app.post('/api/repairs/:id/time', async (c) =>
-    c.json(
-      await (await S(c)).invoke('workorder/report-time', {
-        orderId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.post('/api/repairs/:id/material', async (c) =>
-    c.json(
-      await (await S(c)).invoke('workorder/report-material', {
-        orderId: c.req.param('id'),
-        ...(await body(c)),
-      }),
-    ),
-  );
-  app.post('/api/repairs/:id/complete', async (c) =>
-    c.json(await (await S(c)).invoke('shop/complete-repair', { orderId: c.req.param('id') })),
-  );
-  app.post('/api/repairs/:id/close', async (c) =>
-    c.json(await (await S(c)).invoke('shop/close-repair', { orderId: c.req.param('id') })),
-  );
-
-  // -- the customer portal (the per-entity proof walk) ------------------------
-  app.get('/api/portal/repairs', async (c) =>
-    pageJson(c, await (await S(c)).invoke('shop/portal-repairs', pageInput(c))),
-  );
-
-  // -- invoicing (the sibling engine, fed by event) ---------------------------
-  app.get('/api/invoicing', async (c) =>
-    pageJson(c, await (await S(c)).invoke('invoicing/list', pageInput(c))),
-  );
-  app.get('/api/invoicing/:id', async (c) =>
-    c.json(await (await S(c)).invoke('invoicing/get', { underlagId: c.req.param('id') })),
-  );
-  app.post('/api/invoicing/:id/export', async (c) =>
-    c.json(await (await S(c)).invoke('invoicing/export', { underlagId: c.req.param('id') })),
-  );
+  // Returns what it mounted, in registration order — a test asserts on the count,
+  // so a derived table that silently mounted nothing fails loudly rather than
+  // passing over an empty app.
+  return mountOperations(app, ROUTED, resolveStub);
 }

@@ -1,10 +1,17 @@
-import { defineOperations, money, timelineEntry, z } from '@substrat-run/contracts';
-import { billableLine, workOrder, workorderEntities } from '@substrat-run/engine-workorder';
+import { defineEngineRoutes, defineOperations, money, timelineEntry, z } from '@substrat-run/contracts';
+import { invoicingOperations } from '@substrat-run/engine-invoicing';
+import {
+  billableLine,
+  workOrder,
+  workorderEntities,
+  workorderOperations,
+} from '@substrat-run/engine-workorder';
 import { bikeShopEntities } from './entities.js';
 
 // ============================================================================
 // The bike shop's DECLARED OPERATION SURFACE — what each operation accepts,
-// what it answers with, and which permission gates it.
+// what it answers with, which permission gates it, and where it lives in the
+// HTTP API.
 //
 // This is one declaration, not documentation of another one. `src/module.ts`
 // binds its handlers to this object with `satisfies OperationImpl<…>`, so four
@@ -12,7 +19,10 @@ import { bikeShopEntities } from './entities.js';
 // disagrees with `input`, one whose return disagrees with `output`, an
 // operation declared and not implemented, and one implemented and not declared.
 // `operationInputsOf(bikeShopOperations)` hands the host the same schemas, so
-// every invocation is parsed before the guards and the handler.
+// every invocation is parsed before the guards and the handler — and
+// `mountOperations` (src/routes.ts) derives the route table from the `http`
+// each operation declares, so a `{var}` in a path that names no input field is
+// a compile error too, and there is no second list of routes to drift.
 // ============================================================================
 
 /**
@@ -100,10 +110,12 @@ export const bikeShopOperations = defineOperations(
     }),
     // The row shape comes from the registry — not restated here.
     output: bikeShopEntities.customer.fields,
+    http: { method: 'POST', path: '/customers' },
   },
   'shop/list-customers': {
     summary: 'List customers with the bikes they have registered',
     permission: 'customer:manage',
+    http: { method: 'GET', path: '/customers' },
     // The ENTRY, not the envelope — `paged` wraps it. The page also BOUNDS the
     // hydration: one bikes query per customer ON THE PAGE, where an unpaged read
     // ran one per customer in the scope.
@@ -124,6 +136,8 @@ export const bikeShopOperations = defineOperations(
       frameNo: z.string().min(1).optional(),
     }),
     output: bikeShopEntities.bike.fields,
+    // `{customerId}` must name an input field, and the compiler checks that it does.
+    http: { method: 'POST', path: '/customers/{customerId}/bikes' },
   },
   'shop/upsert-price': {
     summary: 'Create or update a price-list article',
@@ -138,11 +152,13 @@ export const bikeShopOperations = defineOperations(
       internal: z.boolean().optional(),
     }),
     output: priceRow,
+    http: { method: 'POST', path: '/prices' },
   },
   'shop/price-list': {
     summary: 'The workshop price list',
     permission: 'customer:manage',
     output: priceRow,
+    http: { method: 'GET', path: '/prices' },
     // Handler-composed rather than `over`: `shop_price_list` is value-keyed and
     // deliberately not a declared entity, so the registry has no table for the
     // kernel to index. It still pages, and still carries a cursor.
@@ -163,18 +179,21 @@ export const bikeShopOperations = defineOperations(
     // and NOT the row: the engine stores `facility_type`/`facility_id` as two
     // snake_case columns and publishes one `EntityRef` in camelCase.
     output: workOrder,
+    http: { method: 'POST', path: '/repairs' },
   },
   'shop/complete-repair': {
     summary: 'Complete a repair and price its billable lines',
     permission: 'workorder:complete',
     input: z.object({ orderId: z.string().min(1) }),
     output: z.object({ order: workOrder, billable: z.array(billableLine), total: money }),
+    http: { method: 'POST', path: '/repairs/{orderId}/complete' },
   },
   'shop/close-repair': {
     summary: 'Hand the bike back — completed to closed',
     permission: 'workorder:close',
     input: z.object({ orderId: z.string().min(1) }),
     output: workOrder,
+    http: { method: 'POST', path: '/repairs/{orderId}/close' },
   },
   'shop/portal-repairs': {
     summary: 'The repairs visible to the calling portal customer',
@@ -195,6 +214,7 @@ export const bikeShopOperations = defineOperations(
     // compose. It pages by OVER-fetching, so a SHORT page does not end the walk
     // — only an absent cursor does.
     paged: { sortKey: 'id' },
+    http: { method: 'GET', path: '/portal/repairs' },
   },
   'shop/timeline': {
     summary: 'The event timeline for one repair',
@@ -213,5 +233,46 @@ export const bikeShopOperations = defineOperations(
     // The cursor is `id` — the event's ULID, which IS this entity's version at
     // that point.
     paged: { sortKey: 'id' },
+    // The path carries `entityId` alone. `entityType` is the literal above, and
+    // `mountOperations` PINS a literal — it goes into the payload before anything
+    // the caller sent, so a caller cannot talk this route into another entity type.
+    http: { method: 'GET', path: '/repairs/{entityId}/timeline' },
   },
+});
+
+/**
+ * Where the composed engines' operations live in this vertical's API.
+ *
+ * An engine declares no `http`, and should not: it is entity-agnostic and does
+ * not own a URL shape — this shop calls a work order a repair, and the path is
+ * the shop's decision. A binding is a name and a path; the summary, the input
+ * schema and the return shape all come from the engine, so nothing here
+ * restates anything. Bind a `{var}` the engine's input does not accept and it
+ * does not compile; bind a name the engine does not have and it throws when the
+ * module loads.
+ *
+ * `workorder/complete` and `workorder/close` are deliberately NOT bound: the
+ * shop wraps them (`shop/complete-repair` owns the pricing moment,
+ * `shop/close-repair` the handback) and a route straight to the engine would
+ * skip that. Which operations are the vertical's and which are the engine's,
+ * invoked directly, is the composition boundary — visible right here.
+ */
+export const bikeShopEngineRoutes = defineEngineRoutes(workorderOperations)({
+  'workorder/list': { method: 'GET', path: '/repairs' },
+  'workorder/get': { method: 'GET', path: '/repairs/{orderId}' },
+  'workorder/assign': { method: 'POST', path: '/repairs/{orderId}/assign' },
+  'workorder/start': { method: 'POST', path: '/repairs/{orderId}/start' },
+  'workorder/report-time': { method: 'POST', path: '/repairs/{orderId}/time' },
+  'workorder/report-material': { method: 'POST', path: '/repairs/{orderId}/material' },
+});
+
+/**
+ * The invoicing engine's operations (the sibling engine, fed by event). All
+ * three, because this engine's callable surface is reads and one export — there
+ * is nothing to create, so there is no constant for the shop to pin.
+ */
+export const bikeShopInvoicingRoutes = defineEngineRoutes(invoicingOperations)({
+  'invoicing/list': { method: 'GET', path: '/invoicing' },
+  'invoicing/get': { method: 'GET', path: '/invoicing/{underlagId}' },
+  'invoicing/export': { method: 'POST', path: '/invoicing/{underlagId}/export' },
 });

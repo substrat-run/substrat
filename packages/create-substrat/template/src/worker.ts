@@ -314,7 +314,7 @@ app.all('/api/*', (c) => c.json({ error: `unknown route: ${new URL(c.req.raw.url
 app.all('*', (c) =>
   c.json({
     service: 'substrat vertical',
-    api: 'POST /api/invoke { op, input } — plus the named routes in src/routes.ts',
+    api: 'POST /api/invoke { op, input } — plus the routes declared on the operations in src/operations.ts',
     docs: 'https://substrat.net',
   }),
 );
