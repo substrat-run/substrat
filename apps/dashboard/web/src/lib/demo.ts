@@ -484,17 +484,16 @@ export const ROLE_OPTS = ['Owner', 'Admin', 'Member', 'Viewer'];
 export const RANGE_OPTS = ['Last 7 days', 'Last 24 hours', 'Last 30 days', 'Custom'];
 export const APP_FILTER = ['All apps', 'Acme HR', 'Acme Legal', 'Acme Field Ops'];
 
-/** The per-app detail tabs. Environment / Domains / Integrations live as sections
- *  inside Settings; old tab URLs are aliased in AppDetail. */
-export const APP_TABS: Array<{ value: string; label: string; count?: number; future?: boolean }> = [
+/** The per-app detail tabs — the four every service page in the field has (Vercel:
+ *  Project · Deployments · Storage · Settings), rather than one tab per feature in
+ *  merge order. Everything read-only about the RUNNING VERSION (schema, permissions)
+ *  is a fact about the version, not a noun of the instance, so it lives inside Data or
+ *  Settings; the cross-app views (Observability, Audit) belong to the team and live in
+ *  the left menu. Old tab URLs are aliased in AppDetail. See #1447. */
+export const APP_TABS: Array<{ value: string; label: string; count?: number }> = [
   { value: 'overview', label: 'Overview' },
+  { value: 'deployments', label: 'Deployments' },
   { value: 'data', label: 'Data' },
-  { value: 'model', label: 'Model' },
-  { value: 'deployments', label: 'Deployments', future: true },
-  { value: 'observability', label: 'Observability' },
-  { value: 'permissions', label: 'Permissions' },
-  { value: 'audit', label: 'Audit' },
-  { value: 'previews', label: 'Previews' },
   { value: 'settings', label: 'Settings' },
 ];
 
