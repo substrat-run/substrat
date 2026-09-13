@@ -21,7 +21,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { SweepRunEntry } from '@substrat-run/contracts';
-import { parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
+import { parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -2230,7 +2230,11 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         declaredComplete: true,
         connections: [],
       }),
-      operations: deriveOperationHealth({ observed: [], observedComplete: true, denials: [] }),
+      operations: deriveOperationHealth({
+        observed: [],
+        observedComplete: true,
+        denials: { rows: [], held: 0, windowOldestAt: null },
+      }),
       graph: deriveFlowGraph({
         declaredEvents: null,
         schedules: [],
@@ -2253,8 +2257,16 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
     // event. The one per-operation fact the platform actually records — nothing emits
     // a span for an operation, so there is no timing to be had (see #1237).
     cp.facetEvents(scope, { groupBy: 'operation', limit: FLOW_TYPE_LIMIT }),
-    // The refusal half. Capped like every other evidence read here.
-    cp.listDenials(scope, { limit: 400 }).catch(() => []),
+    // The refusal half: the log's own summary for how much it holds and how far back
+    // it reaches, and one page of rows at the route's ceiling for the per-operation
+    // counts (the summary buckets by actor and permission; there is no per-operation
+    // aggregate to ask for yet). Read together so the page is never reported without
+    // the facts that say what it covers. A failed read is passed on as null — an
+    // unread log must stay distinguishable from an empty one, or a retrieval failure
+    // renders as a clean bill.
+    Promise.all([cp.summarizeDenials(scope), cp.listDenials(scope, { limit: DENIAL_LIMIT_MAX })])
+      .then(([summary, rows]) => ({ rows, held: summary.total, windowOldestAt: summary.windowOldestAt }))
+      .catch(() => null),
     // Revoked ones included deliberately: a revoked connection is a DIFFERENT
     // finding from none at all, and the default filter would hide it behind the
     // wrong one.
@@ -2293,7 +2305,14 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         .filter((b): b is { value: string; count: number; lastSeen: string | null } => b.value !== null)
         .map((b) => ({ operation: b.value, count: b.count, lastSeen: b.lastSeen })),
       observedComplete: !byOperation.truncated,
-      denials: denials.map((d) => ({ operation: d.operation, at: d.at })),
+      denials:
+        denials === null
+          ? null
+          : {
+              rows: denials.rows.map((d) => ({ operation: d.operation, at: d.at })),
+              held: denials.held,
+              windowOldestAt: denials.windowOldestAt,
+            },
     }),
     graph: deriveFlowGraph({
       declaredEvents: flow.declaredEvents,

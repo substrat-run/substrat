@@ -1196,15 +1196,19 @@ function FlowMap({ graph, app, onTab }: { graph: FlowGraph; app: AppRow; onTab: 
  */
 function OperationHealth({ view }: { view: OperationHealthView }) {
   if (view.rows.length === 0) return null;
-  const since = view.refusalsSince ? new Date(view.refusalsSince).toLocaleDateString() : null;
+  const refusals = view.refusals;
+  const since = refusals?.since ? new Date(refusals.since).toLocaleDateString() : null;
+  // A count from a capped page is a floor: the page held the newest rows, and this
+  // operation's older refusals may lie beyond it.
+  const atLeast = refusals !== null && !refusals.complete;
 
   return (
     <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
       <div>
         <h3 style={{ margin: 0, fontSize: 15 }}>Operations</h3>
         <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          What each operation has recorded. An operation that raises no events does not appear here
-          however often it runs &mdash; this counts events, not calls.
+          What each operation has recorded. The count is events, not calls: an operation that raises
+          no events shows nothing here however often it runs, and appears only if it has been refused.
         </p>
       </div>
 
@@ -1212,6 +1216,14 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
           More operations have recorded events than can be counted in one pass, so this is the
           busiest of them rather than all of them.
+        </p>
+      )}
+
+      {atLeast && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          The refusal log holds {refusals.held.toLocaleString()} entries and only the newest{' '}
+          {refusals.counted.toLocaleString()} are counted here, so a refusal count is a floor and an
+          operation refused only earlier may be missing.
         </p>
       )}
 
@@ -1231,7 +1243,7 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
             <span style={{ color: 'var(--text-tertiary)', minWidth: 110, textAlign: 'right', fontSize: 11.5 }}>
               {r.lastSeen ? new Date(r.lastSeen).toLocaleDateString() : '—'}
             </span>
-            {r.refusals > 0 && (
+            {r.refusals !== null && r.refusals > 0 && (
               <span
                 style={{
                   fontSize: 11,
@@ -1246,7 +1258,7 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
                     : 'permission refusals recorded for this operation'
                 }
               >
-                {r.refusals} refused{r.refusedOnly ? ', nothing emitted' : ''}
+                {atLeast ? `${r.refusals}+` : r.refusals} refused{r.refusedOnly ? ', nothing emitted' : ''}
               </span>
             )}
           </div>
@@ -1254,9 +1266,12 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
       </div>
 
       <p style={{ margin: 0, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
-        {since
-          ? `Refusals counted from ${since}. Older ones are no longer held, so no badge does not mean an operation has never been refused.`
-          : 'No refusals are currently held for this app.'}
+        {/* An unread log is not an empty one: no badges here mean nothing about refusals. */}
+        {refusals === null
+          ? 'The refusal log could not be read, so no operation here carries a refusal count.'
+          : since
+            ? `Refusals counted from ${since}. Older ones are no longer held, so no badge does not mean an operation has never been refused.`
+            : 'No refusals are currently held for this app.'}
       </p>
     </div>
   );
