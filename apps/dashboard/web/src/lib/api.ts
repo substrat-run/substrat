@@ -497,10 +497,39 @@ export interface FlowGraph {
   declaredComplete: boolean;
 }
 
+/** One operation's recorded facts (#1234). */
+export interface OperationHealthRow {
+  operation: string;
+  /** Events it emitted; null when the facet could not say. */
+  events: number | null;
+  lastSeen: string | null;
+  /** Refusals in the page read; null when the log could not be read. A floor unless `refusals.complete`. */
+  refusals: number | null;
+  /** True when refusals are the ONLY evidence — the facet was complete and it has emitted nothing. */
+  refusedOnly: boolean;
+}
+
+/** What the refusal side can vouch for; null on the view when the log could not be read. */
+export interface RefusalWindow {
+  /** True when the page held every row the log holds, so counts are exact. */
+  complete: boolean;
+  held: number;
+  counted: number;
+  /** Oldest refusal still held. Those rows drain, so 0 never means "never refused". */
+  since: string | null;
+}
+
+export interface OperationHealthView {
+  rows: OperationHealthRow[];
+  observedComplete: boolean;
+  refusals: RefusalWindow | null;
+}
+
 /** The flow read: the same declarations projected as a list and as a map. */
 export interface FlowView {
   findings: FlowFindingsView;
   graph: FlowGraph;
+  operations: OperationHealthView;
 }
 
 /** One declared-vs-observed finding (#1234). */
