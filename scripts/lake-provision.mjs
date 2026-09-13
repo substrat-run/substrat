@@ -12,6 +12,7 @@
  *   node scripts/lake-provision.mjs --dry-run          # print the commands, token redacted
  *   node scripts/lake-provision.mjs                    # create whatever is missing
  *   node scripts/lake-provision.mjs --env test
+ *   node scripts/lake-provision.mjs --recreate         # only while the lake is EMPTY
  *
  * Idempotent by listing first: an existing stream/sink/pipeline is reported and left
  * alone, never recreated. So this is safe to re-run, and re-running it is how you find
@@ -21,6 +22,14 @@
  * no update for a stream's schema or a sink's rolling policy, and a delete-and-recreate
  * would orphan the Iceberg table the sink is committing to. A drifted account is
  * reported for a human to resolve, because the resolution is never mechanical.
+ *
+ * `--recreate` is the one exception, and it is gated on the only condition that makes a
+ * teardown free: the bucket holding ZERO objects. An empty lake has no rows, no Iceberg
+ * metadata, and nothing referencing it, so tearing it down costs nothing and a schema
+ * mistake is repairable for as long as that stays true. One object in, and the same
+ * command refuses — because from then on it would be deleting history, which is the one
+ * thing this tier exists not to do. The check fails CLOSED: an object count it cannot
+ * parse is a refusal, not an assumption.
  *
  * The catalog token comes from secrets/platform.<env>.env (R2_LAKE_CATALOG_TOKEN), never
  * from argv — an argument lands in shell history and in the process list. See
@@ -82,6 +91,7 @@ const flag = (n) => {
   return i >= 0 ? argv[i + 1] : undefined;
 };
 const dryRun = has('dry-run');
+const recreate = has('recreate');
 const env = flag('env') ?? 'prod';
 const secretsFile = flag('file') ?? `secrets/platform.${env}.env`;
 
@@ -161,13 +171,57 @@ if (!catalogToken && !dryRun) {
   );
 }
 
+/**
+ * Objects currently in the lake bucket, or null if that could not be established.
+ *
+ * `bucket info` prints `object_count: N`. Anything else — a changed format, a failed
+ * call, an unparseable number — returns null, and every caller treats null as "not
+ * empty". The asymmetry is deliberate: guessing "empty" wrongly deletes history.
+ */
+function bucketObjectCount() {
+  const res = wrangler(['r2', 'bucket', 'info', LAKE.bucket], { capture: true });
+  if (res.status !== 0) return null;
+  const m = /object_count:\s*(\d+)/.exec(res.stdout ?? '');
+  return m ? Number(m[1]) : null;
+}
+
+if (recreate) {
+  const objects = bucketObjectCount();
+  if (objects !== 0) {
+    fail(
+      objects === null
+        ? `could not read ${LAKE.bucket}'s object count — refusing to recreate.\n` +
+            '  --recreate is only safe on a provably empty lake, and "could not tell" is not that.'
+        : `${LAKE.bucket} holds ${objects} object(s) — refusing to recreate.\n` +
+            '  Tearing the lake down now would delete history, which is what this tier is for.\n' +
+            '  A schema change on a lake with data in it is an Iceberg schema evolution, by hand.',
+    );
+  }
+  console.log('● recreate: bucket is empty — tearing down pipeline, sink, stream\n');
+  // Reverse dependency order: the pipeline references the sink and the stream, so it
+  // goes first. The bucket and its catalog stay — nothing is wrong with them, and an
+  // empty bucket has no table metadata to orphan.
+  for (const [label, kind, name] of [
+    ['pipeline', [], LAKE.pipeline],
+    ['sink', ['sinks'], LAKE.sink],
+    ['stream', ['streams'], LAKE.stream],
+  ]) {
+    if (!exists(kind, name)) {
+      console.log(`· delete ${label}: not present — nothing to do`);
+      continue;
+    }
+    step(`delete ${label}`, { args: ['pipelines', ...kind, 'delete', name, '--force'], skip: false });
+  }
+  console.log();
+}
+
 // The bucket and its catalog first — `sinks create` needs both, and both are safely
 // re-runnable (each command is a no-op on something that already exists).
 step('bucket', { args: ['r2', 'bucket', 'create', LAKE.bucket], skip: false });
 step('catalog', { args: ['r2', 'bucket', 'catalog', 'enable', LAKE.bucket], skip: false });
 
 step('stream', {
-  skip: exists(['streams'], LAKE.stream),
+  skip: recreate ? false : exists(['streams'], LAKE.stream),
   args: [
     'pipelines', 'streams', 'create', LAKE.stream,
     '--schema-file', LAKE.schemaFile,
@@ -181,7 +235,7 @@ step('stream', {
 });
 
 step('sink', {
-  skip: exists(['sinks'], LAKE.sink),
+  skip: recreate ? false : exists(['sinks'], LAKE.sink),
   args: [
     'pipelines', 'sinks', 'create', LAKE.sink,
     '--type', 'r2-data-catalog',
@@ -203,7 +257,7 @@ step('sink', {
 });
 
 step('pipeline', {
-  skip: exists([], LAKE.pipeline),
+  skip: recreate ? false : exists([], LAKE.pipeline),
   args: ['pipelines', 'create', LAKE.pipeline, '--sql', LAKE.sql(LAKE)],
 });
 
