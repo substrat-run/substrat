@@ -9,7 +9,7 @@ description: Piggyback Cloudflare; stamp only what Cloudflare cannot know.
 **Status:** **built** — metrics and logs surface in the console. **Extends:** [master-plan.md](../master-plan.md) §5.3 (Tier 3
 telemetry) and the "Observability per tenant" buy/build row. **Depends on:**
 [orchestration.md](./orchestration.md) (WfP dispatch namespace, D-34 platform-held
-credential), [dashboard-ui.md](../briefs/dashboard-ui.md) §4.9 (the Analytics screen this doc gives
+credential), [dashboard-ui.md](../briefs/dashboard-ui.md) §4.9 (the cross-app screen this doc gives
 a data source), [builder-plane.md](./builder/plane.md) (script → ownerTenant mapping).
 
 ## 1. Problem
@@ -21,8 +21,9 @@ Three audiences want request-level operational data, and none of them have it in
 - **Builders** who `substrat push` a vertical have *no* path to its logs or metrics at all:
   the platform holds the Cloudflare credential (D-34), the builder never does, and there is
   no proxied read surface.
-- **Tenant admins** see the dashboard's Analytics screen, which is demo constants marked
-  "Preview" (dashboard-ui §4.9 left the metrics source explicitly undefined).
+- **Tenant admins** saw the dashboard's Analytics screen, which was demo constants marked
+  "Preview" (dashboard-ui §4.9 left the metrics source explicitly undefined). It is now the
+  Observability page — team-level, with an app filter — reading the tenant grain below (#1447).
 
 Meanwhile the platform already pays for observability it doesn't surface: every worker has
 `observability: { enabled: true }`, and Cloudflare records per-script invocation analytics
@@ -85,9 +86,13 @@ logs belonged to the vertical's builder. That is true at script grain and is not
 to "how is my app doing", which is a question about the installation rather than the code.
 
 So the tenant grain is now **built**, and it is a genuinely separate path rather than a
-filter over the reads above — see §4.5. What a tenant admin wants from an "Analytics"
-screen is still **business activity** (jobs created, invoices sent), which is engine
-events / Tier 2 (master-plan §5.3) and remains out of scope here; this is the ops half.
+filter over the reads above — see §4.5. It is also what the dashboard's Observability page
+reads, in both its modes: one line per installed app across the team, or one app's traffic,
+logs, events and schedules. A vertical's publisher gets the same tenant grain there, and
+the page links up to the Vertical for the fleet answer, so the two questions each have one
+home. What a tenant admin wants from an "analytics" screen is still **business activity**
+(jobs created, invoices sent), which is engine events / Tier 2 (master-plan §5.3) and
+remains out of scope here; this is the ops half.
 
 ## 4. Design
 

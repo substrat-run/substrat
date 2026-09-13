@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
 
 /** The padded, centred content column every screen sits in (content-max default 1200). */
 export function Page({ children, maxWidth = 1200, style }: { children: ReactNode; maxWidth?: number; style?: CSSProperties }) {
@@ -64,6 +64,20 @@ export function Row({
   return (
     <div
       onClick={onClick}
+      // A clickable row is a control, so it is reachable and activatable without a
+      // mouse: focusable, announced as a button, and Enter/Space do what the click does.
+      // A row with no handler stays plain content and gets none of this.
+      {...(onClick
+        ? {
+            role: 'button',
+            tabIndex: 0,
+            onKeyDown: (e: KeyboardEvent<HTMLDivElement>) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return;
+              e.preventDefault();
+              onClick();
+            },
+          }
+        : {})}
       style={{
         display: 'grid',
         gridTemplateColumns: columns,

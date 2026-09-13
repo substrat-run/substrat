@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { instant, platformActorId, type ChannelHistoryEntry, type OpsFailureEntry, type Scope } from '@substrat-run/contracts';
-import { deriveReleaseComparison, deriveReleases, deriveTrafficSeries } from '../src/releases.js';
+import { deriveReleaseComparison, deriveReleases, deriveTeamSeries, deriveTrafficSeries } from '../src/releases.js';
 import { versionPair } from '../src/deployments.js';
 import type { Deployment } from '../src/deployments.js';
 
@@ -268,5 +268,84 @@ describe('deriveTrafficSeries (#1236) — the chart series and its markers', () 
     // The window still exists (so a caller CAN render an axis), but the caller is
     // told not to — an all-zero chart and "I could not look" are different answers.
     expect(series.buckets.every((b) => b.requests === 0)).toBe(true);
+  });
+});
+
+describe('deriveTeamSeries (#1447) — one line per installed app', () => {
+  const now = new Date('2026-09-08T12:00:00.000Z');
+  const A = '01J2Q8Z3V9K4W7X2M5N6P789AB';
+  const B = '01J2Q8Z3V9K4W7X2M5N6P7LEGA';
+
+  it('gives every named scope a series, even one that served nothing', () => {
+    const team = deriveTeamSeries({
+      hours: 2,
+      now,
+      scopeIds: [A, B],
+      buckets: [{ scopeId: A, start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 3, errors: 0 }],
+    });
+    // B installed and quiet is a fact; dropping its line would read as "never installed".
+    expect(team.series.map((s) => s.scopeId)).toEqual([A, B]);
+    expect(team.series[1]!.buckets).toHaveLength(3);
+    expect(team.series[1]!.buckets.every((b) => b.requests === 0 && b.errors === 0)).toBe(true);
+  });
+
+  it('snaps rows onto the grid and zero-fills the rest of the window', () => {
+    const team = deriveTeamSeries({
+      hours: 6,
+      now,
+      scopeIds: [A],
+      buckets: [
+        // Mid-bucket and out-of-window rows, the same two cases the release chart has.
+        { scopeId: A, start: '2026-09-08T11:30:00.000Z', bucketMinutes: 60, requests: 5, errors: 2 },
+        { scopeId: A, start: '2026-09-08T11:00:00.000Z', bucketMinutes: 60, requests: 10, errors: 1 },
+        { scopeId: A, start: '2026-09-01T11:00:00.000Z', bucketMinutes: 60, requests: 999, errors: 999 },
+        { scopeId: A, start: 'not-a-date', bucketMinutes: 60, requests: 7, errors: 7 },
+      ],
+    });
+    const line = team.series[0]!.buckets;
+    expect(line).toHaveLength(7);
+    expect(team.bucketMinutes).toBe(60);
+    expect(line.find((b) => b.start === '2026-09-08T11:00:00.000Z')).toMatchObject({ requests: 15, errors: 3 });
+    expect(line.reduce((n, b) => n + b.requests, 0)).toBe(15);
+  });
+
+  it('keeps two apps apart, so one busy app cannot lend its shape to a quiet one', () => {
+    const team = deriveTeamSeries({
+      hours: 1,
+      now,
+      scopeIds: [A, B],
+      buckets: [
+        { scopeId: A, start: '2026-09-08T12:00:00.000Z', bucketMinutes: 60, requests: 100, errors: 4 },
+        { scopeId: B, start: '2026-09-08T12:00:00.000Z', bucketMinutes: 60, requests: 7, errors: 0 },
+      ],
+    });
+    const at12 = (scopeId: string) =>
+      team.series.find((s) => s.scopeId === scopeId)!.buckets.find((b) => b.start === '2026-09-08T12:00:00.000Z');
+    expect(at12(A)).toMatchObject({ requests: 100, errors: 4 });
+    expect(at12(B)).toMatchObject({ requests: 7, errors: 0 });
+  });
+
+  it('drops rows for a scope the caller did not ask about', () => {
+    // The worker resolves scopes against the team's own apps, so this is belt and
+    // braces — but a stray scope's traffic silently summed into another app's line
+    // is exactly the misreading the scope dimension exists to prevent.
+    const team = deriveTeamSeries({
+      hours: 1,
+      now,
+      scopeIds: [A],
+      buckets: [
+        { scopeId: A, start: '2026-09-08T12:00:00.000Z', bucketMinutes: 60, requests: 2, errors: 0 },
+        { scopeId: '01J2Q8Z3V9K4W7X2M5N6P7XXXX', start: '2026-09-08T12:00:00.000Z', bucketMinutes: 60, requests: 500, errors: 9 },
+      ],
+    });
+    expect(team.series).toHaveLength(1);
+    expect(team.series[0]!.buckets.reduce((n, b) => n + b.requests, 0)).toBe(2);
+  });
+
+  it('says unavailable, and still returns one zero series per scope', () => {
+    const team = deriveTeamSeries({ hours: 24, now, scopeIds: [A, B], buckets: null });
+    expect(team.available).toBe(false);
+    expect(team.series.map((s) => s.scopeId)).toEqual([A, B]);
+    expect(team.series.every((s) => s.buckets.every((b) => b.requests === 0))).toBe(true);
   });
 });
