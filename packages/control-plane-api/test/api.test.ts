@@ -5067,6 +5067,72 @@ describe('control-plane API — observability proxy', () => {
       expect((await app.request('/observability/metrics', { headers: asBuilder })).status).toBe(403);
       expect((await app.request('/observability/logs', { headers: asBuilder })).status).toBe(403);
     });
+
+    /**
+     * The bucketed twin (#1447). A reader can carry the tenant aggregate and still have
+     * no time axis on it — so this is its own 501, not inherited from `tenantMetrics` —
+     * and the same forced-tenant rules hold, because it is the same grain.
+     */
+    describe('tenant-metrics-series', () => {
+      const seen: unknown[] = [];
+      const seriesReader = {
+        ...tenantReader,
+        tenantMetricsSeries: async (input: unknown) => {
+          seen.push(input);
+          return [
+            { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 12, errors: 1 },
+            { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 9, errors: 0 },
+          ];
+        },
+      };
+
+      it('501s when the reader has the aggregate but cannot bucket it', async () => {
+        const app = appWith(tenantReader); // tenantMetrics present, tenantMetricsSeries absent
+        const res = await app.request('/observability/tenant-metrics-series?scopeId=01SCOPE', { headers: asBuilder });
+        expect(res.status).toBe(501);
+      });
+
+      it('answers a bucketed series for the named scopes, tenant from the principal', async () => {
+        const app = appWith(seriesReader);
+        const res = await app.request('/observability/tenant-metrics-series?scopeId=01SCOPE&scopeId=01OTHER&hours=6', {
+          headers: asBuilder,
+        });
+        expect(res.status).toBe(200);
+        expect(await res.json()).toMatchObject([
+          { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 12 },
+          { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', requests: 9 },
+        ]);
+        expect(seen.at(-1)).toEqual({ tenantId: builderTenant, scopeIds: ['01SCOPE', '01OTHER'], hours: 6 });
+      });
+
+      it('ignores a tenantId a builder puts in the query, and requires one from staff', async () => {
+        const app = appWith(seriesReader);
+        const someoneElse = tenantId.parse(ulid());
+        const res = await app.request(`/observability/tenant-metrics-series?scopeId=01SCOPE&tenantId=${someoneElse}`, {
+          headers: asBuilder,
+        });
+        expect(res.status).toBe(200);
+        expect(seen.at(-1)).toMatchObject({ tenantId: builderTenant });
+        expect((await app.request('/observability/tenant-metrics-series?scopeId=01SCOPE', { headers: asStaff })).status).toBe(
+          400,
+        );
+        const staff = await app.request(`/observability/tenant-metrics-series?scopeId=01SCOPE&tenantId=${someoneElse}`, {
+          headers: asStaff,
+        });
+        expect(staff.status).toBe(200);
+        expect(seen.at(-1)).toMatchObject({ tenantId: someoneElse });
+      });
+
+      /** An unnarrowed ask is not on offer, and the window is bounded like its neighbours. */
+      it('refuses an ask that names no scope, and bounds the window', async () => {
+        const app = appWith(seriesReader);
+        expect((await app.request('/observability/tenant-metrics-series', { headers: asBuilder })).status).toBe(400);
+        expect(
+          (await app.request('/observability/tenant-metrics-series?scopeId=01SCOPE&hours=9000', { headers: asBuilder }))
+            .status,
+        ).toBe(400);
+      });
+    });
   });
 });
 

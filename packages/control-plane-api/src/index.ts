@@ -110,7 +110,12 @@ export type {
   CustomHostnameIssuance,
   ReconcileHostnamesResult,
 } from './custom-hostnames.js';
-export type { ObservabilityReader, ServiceMetricsRow, RecentLogEvent } from './observability.js';
+export type {
+  ObservabilityReader,
+  ServiceMetricsRow,
+  RecentLogEvent,
+  TenantMetricsBucket,
+} from './observability.js';
 export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';

@@ -310,3 +310,98 @@ describe('cf tenant metrics', () => {
     ).rejects.toThrow(/unexpected characters/);
   });
 });
+
+/**
+ * The bucketed twin (#1447). It reads the SAME dataset as the aggregate — the tenant
+ * dimension exists nowhere else — so what is worth pinning is that it inherits every
+ * guard the aggregate has (forced tenant, sampling weights, identifier and literal
+ * whitelists), buckets at the widths the script-grain series uses, and refuses a
+ * saturated page rather than handing back a prefix a chart would draw as an outage.
+ */
+describe('cf tenant metrics series', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const reader = () =>
+    createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'substrat_router_test' });
+
+  /** Stub the AE SQL endpoint, capturing the SQL and answering with the given rows. */
+  function stubSql(rows: Array<Record<string, unknown>>) {
+    const sent: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        sent.push(init.body);
+        return new Response(JSON.stringify({ data: rows }), { status: 200 });
+      }),
+    );
+    return sent;
+  }
+
+  it('rides the dataset switch: absent with no dataset, present beside the aggregate with one', () => {
+    expect(createCfObservabilityReader({ accountId: 'acct', apiToken: 't' }).tenantMetricsSeries).toBeUndefined();
+    expect(reader().tenantMetricsSeries).toBeTypeOf('function');
+  });
+
+  it('forces the tenant, narrows to the scope list, weights by the sample interval, and buckets by the window', async () => {
+    const sent = stubSql([]);
+    await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE', '01OTHER'], hours: 24 });
+    const sql = sent[0]!;
+    expect(sql).toContain("index1 = '01TENANT'");
+    expect(sql).toContain("blob2 IN ('01SCOPE', '01OTHER')");
+    expect(sql).toContain('sum(_sample_interval)');
+    expect(sql).not.toMatch(/\bcount\(\)/);
+    expect(sql).toContain("toStartOfInterval(timestamp, INTERVAL '60' MINUTE)");
+    expect(sql).toContain('FROM substrat_router_test');
+
+    await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 6 });
+    expect(sent[1]).toContain("toStartOfInterval(timestamp, INTERVAL '15' MINUTE)");
+  });
+
+  it('projects AE rows into ISO-instant buckets, sums as strings included', async () => {
+    stubSql([
+      { scopeId: '01SCOPE', start: '2026-09-13 10:00:00', requests: '40', errors: '2' },
+      { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', requests: 7, errors: 0 },
+      // A row with no instant cannot be placed on an axis and is dropped, not invented.
+      { scopeId: '01SCOPE', start: null, requests: '1', errors: '0' },
+    ]);
+    const rows = await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 24 });
+    expect(rows).toEqual([
+      { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 40, errors: 2 },
+      { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 7, errors: 0 },
+    ]);
+  });
+
+  it('answers an empty scope list with no rows and no query — never a widening', async () => {
+    const sent = stubSql([{ scopeId: 'X', start: '2026-09-13 10:00:00', requests: '1', errors: '0' }]);
+    expect(await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: [], hours: 24 })).toEqual([]);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('refuses a saturated page rather than returning a prefix a chart would zero-fill', async () => {
+    stubSql(
+      Array.from({ length: 5000 }, (_, i) => ({
+        scopeId: '01SCOPE',
+        start: `2026-09-13 10:${String(i % 60).padStart(2, '0')}:00`,
+        requests: '1',
+        errors: '0',
+      })),
+    );
+    await expect(
+      reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 24 }),
+    ).rejects.toThrow(/saturated/);
+  });
+
+  it('applies the same whitelists as the aggregate to the tenant and every scope', async () => {
+    stubSql([]);
+    await expect(
+      reader().tenantMetricsSeries!({ tenantId: "01T' OR 1=1 --", scopeIds: ['01SCOPE'], hours: 24 }),
+    ).rejects.toThrow(/unexpected characters/);
+    await expect(
+      reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE', "x') OR ('1'='1"], hours: 24 }),
+    ).rejects.toThrow(/unexpected characters/);
+    const bad = createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'x; DROP TABLE y' });
+    await expect(bad.tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 24 })).rejects.toThrow(
+      /bare identifier/,
+    );
+  });
+});

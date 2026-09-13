@@ -1110,6 +1110,36 @@ export class TenantNarrowedControlPlane {
     }));
   }
 
+  /**
+   * MY traffic, bucketed over time (#1447) — `tenantMetrics` with a time axis, one series
+   * per named app. Same grain, same narrowing, same reasoning: the tenant is fixed from the
+   * session and the scope list only narrows within it. The worker resolves that list through
+   * this tenant's own apps first, so what reaches the plane is already owned.
+   */
+  async tenantMetricsSeries(input: { scopeIds: string[]; hours: number }): Promise<
+    Array<{
+      scopeId: string;
+      start: string;
+      bucketMinutes: number;
+      requests: number;
+      errors: number;
+    }>
+  > {
+    const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
+    for (const s of input.scopeIds) q.append('scopeId', s);
+    const num = (v: unknown) => (typeof v === 'number' ? v : 0);
+    const rows =
+      (await this.call<Array<Record<string, unknown>>>(`/observability/tenant-metrics-series?${q.toString()}`)) ??
+      [];
+    return rows.map((r) => ({
+      scopeId: String(r['scopeId'] ?? ''),
+      start: String(r['start'] ?? ''),
+      bucketMinutes: num(r['bucketMinutes']),
+      requests: num(r['requests']),
+      errors: num(r['errors']),
+    }));
+  }
+
   /** MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above. */
   async tenantLogs(input: {
     scopeId?: string;

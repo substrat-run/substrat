@@ -930,6 +930,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     // there is no fleet-wide answer for a forgotten filter to fall back to. Narrowed in
     // the handler by the forced-filter pattern; the allowlist alone is not authz.
     { method: 'GET', re: /\/observability\/tenant-metrics$/ },
+    { method: 'GET', re: /\/observability\/tenant-metrics-series$/ },
     { method: 'GET', re: /\/observability\/tenant-logs$/ },
   ];
   app.use('*', async (c, next) => {
@@ -4403,6 +4404,31 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         hours: c.req.query('hours'),
       });
     return c.json(await options.observability.tenantMetrics(input));
+  });
+
+  // The bucketed twin (#1447): the series a team-level chart plots, one line per app.
+  // Same grain, same forced tenant, same 501 when the reader cannot bucket — an empty
+  // series would render as "quiet". `scopeId` repeats, like `service` on the script-grain
+  // series, so "all my apps" is one read; it is capped because the answer is scopes ×
+  // buckets, and at least one is required because an unnarrowed ask is not on offer.
+  app.get('/observability/tenant-metrics-series', async (c) => {
+    if (!options.observability?.tenantMetricsSeries) {
+      return c.json({ error: 'bucketed tenant-grain observability is not configured on this control plane' }, 501);
+    }
+    const p = c.get('principal');
+    const tenantId = p.kind === 'builder' ? p.tenantId : c.req.query('tenantId');
+    if (!tenantId) throw new ControlPlaneError(400, 'tenantId is required');
+    const scopeIds = (c.req.queries('scopeId') ?? []).filter((s) => s.length > 0);
+    const input = z
+      .object({
+        tenantId: tenantIdSchema,
+        // Narrowing WITHIN the tenant, as on /tenant-metrics: a foreign scope id yields
+        // zero rows rather than somebody else's, so no ownership check is needed here.
+        scopeIds: z.array(z.string().min(1).max(64)).min(1).max(50),
+        hours: z.coerce.number().int().min(1).max(72).default(24),
+      })
+      .parse({ tenantId, scopeIds, hours: c.req.query('hours') });
+    return c.json(await options.observability.tenantMetricsSeries(input));
   });
 
   app.get('/observability/tenant-logs', async (c) => {
