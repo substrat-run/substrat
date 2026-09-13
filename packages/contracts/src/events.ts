@@ -266,6 +266,13 @@ export const causeTerminal = z.enum([
    * smoothed over: silently stopping here would look exactly like a complete chain.
    */
   'missing',
+  /**
+   * The walk met an event it had already passed. Impossible on a sound spine — ids
+   * are monotonic and a cause is always older — so this is an integrity failure,
+   * not a long chain: reporting it as `depth` would invite the reader to "ask for
+   * more", and there is no more to ask for.
+   */
+  'cycle',
 ]);
 export type CauseTerminal = z.infer<typeof causeTerminal>;
 
@@ -275,7 +282,7 @@ export type CauseTerminal = z.infer<typeof causeTerminal>;
  *
  * `chain[0]` is the event asked about and each entry caused the one before it, so the
  * last entry is as far back as the spine can say. `terminal` says WHY it is the last,
- * and a reader must not treat the four reasons alike.
+ * and a reader must not treat the five reasons alike.
  */
 export const causeChain = z.object({
   chain: z.array(historyEntry),

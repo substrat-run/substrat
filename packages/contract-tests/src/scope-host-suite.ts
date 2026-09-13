@@ -4361,7 +4361,7 @@ export function scopeHostContractSuite(
     });
 
     it('walks a real chain back to the operation that started it (#1237)', async () => {
-      // The end-to-end half. `walkEventCause`'s own suite pins the four terminals over
+      // The end-to-end half. `walkEventCause`'s own suite pins the five terminals over
       // a hand-built table; this proves the wiring — that a chain produced by an actual
       // dispatch is walkable through the platform verb, on both adapters.
       const sWalk = scopeId.parse(ulid());

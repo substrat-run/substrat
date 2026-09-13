@@ -2808,6 +2808,13 @@ function CauseChainStrip({ scopeId, eventId }: { scopeId: string; eventId: strin
         'This event names a cause that is not in this app’s records. The trail cannot be followed further, and this is not the beginning.',
       tone: 'var(--status-danger-fg)',
     },
+    // Not "more above this": there is nothing above a loop. The one ending that says
+    // the record itself is wrong, and it must not read like a long chain.
+    cycle: {
+      text:
+        'The trail loops back on itself — an event names a cause that it also caused. That cannot happen in a sound record, so this app’s history needs looking at rather than reading further.',
+      tone: 'var(--status-danger-fg)',
+    },
   };
   const ending = TERMINAL[chain.terminal];
 

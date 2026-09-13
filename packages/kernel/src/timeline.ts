@@ -253,7 +253,7 @@ export function readHistory(
  * started that?"
  *
  * The sanctioned read, for the reason `readHistory` is: the walk's whole value is in
- * telling four endings apart, and a hand-rolled loop over `caused_by` distinguishes
+ * telling five endings apart, and a hand-rolled loop over `caused_by` distinguishes
  * none of them.
  *
  * **A null cause is two different endings, and the pair with `operation` decides
@@ -266,9 +266,10 @@ export function readHistory(
  *
  * Bounded, and terminating even on input the spine should not be able to produce.
  * `maxDepth` caps the walk and reports `depth` rather than trimming silently, and a
- * revisited id ends it: ids are monotonic and a cause is always older, so a cycle is
- * impossible — but "impossible" is not a reason for a read on the audit spine to be
- * able to hang.
+ * revisited id ends it as `cycle`: ids are monotonic and a cause is always older, so
+ * a cycle is impossible — but "impossible" is not a reason for a read on the audit
+ * spine to be able to hang, and it is a reason to report it as the integrity failure
+ * it is rather than as a long chain. `depth` promises more above; a cycle has none.
  */
 export function walkEventCause(
   ctx: TimelineReader,
@@ -282,9 +283,10 @@ export function walkEventCause(
 
   while (next !== null) {
     if (seen.has(next)) {
-      // Unreachable by construction; see the docstring. Reported as a cap rather
-      // than as a clean ending, because a clean ending is a claim.
-      return { chain, terminal: 'depth' };
+      // Unreachable by construction; see the docstring. Its own terminal, because
+      // every other one is a claim this is not: not a clean ending, and not a cap
+      // with more chain above it to ask for.
+      return { chain, terminal: 'cycle' };
     }
     seen.add(next);
     const rows = ctx.sql.query<HistoryRow>(

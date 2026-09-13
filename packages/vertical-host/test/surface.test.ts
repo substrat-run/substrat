@@ -12,6 +12,7 @@ const ACTOR_ULID = '01JZ0000000000000000PRN001';
 const OWNER = '01JZ0000000000000000PRN001';
 // The record whose history the #1235 read walks — any id; the route only forwards it.
 const ENTITY = '01JZ0000000000000000WO0001';
+const EVENT = '01JZ0000000000000000EVT001';
 
 type Env = { PLATFORM_SECRET: string };
 
@@ -217,6 +218,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       { headers: authed() },
     ],
     [`/internal/facets?scopeId=${SCOPE}&groupBy=type`, { headers: authed() }],
+    [`/internal/cause?scopeId=${SCOPE}&eventId=${EVENT}`, { headers: authed() }],
     ['/internal/migrations?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials/summary?scopeId=' + SCOPE, { headers: authed() }],
@@ -367,6 +369,49 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     );
     expect(wide.status).toBe(400);
     expect(host.calls).not.toContain('facetEventsLocal');
+  });
+
+  // #1237: the causal walk. Payloads cross here — every step is a history entry — so
+  // the query is parsed at this door like the two reads above it: the event id has
+  // to be one, and the depth cap is the contract's, refused rather than clamped.
+  it('passes the event and the depth cap through to the host', async () => {
+    const host = fakeHost();
+    const res = await appWith(host).request(
+      `/internal/cause?scopeId=${SCOPE}&eventId=${EVENT}&maxDepth=5`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { chain: unknown[]; terminal: string };
+    expect(body.chain).toEqual([]);
+    // The fake echoes the parsed input as `terminal`: `maxDepth` arrived as a number,
+    // not the string the query carried.
+    expect(JSON.parse(body.terminal)).toEqual({ eventId: EVENT, maxDepth: 5 });
+    expect(host.calls).toContain('eventCauseLocal');
+  });
+
+  it('refuses a malformed cause input rather than widening it', async () => {
+    const host = fakeHost();
+    // No event named — a walk has to start somewhere.
+    const bare = await appWith(host).request(`/internal/cause?scopeId=${SCOPE}`, { headers: authed() }, ENV);
+    expect(bare.status).toBe(400);
+    // Not an id at all.
+    const junk = await appWith(host).request(
+      `/internal/cause?scopeId=${SCOPE}&eventId=not-an-event`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(junk.status).toBe(400);
+    // Over the contract ceiling, and below the floor. Neither is clamped.
+    for (const depth of ['5000', '0', '-1', 'ten']) {
+      const res = await appWith(host).request(
+        `/internal/cause?scopeId=${SCOPE}&eventId=${EVENT}&maxDepth=${depth}`,
+        { headers: authed() },
+        ENV,
+      );
+      expect(res.status, `maxDepth=${depth}`).toBe(400);
+    }
+    expect(host.calls).not.toContain('eventCauseLocal');
   });
 
   it('refuses a malformed history input rather than widening it', async () => {

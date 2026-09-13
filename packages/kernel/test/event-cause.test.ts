@@ -11,11 +11,12 @@ import { walkEventCause, type ScopedSql } from '../src/index.js';
  * agrees with the test rather than with the column. `node:sqlite` in memory, the same
  * move `tools/spine-ddl-drift.mjs` makes.
  *
- * Two of the four terminals cannot be reached through a host at all any more, which
+ * Three of the five terminals cannot be reached through a host at all any more, which
  * is exactly why they are pinned here. `unrecorded` needs a row with no cause AND no
  * operation — a pre-#1237 consumer emit, which nothing can create now that causes are
  * recorded, and which `ctx.sql` rightly refuses to forge. `missing` needs a cause
- * naming an absent event, which an append-only spine should never produce.
+ * naming an absent event, and `cycle` a cause younger than its effect — neither of
+ * which an append-only spine with monotonic ids can produce.
  */
 
 // The columns the walk reads. Kept to those, deliberately: if `HISTORY_COLUMNS` grows
@@ -140,17 +141,20 @@ describe('walkEventCause (#1237)', () => {
     expect(result.terminal).toBe('missing');
   });
 
-  it('terminates on a cycle instead of hanging', () => {
+  it('reports a cycle as CYCLE, not as the depth cap, and does not hang on it', () => {
     // Unreachable by construction — ids are monotonic and a cause is always older —
     // but a read on the audit spine must not be ABLE to spin, and the guard costs a
-    // Set. Reported as `depth` because a clean ending would be a claim.
+    // Set. Its own terminal, because `depth` promises more chain above and a cycle
+    // has none: a corrupted spine must read as an integrity failure, not a long story.
     const { sql } = readerOver([
       { n: 1, causedBy: 2 },
       { n: 2, causedBy: 1 },
     ]);
     const result = walkEventCause({ sql }, id(1));
-    expect(result.terminal).toBe('depth');
+    expect(result.terminal).toBe('cycle');
     expect(result.chain.length).toBeLessThanOrEqual(2);
+    // Well inside the cap, so the two cannot be confused by the chain's length either.
+    expect(walkEventCause({ sql }, id(1), 10).terminal).toBe('cycle');
   });
 
   it('decodes each step as history, not as raw columns', () => {
