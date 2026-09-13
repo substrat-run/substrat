@@ -41,8 +41,9 @@ import { cover } from './schemas.js';
  * Every date RallyPoint accepts is a CALENDAR date on the club's wall calendar — a
  * booking day, a closure, a price-matrix day, a billing run, a report edge — so it
  * is the platform's `calendarDate` (#117): a real month/day check, and no instant.
- * This was a prefix-only regex, which let `2030-07-01T00:00:00Z` and `2030-13-45`
- * through to the wall-time conversion.
+ * This was a shape regex (`^\d{4}-\d{2}-\d{2}$`): anchored at both ends, so an
+ * instant was already refused, but `2030-13-45` and `2030-02-30` went through to
+ * the wall-time conversion.
  */
 const isoDate = calendarDate;
 const clockTime = z.string().regex(/^\d{2}:\d{2}$/);
