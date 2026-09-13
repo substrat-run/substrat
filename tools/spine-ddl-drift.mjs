@@ -470,6 +470,23 @@ function proveItRefuses(reference) {
   return cases.length;
 }
 
+/**
+ * The columns of one scope table as the pure adapter actually builds it — DDL plus the
+ * columns `runtime()` ALTERs in — for a tool that derives an artifact from the spine
+ * rather than comparing two copies of it (`tools/lake-schema-emit.mjs`). The same
+ * extraction the drift check runs, so a column that reaches production reaches the
+ * derived artifact too, and by the same route.
+ */
+export function scopeTableColumns(table) {
+  const side = PAIRS[0].sides[0];
+  const src = read(side.file);
+  const { additions } = additionsFor(side, src);
+  const schema = schemaOf(ddlFor(side, src, kernelFragments()), additions, side.label);
+  const cols = schema.tables.get(table);
+  if (!cols) throw new Error(`${side.label} builds no table named ${table}`);
+  return cols;
+}
+
 function main() {
   const fragments = kernelFragments();
   const sources = new Map();
@@ -568,4 +585,5 @@ function main() {
   );
 }
 
-main();
+// Run as a command; importable for `scopeTableColumns` without running the comparison.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

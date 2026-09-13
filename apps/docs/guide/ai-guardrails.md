@@ -102,7 +102,8 @@ to shipped SQL passed every check in the repo. The **re-emit gates** today — t
 regenerate a derived file and fail if the checked-in copy differs — are `lint:model`,
 `lint:permissions`, `lint:migrations`, `lint:api`, `lint:client`, `lint:conformance`,
 `lint:decisions`, `lint:playbook`, `lint:docs`, `lint:llms`, `lint:agent-rules`,
-`lint:launch`, `lint:plugin`, `lint:pins`, `lint:connector-grants` and `lint:auth-schema`.
+`lint:launch`, `lint:plugin`, `lint:pins`, `lint:connector-grants`, `lint:auth-schema` and
+`lint:lake-schema`.
 
 CI runs more than those, and the difference matters when you are looking for the gate that
 holds a particular file: the checks that **emit nothing and simply refuse** are

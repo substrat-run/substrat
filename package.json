@@ -12,6 +12,7 @@
     "lint:cycles": "node tools/workspace-cycles.mjs",
     "lint:deps": "node tools/declared-deps.mjs",
     "lint:spine-ddl": "node tools/spine-ddl-drift.mjs",
+    "lint:lake-schema": "node tools/lake-schema-emit.mjs",
     "lint:bound-fetch": "node tools/bound-fetch.mjs",
     "lint:vite-proxy": "node tools/vite-proxy-host.mjs",
     "lint:invocation-log": "node tools/invocation-log.mjs",
