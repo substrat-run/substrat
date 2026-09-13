@@ -184,7 +184,9 @@ still be mandatory on your machine, where no such delivery exists.
   redirects to a fixed callback, so a silently reassigned port would break the *login*, not
   the boot — a much worse failure to debug. The cost is
   that a genuine clash is fatal: two demos declaring the same port cannot run at the same
-  time without `PORT=… WEB_PORT=…`.
+  time without `PORT=… WEB_PORT=… ISSUER_PORT=…` — all three, because every demo's dev
+  issuer sits on `:8879` by default, so moving only the API and the web port still leaves
+  the second issuer dying on `EADDRINUSE`.
 - **A process can bind more than the port it declares.** Callout's `api` entry starts the
   vertical API on `:8871` *and* the co-located control plane on `:8788`; only the first is
   declared, because only the first is the one to attach a browser to. If `:8788` is taken —

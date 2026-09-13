@@ -26,10 +26,10 @@
 defineProps<{ desk: string }>();
 
 // The eight demo verticals, in the order they make the argument. `kernel` marks the
-// three whose CORE domain no engine matched: Manyfold and Todo compose nothing at all,
-// and Meridian composes `protocol` only for onboarding, at the edge of a domain — leave,
-// time and expenses — that is vertical code on the kernel. Three of eight, which is the
-// strongest evidence that an engine is an option rather than a tax.
+// four whose CORE domain no engine matched: Manyfold, Todo and Tock compose nothing at
+// all, and Meridian composes `protocol` only for onboarding, at the edge of a domain —
+// leave, time and expenses — that is vertical code on the kernel. Four of eight, which is
+// the strongest evidence that an engine is an option rather than a tax.
 const demos = [
   {
     name: 'Callout', domain: 'field service', layer: 'engine', href: '/verticals/callout',
@@ -64,6 +64,11 @@ const demos = [
   {
     name: 'Todo', domain: 'shared lists', layer: 'kernel', href: '/verticals/todo',
     body: 'Sharing one list with one person is a grant on that entity — revocable, transactional, never an org per row. A 403 wall told apart from an empty list.',
+    uses: 'kernel only — no engine',
+  },
+  {
+    name: 'Tock', domain: 'measured file loads', layer: 'kernel', href: '/verticals/tock',
+    body: 'A runtime schema the data may disagree with — the mismatch is recorded as a finding, not refused. A re-run supersedes without destroying: the old run keeps its numbers.',
     uses: 'kernel only — no engine',
   },
 ];
@@ -232,8 +237,8 @@ const repo = 'https://github.com/substrat-run/substrat';
         </span>
         <h1>Build almost any business app.</h1>
         <p class="lede">
-          Field service, HR, court bookings, a CMS, a coffee shop, a support desk —
-          eight demo verticals on one kernel, and three of them run their core domain
+          Field service, HR, a bike workshop, a CMS, a coffee shop, a support desk —
+          eight demo verticals on one kernel, and four of them run their core domain
           on the kernel alone. Tenancy, identity, permissions, audit and GDPR come
           with the foundation instead of with your discipline.
         </p>
@@ -370,8 +375,8 @@ const repo = 'https://github.com/substrat-run/substrat';
         <p class="muted lede-narrow">
           They own the invariants that are the same in every business: a state
           machine that can’t skip, an invoice immutable once exported, a booking
-          that can’t double-allocate. <strong>Three of the eight demos above need none
-          for their core domain</strong>, and two compose none at all — engines are
+          that can’t double-allocate. <strong>Four of the eight demos above need none
+          for their core domain</strong>, and three compose none at all — engines are
           there when your domain matches one, not a tax when it doesn’t. And no engine talks to a sibling: with <em>N</em>
           engines talking to the kernel there are <em>N</em> contracts to keep
           compatible; between each other there are <em>N</em>².
