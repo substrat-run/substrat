@@ -681,6 +681,15 @@ export function App() {
     void loadMoreApps().catch(() => {});
   }, [route.app, apps, appsCursor, appsLoading, loadMoreApps]);
 
+  // The Audit page is a TEAM view over every app: its filter lists them and its rows
+  // name them, and the first page window (20) is neither. So while it is open the same
+  // walk runs to exhaustion, rather than the page showing a shortened scope id for any
+  // app past the window and offering no way to filter on it.
+  useEffect(() => {
+    if (DEV_MOCK || route.section !== 'audit' || appsLoading || !appsCursor) return;
+    void loadMoreApps().catch(() => {});
+  }, [route.section, apps, appsCursor, appsLoading, loadMoreApps]);
+
   // The team's issuer instances offered in Identity pickers (#427): any ACTIVE app of a
   // vertical that DECLARES `provides: ['oidc-issuer']` (capability-driven, from the
   // catalog), plus the legacy `auth-server` slug for rows pushed before the declaration.
@@ -832,7 +841,7 @@ export function App() {
       ) : route.section === 'billing' ? (
         <Billing />
       ) : route.section === 'audit' ? (
-        <AuditLog apps={apps} scopeId={route.app ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
+        <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
       ) : route.section === 'analytics' ? (
         <Analytics />
       ) : route.section === 'settings' ? (

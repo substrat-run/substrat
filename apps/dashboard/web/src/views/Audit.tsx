@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Badge, Button, Select, Table, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type AppRow, type AuditEntry } from '../lib/api';
 import { DEV_MOCK, MOCK_AUDIT_ENTRIES } from '../lib/mock';
@@ -40,55 +40,78 @@ function auditSummary(entry: AuditEntry): string {
  *
  * The control plane serves this, so embedded mode has nothing to show and the page says so.
  */
-export function AuditLog({ apps, scopeId, onScope }: { apps: AppRow[]; scopeId: string | null; onScope: (s: string | null) => void }) {
+export function AuditLog({
+  apps,
+  appsComplete,
+  scopeId,
+  onScope,
+}: {
+  apps: AppRow[];
+  /** False while the app index is still being walked — the filter and the App column are then partial. */
+  appsComplete: boolean;
+  scopeId: string | null;
+  onScope: (s: string | null) => void;
+}) {
   const [entries, setEntries] = useState<AuditEntry[] | null>(null);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
   const [selected, setSelected] = useState<AuditEntry | null>(null);
+  // One generation per filter. Every request — the first page and each older one —
+  // remembers the generation it was started under and is ignored if the filter has moved
+  // on by the time it lands, so a "Load older" still in flight when the app filter
+  // changes (or Back is pressed) cannot append the old scope's rows under the new one
+  // and hand it the old cursor.
+  const generation = useRef(0);
 
   useEffect(() => {
     if (DEV_MOCK) {
       setEntries(scopeId ? MOCK_AUDIT_ENTRIES.filter((e) => e.scopeId === scopeId) : MOCK_AUDIT_ENTRIES);
       return;
     }
-    let live = true;
+    const gen = ++generation.current;
     // Cleared before the refetch: a list of one app's entries under a heading that now
     // names another is worse than a blank moment, and the filter is the whole page here.
     setEntries(null);
     setCursor(null);
+    setLoadingOlder(false);
     api
       .auditLogAll(scopeId ? { scopeId } : undefined)
       .then((p) => {
-        if (!live) return;
+        if (gen !== generation.current) return;
         setEntries(p.entries);
         setCursor(p.nextCursor);
       })
       .catch((e) => {
-        if (!live) return;
+        if (gen !== generation.current) return;
         if (e instanceof ApiError && e.status === 501) setUnavailable(true);
         setEntries([]);
       });
     return () => {
-      live = false;
+      // Unmount, or a new filter about to start: either way this generation is over.
+      if (gen === generation.current) generation.current += 1;
     };
   }, [scopeId]);
 
   const loadOlder = async () => {
     if (DEV_MOCK || loadingOlder || !cursor) return;
+    const gen = generation.current;
     setLoadingOlder(true);
     try {
       const p = await api.auditLogAll({ ...(scopeId ? { scopeId } : {}), cursor });
+      if (gen !== generation.current) return;
       setEntries((prev) => [...(prev ?? []), ...p.entries.filter((e) => !prev?.some((x) => x.id === e.id))]);
       setCursor(p.nextCursor);
     } finally {
-      setLoadingOlder(false);
+      if (gen === generation.current) setLoadingOlder(false);
     }
   };
 
   const appName = (id: string | null): string => {
     // A tenant-level action (a role change, an entitlement) names no scope — an em dash
-    // is the honest cell, not a guessed app.
+    // is the honest cell, not a guessed app. A scope not in the index is shown by id:
+    // while the index is still being walked that is "not yet", and once it is complete
+    // it is an app this team no longer has (a reaped scope still has audit rows).
     if (!id) return '—';
     return apps.find((a) => a.app_scope_id === id)?.name ?? shortId(id);
   };
@@ -113,7 +136,10 @@ export function AuditLog({ apps, scopeId, onScope }: { apps: AppRow[]; scopeId: 
         </div>
         <div style={{ flex: 1 }} />
         <Select
-          options={[{ value: '', label: 'All apps' }, ...apps.map((a) => ({ value: a.app_scope_id, label: a.name }))]}
+          options={[
+            { value: '', label: appsComplete ? 'All apps' : 'All apps (still listing…)' },
+            ...apps.map((a) => ({ value: a.app_scope_id, label: a.name })),
+          ]}
           value={scopeId ?? ''}
           onChange={(e) => onScope(e.target.value || null)}
           style={{ width: 200 }}
