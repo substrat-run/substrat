@@ -116,12 +116,25 @@ behavioural test can see an import that merely widens what is bundled, which is 
 source assertions.
 
 **Still open, deliberately — tracked as #1343:** the deployment's own `ControlPlaneDO`
-(`wrangler.jsonc`), whose identity links are best-effort mirrored into the shared control-plane
-directory on every `/api/me` (#265). Two sources of truth for identity, healed by polling.
-Retiring it in favour of the shared directory is a **live-data move**, not a refactor — existing
-links have to arrive in the shared directory without a window in which a signed-in user resolves
-to no principal — so it is a migration with a human on it, tracked separately from the bundling
-question this section closes.
+(`wrangler.jsonc`). Its identity links are best-effort mirrored into the shared control-plane
+directory on every `/api/me` (#265) — two sources of truth for identity, healed on the next
+request that re-mirrors (`/api/me`, team creation, invite acceptance), never by anything
+scheduled: a link whose mirror failed stays missing until that user comes back.
+
+The links are the visible half and not the whole of it. `env.CONTROL_PLANE` is what `hostFor`
+hands `CloudflareScopeHost` as its `controlPlane`, and the dashboard is itself a vertical (#1185)
+running a scope per team, so that DO is **the directory backing the dashboard's own host** — its
+tenants, scopes, roles, grants, entitlements, vertical catalog and audit log. Only the tenant row
+and the identity links are mirrored; the scope, entitlements, roles and tuples exist locally and
+nowhere else; and the vertical catalogue is split — the builtin entries `ensureCatalog` seeds are
+local, the pushed verticals are the shared plane's, and a read merges the two.
+
+Retiring it is therefore a **live-data move**, not a refactor: existing state has to arrive in
+the shared directory without a window in which a signed-in user resolves to no principal. The
+inventory, the open questions that need production reads, and a staged plan with its rollback are
+in [briefs/dashboard-control-plane-retirement.md](../briefs/dashboard-control-plane-retirement.md).
+It is a migration with a human on it, tracked separately from the bundling question this section
+closes.
 
 ## 4. The authority model — the crux
 
