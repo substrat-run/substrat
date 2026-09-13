@@ -241,6 +241,15 @@ export interface ObservabilityReader {
    * only the stamped lines rather than guessing — under-reporting is survivable here and
    * misattribution is not, since a line shown to the wrong tenant is precisely the leak
    * the grain decision exists to prevent.
+   *
+   * `since`/`until` are ISO instants and they travel together, because a window is two
+   * instants and `hours` alone can only name one of them: it always ends at now, so it
+   * can say "the last three hours" and never "the three minutes around the failure the
+   * chart just drew". That instant is in the past, which is the one window `hours` cannot
+   * express — hence the pair. `until` defaults to now and `since` to `until − hours`, so
+   * a caller that passes neither gets exactly the trailing window it always did; both
+   * given, `hours` is ignored rather than intersected, since two spellings of the same
+   * bound cannot both be honoured and the explicit one is the one the caller meant.
    */
   tenantLogs?(input: {
     tenantId: string;
@@ -249,6 +258,8 @@ export interface ObservabilityReader {
     level?: string;
     search?: string;
     hours: number;
+    since?: string;
+    until?: string;
     limit: number;
   }): Promise<RecentLogEvent[]>;
 

@@ -5062,6 +5062,78 @@ describe('control-plane API — observability proxy', () => {
       expect((await app.request('/observability/tenant-metrics?hours=9000', { headers: asBuilder })).status).toBe(400);
     });
 
+    /**
+     * The time cursor (#1447 step 3c). `hours` can only end at now, so a click on the
+     * chart — which points at a minute in the PAST — needs the two instants. What the
+     * route owes is that the pair reaches the reader untouched and that neither spelling
+     * of the window can read further back than the other allows.
+     */
+    describe('the time cursor’s window', () => {
+      const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+
+      it('passes both instants through to the reader verbatim', async () => {
+        const app = appWith(tenantReader);
+        const since = iso(10 * 60_000);
+        const until = iso(5 * 60_000);
+        const res = await app.request(
+          `/observability/tenant-logs?since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`,
+          { headers: asBuilder },
+        );
+        expect(res.status).toBe(200);
+        expect(tenantSeen.logs.at(-1)).toMatchObject({ tenantId: builderTenant, since, until });
+      });
+
+      /** `until` alone is a legitimate ask — the reader anchors `hours` to it. */
+      it('accepts an upper bound on its own, leaving `since` for the reader to default', async () => {
+        const app = appWith(tenantReader);
+        const until = iso(60 * 60_000);
+        const res = await app.request(`/observability/tenant-logs?until=${encodeURIComponent(until)}`, {
+          headers: asBuilder,
+        });
+        expect(res.status).toBe(200);
+        expect(tenantSeen.logs.at(-1)).toMatchObject({ until, hours: 24 });
+        expect((tenantSeen.logs.at(-1) as { since?: string }).since).toBeUndefined();
+      });
+
+      it('refuses a window that runs backwards, however it was spelled', async () => {
+        const app = appWith(tenantReader);
+        const backwards = await app.request(
+          `/observability/tenant-logs?since=${encodeURIComponent(iso(60_000))}&until=${encodeURIComponent(iso(600_000))}`,
+          { headers: asBuilder },
+        );
+        expect(backwards.status).toBe(400);
+        // A lone `since` in the future is the same window, measured against now — and the
+        // one shape that would otherwise pass every check and return an empty page.
+        const ahead = await app.request(
+          `/observability/tenant-logs?since=${encodeURIComponent(iso(-3_600_000))}`,
+          { headers: asBuilder },
+        );
+        expect(ahead.status).toBe(400);
+      });
+
+      /** The cap `hours` carries, applied to the pair: two spellings, one ceiling. */
+      it('refuses a span past the same 72h ceiling `hours` stops at', async () => {
+        const app = appWith(tenantReader);
+        const until = iso(60_000);
+        const since = iso(73 * 3_600_000);
+        const res = await app.request(
+          `/observability/tenant-logs?since=${encodeURIComponent(since)}&until=${encodeURIComponent(until)}`,
+          { headers: asBuilder },
+        );
+        expect(res.status).toBe(400);
+      });
+
+      /** A future window matches nothing, and an empty page reads as "my app was quiet". */
+      it('refuses an upper bound past the clock-skew allowance', async () => {
+        const app = appWith(tenantReader);
+        const until = new Date(Date.now() + 3_600_000).toISOString();
+        const res = await app.request(`/observability/tenant-logs?until=${encodeURIComponent(until)}`, {
+          headers: asBuilder,
+        });
+        expect(res.status).toBe(400);
+      });
+    });
+
     /** The script-grain neighbours stay shut to a builder — this adds one door, not two. */
     it('does not open the script-grain routes to a builder', async () => {
       const app = appWith(tenantReader);

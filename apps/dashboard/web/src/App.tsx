@@ -36,6 +36,12 @@ interface Route {
   /** For `observability`, the event type the Events sub-view opens grouped on — the flow
    *  map's deep link, carried as a param for the same reason. */
   type?: string;
+  /** For `observability`, the time cursor's window as ISO instants (#1447 step 3c). It
+   *  rides the URL for the reason `app` and `view` do, and this is the sharpest case of
+   *  it: a shared link should open on the minute that was worth sharing, not on whatever
+   *  the trailing hours happen to hold by the time somebody follows it. */
+  from?: string;
+  to?: string;
   /** The team slug the URL is scoped to (its first segment); absent on legacy slug-less paths. */
   team?: string;
 }
@@ -64,9 +70,10 @@ function parsePath(): Route {
   // The audit page is team-level; an app narrows it, so the scope rides as a query
   // param rather than a path segment — `/audit` and `/audit?app=x` are one page.
   if (parts[0] === 'audit') return { section: 'audit', team, app: new URLSearchParams(window.location.search).get('app') ?? undefined };
-  // Observability is team-level for the same reason, and carries two more filters: which
-  // sub-view is open, and the event type the Events explorer opens grouped on. Both are
-  // filters on one page rather than addresses of their own, so both ride the query string.
+  // Observability is team-level for the same reason, and carries three more filters:
+  // which sub-view is open, the event type the Events explorer opens grouped on, and the
+  // time cursor's window. Each is a filter on one page rather than an address of its own,
+  // so each rides the query string.
   // `/analytics` is the same page — the "Preview" screen it replaced (#1447).
   if (parts[0] === 'observability' || parts[0] === 'analytics') {
     const q = new URLSearchParams(window.location.search);
@@ -76,6 +83,8 @@ function parsePath(): Route {
       app: q.get('app') ?? undefined,
       view: q.get('view') ?? undefined,
       type: q.get('type') ?? undefined,
+      from: q.get('from') ?? undefined,
+      to: q.get('to') ?? undefined,
     };
   }
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
@@ -886,6 +895,9 @@ export function App() {
           scopeId={route.app ?? null}
           view={route.view ?? null}
           focusEventType={route.type ?? null}
+          // Both or neither: half a window is not a window, and a lone `from` in a
+          // hand-edited URL must read as no cursor rather than as one open at the top.
+          cursor={route.from && route.to ? { from: route.from, to: route.to } : null}
           onNav={(q) => go(obsPath(q))}
         />
       ) : route.section === 'settings' ? (

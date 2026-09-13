@@ -31,6 +31,16 @@ function windowLabel(hours: number): string {
 }
 
 /**
+ * The time cursor's window, as a panel's header says it (#1447 step 3c) — the two
+ * instants rather than a duration, because "the last day" and "10:05–10:15" are different
+ * claims and a panel answering the second must not caption itself with the first.
+ */
+function cursorLabel(w: { from: string; to: string }): string {
+  const t = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return `${t(w.from)}–${t(w.to)}`;
+}
+
+/**
  * One installed app's traffic, split by the surface that answered — the tenant grain
  * (observability.md §3 view 4).
  *
@@ -180,6 +190,7 @@ export function TenantLogs({
   hours,
   nonce,
   hadTraffic,
+  window: cursor,
 }: {
   scopeId: string;
   hours: number;
@@ -188,6 +199,10 @@ export function TenantLogs({
    *  which of two very different empty states this panel shows; undefined means the
    *  chart could not say, and then the panel claims neither. */
   hadTraffic?: boolean;
+  /** The page's time cursor. The window this panel reads is the cursor's when there is
+   *  one and the page's range when there is not — never both, since `hours` can only
+   *  end at now and would silently overrule an instant in the past. */
+  window?: { from: string; to: string };
 }) {
   const [level, setLevel] = useState(LEVELS[0]);
   const [query, setQuery] = useState('');
@@ -203,12 +218,22 @@ export function TenantLogs({
       try {
         const events = DEV_MOCK
           ? MOCK_OBSERVABILITY_LOGS.filter(
-              (l) => (level === LEVELS[0] || l.level === level) && (!search || (l.message ?? '').includes(search)),
+              (l) =>
+                (level === LEVELS[0] || l.level === level) &&
+                (!search || (l.message ?? '').includes(search)) &&
+                // The preview narrows too, so a bar click visibly does something without
+                // a plane behind it.
+                (!cursor ||
+                  (l.timestamp !== null &&
+                    l.timestamp >= Date.parse(cursor.from) &&
+                    l.timestamp <= Date.parse(cursor.to))),
             )
           : await api.appTenantLogs(scopeId, {
               level: level === LEVELS[0] ? undefined : level,
               search: search || undefined,
-              hours,
+              // The cursor's window REPLACES the range; sending both would let `hours`,
+              // which always ends at now, overrule the instant the reader clicked on.
+              ...(cursor ? { since: cursor.from, until: cursor.to } : { hours }),
               limit: 100,
             });
         if (live) setLogs(events);
@@ -229,7 +254,7 @@ export function TenantLogs({
     return () => {
       live = false;
     };
-  }, [scopeId, level, search, hours, nonce]);
+  }, [scopeId, level, search, hours, nonce, cursor?.from, cursor?.to]);
 
   return (
     <div style={{ ...card, padding: 0, overflow: 'hidden' }}>
@@ -262,7 +287,9 @@ export function TenantLogs({
             Search
           </Button>
         </form>
-        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>{windowLabel(hours)}, newest 100</span>
+        <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          {cursor ? `around ${cursorLabel(cursor)}` : `${windowLabel(hours)}, newest 100`}
+        </span>
       </div>
       {logsError ? (
         <div style={{ padding: 14, fontSize: 13, color: 'var(--text-tertiary)' }}>{logsError}</div>
@@ -274,7 +301,11 @@ export function TenantLogs({
               last reader looking in the wrong place. Traffic with no lines means the
               version serving this app predates the stamped invocation line, so there is
               nothing to correlate — a re-push fixes it. No traffic means no traffic. */}
-          {hadTraffic
+          {/* Under a cursor the hint is withheld, not because it stopped being true but
+              because `hadTraffic` is a fact about the page's whole RANGE: attaching it to
+              a ten-minute window would answer a question about minutes with evidence
+              about days. */}
+          {hadTraffic && !cursor
             ? 'No log events in this window. If this app’s version was deployed before per-request logging, its lines are not attributed to your team yet — a new deploy of the vertical starts that.'
             : 'No log events in this window.'}
         </div>
@@ -299,11 +330,19 @@ export function TenantLogs({
  * count over everything the scope still holds is a different claim from a count over the
  * page's window, and one axis cannot caption both.
  */
-function facetWindow(hours: number): Pick<AppliedFacet, 'since' | 'until'> {
+function facetWindow(
+  hours: number,
+  cursor?: { from: string; to: string },
+): Pick<AppliedFacet, 'since' | 'until' | 'cursored'> {
+  // A cursor already IS two closed instants, so it needs no closing of its own — and
+  // taking it verbatim is what makes this panel and the log panel beside it answer about
+  // the same minutes rather than two windows that merely started together.
+  if (cursor) return { since: cursor.from, until: cursor.to, cursored: true };
   const until = Date.now();
   return {
     since: new Date(until - hours * 3_600_000).toISOString(),
     until: new Date(until).toISOString(),
+    cursored: false,
   };
 }
 
@@ -317,6 +356,10 @@ interface AppliedFacet {
   /** The window as it was at SUBMIT, carried so the header names the window the counts
    *  answer about rather than whatever the page's range shows now. */
   hours: number;
+  /** Whether that window came from the time cursor. It decides how the header SAYS the
+   *  window, and "the last 3 days" over a ten-minute count is the one caption that would
+   *  make the number a lie. */
+  cursored: boolean;
 }
 
 /**
@@ -342,10 +385,14 @@ export function EventExplorer({
   scopeId,
   hours,
   focusEventType,
+  window: cursor,
 }: {
   scopeId: string;
   hours: number;
   focusEventType?: string;
+  /** The page's time cursor. Its facet read already spoke in two instants, so this is
+   *  only a question of WHICH two — and of the header naming the one it answered. */
+  window?: { from: string; to: string };
 }) {
   const [groupBy, setGroupBy] = useState('type');
   const [field, setField] = useState('');
@@ -375,7 +422,7 @@ export function EventExplorer({
     field: '',
     type: focusEventType ?? '',
     hours,
-    ...facetWindow(hours),
+    ...facetWindow(hours, cursor),
   }));
   const submit = () =>
     setApplied({
@@ -383,7 +430,7 @@ export function EventExplorer({
       field: field.trim(),
       type: type.trim(),
       hours,
-      ...facetWindow(hours),
+      ...facetWindow(hours, cursor),
     });
 
   // A second link followed while the panel is open changes the prop and nothing else —
@@ -396,10 +443,22 @@ export function EventExplorer({
 
   // The page's range moved, so the standing question is re-asked over the new window
   // rather than left captioned with the old one: a range control and a count on the same
-  // screen have to be a question and its answer.
+  // screen have to be a question and its answer. Under a cursor the range is not the
+  // window, so `hours` is recorded and the instants are left alone.
   useEffect(() => {
-    setApplied((a) => (a.hours === hours ? a : { ...a, hours, ...facetWindow(hours) }));
+    setApplied((a) => (a.hours === hours ? a : { ...a, hours, ...facetWindow(hours, cursor) }));
   }, [hours]);
+
+  // The cursor moved (another bar, another marker, or the × that clears it) — the same
+  // rule, from the other direction. No cursor and none applied is the mount case and must
+  // change nothing: recomputing the trailing window there would re-run the read the
+  // initial state had already asked, with a `Date.now()` a few milliseconds later.
+  useEffect(() => {
+    setApplied((a) => {
+      if (!cursor) return a.cursored ? { ...a, ...facetWindow(hours) } : a;
+      return a.since === cursor.from && a.until === cursor.to ? a : { ...a, ...facetWindow(hours, cursor) };
+    });
+  }, [cursor?.from, cursor?.to]);
 
   useEffect(() => {
     let live = true;
@@ -514,7 +573,10 @@ export function EventExplorer({
       {result && (
         <>
           <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-            {result.total.toLocaleString()} event{result.total === 1 ? '' : 's'} matched in the {windowLabel(applied.hours)}
+            {result.total.toLocaleString()} event{result.total === 1 ? '' : 's'} matched{' '}
+            {applied.cursored
+              ? `around ${cursorLabel({ from: applied.since, to: applied.until })}`
+              : `in the ${windowLabel(applied.hours)}`}
             {result.erased > 0 && (
               <span style={{ color: 'var(--status-warning-fg)' }}>
                 {' '}· {result.erased.toLocaleString()} with an erased payload, counted apart and not grouped

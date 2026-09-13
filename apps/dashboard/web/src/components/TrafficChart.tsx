@@ -75,6 +75,12 @@ const HIT = 24;
  * full-height rule means "the code changed here", and nothing else may borrow it — and
  * a glyph is clickable where a release marker is not, because each one has a sub-view
  * that explains it.
+ *
+ * With `onBucket` the time axis becomes a cursor (#1447 step 3c): a bar already IS a span
+ * of time, so clicking one asks "what was happening then". Bars only — a line chart has
+ * no bar to aim at, and several apps' lines share every x, so a click there would have to
+ * pick a series on the reader's behalf. `cursor` draws the window a click produced, which
+ * is what keeps the chart and the narrowed panels below it one screen rather than two.
  */
 export function TrafficChart({
   buckets,
@@ -84,6 +90,8 @@ export function TrafficChart({
   lines,
   overlays,
   onMarker,
+  onBucket,
+  cursor,
 }: {
   buckets: TrafficBucket[];
   markers: ReleaseMarker[];
@@ -98,6 +106,11 @@ export function TrafficChart({
   /** What a glyph opens. Absent ⇒ the glyphs are drawn but inert, and are not announced
    *  as buttons — a control that does nothing is worse than no control. */
   onMarker?: (marker: OverlayMarker) => void;
+  /** What a bar opens, given its start and the width it covers. Absent ⇒ the bars are
+   *  drawn exactly as before and are not announced as buttons, for the same reason. */
+  onBucket?: (start: string, bucketMinutes: number) => void;
+  /** The window the page is currently narrowed to, drawn over the plot. */
+  cursor?: { from: string; to: string };
 }) {
   if (buckets.length === 0) return null;
 
@@ -179,6 +192,24 @@ export function TrafficChart({
             <title>{`${s.label} stale ${fmt(s.from)}–${fmt(s.to)}`}</title>
           </rect>
         ))}
+        {/* The cursor sits ABOVE the stale shading and BELOW the traffic: it is the
+            reader's own selection, so it must win over the other context drawn behind the
+            bars, and it must still not tint the data it is selecting. Same x mapping as
+            the markers, so the highlight lands under the instant it names. A window
+            narrower than a hair still gets a visible sliver — a five-minute cursor on a
+            three-day axis is otherwise nothing at all. */}
+        {cursor && (
+          <rect
+            x={xOf(cursor.from)}
+            width={Math.max(xOf(cursor.to) - xOf(cursor.from), 0.08)}
+            y={0}
+            height={H}
+            fill="var(--brand-500, #6366f1)"
+            opacity={0.15}
+          >
+            <title>{`Showing ${fmt(cursor.from)}–${fmt(cursor.to)}`}</title>
+          </rect>
+        )}
         {lines
           ? lines.map((line, i) => (
               // Plotted at the bucket's MIDPOINT: a bar owns the span [i, i+1], so a
@@ -200,15 +231,35 @@ export function TrafficChart({
           : buckets.map((b, i) => {
               const total = (b.requests / peak) * (H - 2);
               const errs = b.requests === 0 ? 0 : (b.errors / peak) * (H - 2);
+              const label = `${fmt(b.start)} — ${b.requests.toLocaleString()} req, ${b.errors.toLocaleString()} err`;
               return (
-                <g key={b.start}>
+                <g
+                  key={b.start}
+                  {...(onBucket
+                    ? {
+                        role: 'button',
+                        tabIndex: 0,
+                        'aria-label': `Show ${label}`,
+                        style: { cursor: 'pointer' },
+                        onClick: () => onBucket(b.start, bucketMinutes),
+                        onKeyDown: (e: KeyboardEvent<SVGGElement>) => {
+                          if (e.key !== 'Enter' && e.key !== ' ') return;
+                          e.preventDefault();
+                          onBucket(b.start, bucketMinutes);
+                        },
+                      }
+                    : {})}
+                >
+                  {/* The hit area is the whole column, not the bar: a quiet bucket draws a
+                      0.6-unit tick, and asking a reader to hit that is asking them not to
+                      use the cursor on exactly the buckets an outage produces. */}
+                  {onBucket && <rect x={i} y={0} width={1} height={H} fill="transparent" />}
                   {/* The baseline tick keeps an empty bucket visible as a bucket. */}
-                  <rect x={i + 0.1} y={H - Math.max(total, 0.6)} width={0.8} height={Math.max(total, 0.6)} fill="var(--brand-500, #6366f1)" opacity={0.55}>
-                    <title>{`${fmt(b.start)} — ${b.requests.toLocaleString()} req, ${b.errors.toLocaleString()} err`}</title>
-                  </rect>
+                  <rect x={i + 0.1} y={H - Math.max(total, 0.6)} width={0.8} height={Math.max(total, 0.6)} fill="var(--brand-500, #6366f1)" opacity={0.55} />
                   {errs > 0 && (
                     <rect x={i + 0.1} y={H - errs} width={0.8} height={errs} fill="var(--status-danger-fg, #dc2626)" opacity={0.9} />
                   )}
+                  <title>{label}</title>
                 </g>
               );
             })}
