@@ -18,8 +18,12 @@ import { Pill, PageTitle, RowActions, card } from '../components/ui';
  * `silent` is listed as loudly as `failing`, because an app nothing has checked
  * is not an app that is fine — rendering silence as success is the failure this
  * whole view set exists to prevent.
+ *
+ * Exported because the team Observability page shows the same rollup as its all-apps
+ * Health sub-view (#1447) — one derivation, two entrances, rather than the fleet answer
+ * living in one place and the cross-app page carrying a copy of it.
  */
-function FleetHealth({ onOpen }: { onOpen: (scopeId: string) => void }) {
+export function FleetHealth({ onOpen }: { onOpen: (scopeId: string) => void }) {
   const [rows, setRows] = useState<AppHealthRow[] | null>(null);
 
   useEffect(() => {

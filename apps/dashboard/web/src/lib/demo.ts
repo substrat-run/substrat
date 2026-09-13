@@ -397,41 +397,6 @@ export const DEPLOYMENTS: Deployment[] = [
   { version: 'v0.0.1', source: 'hr-portal@b91d044', status: 'previous', promoted: 'Jul 14, 2026 09:40', by: 'dana@acme.com' },
 ];
 
-// -- future: analytics ------------------------------------------------------
-
-export interface Kpi {
-  label: string;
-  value: string;
-  delta: string;
-  up: boolean;
-}
-export const KPIS: Kpi[] = [
-  { label: 'Requests', value: '1.24M', delta: '▲ 12.4% vs prior 7d', up: true },
-  { label: 'Active users', value: '3,482', delta: '▲ 5.1% vs prior 7d', up: true },
-  { label: 'Operations / day', value: '86.2k', delta: '▲ 8.9% vs prior 7d', up: true },
-  { label: 'Error rate', value: '0.42%', delta: '▼ 0.1pt vs prior 7d', up: true },
-];
-export const BARS: Array<{ hr: number; ops: number; legal: number }> = [
-  { hr: 46, ops: 22, legal: 14 }, { hr: 52, ops: 24, legal: 15 }, { hr: 44, ops: 28, legal: 12 },
-  { hr: 58, ops: 30, legal: 18 }, { hr: 62, ops: 26, legal: 16 }, { hr: 40, ops: 18, legal: 10 },
-  { hr: 36, ops: 16, legal: 9 }, { hr: 55, ops: 32, legal: 17 }, { hr: 60, ops: 35, legal: 19 },
-  { hr: 66, ops: 30, legal: 21 }, { hr: 58, ops: 36, legal: 18 }, { hr: 72, ops: 38, legal: 22 },
-  { hr: 50, ops: 24, legal: 13 }, { hr: 68, ops: 40, legal: 24 },
-];
-export interface AnalyticsRow {
-  app: string;
-  accent: string;
-  requests: string;
-  users: string;
-  errorRate: string;
-  up: boolean;
-}
-export const ANALYTICS_ROWS: AnalyticsRow[] = [
-  { app: 'Acme HR', accent: LAYER.vertical, requests: '712,400', users: '1,904', errorRate: '0.31%', up: true },
-  { app: 'Acme Field Ops', accent: LAYER.engine, requests: '385,900', users: '1,120', errorRate: '0.66%', up: true },
-  { app: 'Acme Legal', accent: LAYER.kernel, requests: '141,700', users: '458', errorRate: '0.28%', up: false },
-];
-
 // -- future: billing --------------------------------------------------------
 
 export interface Invoice {
@@ -481,8 +446,6 @@ export const REPOS: RepoRow[] = [
 export const STATUS_FILTER = ['All statuses', 'Active', 'Provisioning', 'Failed'];
 export const ENV_OPTS = ['Production', 'Preview', 'All'];
 export const ROLE_OPTS = ['Owner', 'Admin', 'Member', 'Viewer'];
-export const RANGE_OPTS = ['Last 7 days', 'Last 24 hours', 'Last 30 days', 'Custom'];
-export const APP_FILTER = ['All apps', 'Acme HR', 'Acme Legal', 'Acme Field Ops'];
 
 /** The per-app detail tabs — the four every service page in the field has (Vercel:
  *  Project · Deployments · Storage · Settings), rather than one tab per feature in

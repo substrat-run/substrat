@@ -32,7 +32,7 @@ import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
-import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './releases.js';
+import { deriveReleases, deriveReleaseComparison, deriveTeamSeries, deriveTrafficSeries } from './releases.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
@@ -3825,14 +3825,25 @@ app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
 });
 
 /**
- * MY traffic, bucketed over time, across one or more of MY apps (#1447) — the read the
- * team-level Observability page plots, one series per app. Team-level rather than under
- * `/apps/:scopeId` because "all my apps" is one read here, not one per app.
- *
- * `scopeId` repeats. Named scopes are resolved through this tenant's own `list-apps`, as the
- * per-app routes above do, so a foreign one is a 404 (K-3) rather than a silent empty
- * series; none named means every app this tenant has installed — the list is still THIS
- * tenant's, resolved here, never a widening the plane could be asked for.
+ * Which of MY apps a tenant-grain series read covers. `scopeId` repeats; named scopes are
+ * resolved through this tenant's own `list-apps`, as the per-app routes above do, so a
+ * foreign one is a 404 (K-3) rather than a silent empty series, and none named means every
+ * app this tenant has installed — the list is still THIS tenant's, resolved here, never a
+ * widening the plane could be asked for. Shared by the two routes below so the shaped chart
+ * read and the raw one cannot drift into answering about different apps.
+ */
+function seriesScopes(apps: DashboardAppRow[], asked: string[]): string[] {
+  const owned = new Set(apps.map((a) => a.app_scope_id));
+  if (asked.some((s) => !owned.has(s))) throw new HTTPException(404, { message: 'app not found' });
+  // Every installed app when none is named. The plane caps one ask; the authority
+  // batches past it, so a team with more apps than that gets a series, not a 400.
+  return asked.length > 0 ? [...new Set(asked)] : [...owned];
+}
+
+/**
+ * MY traffic, bucketed over time, across one or more of MY apps (#1447) — the buckets
+ * unshaped, for a consumer that wants to fill and fold them itself. Team-level rather
+ * than under `/apps/:scopeId` because "all my apps" is one read here, not one per app.
  */
 app.get('/api/observability/tenant-metrics-series', async (c) => {
   const host = hostFor(c.env);
@@ -3840,13 +3851,7 @@ app.get('/api/observability/tenant-metrics-series', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
-  const asked = c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? [];
-  const owned = new Set(apps.map((a) => a.app_scope_id));
-  const foreign = asked.find((s) => !owned.has(s));
-  if (foreign) throw new HTTPException(404, { message: 'app not found' });
-  // Every installed app when none is named. The plane caps one ask; the authority
-  // batches past it, so a team with more apps than that gets a series, not a 400.
-  const scopeIds = asked.length > 0 ? [...new Set(asked)] : [...owned];
+  const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
   // No apps at all is an honest empty series, not a question for the plane.
   if (scopeIds.length === 0) return c.json([]);
   const cp = controlPlaneFor(c.env, node.tenantId);
@@ -3856,6 +3861,40 @@ app.get('/api/observability/tenant-metrics-series', async (c) => {
       cp.tenantMetricsSeries({ scopeIds, hours: Number.isFinite(hours) ? hours : 24 }),
     ),
   );
+});
+
+/**
+ * The team Observability page's chart (#1447): the same buckets, shaped into one
+ * zero-filled series per app — every installation on one axis, from one read.
+ *
+ * The raw sibling above stays for a consumer that wants the buckets unshaped. What this
+ * adds is the reading contract the chart depends on: a scope with no rows still gets a
+ * line (an installed app that served nothing is a fact, not a missing row), the window is
+ * zero-filled so a gap in traffic is a gap on the chart, and an unavailable plane comes
+ * back as `available: false` rather than a flat line that reads as silence.
+ *
+ * No markers. A push is a fact about a vertical's code and this chart draws installations
+ * of several verticals at once; per-app deploy markers are their own read.
+ */
+app.get('/api/observability/traffic', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
+  // Rounded, not just clamped, for the same reason the release chart's window is: the
+  // plane's schema is `.int()`, so `?hours=6.5` would be refused there and the chart
+  // would say "not available" for what is really a bad parameter.
+  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
+  const now = new Date();
+  // No apps at all still shapes an answer — an empty chart with a real axis, not a 501.
+  if (scopeIds.length === 0) return c.json(deriveTeamSeries({ buckets: [], scopeIds, hours, now }));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  // Tolerated to null: an unconfigured plane makes the chart say so, and the page's other
+  // panels answer their own questions independently.
+  const buckets = await cp.tenantMetricsSeries({ scopeIds, hours }).catch(() => null);
+  return c.json(deriveTeamSeries({ buckets, scopeIds, hours, now }));
 });
 
 app.get('/api/apps/:scopeId/observability/logs', async (c) => {

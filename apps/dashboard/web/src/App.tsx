@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
-import { navigate as go, setTeamSlug, teamPath } from './lib/router';
+import { navigate as go, obsPath, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { CommandPalette } from './components/CommandPalette';
@@ -17,23 +17,30 @@ import { Team } from './views/Team';
 import { Domains } from './views/Domains';
 import { Integrations } from './views/Integrations';
 import { Billing } from './views/Billing';
-import { Analytics } from './views/Analytics';
+import { Observability } from './views/Observability';
 import { AuditLog } from './views/Audit';
 import { Settings } from './views/Settings';
 
 /** The path route, parsed. `section` maps to the sidebar; `app`/`tab`/`vertical` drive detail. */
 interface Route {
   section: NavKey | 'new';
-  /** For `apps`, the scope id in the path. For `audit`, the OPTIONAL app filter the
-   *  query string carries — the page is team-level, so the app narrows it, not addresses it. */
+  /** For `apps`, the scope id in the path. For `audit` and `observability`, the OPTIONAL
+   *  app filter the query string carries — the page is team-level, so the app narrows it,
+   *  not addresses it. */
   app?: string;
   tab?: string;
   vertical?: string;
+  /** For `observability`, which sub-view is open (`logs`, `events`, …) — a filter on a
+   *  team page, so it rides the query string beside the app. */
+  view?: string;
+  /** For `observability`, the event type the Events sub-view opens grouped on — the flow
+   *  map's deep link, carried as a param for the same reason. */
+  type?: string;
   /** The team slug the URL is scoped to (its first segment); absent on legacy slug-less paths. */
   team?: string;
 }
 
-const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'audit', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
+const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'observability', 'audit', 'domains', 'team', 'integrations', 'billing', 'settings'];
 
 function parsePath(): Route {
   let parts = window.location.pathname.split('/').filter(Boolean);
@@ -41,7 +48,7 @@ function parsePath(): Route {
   // (a legacy slug-less path) or a reserved word. Real slugs always carry a ULID
   // tail (worker's `teamSlug()`), so they can never shadow a section name.
   let team: string | undefined;
-  if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'api'].includes(parts[0])) {
+  if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'analytics', 'api'].includes(parts[0])) {
     team = parts[0];
     parts = parts.slice(1);
   }
@@ -54,6 +61,20 @@ function parsePath(): Route {
   // The audit page is team-level; an app narrows it, so the scope rides as a query
   // param rather than a path segment — `/audit` and `/audit?app=x` are one page.
   if (parts[0] === 'audit') return { section: 'audit', team, app: new URLSearchParams(window.location.search).get('app') ?? undefined };
+  // Observability is team-level for the same reason, and carries two more filters: which
+  // sub-view is open, and the event type the Events explorer opens grouped on. Both are
+  // filters on one page rather than addresses of their own, so both ride the query string.
+  // `/analytics` is the same page — the "Preview" screen it replaced (#1447).
+  if (parts[0] === 'observability' || parts[0] === 'analytics') {
+    const q = new URLSearchParams(window.location.search);
+    return {
+      section: 'observability',
+      team,
+      app: q.get('app') ?? undefined,
+      view: q.get('view') ?? undefined,
+      type: q.get('type') ?? undefined,
+    };
+  }
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
   if (parts[0] === 'deployments') return { section: 'verticals', team };
   const section = (SECTIONS.includes(parts[0] as NavKey) ? parts[0] : 'overview') as NavKey;
@@ -662,16 +683,30 @@ export function App() {
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
   const openVertical = useMemo(() => (route.vertical ? deployments.find((d) => d.slug === route.vertical) : undefined), [deployments, route.vertical]);
 
-  // The app's Audit tab became a team-level page (#1447). A bookmark on the old tab is
-  // answered by REPLACING the history entry rather than pushing one: a push would leave
-  // the dead tab URL behind Back, and pressing Back would redirect forward again — a
-  // loop with no way out of the page.
-  const legacyAuditTab = route.section === 'apps' && !!openApp && (route.tab === 'audit' || (route.tab ?? '').startsWith('audit/'));
+  // The app's Audit and Observability tabs both became team-level pages (#1447). A
+  // bookmark on either old tab is answered by REPLACING the history entry rather than
+  // pushing one: a push would leave the dead tab URL behind Back, and pressing Back would
+  // redirect forward again — a loop with no way out of the page.
+  //
+  // `apps/:id/observability/<type>` was the flow map's deep link into the event explorer,
+  // so it lands on the Events sub-view already grouped on that type.
+  const legacyTab = useMemo(() => {
+    if (route.section !== 'apps' || !openApp) return null;
+    const [main, ...rest] = (route.tab ?? '').split('/');
+    const sub = rest.join('/');
+    if (main === 'audit') return `/audit?app=${openApp.app_scope_id}`;
+    if (main === 'observability') {
+      return sub
+        ? obsPath({ app: openApp.app_scope_id, view: 'events', type: decodeURIComponent(sub) })
+        : obsPath({ app: openApp.app_scope_id });
+    }
+    return null;
+  }, [route.section, route.tab, openApp]);
   useEffect(() => {
-    if (!legacyAuditTab || !openApp) return;
-    window.history.replaceState(null, '', teamPath(`/audit?app=${openApp.app_scope_id}`));
+    if (!legacyTab) return;
+    window.history.replaceState(null, '', teamPath(legacyTab));
     window.dispatchEvent(new PopStateEvent('popstate'));
-  }, [legacyAuditTab, openApp]);
+  }, [legacyTab]);
 
   // A deep-linked app can sit beyond the loaded page window — keep walking older
   // pages until it turns up (or the list is exhausted), instead of flashing a 404.
@@ -681,12 +716,12 @@ export function App() {
     void loadMoreApps().catch(() => {});
   }, [route.app, apps, appsCursor, appsLoading, loadMoreApps]);
 
-  // The Audit page is a TEAM view over every app: its filter lists them and its rows
-  // name them, and the first page window (20) is neither. So while it is open the same
-  // walk runs to exhaustion, rather than the page showing a shortened scope id for any
-  // app past the window and offering no way to filter on it.
+  // Audit and Observability are TEAM views over every app: their filters list them and
+  // their rows name them, and the first page window (20) is neither. So while either is
+  // open the same walk runs to exhaustion, rather than the page showing a shortened scope
+  // id for any app past the window and offering no way to filter on it.
   useEffect(() => {
-    if (DEV_MOCK || route.section !== 'audit' || appsLoading || !appsCursor) return;
+    if (DEV_MOCK || !['audit', 'observability'].includes(route.section) || appsLoading || !appsCursor) return;
     void loadMoreApps().catch(() => {});
   }, [route.section, apps, appsCursor, appsLoading, loadMoreApps]);
 
@@ -745,7 +780,7 @@ export function App() {
     crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('/verticals') : undefined });
     if (openVertical) crumbs.push({ label: openVertical.name });
   }
-  if (['audit', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
+  if (['observability', 'audit', 'domains', 'team', 'integrations', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
 
@@ -802,7 +837,7 @@ export function App() {
           <NotFound label="That app could not be found." onBack={() => go('/apps')} />
         )
       ) : route.section === 'overview' || route.section === 'apps' ? (
-        <Apps apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onOpenHealth={(s) => go(`/apps/${s}/observability`)} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
+        <Apps apps={apps} loading={appsLoading} onCreate={() => go('/apps/new')} onOpen={(s) => go(`/apps/${s}/overview`)} onOpenHealth={(s) => go(obsPath({ app: s }))} onRetry={(s) => void retryApp(s)} onResume={(s) => void resumeApp(s)} loadSteps={loadInstallSteps} hasMore={appsCursor !== null} loadingMore={appsLoadingMore} onLoadMore={() => void loadMoreApps()} />
       ) : route.section === 'verticals' && openVertical ? (
         <VerticalDetail
           d={openVertical}
@@ -842,8 +877,14 @@ export function App() {
         <Billing />
       ) : route.section === 'audit' ? (
         <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
-      ) : route.section === 'analytics' ? (
-        <Analytics />
+      ) : route.section === 'observability' ? (
+        <Observability
+          apps={apps}
+          scopeId={route.app ?? null}
+          view={route.view ?? null}
+          focusEventType={route.type ?? null}
+          onNav={(q) => go(obsPath(q))}
+        />
       ) : route.section === 'settings' ? (
         <Settings org={org} />
       ) : null}

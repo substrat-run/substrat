@@ -236,6 +236,52 @@ export interface TrafficSeries {
   available: boolean;
 }
 
+/** The grid a series is drawn on: the bucket width, and the window's two ends. */
+interface BucketGrid {
+  widthMs: number;
+  start: number;
+  end: number;
+}
+
+/**
+ * The window, snapped to the bucket boundary the backend buckets on. Shared by both
+ * derivations below so a release chart and a team chart drawn over the same hours
+ * cannot disagree about where a column begins.
+ */
+function bucketGrid(bucketMinutes: number, hours: number, now: Date): BucketGrid {
+  const widthMs = bucketMinutes * 60_000;
+  const end = Math.floor(now.getTime() / widthMs) * widthMs;
+  return { widthMs, start: end - hours * 3_600_000, end };
+}
+
+/**
+ * Rows → one bucket per slot of the grid, absent meaning explicitly zero. See the
+ * zero-fill rule on `deriveTrafficSeries`: skipping an empty bucket lets its
+ * neighbours join and draws an outage as a narrower peak.
+ */
+function fillGrid(rows: TrafficBucketInput[], grid: BucketGrid): TrafficBucket[] {
+  const totals = new Map<number, { requests: number; errors: number }>();
+  for (const b of rows) {
+    const t = Date.parse(b.start);
+    if (Number.isNaN(t)) continue;
+    // Snap to the grid this series is drawn on: the backend's bucket boundary and
+    // ours must agree, or a row lands between two columns and is lost.
+    const slot = Math.floor(t / grid.widthMs) * grid.widthMs;
+    if (slot < grid.start || slot > grid.end) continue;
+    const acc = totals.get(slot) ?? { requests: 0, errors: 0 };
+    acc.requests += b.requests;
+    acc.errors += b.errors;
+    totals.set(slot, acc);
+  }
+
+  const plotted: TrafficBucket[] = [];
+  for (let t = grid.start; t <= grid.end; t += grid.widthMs) {
+    const acc = totals.get(t);
+    plotted.push({ start: new Date(t).toISOString(), requests: acc?.requests ?? 0, errors: acc?.errors ?? 0 });
+  }
+  return plotted;
+}
+
 /**
  * The series a release chart plots (#1236): traffic over time with every push and
  * go-live drawn on it — "did this push break anything" as a shape rather than a
@@ -265,34 +311,13 @@ export function deriveTrafficSeries(input: {
 }): TrafficSeries {
   const { buckets, releases, prodHistory, hours, now } = input;
   const bucketMinutes = buckets?.[0]?.bucketMinutes ?? (hours <= 6 ? 15 : 60);
-  const widthMs = bucketMinutes * 60_000;
-  const end = Math.floor(now.getTime() / widthMs) * widthMs;
-  const start = end - hours * 3_600_000;
-
-  const totals = new Map<number, { requests: number; errors: number }>();
-  for (const b of buckets ?? []) {
-    const t = Date.parse(b.start);
-    if (Number.isNaN(t)) continue;
-    // Snap to the grid this series is drawn on: the backend's bucket boundary and
-    // ours must agree, or a row lands between two columns and is lost.
-    const slot = Math.floor(t / widthMs) * widthMs;
-    if (slot < start || slot > end) continue;
-    const acc = totals.get(slot) ?? { requests: 0, errors: 0 };
-    acc.requests += b.requests;
-    acc.errors += b.errors;
-    totals.set(slot, acc);
-  }
-
-  const plotted: TrafficBucket[] = [];
-  for (let t = start; t <= end; t += widthMs) {
-    const acc = totals.get(t);
-    plotted.push({ start: new Date(t).toISOString(), requests: acc?.requests ?? 0, errors: acc?.errors ?? 0 });
-  }
+  const grid = bucketGrid(bucketMinutes, hours, now);
+  const plotted = fillGrid(buckets ?? [], grid);
 
   const markers: ReleaseMarker[] = [];
   const inWindow = (iso: string): boolean => {
     const t = Date.parse(iso);
-    return !Number.isNaN(t) && t >= start && t <= now.getTime();
+    return !Number.isNaN(t) && t >= grid.start && t <= now.getTime();
   };
   for (const r of releases) {
     if (inWindow(r.pushedAt)) {
@@ -311,4 +336,64 @@ export function deriveTrafficSeries(input: {
   markers.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
 
   return { buckets: plotted, markers, bucketMinutes, available: buckets !== null };
+}
+
+/** One time bucket of ONE installed app's traffic, as the tenant series read delivers it. */
+export interface TenantTrafficBucketInput extends TrafficBucketInput {
+  scopeId: string;
+}
+
+/** One app's line on the team chart — its own zero-filled series. */
+export interface TeamTrafficLine {
+  scopeId: string;
+  buckets: TrafficBucket[];
+}
+
+export interface TeamTrafficSeries {
+  /** Every scope asked for, in the order asked. */
+  series: TeamTrafficLine[];
+  bucketMinutes: number;
+  /** False = the plane cannot bucket; the chart says so rather than drawing silence. */
+  available: boolean;
+}
+
+/**
+ * The team Observability chart's series (#1447): every installed app's traffic over one
+ * window, one line each, from the single tenant-grain read.
+ *
+ * Two rules beyond `deriveTrafficSeries`' zero-fill, both about what an absence means.
+ * **A named scope always gets a series**, even when the read returned no row for it: an
+ * installed app that served nothing is a fact, and dropping its line would make it
+ * indistinguishable from an app the reader never installed. **Scopes never merge**: rows
+ * are keyed by scope before they are bucketed, so one busy app cannot lend its shape to a
+ * quiet one — the whole reason the plane carries the scope dimension.
+ *
+ * No markers here. A push is a fact about a vertical's code, and a team chart draws
+ * installations of several verticals at once; per-app deploy markers arrive with the
+ * per-app series route.
+ */
+export function deriveTeamSeries(input: {
+  /** Null = the bucketed read was unavailable; the chart says so. */
+  buckets: TenantTrafficBucketInput[] | null;
+  /** The scopes the caller asked about — each one gets a line whether it has rows or not. */
+  scopeIds: string[];
+  hours: number;
+  /** The window's end — the caller's clock, so every line shares one axis. */
+  now: Date;
+}): TeamTrafficSeries {
+  const { buckets, scopeIds, hours, now } = input;
+  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? (hours <= 6 ? 15 : 60);
+  const grid = bucketGrid(bucketMinutes, hours, now);
+
+  const rowsByScope = new Map<string, TenantTrafficBucketInput[]>();
+  for (const b of buckets ?? []) rowsByScope.set(b.scopeId, [...(rowsByScope.get(b.scopeId) ?? []), b]);
+
+  return {
+    series: [...new Set(scopeIds)].map((scopeId) => ({
+      scopeId,
+      buckets: fillGrid(rowsByScope.get(scopeId) ?? [], grid),
+    })),
+    bucketMinutes,
+    available: buckets !== null,
+  };
 }

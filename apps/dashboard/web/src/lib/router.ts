@@ -29,6 +29,22 @@ export function teamPath(path: string): string {
   return `/${teamSlug}${path === '/' ? '' : path}`;
 }
 
+/**
+ * A link into the team Observability page (#1447). All three narrowings are query
+ * params rather than path segments because the page is team-level and they are filters
+ * on it: the app narrows the whole page to one installation, `view` picks the sub-view,
+ * and `type` seeds the event explorer. Only what is set is written, so `/observability`
+ * stays the page's own address.
+ */
+export function obsPath(q: { app?: string; view?: string; type?: string } = {}): string {
+  const p = new URLSearchParams();
+  if (q.app) p.set('app', q.app);
+  if (q.view) p.set('view', q.view);
+  if (q.type) p.set('type', q.type);
+  const qs = p.toString();
+  return `/observability${qs ? `?${qs}` : ''}`;
+}
+
 export function navigate(path: string): void {
   window.history.pushState(null, '', teamPath(path));
   window.dispatchEvent(new PopStateEvent('popstate'));
