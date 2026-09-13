@@ -36,6 +36,7 @@ import {
   eventFacetInput,
   eventCauseInput,
   eventEffectsInput,
+  type DelegatedReadMethod,
   createOrgInput,
   roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
@@ -1784,11 +1785,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.listScopeTables(scopeId)
-        : await admin.listScopeTables(c.get('actor'), tenantId, scopeId),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'listScopeTables', null,
+        {
+          viaVertical: (v) => v.listScopeTables(scopeId),
+          colocated: () => admin.listScopeTables(c.get('actor'), tenantId, scopeId),
+        },
+        (r) => r.length,
+      ),
     );
   });
 
@@ -1820,10 +1825,16 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
-    const tables = vertical
-      ? await vertical.listScopeTables(scopeId)
-      : await admin.listScopeTables(c.get('actor'), tenantId, scopeId);
+    // Health reads the scope the same way the Data view does, so it leaves the same
+    // row: an auditor should not be able to tell which route reached the tables.
+    const tables = await delegatedRead(
+      c, tenantId, scopeId, scope, 'listScopeTables', null,
+      {
+        viaVertical: (v) => v.listScopeTables(scopeId),
+        colocated: () => admin.listScopeTables(c.get('actor'), tenantId, scopeId),
+      },
+      (r) => r.length,
+    );
     const roles = tables.find((t) => t.name === '_substrat_roles');
     const roleCount = roles ? roles.rowCount : null;
     const roleProjectionEmpty = scope.status === 'active' && roleCount === 0;
@@ -2070,13 +2081,65 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.facetEvents(scopeId, input)
-        : await admin.facetEvents(c.get('actor'), tenantId, scopeId, input),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'facetEvents', input,
+        {
+          viaVertical: (v) => v.facetEvents(scopeId, input),
+          colocated: () => admin.facetEvents(c.get('actor'), tenantId, scopeId, input),
+        },
+        // The buckets RETURNED, not `total`: the row says how much this read handed
+        // back, and a capped facet hands back fewer than it counted.
+        (r) => r.buckets.length,
+      ),
     );
   });
+
+  /**
+   * Serve a scope read from whichever side holds the data, and leave ONE K-24 row
+   * either way (#1357).
+   *
+   * Every scope-addressed read runs the same ladder — resolve the scope record, ask the
+   * vertical when one resolves, the co-located host otherwise — and only the second
+   * branch reaches `HostAdmin`, where `recordAccess` lives. So on the production path,
+   * which is every hosted vertical, the access log held a `getScopeRecord` entry and
+   * nothing saying what was read: a summary page, a table walk and one record's history
+   * were indistinguishable, and the history page is the one carrying payloads.
+   *
+   * `count` exists because the row records how much came back and every answer counts
+   * differently — a page has `entries`, a facet has `buckets`, a chain has its own
+   * length. Handing each site its own counter keeps that honest rather than logging a
+   * zero everywhere the shape is not a list.
+   *
+   * The record is written AFTER the read succeeds and is not caught: a failed write
+   * fails the request. That is the co-located branch's existing trade, where
+   * `recordAccess` is awaited inside the read — and returning rows whose disclosure went
+   * unrecorded is the thing K-24 exists to prevent.
+   */
+  async function delegatedRead<T>(
+    c: { get: (k: 'actor') => PlatformActorId },
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
+    method: DelegatedReadMethod,
+    params: unknown,
+    run: { viaVertical: (v: VerticalClient) => Promise<T>; colocated: () => Promise<T> },
+    count: (answer: T) => number,
+  ): Promise<T> {
+    const vertical = await verticalForScope(c, scope);
+    // The co-located branch already records inside the read — adding a row here would
+    // log it twice, which is a different kind of dishonest log.
+    if (!vertical) return run.colocated();
+    const answer = await run.viaVertical(vertical);
+    await admin.recordDelegatedRead(c.get('actor'), {
+      method,
+      tenantId,
+      scopeId,
+      params,
+      resultCount: count(answer),
+    });
+    return answer;
+  }
 
   // #1237: one event's causal chain, walked backwards. Delegated exactly like the
   // history read below — through the vertical holding the scope's data when one
@@ -2090,11 +2153,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.eventCause(scopeId, input)
-        : await admin.eventCause(c.get('actor'), tenantId, scopeId, input),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'eventCause', input,
+        {
+          viaVertical: (v) => v.eventCause(scopeId, input),
+          colocated: () => admin.eventCause(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.chain.length,
+      ),
     );
   });
 
@@ -2108,11 +2175,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.eventEffects(scopeId, input)
-        : await admin.eventEffects(c.get('actor'), tenantId, scopeId, input),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'eventEffects', input,
+        {
+          viaVertical: (v) => v.eventEffects(scopeId, input),
+          colocated: () => admin.eventEffects(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.count,
+      ),
     );
   });
 
@@ -2130,11 +2201,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.entityHistory(scopeId, input)
-        : await admin.entityHistory(c.get('actor'), tenantId, scopeId, input),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'entityHistory', input,
+        {
+          viaVertical: (v) => v.entityHistory(scopeId, input),
+          colocated: () => admin.entityHistory(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.entries.length,
+      ),
     );
   });
 
@@ -2148,11 +2223,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     });
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.readScopeTable(scopeId, input)
-        : await admin.readScopeTable(c.get('actor'), tenantId, scopeId, input),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'readScopeTable', input,
+        {
+          viaVertical: (v) => v.readScopeTable(scopeId, input),
+          colocated: () => admin.readScopeTable(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.rows.length,
+      ),
     );
   });
 
@@ -2167,11 +2246,18 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const input = queryScopeInput.parse(await c.req.json());
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.queryScope(scopeId, input)
-        : await admin.queryScope(c.get('actor'), tenantId, scopeId, input),
+      await delegatedRead(
+        // The SQL is the argument the co-located branch logs, so it is the argument
+        // here — an audit row for the read-only console that did not carry the
+        // statement would answer "someone queried" and nothing a reader needs.
+        c, tenantId, scopeId, scope, 'queryScope', input,
+        {
+          viaVertical: (v) => v.queryScope(scopeId, input),
+          colocated: () => admin.queryScope(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.rows.length,
+      ),
     );
   });
 
@@ -2196,11 +2282,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const filter = denialLogQuery.parse(c.req.query());
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.listDenials(scopeId, filter)
-        : await admin.listDenials(c.get('actor'), tenantId, scopeId, filter),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'listDenials', filter,
+        {
+          viaVertical: (v) => v.listDenials(scopeId, filter),
+          colocated: () => admin.listDenials(c.get('actor'), tenantId, scopeId, filter),
+        },
+        (r) => r.length,
+      ),
     );
   });
 
@@ -2214,11 +2304,15 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const filter = denialLogQuery.parse(c.req.query());
     const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const vertical = await verticalForScope(c, scope);
     return c.json(
-      vertical
-        ? await vertical.summarizeDenials(scopeId, filter)
-        : await admin.summarizeDenials(c.get('actor'), tenantId, scopeId, filter),
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'summarizeDenials', filter,
+        {
+          viaVertical: (v) => v.summarizeDenials(scopeId, filter),
+          colocated: () => admin.summarizeDenials(c.get('actor'), tenantId, scopeId, filter),
+        },
+        (r) => r.buckets.length,
+      ),
     );
   });
 

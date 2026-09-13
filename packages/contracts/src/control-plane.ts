@@ -376,6 +376,48 @@ export const accessLogEntry = z.object({
 export type AccessLogEntry = z.infer<typeof accessLogEntry>;
 
 /**
+ * The scope reads a control plane may record on a vertical's behalf (#1357).
+ *
+ * A **closed set**, and that is the point rather than tidiness. Recording an access
+ * entry from outside an adapter is a new power — until now only an adapter could add a
+ * row — so the seam is built so it cannot be used to write an arbitrary one: the method
+ * comes from here, and the actor comes from the request context, never from a body.
+ *
+ * Every member is the name the CO-LOCATED branch already logs for the same read, so an
+ * auditor cannot tell which branch served a request from the row it left. That is the
+ * whole objective: today a hosted vertical — which is every real deployment — leaves a
+ * `getScopeRecord` entry and nothing saying what was read.
+ */
+export const delegatedReadMethod = z.enum([
+  'readScopeTable',
+  'listScopeTables',
+  'queryScope',
+  'listDenials',
+  'summarizeDenials',
+  'entityHistory',
+  'facetEvents',
+  'eventCause',
+  'eventEffects',
+]);
+export type DelegatedReadMethod = z.infer<typeof delegatedReadMethod>;
+
+/**
+ * What the control plane reports after a read it delegated to a vertical.
+ *
+ * Deliberately carries no `id` and no `at`: the adapter stamps both, so a caller cannot
+ * backdate a row or collide one with another. `params` is the same argument object the
+ * co-located branch logs, truncated by the adapter exactly as that path truncates it.
+ */
+export const delegatedReadRecord = z.object({
+  method: delegatedReadMethod,
+  tenantId,
+  scopeId,
+  params: z.unknown(),
+  resultCount: z.number().int().nonnegative(),
+});
+export type DelegatedReadRecord = z.infer<typeof delegatedReadRecord>;
+
+/**
  * One principal's membership of one org, as the directory holds it (K-21).
  *
  * `revokedAt` non-null is a **tombstone**: the tuple is still here and still

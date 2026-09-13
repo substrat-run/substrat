@@ -72,6 +72,7 @@ import {
   type DrainedEvent,
   type EntityHistoryInput,
   type EventCauseInput,
+  delegatedReadRecord,
   type EventEffectsInput,
   type EffectsTree,
   type CauseChain,
@@ -4628,6 +4629,24 @@ export class CloudflareScopeHost implements ScopeHost {
         const row = await this.cp.resolveIdentity(tenantId, provider, externalId);
         if (!row) return undefined;
         return resolvedIdentity.parse({ principal: row.principal, scopeId: row.scopeId });
+      },
+      /**
+       * #1357: the K-24 row for a read this control plane delegated to a vertical.
+       *
+       * Routed through the SAME `recordAccess` the co-located branch uses rather than
+       * writing the table directly — the id, the timestamp and the param truncation are
+       * that helper's, so a delegated row and a co-located one are indistinguishable,
+       * which is the point of the seam.
+       */
+      recordDelegatedRead: async (actor, record) => {
+        const parsed = delegatedReadRecord.parse(record);
+        await this.recordAccess(
+          actor,
+          parsed.method,
+          { tenantId: parsed.tenantId, scopeId: parsed.scopeId },
+          parsed.params,
+          parsed.resultCount,
+        );
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const rows = await this.cp.accessLog({
