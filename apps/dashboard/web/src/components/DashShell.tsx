@@ -13,7 +13,7 @@ export type NavKey =
   | 'domains'
   | 'team'
   | 'integrations'
-  | 'analytics'
+  | 'observability'
   | 'billing'
   | 'settings';
 
@@ -34,7 +34,11 @@ const MAIN: NavItem[] = [
   { key: 'integrations', label: 'Integrations', icon: 'plug' },
 ];
 const ACCOUNT: NavItem[] = [
-  { key: 'analytics', label: 'Analytics', icon: 'chart' },
+  // #1447: Observability replaces Analytics. Analytics was a Preview page on
+  // estimated figures whose `All apps` select filtered nothing; this is the team's own
+  // traffic at tenant grain, with an app chip — the shape Sentry, Cloudflare and Vercel
+  // all settled on for a cross-project view.
+  { key: 'observability', label: 'Observability', icon: 'chart' },
   { key: 'billing', label: 'Billing', icon: 'card' },
   { key: 'settings', label: 'Settings', icon: 'settings' },
 ];
