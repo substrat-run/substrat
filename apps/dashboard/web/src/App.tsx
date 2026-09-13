@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
-import { navigate as go, setTeamSlug } from './lib/router';
+import { navigate as go, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
 import { CommandPalette } from './components/CommandPalette';
@@ -18,11 +18,14 @@ import { Domains } from './views/Domains';
 import { Integrations } from './views/Integrations';
 import { Billing } from './views/Billing';
 import { Analytics } from './views/Analytics';
+import { AuditLog } from './views/Audit';
 import { Settings } from './views/Settings';
 
 /** The path route, parsed. `section` maps to the sidebar; `app`/`tab`/`vertical` drive detail. */
 interface Route {
   section: NavKey | 'new';
+  /** For `apps`, the scope id in the path. For `audit`, the OPTIONAL app filter the
+   *  query string carries — the page is team-level, so the app narrows it, not addresses it. */
   app?: string;
   tab?: string;
   vertical?: string;
@@ -30,7 +33,7 @@ interface Route {
   team?: string;
 }
 
-const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
+const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'audit', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
 
 function parsePath(): Route {
   let parts = window.location.pathname.split('/').filter(Boolean);
@@ -48,6 +51,9 @@ function parsePath(): Route {
   // A vertical's slug (acme-co/helpdesk) carries a slash, so it's URI-encoded into the
   // single segment — the `/` stays as `%2F` in the pathname, so it never splits across parts.
   if (parts[0] === 'verticals' && parts[1]) return { section: 'verticals', vertical: decodeURIComponent(parts[1]), team };
+  // The audit page is team-level; an app narrows it, so the scope rides as a query
+  // param rather than a path segment — `/audit` and `/audit?app=x` are one page.
+  if (parts[0] === 'audit') return { section: 'audit', team, app: new URLSearchParams(window.location.search).get('app') ?? undefined };
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
   if (parts[0] === 'deployments') return { section: 'verticals', team };
   const section = (SECTIONS.includes(parts[0] as NavKey) ? parts[0] : 'overview') as NavKey;
@@ -656,6 +662,17 @@ export function App() {
   const openApp = useMemo(() => (route.app ? apps.find((a) => a.app_scope_id === route.app) : undefined), [apps, route.app]);
   const openVertical = useMemo(() => (route.vertical ? deployments.find((d) => d.slug === route.vertical) : undefined), [deployments, route.vertical]);
 
+  // The app's Audit tab became a team-level page (#1447). A bookmark on the old tab is
+  // answered by REPLACING the history entry rather than pushing one: a push would leave
+  // the dead tab URL behind Back, and pressing Back would redirect forward again — a
+  // loop with no way out of the page.
+  const legacyAuditTab = route.section === 'apps' && !!openApp && (route.tab === 'audit' || (route.tab ?? '').startsWith('audit/'));
+  useEffect(() => {
+    if (!legacyAuditTab || !openApp) return;
+    window.history.replaceState(null, '', teamPath(`/audit?app=${openApp.app_scope_id}`));
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, [legacyAuditTab, openApp]);
+
   // A deep-linked app can sit beyond the loaded page window — keep walking older
   // pages until it turns up (or the list is exhausted), instead of flashing a 404.
   useEffect(() => {
@@ -719,7 +736,7 @@ export function App() {
     crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('/verticals') : undefined });
     if (openVertical) crumbs.push({ label: openVertical.name });
   }
-  if (['domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
+  if (['audit', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
 
@@ -814,6 +831,8 @@ export function App() {
         <Integrations />
       ) : route.section === 'billing' ? (
         <Billing />
+      ) : route.section === 'audit' ? (
+        <AuditLog apps={apps} scopeId={route.app ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
       ) : route.section === 'analytics' ? (
         <Analytics />
       ) : route.section === 'settings' ? (

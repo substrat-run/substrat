@@ -1268,6 +1268,14 @@ export const api = {
   /** One page of the app scope's control-plane audit log (#479), newest first; `nextCursor` walks older. */
   auditLog: (scopeId: string, opts?: PageOpts) =>
     call<ListPage<AuditEntry>>(`/apps/${encodeURIComponent(scopeId)}/audit${pageQs(opts)}`),
+  /** One page of the TEAM's control-plane audit log (#1447) — every app, newest first.
+   *  `scopeId` narrows it to one app; without it the page is the tenant's whole log,
+   *  which is the only way to see the entries that name no scope at all. */
+  auditLogAll: (opts?: PageOpts & { scopeId?: string }) => {
+    const qs = pageQs(opts);
+    const scope = opts?.scopeId ? `${qs ? '&' : '?'}scopeId=${encodeURIComponent(opts.scopeId)}` : '';
+    return call<ListPage<AuditEntry>>(`/audit${qs}${scope}`);
+  },
   /** The app's vertical version registry (one page of versions, newest first) + channels +
    *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
   appDeployments: (scopeId: string, opts?: PageOpts) =>

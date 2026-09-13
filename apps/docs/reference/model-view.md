@@ -10,8 +10,8 @@ pnpm add @substrat-run/model-view
 ```
 
 It is the pure rendering core behind two surfaces you may already know: `substrat model
-view` in the [CLI](/reference/cli), and the dashboard's Model tab, which shows the model of
-the version an app actually runs. Both call the same two functions, so the page a builder
+view` in the [CLI](/reference/cli), and the dashboard's Schema view (Data → Schema on an
+app), which shows the model of the version an app actually runs. Both call the same two functions, so the page a builder
 approves at the design gate is the page a tenant later sees.
 
 ## Using it
