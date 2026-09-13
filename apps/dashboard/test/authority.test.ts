@@ -683,6 +683,79 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     });
   });
 
+  // The tenant grain, bucketed (#1447). No ownership map here — the narrowing IS the
+  // constructor-pinned tenant, sent on every ask and unwidenable from the call — so what
+  // is worth pinning is that it is sent, that the scope list reaches the plane whole and
+  // in batches the plane will accept, and that every bucket field survives the projection.
+  describe('tenantMetricsSeries (#1447)', () => {
+    const bucket = (scopeId: string, hour: number, n: number) => ({
+      scopeId,
+      start: `2026-09-13T${String(hour).padStart(2, '0')}:00:00Z`,
+      bucketMinutes: 60,
+      requests: n,
+      errors: n % 3,
+      durationP50: n * 1.5,
+      durationP95: n * 4,
+    });
+
+    it('sends the pinned tenant and every scope, and projects every bucket field', async () => {
+      const { cp, calls } = routedHarness({
+        '/observability/tenant-metrics-series': [bucket(S, 10, 12), bucket(S, 11, 9), bucket('01OTHER', 10, 4)],
+      });
+      const rows = await cp.tenantMetricsSeries({ scopeIds: [S, '01OTHER'], hours: 6 });
+      expect(rows).toEqual([
+        { scopeId: S, start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 12, errors: 0, durationP50: 18, durationP95: 48 },
+        { scopeId: S, start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 9, errors: 0, durationP50: 13.5, durationP95: 36 },
+        { scopeId: '01OTHER', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 4, errors: 1, durationP50: 6, durationP95: 16 },
+      ]);
+      const ask = new URL(calls.find((u) => u.includes('/observability/tenant-metrics-series'))!);
+      // The tenant is the one fixed at construction — there is no parameter that could
+      // name another — and the scopes repeat rather than join.
+      expect(ask.searchParams.get('tenantId')).toBe(T);
+      expect(ask.searchParams.getAll('scopeId')).toEqual([S, '01OTHER']);
+      expect(ask.searchParams.get('hours')).toBe('6');
+    });
+
+    it('answers an empty scope list with no rows and no request', async () => {
+      const { cp, calls } = routedHarness({ '/observability/tenant-metrics-series': [bucket(S, 10, 1)] });
+      expect(await cp.tenantMetricsSeries({ scopeIds: [], hours: 24 })).toEqual([]);
+      expect(calls.some((u) => u.includes('/observability/'))).toBe(false);
+    });
+
+    it('batches a long scope list at the cap the plane refuses past, and merges the pages', async () => {
+      // "All my apps" is every app a team installed, and nothing caps that; the plane
+      // takes 50 per ask. So 120 scopes is three asks, none over 50, every scope named
+      // exactly once, and the merged answer holds every bucket that came back.
+      const scopes = Array.from({ length: 120 }, (_, i) => `01SCOPE${String(i).padStart(3, '0')}`);
+      const calls: string[] = [];
+      const fetch = (async (url: string | URL | Request) => {
+        const u = String(url);
+        calls.push(u);
+        const asked = new URL(u).searchParams.getAll('scopeId');
+        return new Response(JSON.stringify(asked.map((id) => bucket(id, 10, 1))), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof globalThis.fetch;
+      const cp = new TenantNarrowedControlPlane({
+        baseUrl: 'https://cp/api',
+        actor: '01JZ000000000000000000TEST',
+        serviceToken: 'secret-token',
+        tenantId: T,
+        fetch,
+      });
+      const rows = await cp.tenantMetricsSeries({ scopeIds: [...scopes, scopes[0]!], hours: 24 });
+      const asks = calls.map((u) => new URL(u));
+      expect(asks).toHaveLength(3);
+      expect(asks.every((u) => u.searchParams.getAll('scopeId').length <= 50)).toBe(true);
+      expect(asks.every((u) => u.searchParams.get('tenantId') === T)).toBe(true);
+      const askedAll = asks.flatMap((u) => u.searchParams.getAll('scopeId'));
+      expect(askedAll).toHaveLength(120); // the duplicate was folded before batching
+      expect(new Set(askedAll).size).toBe(120);
+      expect(rows.map((r) => r.scopeId)).toEqual(scopes);
+    });
+  });
+
   // The permission-registry read (D-39, #336) the Permissions tab consumes.
   it('versionRegistry reads one version’s declared surface at the right route', async () => {
     const reg = {
