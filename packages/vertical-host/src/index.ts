@@ -212,6 +212,7 @@ const denialQuery = (c: { req: { query: (k: string) => string | undefined } }): 
     since: c.req.query('since'),
     until: c.req.query('until'),
     limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    groupBy: c.req.query('groupBy'),
   });
 
 /** `/internal/provision` body. `slug`/`name` ride along so `onProvision` can register a site (M2). */

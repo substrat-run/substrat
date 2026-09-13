@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { deriveOperationHealth, type DenialRead } from '../src/operation-health.js';
+import { deriveOperationHealth, type DenialRead, type RefusalBucket } from '../src/operation-health.js';
 
-const emptyLog: DenialRead = { rows: [], held: 0, windowOldestAt: null };
+const emptyLog: DenialRead = { buckets: [], held: 0, windowOldestAt: null };
 
-/** A log whose one page IS the whole log — the complete case. */
-function log(rows: { operation: string | null; at: string }[]): DenialRead {
-  const oldest = rows.map((r) => r.at).sort()[0] ?? null;
-  return { rows, held: rows.length, windowOldestAt: oldest };
+/** A log whose bucket list accounts for every row it holds — the complete case. */
+function log(buckets: RefusalBucket[], windowOldestAt = '2026-09-01T00:00:00.000Z'): DenialRead {
+  return {
+    buckets,
+    held: buckets.reduce((n, b) => n + b.count, 0),
+    windowOldestAt: buckets.length ? windowOldestAt : null,
+  };
 }
 
 const base = {
@@ -38,10 +41,7 @@ describe('deriveOperationHealth (#1234)', () => {
     const v = deriveOperationHealth({
       ...base,
       observed: [{ operation: 'billing/close', count: 10, lastSeen: '2026-09-01T00:00:00.000Z' }],
-      denials: log([
-        { operation: 'billing/void', at: '2026-09-05T00:00:00.000Z' },
-        { operation: 'billing/void', at: '2026-09-06T00:00:00.000Z' },
-      ]),
+      denials: log([{ operation: 'billing/void', count: 2 }]),
     });
     const void_ = v.rows.find((r) => r.operation === 'billing/void')!;
     expect(void_.refusals).toBe(2);
@@ -55,24 +55,32 @@ describe('deriveOperationHealth (#1234)', () => {
     const v = deriveOperationHealth({
       ...base,
       observed: [{ operation: 'billing/close', count: 10, lastSeen: '2026-09-01T00:00:00.000Z' }],
-      denials: log([{ operation: 'billing/close', at: '2026-09-05T00:00:00.000Z' }]),
+      denials: log([{ operation: 'billing/close', count: 1 }]),
     });
     expect(v.rows).toHaveLength(1);
     expect(v.rows[0]).toMatchObject({ events: 10, refusals: 1, refusedOnly: false });
   });
 
-  it("reports the LOG's floor, not the page's, because those rows drain rather than expire", () => {
+  it('takes the count from the bucket, not from anything it could count itself (#1456)', () => {
+    // The bucket IS the aggregate: every row of its operation, however many the log
+    // holds. Nothing here re-counts, so a count can never be a floor of a page.
+    const v = deriveOperationHealth({
+      ...base,
+      denials: log([{ operation: 'a/b', count: 4_312 }]),
+    });
+    expect(v.rows[0]!.refusals).toBe(4_312);
+    expect(v.refusals).toMatchObject({ complete: true, held: 4_312, counted: 4_312 });
+  });
+
+  it("reports the LOG's floor, not the buckets', because those rows drain rather than expire", () => {
     // THE honesty flag. `refusals: 0` means "none in what is still held", never "never
     // refused" — the log is a storage bound, not a retention promise, so a view that
     // omitted the floor would be inviting the wrong reading. And the floor is what the
-    // log says it holds, which reaches further back than a newest-first page does.
+    // log says it holds, filter-free, not the first occurrence in any bucket.
     const v = deriveOperationHealth({
       ...base,
       denials: {
-        rows: [
-          { operation: 'a/b', at: '2026-09-05T00:00:00.000Z' },
-          { operation: 'a/b', at: '2026-09-02T00:00:00.000Z' },
-        ],
+        buckets: [{ operation: 'a/b', count: 2 }],
         held: 2,
         windowOldestAt: '2026-08-20T00:00:00.000Z',
       },
@@ -84,11 +92,11 @@ describe('deriveOperationHealth (#1234)', () => {
     expect(deriveOperationHealth(base).refusals?.since).toBeNull();
   });
 
-  it('lets a denial with no operation count toward the window without inventing a row', () => {
+  it('lets a null-operation bucket count toward the window without inventing a row', () => {
     // It is evidence about the log's extent, and not evidence about any operation.
     const v = deriveOperationHealth({
       ...base,
-      denials: log([{ operation: null, at: '2026-09-02T00:00:00.000Z' }]),
+      denials: log([{ operation: null, count: 1 }], '2026-09-02T00:00:00.000Z'),
     });
     expect(v.rows).toEqual([]);
     expect(v.refusals).toMatchObject({ complete: true, held: 1, counted: 1, since: '2026-09-02T00:00:00.000Z' });
@@ -102,27 +110,50 @@ describe('deriveOperationHealth (#1234)', () => {
       ...base,
       observed: [],
       observedComplete: false,
-      denials: log([{ operation: 'billing/void', at: '2026-09-05T00:00:00.000Z' }]),
+      denials: log([{ operation: 'billing/void', count: 1 }]),
     });
     expect(v.rows[0]!.events).toBeNull();
     expect(v.rows[0]!.refusedOnly).toBe(false);
     expect(v.observedComplete).toBe(false);
   });
 
-  it('marks a capped page as a floor, not a count', () => {
-    // The log holds more than one page. The newest 200 rows can be one prober's, so an
-    // operation refused only earlier is missing and every count is a lower bound — the
-    // view says so rather than letting the page pass for the whole.
+  it('marks a capped bucket list as incomplete, while the counts it does carry stay exact', () => {
+    // The log holds rows no bucket accounts for: the list was cut at its cap, so the
+    // QUIETEST operations are missing entirely (buckets are busiest first). The one
+    // shown is still every row of its operation — a cap withholds operations, not rows.
     const v = deriveOperationHealth({
       ...base,
       denials: {
-        rows: [{ operation: 'billing/void', at: '2026-09-05T00:00:00.000Z' }],
+        buckets: [{ operation: 'billing/void', count: 850 }],
         held: 900,
         windowOldestAt: '2026-08-01T00:00:00.000Z',
       },
     });
-    expect(v.refusals).toEqual({ complete: false, held: 900, counted: 1, since: '2026-08-01T00:00:00.000Z' });
-    expect(v.rows[0]!.refusals).toBe(1);
+    expect(v.refusals).toEqual({ complete: false, held: 900, counted: 850, since: '2026-08-01T00:00:00.000Z' });
+    expect(v.rows[0]!.refusals).toBe(850);
+  });
+
+  it('says UNKNOWN rather than zero for an observed operation absent from a capped bucket list', () => {
+    // The mirror of the facet rule above. Buckets are busiest first and this list was
+    // cut, so an operation that emitted events but has no bucket may be one of the quiet
+    // ones the cap dropped: its count is unknown. Zero is what a COMPLETE list says
+    // about an operation it does not carry, and only that.
+    const observed = [{ operation: 'billing/settle', count: 12, lastSeen: '2026-09-01T00:00:00.000Z' }];
+    const cut = deriveOperationHealth({
+      ...base,
+      observed,
+      denials: { buckets: [{ operation: 'billing/void', count: 850 }], held: 900, windowOldestAt: null },
+    });
+    expect(cut.rows.find((r) => r.operation === 'billing/settle')!.refusals).toBeNull();
+    // …while the bucket that WAS returned is still exact.
+    expect(cut.rows.find((r) => r.operation === 'billing/void')!.refusals).toBe(850);
+
+    const whole = deriveOperationHealth({
+      ...base,
+      observed,
+      denials: log([{ operation: 'billing/void', count: 850 }]),
+    });
+    expect(whole.rows.find((r) => r.operation === 'billing/settle')!.refusals).toBe(0);
   });
 
   it('keeps an unread log distinct from an empty one', () => {

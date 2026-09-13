@@ -2281,7 +2281,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       operations: deriveOperationHealth({
         observed: [],
         observedComplete: true,
-        denials: { rows: [], held: 0, windowOldestAt: null },
+        denials: { buckets: [], held: 0, windowOldestAt: null },
       }),
       graph: deriveFlowGraph({
         declaredEvents: null,
@@ -2305,15 +2305,26 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
     // event. The one per-operation fact the platform actually records — nothing emits
     // a span for an operation, so there is no timing to be had (see #1237).
     cp.facetEvents(scope, { groupBy: 'operation', limit: FLOW_TYPE_LIMIT }),
-    // The refusal half: the log's own summary for how much it holds and how far back
-    // it reaches, and one page of rows at the route's ceiling for the per-operation
-    // counts (the summary buckets by actor and permission; there is no per-operation
-    // aggregate to ask for yet). Read together so the page is never reported without
-    // the facts that say what it covers. A failed read is passed on as null — an
-    // unread log must stay distinguishable from an empty one, or a retrieval failure
-    // renders as a clean bill.
-    Promise.all([cp.summarizeDenials(scope), cp.listDenials(scope, { limit: DENIAL_LIMIT_MAX })])
-      .then(([summary, rows]) => ({ rows, held: summary.total, windowOldestAt: summary.windowOldestAt }))
+    // The refusal half: the log's own per-operation aggregate (#1456), one bucket per
+    // operation at the route's ceiling, with the facts about the whole log — how much
+    // it holds, how far back it reaches — in the same answer, so the buckets are never
+    // reported without what says what they cover. A failed read is passed on as null —
+    // an unread log must stay distinguishable from an empty one, or a retrieval failure
+    // renders as a clean bill. So is an answer in the OTHER grouping: the route lives
+    // inside the vertical's deploy, and one pushed before it learned `groupBy` answers
+    // K-35's (actor, permission) buckets instead, from which no per-operation count can
+    // honestly be made. That reads as "could not be read" until the vertical is re-pushed,
+    // which is the truth of it.
+    cp.summarizeDenials(scope, { groupBy: 'operation', limit: DENIAL_LIMIT_MAX })
+      .then((summary) =>
+        summary.groupBy === 'operation'
+          ? {
+              buckets: summary.buckets.map((b) => ({ operation: b.operation, count: b.count })),
+              held: summary.total,
+              windowOldestAt: summary.windowOldestAt,
+            }
+          : null,
+      )
       .catch(() => null),
     // Revoked ones included deliberately: a revoked connection is a DIFFERENT
     // finding from none at all, and the default filter would hide it behind the
@@ -2353,14 +2364,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         .filter((b): b is { value: string; count: number; lastSeen: string | null } => b.value !== null)
         .map((b) => ({ operation: b.value, count: b.count, lastSeen: b.lastSeen })),
       observedComplete: !byOperation.truncated,
-      denials:
-        denials === null
-          ? null
-          : {
-              rows: denials.rows.map((d) => ({ operation: d.operation, at: d.at })),
-              held: denials.held,
-              windowOldestAt: denials.windowOldestAt,
-            },
+      denials,
     }),
     graph: deriveFlowGraph({
       declaredEvents: flow.declaredEvents,

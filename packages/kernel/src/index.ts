@@ -184,9 +184,13 @@ export {
   denialTotalsQuery,
   mapDenialRow,
   mapDenialBucketRow,
+  mapDenialOperationBucketRow,
+  mapDenialSummaryBuckets,
   storedActor,
   type DenialRow,
   type DenialBucketRow,
+  type DenialOperationBucketRow,
+  type DenialSummaryBuckets,
   type DenialWindowRow,
 } from './denial-query.js';
 export {

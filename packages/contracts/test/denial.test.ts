@@ -20,6 +20,7 @@ describe('denialQuery', () => {
       since: '2026-09-01T00:00:00.000Z',
       until: '2026-09-02T00:00:00.000Z',
       limit: DEFAULT_DENIAL_LIMIT,
+      groupBy: 'operation',
     });
     const params = new URLSearchParams(denialQuery(filter).slice(1));
     expect(Object.fromEntries(params)).toEqual({
@@ -29,6 +30,7 @@ describe('denialQuery', () => {
       since: '2026-09-01T00:00:00.000Z',
       until: '2026-09-02T00:00:00.000Z',
       limit: String(DEFAULT_DENIAL_LIMIT),
+      groupBy: 'operation',
     });
     // Every key the schema knows about is accounted for — a field added to the filter
     // and forgotten here (the drift this helper exists to stop) fails this line.

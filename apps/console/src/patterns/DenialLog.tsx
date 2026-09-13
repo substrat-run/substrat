@@ -145,7 +145,14 @@ export function DenialLog({ api, scope }: { api: Api; scope: Scope }) {
         </>
       ) : (
         <Table<DenialBucket>
-          rows={summary.buckets}
+          // This screen asks K-35's question and never sends `groupBy`, so the other
+          // arm (#1456's per-operation buckets) cannot arrive — the narrowing is for
+          // the type, and an empty table if it ever did rather than a wrong column.
+          // Written as "not the other arm" rather than "is this arm" on purpose: the
+          // route lives inside each vertical's deploy, and one pushed before the echo
+          // existed answers these same buckets with no `groupBy` at all. That answer is
+          // still K-35's and still valid, and the console must not blank it.
+          rows={summary.groupBy !== 'operation' ? summary.buckets : []}
           emptyText="Nothing has been refused in this window."
           onRowClick={(b) => setOpen(b)}
           columns={[

@@ -444,6 +444,7 @@ export function permissionContractSuite(
 
       it('buckets per (actor, permission) with first occurrence and count (K-35)', async () => {
         const summary = await host.admin.summarizeDenials(staff, t1, s3);
+        if (summary.groupBy !== 'actor-permission') throw new Error('unreachable');
         const use = summary.buckets.find(
           (b) => b.actor === mallory && b.permission === PERM_USE,
         )!;
@@ -458,11 +459,52 @@ export function permissionContractSuite(
 
       it('orders buckets by COUNT, so a flood cannot hide the quiet actor', async () => {
         const summary = await host.admin.summarizeDenials(staff, t1, s3);
+        if (summary.groupBy !== 'actor-permission') throw new Error('unreachable');
         const counts = summary.buckets.map((b) => b.count);
         expect(counts).toEqual([...counts].sort((a, b) => b - a));
         // trudy wrote one row and mallory four; a recency- or volume-blind page could
         // drop trudy. The count-ordered one carries every distinct pair.
         expect(summary.buckets.some((b) => b.actor === trudy)).toBe(true);
+      });
+
+      it('says which grouping it answered with, so a caller cannot mistake one for the other', async () => {
+        // The route lives inside each vertical's deploy, so across a version skew a
+        // caller asking for one grouping can be answered with the default — the echo
+        // is what lets it notice.
+        expect((await host.admin.summarizeDenials(staff, t1, s3)).groupBy).toBe('actor-permission');
+        expect(
+          (await host.admin.summarizeDenials(staff, t1, s3, { groupBy: 'actor-permission' })).groupBy,
+        ).toBe('actor-permission');
+      });
+
+      it('buckets per OPERATION on request — a different question, not a refinement (#1456)', async () => {
+        const summary = await host.admin.summarizeDenials(staff, t1, s3, { groupBy: 'operation' });
+        expect(summary.groupBy).toBe('operation');
+        if (summary.groupBy !== 'operation') throw new Error('unreachable');
+        // perm/authorized-read was refused three times across TWO actors and THREE keys —
+        // one bucket here, three under the (actor, permission) grouping.
+        expect(summary.buckets.map((b) => [b.operation, b.count])).toEqual([
+          ['perm/authorized-read', 3],
+          ['perm/authorized-emit', 2],
+        ]);
+        const read = summary.buckets[0]!;
+        expect(read.firstAt <= read.lastAt).toBe(true);
+        // The facts beside the buckets are the same ones, so the buckets sum to `total`.
+        expect(summary.buckets.reduce((n, b) => n + b.count, 0)).toBe(summary.total);
+        expect(summary.total).toBe(5);
+        expect(summary.actors).toBe(2);
+        expect(summary.windowOldestAt).not.toBeNull();
+      });
+
+      it('narrows the per-operation buckets with the same filter', async () => {
+        const summary = await host.admin.summarizeDenials(staff, t1, s3, {
+          groupBy: 'operation',
+          actor: trudy,
+        });
+        if (summary.groupBy !== 'operation') throw new Error('unreachable');
+        expect(summary.buckets).toHaveLength(1);
+        expect(summary.buckets[0]).toMatchObject({ operation: 'perm/authorized-read', count: 1 });
+        expect(summary.total).toBe(1);
       });
 
       it('reports the window unfiltered — a bound narrows `total`, never the window', async () => {

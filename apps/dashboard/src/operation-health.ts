@@ -22,12 +22,15 @@
  * operations the event facet cannot — a call refused at its first line emits nothing —
  * which is why the two are unioned rather than one being joined onto the other.
  *
- * The log has no per-operation aggregate today (its summary buckets by actor and
- * permission, K-35's question), so the counts come from a page of raw rows, newest
- * first and capped. That page is honest only beside two facts the summary DOES carry:
- * how many rows the log holds, so a capped page knows it is capped, and the log's own
- * floor, which is not the same as the page's oldest row. Both are read and both are
- * reported; the aggregate is a follow-up, not something to fake from a page.
+ * The counts come from the log's own per-operation aggregate (`groupBy: 'operation'`
+ * on the denial summary, #1456) — one bucket per operation, busiest first, capped at
+ * the route's ceiling — never from a page of raw rows. A page could not answer this:
+ * newest-first and capped, one noisy operation crowds every other out of it (K-35's
+ * flooding prober), and every count it yields is a floor. A bucket is every row of its
+ * operation, so a count here is exact; what a cap can cost is the QUIETEST operations,
+ * missing entirely, which is why the summary's two facts about the whole log ride
+ * beside the buckets: how many rows it holds, so a cut bucket list knows it was cut,
+ * and the log's own floor.
  *
  * Neither is a call count, and nothing here pretends to compute an error RATE: the
  * denominator would have to be invocations, and the platform does not record those
@@ -40,10 +43,12 @@ export interface OperationHealthRow {
   /** When it last emitted one; null if it never has, or the facet could not say. */
   lastSeen: string | null;
   /**
-   * Permission refusals recorded for it in the page read, or null when the log could
-   * not be read at all. A count is exact when `refusals.complete` on the view is true,
-   * and a floor otherwise — the page held the newest rows, and this operation's older
-   * refusals may lie beyond it.
+   * Permission refusals recorded for it — its bucket in the per-operation aggregate,
+   * so a count here is exact whatever `refusals.complete` on the view says; what an
+   * incomplete view withholds is operations, not rows. Null when the log could not be
+   * read at all, and ALSO when the bucket list was cut short and this operation had no
+   * bucket in it: it may be one of the quiet operations the cap dropped, so its count is
+   * unknown, not zero. Zero is reserved for a complete list this operation was not in.
    */
   refusals: number | null;
   /**
@@ -64,16 +69,17 @@ export interface OperationHealthRow {
  */
 export interface RefusalWindow {
   /**
-   * True when the page read held every row the log holds, so per-operation counts are
-   * exact and an operation with no row genuinely has no refusal in the window. False
-   * when the log holds more than one page: counts are floors, and an operation whose
-   * refusals all predate the page is missing entirely — one noisy operation can crowd
-   * out every other.
+   * True when the buckets account for every row the log holds, so every operation
+   * with a refusal has a row here and an operation with none genuinely has no refusal
+   * in the window. False when the log holds more distinct operations than one page of
+   * buckets carries: the counts shown are still exact, but the buckets are busiest
+   * first, so what is missing is the quietest operations — absent entirely, not
+   * undercounted.
    */
   complete: boolean;
-  /** Rows the log holds in total, so a reader can see how much a capped page covers. */
+  /** Rows the log holds in total, so a reader can see how much the buckets cover. */
   held: number;
-  /** Rows the page actually carried. */
+  /** Rows the buckets account for — the sum of their counts. */
   counted: number;
   /**
    * The oldest denial the log still holds, or null when it holds none. The LOG's floor,
@@ -102,16 +108,17 @@ export interface ObservedOperation {
   lastSeen: string | null;
 }
 
-export interface RecordedDenial {
+/** One per-operation bucket of the denial log; null for refusals that unwound no operation. */
+export interface RefusalBucket {
   operation: string | null;
-  at: string;
+  count: number;
 }
 
-/** The denial log as read: a capped page of rows plus the summary's facts about the whole. */
+/** The denial log as read: its per-operation buckets plus the summary's facts about the whole. */
 export interface DenialRead {
-  /** A bounded, newest-first page of the scope's denial log. */
-  rows: readonly RecordedDenial[];
-  /** How many rows the log holds, from the summary — filter-free, so page-independent. */
+  /** The scope's denial log grouped by operation, busiest first, capped at the route's ceiling. */
+  buckets: readonly RefusalBucket[];
+  /** How many rows the log holds, from the same summary — what the buckets are a page of. */
   held: number;
   /** The log's own floor, from the summary; null when it holds nothing. */
   windowOldestAt: string | null;
@@ -128,14 +135,23 @@ export function deriveOperationHealth(input: {
   const { observed, observedComplete, denials } = input;
 
   const refusals = new Map<string, number>();
+  let counted = 0;
   if (denials !== null) {
-    for (const d of denials.rows) {
-      // A denial whose operation was not recorded cannot be attributed to one. It is
-      // still a row the log holds, which the summary's `held` already counts.
-      if (d.operation === null) continue;
-      refusals.set(d.operation, (refusals.get(d.operation) ?? 0) + 1);
+    for (const b of denials.buckets) {
+      // Every bucket's rows are rows the buckets account for, the null one included:
+      // a denial whose operation was not recorded cannot be attributed to one, but it
+      // is still a row the log holds, and leaving it out would make the buckets look
+      // cut short when they are not.
+      counted += b.count;
+      if (b.operation === null) continue;
+      refusals.set(b.operation, b.count);
     }
   }
+
+  // The contract's own test for an uncapped bucket list: the counts sum to the total.
+  // Cheaper and truer than comparing lengths against a cap the derive would otherwise
+  // have to be told. Decided before the rows because it decides what an absence means.
+  const refusalsComplete = denials !== null && counted >= denials.held;
 
   const rows = new Map<string, OperationHealthRow>();
   for (const o of observed) {
@@ -143,7 +159,11 @@ export function deriveOperationHealth(input: {
       operation: o.operation,
       events: o.count,
       lastSeen: o.lastSeen,
-      refusals: denials === null ? null : (refusals.get(o.operation) ?? 0),
+      // The same rule as `events` below, read the other way: zero only when the list
+      // was complete and this operation was not in it. A cut list is busiest first, so
+      // an observed operation with no bucket may be one the cap dropped — unknown, and
+      // printing zero would turn that gap into a measurement.
+      refusals: denials === null ? null : (refusals.get(o.operation) ?? (refusalsComplete ? 0 : null)),
       refusedOnly: false,
     });
   }
@@ -176,9 +196,9 @@ export function deriveOperationHealth(input: {
       denials === null
         ? null
         : {
-            complete: denials.rows.length >= denials.held,
+            complete: refusalsComplete,
             held: denials.held,
-            counted: denials.rows.length,
+            counted,
             since: denials.windowOldestAt,
           },
   };
