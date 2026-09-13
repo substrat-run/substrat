@@ -133,6 +133,29 @@ describe('deriveOperationHealth (#1234)', () => {
     expect(v.rows[0]!.refusals).toBe(850);
   });
 
+  it('says UNKNOWN rather than zero for an observed operation absent from a capped bucket list', () => {
+    // The mirror of the facet rule above. Buckets are busiest first and this list was
+    // cut, so an operation that emitted events but has no bucket may be one of the quiet
+    // ones the cap dropped: its count is unknown. Zero is what a COMPLETE list says
+    // about an operation it does not carry, and only that.
+    const observed = [{ operation: 'billing/settle', count: 12, lastSeen: '2026-09-01T00:00:00.000Z' }];
+    const cut = deriveOperationHealth({
+      ...base,
+      observed,
+      denials: { buckets: [{ operation: 'billing/void', count: 850 }], held: 900, windowOldestAt: null },
+    });
+    expect(cut.rows.find((r) => r.operation === 'billing/settle')!.refusals).toBeNull();
+    // …while the bucket that WAS returned is still exact.
+    expect(cut.rows.find((r) => r.operation === 'billing/void')!.refusals).toBe(850);
+
+    const whole = deriveOperationHealth({
+      ...base,
+      observed,
+      denials: log([{ operation: 'billing/void', count: 850 }]),
+    });
+    expect(whole.rows.find((r) => r.operation === 'billing/settle')!.refusals).toBe(0);
+  });
+
   it('keeps an unread log distinct from an empty one', () => {
     // A retrieval failure must not render as a clean bill: every row carries null for
     // refusals rather than zero, and the view carries no window to vouch for.

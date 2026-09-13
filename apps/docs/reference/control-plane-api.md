@@ -83,7 +83,9 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   back and so must be written where that operation ran; the summary is bucketed per
   (actor, permission) so a prober's volume cannot hide a quiet actor, or per operation
   with `?groupBy=operation` — the answer echoes `groupBy` so a caller can tell which
-  question a vertical pushed before that parameter existed actually answered.
+  question a vertical pushed before that parameter existed actually answered. An operation
+  bucket's key is nullable: refusals that unwound no operation invocation form one
+  `operation: null` bucket that still counts toward `total`.
 - **`/push-tokens`** — mints the scoped builder tokens a `substrat push` authenticates with.
 
 Routes are the shape only; enumerate the [OpenAPI](/reference/contracts) document for the

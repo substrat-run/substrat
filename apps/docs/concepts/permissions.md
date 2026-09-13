@@ -237,7 +237,9 @@ console:
   last hundred rows push every other actor off the screen. `groupBy: 'operation'` asks the
   other question — which operation keeps getting refused — with one bucket per operation
   and the same `total` and window facts beside it; the summary echoes the grouping it
-  answered with.
+  answered with. A denial that unwound something other than an operation invocation has
+  no operation, and those rows come back as one bucket keyed `operation: null` — still
+  counted, still part of `total` — rather than vanishing from the sum.
 - **`listDenials`** returns the raw rows behind a bucket, newest first, narrowed by `actor`,
   `permission`, `operation`, and a `since`/`until` window.
 

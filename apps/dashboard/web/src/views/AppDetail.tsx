@@ -1249,7 +1249,8 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
           The refusal log holds {refusals.held.toLocaleString()} entries across more operations than
           are listed here; the {refusals.counted.toLocaleString()} accounted for belong to the most
           refused operations. Each count shown is exact, but an operation refused less often may be
-          missing from this list altogether.
+          missing from this list altogether &mdash; and an operation above with no refusal badge may
+          be one of them, not one that was never refused.
         </p>
       )}
 

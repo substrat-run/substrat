@@ -44,9 +44,11 @@ export interface OperationHealthRow {
   lastSeen: string | null;
   /**
    * Permission refusals recorded for it — its bucket in the per-operation aggregate,
-   * so the count is exact — or null when the log could not be read at all. A row
-   * present here is exact whatever `refusals.complete` on the view says; what an
-   * incomplete view withholds is operations, not rows.
+   * so a count here is exact whatever `refusals.complete` on the view says; what an
+   * incomplete view withholds is operations, not rows. Null when the log could not be
+   * read at all, and ALSO when the bucket list was cut short and this operation had no
+   * bucket in it: it may be one of the quiet operations the cap dropped, so its count is
+   * unknown, not zero. Zero is reserved for a complete list this operation was not in.
    */
   refusals: number | null;
   /**
@@ -146,13 +148,22 @@ export function deriveOperationHealth(input: {
     }
   }
 
+  // The contract's own test for an uncapped bucket list: the counts sum to the total.
+  // Cheaper and truer than comparing lengths against a cap the derive would otherwise
+  // have to be told. Decided before the rows because it decides what an absence means.
+  const refusalsComplete = denials !== null && counted >= denials.held;
+
   const rows = new Map<string, OperationHealthRow>();
   for (const o of observed) {
     rows.set(o.operation, {
       operation: o.operation,
       events: o.count,
       lastSeen: o.lastSeen,
-      refusals: denials === null ? null : (refusals.get(o.operation) ?? 0),
+      // The same rule as `events` below, read the other way: zero only when the list
+      // was complete and this operation was not in it. A cut list is busiest first, so
+      // an observed operation with no bucket may be one the cap dropped — unknown, and
+      // printing zero would turn that gap into a measurement.
+      refusals: denials === null ? null : (refusals.get(o.operation) ?? (refusalsComplete ? 0 : null)),
       refusedOnly: false,
     });
   }
@@ -185,10 +196,7 @@ export function deriveOperationHealth(input: {
       denials === null
         ? null
         : {
-            // The contract's own test for an uncapped bucket list: the counts sum to
-            // the total. Cheaper and truer than comparing lengths against a cap the
-            // derive would otherwise have to be told.
-            complete: counted >= denials.held,
+            complete: refusalsComplete,
             held: denials.held,
             counted,
             since: denials.windowOldestAt,
