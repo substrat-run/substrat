@@ -24,7 +24,10 @@
  * reported for a human to resolve, because the resolution is never mechanical.
  *
  * `--recreate` is the one exception, and it is gated on the only condition that makes a
- * teardown free: the Iceberg table holding ZERO snapshots, and the bucket ZERO objects.
+ * teardown free: the Iceberg table holding ZERO snapshots. Not the bucket's object count —
+ * creating a table writes its metadata JSON, so one object beside an empty table is the
+ * normal state of a lake nothing has shipped to, and gating on that refused the first real
+ * recreate this script was ever asked to perform.
  *
  * It has to drop the TABLE too, not just the three pipelines resources. Deleting a sink
  * leaves the catalog table it was committing to, and `sinks create` then refuses with
@@ -282,20 +285,15 @@ function bucketObjectCount() {
 }
 
 if (recreate) {
-  const objects = bucketObjectCount();
-  if (objects !== 0) {
-    fail(
-      objects === null
-        ? `could not read ${LAKE.bucket}'s object count — refusing to recreate.\n` +
-            '  --recreate is only safe on a provably empty lake, and "could not tell" is not that.'
-        : `${LAKE.bucket} holds ${objects} object(s) — refusing to recreate.\n` +
-            '  Tearing the lake down now would delete history, which is what this tier is for.\n' +
-            '  A schema change on a lake with data in it is an Iceberg schema evolution, by hand.',
-    );
-  }
-  // The sharper question than the object count, and the one asked second because it costs
-  // a round trip: has this table ever held a snapshot? A table with snapshots has had data
-  // committed to it even if compaction or expiry has since removed the files.
+  // SNAPSHOTS are the gate, and the bucket's object count deliberately is NOT.
+  //
+  // Iceberg commits data only under a snapshot, so a table with none has never received a
+  // row — whatever is in the bucket. The object count cannot answer the same question,
+  // because creating a table writes its metadata JSON: `object_count: 1` beside an empty
+  // table is the NORMAL state of a lake nothing has shipped to, and gating on it refused
+  // the first real recreate this script was ever asked to do. Snapshot expiry always keeps
+  // the current snapshot, so "no snapshots and no current snapshot" cannot be a table whose
+  // history was merely aged out.
   const snapshots = await tableSnapshotCount();
   if (snapshots !== 0 && snapshots !== 'absent') {
     fail(
@@ -303,10 +301,18 @@ if (recreate) {
         ? `could not read ${LAKE.namespace}.${LAKE.table}'s snapshots — refusing to recreate.\n` +
             '  "could not tell" is not "empty", and this step would drop the table.'
         : `${LAKE.namespace}.${LAKE.table} has ${snapshots} snapshot(s) — refusing to recreate.\n` +
-            '  Data has been committed to this table. Dropping it destroys history.',
+            '  Data has been committed to this table. Dropping it destroys history, which is\n' +
+            '  what this tier exists not to do. A schema change here is an Iceberg schema\n' +
+            '  evolution, by hand.',
     );
   }
-  console.log('● recreate: lake is empty — tearing down pipeline, sink, stream, table\n');
+  // Reported, never gating: useful for noticing objects the table does not account for.
+  const objects = bucketObjectCount();
+  console.log(
+    `● recreate: ${LAKE.namespace}.${LAKE.table} has no snapshots — nothing committed` +
+      `${objects === null ? '' : ` (${objects} object(s) in the bucket: table metadata)`}`,
+  );
+  console.log('  tearing down pipeline, sink, stream, table\n');
   // Reverse dependency order: the pipeline references the sink and the stream, so it
   // goes first. The bucket and its catalog stay — nothing is wrong with them, and an
   // empty bucket has no table metadata to orphan.
