@@ -1,5 +1,24 @@
 # @substrat-run/adapter-cloudflare
 
+## 0.111.0
+
+### Minor Changes
+
+- aaafae3: Every event in an app's history now has a **Why?** beside it, and it answers.
+
+  Open the history of any record and follow one of its events backwards: each step names the event that produced it, back to the request or the scheduled run that set the whole thing off. "This invoice exists because that timesheet closed, because the Monday sweep ran." That chain is read from what was recorded at the time, not reconstructed afterwards and not sampled — so it is the same answer every time, for every event, however long ago.
+
+  The last line of the answer is the part that matters most, because it says how far the trail actually goes. A chain that reached the operation which started it and a chain that ran out of recorded history look identical otherwise, and presenting the second as the first would let someone conclude that an automatic step began work it only continued. So the ending is always stated: this is where it started, or this is where the record stops, or there is more above this than one read follows, or the trail names something the app no longer holds, or — which should never happen — the trail loops back on itself, and the record needs looking at rather than reading further.
+
+  Events recorded before the platform stored causes say exactly that. Nothing guesses at a missing link, and no chain is presented as complete unless it is.
+
+### Patch Changes
+
+- Updated dependencies [f08bfc4]
+- Updated dependencies [aaafae3]
+  - @substrat-run/contracts@0.111.0
+  - @substrat-run/kernel@0.111.0
+
 ## 0.110.0
 
 ### Minor Changes
@@ -4746,7 +4765,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
