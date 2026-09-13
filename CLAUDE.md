@@ -408,7 +408,8 @@ generated while nothing re-emits it. So a generated file has all three of:
 The re-emit gates today: `lint:permissions`, `lint:model`, `lint:api`, `lint:client`,
 `lint:conformance`, `lint:migrations`, plus `lint:decisions`, `lint:playbook`, `lint:docs`,
 `lint:llms`, `lint:agent-rules`, `lint:launch`, `lint:plugin`, `lint:pins`,
-`lint:auth-schema`.
+`lint:auth-schema`, `lint:lake-schema` (`tools/lake-schema-emit.mjs`: the Tier-2 stream
+schema, derived from the outbox DDL the same way `lint:spine-ddl` reads it).
 
 A gate must be the thing that **refuses**, and it must be the only thing that touches the
 file. `demos/auth-server`'s schema had marks 1 and 2, and its `--check` lived inside a

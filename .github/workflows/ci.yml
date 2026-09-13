@@ -189,6 +189,10 @@ jobs:
       # production runs (#969). This executes each side's DDL *and* the columns it ALTERs
       # in afterwards, then compares the schemas a query would actually meet.
       - run: pnpm lint:spine-ddl
+      # The Tier-2 lake's stream schema is derived from that same outbox DDL
+      # (tools/lake-schema-emit.mjs) — the hand-written copy dropped a column on
+      # its first attempt (#1237), so this re-emits it and refuses on drift.
+      - run: pnpm lint:lake-schema --check
       # ── Scope ────────────────────────────────────────────────────────────
       # Everything above this line runs in full on every PR: the build is what
       # the lints import from, and the lints together take fifteen seconds. The

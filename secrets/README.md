@@ -9,6 +9,7 @@ Keep the filled files in a password manager; only the `.example` templates are c
 | Worker | Dir | Deployed name (prod / test) |
 |---|---|---|
 | control-plane | `apps/control-plane` | `substrat-control-plane` / `…-test` |
+| builder | `apps/builder` | `substrat-builder` / `…-test` |
 | dashboard | `apps/dashboard` | `substrat-dashboard` / `…-test` |
 | router | `apps/router` | `substrat-router` / `…-test` |
 
@@ -84,7 +85,7 @@ throwaway — never reuse a prod secret locally.
 
 | Command | What |
 |---|---|
-| `secrets.mjs check` | Print the worker→secret map and what the file covers. No values. |
+| `secrets.mjs check` | Print the worker→secret map, the store-only keys, and anything the file carries that nothing reads. No values. |
 | `secrets.mjs push --env prod\|test` | Upload the file's secrets to each deployed worker, **then** re-put `PLATFORM_SECRET`/`ROUTER_SECRET` on every vertical. Also `pnpm secrets:platform`. |
 | `secrets.mjs verticals --env prod\|test` | Just that second step, on its own. |
 | `secrets.mjs dev` | Write `apps/*/.dev.vars` from the dev file. |
@@ -114,6 +115,7 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `CF_SAAS_ZONE_ID` | `CF_SAAS_ZONE_ID` | — | — |
 | `SECRET_BOX_KEY` | — | `SECRET_BOX_KEY` | — |
 | `GITHUB_APP_ID` / `_SLUG` / `_PRIVATE_KEY` | — | same names | — |
+| `R2_LAKE_SQL_TOKEN` | `R2_SQL_TOKEN` | — | — |
 
 `PLATFORM_SECRET` and `ROUTER_SECRET` are also injected into every pushed vertical by
 the control plane's WfP uploader — verticals need no secret setup of their own, but the
@@ -123,6 +125,76 @@ Optional keys (`CF_SAAS_ROUTING_TARGET`, `CF_SAAS_SSL_METHOD`, `PLATFORM_BASE_DO
 `SECRET_BOX_KEY_ID`, `EMAIL_FROM`, `CP_ACTOR`) are normally wrangler.jsonc `vars`; set
 them in the file only to override, and they'll be pushed as secrets that shadow the var.
 
+## Store-only keys (in the file, never pushed)
+
+`push` uploads only what the manifest maps, each key to the worker(s) among the four
+(control plane, builder, dashboard, router) that name it — a key in `platform.<env>.env`
+that no worker maps goes nowhere. A credential whose home is some *other* service's config
+therefore needs saying so out loud, not because it might be pushed but because the
+alternative is a key that sits in the file doing nothing and looks exactly like a typo.
+`STORE_ONLY` in `scripts/secrets.mjs` names them and `check` prints them under their own
+heading; `push` excludes them by construction, since it only ever walks the manifest.
+
+| Key | Where it actually lives |
+|---|---|
+| `R2_LAKE_CATALOG_TOKEN` | the sink's own config, written once by `scripts/lake-provision.mjs` |
+| `R2_LAKE_SEND_TOKEN` | nowhere by default — only a non-Workers sender needs it |
+
+They are recorded here anyway because **Cloudflare never gives a token back**: the same
+reason `generate` writes new values into the file before pushing them. A token that exists
+only inside a pipeline's config is one you cannot restore an account from.
+
+`check` also now lists any key the file carries that neither a worker nor `STORE_ONLY`
+names. That is reported, not fatal — but a misspelled canonical key used to be completely
+silent, which is how a "configured" secret can turn out never to have been pushed.
+
+## The Tier-2 lake needs three separate credentials
+
+The Iceberg tier (D-5, `kernel-design` §5.3) is the one place where three
+similar-sounding Cloudflare tokens are genuinely not interchangeable, so the prod template
+spells each out. The short version:
+
+| Credential | Permission | Who holds it |
+|---|---|---|
+| catalog | R2 **Admin Read & Write**, scoped to the lake bucket | Cloudflare Pipelines, in the pipeline config |
+| query | R2 **Admin Read only**, same bucket | control-plane, as `R2_SQL_TOKEN` |
+| send | **Workers Pipeline Send** | only a sender outside Workers |
+
+Two traps worth knowing before debugging one:
+
+- **Object Read & Write does not work for the catalog.** That permission is
+  S3-API-only, so a pipeline holding one is created successfully and then fails at its
+  first catalog commit — a setup that looks complete and a failure that arrives later.
+- **Catalog-vended R2 credentials inherit the token's storage permission.** A token with
+  read-only catalog access but read-write storage access can still write objects. So the
+  reader is `Admin Read only`, which is read-only on both halves, rather than a
+  hand-assembled policy that is only half narrowed.
+
+`scripts/lake-provision.mjs` is where the lake's shape is declared — bucket, namespace,
+table, compression, rolling policy, and the pipeline SQL. It speaks to the Pipelines and
+R2 account API directly rather than through wrangler, and reads `CF_API_TOKEN` and
+`R2_LAKE_CATALOG_TOKEN` out of this file: the catalog token goes into the sink's request
+body over TLS, so it reaches neither shell history nor any process's argv (wrangler's only
+transport for it is `--catalog-token <value>`, which is a child process's command line for
+as long as it runs — redacting the log does not take it out of `ps`). `pnpm lake:check`
+dry-runs it against the account: every existing stream, sink and pipeline is fetched and
+**compared field by field with the declaration** — schema fields, HTTP auth, format,
+compression, rolling policy, namespace, table, SQL — and the run exits non-zero on a
+mismatch. `pnpm lake:provision` creates what is missing. Neither changes anything that
+already exists, because Cloudflare has no update for a stream's schema or a sink's rolling
+policy, and a delete-and-recreate would orphan the Iceberg table the sink is committing
+to — drift is reported for a human, since resolving it is never mechanical. The stream
+schema itself is generated from the outbox DDL (`pnpm lint:lake-schema`), so a column the
+kernel adds reaches the declaration or CI is red.
+
+The shipper itself needs **no credential**: it runs in a platform worker and reaches the
+stream through a `[[pipelines]]` binding. Prefer that over the HTTP endpoint wherever the
+sender is a Worker — a binding cannot leak, expire, or be rotated out from under you.
+
+The Access Key ID and Secret Access Key that R2 hands you alongside a token are for the
+S3-compatible API, which nothing on this path uses. Don't record them: the Secret Access
+Key is the SHA-256 of the token value, so they carry nothing the token doesn't.
+
 ## Rotation caveats
 
 - **`SECRET_BOX_KEY`** seals stored connection credentials at rest. Replacing it orphans
@@ -131,6 +203,19 @@ them in the file only to override, and they'll be pushed as secrets that shadow 
   `open()` throws on a keyId mismatch; real rotation needs a keyring box plus a re-seal
   sweep, and the keyId field is ready while the implementation is not.
 - **`SESSION_SECRET`** (either) signs cookies — rotating signs everyone out.
+- **The lake tokens** rotate independently, and only one of them rotates at all today.
+  Replacing `R2_LAKE_SQL_TOKEN` interrupts lake queries until the next `push` + deploy,
+  nothing worse. **`R2_LAKE_CATALOG_TOKEN` cannot be rotated on a lake that holds data.**
+  The token lives in the sink's config, Cloudflare has no update for a sink, and
+  `lake:provision --recreate` — the only path that writes a new sink — refuses once the
+  table has a snapshot, because it drops the table on the way. So the token the sink was
+  created with must **stay valid** for as long as that sink exists: revoking it does not
+  fail the next `lake:check` (the token is write-only and cannot be compared), it fails
+  the next roll, and the outbox stops reaching the lake with nothing red to say so. The
+  table-preserving migration — a second sink on a new token committing to a new table, a
+  pipeline pointed at it, and a hand-cutover of the query side — is not written yet; until
+  it is, treat the catalog token like `SECRET_BOX_KEY`: set once, backed up, left out of
+  any rotation.
 - Rotating **`PLATFORM_SECRET` / `ROUTER_SECRET`** is a TWO-step move, and **`push` now
   runs both** (#979): it updates the platform workers, then re-puts the pair on every
   deployed vertical script in the dispatch namespace. Vertical scripts receive these as

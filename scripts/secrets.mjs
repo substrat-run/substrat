@@ -124,6 +124,12 @@ const MANIFEST = {
       // different halves of a rotation, and only one of them would work.
       // Optional: unset ⇒ neither app carries a support bubble.
       SUPPORT_WIDGET_SECRET: 'SUPPORT_WIDGET_SECRET',
+      // Reads the Tier-2 Iceberg lake with R2 SQL — an R2 "Admin Read only" token,
+      // scoped to substrat-lake. Optional: unset, the plane simply serves no lake
+      // query, which is the state every deployment is in until the gateway ships.
+      // Read-only on purpose. The catalog's write token is NOT interchangeable with
+      // this and is never pushed to a worker (see STORE_ONLY below).
+      R2_SQL_TOKEN: 'R2_LAKE_SQL_TOKEN',
     },
   },
   builder: {
@@ -199,6 +205,23 @@ const MANIFEST = {
       ROUTER_SECRET: 'ROUTER_SECRET',
     },
   },
+};
+
+/**
+ * Canonical keys the file carries that NO worker should ever receive → `key: why`.
+ *
+ * `push` already only walks MANIFEST, so these are excluded by construction; the list
+ * exists so `check` can SAY so. Before it, a key in the file that no worker mapped
+ * printed nothing at all — indistinguishable from a typo, which is the same defect
+ * #990 fixed for unset-but-needed vars, in the other direction. A key leaves the file
+ * only through a MANIFEST mapping, to the worker(s) among the four that map it — so a
+ * credential that belongs in one service's config is in no danger of being pushed; the
+ * danger is that it sits unmapped and unread, which is why it must be visibly marked
+ * as not travelling (secrets/README.md, #862).
+ */
+const STORE_ONLY = {
+  R2_LAKE_CATALOG_TOKEN: 'handed to `wrangler pipelines setup` — lives in the pipeline config',
+  R2_LAKE_SEND_TOKEN: 'only for a sender outside Workers; the shipper uses a [[pipelines]] binding',
 };
 
 /** Canonical keys `generate` fills when blank — the random shared/session tokens. */
@@ -299,8 +322,26 @@ function cmdCheck() {
     for (const m of missingRequired) gaps.push({ worker: name, ...m });
     console.log();
   }
+  // Deliberately kept in the file and deliberately not pushed — named so the reader can
+  // tell that apart from an oversight.
+  console.log('● store-only  (kept in this file, never pushed to a worker)');
+  for (const [key, why] of Object.entries(STORE_ONLY)) {
+    const present = values[key] !== undefined;
+    console.log(`    ${present ? '✓' : '·'} ${key}${present ? '' : '  (unset)'}   ${why}`);
+  }
+  console.log();
   console.log('✓ = will be set   · = blank, optional (skipped)   ✗ = blank but REQUIRED.');
   console.log('Values are never printed.');
+  // A key no worker maps and STORE_ONLY does not name does nothing whatsoever — almost
+  // always a misspelled canonical key, occasionally a provider credential that belongs
+  // in connectors.env. Reported, not fatal: a filled file may legitimately carry notes
+  // of its own, and refusing would break every existing checkout to catch a typo.
+  const mapped = new Set(Object.values(MANIFEST).flatMap((cfg) => Object.values(cfg.secrets)));
+  const unmapped = Object.keys(values).filter((k) => !mapped.has(k) && !(k in STORE_ONLY));
+  if (unmapped.length) {
+    console.log(`\n· ${unmapped.length} key(s) in the file that nothing reads (typo? belongs in connectors.env?):`);
+    for (const k of unmapped) console.log(`    ${k}`);
+  }
   if (gaps.length) {
     const out = enforcingRequired ? console.error : console.log;
     out(`\n${enforcingRequired ? '✗' : '·'} ${gaps.length} required secret(s) missing from ${filePath}:`);
