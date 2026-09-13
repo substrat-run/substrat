@@ -87,7 +87,7 @@ export interface OpsFailureRead {
   limit?: number;
 }
 
-/** Filter for the sweep record (#1232). */
+/** Filter for the sweep record (#1232). `since` is inclusive, `until` exclusive, on `at`. */
 export interface SweepRunRead {
   kind?: 'connector' | 'schedule' | 'freshness';
   connectionId?: string;
@@ -95,6 +95,12 @@ export interface SweepRunRead {
   unit?: string;
   outcome?: 'ok' | 'failed' | 'skipped';
   since?: string;
+  /**
+   * The upper bound — what makes "the verdict in force when the window began" one
+   * `limit: 1` read (newest-first, `until: <window start>`) rather than a walk back
+   * through everything since.
+   */
+  until?: string;
   limit?: number;
 }
 
@@ -1309,6 +1315,7 @@ export class TenantNarrowedControlPlane {
         unit: filter.unit,
         outcome: filter.outcome,
         since: filter.since,
+        until: filter.until,
       },
       filter.limit,
     );

@@ -142,12 +142,14 @@ export function deriveAppOverlays(input: {
  * `skipped` neither opens nor closes: it means no event of this type has ever landed, and
  * never-seen is not stale — a brand-new install must not shade its whole chart.
  *
- * Because the rows are change-gated, the read behind this must NOT be windowed to the
- * chart: an expectation that went stale last week and has not recovered has exactly one
- * row, last week's, and a `since` at the window's start would drop it — the app reads
- * healthy for as long as nothing changes, which is the opposite of what happened. The
- * worker reads freshness rows unwindowed (there are as many as there were verdict
- * changes, not passes), and this function windows the SPANS, not the rows.
+ * Because the rows are change-gated, the read behind this must reach the verdict in
+ * force BEFORE the window: an expectation that went stale last week and has not
+ * recovered has exactly one row, last week's, and a read windowed at the chart's start
+ * would drop it — the app reads healthy for as long as nothing changes, which is the
+ * opposite of what happened. Nor may that read be shared across units and capped: a
+ * noisier unit's changes would push the quiet one's only row off the page. So the
+ * worker reads PER UNIT — the newest row before the window, then the rows inside it —
+ * and this function windows the SPANS, not the rows.
  */
 function staleSpans(sweepRuns: SweepRunEntry[], start: number, end: number, now: Date): OverlaySpan[] {
   const byUnit = new Map<string, SweepRunEntry[]>();
