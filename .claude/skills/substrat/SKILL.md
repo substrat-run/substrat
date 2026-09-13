@@ -221,7 +221,9 @@ in plain language, so nothing there is a surprise:
    cross-tenant attacker gets nothing).
 9. **Open decisions** — each with a **recommended default**, so the user chooses rather
    than specifies:
-   - **Auth.** Local dev uses an `x-principal` header — a dev seam, not a login. Real auth
+   - **Auth.** Local dev signs in through `@substrat-run/dev-issuer` — a real OIDC
+     provider whose only shortcut is picking a name instead of typing a password, so there
+     is no dev header and no second auth path. Real auth
      gates *exposing* the app, not *building* it — but if the app will be deployed for real
      users, wire the OIDC seam from the start: the standard is a **separate OIDC issuer**
      (an Auth Server app in the same team, or an external issuer — Supabase/Auth0/AuthHero/
@@ -313,7 +315,9 @@ what got built.
 The model is approved — now build it with the **new-vertical** skill
 (`.claude/skills/new-vertical/SKILL.md`), which turns this design document into a working
 vertical (the three module files, the seed world, the server, the API surface, the app
-skin, the scenario test) against the Callout reference. Point it at the approved
+skin, the scenario test) against the two references — `demos/todo` for the shape of a
+vertical built forward from its model, `demos/ticket0` for the deployed half (engine
+composition by call, the worker, the push). Point it at the approved
 `spec/concept.md` — it should translate the design, not re-derive the domain.
 
 Two front-door cautions worth carrying in, because they are silent traps and easy to lose:
@@ -344,12 +348,13 @@ pnpm dev                       # API on :8871 (PORT=… WEB_PORT=… to move it)
 ```
 
 Then **actually exercise it** — don't just report that the server started. Drive the real
-flow with curl (create → assign → start → report → complete), switching `x-principal` to
-show a denial landing. The moment the attack fails is the demo; make sure the user sees
-it.
+flow with curl (create → assign → start → report → complete) as a bearer minted per persona
+at the issuer (`POST {issuer}/dev/token {sub}`), switching persona to show a denial landing.
+The moment the attack fails is the demo; make sure the user sees it.
 
-If they want a UI, scaffold a minimal Vite + React app under `app/` with a principal
-picker in the top bar and typed wrappers over the routes. Ask first — it roughly doubles
+If they want a UI, scaffold a minimal Vite + React app under `app/` over the generated
+client (`substrat.client` → `app/src/api.generated.ts`), with the issuer login in the top
+bar. Ask first — it roughly doubles
 the work and plenty of people want the API and their own frontend.
 
 **The same change that creates `app/` declares it** (#881) — before a single component is
@@ -427,8 +432,8 @@ see other customers' data?*
 Only if the user asks. Local-first is a legitimate stopping point.
 
 Substrat runs on Cloudflare via `@substrat-run/adapter-cloudflare` (Durable Objects).
-`demos/callout` and `demos/meridian` are the references for the Worker topology (own ScopeDO
-+ IdentityDO). A vertical declares what it needs at runtime with a `substrat.runtimeNeeds`
+`demos/ticket0/src/worker.ts` and `demos/meridian/src/worker.ts` are the references for the
+Worker topology (own ScopeDO + IdentityDO). A vertical declares what it needs at runtime with a `substrat.runtimeNeeds`
 block in `package.json` (stores, node-compat, build) instead of hand-authoring wrangler
 config — though the demos still ship an authored `wrangler.jsonc` today.
 
@@ -495,8 +500,10 @@ release.
   against prod data, and backout is a time-boxed PITR rewind. `substrat scope pull` /
   `scope restore` export and reload a scope's data.
 
-Before deploying: the `x-principal` dev header **must** be gone. It is a dev affordance,
-and shipping it is a cross-tenant hole with a UI.
+Before deploying: there must be **no** header, query parameter or env flag that names the
+caller. A vertical built from the references has none; one that grew a dev seam along the
+way is shipping a cross-tenant hole with a UI. Impersonation for scripts lives at the
+issuer (`/dev/token`), never in the vertical.
 
 ---
 
