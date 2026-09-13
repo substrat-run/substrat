@@ -135,7 +135,7 @@ walks the manifest.
 
 | Key | Where it actually lives |
 |---|---|
-| `R2_LAKE_CATALOG_TOKEN` | the pipeline's own config, set once by `wrangler pipelines setup` |
+| `R2_LAKE_CATALOG_TOKEN` | the sink's own config, written once by `scripts/lake-provision.mjs` |
 | `R2_LAKE_SEND_TOKEN` | nowhere by default — only a non-Workers sender needs it |
 
 They are recorded here anyway because **Cloudflare never gives a token back**: the same
@@ -167,6 +167,23 @@ Two traps worth knowing before debugging one:
   read-only catalog access but read-write storage access can still write objects. So the
   reader is `Admin Read only`, which is read-only on both halves, rather than a
   hand-assembled policy that is only half narrowed.
+
+`scripts/lake-provision.mjs` is where the lake's shape is declared — bucket, namespace,
+table, compression, rolling policy, and the pipeline SQL. It speaks to the Pipelines and
+R2 account API directly rather than through wrangler, and reads `CF_API_TOKEN` and
+`R2_LAKE_CATALOG_TOKEN` out of this file: the catalog token goes into the sink's request
+body over TLS, so it reaches neither shell history nor any process's argv (wrangler's only
+transport for it is `--catalog-token <value>`, which is a child process's command line for
+as long as it runs — redacting the log does not take it out of `ps`). `pnpm lake:check`
+dry-runs it against the account: every existing stream, sink and pipeline is fetched and
+**compared field by field with the declaration** — schema fields, HTTP auth, format,
+compression, rolling policy, namespace, table, SQL — and the run exits non-zero on a
+mismatch. `pnpm lake:provision` creates what is missing. Neither changes anything that
+already exists, because Cloudflare has no update for a stream's schema or a sink's rolling
+policy, and a delete-and-recreate would orphan the Iceberg table the sink is committing
+to — drift is reported for a human, since resolving it is never mechanical. The stream
+schema itself is generated from the outbox DDL (`pnpm lint:lake-schema`), so a column the
+kernel adds reaches the declaration or CI is red.
 
 The shipper itself needs **no credential**: it runs in a platform worker and reaches the
 stream through a `[[pipelines]]` binding. Prefer that over the HTTP endpoint wherever the
