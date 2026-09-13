@@ -507,8 +507,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
   /**
    * The tenant grain, bucketed over time (#1447) — `tenantMetrics` with a time axis.
    *
-   * Same dataset, same sampling weights, same forced tenant predicate as the aggregate
-   * above, and NOT the GraphQL series `serviceMetricsSeries` reads: that dataset is keyed
+   * Same dataset, same sampling weights, same forced tenant predicate, and the same two
+   * weighted quantiles as the aggregate above — per bucket here, because the chart plots
+   * latency and a whole-window quantile cannot be unrolled into one — and NOT the GraphQL series `serviceMetricsSeries` reads: that dataset is keyed
    * on the script, and no filter on it can produce a per-tenant number (see
    * `queryTenantMetrics`). The time axis comes from `toStartOfInterval`, at the same two
    * widths the script-grain series uses so the two charts read alike.
@@ -535,7 +536,9 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         blob2 AS scopeId,
         toStartOfInterval(timestamp, INTERVAL '${bucketMinutes}' MINUTE) AS start,
         sum(_sample_interval) AS requests,
-        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors
+        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
+        quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
+        quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
       FROM ${aeDataset(dataset)}
       WHERE index1 = ${aeLiteral(input.tenantId)}
         AND timestamp > now() - INTERVAL '${hours}' HOUR
@@ -563,6 +566,8 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           bucketMinutes,
           requests: aeNum(r['requests']),
           errors: aeNum(r['errors']),
+          durationP50: aeNum(r['durationP50']),
+          durationP95: aeNum(r['durationP95']),
         },
       ];
     });

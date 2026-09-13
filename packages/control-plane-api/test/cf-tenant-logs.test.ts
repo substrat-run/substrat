@@ -350,6 +350,11 @@ describe('cf tenant metrics series', () => {
     expect(sql).toContain("blob2 IN ('01SCOPE', '01OTHER')");
     expect(sql).toContain('sum(_sample_interval)');
     expect(sql).not.toMatch(/\bcount\(\)/);
+    // Latency per bucket, weighted like the counts — `quantile()` would count each
+    // surviving row once however many requests it stood for.
+    expect(sql).toContain('quantileWeighted(0.5)(double1, _sample_interval)');
+    expect(sql).toContain('quantileWeighted(0.95)(double1, _sample_interval)');
+    expect(sql).not.toMatch(/\bquantile\(/);
     expect(sql).toContain("toStartOfInterval(timestamp, INTERVAL '60' MINUTE)");
     expect(sql).toContain('FROM substrat_router_test');
 
@@ -359,15 +364,15 @@ describe('cf tenant metrics series', () => {
 
   it('projects AE rows into ISO-instant buckets, sums as strings included', async () => {
     stubSql([
-      { scopeId: '01SCOPE', start: '2026-09-13 10:00:00', requests: '40', errors: '2' },
-      { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', requests: 7, errors: 0 },
+      { scopeId: '01SCOPE', start: '2026-09-13 10:00:00', requests: '40', errors: '2', durationP50: '12.5', durationP95: 80 },
+      { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', requests: 7, errors: 0, durationP50: 9, durationP95: '31' },
       // A row with no instant cannot be placed on an axis and is dropped, not invented.
-      { scopeId: '01SCOPE', start: null, requests: '1', errors: '0' },
+      { scopeId: '01SCOPE', start: null, requests: '1', errors: '0', durationP50: 1, durationP95: 1 },
     ]);
     const rows = await reader().tenantMetricsSeries!({ tenantId: '01TENANT', scopeIds: ['01SCOPE'], hours: 24 });
     expect(rows).toEqual([
-      { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 40, errors: 2 },
-      { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 7, errors: 0 },
+      { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 40, errors: 2, durationP50: 12.5, durationP95: 80 },
+      { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 7, errors: 0, durationP50: 9, durationP95: 31 },
     ]);
   });
 

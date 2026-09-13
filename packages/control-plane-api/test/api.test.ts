@@ -11,6 +11,7 @@ import {
   ControlPlaneError,
   DeployUploadError,
   DEV_ACTOR_HEADER,
+  TENANT_SERIES_SCOPE_CAP,
   UNSAFE_devPlatformActorAuth,
   VerticalClient,
   deploymentRefFor,
@@ -5080,8 +5081,8 @@ describe('control-plane API — observability proxy', () => {
         tenantMetricsSeries: async (input: unknown) => {
           seen.push(input);
           return [
-            { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 12, errors: 1 },
-            { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 9, errors: 0 },
+            { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 12, errors: 1, durationP50: 10, durationP95: 40 },
+            { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', bucketMinutes: 60, requests: 9, errors: 0, durationP50: 8, durationP95: 30 },
           ];
         },
       };
@@ -5099,7 +5100,7 @@ describe('control-plane API — observability proxy', () => {
         });
         expect(res.status).toBe(200);
         expect(await res.json()).toMatchObject([
-          { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 12 },
+          { scopeId: '01SCOPE', start: '2026-09-13T10:00:00Z', bucketMinutes: 60, requests: 12, durationP50: 10, durationP95: 40 },
           { scopeId: '01SCOPE', start: '2026-09-13T11:00:00Z', requests: 9 },
         ]);
         expect(seen.at(-1)).toEqual({ tenantId: builderTenant, scopeIds: ['01SCOPE', '01OTHER'], hours: 6 });
@@ -5129,6 +5130,20 @@ describe('control-plane API — observability proxy', () => {
         expect((await app.request('/observability/tenant-metrics-series', { headers: asBuilder })).status).toBe(400);
         expect(
           (await app.request('/observability/tenant-metrics-series?scopeId=01SCOPE&hours=9000', { headers: asBuilder }))
+            .status,
+        ).toBe(400);
+      });
+
+      /** The list is capped at the published constant — the number a batching caller is written against. */
+      it('refuses a scope list past TENANT_SERIES_SCOPE_CAP, and takes one exactly at it', async () => {
+        const app = appWith(seriesReader);
+        const ids = (n: number) => Array.from({ length: n }, (_, i) => `scopeId=01S${String(i).padStart(3, '0')}`).join('&');
+        expect(
+          (await app.request(`/observability/tenant-metrics-series?${ids(TENANT_SERIES_SCOPE_CAP)}`, { headers: asBuilder }))
+            .status,
+        ).toBe(200);
+        expect(
+          (await app.request(`/observability/tenant-metrics-series?${ids(TENANT_SERIES_SCOPE_CAP + 1)}`, { headers: asBuilder }))
             .status,
         ).toBe(400);
       });

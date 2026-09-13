@@ -127,7 +127,7 @@ import {
   type MintedStore,
 } from './tenant-stores.js';
 import { mintPushToken, pushActorFor } from './push-token.js';
-import type { ObservabilityReader } from './observability.js';
+import { TENANT_SERIES_SCOPE_CAP, type ObservabilityReader } from './observability.js';
 import type { PlatformRuntime } from './platform-runtime.js';
 import { namespacesForScript, type DoNamespaceReader } from './do-namespaces.js';
 import type {
@@ -4424,7 +4424,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         tenantId: tenantIdSchema,
         // Narrowing WITHIN the tenant, as on /tenant-metrics: a foreign scope id yields
         // zero rows rather than somebody else's, so no ownership check is needed here.
-        scopeIds: z.array(z.string().min(1).max(64)).min(1).max(50),
+        scopeIds: z.array(z.string().min(1).max(64)).min(1).max(TENANT_SERIES_SCOPE_CAP),
         hours: z.coerce.number().int().min(1).max(72).default(24),
       })
       .parse({ tenantId, scopeIds, hours: c.req.query('hours') });

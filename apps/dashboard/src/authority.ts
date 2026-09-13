@@ -46,6 +46,15 @@ import { LIST_PAGE_MAX, problemDetail } from '@substrat-run/contracts';
 const SERIES_URL_BUDGET = 4096;
 
 /**
+ * How many scopes one tenant-grain series request may name (#1447) — the control
+ * plane's `TENANT_SERIES_SCOPE_CAP`, which its route refuses past. Spelled here rather
+ * than imported because this worker reaches the plane over HTTP and carries none of its
+ * module graph; the plane's own test pins the number, and a mismatch reads as a 400 from
+ * the first team with more apps than this, which is the case the batching exists for.
+ */
+const TENANT_SERIES_SCOPE_CAP = 50;
+
+/**
  * One list read, with the two facts about the READ that its rows cannot state.
  *
  * Every consumer of a bounded list read has to decide what the absence of a row
@@ -1115,6 +1124,12 @@ export class TenantNarrowedControlPlane {
    * per named app. Same grain, same narrowing, same reasoning: the tenant is fixed from the
    * session and the scope list only narrows within it. The worker resolves that list through
    * this tenant's own apps first, so what reaches the plane is already owned.
+   *
+   * The plane caps one ask at `TENANT_SERIES_SCOPE_CAP` scopes, and nothing caps how many
+   * apps a team installs — so "all my apps" batches by count and merges the pages, the way
+   * the script-grain series batches by bytes above. Each page is a whole answer for the
+   * scopes it named (the plane refuses a saturated page rather than trimming it), so the
+   * merge loses nothing.
    */
   async tenantMetricsSeries(input: { scopeIds: string[]; hours: number }): Promise<
     Array<{
@@ -1123,21 +1138,35 @@ export class TenantNarrowedControlPlane {
       bucketMinutes: number;
       requests: number;
       errors: number;
+      durationP50: number;
+      durationP95: number;
     }>
   > {
-    const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
-    for (const s of input.scopeIds) q.append('scopeId', s);
+    const scopeIds = [...new Set(input.scopeIds)];
+    if (scopeIds.length === 0) return [];
+    const batches: string[][] = [];
+    for (let i = 0; i < scopeIds.length; i += TENANT_SERIES_SCOPE_CAP) {
+      batches.push(scopeIds.slice(i, i + TENANT_SERIES_SCOPE_CAP));
+    }
     const num = (v: unknown) => (typeof v === 'number' ? v : 0);
-    const rows =
-      (await this.call<Array<Record<string, unknown>>>(`/observability/tenant-metrics-series?${q.toString()}`)) ??
-      [];
-    return rows.map((r) => ({
-      scopeId: String(r['scopeId'] ?? ''),
-      start: String(r['start'] ?? ''),
-      bucketMinutes: num(r['bucketMinutes']),
-      requests: num(r['requests']),
-      errors: num(r['errors']),
-    }));
+    const pages = await Promise.all(
+      batches.map((ids) => {
+        const q = new URLSearchParams({ tenantId: this.tenantId, hours: String(input.hours) });
+        for (const s of ids) q.append('scopeId', s);
+        return this.call<Array<Record<string, unknown>>>(`/observability/tenant-metrics-series?${q.toString()}`);
+      }),
+    );
+    return pages
+      .flatMap((page) => page ?? [])
+      .map((r) => ({
+        scopeId: String(r['scopeId'] ?? ''),
+        start: String(r['start'] ?? ''),
+        bucketMinutes: num(r['bucketMinutes']),
+        requests: num(r['requests']),
+        errors: num(r['errors']),
+        durationP50: num(r['durationP50']),
+        durationP95: num(r['durationP95']),
+      }));
   }
 
   /** MY logs — same grain, same narrowing, same reasoning as `tenantMetrics` above. */

@@ -1183,6 +1183,9 @@ export interface TenantMetricsBucket {
   bucketMinutes: number;
   requests: number;
   errors: number;
+  /** Weighted median request duration inside the bucket, ms — the same quantiles as `TenantMetricsRow`. */
+  durationP50: number;
+  durationP95: number;
 }
 
 /** One recent log event from a team vertical's deployed service. */

@@ -116,6 +116,7 @@ export type {
   RecentLogEvent,
   TenantMetricsBucket,
 } from './observability.js';
+export { TENANT_SERIES_SCOPE_CAP } from './observability.js';
 export type { PlatformRuntime } from './platform-runtime.js';
 export { createCfDoNamespaceReader, namespacesForScript } from './do-namespaces.js';
 export type { DoNamespaceReader, DoNamespaceRecord, CfDoNamespaceOptions } from './do-namespaces.js';

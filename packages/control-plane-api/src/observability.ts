@@ -161,6 +161,11 @@ export interface TenantMetricsRow {
  * a chart wants one line per app. The per-surface split stays on the aggregate row.
  * `start` and `bucketMinutes` mean what they mean on `ServiceMetricsBucket` — an empty
  * bucket is omitted, never zero-filled here; the caller fills, knowing the width.
+ *
+ * Unlike the script-grain bucket it carries latency, because #1447's chart plots it and
+ * the aggregate row's whole-window quantiles cannot be turned back into a timeline. The
+ * same two quantiles as `TenantMetricsRow`, so the chart and the table beneath it name
+ * the same number; sampling-weighted for the same reason its counts are.
  */
 export interface TenantMetricsBucket {
   scopeId: string;
@@ -169,7 +174,18 @@ export interface TenantMetricsBucket {
   bucketMinutes: number;
   requests: number;
   errors: number;
+  /** Weighted median request duration inside the bucket, ms. */
+  durationP50: number;
+  /** Weighted 95th percentile, ms. */
+  durationP95: number;
 }
+
+/**
+ * How many scopes one `tenantMetricsSeries` ask may name. The answer is scopes × buckets
+ * against the reader's row ceiling, so the route refuses a longer list; a caller with
+ * more apps than this batches its ask and merges the pages (the dashboard does).
+ */
+export const TENANT_SERIES_SCOPE_CAP = 50;
 
 export interface ObservabilityReader {
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */

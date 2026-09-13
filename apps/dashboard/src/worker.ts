@@ -3820,6 +3820,8 @@ app.get('/api/observability/tenant-metrics-series', async (c) => {
   const owned = new Set(apps.map((a) => a.app_scope_id));
   const foreign = asked.find((s) => !owned.has(s));
   if (foreign) throw new HTTPException(404, { message: 'app not found' });
+  // Every installed app when none is named. The plane caps one ask; the authority
+  // batches past it, so a team with more apps than that gets a series, not a 400.
   const scopeIds = asked.length > 0 ? [...new Set(asked)] : [...owned];
   // No apps at all is an honest empty series, not a question for the plane.
   if (scopeIds.length === 0) return c.json([]);
