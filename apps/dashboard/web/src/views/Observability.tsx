@@ -199,8 +199,15 @@ export function Observability({
         onPick={(k) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: k })}
       />
 
-      {active === 'traffic' && !oneApp && <AppTrafficRows rows={totals} loading={series === null} onOpen={(s) => onNav({ app: s })} />}
-      {active === 'health' && <FleetHealth onOpen={(s) => onNav({ app: s })} />}
+      {/* Not drawn under an unavailable chart: `deriveTeamSeries` zero-fills every line
+          whether or not the plane answered, so these rows would put "0 requests" beside
+          each app directly beneath a chart that just said nothing was measured. */}
+      {active === 'traffic' && !oneApp && series?.available !== false && (
+        <AppTrafficRows rows={totals} loading={series === null} onOpen={(s) => onNav({ app: s })} />
+      )}
+      {/* A Health row promises its sweep record, which lives on the Schedules sub-view —
+          landing on the default Traffic panel would hide the very reason the row exists. */}
+      {active === 'health' && <FleetHealth key={nonce} onOpen={(s) => onNav({ app: s, view: 'schedules' })} />}
       {scopeId && active === 'traffic' && <TenantTrafficTable scopeId={scopeId} hours={hours} nonce={nonce} />}
       {scopeId && active === 'logs' && (
         <TenantLogs
@@ -212,16 +219,20 @@ export function Observability({
           {...(series?.available && thisApp ? { hadTraffic: thisApp.requests > 0 } : {})}
         />
       )}
+      {/* The page-level Refresh reaches every panel. The three below take no nonce of
+          their own — they are the app page's panels, mounted here unchanged — so the
+          nonce rides their `key` and Refresh remounts them, which re-asks every question
+          they hold. Anything less reproduces the per-card refresh this page replaced. */}
       {scopeId && active === 'events' && (
         <EventExplorer
-          key={scopeId}
+          key={`${scopeId}:${nonce}`}
           scopeId={scopeId}
           hours={hours}
           {...(focusEventType ? { focusEventType } : {})}
         />
       )}
-      {scopeId && active === 'schedules' && <AppSchedules scopeId={scopeId} />}
-      {app && active === 'flow' && <Flow key={app.app_scope_id} app={app} />}
+      {scopeId && active === 'schedules' && <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} />}
+      {app && active === 'flow' && <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />}
     </Page>
   );
 }
@@ -338,10 +349,17 @@ function Segmented({
           <button
             key={o.key}
             type="button"
-            disabled={o.disabled ?? false}
-            {...(o.title ? { title: o.title } : {})}
+            // `aria-disabled`, not `disabled`: a natively disabled button drops out of
+            // the tab order, and with it the one place the "why" (`title`) is exposed —
+            // so a keyboard or screen-reader user would meet a control that is simply
+            // gone. This stays focusable, is announced as unavailable, and activation is
+            // guarded instead.
+            aria-disabled={o.disabled ?? false}
+            {...(o.title ? { title: o.title, 'aria-description': o.title } : {})}
             aria-pressed={on}
-            onClick={() => onPick(o.key)}
+            onClick={() => {
+              if (!o.disabled) onPick(o.key);
+            }}
             style={{
               appearance: 'none',
               border: 0,

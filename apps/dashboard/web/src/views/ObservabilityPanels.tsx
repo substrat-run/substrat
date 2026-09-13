@@ -79,6 +79,11 @@ export function TenantTrafficTable({ scopeId, hours, nonce }: { scopeId: string;
   useEffect(() => {
     let live = true;
     setState('loading');
+    // Cleared with the state, not left in place: the loader only shows over an EMPTY
+    // table, so keeping the old rows would leave one app's totals on screen under the
+    // heading of another until the new read lands — the misreading this page exists
+    // to prevent.
+    setRows(null);
     void (async () => {
       try {
         const r = DEV_MOCK ? MOCK_TENANT_METRICS : await api.appTenantMetrics(scopeId, hours);

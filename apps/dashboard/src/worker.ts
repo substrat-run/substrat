@@ -3944,17 +3944,20 @@ app.get('/api/observability/traffic', async (c) => {
   const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const scopeIds = seriesScopes(apps, c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? []);
-  // Rounded, not just clamped, for the same reason the release chart's window is: the
-  // plane's schema is `.int()`, so `?hours=6.5` would be refused there and the chart
-  // would say "not available" for what is really a bad parameter.
-  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
+  const hours = chartHours(c.req.query('hours'));
   const now = new Date();
   // No apps at all still shapes an answer — an empty chart with a real axis, not a 501.
   if (scopeIds.length === 0) return c.json(deriveTeamSeries({ buckets: [], scopeIds, hours, now }));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  // Tolerated to null: an unconfigured plane makes the chart say so, and the page's other
-  // panels answer their own questions independently.
-  const buckets = await cp.tenantMetricsSeries({ scopeIds, hours }).catch(() => null);
+  // ONLY the plane's 501 is tolerated to null — that is the platform's shape for "no
+  // bucketed reader is configured", and the chart says so. Everything else — a refused
+  // token, a saturated plane, a 5xx — is an operational failure and propagates, so the
+  // page shows an error rather than a confident "not available" over a plane that is
+  // merely down, which reads as a fact about the platform rather than an outage.
+  const buckets = await cp.tenantMetricsSeries({ scopeIds, hours }).catch((e: unknown) => {
+    if (e instanceof ControlPlaneError && e.status === 501) return null;
+    throw e;
+  });
   return c.json(deriveTeamSeries({ buckets, scopeIds, hours, now }));
 });
 
