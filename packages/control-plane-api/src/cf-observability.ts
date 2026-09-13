@@ -2,6 +2,7 @@ import type {
   ObservabilityReader,
   ObservedEgressRow,
   RecentLogEvent,
+  TenantMetricsBucket,
   TenantMetricsRow,
 } from './observability.js';
 
@@ -366,11 +367,15 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     },
 
     // Present only when the caller named the router's dataset: with no dataset there is
-    // no honest answer, and the route's 501 says so. See `routerDataset`.
+    // no honest answer, and the route's 501 says so. See `routerDataset`. The bucketed
+    // twin rides the same switch — it reads the same dataset, so it is exactly as
+    // available as the aggregate and never more.
     ...(opts.routerDataset
       ? {
           tenantMetrics: (input: Parameters<NonNullable<ObservabilityReader['tenantMetrics']>>[0]) =>
             queryTenantMetrics(opts.routerDataset!, input),
+          tenantMetricsSeries: (input: Parameters<NonNullable<ObservabilityReader['tenantMetricsSeries']>>[0]) =>
+            queryTenantMetricsSeries(opts.routerDataset!, input),
         }
       : {}),
 
@@ -459,29 +464,12 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       hours: number;
     },
   ): Promise<TenantMetricsRow[]> {
-    // The dataset name is an IDENTIFIER, not a bound value — it cannot be quoted into
-    // place, so the only defence is refusing anything that is not a bare name. Checked
-    // here rather than at construction so a mistyped var costs this one route a 500
-    // instead of taking every other observability read down with it.
-    if (!/^[A-Za-z0-9_]{1,64}$/.test(dataset)) {
-      throw new Error('observability: refusing a router dataset name that is not a bare identifier');
-    }
-    // The tenant is bound, never interpolated: this is SQL built in a string, and the
-    // value arrives from a session. Ids are opaque ULIDs, so the escape is a whitelist
-    // rather than a quote-doubling dance — anything that is not ULID-shaped is not an
-    // id and has no business reaching the query.
-    const literal = (v: string) => {
-      if (!/^[A-Za-z0-9_\-./]{1,128}$/.test(v)) {
-        throw new Error('observability: refusing a dimension value with unexpected characters');
-      }
-      return `'${v}'`;
-    };
     const where = [
-      `index1 = ${literal(input.tenantId)}`,
+      `index1 = ${aeLiteral(input.tenantId)}`,
       `timestamp > now() - INTERVAL '${Math.max(1, Math.floor(input.hours))}' HOUR`,
     ];
-    if (input.scopeId) where.push(`blob2 = ${literal(input.scopeId)}`);
-    if (input.vertical) where.push(`blob1 = ${literal(input.vertical)}`);
+    if (input.scopeId) where.push(`blob2 = ${aeLiteral(input.scopeId)}`);
+    if (input.vertical) where.push(`blob1 = ${aeLiteral(input.vertical)}`);
 
     // Blob/double positions are the router's published shape (`apps/router/src/worker.ts`
     // `record`): index1 tenant; blob1 vertical, blob2 scope, blob3 surface, blob4 status
@@ -496,13 +484,92 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors,
         quantileWeighted(0.5)(double1, _sample_interval) AS durationP50,
         quantileWeighted(0.95)(double1, _sample_interval) AS durationP95
-      FROM ${dataset}
+      FROM ${aeDataset(dataset)}
       WHERE ${where.join(' AND ')}
       GROUP BY scopeId, vertical, surface
       ORDER BY requests DESC
       LIMIT 200
       FORMAT JSON`;
 
+    const rows = await analyticsEngineSql(sql);
+    const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
+    return rows.map((r) => ({
+      scopeId: String(r['scopeId'] ?? ''),
+      vertical: str(r['vertical']),
+      surface: str(r['surface']),
+      requests: aeNum(r['requests']),
+      errors: aeNum(r['errors']),
+      durationP50: aeNum(r['durationP50']),
+      durationP95: aeNum(r['durationP95']),
+    }));
+  }
+
+  /**
+   * The tenant grain, bucketed over time (#1447) — `tenantMetrics` with a time axis.
+   *
+   * Same dataset, same sampling weights, same forced tenant predicate as the aggregate
+   * above, and NOT the GraphQL series `serviceMetricsSeries` reads: that dataset is keyed
+   * on the script, and no filter on it can produce a per-tenant number (see
+   * `queryTenantMetrics`). The time axis comes from `toStartOfInterval`, at the same two
+   * widths the script-grain series uses so the two charts read alike.
+   *
+   * Bounded the way the script-grain series is: a scope answers at most one row per
+   * bucket, so scopes × buckets is the ceiling, and a page that reaches `LIMIT` is a
+   * PREFIX (ascending order) missing its newest buckets — which a zero-filling caller
+   * would draw as an outage. Refusing is the honest answer to that, and the route's
+   * bound on the scope list is what keeps a legitimate ask well under it.
+   */
+  async function queryTenantMetricsSeries(
+    dataset: string,
+    input: { tenantId: string; scopeIds: string[]; hours: number },
+  ): Promise<TenantMetricsBucket[]> {
+    // An empty list narrows to nothing, and says so without a query: an unfiltered read
+    // would be "every scope of this tenant", which is a widening the caller did not ask
+    // for and the contract does not offer.
+    if (input.scopeIds.length === 0) return [];
+    const hours = Math.max(1, Math.floor(input.hours));
+    const bucketMinutes = hours <= 6 ? 15 : 60;
+    const scopes = input.scopeIds.map((s) => aeLiteral(s)).join(', ');
+    const sql = `
+      SELECT
+        blob2 AS scopeId,
+        toStartOfInterval(timestamp, INTERVAL '${bucketMinutes}' MINUTE) AS start,
+        sum(_sample_interval) AS requests,
+        sum(if(blob4 = '5xx', _sample_interval, 0)) AS errors
+      FROM ${aeDataset(dataset)}
+      WHERE index1 = ${aeLiteral(input.tenantId)}
+        AND timestamp > now() - INTERVAL '${hours}' HOUR
+        AND blob2 IN (${scopes})
+      GROUP BY scopeId, start
+      ORDER BY start ASC
+      LIMIT ${SERIES_ROW_LIMIT}
+      FORMAT JSON`;
+
+    const rows = await analyticsEngineSql(sql);
+    if (rows.length >= SERIES_ROW_LIMIT) {
+      throw new Error(
+        `Cloudflare Analytics Engine series query saturated at ${SERIES_ROW_LIMIT} rows: the answer would be a partial prefix, not a series`,
+      );
+    }
+    return rows.flatMap((r) => {
+      const start = aeInstant(r['start']);
+      // A row with no bucket instant cannot be placed on an axis — dropping it beats
+      // plotting it at an invented time.
+      if (start === null) return [];
+      return [
+        {
+          scopeId: String(r['scopeId'] ?? ''),
+          start,
+          bucketMinutes,
+          requests: aeNum(r['requests']),
+          errors: aeNum(r['errors']),
+        },
+      ];
+    });
+  }
+
+  /** One Analytics Engine SQL read, returning the rows as the API shaped them. */
+  async function analyticsEngineSql(sql: string): Promise<Array<Record<string, unknown>>> {
     const res = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/analytics_engine/sql`,
       { method: 'POST', headers: { authorization: `Bearer ${opts.apiToken}` }, body: sql },
@@ -512,18 +579,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       throw new Error(`Cloudflare Analytics Engine query failed: HTTP ${res.status} ${text.slice(0, 200)}`);
     }
     const json = JSON.parse(text) as { data?: Array<Record<string, unknown>> };
-    // AE returns aggregate sums as STRINGS (they are 64-bit), quantiles as numbers.
-    const num = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : 0);
-    const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : null);
-    return (json.data ?? []).map((r) => ({
-      scopeId: String(r['scopeId'] ?? ''),
-      vertical: str(r['vertical']),
-      surface: str(r['surface']),
-      requests: num(r['requests']),
-      errors: num(r['errors']),
-      durationP50: num(r['durationP50']),
-      durationP95: num(r['durationP95']),
-    }));
+    return json.data ?? [];
   }
 
   /**
@@ -857,6 +913,48 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // swallowed — an egress report that silently drops hosts is worse than none (#859).
     return { spans, truncated: events.length >= limit };
   }
+}
+
+/**
+ * The router dataset's name, checked before it is spliced into SQL. It is an IDENTIFIER,
+ * not a bound value — it cannot be quoted into place, so the only defence is refusing
+ * anything that is not a bare name. Checked per query rather than at construction so a
+ * mistyped var costs the tenant routes a 500 instead of taking every other observability
+ * read down with it.
+ */
+function aeDataset(dataset: string): string {
+  if (!/^[A-Za-z0-9_]{1,64}$/.test(dataset)) {
+    throw new Error('observability: refusing a router dataset name that is not a bare identifier');
+  }
+  return dataset;
+}
+
+/**
+ * A dimension value quoted for Analytics Engine SQL. The SQL is built in a string and the
+ * value arrives from a session, so this is a whitelist rather than a quote-doubling dance:
+ * ids are opaque ULIDs and slugs, and anything that is not shaped like one is not an id
+ * and has no business reaching the query.
+ */
+function aeLiteral(v: string): string {
+  if (!/^[A-Za-z0-9_\-./]{1,128}$/.test(v)) {
+    throw new Error('observability: refusing a dimension value with unexpected characters');
+  }
+  return `'${v}'`;
+}
+
+/** AE returns aggregate sums as STRINGS (they are 64-bit), quantiles as numbers. */
+function aeNum(v: unknown): number {
+  return typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : 0;
+}
+
+/**
+ * An Analytics Engine DateTime (`2026-09-08 11:00:00`, no zone designator, UTC) as the
+ * ISO instant the seam promises. Null when the value is not a timestamp at all.
+ */
+function aeInstant(v: unknown): string | null {
+  if (typeof v !== 'string' || v === '') return null;
+  const iso = v.includes('T') ? v : v.replace(' ', 'T');
+  return /(Z|[+-]\d{2}:\d{2})$/.test(iso) ? iso : `${iso}Z`;
 }
 
 /** The hostname of a URL, or null when it does not parse — never throws into a report. */

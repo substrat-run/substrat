@@ -3800,6 +3800,38 @@ app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
   );
 });
 
+/**
+ * MY traffic, bucketed over time, across one or more of MY apps (#1447) — the read the
+ * team-level Observability page plots, one series per app. Team-level rather than under
+ * `/apps/:scopeId` because "all my apps" is one read here, not one per app.
+ *
+ * `scopeId` repeats. Named scopes are resolved through this tenant's own `list-apps`, as the
+ * per-app routes above do, so a foreign one is a 404 (K-3) rather than a silent empty
+ * series; none named means every app this tenant has installed — the list is still THIS
+ * tenant's, resolved here, never a widening the plane could be asked for.
+ */
+app.get('/api/observability/tenant-metrics-series', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const asked = c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? [];
+  const owned = new Set(apps.map((a) => a.app_scope_id));
+  const foreign = asked.find((s) => !owned.has(s));
+  if (foreign) throw new HTTPException(404, { message: 'app not found' });
+  const scopeIds = asked.length > 0 ? [...new Set(asked)] : [...owned];
+  // No apps at all is an honest empty series, not a question for the plane.
+  if (scopeIds.length === 0) return c.json([]);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const hours = Number(c.req.query('hours') ?? '24');
+  return c.json(
+    await cpObservability(() =>
+      cp.tenantMetricsSeries({ scopeIds, hours: Number.isFinite(hours) ? hours : 24 }),
+    ),
+  );
+});
+
 app.get('/api/apps/:scopeId/observability/logs', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

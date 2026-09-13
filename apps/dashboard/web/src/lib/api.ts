@@ -1171,6 +1171,20 @@ export interface TenantMetricsRow {
   durationP95: number;
 }
 
+/**
+ * One installed app's traffic inside ONE time bucket (#1447) — `TenantMetricsRow` with a
+ * time axis, keyed on the app alone so a chart draws one line per app. An empty bucket is
+ * omitted, never zero-filled; the renderer fills, knowing `bucketMinutes`.
+ */
+export interface TenantMetricsBucket {
+  scopeId: string;
+  /** The bucket's opening instant, ISO, UTC. */
+  start: string;
+  bucketMinutes: number;
+  requests: number;
+  errors: number;
+}
+
 /** One recent log event from a team vertical's deployed service. */
 export interface ObservabilityLogEvent {
   timestamp: number | null;
@@ -1474,6 +1488,18 @@ export const api = {
   // Narrowed to this app's scope by the worker, never by this client.
   appTenantMetrics: (scopeId: string, hours = 24) =>
     call<TenantMetricsRow[]>(`/apps/${encodeURIComponent(scopeId)}/observability/metrics?hours=${hours}`),
+  /**
+   * The same traffic bucketed over time, across MY apps (#1447): one series per app, in
+   * one read. No `scopeIds` means every app this team has installed — resolved by the
+   * worker against the team's own apps, never by this client.
+   */
+  tenantMetricsSeries: (q: { scopeIds?: string[]; hours?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const s of q.scopeIds ?? []) p.append('scopeId', s);
+    if (q.hours) p.set('hours', String(q.hours));
+    const qs = p.toString();
+    return call<TenantMetricsBucket[]>(`/observability/tenant-metrics-series${qs ? `?${qs}` : ''}`);
+  },
   appTenantLogs: (scopeId: string, q: { level?: string; search?: string; hours?: number; limit?: number }) => {
     const p = new URLSearchParams();
     if (q.level) p.set('level', q.level);
