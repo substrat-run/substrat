@@ -29,7 +29,6 @@ export const verticals: Layer = {
   owner: 'own vocabulary · screens · pricing · roles',
   chips: [
     ['Callout', 'field service'],
-    ['RallyPoint', 'padel club'],
     ['Handlebar', 'bike workshop'],
     ['Kallkälla', 'coffee shop'],
     ['Meridian', 'HR'],

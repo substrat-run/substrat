@@ -103,6 +103,8 @@ import type {
   EntityHistoryInput,
   EventFacetInput,
   EventCauseInput,
+  EventEffectsInput,
+  EffectsTree,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -2075,6 +2077,25 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: EventCauseInput,
   ): Promise<CauseChain>;
+
+  /**
+   * One event expanded FORWARD (#1237) — what it set off: the consumers it reached,
+   * and the events they emitted in turn.
+   *
+   * The mirror of `eventCause`, and the honest form of "expand this invocation": it is
+   * a tree of recorded steps with real timestamps, not a timing waterfall. Nothing in
+   * the platform emits a span for an operation, a permission check or an engine call,
+   * so there is no duration for those steps and this does not invent one.
+   *
+   * Same posture as `entityHistory`: it decodes payloads, so the caller's permission
+   * check comes first and the read is logged against the actor.
+   */
+  eventEffects(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: EventEffectsInput,
+  ): Promise<EffectsTree>;
 
   /**
    * One read-only SQL statement against the scope's database — the console the two

@@ -42,15 +42,17 @@ const WARN_AT = 30;
 const FAIL_AT = 75;
 
 /**
- * The one vertical whose doc path and source path are not the same word: the
- * page is named for the product, the directory for the working title.
+ * A vertical whose doc path and source path are not the same word — the page
+ * named for the product, the directory for the working title. Empty since the
+ * one such demo was removed; the seam stays because the next one is a one-line
+ * entry here rather than a special case below.
  *
  * Everything else is derived by convention below, because a convention that
  * needs a list is not a convention — and a hand-list is the thing that would
  * silently omit the next package the way `model-emit` was omitted, and the next
  * demo the way `todo` and `ticket0` were (#998).
  */
-const VERTICAL_SLUG = { rally: 'rallypoint' };
+const VERTICAL_SLUG = {};
 
 /**
  * Every demo is `private`, so the `substrat` block in its package.json is what

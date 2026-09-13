@@ -13,8 +13,8 @@ Keep the filled files in a password manager; only the `.example` templates are c
 | router | `apps/router` | `substrat-router` / `…-test` |
 
 `apps/docs` is a static Pages site (no secrets). Demo verticals keep their own `.dev.vars`
-— out of scope here. (Callout, Meridian and Manyfold are OIDC-only and run no credential
-store at all; only the shop, rally, handlebar and the auth-server issuer still use Better
+— out of scope here. (Every demo vertical is OIDC-only and runs no credential store at
+all; `demos/auth-server`, the issuer, is the one workspace member that still runs Better
 Auth.)
 
 ## Connector credentials are a different file, on purpose

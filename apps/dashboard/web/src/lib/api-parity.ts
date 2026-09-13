@@ -1,4 +1,4 @@
-import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, TeamTrafficLine as WireTeamTrafficLine, TeamTrafficSeries as WireTeamTrafficSeries, FieldCoverageView as WireFieldCoverageView, FlowFindingsView as WireFlowFindingsView, FlowFinding as WireFlowFinding, FlowGraph as WireFlowGraph, FlowNode as WireFlowNode, FlowEdge as WireFlowEdge, AppHealthRow as WireAppHealthRow, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, SweepRunView } from './api';
+import type { AppFreshnessRow, AppScheduleRow as WireAppScheduleRow, FailureGroupRow as WireFailureGroupRow, ReleaseRow as WireReleaseRow, ReleasesView as WireReleasesView, ReleaseComparison as WireReleaseComparison, ReleaseSide as WireReleaseSide, TrafficSeries as WireTrafficSeries, TeamTrafficLine as WireTeamTrafficLine, TeamTrafficSeries as WireTeamTrafficSeries, FieldCoverageView as WireFieldCoverageView, FlowFindingsView as WireFlowFindingsView, FlowFinding as WireFlowFinding, FlowGraph as WireFlowGraph, FlowNode as WireFlowNode, FlowEdge as WireFlowEdge, OperationHealthView as WireOperationHealthView, OperationHealthRow as WireOperationHealthRow, AppHealthRow as WireAppHealthRow, EntityCoverage as WireEntityCoverage, FieldCoverageRow as WireFieldCoverageRow, TrafficBucket as WireTrafficBucket, ReleaseMarker as WireReleaseMarker, SweepRunView } from './api';
 // Type-only reach into the worker: schedules.ts is environment-free (contracts types
 // only), so it compiles under the DOM tsconfig, where the worker program could never
 // swallow this file's DOM-typed sibling. Never imported at runtime — the two bundles
@@ -16,6 +16,7 @@ import type {
 } from '../../../src/field-coverage';
 import type { FlowFindingsView as WorkerFlowFindingsView, FlowFinding as WorkerFlowFinding } from '../../../src/flow-findings';
 import type { FlowGraph as WorkerFlowGraph, FlowNode as WorkerFlowNode, FlowEdge as WorkerFlowEdge } from '../../../src/flow-graph';
+import type { OperationHealthView as WorkerOperationHealthView, OperationHealthRow as WorkerOperationHealthRow } from '../../../src/operation-health';
 import type { AppHealthRow as WorkerAppHealthRow } from '../../../src/fleet-health';
 import type { ReleaseRow as WorkerReleaseRow, ReleasesView as WorkerReleasesView, ReleaseComparison as WorkerReleaseComparison, ReleaseSide as WorkerReleaseSide, TrafficSeries as WorkerTrafficSeries, TeamTrafficLine as WorkerTeamTrafficLine, TeamTrafficSeries as WorkerTeamTrafficSeries, TrafficBucket as WorkerTrafficBucket, ReleaseMarker as WorkerReleaseMarker } from '../../../src/releases';
 
@@ -61,3 +62,5 @@ export const FLOW_FINDINGS_VIEW_PARITY: Equal<WireFlowFindingsView, WorkerFlowFi
 export const FLOW_NODE_PARITY: Equal<WireFlowNode, WorkerFlowNode> = true;
 export const FLOW_EDGE_PARITY: Equal<WireFlowEdge, WorkerFlowEdge> = true;
 export const FLOW_GRAPH_PARITY: Equal<WireFlowGraph, WorkerFlowGraph> = true;
+export const OPERATION_HEALTH_ROW_PARITY: Equal<WireOperationHealthRow, WorkerOperationHealthRow> = true;
+export const OPERATION_HEALTH_VIEW_PARITY: Equal<WireOperationHealthView, WorkerOperationHealthView> = true;

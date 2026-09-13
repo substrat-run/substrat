@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
@@ -2274,6 +2274,111 @@ function TableGroup({ label, tables, selected, onPick }: { label: string; tables
 }
 
 /**
+ * What one event set off (#1237) — the forward twin of `CauseChainStrip`.
+ *
+ * This is the honest form of "expand this invocation". It is NOT a timing waterfall:
+ * nothing in the platform emits a span for an operation, a permission check or an
+ * engine call, so those steps have no duration to draw. What the spine did record is
+ * which steps happened and when — which consumers an event reached, whether they threw,
+ * and what they emitted in turn — and that is what this shows.
+ *
+ * The delivery states are kept apart deliberately. A consumer still retrying and one
+ * that has given up both carry an error, and merging them would promise a retry that
+ * is not coming.
+ */
+function EffectsTreeStrip({ scopeId, eventId }: { scopeId: string; eventId: string }) {
+  const [tree, setTree] = useState<EffectsTree | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setTree(null);
+    setErr(null);
+    api
+      .appEventEffects(scopeId, eventId)
+      .then((t) => live && setTree(t))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [scopeId, eventId]);
+
+  if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
+  if (!tree) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Following what it set off…</div>;
+  if (!tree.root) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>This event is not in the app&rsquo;s records.</div>;
+
+  const TONE: Record<EventDelivery['state'], { label: string; fg: string; bg: string }> = {
+    delivered: { label: 'handled', fg: 'var(--text-secondary)', bg: 'var(--surface-inset)' },
+    retrying: { label: 'retrying', fg: 'var(--status-warning-fg)', bg: 'var(--status-warning-bg)' },
+    dead: { label: 'gave up', fg: 'var(--status-danger-fg)', bg: 'var(--status-danger-bg)' },
+  };
+
+  const ENDING: Record<EffectsTerminal, string | null> = {
+    complete: null,
+    depth: 'More happened below this than one read follows.',
+    missing: 'Part of this trail names an event the app no longer holds.',
+    cycle:
+      'An event appears twice in this trail. That should not be possible — a cause is always older than what it caused — so this is worth reporting rather than reading as a long chain.',
+  };
+  const ending = ENDING[tree.terminal];
+
+  const node = (n: EventEffects, depth: number): React.ReactNode => (
+    <div key={n.event.id} style={{ display: 'grid', gap: 4, paddingLeft: depth * 14 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12 }}>
+        <MonoTag>{n.event.type}</MonoTag>
+        <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
+          {new Date(n.event.occurredAt).toLocaleString()}
+        </span>
+        <span style={{ color: 'var(--text-secondary)', fontSize: 11.5, fontFamily: 'var(--font-mono)' }}>
+          {operationLabel(n.event.operation)}
+        </span>
+      </div>
+      {n.deliveries.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+          {/* Ambiguous, and said so: the table records arrivals, never their absence. */}
+          No delivery recorded &mdash; either nothing handles this type, or dispatch has not run yet.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {n.deliveries.map((d) => (
+            <span
+              key={d.consumer}
+              title={
+                d.error
+                  ? `${d.error} — ${d.attempts} attempt${d.attempts === 1 ? '' : 's'}, last ${new Date(d.at).toLocaleString()}`
+                  : `handled ${new Date(d.at).toLocaleString()}`
+              }
+              style={{
+                fontSize: 11,
+                padding: '2px 6px',
+                borderRadius: 4,
+                fontFamily: 'var(--font-mono)',
+                background: TONE[d.state].bg,
+                color: TONE[d.state].fg,
+              }}
+            >
+              {d.consumer} · {TONE[d.state].label}
+            </span>
+          ))}
+        </div>
+      )}
+      {n.effects.map((child) => node(child, depth + 1))}
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'grid', gap: 6, paddingLeft: 10, borderLeft: '2px solid var(--border-default)' }}>
+      {node(tree.root, 0)}
+      {ending && <div style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>{ending}</div>}
+      <div style={{ fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+        Steps and when they happened. The platform records no duration for an operation, so there are
+        no timings here.
+      </div>
+    </div>
+  );
+}
+
+/**
  * Why one event exists (#1237) — its chain walked backwards, newest first.
  *
  * The value is entirely in the last line. A chain that reached the operation which
@@ -2444,6 +2549,8 @@ function EntityTimeline({
 
   /** Which row's chain is open. One at a time: each is a scope read. */
   const [why, setWhy] = useState<string | null>(null);
+  /** …and which row's forward tree is open. Independent: the two answer opposite questions. */
+  const [effects, setEffects] = useState<string | null>(null);
 
   const when = (iso: string) => new Date(iso).toLocaleString();
 
@@ -2500,7 +2607,16 @@ function EntityTimeline({
           >
             {why === e.id ? 'Hide why' : 'Why?'}
           </button>
+          <button
+            type="button"
+            onClick={() => setEffects((w) => (w === e.id ? null : e.id))}
+            title="follow this event forward to what it set off"
+            style={{ ...pagerBtn(true), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
+          >
+            {effects === e.id ? 'Hide effects' : 'What did it do?'}
+          </button>
           {why === e.id && <CauseChainStrip scopeId={scopeId} eventId={e.id} />}
+          {effects === e.id && <EffectsTreeStrip scopeId={scopeId} eventId={e.id} />}
         </div>
       ))}
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type AppRow, type FlowFindingsView, type FlowFinding, type FlowGraph, type FlowNode, type FlowView } from '../lib/api';
+import { api, type AppRow, type FlowFindingsView, type FlowFinding, type FlowGraph, type FlowNode, type FlowView, type OperationHealthView } from '../lib/api';
 import { card } from '../components/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
 
@@ -244,6 +244,102 @@ function FlowMap({ graph, app }: { graph: FlowGraph; app: AppRow }) {
 }
 
 /**
+ * Per-operation health (#1234's overlay).
+ *
+ * Deliberately NOT a latency table. Nothing in the platform emits a span for an
+ * operation — what reaches the trace dataset is the runtime's own outbound `fetch`
+ * and DO-entry spans — so per-operation timing does not exist to render (#1237). What
+ * does exist is what the spine wrote down: the events an operation emitted, when it
+ * last emitted one, and how often it was refused.
+ *
+ * Two limits the copy states rather than lets a reader assume: an operation that emits
+ * nothing is invisible to the event side however often it runs, and refusals are
+ * counted only over what the denial log still holds, which drains rather than expires.
+ */
+function OperationHealth({ view }: { view: OperationHealthView }) {
+  if (view.rows.length === 0) return null;
+  const refusals = view.refusals;
+  const since = refusals?.since ? new Date(refusals.since).toLocaleDateString() : null;
+  // A count from a capped page is a floor: the page held the newest rows, and this
+  // operation's older refusals may lie beyond it.
+  const atLeast = refusals !== null && !refusals.complete;
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Operations</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          What each operation has recorded. The count is events, not calls: an operation that raises
+          no events shows nothing here however often it runs, and appears only if it has been refused.
+        </p>
+      </div>
+
+      {!view.observedComplete && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          More operations have recorded events than can be counted in one pass, so this is the
+          busiest of them rather than all of them.
+        </p>
+      )}
+
+      {atLeast && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          The refusal log holds {refusals.held.toLocaleString()} entries and only the newest{' '}
+          {refusals.counted.toLocaleString()} are counted here, so a refusal count is a floor and an
+          operation refused only earlier may be missing.
+        </p>
+      )}
+
+      <div style={{ display: 'grid', gap: 4 }}>
+        {view.rows.map((r) => (
+          <div
+            key={r.operation}
+            style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12.5 }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', flex: '1 1 220px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {r.operation}
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', minWidth: 96, textAlign: 'right' }}>
+              {/* Null is "not counted", which is not zero. */}
+              {r.events === null ? 'not counted' : `${r.events.toLocaleString()} events`}
+            </span>
+            <span style={{ color: 'var(--text-tertiary)', minWidth: 110, textAlign: 'right', fontSize: 11.5 }}>
+              {r.lastSeen ? new Date(r.lastSeen).toLocaleDateString() : '—'}
+            </span>
+            {r.refusals !== null && r.refusals > 0 && (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'var(--status-warning-bg)',
+                  color: 'var(--status-warning-fg)',
+                }}
+                title={
+                  r.refusedOnly
+                    ? 'every record of this operation is a refusal — it has emitted nothing'
+                    : 'permission refusals recorded for this operation'
+                }
+              >
+                {atLeast ? `${r.refusals}+` : r.refusals} refused{r.refusedOnly ? ', nothing emitted' : ''}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <p style={{ margin: 0, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+        {/* An unread log is not an empty one: no badges here mean nothing about refusals. */}
+        {refusals === null
+          ? 'The refusal log could not be read, so no operation here carries a refusal count.'
+          : since
+            ? `Refusals counted from ${since}. Older ones are no longer held, so no badge does not mean an operation has never been refused.`
+            : 'No refusals are currently held for this app.'}
+      </p>
+    </div>
+  );
+}
+
+/**
  * The flow read, rendered as both a map and a list from ONE request. They are two
  * resolutions of the same join, and fetching twice would let them disagree about what
  * was observed — the map showing a count for a type the list called silent.
@@ -268,6 +364,7 @@ export function Flow({ app }: { app: AppRow }) {
   return (
     <>
       <FlowMap graph={view.graph} app={app} />
+      <OperationHealth view={view.operations} />
       <FlowFindings view={view.findings} />
     </>
   );

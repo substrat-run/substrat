@@ -19,6 +19,10 @@ import type {
   HistoryEntry,
   EventFacetResult,
   CauseChain,
+  DenialFilter,
+  DenialSummary,
+  EffectsTree,
+  PermissionDenial,
   PermissionRegistry,
   PlatformRequest,
   PrincipalId,
@@ -35,7 +39,7 @@ import type {
   OwnerClaimLink,
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
-import { LIST_PAGE_MAX, problemDetail } from '@substrat-run/contracts';
+import { LIST_PAGE_MAX, denialQuery, problemDetail } from '@substrat-run/contracts';
 
 /**
  * Bytes of `&service=…` params one bucketed-metrics request may carry (#1236). A Workers
@@ -1671,6 +1675,42 @@ export class TenantNarrowedControlPlane {
     if (input.until !== undefined) q.set('until', input.until);
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/facets?${q}`);
+  }
+
+  /**
+   * A bounded page of this scope's permission refusals (K-35).
+   *
+   * Exposed at the control plane since K-35 and read by nothing on this side until
+   * now. It is the one failure signal the spine keeps for a vertical's OWN operations:
+   * `_substrat_ops_failures` records control-plane routes (`deploy.upload`), a
+   * different namespace entirely, and joining the two by operation name would be a
+   * false join between two things that merely share a column name.
+   */
+  listDenials(scopeId: ScopeId, filter?: DenialFilter): Promise<PermissionDenial[]> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/denials${denialQuery(filter)}`);
+  }
+
+  /**
+   * The same log, bucketed — read here for the two facts a page of rows cannot give:
+   * `total` (how many the log holds, so a capped page knows it is capped) and
+   * `windowOldestAt` (the log's own floor, filter ignored). The buckets are per
+   * (actor, permission), which is the operator's question and not this one; a
+   * per-operation aggregate is the follow-up, not a thing to fake from a page.
+   */
+  summarizeDenials(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary> {
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/denials/summary${denialQuery(filter)}`);
+  }
+
+  /**
+   * What one event set off (#1237) — the forward twin of `eventCause`.
+   *
+   * `terminal` rides back untouched, as it does there: a tree that was walked whole
+   * and one cut at the cap are the same shape, and only the flag separates them.
+   */
+  eventEffects(scopeId: ScopeId, input: { eventId: string; maxNodes?: number }): Promise<EffectsTree> {
+    const q = new URLSearchParams({ eventId: input.eventId });
+    if (input.maxNodes !== undefined) q.set('maxNodes', String(input.maxNodes));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/effects?${q}`);
   }
 
   /**

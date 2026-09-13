@@ -1,5 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
-import type { CauseChain, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { CauseChain, EffectsTree, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -421,7 +421,7 @@ export interface AppliedMigration {
  * null = nobody was impersonating, the ordinary case. See `lib/history.ts`, which
  * is where each one is turned into words.
  */
-export type { HistoryEntry, CauseChain, CauseTerminal } from '@substrat-run/contracts';
+export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects, EventDelivery, EffectsTerminal } from '@substrat-run/contracts';
 
 /**
  * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
@@ -497,10 +497,39 @@ export interface FlowGraph {
   declaredComplete: boolean;
 }
 
+/** One operation's recorded facts (#1234). */
+export interface OperationHealthRow {
+  operation: string;
+  /** Events it emitted; null when the facet could not say. */
+  events: number | null;
+  lastSeen: string | null;
+  /** Refusals in the page read; null when the log could not be read. A floor unless `refusals.complete`. */
+  refusals: number | null;
+  /** True when refusals are the ONLY evidence — the facet was complete and it has emitted nothing. */
+  refusedOnly: boolean;
+}
+
+/** What the refusal side can vouch for; null on the view when the log could not be read. */
+export interface RefusalWindow {
+  /** True when the page held every row the log holds, so counts are exact. */
+  complete: boolean;
+  held: number;
+  counted: number;
+  /** Oldest refusal still held. Those rows drain, so 0 never means "never refused". */
+  since: string | null;
+}
+
+export interface OperationHealthView {
+  rows: OperationHealthRow[];
+  observedComplete: boolean;
+  refusals: RefusalWindow | null;
+}
+
 /** The flow read: the same declarations projected as a list and as a map. */
 export interface FlowView {
   findings: FlowFindingsView;
   graph: FlowGraph;
+  operations: OperationHealthView;
 }
 
 /** One declared-vs-observed finding (#1234). */
@@ -1607,6 +1636,17 @@ export const api = {
   deploymentTraffic: (slug: string, hours: number) =>
     call<TrafficSeries>(`/deployments/${encodeURIComponent(slug)}/traffic?hours=${hours}`),
 
+  /**
+   * The same series for ONE installed app (#1447) — tenant grain, so the answer is this
+   * installation's traffic rather than the script's across every team that installed the
+   * vertical. Nothing renders it yet: the Overview sparkline is a later step of #1447, and
+   * this is its read — one app, zero-filled, with release markers. The team-level
+   * Observability page is NOT a consumer: it plots many apps on one axis from the
+   * multi-scope series instead, so never call this once per app to build that.
+   */
+  appTraffic: (scopeId: string, hours: number) =>
+    call<TrafficSeries>(`/apps/${encodeURIComponent(scopeId)}/traffic?hours=${hours}`),
+
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>
     call<AppMigrationsView>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
@@ -1621,6 +1661,12 @@ export const api = {
   /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
    *  cross: a dropped `until` answers about a wider slice than was asked for, and
    *  nothing about the answer says so. */
+  /** What one event set off (#1237) — the consumers it reached and what they emitted. */
+  appEventEffects: (scopeId: string, eventId: string) =>
+    call<EffectsTree>(
+      `/apps/${encodeURIComponent(scopeId)}/effects?eventId=${encodeURIComponent(eventId)}`,
+    ),
+
   /** Why one event exists (#1237) — its causal chain, newest first. */
   appEventCause: (scopeId: string, eventId: string) =>
     call<CauseChain>(

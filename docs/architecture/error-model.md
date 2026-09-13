@@ -242,10 +242,12 @@ mechanical, lower traffic.
    - **`about:blank` had to exist first** (§1a) — otherwise the phase's own fallback would
      have had to fabricate a code.
    - **One refusal is deliberately still hand-answered.** `engine-booking` publishes
-     `SlotUnavailable` with its own `code = 'SLOT_UNAVAILABLE'`, which both RallyPoint
-     clients switch on. An engine surface evolves additively only, so retyping it is a
-     dual-emit through a deprecation window, not a line in a transport change;
-     `demos/rally/src/routes.ts` answers it by hand and says why.
+     `SlotUnavailable` with its own `code = 'SLOT_UNAVAILABLE'`, which the racket-club
+     demo's two clients switched on. An engine surface evolves additively only, so retyping
+     it is a dual-emit through a deprecation window, not a line in a transport change; that
+     demo's `routes.ts` answered it by hand and said why. The demo is gone (2026-09), so no
+     in-repo route answers it today — the next vertical composing `booking` inherits the
+     same hand-answer until the engine retypes it.
 5. **Cleanup — open.** Contract-suite assertions migrate from message text to `code`; the
    regex fallback and the `error` duplicate are deleted. `SlotUnavailable` gets its
    dual-emit here.

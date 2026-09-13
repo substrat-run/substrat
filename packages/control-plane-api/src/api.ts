@@ -35,6 +35,7 @@ import {
   entityHistoryInput,
   eventFacetInput,
   eventCauseInput,
+  eventEffectsInput,
   createOrgInput,
   roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
@@ -2091,6 +2092,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       vertical
         ? await vertical.eventCause(scopeId, input)
         : await admin.eventCause(c.get('actor'), tenantId, scopeId, input),
+    );
+  });
+
+  // #1237 forward: what one event set off. Delegated like its backwards twin.
+  app.get('/tenants/:tenantId/scopes/:scopeId/effects', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = eventEffectsInput.parse({
+      eventId: c.req.query('eventId'),
+      maxNodes: c.req.query('maxNodes') ? Number(c.req.query('maxNodes')) : undefined,
+    });
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const vertical = await verticalForScope(c, scope);
+    return c.json(
+      vertical
+        ? await vertical.eventEffects(scopeId, input)
+        : await admin.eventEffects(c.get('actor'), tenantId, scopeId, input),
     );
   });
 

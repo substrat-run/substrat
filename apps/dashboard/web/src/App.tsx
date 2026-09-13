@@ -46,7 +46,10 @@ function parsePath(): Route {
   let parts = window.location.pathname.split('/').filter(Boolean);
   // The first segment is the team slug (`/acme-x1y2z3/apps`) unless it's a section
   // (a legacy slug-less path) or a reserved word. Real slugs always carry a ULID
-  // tail (worker's `teamSlug()`), so they can never shadow a section name.
+  // tail (worker's `teamSlug()`), so they can never shadow a section name. A retired
+  // section name stays reserved here for as long as its alias below exists: a slug-less
+  // `/analytics` would otherwise be read as a team called "analytics" and land on the
+  // overview, and the alias would be unreachable.
   let team: string | undefined;
   if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'analytics', 'api'].includes(parts[0])) {
     team = parts[0];
