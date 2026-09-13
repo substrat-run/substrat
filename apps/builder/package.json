@@ -1,6 +1,6 @@
 {
   "name": "@substrat-run/builder",
-  "version": "0.5.52",
+  "version": "0.5.53",
   "private": true,
   "description": "The builder studio — chat → vertical. Terminal driver today; Worker + chat pane to come (builder-studio.md §7).",
   "type": "module",
