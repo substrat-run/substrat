@@ -35,13 +35,14 @@ const outbox = (type: string, entityId: string) => {
     .prepare('SELECT payload FROM _substrat_outbox WHERE type = ? AND entity_id = ? ORDER BY id')
     .all(type, entityId) as { payload: string | null }[];
   db.close();
-  return rows.map((r) => JSON.parse(r.payload ?? '{}') as { complete?: boolean; row_count?: number });
+  return rows.map((r) => JSON.parse(r.payload ?? '{}') as { complete?: boolean; status?: string; row_count?: number; counted_at?: string | null });
 };
 
 interface Run {
   id: string;
   filename: string;
   status: string;
+  counted_at: string | null;
   row_count: number | null;
   rejected_count: number | null;
   schema_version: number | null;
@@ -1509,5 +1510,185 @@ describe('the back-fill affordance, and drift the mapping absorbs', () => {
     // And the run says which mapping made it, so the two days are explainable side by side.
     const rules = await ines.invoke<{ entries: { rule_kind: string; identifier: string }[] }>('tock/run-rules', { runId: aug2.id });
     expect(rules.entries.find((r) => r.rule_kind === 'mapping')?.identifier).toMatch(/@v2/);
+  });
+});
+
+describe('counting a run larger than one pass', () => {
+  const SRC = 'big-src';
+  /**
+   * One chunk and a bit, as a LITERAL.
+   *
+   * Not `COUNT_CHUNK + 7`: a suite that reads the model cannot disagree with it, so a chunk
+   * size changed by accident would drag this test along and it would keep passing while
+   * testing nothing. `pnpm lint:tests` refuses the import for exactly that reason. If the
+   * chunk size moves, this number should fail loudly and be chosen again on purpose.
+   */
+  const N = 5_007;
+
+  it('33 — a run bigger than a chunk finishes across several passes, and the total is right', async () => {
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    await ines.invoke('tock/declare-source', { key: SRC, title: 'Big', expectedCadence: 'daily' });
+    await ines.invoke('tock/save-schema', {
+      sourceKey: SRC,
+      fields: { country: { type: 'text', role: 'dimension' }, amount: { type: 'int', role: 'measure' } },
+    });
+
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename: 'big.jsonl', byteSize: 999, contentHash: 'sha256:big', storageKey: 'runs/big.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-09-01T00:00:00.000Z', periodTo: '2026-09-02T00:00:00.000Z',
+    });
+    // Delivered in batches, as the host would.
+    for (let i = 0; i < N; i += 1000) {
+      const batch = Array.from({ length: Math.min(1000, N - i) }, (_, k) => ({
+        occurredAt: '2026-09-01T08:00:00.000Z',
+        subject: `s-${i + k}`,
+        fields: { country: 'SE', amount: '1' },
+      }));
+      await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: i + 1000 >= N });
+    }
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+
+    // The first pass must NOT finish, and must not publish a partial number.
+    const first = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+    expect(first.complete).toBe(false);
+    expect(first.status).toBe('mapped');
+    expect(first.counted_at).toBeNull();
+    // A half-counted run is not current, so the report has nothing yet.
+    const midway = await ines.invoke<{ rows: unknown[] }>('tock/report', {
+      sourceKey: SRC, grain: 'day', dimSet: 'total',
+      from: '2026-09-01T00:00:00.000Z', to: '2026-09-02T00:00:00.000Z',
+    });
+    expect(midway.rows).toEqual([]);
+
+    let passes = 1;
+    let out = first;
+    while (out.complete === false) {
+      out = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+      passes += 1;
+    }
+    expect(passes).toBeGreaterThan(1);
+    expect(out.status).toBe('counted');
+
+    // Every row counted exactly once — the accumulation is what this whole change is for.
+    const report = await ines.invoke<{ rows: { events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: SRC, grain: 'day', dimSet: 'total',
+      from: '2026-09-01T00:00:00.000Z', to: '2026-09-02T00:00:00.000Z',
+    });
+    expect(report.rows[0]?.events).toBe(N);
+    // And the decimal measure summed across passes without going through a float.
+    expect(report.rows[0]?.measure).toBe(String(N));
+
+    // EVERY pass is on the spine, not only the last: a pass that is not the last still wrote
+    // rollups, labels and the cursor. `complete` and `status` are what tell them apart, so a
+    // consumer gates publication on the run's state rather than on the event's existence.
+    const emitted = outbox('tock.run-counted', run.id);
+    expect(emitted).toHaveLength(passes);
+    expect(emitted.slice(0, -1).every((e) => e.complete === false && e.status === 'mapped' && e.counted_at === null)).toBe(true);
+    expect(emitted.at(-1)).toMatchObject({ complete: true, status: 'counted' });
+  }, 120_000);
+
+  it('33b — a run that is an exact multiple of the chunk finishes on its last full chunk', async () => {
+    // The boundary the lookahead exists for. An implementation that inferred "more" from a
+    // chunk coming back full would answer `complete: false` here and need an empty extra pass
+    // to notice; the extra row it asks for is what lets it say `true` on the chunk itself.
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    const M = 10_000; // two chunks exactly, as a literal for the reason `N` is
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename: 'exact.jsonl', byteSize: 999, contentHash: 'sha256:exact', storageKey: 'runs/exact.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-09-02T00:00:00.000Z', periodTo: '2026-09-03T00:00:00.000Z',
+    });
+    for (let i = 0; i < M; i += 1000) {
+      const batch = Array.from({ length: 1000 }, (_, k) => ({
+        occurredAt: '2026-09-02T08:00:00.000Z',
+        subject: `e-${i + k}`,
+        fields: { country: 'NO', amount: '2' },
+      }));
+      await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: i + 1000 >= M });
+    }
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+
+    const first = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+    expect(first.complete).toBe(false);
+    const second = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+    // The second chunk is full AND the last: complete on the chunk, with no third pass.
+    expect(second.complete).toBe(true);
+    expect(second.status).toBe('counted');
+    expect(outbox('tock.run-counted', run.id)).toHaveLength(2);
+
+    const report = await ines.invoke<{ rows: { events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: SRC, grain: 'day', dimSet: 'total',
+      from: '2026-09-02T00:00:00.000Z', to: '2026-09-03T00:00:00.000Z',
+    });
+    expect(report.rows[0]?.events).toBe(M);
+    expect(report.rows[0]?.measure).toBe(String(2 * M));
+  }, 120_000);
+
+  it('33c — the plan is pinned on the first pass, so a mapping saved mid-count does not split the run', async () => {
+    // `save-mapping` stays open while a run is mid-count. Without a pinned plan the second
+    // half of the run would fold under a mapping the first half never saw, and the captured
+    // mapping rule would name a plan that made only some of the numbers.
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    await ines.invoke('tock/save-output-schema', {
+      sourceKey: SRC,
+      key: 'sales',
+      fields: { market: { type: 'text', role: 'dimension' }, total: { type: 'int', role: 'measure' } },
+    });
+    // v1 maps the amount; a mapping saved mid-count will stop mapping it.
+    await ines.invoke('tock/save-mapping', {
+      sourceKey: SRC, outputKey: 'sales',
+      rules: [{ from: 'country', to: 'market' }, { from: 'amount', to: 'total' }],
+    });
+
+    const P = 5_003;
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename: 'pinned.jsonl', byteSize: 999, contentHash: 'sha256:pinned', storageKey: 'runs/pinned.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-09-03T00:00:00.000Z', periodTo: '2026-09-04T00:00:00.000Z',
+    });
+    for (let i = 0; i < P; i += 1000) {
+      const batch = Array.from({ length: Math.min(1000, P - i) }, (_, k) => ({
+        occurredAt: '2026-09-03T08:00:00.000Z',
+        subject: `p-${i + k}`,
+        fields: { country: 'DK', amount: '3' },
+      }));
+      await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: i + 1000 >= P });
+    }
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+
+    const first = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+    expect(first.complete).toBe(false);
+
+    // The plan changes underneath the count: v2 no longer carries the measure.
+    const v2 = await ines.invoke<{ version: number }>('tock/save-mapping', {
+      sourceKey: SRC, outputKey: 'sales',
+      rules: [{ from: 'country', to: 'market' }],
+    });
+    expect(v2.version).toBe(2);
+
+    let out = first;
+    while (out.complete === false) out = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+
+    // Every row counted under v1 — the total is whole, not the first chunk's alone.
+    const report = await ines.invoke<{ rows: { events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: SRC, outputKey: 'sales', grain: 'day', dimSet: 'total',
+      from: '2026-09-03T00:00:00.000Z', to: '2026-09-04T00:00:00.000Z',
+    });
+    expect(report.rows[0]?.events).toBe(P);
+    expect(report.rows[0]?.measure).toBe(String(3 * P));
+    // And the run names the plan that made ALL of its numbers.
+    const rules = await ines.invoke<{ entries: { rule_kind: string; identifier: string }[] }>('tock/run-rules', { runId: run.id });
+    expect(rules.entries.find((r) => r.rule_kind === 'mapping')?.identifier).toMatch(/sales@v1/);
+    expect(rules.entries.find((r) => r.rule_kind === 'mapping')?.identifier).not.toMatch(/@v2/);
+  }, 120_000);
+
+  it('34 — a counted run refuses a further pass rather than double-counting', async () => {
+    const tomas = await as('tomas');
+    const run = (await tomas.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC })).entries[0]!;
+    await expect(tomas.invoke('tock/count-run', { runId: run.id })).rejects.toThrow(/counted run cannot be counted/);
   });
 });

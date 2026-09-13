@@ -1171,6 +1171,23 @@ export interface TenantMetricsRow {
   durationP95: number;
 }
 
+/**
+ * One installed app's traffic inside ONE time bucket (#1447) — `TenantMetricsRow` with a
+ * time axis, keyed on the app alone so a chart draws one line per app. An empty bucket is
+ * omitted, never zero-filled; the renderer fills, knowing `bucketMinutes`.
+ */
+export interface TenantMetricsBucket {
+  scopeId: string;
+  /** The bucket's opening instant, ISO, UTC. */
+  start: string;
+  bucketMinutes: number;
+  requests: number;
+  errors: number;
+  /** Weighted median request duration inside the bucket, ms — the same quantiles as `TenantMetricsRow`. */
+  durationP50: number;
+  durationP95: number;
+}
+
 /** One recent log event from a team vertical's deployed service. */
 export interface ObservabilityLogEvent {
   timestamp: number | null;
@@ -1268,6 +1285,14 @@ export const api = {
   /** One page of the app scope's control-plane audit log (#479), newest first; `nextCursor` walks older. */
   auditLog: (scopeId: string, opts?: PageOpts) =>
     call<ListPage<AuditEntry>>(`/apps/${encodeURIComponent(scopeId)}/audit${pageQs(opts)}`),
+  /** One page of the TEAM's control-plane audit log (#1447) — every app, newest first.
+   *  `scopeId` narrows it to one app; without it the page is the tenant's whole log,
+   *  which is the only way to see the entries that name no scope at all. */
+  auditLogAll: (opts?: PageOpts & { scopeId?: string }) => {
+    const qs = pageQs(opts);
+    const scope = opts?.scopeId ? `${qs ? '&' : '?'}scopeId=${encodeURIComponent(opts.scopeId)}` : '';
+    return call<ListPage<AuditEntry>>(`/audit${qs}${scope}`);
+  },
   /** The app's vertical version registry (one page of versions, newest first) + channels +
    *  the version THIS scope actually runs (`boundVersionId`). `cursor` walks older versions. */
   appDeployments: (scopeId: string, opts?: PageOpts) =>
@@ -1474,6 +1499,18 @@ export const api = {
   // Narrowed to this app's scope by the worker, never by this client.
   appTenantMetrics: (scopeId: string, hours = 24) =>
     call<TenantMetricsRow[]>(`/apps/${encodeURIComponent(scopeId)}/observability/metrics?hours=${hours}`),
+  /**
+   * The same traffic bucketed over time, across MY apps (#1447): one series per app, in
+   * one read. No `scopeIds` means every app this team has installed — resolved by the
+   * worker against the team's own apps, never by this client.
+   */
+  tenantMetricsSeries: (q: { scopeIds?: string[]; hours?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const s of q.scopeIds ?? []) p.append('scopeId', s);
+    if (q.hours) p.set('hours', String(q.hours));
+    const qs = p.toString();
+    return call<TenantMetricsBucket[]>(`/observability/tenant-metrics-series${qs ? `?${qs}` : ''}`);
+  },
   appTenantLogs: (scopeId: string, q: { level?: string; search?: string; hours?: number; limit?: number }) => {
     const p = new URLSearchParams();
     if (q.level) p.set('level', q.level);

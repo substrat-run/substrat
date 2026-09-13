@@ -201,7 +201,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   API :8873, storefront :5273, back-office :5274 (`ADMIN_PORT=…`). Customer-facing and
   staff-facing surfaces are separate Vite apps against one API — the split is chrome and
   audience, never a second source of truth. Four processes now, with the dev issuer first.
-- One vitest scenario per demo vertical: `pnpm --filter @substrat-run/demo-callout test`
+- One vitest scenario per demo vertical: `pnpm --filter @substrat-run/demo-todo test`
 - `pnpm --filter @substrat-run/docs cf:deploy` — build + ship the docs site to
   [substrat.net](https://substrat.net) (Cloudflare Pages). Every **platform** workspace that
   ships to Cloudflare directly uses the `cf:deploy` script name — router, control-plane,
@@ -476,15 +476,21 @@ Two phases, in order. **Design** with the **substrat** skill
 and land a reviewable `spec/concept.md` the user approves *before any code*.
 Then **build** with the **new-vertical** skill (`.claude/skills/new-vertical/SKILL.md`),
 which turns that approved design into a working vertical. Two reference implementations,
-each for a different shape of app:
+each for a different question — and both are references *because they are used* (todo is
+what a scaffolded project's docs point at, ticket0 is the production support desk), which
+is what keeps them from rotting; an idle demo is not a reference, however complete:
 
-- `demos/callout` — an **engine-composing workflow** (spec in `demos/callout/spec/`,
-  **declared model in `src/entities.ts` + `src/operations.ts`**, module in `src/module.ts`,
-  world in `src/seed.ts`, scenario test in `test/scenario.test.ts`).
-- `demos/todo` — a **record app with user-initiated sharing and no engine**: shared lists,
-  per-list sharing by email, revoke, and a React app that tells a 403 wall from an empty
-  list. Its `src/module.ts` is where `ctx.grant`/`ctx.revoke` are shown doing that in one
-  line each — read it before designing any "share this with a person" feature.
+- `demos/todo` — **the shape**: a vertical built forward from its model (`spec/model.ts`
+  → generated migrations, manifest, routes, OpenAPI, browser client, `PERMISSIONS.md`),
+  with the smallest module that is still a real one. Shared lists, per-list sharing by
+  email, revoke, and a React app that tells a 403 wall from an empty list. Its
+  `src/module.ts` is where `ctx.grant`/`ctx.revoke` are shown doing that in one line each —
+  read it before designing any "share this with a person" feature.
+- `demos/ticket0` — **a deployed vertical**: an engine composed by call (`engine-metering`,
+  registered in `src/provision.ts`, called from `src/module.ts`), the sandbox-clean
+  worker (`src/worker.ts`), the `substrat.runtimeNeeds` / `outbound` declaration a push
+  reads, and the deploy workflow (`.github/workflows/substrat-deploy.yml`). Too large to
+  read whole; the new-vertical skill names the files.
 
 A vertical declares **what exists** — entities, operations, permissions — in one typed
 module, and the compiler checks the joins between them: a parent naming no entity, an
