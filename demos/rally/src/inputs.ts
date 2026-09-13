@@ -1,4 +1,4 @@
-import { z } from '@substrat-run/contracts';
+import { calendarDate, z } from '@substrat-run/contracts';
 import { cover } from './schemas.js';
 
 /**
@@ -18,7 +18,7 @@ import { cover } from './schemas.js';
  * written down and the compiler holds `idFrom` to them, which is what #891 needs;
  * the parse call sites are the follow-up.
  *
- * `date` / `time` regexes match `bookInput`'s, which is where they came from.
+ * The `time` regex matches `bookInput`'s, which is where it came from.
  *
  * **No input below declares `now`, and that absence is the point (#1065).**
  * RallyPoint composes `engine-booking` by call, and the engine's `nowOr` prefers a
@@ -37,7 +37,15 @@ import { cover } from './schemas.js';
  * exercises the same path the wire does (`test/wire-clock.test.ts`).
  */
 
-const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+/**
+ * Every date RallyPoint accepts is a CALENDAR date on the club's wall calendar — a
+ * booking day, a closure, a price-matrix day, a billing run, a report edge — so it
+ * is the platform's `calendarDate` (#117): a real month/day check, and no instant.
+ * This was a shape regex (`^\d{4}-\d{2}-\d{2}$`): anchored at both ends, so an
+ * instant was already refused, but `2030-13-45` and `2030-02-30` went through to
+ * the wall-time conversion.
+ */
+const isoDate = calendarDate;
 const clockTime = z.string().regex(/^\d{2}:\d{2}$/);
 
 // --- venue configuration ----------------------------------------------------
@@ -163,8 +171,8 @@ export const bookInput = z.object({
   resourceId: z.string().min(1).optional(),
   cover: z.array(z.enum(['indoor', 'covered', 'open'])).optional(),
   memberId: z.string().min(1),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  time: z.string().regex(/^\d{2}:\d{2}$/),
+  date: isoDate,
+  time: clockTime,
   duration: z.number().int().positive(),
 });
 

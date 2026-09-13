@@ -151,6 +151,42 @@ export interface TenantMetricsRow {
   durationP95: number;
 }
 
+/**
+ * One tenant's traffic through ONE of their installed apps inside ONE time bucket
+ * (#1447) — the tenant-grain twin of `ServiceMetricsBucket`, for the same reason
+ * `TenantMetricsRow` twins `ServiceMetricsRow`: a script-grain series serves every
+ * installer at once, so a chart drawn from it for one of them plots the others' volume.
+ *
+ * Keyed on the scope alone, not `(scope, surface)`: the series exists to be drawn, and
+ * a chart wants one line per app. The per-surface split stays on the aggregate row.
+ * `start` and `bucketMinutes` mean what they mean on `ServiceMetricsBucket` — an empty
+ * bucket is omitted, never zero-filled here; the caller fills, knowing the width.
+ *
+ * Unlike the script-grain bucket it carries latency, because #1447's chart plots it and
+ * the aggregate row's whole-window quantiles cannot be turned back into a timeline. The
+ * same two quantiles as `TenantMetricsRow`, so the chart and the table beneath it name
+ * the same number; sampling-weighted for the same reason its counts are.
+ */
+export interface TenantMetricsBucket {
+  scopeId: string;
+  /** The bucket's opening instant, ISO, UTC. */
+  start: string;
+  bucketMinutes: number;
+  requests: number;
+  errors: number;
+  /** Weighted median request duration inside the bucket, ms. */
+  durationP50: number;
+  /** Weighted 95th percentile, ms. */
+  durationP95: number;
+}
+
+/**
+ * How many scopes one `tenantMetricsSeries` ask may name. The answer is scopes × buckets
+ * against the reader's row ceiling, so the route refuses a longer list; a caller with
+ * more apps than this batches its ask and merges the pages (the dashboard does).
+ */
+export const TENANT_SERIES_SCOPE_CAP = 50;
+
 export interface ObservabilityReader {
   /** Per-service invocation metrics for the trailing window (fleet + builder views). */
   serviceMetrics(input: { hours: number }): Promise<ServiceMetricsRow[]>;
@@ -176,6 +212,23 @@ export interface ObservabilityReader {
     vertical?: string;
     hours: number;
   }): Promise<TenantMetricsRow[]>;
+
+  /**
+   * The same tenant traffic, bucketed over time (#1447) — what a team-level chart plots,
+   * one series per installed app.
+   *
+   * Same optionality, and the same non-widenable `tenantId`, as `tenantMetrics`: a
+   * backend with a tenant dimension may still have no time axis on it, and absent must
+   * 501 rather than answer an empty series, which a chart renders as "quiet" — the exact
+   * misreading a status band exists to prevent.
+   *
+   * `scopeIds` is a LIST so that "all my apps" is one read rather than one per app; it
+   * narrows WITHIN the tenant, so a foreign scope id yields no rows rather than somebody
+   * else's. An empty list narrows to nothing — the caller names the apps it will plot,
+   * which is also what keeps the answer bounded (scopes × buckets). The backend picks the
+   * bucket width from the window and reports it on every row.
+   */
+  tenantMetricsSeries?(input: { tenantId: string; scopeIds: string[]; hours: number }): Promise<TenantMetricsBucket[]>;
 
   /**
    * ONE tenant's recent log events — the lines their own installations produced (§4.3).

@@ -9,7 +9,7 @@
  * host routes precisely because module code cannot touch a blob, so no generated method could
  * exist for them: they are not operations.
  */
-import { ApiError, createClient } from './api.generated.js';
+import { ApiError, createClient, type Run, type TockClient } from './api.generated.js';
 
 export { ApiError } from './api.generated.js';
 export type {
@@ -74,6 +74,32 @@ export const upload = (
 /** Ask the server to read those bytes back and profile from them. */
 export const profile = (runId: string) =>
   bytesRoute(`/api/runs/${encodeURIComponent(runId)}/profile`, { method: 'POST' });
+
+/** What the count-to-completion route answers with: the run as it ended up, and how many passes it took. */
+export interface CountResult {
+  run: Run;
+  passes: number;
+}
+
+/**
+ * Count a run to completion.
+ *
+ * The generated `countRun` folds in ONE chunk and says whether more remain — the honest shape
+ * of the operation, since a large run does not fit one scope invocation. This is the host loop
+ * that keeps asking, and the one the Count button presses: one action, however big the file.
+ * The caller's rules ride it exactly as they ride a single pass.
+ */
+export async function countAll(runId: string, rules?: Parameters<TockClient['countRun']>[0]['rules']): Promise<CountResult> {
+  const res = await fetch(`/api/runs/${encodeURIComponent(runId)}/count-all`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(rules ? { rules } : {}),
+  });
+  const body = (await res.json().catch(() => ({}))) as Partial<CountResult> & { error?: string };
+  if (!res.ok) throw new ApiError(res.status, body.error ?? res.statusText ?? `${res.status}`, body);
+  return body as CountResult;
+}
 
 /**
  * Every page of a paged read, not just the first.

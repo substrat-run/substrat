@@ -12,6 +12,7 @@ import {
   all,
   api,
   auth,
+  countAll,
   me,
   profile,
   upload,
@@ -1033,7 +1034,7 @@ function Runs({ sourceKey, runs, onDone }: { sourceKey: string; runs: Run[]; onD
                   </button>
                 )}
                 {r.status === 'mapped' && (
-                  <button disabled={busy} onClick={() => act(async () => { await api.countRun({ runId: r.id }); onDone(); })}>Count</button>
+                  <button disabled={busy} onClick={() => act(async () => { await countAll(r.id); onDone(); })}>Count</button>
                 )}
               </td>
             </tr>

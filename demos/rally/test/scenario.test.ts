@@ -195,6 +195,23 @@ describe('RallyPoint demo scenario (spec §11)', () => {
     ).rejects.toThrow(/not bookable on this court/);
   });
 
+  it('9b. a booking day is a calendar date, not a shape — an impossible day is refused (#117)', async () => {
+    const book = (date: string) =>
+      ravi.invoke<{ reservation: Reservation }>('rally/book-court', {
+        resourceId: w.court2,
+        memberId: w.elinId,
+        date,
+        time: '12:00',
+        duration: 60,
+      });
+    await expect(book('2030-13-45')).rejects.toThrow(); // the old regex took this
+    await expect(book('2030-02-30')).rejects.toThrow();
+    await expect(book('2026-07-22T00:00:00Z')).rejects.toThrow(); // an instant is not a day
+    const booked = await book('2026-07-22'); // a Wednesday nothing else in this suite touches
+    expect(booked.reservation.state).toBe('held');
+    expect(booked.reservation.startsAt).toBe('2026-07-22T10:00:00.000Z');
+  });
+
   it('10. a closure shuts the day, and the calendar agrees', async () => {
     await astrid.invoke('rally/add-closure', {
       onDate: '2026-07-21',

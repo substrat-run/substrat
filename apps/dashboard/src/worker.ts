@@ -1495,6 +1495,30 @@ app.get('/api/apps/:scopeId/audit', async (c) => {
 });
 
 /**
+ * The TEAM's audit log (#1447) — the same admin log, one page newest-first, behind the
+ * left-menu Audit page. The tenant is pinned by the authority seam, so the SCOPE is the
+ * only thing this query decides: `?scopeId=` narrows to one app, resolved exactly as the
+ * per-app route resolves it (from the caller's OWN `list-apps`, so a foreign scope id
+ * 404s), and leaving it off is precisely "this team's whole log" — including the entries
+ * that name no scope at all, which a per-app read can never show. The per-app route stays
+ * for the deep links that already carry a scope in their path.
+ */
+app.get('/api/audit', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const page = pageParams(c);
+  const asked = c.req.query('scopeId');
+  if (!asked) return c.json(await cp.auditLogPage({ limit: page.limit, cursor: page.cursor }));
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === asked);
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  return c.json(await cp.auditLogPage({ limit: page.limit, cursor: page.cursor }, scopeId.parse(appRow.app_scope_id)));
+});
+
+/**
  * One app's Deployments tab — its vertical's REAL version registry + which version each
  * channel points at (the `prod` one is what the app runs). Read-only: for a platform
  * vertical the versions are managed by the Substrat team; this just surfaces the truth
@@ -3833,6 +3857,40 @@ app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
   return c.json(
     await cpObservability(() =>
       cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: Number.isFinite(hours) ? hours : 24 }),
+    ),
+  );
+});
+
+/**
+ * MY traffic, bucketed over time, across one or more of MY apps (#1447) — the read the
+ * team-level Observability page plots, one series per app. Team-level rather than under
+ * `/apps/:scopeId` because "all my apps" is one read here, not one per app.
+ *
+ * `scopeId` repeats. Named scopes are resolved through this tenant's own `list-apps`, as the
+ * per-app routes above do, so a foreign one is a 404 (K-3) rather than a silent empty
+ * series; none named means every app this tenant has installed — the list is still THIS
+ * tenant's, resolved here, never a widening the plane could be asked for.
+ */
+app.get('/api/observability/tenant-metrics-series', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const asked = c.req.queries('scopeId')?.filter((s) => s.length > 0) ?? [];
+  const owned = new Set(apps.map((a) => a.app_scope_id));
+  const foreign = asked.find((s) => !owned.has(s));
+  if (foreign) throw new HTTPException(404, { message: 'app not found' });
+  // Every installed app when none is named. The plane caps one ask; the authority
+  // batches past it, so a team with more apps than that gets a series, not a 400.
+  const scopeIds = asked.length > 0 ? [...new Set(asked)] : [...owned];
+  // No apps at all is an honest empty series, not a question for the plane.
+  if (scopeIds.length === 0) return c.json([]);
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const hours = Number(c.req.query('hours') ?? '24');
+  return c.json(
+    await cpObservability(() =>
+      cp.tenantMetricsSeries({ scopeIds, hours: Number.isFinite(hours) ? hours : 24 }),
     ),
   );
 });

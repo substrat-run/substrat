@@ -157,6 +157,19 @@ load and reports each surviving row's weight, so `count()` undercounts a busy te
 the sampling factor, silently and in the flattering direction. Quantiles are
 `quantileWeighted(q)(value, _sample_interval)` for the same reason.
 
+The bucketed twin, `tenantMetricsSeries` (#1447), is the same SQL read with a time axis
+— `toStartOfInterval(timestamp, …)` at the widths the script-grain series uses — grouped
+by scope alone, so a team-level chart draws one line per app, and carrying the same two
+weighted quantiles per bucket, because the chart plots latency and a whole-window
+quantile cannot be unrolled into a timeline. It takes a **list** of scopes so "all my
+apps" is one read — capped at `TENANT_SERIES_SCOPE_CAP` per ask, past which the dashboard
+batches and merges — rides the same dataset switch (no dataset ⇒ absent ⇒ the route
+501s), and refuses a page that reaches its row limit rather than returning a prefix: the
+query orders ascending, so a truncated answer is missing its newest buckets, which a
+zero-filling chart would draw as an outage. It is deliberately NOT the GraphQL
+series `serviceMetricsSeries` reads — that dataset is keyed on the script, and no filter
+on it produces a per-tenant number.
+
 *Logs* are the telemetry query API in **two phases**, and the reason is the finding below.
 
 > **A trace does not cross the dispatch hop.** The obvious design is to join the router's
