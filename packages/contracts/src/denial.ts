@@ -73,7 +73,15 @@ export type PermissionDenial = z.infer<typeof permissionDenial>;
  * `JSON.stringify(actor)`, so a principal is stored with its quotes; normalizing to that
  * encoding is the reader's job (`storedActor` in the kernel's query builder), not every
  * caller's.
+ *
+ * `groupBy` is the one field that narrows nothing: it picks which bucketing the SUMMARY
+ * answers with (#1456), and the row read ignores it. It lives on the shared filter all
+ * the same, because both reads travel through one encoder, one decoder per door and one
+ * drift test — a second filter type would be a second copy of all three.
  */
+export const denialGroupBy = z.enum(['actor-permission', 'operation']);
+export type DenialGroupBy = z.infer<typeof denialGroupBy>;
+
 export const denialFilter = z.object({
   actor: z.string().min(1).optional(),
   permission: z.string().min(1).optional(),
@@ -83,6 +91,13 @@ export const denialFilter = z.object({
   /** ISO 8601, exclusive. */
   until: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(DENIAL_LIMIT_MAX).optional(),
+  /**
+   * Which bucketing `denialSummary` answers with. Absent means `actor-permission`,
+   * K-35's own question; `operation` is #1456's — "which operation keeps getting
+   * refused" — and is what a per-operation health panel asks instead of counting from
+   * a page of rows. Meaningful to the summary only.
+   */
+  groupBy: denialGroupBy.optional(),
 });
 export type DenialFilter = z.infer<typeof denialFilter>;
 
@@ -114,6 +129,7 @@ export function denialFilterParams(filter?: DenialFilter): URLSearchParams {
   if (filter?.since) q.set('since', filter.since);
   if (filter?.until) q.set('until', filter.until);
   if (filter?.limit) q.set('limit', String(filter.limit));
+  if (filter?.groupBy) q.set('groupBy', filter.groupBy);
   return q;
 }
 
@@ -147,7 +163,25 @@ export const denialBucket = z.object({
 export type DenialBucket = z.infer<typeof denialBucket>;
 
 /**
- * The bucketed view of a scope's denial log, plus the facts that keep it honest.
+ * One per-operation bucket (#1456) — "which operation keeps getting refused", the
+ * question a per-operation health panel asks. It is a different question from the
+ * (actor, permission) one and not a refinement of it: the same operation refused for
+ * a dozen actors is one row here and a dozen there. `operation` is null for the
+ * refusals that unwound something other than an operation invocation; they are still
+ * rows the log holds, so they get a bucket rather than vanishing from the sum.
+ */
+export const denialOperationBucket = z.object({
+  operation: z.string().nullable(),
+  count: z.number().int().positive(),
+  /** ISO 8601 — the first occurrence still in the window (see `windowOldestAt`). */
+  firstAt: z.string().min(1),
+  lastAt: z.string().min(1),
+});
+export type DenialOperationBucket = z.infer<typeof denialOperationBucket>;
+
+/**
+ * The facts every summary carries beside its buckets — what keeps the bucket list
+ * honest whichever way it was grouped.
  *
  * `total` counts every row matching the filter, so a caller can tell a capped bucket
  * list from a complete one. `windowOldestAt` is deliberately computed WITHOUT the
@@ -155,8 +189,7 @@ export type DenialBucket = z.infer<typeof denialBucket>;
  * this scope can still speak to. An empty result older than it means "no denials";
  * an empty result at it means "we no longer hold that far back".
  */
-export const denialSummary = z.object({
-  buckets: z.array(denialBucket),
+const denialSummaryFacts = {
   /** Rows matching the filter. Bucket counts sum to this when `buckets` is uncapped. */
   total: z.number().int().nonnegative(),
   /** Distinct actors among the matching rows. */
@@ -171,5 +204,35 @@ export const denialSummary = z.object({
   windowNewestAt: z.string().nullable(),
   /** Rows already shipped to a Tier-2 sink, filter ignored — prunable, not pruned. */
   drained: z.number().int().nonnegative(),
+};
+
+/** The summary as K-35 asked for it: one bucket per (actor, permission). */
+export const denialActorSummary = z.object({
+  groupBy: z.literal('actor-permission'),
+  buckets: z.array(denialBucket),
+  ...denialSummaryFacts,
 });
+export type DenialActorSummary = z.infer<typeof denialActorSummary>;
+
+/** The summary grouped by operation (#1456) — the same facts, a different bucket. */
+export const denialOperationSummary = z.object({
+  groupBy: z.literal('operation'),
+  buckets: z.array(denialOperationBucket),
+  ...denialSummaryFacts,
+});
+export type DenialOperationSummary = z.infer<typeof denialOperationSummary>;
+
+/**
+ * The bucketed view of a scope's denial log, plus the facts that keep it honest.
+ *
+ * One read, two groupings, chosen by the filter's `groupBy` and ECHOED on the answer:
+ * the caller learns which question was answered rather than inferring it from a
+ * bucket's fields — which matters across a version skew, since the route lives inside
+ * each vertical's deploy and an older one that never heard of `groupBy` answers the
+ * default grouping to a caller that asked for the other.
+ */
+export const denialSummary = z.discriminatedUnion('groupBy', [
+  denialActorSummary,
+  denialOperationSummary,
+]);
 export type DenialSummary = z.infer<typeof denialSummary>;

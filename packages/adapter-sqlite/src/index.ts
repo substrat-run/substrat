@@ -203,9 +203,8 @@ import {
   denialTotalsQuery,
   DENIAL_WINDOW_QUERY,
   mapDenialRow,
-  mapDenialBucketRow,
+  mapDenialSummaryBuckets,
   type DenialRow,
-  type DenialBucketRow,
   type DenialWindowRow,
   IMPERSONATION_COLUMNS,
   IMPERSONATION_DDL,
@@ -6218,9 +6217,8 @@ export class SqliteScopeHost implements ScopeHost {
       ): Promise<DenialSummary> => {
         const db = this.scopeDbFor(tenantId, scopeId);
         const b = denialSummaryQuery(filter);
-        const buckets = (db.prepare(b.sql).all(...b.params) as DenialBucketRow[]).map(
-          mapDenialBucketRow,
-        );
+        // Grouped as the filter asked (#1456), and the answer says which way.
+        const grouped = mapDenialSummaryBuckets(b.groupBy, db.prepare(b.sql).all(...b.params));
         const t = denialTotalsQuery(filter);
         const totals = db.prepare(t.sql).get(...t.params) as { total: number; actors: number };
         // Unfiltered on purpose — these describe the log, not the query (denial-query.ts).
@@ -6230,10 +6228,10 @@ export class SqliteScopeHost implements ScopeHost {
           'summarizeDenials',
           { tenantId, scopeId },
           filter ?? null,
-          buckets.length,
+          grouped.buckets.length,
         );
         return {
-          buckets,
+          ...grouped,
           total: Number(totals.total),
           actors: Number(totals.actors),
           windowOldestAt: w.oldest_at ?? null,

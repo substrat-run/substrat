@@ -40,6 +40,7 @@ import {
   roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
   DENIAL_LIMIT_MAX,
+  denialGroupBy,
   registerVerticalInput,
   serviceDimensions,
   sweepRunKind,
@@ -679,6 +680,8 @@ export const denialLogQuery = z.object({
   since: z.string().optional(),
   until: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(DENIAL_LIMIT_MAX).default(DEFAULT_DENIAL_LIMIT),
+  // Which bucketing the summary answers with (#1456); the row read ignores it.
+  groupBy: denialGroupBy.optional(),
 });
 
 const opsFailuresQuery = z.object({

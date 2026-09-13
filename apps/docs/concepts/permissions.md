@@ -234,7 +234,10 @@ console:
   distinct operations, and first/last occurrence. This is the view to open first, and the
   ordering is **by count** on purpose: the volume of this log is attacker-influenceable — a
   probing client mints unlimited rows — so a newest-first page would let whoever wrote the
-  last hundred rows push every other actor off the screen.
+  last hundred rows push every other actor off the screen. `groupBy: 'operation'` asks the
+  other question — which operation keeps getting refused — with one bucket per operation
+  and the same `total` and window facts beside it; the summary echoes the grouping it
+  answered with.
 - **`listDenials`** returns the raw rows behind a bucket, newest first, narrowed by `actor`,
   `permission`, `operation`, and a `since`/`until` window.
 

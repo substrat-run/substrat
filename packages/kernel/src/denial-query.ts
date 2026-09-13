@@ -2,8 +2,12 @@ import {
   DEFAULT_DENIAL_LIMIT,
   denialFilter,
   type Actor,
+  type DenialActorSummary,
   type DenialBucket,
   type DenialFilter,
+  type DenialGroupBy,
+  type DenialOperationBucket,
+  type DenialOperationSummary,
   type ImpersonationStamp,
   type PermissionDenial,
   type PermissionKey,
@@ -116,27 +120,44 @@ export function denialListQuery(filter?: DenialFilter): { sql: string; params: (
 }
 
 /**
- * K-35's rate-buckets: one row per (actor, permission), busiest first.
+ * K-35's rate-buckets: one row per (actor, permission), busiest first — or, with
+ * `groupBy: 'operation'` (#1456), one row per operation, ordered the same way.
  *
  * Busiest-first rather than newest-first on purpose — this view exists BECAUSE the
  * volume is attacker-influenceable, and ordering by recency would let whoever wrote
  * the last hundred rows push everyone else off the page, which is the exact failure
  * the bucketing is there to prevent. Ties break on `MAX(id)` so the order is total.
+ *
+ * The grouping is returned beside the SQL so the adapter maps the rows it gets back
+ * with the matching mapper (`mapDenialSummaryBuckets`) rather than re-deriving which
+ * query it ran from the filter.
  */
 export function denialSummaryQuery(filter?: DenialFilter): {
   sql: string;
   params: (string | number)[];
+  groupBy: DenialGroupBy;
 } {
   const f = denialFilter.parse(filter ?? {});
   const w = where(f);
+  const groupBy = f.groupBy ?? 'actor-permission';
+  const select =
+    groupBy === 'operation'
+      ? // A NULL operation groups with the other NULLs in SQLite, so the refusals that
+        // unwound no operation invocation come back as one null-keyed bucket — still
+        // counted, still summing to `total`, rather than silently dropped.
+        `SELECT operation, COUNT(*) AS count,` +
+        ` MIN(at) AS first_at, MAX(at) AS last_at, MAX(id) AS last_id` +
+        ` FROM _substrat_denials${w.clause}` +
+        ` GROUP BY operation`
+      : `SELECT actor, permission, COUNT(*) AS count,` +
+        ` COUNT(DISTINCT operation) AS operations,` +
+        ` MIN(at) AS first_at, MAX(at) AS last_at, MAX(id) AS last_id` +
+        ` FROM _substrat_denials${w.clause}` +
+        ` GROUP BY actor, permission`;
   return {
-    sql:
-      `SELECT actor, permission, COUNT(*) AS count,` +
-      ` COUNT(DISTINCT operation) AS operations,` +
-      ` MIN(at) AS first_at, MAX(at) AS last_at, MAX(id) AS last_id` +
-      ` FROM _substrat_denials${w.clause}` +
-      ` GROUP BY actor, permission ORDER BY count DESC, last_id DESC LIMIT ?`,
+    sql: `${select} ORDER BY count DESC, last_id DESC LIMIT ?`,
     params: [...w.params, f.limit ?? DEFAULT_DENIAL_LIMIT],
+    groupBy,
   };
 }
 
@@ -158,6 +179,38 @@ export function mapDenialBucketRow(row: DenialBucketRow): DenialBucket {
     firstAt: row.first_at,
     lastAt: row.last_at,
   };
+}
+
+export interface DenialOperationBucketRow {
+  operation: string | null;
+  count: number;
+  first_at: string;
+  last_at: string;
+}
+
+export function mapDenialOperationBucketRow(row: DenialOperationBucketRow): DenialOperationBucket {
+  return {
+    operation: row.operation ?? null,
+    count: Number(row.count),
+    firstAt: row.first_at,
+    lastAt: row.last_at,
+  };
+}
+
+/** The half of a `DenialSummary` the grouped query answers; the facts are the other half. */
+export type DenialSummaryBuckets =
+  | Pick<DenialActorSummary, 'groupBy' | 'buckets'>
+  | Pick<DenialOperationSummary, 'groupBy' | 'buckets'>;
+
+/**
+ * Map the rows `denialSummaryQuery` came back with, under the grouping it reported —
+ * and carry that grouping onto the answer, so a caller who asked one question can see
+ * which one was answered. Both adapters spread this into the summary they return.
+ */
+export function mapDenialSummaryBuckets(groupBy: DenialGroupBy, rows: unknown[]): DenialSummaryBuckets {
+  return groupBy === 'operation'
+    ? { groupBy, buckets: (rows as DenialOperationBucketRow[]).map(mapDenialOperationBucketRow) }
+    : { groupBy, buckets: (rows as DenialBucketRow[]).map(mapDenialBucketRow) };
 }
 
 /** Totals for the FILTERED set — what the capped bucket list is a page of. */

@@ -63,9 +63,8 @@ import {
   denialTotalsQuery,
   DENIAL_WINDOW_QUERY,
   mapDenialRow,
-  mapDenialBucketRow,
+  mapDenialSummaryBuckets,
   type DenialRow,
-  type DenialBucketRow,
   type DenialWindowRow,
   PermissionDenied,
   assertImpersonationWrites,
@@ -2473,12 +2472,13 @@ export function defineScopeDO(
       ).map(mapDenialRow);
     }
 
-    /** The same log bucketed per (actor, permission), with the window's own facts. */
+    /**
+     * The same log bucketed per (actor, permission) — or per operation when the filter
+     * says `groupBy: 'operation'` (#1456) — with the window's own facts.
+     */
     summarizeDenials(filter?: DenialFilter): DenialSummary {
       const b = denialSummaryQuery(filter);
-      const buckets = (
-        this.sql.exec(b.sql, ...b.params).toArray() as unknown as DenialBucketRow[]
-      ).map(mapDenialBucketRow);
+      const grouped = mapDenialSummaryBuckets(b.groupBy, this.sql.exec(b.sql, ...b.params).toArray());
       const t = denialTotalsQuery(filter);
       const totals = this.sql.exec(t.sql, ...t.params).toArray()[0] as unknown as {
         total: number;
@@ -2487,7 +2487,7 @@ export function defineScopeDO(
       // Unfiltered on purpose — these describe the log, not the query (denial-query.ts).
       const w = this.sql.exec(DENIAL_WINDOW_QUERY).toArray()[0] as unknown as DenialWindowRow;
       return {
-        buckets,
+        ...grouped,
         total: Number(totals.total),
         actors: Number(totals.actors),
         windowOldestAt: w.oldest_at ?? null,

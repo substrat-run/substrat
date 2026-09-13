@@ -2164,6 +2164,8 @@ export interface HostAdmin {
    * per actor/key/window" — busiest first, with the filtered totals and the unfiltered
    * window facts beside them. This is the view an operator opens first: "who has been
    * probing for access they don't hold" is a question about counts, not about rows.
+   * `groupBy: 'operation'` asks the other question (#1456) — "which operation keeps
+   * getting refused" — and the answer says which grouping it carries.
    */
   summarizeDenials(
     actor: PlatformActorId,
