@@ -39,7 +39,7 @@ import { deriveFlowGraph } from './flow-graph.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
-import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
+import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -3944,6 +3944,76 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
 });
 
 /**
+ * A chart window from `?hours=`, in whole hours on [1, 72]. Rounded, not just clamped:
+ * the plane's schema is `.int()`, so `?hours=6.5` would be rejected there and the chart
+ * would say "not available" for what is really a bad parameter. Only an absent or
+ * unparsable value falls back to the default — `?hours=0` is a real request that clamps
+ * to one hour, not a missing one that silently becomes a day (`|| 24` read it as that).
+ */
+function chartHours(raw: string | undefined, fallback = 24): number {
+  const parsed = raw === undefined ? fallback : Number(raw);
+  return Math.min(72, Math.max(1, Math.round(Number.isFinite(parsed) ? parsed : fallback)));
+}
+
+/**
+ * The app's own chart series (#1447 step 2) — the same traffic with a time axis, at
+ * TENANT grain. It sits beside the deployment route rather than reusing it because the
+ * two answer different questions: `/api/deployments/:slug/traffic` plots the script,
+ * which serves every team that installed the vertical, while an app page answers about
+ * this one installation — for the owner too.
+ *
+ * The markers are the other half of that split. A deploy line is a fact about the code,
+ * readable only from the registry the PUBLISHER owns, so an app running somebody else's
+ * vertical resolves no deployment and gets none. That is not a degraded answer: the
+ * traffic is the tenant's to see and the release history is the publisher's, and an empty
+ * marker set is how the page says so.
+ */
+app.get('/api/apps/:scopeId/traffic', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const hours = chartHours(c.req.query('hours'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const [buckets, deployment] = await Promise.all([
+    // Null = the plane cannot bucket; the chart says so rather than drawing a flat line
+    // that reads as silence.
+    cp.tenantMetricsSeries({ scopeIds: [appRow.app_scope_id], hours }).catch(() => null),
+    // The registry read is the publisher's, so it is attempted and tolerated: an installed
+    // vertical simply is not among this team's own deployments. Narrowed to this one slug
+    // — ownership is one list read, and only the match is hydrated — so a sparkline
+    // request does not walk versions and channels for every vertical the team publishes.
+    ownedDeploymentFromCp(cp, appRow.vertical_slug).catch(() => null),
+  ]);
+  const prodHistory = deployment ? await cp.channelHistory(deployment.slug, 'prod') : [];
+  const releases = deployment
+    ? deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null }).releases
+    : [];
+
+  return c.json(
+    deriveTrafficSeries({
+      // Mapped field by field rather than handed the wider row, which would satisfy
+      // `TrafficBucketInput` structurally and leave the web client's parity guard
+      // asserting something narrower than what actually crosses.
+      buckets:
+        buckets?.map((b) => ({
+          start: b.start,
+          bucketMinutes: b.bucketMinutes,
+          requests: b.requests,
+          errors: b.errors,
+        })) ?? null,
+      releases,
+      prodHistory,
+      hours,
+      now: new Date(),
+    }),
+  );
+});
+
+/**
  * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
  * serve while the vertical is PRIVATE (its blast radius is this tenant alone — merge-to-main
  * deploys and dashboard rollback both land here). Prod on a LISTED vertical is refused:
@@ -4044,10 +4114,8 @@ app.get('/api/deployments/:slug/traffic', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
-  // Rounded, not just clamped: the plane's schema is `.int()`, so `?hours=6.5` would be
-  // rejected there and the chart would say "not available" for what is really a bad
-  // parameter. The window is also the marker grid, so a fractional one is meaningless.
-  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
+  // The window is also the marker grid, so a fractional one is meaningless — see chartHours.
+  const hours = chartHours(c.req.query('hours'));
   const cp = controlPlaneFor(c.env, node.tenantId);
   const deployments = await listDeploymentsFromCp(cp);
   assertOwned(deployments, slug);
