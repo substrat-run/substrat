@@ -1219,9 +1219,13 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
   if (view.rows.length === 0) return null;
   const refusals = view.refusals;
   const since = refusals?.since ? new Date(refusals.since).toLocaleDateString() : null;
-  // A count from a capped page is a floor: the page held the newest rows, and this
-  // operation's older refusals may lie beyond it.
-  const atLeast = refusals !== null && !refusals.complete;
+  // The buckets are the log's own per-operation aggregate (#1456), so every count shown
+  // is exact whatever `complete` says. What an incomplete window withholds is whole
+  // OPERATIONS — the list is busiest first and capped, so the quietest fell off it —
+  // never rows from a bucket that is shown. So the caveat is about absence, and no
+  // count gets a "+": that would say "at least", which is the old page-of-rows reading
+  // and now simply false.
+  const partial = refusals !== null && !refusals.complete;
 
   return (
     <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
@@ -1240,11 +1244,12 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
         </p>
       )}
 
-      {atLeast && (
+      {partial && (
         <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
-          The refusal log holds {refusals.held.toLocaleString()} entries and only the newest{' '}
-          {refusals.counted.toLocaleString()} are counted here, so a refusal count is a floor and an
-          operation refused only earlier may be missing.
+          The refusal log holds {refusals.held.toLocaleString()} entries across more operations than
+          are listed here; the {refusals.counted.toLocaleString()} accounted for belong to the most
+          refused operations. Each count shown is exact, but an operation refused less often may be
+          missing from this list altogether.
         </p>
       )}
 
@@ -1279,7 +1284,7 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
                     : 'permission refusals recorded for this operation'
                 }
               >
-                {atLeast ? `${r.refusals}+` : r.refusals} refused{r.refusedOnly ? ', nothing emitted' : ''}
+                {r.refusals} refused{r.refusedOnly ? ', nothing emitted' : ''}
               </span>
             )}
           </div>
