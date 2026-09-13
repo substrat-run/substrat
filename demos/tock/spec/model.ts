@@ -278,6 +278,19 @@ export const tockEntities = defineEntities({
        * this existed, which is a fact rather than a gap.
        */
       counted_through: z.string().nullable(),
+      /**
+       * What a resumed pass has to carry that no other column does, as JSON; null before
+       * counting starts, and on a run counted before this existed.
+       *
+       * Two halves. The PLAN: which output-schema and mapping versions the first pass counted
+       * under, pinned by version the way `schema_version` pins the envelope — a later pass
+       * reselecting "the latest" would fold the second half of a run under a plan the first
+       * half never saw, and the captured mapping rule would then name a plan that made only
+       * some of the numbers. And the DAYS seen so far: the salt provenance is a hash over the
+       * salts of every day the run touched, and gathering them from the rows again on every
+       * pass is a scan of the whole run per chunk, which is the cost chunking exists to avoid.
+       */
+      count_state_json: z.string().nullable(),
       counted_at: z.string().nullable(),
     }),
     parents: ['source'],
@@ -999,7 +1012,8 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
    * carry its own id, written in the transaction that counts it, so a report never reads half
    * of one run's numbers beside half of another's.
    *
-   * Chunked like `profile-run`, for the same reason and with the same `complete` answer.
+   * Chunked like `profile-run`, for the same reason and with the same `complete` answer — and
+   * the same event on every pass, since every pass writes rollups, labels and the cursor.
    */
   'tock/count-run': {
     summary: 'Count a mapped run and freeze it',
@@ -1043,6 +1057,11 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
       schemaVersion: 1,
       piiClass: 'none',
       // Fat: a consumer deciding what a corrected period means must never need a read back.
+      // Emitted for EVERY pass, as `run-profiled` is: a pass that is not the last still writes
+      // rollup rows, labels, rule states and the cursor, and a mutation with no entry on the
+      // spine is the one thing the event rule exists to prevent. `complete` (and `status`, the
+      // same fact in the run's own vocabulary) is what a consumer gates publication on — the
+      // rollups a non-final pass wrote are not yet a number anyone should read.
       payload: [
         'id',
         'source_key',
@@ -1052,6 +1071,8 @@ export const tockOperations = defineOperations(tockEntities, TOCK_PERMISSIONS)({
         'row_count',
         'rejected_count',
         'counted_at',
+        'status',
+        'complete',
       ],
     },
   },

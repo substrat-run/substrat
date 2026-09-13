@@ -529,6 +529,16 @@
               }
             ]
           },
+          "count_state_json": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "counted_at": {
             "anyOf": [
               {
@@ -559,6 +569,7 @@
           "received_at",
           "received_by",
           "counted_through",
+          "count_state_json",
           "counted_at"
         ],
         "additionalProperties": false

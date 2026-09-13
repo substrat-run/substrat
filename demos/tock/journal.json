@@ -37,8 +37,8 @@
     },
     {
       "version": "0008",
-      "slug": "add-tock_runs-counted_through",
-      "sql": "ALTER TABLE tock_runs ADD COLUMN counted_through TEXT;"
+      "slug": "add-tock_runs-counted_through-and-1-more",
+      "sql": "ALTER TABLE tock_runs ADD COLUMN counted_through TEXT;\n\nALTER TABLE tock_runs ADD COLUMN count_state_json TEXT;"
     }
   ]
 }

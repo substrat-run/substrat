@@ -321,10 +321,12 @@ export const tockMigrations: SqlMigration[] = [
     `,
   },
   {
-    // add-tock_runs-counted_through
+    // add-tock_runs-counted_through-and-1-more
     version: '0008',
     sql: `
       ALTER TABLE tock_runs ADD COLUMN counted_through TEXT;
+
+      ALTER TABLE tock_runs ADD COLUMN count_state_json TEXT;
     `,
   },
 ];
