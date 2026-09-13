@@ -324,7 +324,7 @@ to make the build pass.
 ## Step 6 — Reshape the reference
 
 The design is approved. The scaffold already contains a working vertical in `src/` + `test/` —
-the bike-repair shop. **Read it first** (it's your Callout: the real, green implementation of
+the bike-repair shop. **Read it first** (it is your reference: the real, green implementation of
 every pattern this step describes), then reshape it into the user's domain from the approved
 `spec/concept.md`:
 
