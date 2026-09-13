@@ -9,11 +9,11 @@ export type NavKey =
   | 'overview'
   | 'apps'
   | 'verticals'
+  | 'observability'
   | 'audit'
   | 'domains'
   | 'team'
   | 'integrations'
-  | 'observability'
   | 'billing'
   | 'settings';
 
@@ -26,6 +26,11 @@ const MAIN: NavItem[] = [
   { key: 'overview', label: 'Overview', icon: 'grid' },
   { key: 'apps', label: 'Apps', icon: 'box' },
   { key: 'verticals', label: 'Verticals', icon: 'layers' },
+  // Observability replaces the demo Analytics page (#1447): every app on the team on one
+  // chart with one time range, and an app filter that narrows the page to one of them.
+  // It sits here rather than beside Billing because it is about the team's apps, not the
+  // account — grouping the menu into Build / Operate / Configure is a later step.
+  { key: 'observability', label: 'Observability', icon: 'chart' },
   // The audit log is the TEAM's, not one app's — role changes and entitlements name no
   // scope at all — so it is a page here with an app filter rather than a tab on each app (#1447).
   { key: 'audit', label: 'Audit', icon: 'list' },
@@ -34,11 +39,6 @@ const MAIN: NavItem[] = [
   { key: 'integrations', label: 'Integrations', icon: 'plug' },
 ];
 const ACCOUNT: NavItem[] = [
-  // #1447: Observability replaces Analytics. Analytics was a Preview page on
-  // estimated figures whose `All apps` select filtered nothing; this is the team's own
-  // traffic at tenant grain, with an app chip — the shape Sentry, Cloudflare and Vercel
-  // all settled on for a cross-project view.
-  { key: 'observability', label: 'Observability', icon: 'chart' },
   { key: 'billing', label: 'Billing', icon: 'card' },
   { key: 'settings', label: 'Settings', icon: 'settings' },
 ];

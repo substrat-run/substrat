@@ -2022,6 +2022,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../contracts
+      '@substrat-run/kernel':
+        specifier: workspace:^
+        version: link:../kernel
       '@substrat-run/oidc-rp':
         specifier: workspace:^
         version: link:../oidc-rp
@@ -2047,6 +2050,9 @@ importers:
       better-sqlite3:
         specifier: 13.0.3
         version: 13.0.3
+      hono:
+        specifier: 4.12.30
+        version: 4.12.30
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

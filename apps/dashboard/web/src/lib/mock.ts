@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, ObservabilityRow, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -515,22 +515,51 @@ export const MOCK_APPS: AppRow[] = [
   { id: '4', app_scope_id: '01J2Q8Z3V9K4W7X2M5N6P7FINA', vertical_slug: 'invoicing', name: 'Acme Finance', status: 'failed', hostname: null, created_by: 'dana@acme.com', created_at: ago(3 * 86400e3) },
 ];
 
-/** Traffic for the mock deployments' deployed versions (matches MOCK_DEPLOYMENTS refs). */
-export const MOCK_OBSERVABILITY: ObservabilityRow[] = [
-  { vertical: 'acme/helpdesk', version: '0.3.0', versionId: '01J2Q8Z3V9K4W7X2M5N6P7V300', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v300', requests: 12840, errors: 23, subrequests: 31200, cpuTimeP50: 2400, cpuTimeP99: 18200 },
-  { vertical: 'acme/helpdesk', version: '0.2.0', versionId: '01J2Q8Z3V9K4W7X2M5N6P7V200', service: 'acme-helpdesk-01j2q8z3v9k4w7x2m5n6p7v200', requests: 3120, errors: 1, subrequests: 7400, cpuTimeP50: 2100, cpuTimeP99: 15400 },
-];
-
 /**
  * Dev-preview sample for the tenant grain — one installed app's own traffic, split by
- * the surface that answered. Deliberately NOT split by version the way
- * `MOCK_OBSERVABILITY` is: this view is for an app whose vertical another team
- * publishes, and a version is a fact about code that is not the viewing team's.
+ * the surface that answered rather than by version: a version is a fact about code, and
+ * for an app whose vertical another team publishes the code is not the viewing team's.
  */
 export const MOCK_TENANT_METRICS: TenantMetricsRow[] = [
   { scopeId: MOCK_INSTALLED_APP_SCOPE, vertical: 'protocol', surface: 'app', requests: 4210, errors: 6, durationP50: 84, durationP95: 689 },
   { scopeId: MOCK_INSTALLED_APP_SCOPE, vertical: 'protocol', surface: 'api', requests: 912, errors: 0, durationP50: 31, durationP95: 210 },
 ];
+
+/**
+ * The team Observability chart (#1447): a day of hourly buckets for the two mock apps
+ * that have traffic. Deliberately two different shapes — one app busy in office hours
+ * with a burst of errors, one steady and quiet — because the whole point of the all-apps
+ * mode is telling two installations apart on one axis.
+ *
+ * `MOCK_APPS` has four rows and this covers two, which is the honest fixture: an app
+ * still provisioning and a failed one have no traffic, and the page must draw them as
+ * flat zero lines rather than leaving them out.
+ */
+export const MOCK_TEAM_TRAFFIC: TeamTrafficSeries = (() => {
+  const start = Date.now();
+  const line = (shape: (i: number) => { requests: number; errors: number }) =>
+    Array.from({ length: 24 }, (_, i) => ({
+      start: new Date(Math.floor((start - (23 - i) * 3600e3) / 3600e3) * 3600e3).toISOString(),
+      ...shape(i),
+    }));
+  return {
+    series: [
+      {
+        scopeId: '01J2Q8Z3V9K4W7X2M5N6P789AB',
+        buckets: line((i) => ({
+          requests: i > 6 && i < 21 ? 180 + ((i * 53) % 90) : 20 + ((i * 7) % 12),
+          errors: i >= 18 && i <= 20 ? 9 + ((i * 3) % 5) : 0,
+        })),
+      },
+      {
+        scopeId: MOCK_INSTALLED_APP_SCOPE,
+        buckets: line((i) => ({ requests: 40 + ((i * 13) % 18), errors: i % 9 === 0 ? 1 : 0 })),
+      },
+    ],
+    bucketMinutes: 60,
+    available: true,
+  };
+})();
 
 /**
  * Dev-preview sample for the Audit tab — a scope's control-plane admin log, newest

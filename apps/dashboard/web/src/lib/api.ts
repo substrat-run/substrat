@@ -609,6 +609,20 @@ export interface TrafficSeries {
   available: boolean;
 }
 
+/** One app's line on the team chart — its own zero-filled series. */
+export interface TeamTrafficLine {
+  scopeId: string;
+  buckets: TrafficBucket[];
+}
+
+export interface TeamTrafficSeries {
+  /** Every scope asked for, in the order asked. */
+  series: TeamTrafficLine[];
+  bucketMinutes: number;
+  /** False = the plane cannot bucket; the chart says so rather than drawing silence. */
+  available: boolean;
+}
+
 /** One side of the running-vs-update comparison (#1236). Nulls = metrics unavailable. */
 export interface ReleaseSide {
   versionId: string;
@@ -1539,6 +1553,18 @@ export const api = {
     if (q.hours) p.set('hours', String(q.hours));
     const qs = p.toString();
     return call<TenantMetricsBucket[]>(`/observability/tenant-metrics-series${qs ? `?${qs}` : ''}`);
+  },
+  /**
+   * The same read, shaped for the team Observability chart (#1447): one zero-filled
+   * series per app, every scope asked for present whether it served or not. No
+   * `scopeIds` means every app this team has installed — resolved by the worker.
+   */
+  teamTraffic: (q: { scopeIds?: string[]; hours?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const s of q.scopeIds ?? []) p.append('scopeId', s);
+    if (q.hours) p.set('hours', String(q.hours));
+    const qs = p.toString();
+    return call<TeamTrafficSeries>(`/observability/traffic${qs ? `?${qs}` : ''}`);
   },
   appTenantLogs: (scopeId: string, q: { level?: string; search?: string; hours?: number; limit?: number }) => {
     const p = new URLSearchParams();
