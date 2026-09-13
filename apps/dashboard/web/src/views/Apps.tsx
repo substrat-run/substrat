@@ -35,21 +35,40 @@ function FleetHealth({ onOpen }: { onOpen: (scopeId: string) => void }) {
   }, []);
 
   if (!rows || rows.length === 0) return null;
-  const attention = rows.filter((r) => r.state !== 'ok');
+  // A row here is a to-do. `unknown` is not one: it is a fact about a read that
+  // did not reach the end of its record, not about the app — so it is counted in
+  // a footnote about the panel's own coverage rather than listed as a verdict the
+  // reader is expected to act on and cannot.
+  const attention = rows.filter((r) => r.state !== 'ok' && r.state !== 'unknown');
+  const unread = rows.filter((r) => r.state === 'unknown');
+  const read = rows.length - unread.length;
   const tone: Record<string, 'danger' | 'warning' | 'neutral'> = {
     failing: 'danger',
     stale: 'warning',
     silent: 'warning',
-    unknown: 'neutral',
   };
+  const footnote =
+    unread.length > 0 ? (
+      <span style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+        Health for {unread.length} {unread.length === 1 ? 'app' : 'apps'} could not be read
+        {unread.length <= 3 ? ` (${unread.map((r) => r.name).join(', ')})` : ''} — {unread[0]!.reason}
+      </span>
+    ) : null;
 
   if (attention.length === 0) {
+    if (read === 0) {
+      // Nothing was readable: no verdict at all, and no "All clear" for it.
+      return <div style={{ ...card, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>{footnote}</div>;
+    }
     return (
-      <div style={{ ...card, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
-        <Pill kind="success">All clear</Pill>
-        <span style={{ color: 'var(--text-tertiary)' }}>
-          {rows.length} {rows.length === 1 ? 'app' : 'apps'} swept, with nothing failing or overdue.
-        </span>
+      <div style={{ ...card, padding: '10px 14px', display: 'grid', gap: 4, fontSize: 12.5 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Pill kind="success">All clear</Pill>
+          <span style={{ color: 'var(--text-tertiary)' }}>
+            {read} {read === 1 ? 'app' : 'apps'} swept or with nothing to sweep, and nothing failing or overdue.
+          </span>
+        </div>
+        {footnote}
       </div>
     );
   }
@@ -59,8 +78,8 @@ function FleetHealth({ onOpen }: { onOpen: (scopeId: string) => void }) {
       <div>
         <h3 style={{ margin: 0, fontSize: 15 }}>Needs attention</h3>
         <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
-          {attention.length} of {rows.length} {rows.length === 1 ? 'app' : 'apps'}, worst first. Apps that
-          are swept and clean are not listed.
+          {attention.length} of {read} {read === 1 ? 'app' : 'apps'}, worst first. Apps that are swept and
+          clean, or declare nothing to sweep, are not listed. Open a row for its sweep record.
         </p>
       </div>
       {attention.map((r) => (
@@ -128,6 +147,7 @@ export function Apps({
   loading,
   onCreate,
   onOpen,
+  onOpenHealth,
   onRetry,
   onResume,
   loadSteps,
@@ -139,6 +159,12 @@ export function Apps({
   loading?: boolean;
   onCreate: () => void;
   onOpen: (scopeId: string) => void;
+  /**
+   * Where a "needs attention" row lands — the app's Observability tab, which holds
+   * the sweep record the verdict was read from. Landing on the overview instead
+   * showed a page with no trace of why the row existed.
+   */
+  onOpenHealth?: (scopeId: string) => void;
   onRetry: (scopeId: string) => void;
   onResume?: (scopeId: string) => void;
   /** Loader for one app's install step record (#424) — threaded to the cards. */
@@ -174,7 +200,7 @@ export function Apps({
         <Button icon={<Ic name="plus" />} onClick={onCreate}>Create App</Button>
       </div>
 
-      <FleetHealth onOpen={onOpen} />
+      <FleetHealth onOpen={onOpenHealth ?? onOpen} />
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <Input placeholder="Search apps…" value={q} onChange={(e) => setQ(e.target.value)} style={{ width: 260 }} />

@@ -355,13 +355,43 @@ describe('bike-shop scenario', () => {
 
   // ROUTE-LEVEL, and it has to be: everything above calls operations through a
   // `ScopeStub`, where a paged read's answer IS the `Page`. On the wire it is not
-  // — the entries are the body and the walk rides in a `Link` header — and this
-  // template's route table is hand-written, so nothing else holds the two halves
-  // together. A route that forwarded no cursor would pass every assertion above
-  // and still pin its endpoint to page one forever.
+  // — the entries are the body and the walk rides in a `Link` header. The route
+  // table is derived from the operations' `http` declarations, so this is the
+  // one place that proves the derivation reached every route: a table that
+  // silently mounted nothing, or a paged read that forwarded no cursor, would
+  // pass every assertion above and still be broken in a browser.
   it('12. the HTTP routes forward the page and hand back a Link to the next one', async () => {
     const app = new Hono();
-    mountApi(app, async () => greta);
+    const mounted = mountApi(app, async () => greta);
+
+    // Ten of this vertical's own, six of the work-order engine's, three of the
+    // invoicing engine's — every operation that declares a URL, and no more.
+    // Pinned as the complete method/path set rather than a count: this table is
+    // the public route table the hand-written one used to publish, and a count
+    // would let a wrong verb or a moved path leave nineteen entries and every
+    // walk below green. A derived table that mounted nothing would otherwise
+    // 404 its way through those walks with the same message for every route.
+    expect(mounted.map((r) => `${r.method} ${r.path}`).sort()).toEqual([
+      'GET /api/customers',
+      'GET /api/invoicing',
+      'GET /api/invoicing/:underlagId',
+      'GET /api/portal/repairs',
+      'GET /api/prices',
+      'GET /api/repairs',
+      'GET /api/repairs/:entityId/timeline',
+      'GET /api/repairs/:orderId',
+      'POST /api/customers',
+      'POST /api/customers/:customerId/bikes',
+      'POST /api/invoicing/:underlagId/export',
+      'POST /api/prices',
+      'POST /api/repairs',
+      'POST /api/repairs/:orderId/assign',
+      'POST /api/repairs/:orderId/close',
+      'POST /api/repairs/:orderId/complete',
+      'POST /api/repairs/:orderId/material',
+      'POST /api/repairs/:orderId/start',
+      'POST /api/repairs/:orderId/time',
+    ]);
 
     const nextOf = (res: Response): string | null => {
       // `<http://localhost/api/prices?limit=1&cursor=labor>; rel="next"` — the
@@ -389,9 +419,11 @@ describe('bike-shop scenario', () => {
     expect(next).toBeNull();
     expect(walked).toEqual(['chain-9s', 'labor', 'shop-supplies', 'tube-28']);
 
-    // The other hand-written paged routes forward the trio the same way. The
-    // customer list is the one with its own keyset SQL; the timeline is the
-    // kernel's own read, reached through a per-entity permission check.
+    // The other paged routes forward the trio the same way. The customer list is
+    // the one with its own keyset SQL; the timeline is the kernel's own read,
+    // reached through a per-entity permission check — and its route supplies
+    // `entityType` from the declared literal, which is why the URL carries only
+    // the id.
     const customers = await app.request('/api/customers?limit=1');
     expect(((await customers.json()) as { number: string }[]).map((c) => c.number)).toEqual([
       '2001',

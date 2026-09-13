@@ -36,7 +36,7 @@ import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
-import { deriveFleetHealth } from './fleet-health.js';
+import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
@@ -1925,8 +1925,8 @@ app.get('/api/fleet-health', async (c) => {
   // The verdict carries the app's own name and vertical: the operator this view is
   // for runs one vertical for thirty clients, and a scope id does not tell them whose
   // app is broken.
-  const fleet = apps.map((a) => ({ scopeId: a.app_scope_id, name: a.name, vertical: a.vertical_slug }));
-  if (fleet.length === 0) return c.json({ rows: [] });
+  const named = apps.map((a) => ({ scopeId: a.app_scope_id, name: a.name, vertical: a.vertical_slug }));
+  if (named.length === 0) return c.json({ rows: [] });
 
   const cp = controlPlaneFor(c.env, node.tenantId);
   const since = new Date(Date.now() - FLEET_HEALTH_WINDOW_MS).toISOString();
@@ -1942,24 +1942,52 @@ app.get('/api/fleet-health', async (c) => {
   //
   // The third answers only "has anything checked this app at all" — the `silent`
   // verdict — and a truncated one costs exactly that verdict and nothing else.
-  const [failures, failedSweeps, sweeps] = await Promise.all([
+  //
+  // Beside them, what each app's running version DECLARES for the sweeper: an app
+  // that declares nothing is never swept by design, and its silence is not a
+  // finding. Resolved per distinct vertical and version, not per app.
+  const [failures, failedSweeps, sweeps, sweepable] = await Promise.all([
     cp.readOpsFailures({ since, limit: FLEET_HEALTH_ROW_MAX }),
     cp.readSweepRuns({ since, outcome: 'failed', limit: FLEET_HEALTH_ROW_MAX }),
     cp.readSweepRuns({ since, limit: FLEET_HEALTH_ROW_MAX }),
+    resolveSweepable(cp, named),
   ]);
+  const fleet = named.map((a) => ({ ...a, sweepable: sweepable.get(a.scopeId) ?? null }));
+
+  // The failed rows come from the narrow read; the broad read contributes only
+  // `lastSweepAt`, so a row appearing in both is not double-counted as a failure.
+  const merged = [...failedSweeps.entries, ...sweeps.entries.filter((s) => s.outcome !== 'failed')];
+
+  // A truncated broad read cannot say whether an app absent from it was ever swept.
+  // One read narrowed to that scope can — the same `limit: 1` liveness probe the
+  // per-app schedules view uses — so the apps it missed get one each, bounded, and
+  // only when the cap was actually hit. Its newest row of any outcome is the
+  // liveness answer — and it is kept whatever the outcome: it can only be `failed`
+  // when the failed-sweep read above was itself truncated, in which case it is a
+  // confirmed failure that read missed, and dropping it would leave the app
+  // `unknown` through the gap. It cannot double-count one: the follow-up runs only
+  // for scopes absent from `merged`.
+  const followUp = sweeps.complete
+    ? { sweeps: [], confirmed: new Set<string>() }
+    : await followUpUnsweptApps({
+        apps: fleet,
+        // Connector rows carry no scope, by contract — they mark nothing as seen.
+        seen: new Set(merged.flatMap((s) => (s.scopeId ? [s.scopeId as string] : []))),
+        read: (scope) => cp.readSweepRuns({ since, scopeId: scope, limit: 1 }),
+      });
+
   return c.json({
     rows: deriveFleetHealth({
       apps: fleet,
       failures: failures.entries,
-      // The failed rows come from the narrow read; the broad read contributes only
-      // `lastSweepAt`, so a row appearing in both is not double-counted as a failure.
-      sweeps: [...failedSweeps.entries, ...sweeps.entries.filter((s) => s.outcome !== 'failed')],
+      sweeps: [...merged, ...followUp.sweeps],
       // A read that did not happen is not an empty window: every app reads `unknown`
       // rather than a cheerful `ok`.
       available: !failures.failed && !failedSweeps.failed && !sweeps.failed,
       coverage: {
         failures: failures.complete && failedSweeps.complete,
         sweeps: sweeps.complete,
+        sweepsConfirmed: followUp.confirmed,
       },
     }),
   });
@@ -2008,6 +2036,30 @@ app.get('/api/apps/:scopeId/history', async (c) => {
       entityId: c.req.query('entityId') ?? '',
       limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
       cursor: c.req.query('cursor') ?? undefined,
+    }),
+  );
+});
+
+/**
+ * #1237: why one event exists — the chain walked backwards, newest first.
+ *
+ * The honest part is `terminal`, and it is the answer's own field rather than
+ * something the screen infers from the chain's length: a chain that reached the
+ * operation that started it and one that ran out of recorded trail are the same
+ * shape, and telling them apart is the whole point of the view.
+ */
+app.get('/api/apps/:scopeId/cause', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.eventCause(scope, {
+      eventId: c.req.query('eventId') ?? '',
+      maxDepth: c.req.query('maxDepth') ? Number(c.req.query('maxDepth')) : undefined,
     }),
   );
 });

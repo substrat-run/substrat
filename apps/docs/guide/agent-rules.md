@@ -52,20 +52,27 @@ src/migrations.ts      the SqlMigration[]                         ← module cod
 src/module.ts          the handlers, bound to the declaration      ← module code
 src/provision.ts       MODULES, ROLES, grant shapes — node-free    ← module code
 src/seed.ts            host, tenants, demo cast, seed world        ← harness
-src/routes.ts          the HTTP route table — BOTH hosts mount it   ← harness
+src/routes.ts          the routes, DERIVED from the operations     ← harness
 src/server.ts          the dev entrypoint (node + persona picker)   ← harness
 src/worker.ts          the deployable Cloudflare worker             ← harness
 src/config-do.ts       per-instance config store (Cloudflare only)  ← harness
 test/scenario.test.ts  the scenario — including the denials
 ```
 
-**A new route goes in `src/routes.ts`, never in an entrypoint.** Both `server.ts`
-and `worker.ts` mount that one table, so a route added there is live on both — and
-a route added to only one is a surface that works in dev and 404s in production
+**A new route is an `http` declaration on its operation, never a handler in an
+entrypoint.** `src/routes.ts` holds no table: `mountOperations` (from
+`@substrat-run/vertical-host`) derives one from the `http` each operation in
+`src/operations.ts` declares — method, path, and which input fields the path
+carries, compile-checked there — and both `server.ts` and `worker.ts` mount that
+one derivation, so a route is live on both the moment it is declared. A route
+added to only one entrypoint is a surface that works in dev and 404s in production
 (or the reverse), which nothing catches until you deploy: the scenario tests call
-operations directly and never boot either host. What an entrypoint may still own
-is only what is genuinely its own — building a host, resolving a caller, and its
-own auth-shaped route (`/api/cast` in dev, `/api/me` in the worker).
+operations directly and never boot either host. A composed engine's operations
+carry no `http` of their own (an engine does not own a URL shape), so the vertical
+binds them with `defineEngineRoutes` beside its own declarations. What an
+entrypoint may still own is only what is genuinely its own — building a host,
+resolving a caller, and its own auth-shaped routes (`/api/auth/*` and `/api/me`
+in dev, `/api/me` in the worker).
 
 `provision.ts` is deliberately node-free: both hosts register from it (the dev
 server's SQLite host and the worker's `ScopeDO`), and `substrat push` reads the
@@ -167,15 +174,17 @@ walk, a table the registry does not carry — the handler composes its own and n
 field the cursor walks (`paged: { sortKey: 'article' }`). Keyset, never offset: on
 live data an offset shifts between requests, so pages drop and duplicate rows.
 
-**A paged read has an HTTP half, and this route table is hand-written.** The
+**A paged read has an HTTP half, and the derived route does it for you.** The
 operation answers with a `Page<T>` — it is transport-agnostic, and a test or a seed
-must be able to walk a list with no response to read headers off — so `src/routes.ts`
-does the projection at the edge: it forwards the page trio in (`pageInput`) and hands
-the entries back as the body with the walk in a `Link` header (`pageJson`). Forget the
-first and the endpoint is pinned to page one no matter what the operation supports;
-forget the second and it answers with an envelope where it used to answer with an
-array. Both helpers are already in `src/routes.ts` — use them for every route that
-invokes a paged operation, the engines' list reads included.
+must be able to walk a list with no response to read headers off — so the projection
+happens at the edge: `mountOperations` forwards the page trio in (`limit`, `cursor`,
+`order`, parsed with the platform's own defaults and ceiling) and hands the entries
+back as the body with the walk in a `Link` header. Declare `http` on the paged
+operation and both halves are there; hand-mount a paged read yourself and you have
+to do both by hand — forget the first and the endpoint is pinned to page one no
+matter what the operation supports, forget the second and it answers with an
+envelope where it used to answer with an array. That is the case for not
+hand-mounting anything an operation can declare.
 
 ## The rules (non-negotiable)
 

@@ -102,6 +102,8 @@ import type {
   DrainedEvent,
   EntityHistoryInput,
   EventFacetInput,
+  EventCauseInput,
+  CauseChain,
   EventFacetResult,
   HistoryEntry,
   ErrorCode,
@@ -2052,6 +2054,27 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: EntityHistoryInput,
   ): Promise<Page<HistoryEntry>>;
+
+  /**
+   * One event's causal chain, walked backwards (#1237) — the answer to "this record
+   * exists; what started that?"
+   *
+   * Returns the chain newest-first plus a `terminal` saying why it ends, and the five
+   * reasons must not be flattened. `operation` is a COMPLETE chain (an operation
+   * emitted the first event); `unrecorded` is a truncated one (something emitted it
+   * before #1237 recorded causes) and reading it as complete would present a fragment
+   * as the whole story. `depth` and `missing` are the two ways the walk gave up, and
+   * `cycle` is the spine contradicting itself — an integrity failure, never a long chain.
+   *
+   * Same posture as `entityHistory`: this decodes payloads, so the caller's permission
+   * check comes first, and the read is logged against the actor.
+   */
+  eventCause(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: EventCauseInput,
+  ): Promise<CauseChain>;
 
   /**
    * One read-only SQL statement against the scope's database — the console the two

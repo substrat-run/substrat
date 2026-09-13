@@ -18,6 +18,7 @@ import type {
   Page,
   HistoryEntry,
   EventFacetResult,
+  CauseChain,
   PermissionRegistry,
   PlatformRequest,
   PrincipalId,
@@ -682,13 +683,21 @@ export class TenantNarrowedControlPlane {
    * `null` for a version pushed by a pre-#1214 CLI or a vertical with no model.json;
    * `null` on any non-200, so the caller treats "unknown" and "none" the same.
    */
-  /** The declared schedules of one version (#1232) — null on skew or a pre-field push. */
+  /**
+   * The declared schedules of one version (#1232) — null on skew or a pre-field push.
+   *
+   * `failed` marks the read that did not happen (a non-200, the plane away) apart
+   * from the read that answered "declares neither": both hand back two nulls, and
+   * a caller concluding "nothing will ever sweep this app" from the first would be
+   * turning a transient fault into a verdict.
+   */
   async versionSchedules(
     verticalSlug: string,
     versionId: string,
   ): Promise<{
     schedules: DeployManifest['schedules'] | null;
     freshness: DeployManifest['freshness'] | null;
+    failed?: true;
   }> {
     try {
       const res = await this.call<{
@@ -697,7 +706,7 @@ export class TenantNarrowedControlPlane {
       }>(`/verticals/${encodeURIComponent(verticalSlug)}/versions/${encodeURIComponent(versionId)}/schedules`);
       return { schedules: res?.schedules ?? null, freshness: res?.freshness ?? null };
     } catch {
-      return { schedules: null, freshness: null };
+      return { schedules: null, freshness: null, failed: true };
     }
   }
 
@@ -1603,6 +1612,19 @@ export class TenantNarrowedControlPlane {
     if (input.until !== undefined) q.set('until', input.until);
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/facets?${q}`);
+  }
+
+  /**
+   * One event's causal chain (#1237) — "this record exists; what started that?"
+   *
+   * `terminal` rides back untouched: it is the difference between a chain that
+   * reached its beginning and one that ran out of recorded trail, and a caller that
+   * flattened it would present a fragment as the whole story.
+   */
+  eventCause(scopeId: ScopeId, input: { eventId: string; maxDepth?: number }): Promise<CauseChain> {
+    const q = new URLSearchParams({ eventId: input.eventId });
+    if (input.maxDepth !== undefined) q.set('maxDepth', String(input.maxDepth));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/cause?${q}`);
   }
 
   /**

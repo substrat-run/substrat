@@ -20,6 +20,8 @@ import type {
   ReadScopeTableInput,
   EntityHistoryInput,
   EventFacetInput,
+  EventCauseInput,
+  CauseChain,
   EventFacetResult,
   HistoryEntry,
   Page,
@@ -657,6 +659,13 @@ export class VerticalClient {
     if (input.until !== undefined) q.set('until', input.until);
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.getInternal<EventFacetResult>(`/internal/facets?${q.toString()}`);
+  }
+
+  /** One event's causal chain (#1237) — the walk, through the vertical that holds the data. */
+  async eventCause(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain> {
+    const q = new URLSearchParams({ scopeId, eventId: input.eventId });
+    if (input.maxDepth !== undefined) q.set('maxDepth', String(input.maxDepth));
+    return this.getInternal<CauseChain>(`/internal/cause?${q.toString()}`);
   }
 
   /** One record's event history (#1235) — `readHistory`'s answer, through the vertical that holds the data. */

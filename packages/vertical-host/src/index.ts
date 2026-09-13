@@ -59,8 +59,11 @@ import {
   readScopeTableInput,
   entityHistoryInput,
   eventFacetInput,
+  eventCauseInput,
   type EntityHistoryInput,
   type EventFacetInput,
+  type EventCauseInput,
+  type CauseChain,
   type EventFacetResult,
   type HistoryEntry,
   type Page,
@@ -119,6 +122,7 @@ export interface VerticalScopeHost {
   ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
+  eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -416,6 +420,21 @@ export function mountPlatformSurface<Env extends object>(
   // grouped VALUES cross here, which is less than the history route below sends,
   // but a payload field's values are still the tenant's own data on the tenant's
   // own dashboard, through the platform's tenant-scoped read.
+  // #1237: the causal walk for a scope THIS vertical holds. Same shape as the two
+  // reads below it — the control plane cannot reach a dispatch vertical's DO, so the
+  // vertical answers for its own spine.
+  app.get('/internal/cause', async (c) =>
+    c.json(
+      await deps.hostFor(c.env).eventCauseLocal(
+        scopeIdOf.parse(c.req.query('scopeId')),
+        eventCauseInput.parse({
+          eventId: c.req.query('eventId'),
+          maxDepth: c.req.query('maxDepth') ? Number(c.req.query('maxDepth')) : undefined,
+        }),
+      ),
+    ),
+  );
+
   app.get('/internal/facets', async (c) =>
     c.json(
       await deps.hostFor(c.env).facetEventsLocal(

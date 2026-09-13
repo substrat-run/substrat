@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type FieldCoverageView, type FlowFindingsView, type FlowFinding, type FlowView, type FlowGraph, type FlowNode, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type FlowFindingsView, type FlowFinding, type FlowView, type FlowGraph, type FlowNode, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
@@ -2637,6 +2637,95 @@ function TableGroup({ label, tables, selected, onPick }: { label: string; tables
 }
 
 /**
+ * Why one event exists (#1237) — its chain walked backwards, newest first.
+ *
+ * The value is entirely in the last line. A chain that reached the operation which
+ * started it and a chain that ran out of recorded trail are the SAME SHAPE, and a
+ * screen that rendered both as "here is the story" would let a reader conclude a
+ * consumer began something it merely continued. So the terminal is stated in words,
+ * every time, including when the answer is that the platform cannot say.
+ */
+function CauseChainStrip({ scopeId, eventId }: { scopeId: string; eventId: string }) {
+  const [chain, setChain] = useState<CauseChain | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    setChain(null);
+    setErr(null);
+    api
+      .appEventCause(scopeId, eventId)
+      .then((c) => live && setChain(c))
+      .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
+    return () => {
+      live = false;
+    };
+  }, [scopeId, eventId]);
+
+  if (err) return <div style={{ fontSize: 12, color: 'var(--status-danger-fg)' }}>{err}</div>;
+  if (!chain) return <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>Following the trail…</div>;
+
+  // One sentence per ending, and none of them is "here is the story".
+  const root = chain.chain.at(-1);
+  const TERMINAL: Record<CauseTerminal, { text: string; tone: string }> = {
+    operation: {
+      text: root?.operation
+        ? `Started by ${root.operation}${root.version ? ` (version ${root.version})` : ''}.`
+        : 'Started by an operation.',
+      tone: 'var(--text-secondary)',
+    },
+    unrecorded: {
+      text:
+        'The trail stops here. Something produced this event, and it happened before the platform recorded what caused it — so this is where the chain was cut, not where it began.',
+      tone: 'var(--status-warning-fg)',
+    },
+    depth: {
+      text: 'More of the chain exists above this — it was longer than one read follows.',
+      tone: 'var(--status-warning-fg)',
+    },
+    missing: {
+      text:
+        'This event names a cause that is not in this app’s records. The trail cannot be followed further, and this is not the beginning.',
+      tone: 'var(--status-danger-fg)',
+    },
+    // Not "more above this": there is nothing above a loop. The one ending that says
+    // the record itself is wrong, and it must not read like a long chain.
+    cycle: {
+      text:
+        'The trail loops back on itself — an event names a cause that it also caused. That cannot happen in a sound record, so this app’s history needs looking at rather than reading further.',
+      tone: 'var(--status-danger-fg)',
+    },
+  };
+  const ending = TERMINAL[chain.terminal];
+
+  return (
+    <div style={{ display: 'grid', gap: 6, paddingLeft: 10, borderLeft: '2px solid var(--border-default)' }}>
+      {chain.chain.length === 0 ? (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>No chain to show.</div>
+      ) : (
+        chain.chain.map((e, i) => (
+          <div key={e.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12 }}>
+            <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)' }}>
+              {i === 0 ? 'this' : `${i} back`}
+            </span>
+            <MonoTag>{e.type}</MonoTag>
+            <span style={{ color: 'var(--text-tertiary)', fontFamily: 'var(--font-mono)', fontSize: 11.5 }}>
+              {new Date(e.occurredAt).toLocaleString()}
+            </span>
+            {/* A consumer records no operation — that absence is the fact, and the
+                label says so rather than leaving a gap. */}
+            <span style={{ color: 'var(--text-secondary)', fontSize: 11.5, fontFamily: 'var(--font-mono)' }}>
+              {operationLabel(e.operation)}
+            </span>
+          </div>
+        ))
+      )}
+      <div style={{ fontSize: 12, color: ending.tone }}>{ending.text}</div>
+    </div>
+  );
+}
+
+/**
  * One record's story (#1235) — `readHistory`'s answer rendered: what happened to
  * this entity, who did it, under what permission, as whom, and under which push.
  *
@@ -2716,6 +2805,9 @@ function EntityTimeline({
       .finally(() => walk.current === at && setReading(false));
   };
 
+  /** Which row's chain is open. One at a time: each is a scope read. */
+  const [why, setWhy] = useState<string | null>(null);
+
   const when = (iso: string) => new Date(iso).toLocaleString();
 
   return (
@@ -2763,6 +2855,15 @@ function EntityTimeline({
           >
             {payloadText(e.payload)}
           </pre>
+          <button
+            type="button"
+            onClick={() => setWhy((w) => (w === e.id ? null : e.id))}
+            title="follow this event back to whatever set it off"
+            style={{ ...pagerBtn(true), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
+          >
+            {why === e.id ? 'Hide why' : 'Why?'}
+          </button>
+          {why === e.id && <CauseChainStrip scopeId={scopeId} eventId={e.id} />}
         </div>
       ))}
 

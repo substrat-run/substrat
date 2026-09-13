@@ -296,6 +296,7 @@ import {
   type IdempotencyRow,
   facetEvents,
   readHistory,
+  walkEventCause,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -5758,6 +5759,21 @@ export class SqliteScopeHost implements ScopeHost {
           page.entries.length,
         );
         return page;
+      },
+      eventCause: async (actor, tenantId, scopeId, input) => {
+        // #1237: the sanctioned walk. The helper owns the one distinction the whole
+        // view rests on — a null cause with an operation is the beginning of the
+        // chain, a null cause without one is the trail running out.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const result = walkEventCause({ sql: scopedSql(db) }, input.eventId, input.maxDepth);
+        this.recordAccess(
+          actor,
+          'eventCause',
+          { tenantId, scopeId },
+          { eventId: input.eventId },
+          result.chain.length,
+        );
+        return result;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeDbFor(tenantId, scopeId);
