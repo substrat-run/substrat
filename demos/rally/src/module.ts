@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { listInvites, revokeInvite, sendInvite, type Invitation } from '@substrat-run/engine-invites';
 import {
   addDecimal,
+  calendarDate,
   dataSubjectId,
   principalId,
   orgId as orgIdSchema,
@@ -1419,7 +1420,8 @@ const bookInput = z.object({
   resourceId: z.string().min(1).optional(),
   cover: z.array(z.enum(['indoor', 'covered', 'open'])).optional(),
   memberId: z.string().min(1),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  /** A calendar date, not a shape (#117) — the same schema `inputs.ts` declares. */
+  date: calendarDate,
   time: z.string().regex(/^\d{2}:\d{2}$/),
   duration: z.number().int().positive(),
 });
