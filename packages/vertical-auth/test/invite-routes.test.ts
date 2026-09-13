@@ -69,9 +69,11 @@ beforeEach(() => {
   log = [];
   directory = new MemoryDirectory(log);
   app = new Hono<{ Bindings: Env }>();
-  // The envelope a vertical has (mountPlatformSurface installs one): an HTTPException keeps
-  // its status, and anything else — a Zod parse failure — is the caller's 400.
-  app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 400)));
+  // A deliberately naive envelope: an HTTPException keeps its status and ANYTHING else is a
+  // 500. That is what pins the mount's promise — every error it raises itself is an
+  // HTTPException — because a `ZodError` or a `SyntaxError` escaping would show up here as
+  // a 500, where a vertical's own envelope might have papered over it.
+  app.onError((err, c) => (err instanceof HTTPException ? err.getResponse() : c.json({ error: err.message }, 500)));
   mountInviteRoutes(app, {
     nodeFor: async () => NODE,
     // The vertical's gate: in the demos a whoami; here the caller says so with a header.
@@ -83,6 +85,9 @@ beforeEach(() => {
     directory: () => directory,
     assignScopeRole: async (_env, scopeId, principal, roleKey) => {
       log.push(`assignScopeRole ${scopeId} ${principal} ${roleKey}`);
+    },
+    revokeScopeRole: async (_env, scopeId, principal, roleKey) => {
+      log.push(`revokeScopeRole ${scopeId} ${principal} ${roleKey}`);
     },
     authProvider: async (env) => provider(env),
   });
@@ -146,17 +151,43 @@ describe('mountInviteRoutes', () => {
     expect(directory.invites.size).toBe(0);
   });
 
-  it('needs no email; a missing roleKey is a parse failure the vertical renders', async () => {
+  it('needs no email; a body that does not fit is a 400 the mount raises itself, not a throw the vertical must catch', async () => {
     const res = await app.request('http://app.example/api/invites', json({ roleKey: 'admin' }), env());
     expect(res.status).toBe(201);
     expect(((await res.json()) as { email: string | null }).email).toBeNull();
     expect(log).toHaveLength(2); // one grant, one row
 
-    // A Zod throw is not an HTTPException — it reaches the vertical's `onError`, which
-    // renders it as its own 400; nothing here catches it on the way, and nothing was granted.
+    // A schema miss and a body that is not JSON at all both come out as an HTTPException
+    // 400 naming the problem — under this suite's envelope a bare ZodError or SyntaxError
+    // would be a 500 — and nothing was granted on the way.
     const bad = await app.request('http://app.example/api/invites', json({ email: 'x' }), env());
     expect(bad.status).toBe(400);
+    expect(await bad.text()).toMatch(/roleKey/);
+    const notJson = await app.request('http://app.example/api/invites', {
+      method: 'POST',
+      headers: { ...admin, 'content-type': 'application/json' },
+      body: '{not json',
+    }, env());
+    expect(notJson.status).toBe(400);
+    expect(await notJson.text()).toMatch(/must be JSON/);
     expect(log).toHaveLength(2);
+  });
+
+  it('takes the grant back when the invite row cannot be written, so a retry mints no orphan', async () => {
+    // The grant and the row live in two Durable Objects with no transaction between
+    // them. A create that fails after the grant would otherwise leave a principal nobody
+    // can bind to holding a role — and every retry another one.
+    directory.createInvite = async () => {
+      throw new Error('directory unavailable');
+    };
+    const res = await app.request('http://app.example/api/invites', json({ roleKey: 'admin' }), env());
+    expect(res.status).toBe(500);
+    expect(await res.text()).toMatch(/directory unavailable/); // the ORIGINAL failure, not the revoke's
+    expect(log.map((l) => l.split(' ')[0])).toEqual(['assignScopeRole', 'revokeScopeRole']);
+    const [grant, revoke] = log;
+    // The same (scope, principal, role) the grant named.
+    expect(revoke!.replace('revokeScopeRole', 'assignScopeRole')).toBe(grant);
+    expect(directory.invites.size).toBe(0);
   });
 
   it('revokes an invite, for an admin only', async () => {
@@ -213,7 +244,10 @@ describe('mountInviteRoutes', () => {
       directory: () => directory,
       assignScopeRole: async () => undefined,
       authProvider: async (env) => provider(env),
-      origin: () => 'https://public.acme.example',
+      revokeScopeRole: async () => undefined,
+      // With the trailing slash a configured origin so often carries: the link must not
+      // come out as `https://host//?invite=…`, which is a different SPA path.
+      origin: () => 'https://public.acme.example/',
     });
     const res = await other.request('http://internal.local/api/invites', json({ roleKey: 'admin' }), env());
     expect(((await res.json()) as { acceptUrl: string }).acceptUrl).toMatch(/^https:\/\/public\.acme\.example\/\?invite=[0-9a-f]{64}$/);

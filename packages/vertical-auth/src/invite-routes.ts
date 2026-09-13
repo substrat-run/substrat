@@ -63,10 +63,46 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
   directory: (env: E, node: N) => InviteDirectory;
   /** Grant the pre-minted principal its role at scope level — the host's `assignScopeRole`. */
   assignScopeRole: (env: E, scopeId: N['scopeId'], principal: PrincipalId, roleKey: string) => Promise<void>;
+  /**
+   * Take that grant back — the host's `revokeScopeRole`. The grant and the invite row live
+   * in two different Durable Objects, so the create has no transaction across them: when
+   * the row cannot be written after the role was granted, this is what puts the scope back
+   * where it was, rather than leaving a principal nobody can ever bind to holding a role.
+   */
+  revokeScopeRole: (env: E, scopeId: N['scopeId'], principal: PrincipalId, roleKey: string) => Promise<unknown>;
   /** The configured `AuthProvider` — who is accepting. Resolved per request, as the vertical does. */
   authProvider: (env: E, req: Request) => Promise<AuthProvider>;
-  /** The origin the accept link is built on. Defaults to the request's own. */
+  /**
+   * The origin the accept link is built on. Defaults to the request's own. A trailing
+   * slash is tolerated — `mintOwnerClaimLink` strips one the same way — so a vertical that
+   * hands over a configured `https://host/` does not send invitees to `https://host//`.
+   */
   origin?: (req: Request) => string;
+}
+
+/**
+ * The request body, parsed against the route's schema — or a 400 that names what was
+ * wrong. Both failure shapes are turned into an `HTTPException` here so the promise
+ * `mountInviteRoutes` makes holds: a body that is not JSON would otherwise surface as the
+ * `SyntaxError` `c.req.json()` throws (a 500 under any `onError` that does not know it),
+ * and a body that does not fit the schema as a `ZodError` the vertical would have to map
+ * itself. The issue list is written into the message rather than a structured body
+ * because the vertical's own envelope decides the body shape, and a message is the one
+ * thing every envelope carries through.
+ */
+async function bodyOf<T>(c: Context, schema: z.ZodType<T>): Promise<T> {
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    throw new HTTPException(400, { message: 'the request body must be JSON' });
+  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join('.') || 'body'}: ${i.message}`).join('; ');
+    throw new HTTPException(400, { message: `invalid request body — ${issues}` });
+  }
+  return parsed.data;
 }
 
 /**
@@ -77,14 +113,18 @@ export interface InviteRouteDeps<E extends object, N extends { scopeId: string }
  *   POST /api/invites/:principal/revoke  → 204                           (admin)
  *   POST /api/accept-invite              → { ok: true, principal }       (any signed-in subject)
  *
- * Errors are thrown as `HTTPException`s, so the vertical's own `onError` — or the envelope
- * `mountPlatformSurface` installs — renders them exactly as it renders its own.
+ * Every error these routes raise themselves is an `HTTPException` — a body that is not
+ * JSON or does not fit its schema included, which `bodyOf` turns into a 400 rather than
+ * letting a `SyntaxError` or `ZodError` out — so the vertical's own `onError`, or the
+ * envelope `mountPlatformSurface` installs, renders them exactly as it renders its own,
+ * and needs no branch for this mount. What the vertical's OWN deps throw (`requireAdmin`,
+ * the directory, the host) is passed through untouched: those are its errors to shape.
  */
 export function mountInviteRoutes<E extends object, N extends { scopeId: string }>(
   app: Hono<{ Bindings: E }>,
   deps: InviteRouteDeps<E, N>,
 ): void {
-  const originOf = deps.origin ?? ((req: Request) => new URL(req.url).origin);
+  const originOf = (req: Request): string => (deps.origin?.(req) ?? new URL(req.url).origin).replace(/\/$/, '');
 
   app.get('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
@@ -95,7 +135,7 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
   app.post('/api/invites', async (c) => {
     const node = await deps.nodeFor(c.req.raw, c.env);
     await deps.requireAdmin(c);
-    const { email, roleKey } = inviteBody.parse(await c.req.json());
+    const { email, roleKey } = await bodyOf(c, inviteBody);
     if (!deps.roles.includes(roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
     const principal = principalId.parse(ulid());
     // A long, URL-safe token; only its hash is stored. Two UUIDs = 256 bits of entropy.
@@ -103,7 +143,17 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     // The grant first: an invite row whose principal holds nothing is a link that binds a
     // teammate to no access, whereas a grant with no row is inert — nobody can bind to it.
     await deps.assignScopeRole(c.env, node.scopeId, principal, roleKey);
-    await deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, await sha256Hex(token));
+    try {
+      await deps.directory(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, await sha256Hex(token));
+    } catch (err) {
+      // Two Durable Objects, no transaction between them. Inert is not the same as
+      // harmless: every retry of a failing create would mint another principal with a
+      // role and no row, so the grant is taken back before the failure is reported. If
+      // the revoke fails too, the ORIGINAL failure is what the caller hears — it is the
+      // one that explains the request — and the orphan is the state this comment names.
+      await deps.revokeScopeRole(c.env, node.scopeId, principal, roleKey).catch(() => undefined);
+      throw err;
+    }
     return c.json({ principal, roleKey, email: email ?? null, acceptUrl: `${originOf(c.req.raw)}${invitePath(token)}` }, 201);
   });
 
@@ -118,7 +168,7 @@ export function mountInviteRoutes<E extends object, N extends { scopeId: string 
     const node = await deps.nodeFor(c.req.raw, c.env);
     const subject = await (await deps.authProvider(c.env, c.req.raw)).resolve(c.req.raw.headers);
     if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
-    const { token } = acceptInviteBody.parse(await c.req.json());
+    const { token } = await bodyOf(c, acceptInviteBody);
     const principal = await deps.directory(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
     if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
     return c.json({ ok: true, principal });

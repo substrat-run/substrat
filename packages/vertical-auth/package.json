@@ -31,6 +31,10 @@
     "./oidc-rp-provider": {
       "types": "./dist/oidc-rp-provider.d.ts",
       "default": "./dist/oidc-rp-provider.js"
+    },
+    "./invite-routes": {
+      "types": "./dist/invite-routes.d.ts",
+      "default": "./dist/invite-routes.js"
     }
   },
   "files": [

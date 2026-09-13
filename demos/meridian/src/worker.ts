@@ -40,10 +40,10 @@ import {
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
-  mountInviteRoutes,
   sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
+import { mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 
 /** The scope-DO class = the app binary: kernel + protocol + Meridian, bundled. */
 export const ScopeDO = defineScopeDO(MODULES, {});
@@ -344,6 +344,7 @@ mountInviteRoutes(app, {
   roles: ROLES.map((r) => r.key),
   directory: identityDo,
   assignScopeRole: (env, scope, principal, roleKey) => hostFor(env).assignScopeRole(scope, principal, roleKey),
+  revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
   authProvider: authProviderFor,
 });
 

@@ -26,10 +26,10 @@ import {
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
-  mountInviteRoutes,
   sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
+import { mountInviteRoutes } from '@substrat-run/vertical-auth/invite-routes';
 import { MODULES, ROLES } from './provision.js';
 import { MANYFOLD_ENV } from './manifest.js';
 import { serveAsset } from './assets.js';
@@ -318,6 +318,7 @@ mountInviteRoutes(app, {
   roles: ROLES.map((r) => r.key),
   directory: identityDo,
   assignScopeRole: (env, scope, principal, roleKey) => hostFor(env).assignScopeRole(scope, principal, roleKey),
+  revokeScopeRole: (env, scope, principal, roleKey) => hostFor(env).revokeScopeRole(scope, principal, roleKey),
   authProvider: authProviderFor,
 });
 
