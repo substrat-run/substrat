@@ -10,7 +10,7 @@ Status: **built** — the engine ships on npm
 
 > Surface sketch for the reservation engine. Companion to
 > [booking-social.md](../rfc/booking-social.md) (tier split, locking model) and
-> [demos/rally/spec/concept.md](../../demos/rally/spec/concept.md) (the driving vertical).
+> [rallypoint-concept.md](../rfc/rallypoint-concept.md) (the driving vertical — the demo itself was removed, its concept kept).
 > Settles decisions 1 and 2 from the demo spec §12.
 
 ## 0. Two decisions, settled

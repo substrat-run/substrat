@@ -267,8 +267,9 @@ B is far cheaper than the fork implied, because **the executor seam it needs alr
 effects, with `HostAdmin` authority, what a module asked for inside a scope; delivered
 at-least-once from the outbox and stamped `causedBy` the causing event, so the authorizing
 principal and the privileged write join in the trail. It is implemented in both adapters,
-covered by the contract suite, and used in anger by `demos/rally` (`rally-member-adder` reacting
-to `member.add-requested`). Membership's own dashboard path still launders through `STAFF` inline
+covered by the contract suite, and was used in anger by the racket-club demo (a
+`member-adder` reacting to `member.add-requested`; the demo was removed 2026-09, so the
+contract suite is its only in-repo executor now). Membership's own dashboard path still launders through `STAFF` inline
 instead of using this seam — that is the **parallel cleanup** this decision commits to, so the two
 converge as §3.5 always intended.
 
@@ -692,8 +693,8 @@ every call. That is a kernel + adapter change, deliberately deferred.
 
 ### 4.1 What an executor is missing
 
-The one real executor in the repo
-([demos/rally/src/seed.ts:277](../../demos/rally/src/seed.ts)) needs only `admin`. A connector
+The one real executor the repo had (the racket-club demo's seed, removed 2026-09) needed
+only `admin`. A connector
 needs two things the signature does not carry:
 
 ```ts

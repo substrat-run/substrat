@@ -8,7 +8,7 @@ import { z } from '@substrat-run/contracts';
  * declaration file that imports the implementation would close a cycle — so they
  * live below both, the way `entities.ts` and `schemas.ts` do.
  *
- * As in `demos/rally`, these declare the SHAPE; the handlers that did not
+ * As in the other demos, these declare the SHAPE; the handlers that did not
  * previously parse still do not. Shop already parses where it matters most
  * (`paymentMethod` goes through `z.enum` at checkout, because an unknown method
  * would place an order that neither invoices nor charges); wiring the rest is a

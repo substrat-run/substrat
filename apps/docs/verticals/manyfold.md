@@ -129,7 +129,7 @@ reference "heals" the moment its target is published, without touching the refer
 Authority is a **role ladder**, held per site (K-22: the same login is a different
 principal, with a different role, in each scope). There are **no entity-narrowed grants** —
 this vertical's access is node-level, not per-entity, which is itself a contrast with
-RallyPoint and Meridian:
+Meridian and Todo:
 
 | Role | Holds | Can |
 |---|---|---|

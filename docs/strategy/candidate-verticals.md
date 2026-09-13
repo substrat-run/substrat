@@ -45,7 +45,7 @@ plus vocabulary. That decomposition is the platform thesis, and it is testable.
 | Booking — scarce resource in time | ✅ `booking` |
 | Record of examination — checklist → signed, immutable artifact | ✅ `protocol` |
 | Claim / ledger — owed, append-only | ✅ `invoicing` |
-| Membership / roster — who belongs, in what role, paying what | candidate — lives in `demos/rally` |
+| Membership / roster — who belongs, in what role, paying what | candidate — was vertical code in the racket-club demo, removed 2026-09; shape kept in [rfc/rallypoint-concept.md](../rfc/rallypoint-concept.md) |
 | Registry with validity — true until a date: certificate, licence, permit, insurance | candidate |
 | Application → assessment → decision — with eligibility, recusal, appeal | candidate |
 | Plan / assignment over time — shifts, capacity, who works when | candidate |
@@ -382,10 +382,11 @@ almost entirely, in this order of evidence:
    kompetens in HR, besiktningsintervall in fastighet, ledarlicenser in clubs. Small,
    sharply defined, and already appearing in four places — **closest to qualifying for
    extraction under §3's rule.**
-3. **Membership** — categories 4, 5, 13, 15. Already implemented as vertical code in
-   `demos/rally` (`rally_members`, append-only wallet ledger, klippkort subscriptions,
-   entity-narrowed grants walking reservation → member). A second membership vertical is
-   the extraction test.
+3. **Membership** — categories 4, 5, 13, 15. Was implemented as vertical code in the
+   racket-club demo (`rally_members`, append-only wallet ledger, klippkort subscriptions,
+   entity-narrowed grants walking reservation → member), removed 2026-09 with its concept
+   kept at [rfc/rallypoint-concept.md](../rfc/rallypoint-concept.md). The next membership
+   vertical is the extraction test, and starts from that record rather than from code.
 4. **Deliberative body** — categories 4, 15, 17. Smallest and least urgent; may turn out
    to be `protocol` plus vocabulary, which is itself a useful finding.
 

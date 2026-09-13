@@ -28,7 +28,7 @@ elapsed holds are excluded on read and swept opportunistically on the next write
 timer or cron (default hold 900 s). Checkout re-verifies `on_hand` in case a hold lapsed.
 
 It is enforced in the vertical's **own commerce module**, not an engine — and it is atomic for the
-same reason RallyPoint's booking is: operations serialize per scope (K-6), so "read available, then
+same reason the booking engine's hold is: operations serialize per scope (K-6), so "read available, then
 reserve" never interleaves. This is the extraction seam for a future `engine-inventory` /
 `engine-order` — named for the *second* retail vertical (decision 27), not built ahead of one.
 Its companion invariant: an order is **immutable after placement** (`cart → placed → fulfilled →
