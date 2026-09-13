@@ -80,13 +80,26 @@ describe('the dashboard directory, as provisioning leaves it (#1343)', () => {
     expect(held).toContain('invites');
   });
 
-  it('defines roles and seats the owner — tuples that exist in no other directory', async () => {
-    // The owner seat is what makes the signed-in user anything at all. #1343's stated
-    // hazard is "a window in which a signed-in user resolves to no principal", and this
-    // row is the one that decides it.
+  it('defines roles — definitions that exist in no other directory', async () => {
     const roles = await host.admin.listRoles(staff, { tenantId: node.tenantId });
     expect(roles.length).toBeGreaterThan(0);
     expect(roles.map((r) => r.key)).toContain('owner');
+  });
+
+  it('seats the owner — the one tuple that decides whether a signed-in user is anyone', async () => {
+    // #1343's stated hazard is "a window in which a signed-in user resolves to no
+    // principal", and the owner's tuple is the row that decides it. There is no admin
+    // read for tuples, so the seat is proved the way it is used: the owner's principal
+    // resolves a permission-gated dashboard operation, and a principal with no tuple
+    // — the state the owner would be in if the backfill dropped this row — is refused.
+    // A test that only listed the role DEFINITIONS would stay green with the
+    // `assignRole` call deleted from `provisionDashboard`.
+    const ownerScope = await host.getScope(node.principal, node.tenantId, node.scopeId);
+    await expect(ownerScope.invoke('dashboard/list-apps', {})).resolves.toEqual([]);
+
+    const stranger = principalId.parse(ulid());
+    const strangerScope = await host.getScope(stranger, node.tenantId, node.scopeId);
+    await expect(strangerScope.invoke('dashboard/list-apps', {})).rejects.toThrow(/permission/i);
   });
 
   it('names every local-only fact the migration has to carry', async () => {
@@ -94,19 +107,26 @@ describe('the dashboard directory, as provisioning leaves it (#1343)', () => {
     // drift away from the code the way §3's description did. Pinned to the actual
     // constants: if `provisionDashboard` grows a role or an entitlement, this fails,
     // which is the point — a fact nobody added to the backfill is the failure mode.
-    const [scopes, roles, held] = await Promise.all([
+    const [scopes, roles, held, ownerSeated] = await Promise.all([
       host.admin.listScopes(staff, { tenantId: node.tenantId, vertical: 'dashboard' }),
       host.admin.listRoles(staff, { tenantId: node.tenantId }),
       host.admin.listEntitlements(staff, node.tenantId),
+      // The tuple, observed rather than listed (see above): does the owner resolve.
+      host
+        .getScope(node.principal, node.tenantId, node.scopeId)
+        .then((s) => s.invoke('dashboard/list-apps', {}))
+        .then(() => true, () => false),
     ]);
     expect({
       dashboardScopes: scopes.map((x) => x.status),
       roles: roles.map((r) => r.key).sort(),
       entitlements: held.map((e) => e.entitlementKey).sort(),
+      ownerSeated,
     }).toEqual({
       dashboardScopes: ['active'],
       roles: ROLES.map((r) => r.key).sort(),
       entitlements: ['dashboard', 'invites'],
+      ownerSeated: true,
     });
   });
 
