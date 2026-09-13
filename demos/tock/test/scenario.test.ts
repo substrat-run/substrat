@@ -42,6 +42,7 @@ interface Run {
   id: string;
   filename: string;
   status: string;
+  counted_at: string | null;
   row_count: number | null;
   rejected_count: number | null;
   schema_version: number | null;
@@ -1509,5 +1510,80 @@ describe('the back-fill affordance, and drift the mapping absorbs', () => {
     // And the run says which mapping made it, so the two days are explainable side by side.
     const rules = await ines.invoke<{ entries: { rule_kind: string; identifier: string }[] }>('tock/run-rules', { runId: aug2.id });
     expect(rules.entries.find((r) => r.rule_kind === 'mapping')?.identifier).toMatch(/@v2/);
+  });
+});
+
+describe('counting a run larger than one pass', () => {
+  const SRC = 'big-src';
+  /**
+   * One chunk and a bit, as a LITERAL.
+   *
+   * Not `COUNT_CHUNK + 7`: a suite that reads the model cannot disagree with it, so a chunk
+   * size changed by accident would drag this test along and it would keep passing while
+   * testing nothing. `pnpm lint:tests` refuses the import for exactly that reason. If the
+   * chunk size moves, this number should fail loudly and be chosen again on purpose.
+   */
+  const N = 5_007;
+
+  it('33 — a run bigger than a chunk finishes across several passes, and the total is right', async () => {
+    const ines = await as('ines');
+    const tomas = await as('tomas');
+    await ines.invoke('tock/declare-source', { key: SRC, title: 'Big', expectedCadence: 'daily' });
+    await ines.invoke('tock/save-schema', {
+      sourceKey: SRC,
+      fields: { country: { type: 'text', role: 'dimension' }, amount: { type: 'int', role: 'measure' } },
+    });
+
+    const run = await tomas.invoke<Run>('tock/receive-run', {
+      sourceKey: SRC, filename: 'big.jsonl', byteSize: 999, contentHash: 'sha256:big', storageKey: 'runs/big.jsonl',
+      format: 'jsonl', delimiter: null, timeField: 'occurred_at', subjectField: 'subject',
+      periodFrom: '2026-09-01T00:00:00.000Z', periodTo: '2026-09-02T00:00:00.000Z',
+    });
+    // Delivered in batches, as the host would.
+    for (let i = 0; i < N; i += 1000) {
+      const batch = Array.from({ length: Math.min(1000, N - i) }, (_, k) => ({
+        occurredAt: '2026-09-01T08:00:00.000Z',
+        subject: `s-${i + k}`,
+        fields: { country: 'SE', amount: '1' },
+      }));
+      await tomas.invoke('tock/profile-run', { runId: run.id, batch, final: i + 1000 >= N });
+    }
+    await tomas.invoke('tock/map-run', { runId: run.id, schemaVersion: 1 });
+
+    // The first pass must NOT finish, and must not publish a partial number.
+    const first = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+    expect(first.complete).toBe(false);
+    expect(first.status).toBe('mapped');
+    expect(first.counted_at).toBeNull();
+    // A half-counted run is not current, so the report has nothing yet.
+    const midway = await ines.invoke<{ rows: unknown[] }>('tock/report', {
+      sourceKey: SRC, grain: 'day', dimSet: 'total',
+      from: '2026-09-01T00:00:00.000Z', to: '2026-09-02T00:00:00.000Z',
+    });
+    expect(midway.rows).toEqual([]);
+
+    let passes = 1;
+    let out = first;
+    while (out.complete === false) {
+      out = await tomas.invoke<Run & { complete: boolean }>('tock/count-run', { runId: run.id });
+      passes += 1;
+    }
+    expect(passes).toBeGreaterThan(1);
+    expect(out.status).toBe('counted');
+
+    // Every row counted exactly once — the accumulation is what this whole change is for.
+    const report = await ines.invoke<{ rows: { events: number; measure: string | null }[] }>('tock/report', {
+      sourceKey: SRC, grain: 'day', dimSet: 'total',
+      from: '2026-09-01T00:00:00.000Z', to: '2026-09-02T00:00:00.000Z',
+    });
+    expect(report.rows[0]?.events).toBe(N);
+    // And the decimal measure summed across passes without going through a float.
+    expect(report.rows[0]?.measure).toBe(String(N));
+  }, 120_000);
+
+  it('34 — a counted run refuses a further pass rather than double-counting', async () => {
+    const tomas = await as('tomas');
+    const run = (await tomas.invoke<{ entries: Run[] }>('tock/list-runs', { sourceKey: SRC })).entries[0]!;
+    await expect(tomas.invoke('tock/count-run', { runId: run.id })).rejects.toThrow(/counted run cannot be counted/);
   });
 });

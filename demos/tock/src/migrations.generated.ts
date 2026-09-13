@@ -320,4 +320,11 @@ export const tockMigrations: SqlMigration[] = [
 
     `,
   },
+  {
+    // add-tock_runs-counted_through
+    version: '0008',
+    sql: `
+      ALTER TABLE tock_runs ADD COLUMN counted_through TEXT;
+    `,
+  },
 ];

@@ -96,6 +96,16 @@ export const MAX_GROUPING_DIMENSIONS = 2;
 export const FIELD_HISTORY_MAX = 500;
 
 /**
+ * How many rows one `count-run` invocation folds in.
+ *
+ * Counting a month of a busy stream in one go is not possible — a scope has a time budget —
+ * and the operation has always ANSWERED `complete` while never returning false. This is the
+ * number that makes the answer mean something. A tuning value, not a correctness one: the
+ * cursor is what makes resuming correct, and it works at any size.
+ */
+export const COUNT_CHUNK = 5_000;
+
+/**
  * `dim1`/`dim2` are never null, because a NULL inside a composite primary key does not compare
  * equal to itself in SQLite and the rollup's uniqueness would quietly stop holding. So an
  * absent value is the empty string — and there is exactly ONE token rather than two, because
@@ -255,6 +265,19 @@ export const tockEntities = defineEntities({
       rejected_count: z.number().nullable(),
       received_at: z.string(),
       received_by: z.string(),
+      /**
+       * How far counting has got — the id of the last row folded in, or null before it starts.
+       *
+       * Counting a large run in one invocation is not possible: a month of a busy stream is
+       * hundreds of thousands of rows, and a scope has a time budget. Profiling has been
+       * resumable since it existed; counting claimed to be — `complete` is in its own
+       * signature — and always answered true after loading every row at once.
+       *
+       * Rows are walked in id order, which is creation order, so a cursor is one column and a
+       * resumed pass reads strictly forward. Null on a counted run means it was counted before
+       * this existed, which is a fact rather than a gap.
+       */
+      counted_through: z.string().nullable(),
       counted_at: z.string().nullable(),
     }),
     parents: ['source'],

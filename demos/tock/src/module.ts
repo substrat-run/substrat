@@ -34,6 +34,7 @@ import {
   type OperationHandler,
 } from '@substrat-run/kernel';
 import {
+  COUNT_CHUNK,
   DIM_NONE,
   dimsOfSet,
   FIELD_HISTORY_MAX,
@@ -983,7 +984,21 @@ const countRunOp: OperationHandler<
   const dimensions = Object.entries(fields).filter(([, f]) => f.role === 'dimension').map(([n]) => n);
   const measure = Object.entries(fields).find(([, f]) => f.role === 'measure')?.[0];
 
-  const rows = ctx.sql.query<RowRow>('SELECT * FROM tock_rows WHERE run_id = ? ORDER BY id', [run.id]);
+  /**
+   * One chunk, walked forward from the cursor.
+   *
+   * `ORDER BY id` is creation order — ULIDs are chronological — so a resumed pass reads
+   * strictly forward and never revisits a row. One extra row is asked for so "is there more"
+   * is OBSERVED rather than inferred from the chunk coming back full, which is wrong exactly
+   * when the total is a multiple of the chunk size.
+   */
+  const cursor = run.counted_through ?? '';
+  const fetched = ctx.sql.query<RowRow>(
+    'SELECT * FROM tock_rows WHERE run_id = ? AND id > ? ORDER BY id LIMIT ?',
+    [run.id, cursor, COUNT_CHUNK + 1],
+  );
+  const more = fetched.length > COUNT_CHUNK;
+  const rows = more ? fetched.slice(0, COUNT_CHUNK) : fetched;
 
   /**
    * The grouping sets the report serves: the total, each single dimension, and — when a
@@ -1158,15 +1173,25 @@ const countRunOp: OperationHandler<
    * something counting should start doing quietly.
    */
   for (const cell of cells.values()) {
+    // The stored measure is a decimal string, so the running total is merged HERE rather than
+    // in SQL — `CAST(measure AS REAL)` is the float this codebase refuses for money.
+    const prior = ctx.sql.query<{ measure: string | null }>(
+      `SELECT measure FROM tock_rollups
+        WHERE source_key = ? AND output_key = ? AND grain = ? AND dim_set = ?
+          AND period_start = ? AND dim1 = ? AND dim2 = ? AND run_id = ?`,
+      [run.source_key, cell.outputKey, cell.grain, cell.dimSet, cell.periodStart, cell.dim1, cell.dim2, run.id],
+    )[0];
+    const measure =
+      prior?.measure == null ? cell.measure : cell.measure == null ? prior.measure : addDecimal(prior.measure, cell.measure);
     ctx.sql.exec(
       `INSERT INTO tock_rollups
          (source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id, events, measure, unit)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id) DO UPDATE SET
-         events = excluded.events, measure = excluded.measure`,
+         events = events + excluded.events, measure = excluded.measure`,
       [
         run.source_key, cell.outputKey, cell.grain, cell.dimSet, cell.periodStart,
-        cell.dim1, cell.dim2, run.id, cell.events, cell.measure, cell.unit,
+        cell.dim1, cell.dim2, run.id, cell.events, measure, cell.unit,
       ],
     );
   }
@@ -1260,9 +1285,28 @@ const countRunOp: OperationHandler<
     );
   }
 
-  ctx.sql.exec('UPDATE tock_runs SET status = ?, rejected_count = ?, counted_at = ? WHERE id = ?', [
+  /**
+   * The cursor moves every pass; the STATUS moves only on the last one.
+   *
+   * A run mid-count stays `mapped`, which is what stops a half-counted run being read as
+   * current: the report resolves the latest COUNTED run for a period, so an interrupted pass
+   * leaves the previous answer standing rather than publishing a partial one. Rejections
+   * accumulate for the same reason the events do — each pass sees only its own chunk.
+   */
+  const through = rows.length > 0 ? rows[rows.length - 1]!.id : cursor;
+  ctx.sql.exec('UPDATE tock_runs SET counted_through = ?, rejected_count = ? WHERE id = ?', [
+    through,
+    (run.rejected_count ?? 0) + rejected,
+    run.id,
+  ]);
+  if (more) {
+    // More to fold in. No event, no `counted_at`, and deliberately no status change: nothing
+    // downstream should see a number that is still being assembled.
+    return { ...runOrThrow(ctx, run.id), complete: false };
+  }
+
+  ctx.sql.exec('UPDATE tock_runs SET status = ?, counted_at = ? WHERE id = ?', [
     'counted',
-    rejected,
     ctx.now(),
     run.id,
   ]);
@@ -1632,6 +1676,11 @@ const reportOp: OperationHandler<
                WHERE ro2.source_key = ro.source_key AND ro2.output_key = ro.output_key
                  AND ro2.grain = ro.grain
                  AND ro2.dim_set = ro.dim_set AND ro2.period_start = ro.period_start
+                 -- COUNTED, not merely counting. Rollup rows now land chunk by chunk while
+                 -- the status is still 'mapped', so without this a run halfway through would
+                 -- become current on partial numbers — and, being the newest, would displace
+                 -- the complete answer that was standing before it started.
+                 AND r2.status = 'counted'
                ORDER BY r2.counted_at DESC, r2.id DESC
                LIMIT 1
             )

@@ -519,6 +519,16 @@
           "received_by": {
             "type": "string"
           },
+          "counted_through": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "counted_at": {
             "anyOf": [
               {
@@ -548,6 +558,7 @@
           "rejected_count",
           "received_at",
           "received_by",
+          "counted_through",
           "counted_at"
         ],
         "additionalProperties": false

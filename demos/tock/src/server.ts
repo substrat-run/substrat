@@ -218,6 +218,30 @@ async function boot() {
     return c.json({ run, records: parsed.records.length, malformed: parsed.malformed });
   });
 
+  /**
+   * Count a run to completion, one chunk per invocation.
+   *
+   * The operation folds in a bounded number of rows and says whether more remain; this is the
+   * loop that keeps asking. It lives in the host for the same reason the profile loop does —
+   * an operation runs inside one scope invocation and a large run does not fit in one.
+   *
+   * The mounted `POST /runs/{runId}/count` still exists and still counts ONE chunk, which is
+   * the honest surface: a caller that wants the whole run asks for it here.
+   */
+  app.post('/api/runs/:runId/count-all', async (c) => {
+    const scope = await scopeOf(c.req.raw.headers);
+    const runId = c.req.param('runId');
+    let passes = 0;
+    let run: { status: string; complete?: boolean } | undefined;
+    do {
+      run = await scope.invoke<{ status: string; complete?: boolean }>('tock/count-run', { runId });
+      passes += 1;
+      // A guard rather than a limit: a `complete` that never turns true would otherwise spin.
+      if (passes > 10_000) return c.json({ error: 'counting did not finish' }, 500);
+    } while (run.complete === false);
+    return c.json({ run, passes });
+  });
+
   mountApi(app, async (c) => scopeOf(c.req.raw.headers));
 
   const port = Number(process.env.PORT ?? 8880);
