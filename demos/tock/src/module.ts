@@ -34,6 +34,7 @@ import {
   type OperationHandler,
 } from '@substrat-run/kernel';
 import {
+  COUNT_CHUNK,
   DIM_NONE,
   dimsOfSet,
   FIELD_HISTORY_MAX,
@@ -47,6 +48,19 @@ import { tockMigrations } from './migrations.generated.js';
 type SourceRow = EntityRow<typeof tockEntities, 'source'>;
 type SchemaRow = EntityRow<typeof tockEntities, 'schema'>;
 type RunRow = EntityRow<typeof tockEntities, 'run'>;
+
+/**
+ * What `count-run` carries from one pass to the next (`tock_runs.count_state_json`).
+ *
+ * `outputs` and `mappings` are the plan pinned on the first pass — `[key, version]` and
+ * `[variant_key, output_key, version]` — and null only before it; `days` is every day the
+ * counted rows have touched so far, for the salt provenance.
+ */
+interface CountState {
+  outputs: [key: string, version: number][] | null;
+  mappings: [variantKey: string, outputKey: string, version: number][] | null;
+  days: string[];
+}
 type SourceFileRow = EntityRow<typeof tockEntities, 'source_file'>;
 type ObservationRow = EntityRow<typeof tockEntities, 'observation'>;
 type FieldHistoryRow = EntityRow<typeof tockEntities, 'field_history'>;
@@ -983,7 +997,21 @@ const countRunOp: OperationHandler<
   const dimensions = Object.entries(fields).filter(([, f]) => f.role === 'dimension').map(([n]) => n);
   const measure = Object.entries(fields).find(([, f]) => f.role === 'measure')?.[0];
 
-  const rows = ctx.sql.query<RowRow>('SELECT * FROM tock_rows WHERE run_id = ? ORDER BY id', [run.id]);
+  /**
+   * One chunk, walked forward from the cursor.
+   *
+   * `ORDER BY id` is creation order — ULIDs are chronological — so a resumed pass reads
+   * strictly forward and never revisits a row. One extra row is asked for so "is there more"
+   * is OBSERVED rather than inferred from the chunk coming back full, which is wrong exactly
+   * when the total is a multiple of the chunk size.
+   */
+  const cursor = run.counted_through ?? '';
+  const fetched = ctx.sql.query<RowRow>(
+    'SELECT * FROM tock_rows WHERE run_id = ? AND id > ? ORDER BY id LIMIT ?',
+    [run.id, cursor, COUNT_CHUNK + 1],
+  );
+  const more = fetched.length > COUNT_CHUNK;
+  const rows = more ? fetched.slice(0, COUNT_CHUNK) : fetched;
 
   /**
    * The grouping sets the report serves: the total, each single dimension, and — when a
@@ -1004,22 +1032,56 @@ const countRunOp: OperationHandler<
    * Mappings STACK along a record's path exactly as schemas do: the envelope maps the fields
    * every record carries, a kind maps its own, nearest wins. One mapping written once at the
    * root therefore serves every kind, and a kind says only what is different about it.
+   *
+   * Chosen ONCE, on the first pass, and pinned by version for every pass after — the way
+   * `schema_version` pins the envelope. `save-output-schema` and `save-mapping` stay open
+   * while a run is mid-count, so "the latest" can change between two passes; reselecting it
+   * would fold the second half of the run under a plan the first half never saw, and the
+   * mapping rule captured below would then name a plan that made only some of the numbers.
    */
-  const outputs = ctx.sql.query<OutputSchemaRow>(
-    `SELECT o.* FROM tock_output_schemas o
-      WHERE o.source_key = ?
-        AND o.version = (SELECT MAX(v.version) FROM tock_output_schemas v
-                          WHERE v.source_key = o.source_key AND v.key = o.key)`,
-    [run.source_key],
-  );
-  const mappings = ctx.sql.query<MappingRow>(
-    `SELECT m.* FROM tock_mappings m
-      WHERE m.source_key = ?
-        AND m.version = (SELECT MAX(v.version) FROM tock_mappings v
-                          WHERE v.source_key = m.source_key AND v.variant_key = m.variant_key
-                            AND v.output_key = m.output_key)`,
-    [run.source_key],
-  );
+  const state: CountState = run.count_state_json
+    ? (JSON.parse(run.count_state_json) as CountState)
+    : { outputs: null, mappings: null, days: [] };
+  const outputs =
+    state.outputs === null
+      ? ctx.sql.query<OutputSchemaRow>(
+          `SELECT o.* FROM tock_output_schemas o
+            WHERE o.source_key = ?
+              AND o.version = (SELECT MAX(v.version) FROM tock_output_schemas v
+                                WHERE v.source_key = o.source_key AND v.key = o.key)`,
+          [run.source_key],
+        )
+      : state.outputs.map(([key, version]) => {
+          const row = ctx.sql.query<OutputSchemaRow>(
+            'SELECT * FROM tock_output_schemas WHERE source_key = ? AND key = ? AND version = ?',
+            [run.source_key, key, version],
+          )[0];
+          if (!row) throw substratError('conflict', `output ${key}@v${version} this run was counting under is gone`, { reason: 'plan_gone' });
+          return row;
+        });
+  const mappings =
+    state.mappings === null
+      ? ctx.sql.query<MappingRow>(
+          `SELECT m.* FROM tock_mappings m
+            WHERE m.source_key = ?
+              AND m.version = (SELECT MAX(v.version) FROM tock_mappings v
+                                WHERE v.source_key = m.source_key AND v.variant_key = m.variant_key
+                                  AND v.output_key = m.output_key)`,
+          [run.source_key],
+        )
+      : state.mappings.map(([variantKey, outputKey, version]) => {
+          const row = ctx.sql.query<MappingRow>(
+            'SELECT * FROM tock_mappings WHERE source_key = ? AND variant_key = ? AND output_key = ? AND version = ?',
+            [run.source_key, variantKey, outputKey, version],
+          )[0];
+          if (!row)
+            throw substratError(
+              'conflict',
+              `mapping ${variantKey || 'envelope'}->${outputKey}@v${version} this run was counting under is gone`,
+              { reason: 'plan_gone' },
+            );
+          return row;
+        });
 
   /** The rules reaching a record of this kind for this output: root first, nearest last. */
   const rulesFor = (outputKey: string, variantKey: string): MappingRule[] => {
@@ -1082,10 +1144,15 @@ const countRunOp: OperationHandler<
   }
   const cells = new Map<string, Cell>();
   const labels = new Map<string, { dim: string; value: string; label: string }>();
+  // The days this run touches, carried from pass to pass. Read off the chunk in hand rather
+  // than off the run's rows again: that query is a scan of the whole run, and once per chunk
+  // it is the very cost the chunk was supposed to bound.
+  const days = new Set(state.days);
   let rejected = 0;
 
   for (const row of rows) {
     const raw = JSON.parse(row.dims_json) as Record<string, string | null>;
+    days.add(row.occurred_at.slice(0, 10));
 
     // Required-ness and labels are judged against what ARRIVED, not against an output: a field
     // the file was supposed to carry is a fact about the file.
@@ -1158,15 +1225,25 @@ const countRunOp: OperationHandler<
    * something counting should start doing quietly.
    */
   for (const cell of cells.values()) {
+    // The stored measure is a decimal string, so the running total is merged HERE rather than
+    // in SQL — `CAST(measure AS REAL)` is the float this codebase refuses for money.
+    const prior = ctx.sql.query<{ measure: string | null }>(
+      `SELECT measure FROM tock_rollups
+        WHERE source_key = ? AND output_key = ? AND grain = ? AND dim_set = ?
+          AND period_start = ? AND dim1 = ? AND dim2 = ? AND run_id = ?`,
+      [run.source_key, cell.outputKey, cell.grain, cell.dimSet, cell.periodStart, cell.dim1, cell.dim2, run.id],
+    )[0];
+    const measure =
+      prior?.measure == null ? cell.measure : cell.measure == null ? prior.measure : addDecimal(prior.measure, cell.measure);
     ctx.sql.exec(
       `INSERT INTO tock_rollups
          (source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id, events, measure, unit)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(source_key, output_key, grain, dim_set, period_start, dim1, dim2, run_id) DO UPDATE SET
-         events = excluded.events, measure = excluded.measure`,
+         events = events + excluded.events, measure = excluded.measure`,
       [
         run.source_key, cell.outputKey, cell.grain, cell.dimSet, cell.periodStart,
-        cell.dim1, cell.dim2, run.id, cell.events, cell.measure, cell.unit,
+        cell.dim1, cell.dim2, run.id, cell.events, measure, cell.unit,
       ],
     );
   }
@@ -1190,13 +1267,12 @@ const countRunOp: OperationHandler<
    *
    * A run may span days and the row is one per kind, so `identifier` names the days and the
    * hash covers their salt ids in order — a run using the same salts reproduces the hash, one
-   * that had to mint a new salt for any day does not.
+   * that had to mint a new salt for any day does not. The days are every day seen so far,
+   * so a pass in the middle of a run writes the provenance of what it has counted, and the
+   * last pass writes the whole run's.
    */
-  const days = ctx.sql.query<{ day: string }>(
-    'SELECT DISTINCT substr(occurred_at, 1, 10) AS day FROM tock_rows WHERE run_id = ? ORDER BY day',
-    [run.id],
-  ).map((d) => d.day);
-  const saltIds = days.map(
+  const daysSoFar = [...days].sort();
+  const saltIds = daysSoFar.map(
     (day) =>
       ctx.sql.query<{ salt_id: string }>('SELECT salt_id FROM tock_salts WHERE day = ?', [day])[0]?.salt_id ??
       // The salt was destroyed after this run was profiled: the subject keys stand, and what
@@ -1239,7 +1315,13 @@ const countRunOp: OperationHandler<
        VALUES (?, ?, 'salt', ?, ?, ?)
      ON CONFLICT(run_id, rule_kind) DO UPDATE SET
        identifier = excluded.identifier, content_hash = excluded.content_hash`,
-    [ulid(), run.id, days.length === 0 ? 'days:none' : `days:${days[0]}..${days[days.length - 1]}`, saltHash, ctx.now()],
+    [
+      ulid(),
+      run.id,
+      daysSoFar.length === 0 ? 'days:none' : `days:${daysSoFar[0]}..${daysSoFar[daysSoFar.length - 1]}`,
+      saltHash,
+      ctx.now(),
+    ],
   );
 
   /**
@@ -1260,13 +1342,40 @@ const countRunOp: OperationHandler<
     );
   }
 
-  ctx.sql.exec('UPDATE tock_runs SET status = ?, rejected_count = ?, counted_at = ? WHERE id = ?', [
-    'counted',
-    rejected,
-    ctx.now(),
+  /**
+   * The cursor moves every pass; the STATUS moves only on the last one.
+   *
+   * A run mid-count stays `mapped`, which is what stops a half-counted run being read as
+   * current: the report resolves the latest COUNTED run for a period, so an interrupted pass
+   * leaves the previous answer standing rather than publishing a partial one. Rejections
+   * accumulate for the same reason the events do — each pass sees only its own chunk.
+   */
+  const through = rows.length > 0 ? rows[rows.length - 1]!.id : cursor;
+  const carried: CountState = {
+    outputs: outputs.map((o) => [o.key, o.version]),
+    mappings: mappings.map((m) => [m.variant_key, m.output_key, m.version]),
+    days: daysSoFar,
+  };
+  ctx.sql.exec('UPDATE tock_runs SET counted_through = ?, count_state_json = ?, rejected_count = ? WHERE id = ?', [
+    through,
+    JSON.stringify(carried),
+    (run.rejected_count ?? 0) + rejected,
     run.id,
   ]);
+  // No `counted_at` and deliberately no status change while more remains: nothing downstream
+  // should read a number that is still being assembled.
+  if (!more) {
+    ctx.sql.exec('UPDATE tock_runs SET status = ?, counted_at = ? WHERE id = ?', ['counted', ctx.now(), run.id]);
+  }
   const after = runOrThrow(ctx, run.id);
+  const complete = !more;
+  /**
+   * EVERY pass, as `profile-run` does. A pass that is not the last has still written rollup
+   * rows, labels, rule states and the cursor, and a mutation with no entry on the spine is the
+   * one thing the event rule exists to prevent. `complete` is what a consumer gates on — and
+   * `status`, which says the same thing in the run's own vocabulary and is what the report
+   * reads — so a pass in the middle is on the record without being a number anyone publishes.
+   */
   ctx.emit({
     type: 'tock.run-counted',
     schemaVersion: 1,
@@ -1281,9 +1390,11 @@ const countRunOp: OperationHandler<
       row_count: after.row_count,
       rejected_count: after.rejected_count,
       counted_at: after.counted_at,
+      status: after.status,
+      complete,
     },
   });
-  return { ...after, complete: true };
+  return { ...after, complete };
 };
 
 // ── reads ───────────────────────────────────────────────────────────────────
@@ -1632,6 +1743,11 @@ const reportOp: OperationHandler<
                WHERE ro2.source_key = ro.source_key AND ro2.output_key = ro.output_key
                  AND ro2.grain = ro.grain
                  AND ro2.dim_set = ro.dim_set AND ro2.period_start = ro.period_start
+                 -- COUNTED, not merely counting. Rollup rows now land chunk by chunk while
+                 -- the status is still 'mapped', so without this a run halfway through would
+                 -- become current on partial numbers — and, being the newest, would displace
+                 -- the complete answer that was standing before it started.
+                 AND r2.status = 'counted'
                ORDER BY r2.counted_at DESC, r2.id DESC
                LIMIT 1
             )

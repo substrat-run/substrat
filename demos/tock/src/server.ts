@@ -21,6 +21,7 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { platformActorId } from '@substrat-run/contracts';
 import { devLogin } from '@substrat-run/dev-issuer';
+import { tockOperations } from '../spec/model.js';
 import { API_DOCUMENT } from './api.js';
 import { contentHashOf, PROFILE_BATCH, parseDeliveredFile, sniffDelimiter, sniffFormat, type ReadPlan } from './ingest.js';
 import { DEV_PROVIDER } from './personas.js';
@@ -216,6 +217,39 @@ async function boot() {
       });
     }
     return c.json({ run, records: parsed.records.length, malformed: parsed.malformed });
+  });
+
+  /**
+   * Count a run to completion, one chunk per invocation.
+   *
+   * The operation folds in a bounded number of rows and says whether more remain; this is the
+   * loop that keeps asking. It lives in the host for the same reason the profile loop does —
+   * an operation runs inside one scope invocation and a large run does not fit in one.
+   *
+   * The mounted `POST /runs/{runId}/count` still exists and still counts ONE chunk, which is
+   * the honest surface: a caller that wants the whole run asks for it here.
+   *
+   * The body is the operation's own input minus the id the path carries — so the caller's
+   * rules (bot list, threshold, de-duplication) ride this route exactly as they ride a single
+   * pass, parsed by the same schema. They are handed to EVERY pass: the operation upserts them
+   * per run, so repeating them is idempotent, and a loop that passed them once would leave a
+   * caller who drove the chunks by hand with a different provenance from one who did not.
+   */
+  const countAllBody = tockOperations['tock/count-run'].input.omit({ runId: true });
+  app.post('/api/runs/:runId/count-all', async (c) => {
+    const scope = await scopeOf(c.req.raw.headers);
+    const runId = c.req.param('runId');
+    const parsed = countAllBody.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) return c.json({ error: 'invalid input', issues: parsed.error.issues }, 400);
+    let passes = 0;
+    let run: { status: string; complete?: boolean } | undefined;
+    do {
+      run = await scope.invoke<{ status: string; complete?: boolean }>('tock/count-run', { runId, ...parsed.data });
+      passes += 1;
+      // A guard rather than a limit: a `complete` that never turns true would otherwise spin.
+      if (passes > 10_000) return c.json({ error: 'counting did not finish' }, 500);
+    } while (run.complete === false);
+    return c.json({ run, passes });
   });
 
   mountApi(app, async (c) => scopeOf(c.req.raw.headers));
