@@ -609,6 +609,30 @@ export interface TrafficSeries {
   available: boolean;
 }
 
+/** One instant drawn on an app's chart (#1447) — a declared fact, never an inferred anomaly. */
+export interface OverlayMarker {
+  at: string;
+  kind: 'migration' | 'run-failed' | 'failure';
+  label: string;
+  /** The one line of context the tooltip adds, or the honest absence of one. */
+  detail: string | null;
+}
+
+/** A stretch of time worth shading — today only a freshness expectation reading stale. */
+export interface OverlaySpan {
+  from: string;
+  to: string;
+  kind: 'stale';
+  label: string;
+}
+
+export interface AppOverlays {
+  markers: OverlayMarker[];
+  spans: OverlaySpan[];
+  /** True = markers were dropped to the cap; the legend says so rather than hiding it. */
+  truncated: boolean;
+}
+
 /** One app's line on the team chart — its own zero-filled series. */
 export interface TeamTrafficLine {
   scopeId: string;
@@ -1639,13 +1663,22 @@ export const api = {
   /**
    * The same series for ONE installed app (#1447) — tenant grain, so the answer is this
    * installation's traffic rather than the script's across every team that installed the
-   * vertical. Nothing renders it yet: the Overview sparkline is a later step of #1447, and
-   * this is its read — one app, zero-filled, with release markers. The team-level
-   * Observability page is NOT a consumer: it plots many apps on one axis from the
-   * multi-scope series instead, so never call this once per app to build that.
+   * vertical. One app, zero-filled, with release markers — what Observability draws in
+   * one-app mode. The team-level ALL-APPS chart is NOT a consumer: it plots many apps on
+   * one axis from the multi-scope series instead, so never call this once per app to
+   * build that.
    */
   appTraffic: (scopeId: string, hours: number) =>
     call<TrafficSeries>(`/apps/${encodeURIComponent(scopeId)}/traffic?hours=${hours}`),
+
+  /**
+   * The declared facts drawn over that series (#1447) — migrations applied, failed
+   * schedule runs, stale freshness spans, recorded failures. Its own call because it is
+   * its own route: the chart must draw on the series alone, and these arriving late or
+   * not at all costs the overlays and nothing else.
+   */
+  appOverlays: (scopeId: string, hours: number) =>
+    call<AppOverlays>(`/apps/${encodeURIComponent(scopeId)}/overlays?hours=${hours}`),
 
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>

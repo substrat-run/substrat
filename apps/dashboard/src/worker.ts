@@ -33,6 +33,7 @@ import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, 
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTeamSeries, deriveTrafficSeries } from './releases.js';
+import { deriveAppOverlays } from './overlays.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
@@ -4056,6 +4057,45 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
       hours,
       now: new Date(),
     }),
+  );
+});
+
+/**
+ * The same window's declared facts (#1447 step 3b) — migrations applied, failed schedule
+ * runs, stale freshness spans, recorded failures — for the chart to draw over its bars.
+ *
+ * A SIBLING route rather than three more fields on `/traffic`, and that is the whole
+ * design: the chart draws the moment it has the series, and these four reads are slower
+ * and more fragile than the one that produces it. Folded in, an overlay source having a
+ * bad minute would hold the chart up or take it down with it; separate, it costs its own
+ * kind and nothing else. The page reads both in parallel and tolerates this one's absence.
+ */
+app.get('/api/apps/:scopeId/overlays', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const hours = chartHours(c.req.query('hours'));
+  const now = new Date();
+  const since = new Date(now.getTime() - hours * 3_600_000).toISOString();
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  const [migrations, sweepRuns, failures] = await Promise.all([
+    // Each read is tolerated on its own: an overlay source that cannot answer costs its
+    // kind, not the chart. `appliedMigrations` already answers null for a failed read.
+    cp.appliedMigrations(scope),
+    // Every sweep kind, not just `schedule`: the freshness rows are the stale spans.
+    cp.listSweepRuns({ scopeId: scope, since, limit: 500 }).catch(() => []),
+    // The failure record carries no scope filter, so this reads the vertical and the
+    // derivation narrows to the scope — a team may run the same vertical twice.
+    cp.listOpsFailures({ vertical: appRow.vertical_slug, since, limit: 400 }).catch(() => []),
+  ]);
+
+  return c.json(
+    deriveAppOverlays({ migrations: migrations ?? [], sweepRuns, failures, scopeId: scope, hours, now }),
   );
 });
 
