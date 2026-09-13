@@ -4413,6 +4413,19 @@ export function scopeHostContractSuite(
       // unfollowable before the cause was stored beside it.
       expect(result.chain[0]!.operation).toBeNull();
       expect(result.chain[0]!.causedBy).toBe(step1.id);
+
+      // …and the SAME cause leaves for Tier 2 (#1334). Asserted here rather than in
+      // the drain test because this is where a non-null cause exists: a directly
+      // emitted event's `causedBy` is null, so a presence check over one of those
+      // would pass just as well against a hard-coded `null` — which is exactly the
+      // bug this covers. The drain shipped 16 of the outbox's 17 shippable columns
+      // and dropped this one, so the lake's `caused_by` would have been null on
+      // every row, reading as "nothing ever had a cause".
+      const undrained = await host.admin.readUndrainedEvents(staff, t1, sWalk, 200);
+      expect(undrained.find((e) => e.id === step2.id)?.causedBy).toBe(step1.id);
+      // And null where there genuinely is no cause — the ordinary case, kept
+      // distinguishable from the bug above by being asserted alongside it.
+      expect(undrained.find((e) => e.id === step1.id)?.causedBy).toBeNull();
     });
 
     it('does not leak a delivered event\'s id onto a later unrelated emit (#1237)', async () => {
