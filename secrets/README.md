@@ -168,6 +168,16 @@ Two traps worth knowing before debugging one:
   reader is `Admin Read only`, which is read-only on both halves, rather than a
   hand-assembled policy that is only half narrowed.
 
+`scripts/lake-provision.mjs` is where the lake's shape is declared — bucket, namespace,
+table, compression, rolling policy, and the pipeline SQL — and it reads
+`R2_LAKE_CATALOG_TOKEN` out of this file rather than taking it as an argument, so the token
+never reaches shell history or the process list. `pnpm lake:check` dry-runs it against the
+account and prints what already exists; `pnpm lake:provision` creates what does not. It
+changes nothing that already exists, because wrangler has no update for a stream's schema
+or a sink's rolling policy, and a delete-and-recreate would orphan the Iceberg table the
+sink is committing to — drift is reported for a human, since resolving it is never
+mechanical.
+
 The shipper itself needs **no credential**: it runs in a platform worker and reaches the
 stream through a `[[pipelines]]` binding. Prefer that over the HTTP endpoint wherever the
 sender is a Worker — a binding cannot leak, expire, or be rotated out from under you.

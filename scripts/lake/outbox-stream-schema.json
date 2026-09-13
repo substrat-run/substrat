@@ -1,0 +1,90 @@
+{
+  "fields": [
+    {
+      "name": "id",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "type",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "schema_version",
+      "type": "int64",
+      "required": true
+    },
+    {
+      "name": "occurred_at",
+      "type": "timestamp",
+      "required": true,
+      "unit": "millisecond"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "scope_id",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "actor",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "entity_type",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "entity_id",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "pii_class",
+      "type": "string",
+      "required": true
+    },
+    {
+      "name": "subject_id",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "payload",
+      "type": "json",
+      "required": false
+    },
+    {
+      "name": "authorization",
+      "type": "json",
+      "required": false
+    },
+    {
+      "name": "impersonation",
+      "type": "json",
+      "required": false
+    },
+    {
+      "name": "operation",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "version",
+      "type": "string",
+      "required": false
+    },
+    {
+      "name": "caused_by",
+      "type": "string",
+      "required": false
+    }
+  ]
+}

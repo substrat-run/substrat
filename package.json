@@ -36,6 +36,8 @@
     "secrets:check": "node scripts/secrets.mjs check",
     "secrets:push": "node scripts/secrets.mjs push",
     "secrets:dev": "node scripts/secrets.mjs dev",
+    "lake:provision": "node scripts/lake-provision.mjs",
+    "lake:check": "node scripts/lake-provision.mjs --dry-run",
     "todo-demo": "pnpm --filter @substrat-run/demo-todo",
     "lint:tests": "node tools/test-independence.mjs",
     "lint:docs": "node tools/lint-docs.mjs",
