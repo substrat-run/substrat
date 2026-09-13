@@ -21,6 +21,8 @@ import type {
   EntityHistoryInput,
   EventFacetInput,
   EventCauseInput,
+  EventEffectsInput,
+  EffectsTree,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -666,6 +668,13 @@ export class VerticalClient {
     const q = new URLSearchParams({ scopeId, eventId: input.eventId });
     if (input.maxDepth !== undefined) q.set('maxDepth', String(input.maxDepth));
     return this.getInternal<CauseChain>(`/internal/cause?${q.toString()}`);
+  }
+
+  /** What one event set off (#1237) — through the vertical that holds the data. */
+  async eventEffects(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree> {
+    const q = new URLSearchParams({ scopeId, eventId: input.eventId });
+    if (input.maxNodes !== undefined) q.set('maxNodes', String(input.maxNodes));
+    return this.getInternal<EffectsTree>(`/internal/effects?${q.toString()}`);
   }
 
   /** One record's event history (#1235) — `readHistory`'s answer, through the vertical that holds the data. */

@@ -1,5 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
-import type { CauseChain, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { CauseChain, EffectsTree, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -421,7 +421,7 @@ export interface AppliedMigration {
  * null = nobody was impersonating, the ordinary case. See `lib/history.ts`, which
  * is where each one is turned into words.
  */
-export type { HistoryEntry, CauseChain, CauseTerminal } from '@substrat-run/contracts';
+export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects, EventDelivery, EffectsTerminal } from '@substrat-run/contracts';
 
 /**
  * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
@@ -1624,6 +1624,12 @@ export const api = {
   /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
    *  cross: a dropped `until` answers about a wider slice than was asked for, and
    *  nothing about the answer says so. */
+  /** What one event set off (#1237) — the consumers it reached and what they emitted. */
+  appEventEffects: (scopeId: string, eventId: string) =>
+    call<EffectsTree>(
+      `/apps/${encodeURIComponent(scopeId)}/effects?eventId=${encodeURIComponent(eventId)}`,
+    ),
+
   /** Why one event exists (#1237) — its causal chain, newest first. */
   appEventCause: (scopeId: string, eventId: string) =>
     call<CauseChain>(

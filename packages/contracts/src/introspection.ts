@@ -83,6 +83,17 @@ export const eventCauseInput = z.object({
 });
 export type EventCauseInput = z.infer<typeof eventCauseInput>;
 
+/** Which event to expand forward (#1237), and how much of the tree to build. */
+export const eventEffectsInput = z.object({
+  eventId,
+  /**
+   * A cap on NODES, not on depth: a wide fan-out fills a screen exactly as a deep one
+   * does. The walk reports `depth` rather than trimming quietly.
+   */
+  maxNodes: z.number().int().positive().max(500).optional(),
+});
+export type EventEffectsInput = z.infer<typeof eventEffectsInput>;
+
 /**
  * What to group an event facet by (#1239 stage 1). Either an envelope column —
  * facts the kernel stamps and can never be erased — or one field of the fat

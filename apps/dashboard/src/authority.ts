@@ -21,6 +21,7 @@ import type {
   CauseChain,
   DenialFilter,
   DenialSummary,
+  EffectsTree,
   PermissionDenial,
   PermissionRegistry,
   PlatformRequest,
@@ -1698,6 +1699,18 @@ export class TenantNarrowedControlPlane {
    */
   summarizeDenials(scopeId: ScopeId, filter?: DenialFilter): Promise<DenialSummary> {
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/denials/summary${denialQuery(filter)}`);
+  }
+
+  /**
+   * What one event set off (#1237) — the forward twin of `eventCause`.
+   *
+   * `terminal` rides back untouched, as it does there: a tree that was walked whole
+   * and one cut at the cap are the same shape, and only the flag separates them.
+   */
+  eventEffects(scopeId: ScopeId, input: { eventId: string; maxNodes?: number }): Promise<EffectsTree> {
+    const q = new URLSearchParams({ eventId: input.eventId });
+    if (input.maxNodes !== undefined) q.set('maxNodes', String(input.maxNodes));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/effects?${q}`);
   }
 
   /**

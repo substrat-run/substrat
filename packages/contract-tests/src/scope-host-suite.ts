@@ -4360,6 +4360,33 @@ export function scopeHostContractSuite(
       expect(step2.operation === null && step2.caused_by !== null).toBe(true);
     });
 
+    it('expands a real event into what it set off (#1237)', async () => {
+      // The forward end-to-end half. `walkEventEffects`'s own suite pins the delivery
+      // states over a hand-built table; this proves the wiring — that a tree produced
+      // by an actual dispatch is walkable through the platform verb, on both adapters,
+      // WITH the delivery rows the same dispatch wrote.
+      const sTree = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sTree, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sTree);
+      const stub = await host.getScope(alice, t1, sTree);
+      await stub.invoke('flow/produce');
+
+      const rows = (await stub.invoke('flow/causes')) as { id: string; type: string }[];
+      const step1 = rows.find((r) => r.type === 'flow.step1')!;
+
+      const tree = await host.admin.eventEffects(staff, t1, sTree, {
+        eventId: eventId.parse(step1.id),
+      });
+      expect(tree.terminal).toBe('complete');
+      expect(tree.root!.event.type).toBe('flow.step1');
+      // The consumer that handled it is named, with the delivery the dispatch recorded.
+      expect(tree.root!.deliveries.map((d) => d.consumer)).toContain('@test/flow');
+      expect(tree.root!.deliveries.every((d) => d.state === 'delivered')).toBe(true);
+      // …and the event that consumer emitted hangs off it, which is the whole tree.
+      expect(tree.root!.effects.map((e) => e.event.type)).toEqual(['flow.step2']);
+      expect(tree.count).toBe(2);
+    });
+
     it('walks a real chain back to the operation that started it (#1237)', async () => {
       // The end-to-end half. `walkEventCause`'s own suite pins the five terminals over
       // a hand-built table; this proves the wiring — that a chain produced by an actual

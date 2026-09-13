@@ -41,6 +41,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     // surface suite is that the route parses and forwards, not what the walk answers.
     eventCauseLocal: async (_s: unknown, input?: unknown) =>
       note('eventCauseLocal', { chain: [], terminal: JSON.stringify(input) }) as never,
+    eventEffectsLocal: async (_s: unknown, input?: unknown) =>
+      note('eventEffectsLocal', { root: null, terminal: JSON.stringify(input), count: 0 }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
