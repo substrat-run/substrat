@@ -204,6 +204,7 @@ Handoffs with a short shelf life by design. They become `historical` once consum
 
 | document | status | |
 |---|---|---|
+| [dashboard-control-plane-retirement.md](briefs/dashboard-control-plane-retirement.md) | `proposed` | Inventory of what the dashboard's own ControlPlaneDO holds, and a staged plan with rollback for moving it to the shared directory (#1343). Nothing here has been run. |
 | [dashboard-ui.md](briefs/dashboard-ui.md) | `historical` | Visual UI brief handed to a design tool. Consumed. |
 | [first-flow.md](briefs/first-flow.md) | `historical` | The first end-to-end flow. Milestone completed. |
 | [manyfold-ui.md](briefs/manyfold-ui.md) | `historical` | UI design brief for Manyfold. Consumed. |
