@@ -161,6 +161,23 @@ including the two OIDC ones where Better Auth stays dormant:
   `mintOwnerClaimLink` does the token, the hash and the URL in one call, so the vertical's
   `mintOwnerClaim` hook is a one-liner. A closed window is not a lost instance: the seat stays
   pending — `needsSetup` keeps saying so, and `ownerSeat` says *why* — until a claim binds it.
+- `createInvite` / `listInvites` / `revokeInvite` / `claimInvite` — member invites, the
+  post-setup join path. An invite pre-mints a member principal, grants it a role at scope
+  level, and records the token's hash; accepting binds the invitee's verified `sub` to that
+  principal. The four HTTP routes over these — `GET`/`POST /api/invites`,
+  `POST /api/invites/:principal/revoke`, `POST /api/accept-invite` — are written once as
+  `mountInviteRoutes(app, deps)` from `@substrat-run/vertical-auth/invite-routes` — a
+  subpath, because it is the one module here that imports `hono` at runtime, and the root
+  import must stay free of it for a consumer that wants only an `AuthProvider`. A vertical
+  supplies only what is its own: how a request resolves to a scope, what "admin" means,
+  which roles a teammate may be invited at, its directory, the host's `assignScopeRole` and
+  `revokeScopeRole`, and its auth provider. Every error the mount raises itself is an
+  `HTTPException` — a body that is not JSON or does not fit the route's schema is a 400
+  naming the problem, never a bare `SyntaxError` or `ZodError` — so the vertical's own
+  `onError` renders them with no branch for this mount; what its own deps throw passes
+  through untouched. The grant and the invite row live in two Durable Objects, so when the
+  row cannot be written after the role was granted the mount revokes the grant before
+  reporting the failure, which is what `revokeScopeRole` is for.
 
 ## Cookie-domain safety
 

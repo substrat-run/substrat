@@ -31,6 +31,10 @@
     "./oidc-rp-provider": {
       "types": "./dist/oidc-rp-provider.d.ts",
       "default": "./dist/oidc-rp-provider.js"
+    },
+    "./invite-routes": {
+      "types": "./dist/invite-routes.d.ts",
+      "default": "./dist/invite-routes.js"
     }
   },
   "files": [
@@ -43,16 +47,21 @@
   },
   "dependencies": {
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/kernel": "workspace:^",
     "@substrat-run/oidc-rp": "workspace:^",
     "@substrat-run/psl": "workspace:^",
     "better-auth": "^1.7.1",
     "drizzle-orm": "^0.45.2",
     "jose": "^6.2.3"
   },
+  "peerDependencies": {
+    "hono": "^4.6.0"
+  },
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "@types/better-sqlite3": "^9.6.0",
     "better-sqlite3": "^13.0.3",
+    "hono": "^4.6.0",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
