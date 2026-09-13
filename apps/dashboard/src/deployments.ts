@@ -147,6 +147,21 @@ export async function listDeploymentsFromCp(cp: TenantNarrowedControlPlane): Pro
 }
 
 /**
+ * ONE of this team's own deployments by slug, or null when the vertical is not among
+ * them. The ownership question is answered from the tenant-filtered vertical list alone;
+ * versions and channels are read for the match only, so a route that wants a single
+ * publisher's record does not hydrate every vertical the team owns to find it (#1459).
+ */
+export async function ownedDeploymentFromCp(
+  cp: TenantNarrowedControlPlane,
+  slug: string,
+): Promise<Deployment | null> {
+  const v = (await cp.listVerticals()).find((v) => v.slug === slug);
+  if (!v) return null;
+  return shape(v, await cp.listVersions(slug), await cp.listChannels(slug));
+}
+
+/**
  * ONE vertical's deployment record (versions + channels) by slug — for the per-app
  * Deployments tab. Unlike the tenant-level lists above, this is keyed by the app's own
  * vertical (which may be a platform vertical the tenant doesn't "own"), so the app can

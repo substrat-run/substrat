@@ -38,7 +38,7 @@ import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
-import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
+import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -3908,14 +3908,16 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
   // rather than as the bad parameter it is.
   const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  // Null = the plane cannot bucket; the chart says so rather than drawing a flat line
-  // that reads as silence.
-  const buckets = await cp.tenantMetricsSeries({ scopeIds: [appRow.app_scope_id], hours }).catch(() => null);
-
-  // The registry read is the publisher's, so it is attempted and tolerated: an installed
-  // vertical simply is not among this team's own deployments.
-  const deployments = await listDeploymentsFromCp(cp).catch(() => []);
-  const deployment = deployments.find((d) => d.slug === appRow.vertical_slug);
+  const [buckets, deployment] = await Promise.all([
+    // Null = the plane cannot bucket; the chart says so rather than drawing a flat line
+    // that reads as silence.
+    cp.tenantMetricsSeries({ scopeIds: [appRow.app_scope_id], hours }).catch(() => null),
+    // The registry read is the publisher's, so it is attempted and tolerated: an installed
+    // vertical simply is not among this team's own deployments. Narrowed to this one slug
+    // — ownership is one list read, and only the match is hydrated — so a sparkline
+    // request does not walk versions and channels for every vertical the team publishes.
+    ownedDeploymentFromCp(cp, appRow.vertical_slug).catch(() => null),
+  ]);
   const prodHistory = deployment ? await cp.channelHistory(deployment.slug, 'prod') : [];
   const releases = deployment
     ? deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null }).releases
