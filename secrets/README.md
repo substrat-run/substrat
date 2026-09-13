@@ -84,7 +84,7 @@ throwaway — never reuse a prod secret locally.
 
 | Command | What |
 |---|---|
-| `secrets.mjs check` | Print the worker→secret map and what the file covers. No values. |
+| `secrets.mjs check` | Print the worker→secret map, the store-only keys, and anything the file carries that nothing reads. No values. |
 | `secrets.mjs push --env prod\|test` | Upload the file's secrets to each deployed worker, **then** re-put `PLATFORM_SECRET`/`ROUTER_SECRET` on every vertical. Also `pnpm secrets:platform`. |
 | `secrets.mjs verticals --env prod\|test` | Just that second step, on its own. |
 | `secrets.mjs dev` | Write `apps/*/.dev.vars` from the dev file. |
@@ -114,6 +114,7 @@ The env file holds one canonical key; the tool sets it under each worker's own n
 | `CF_SAAS_ZONE_ID` | `CF_SAAS_ZONE_ID` | — | — |
 | `SECRET_BOX_KEY` | — | `SECRET_BOX_KEY` | — |
 | `GITHUB_APP_ID` / `_SLUG` / `_PRIVATE_KEY` | — | same names | — |
+| `R2_LAKE_SQL_TOKEN` | `R2_SQL_TOKEN` | — | — |
 
 `PLATFORM_SECRET` and `ROUTER_SECRET` are also injected into every pushed vertical by
 the control plane's WfP uploader — verticals need no secret setup of their own, but the
@@ -123,6 +124,58 @@ Optional keys (`CF_SAAS_ROUTING_TARGET`, `CF_SAAS_SSL_METHOD`, `PLATFORM_BASE_DO
 `SECRET_BOX_KEY_ID`, `EMAIL_FROM`, `CP_ACTOR`) are normally wrangler.jsonc `vars`; set
 them in the file only to override, and they'll be pushed as secrets that shadow the var.
 
+## Store-only keys (in the file, never pushed)
+
+Everything in `platform.<env>.env` is uploaded to the three workers — that is what `push`
+is. A credential whose home is some *other* service's config therefore needs saying so out
+loud, because the alternative is a key that sits in the file doing nothing and looks
+exactly like a typo. `STORE_ONLY` in `scripts/secrets.mjs` names them and `check` prints
+them under their own heading; `push` excludes them by construction, since it only ever
+walks the manifest.
+
+| Key | Where it actually lives |
+|---|---|
+| `R2_LAKE_CATALOG_TOKEN` | the pipeline's own config, set once by `wrangler pipelines setup` |
+| `R2_LAKE_SEND_TOKEN` | nowhere by default — only a non-Workers sender needs it |
+
+They are recorded here anyway because **Cloudflare never gives a token back**: the same
+reason `generate` writes new values into the file before pushing them. A token that exists
+only inside a pipeline's config is one you cannot restore an account from.
+
+`check` also now lists any key the file carries that neither a worker nor `STORE_ONLY`
+names. That is reported, not fatal — but a misspelled canonical key used to be completely
+silent, which is how a "configured" secret can turn out never to have been pushed.
+
+## The Tier-2 lake needs three separate credentials
+
+The Iceberg tier (D-5, `kernel-design` §5.3) is the one place where three
+similar-sounding Cloudflare tokens are genuinely not interchangeable, so the prod template
+spells each out. The short version:
+
+| Credential | Permission | Who holds it |
+|---|---|---|
+| catalog | R2 **Admin Read & Write**, scoped to the lake bucket | Cloudflare Pipelines, in the pipeline config |
+| query | R2 **Admin Read only**, same bucket | control-plane, as `R2_SQL_TOKEN` |
+| send | **Workers Pipeline Send** | only a sender outside Workers |
+
+Two traps worth knowing before debugging one:
+
+- **Object Read & Write does not work for the catalog.** That permission is
+  S3-API-only, so a pipeline holding one is created successfully and then fails at its
+  first catalog commit — a setup that looks complete and a failure that arrives later.
+- **Catalog-vended R2 credentials inherit the token's storage permission.** A token with
+  read-only catalog access but read-write storage access can still write objects. So the
+  reader is `Admin Read only`, which is read-only on both halves, rather than a
+  hand-assembled policy that is only half narrowed.
+
+The shipper itself needs **no credential**: it runs in a platform worker and reaches the
+stream through a `[[pipelines]]` binding. Prefer that over the HTTP endpoint wherever the
+sender is a Worker — a binding cannot leak, expire, or be rotated out from under you.
+
+The Access Key ID and Secret Access Key that R2 hands you alongside a token are for the
+S3-compatible API, which nothing on this path uses. Don't record them: the Secret Access
+Key is the SHA-256 of the token value, so they carry nothing the token doesn't.
+
 ## Rotation caveats
 
 - **`SECRET_BOX_KEY`** seals stored connection credentials at rest. Replacing it orphans
@@ -131,6 +184,10 @@ them in the file only to override, and they'll be pushed as secrets that shadow 
   `open()` throws on a keyId mismatch; real rotation needs a keyring box plus a re-seal
   sweep, and the keyId field is ready while the implementation is not.
 - **`SESSION_SECRET`** (either) signs cookies — rotating signs everyone out.
+- **The lake tokens** rotate independently and neither is urgent: replacing
+  `R2_LAKE_SQL_TOKEN` interrupts lake queries until the next `push` + deploy, while
+  replacing `R2_LAKE_CATALOG_TOKEN` also means re-running the pipeline's sink config —
+  `push` cannot do that half, because the token does not live on a worker.
 - Rotating **`PLATFORM_SECRET` / `ROUTER_SECRET`** is a TWO-step move, and **`push` now
   runs both** (#979): it updates the platform workers, then re-puts the pair on every
   deployed vertical script in the dispatch namespace. Vertical scripts receive these as
