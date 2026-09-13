@@ -3883,6 +3883,18 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
 });
 
 /**
+ * A chart window from `?hours=`, in whole hours on [1, 72]. Rounded, not just clamped:
+ * the plane's schema is `.int()`, so `?hours=6.5` would be rejected there and the chart
+ * would say "not available" for what is really a bad parameter. Only an absent or
+ * unparsable value falls back to the default — `?hours=0` is a real request that clamps
+ * to one hour, not a missing one that silently becomes a day (`|| 24` read it as that).
+ */
+function chartHours(raw: string | undefined, fallback = 24): number {
+  const parsed = raw === undefined ? fallback : Number(raw);
+  return Math.min(72, Math.max(1, Math.round(Number.isFinite(parsed) ? parsed : fallback)));
+}
+
+/**
  * The app's own chart series (#1447 step 2) — the same traffic with a time axis, at
  * TENANT grain. It sits beside the deployment route rather than reusing it because the
  * two answer different questions: `/api/deployments/:slug/traffic` plots the script,
@@ -3903,10 +3915,7 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
   const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
   const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
-  // Rounded, not just clamped, for the reason the deployment route gives above: the
-  // plane's schema is `.int()`, so a fractional window would read as "not available"
-  // rather than as the bad parameter it is.
-  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
+  const hours = chartHours(c.req.query('hours'));
   const cp = controlPlaneFor(c.env, node.tenantId);
   const [buckets, deployment] = await Promise.all([
     // Null = the plane cannot bucket; the chart says so rather than drawing a flat line
@@ -4044,10 +4053,8 @@ app.get('/api/deployments/:slug/traffic', async (c) => {
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
-  // Rounded, not just clamped: the plane's schema is `.int()`, so `?hours=6.5` would be
-  // rejected there and the chart would say "not available" for what is really a bad
-  // parameter. The window is also the marker grid, so a fractional one is meaningless.
-  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
+  // The window is also the marker grid, so a fractional one is meaningless — see chartHours.
+  const hours = chartHours(c.req.query('hours'));
   const cp = controlPlaneFor(c.env, node.tenantId);
   const deployments = await listDeploymentsFromCp(cp);
   assertOwned(deployments, slug);
