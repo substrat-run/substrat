@@ -9,6 +9,7 @@ Keep the filled files in a password manager; only the `.example` templates are c
 | Worker | Dir | Deployed name (prod / test) |
 |---|---|---|
 | control-plane | `apps/control-plane` | `substrat-control-plane` / `…-test` |
+| builder | `apps/builder` | `substrat-builder` / `…-test` |
 | dashboard | `apps/dashboard` | `substrat-dashboard` / `…-test` |
 | router | `apps/router` | `substrat-router` / `…-test` |
 
@@ -126,12 +127,13 @@ them in the file only to override, and they'll be pushed as secrets that shadow 
 
 ## Store-only keys (in the file, never pushed)
 
-Everything in `platform.<env>.env` is uploaded to the three workers — that is what `push`
-is. A credential whose home is some *other* service's config therefore needs saying so out
-loud, because the alternative is a key that sits in the file doing nothing and looks
-exactly like a typo. `STORE_ONLY` in `scripts/secrets.mjs` names them and `check` prints
-them under their own heading; `push` excludes them by construction, since it only ever
-walks the manifest.
+`push` uploads only what the manifest maps, each key to the worker(s) among the four
+(control plane, builder, dashboard, router) that name it — a key in `platform.<env>.env`
+that no worker maps goes nowhere. A credential whose home is some *other* service's config
+therefore needs saying so out loud, not because it might be pushed but because the
+alternative is a key that sits in the file doing nothing and looks exactly like a typo.
+`STORE_ONLY` in `scripts/secrets.mjs` names them and `check` prints them under their own
+heading; `push` excludes them by construction, since it only ever walks the manifest.
 
 | Key | Where it actually lives |
 |---|---|

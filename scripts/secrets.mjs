@@ -213,9 +213,11 @@ const MANIFEST = {
  * `push` already only walks MANIFEST, so these are excluded by construction; the list
  * exists so `check` can SAY so. Before it, a key in the file that no worker mapped
  * printed nothing at all — indistinguishable from a typo, which is the same defect
- * #990 fixed for unset-but-needed vars, in the other direction. Everything in this
- * file is uploaded to three workers, so a credential that belongs in one service's
- * config must be visibly marked as not travelling (secrets/README.md, #862).
+ * #990 fixed for unset-but-needed vars, in the other direction. A key leaves the file
+ * only through a MANIFEST mapping, to the worker(s) among the four that map it — so a
+ * credential that belongs in one service's config is in no danger of being pushed; the
+ * danger is that it sits unmapped and unread, which is why it must be visibly marked
+ * as not travelling (secrets/README.md, #862).
  */
 const STORE_ONLY = {
   R2_LAKE_CATALOG_TOKEN: 'handed to `wrangler pipelines setup` — lives in the pipeline config',
