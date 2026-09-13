@@ -3883,6 +3883,65 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
 });
 
 /**
+ * The app's own chart series (#1447 step 2) — the same traffic with a time axis, at
+ * TENANT grain. It sits beside the deployment route rather than reusing it because the
+ * two answer different questions: `/api/deployments/:slug/traffic` plots the script,
+ * which serves every team that installed the vertical, while an app page answers about
+ * this one installation — for the owner too.
+ *
+ * The markers are the other half of that split. A deploy line is a fact about the code,
+ * readable only from the registry the PUBLISHER owns, so an app running somebody else's
+ * vertical resolves no deployment and gets none. That is not a degraded answer: the
+ * traffic is the tenant's to see and the release history is the publisher's, and an empty
+ * marker set is how the page says so.
+ */
+app.get('/api/apps/:scopeId/traffic', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  // Rounded, not just clamped, for the reason the deployment route gives above: the
+  // plane's schema is `.int()`, so a fractional window would read as "not available"
+  // rather than as the bad parameter it is.
+  const hours = Math.min(72, Math.max(1, Math.round(Number(c.req.query('hours') ?? 24) || 24)));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  // Null = the plane cannot bucket; the chart says so rather than drawing a flat line
+  // that reads as silence.
+  const buckets = await cp.tenantMetricsSeries({ scopeIds: [appRow.app_scope_id], hours }).catch(() => null);
+
+  // The registry read is the publisher's, so it is attempted and tolerated: an installed
+  // vertical simply is not among this team's own deployments.
+  const deployments = await listDeploymentsFromCp(cp).catch(() => []);
+  const deployment = deployments.find((d) => d.slug === appRow.vertical_slug);
+  const prodHistory = deployment ? await cp.channelHistory(deployment.slug, 'prod') : [];
+  const releases = deployment
+    ? deriveReleases({ deployment, prodHistory, scopes: [], failures: [], metrics: null }).releases
+    : [];
+
+  return c.json(
+    deriveTrafficSeries({
+      // Mapped field by field rather than handed the wider row, which would satisfy
+      // `TrafficBucketInput` structurally and leave the web client's parity guard
+      // asserting something narrower than what actually crosses.
+      buckets:
+        buckets?.map((b) => ({
+          start: b.start,
+          bucketMinutes: b.bucketMinutes,
+          requests: b.requests,
+          errors: b.errors,
+        })) ?? null,
+      releases,
+      prodHistory,
+      hours,
+      now: new Date(),
+    }),
+  );
+});
+
+/**
  * Promote one of MY verticals to `prod` — the one channel (#524; dev/staging retired). Self-
  * serve while the vertical is PRIVATE (its blast radius is this tenant alone — merge-to-main
  * deploys and dashboard rollback both land here). Prod on a LISTED vertical is refused:

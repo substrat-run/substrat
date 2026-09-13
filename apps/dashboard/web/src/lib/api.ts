@@ -1581,6 +1581,15 @@ export const api = {
   deploymentTraffic: (slug: string, hours: number) =>
     call<TrafficSeries>(`/deployments/${encodeURIComponent(slug)}/traffic?hours=${hours}`),
 
+  /**
+   * The same series for ONE installed app (#1447) — tenant grain, so the answer is this
+   * installation's traffic rather than the script's across every team that installed the
+   * vertical. Nothing renders it yet: the Overview sparkline and the team-level
+   * Observability page are later steps of #1447, and this is the read they both call.
+   */
+  appTraffic: (scopeId: string, hours: number) =>
+    call<TrafficSeries>(`/apps/${encodeURIComponent(scopeId)}/traffic?hours=${hours}`),
+
   /** When this app's migrations actually ran (#1236) — its schema history. */
   appMigrations: (scopeId: string) =>
     call<AppMigrationsView>(`/apps/${encodeURIComponent(scopeId)}/migrations`),
