@@ -45,7 +45,8 @@ export function Observability({
   onScope: (s: string | null) => void;
 }) {
   const [hours, setHours] = useState(24);
-  const [buckets, setBuckets] = useState<TenantMetricsBucket[] | null>(null);
+  /** The read, with the instant it landed — the axis ends there, not at each re-render. */
+  const [read, setRead] = useState<{ buckets: TenantMetricsBucket[]; at: Date } | null>(null);
   /**
    * Why the read failed, or null. NOT folded into an empty bucket list: a control
    * plane with no bucketed tenant-grain reader answers 501, and drawing that as a flat
@@ -54,35 +55,35 @@ export function Observability({
    */
   const [err, setErr] = useState<string | null>(null);
 
-  const scopeIds = useMemo(() => apps.map((a) => a.app_scope_id), [apps]);
-
   useEffect(() => {
     let live = true;
-    setBuckets(null);
+    setRead(null);
     setErr(null);
-    if (scopeIds.length === 0) {
-      setBuckets([]);
-      return;
-    }
+    // "All apps" names no scope: the worker resolves the team's own list, complete, so
+    // the read neither waits on the browser's paged app index nor grows a query string
+    // with it. The index is still needed for labels and silent rows, and App walks it to
+    // exhaustion while this page is open, as it does for Audit.
     api
-      .tenantMetricsSeries({ scopeIds: scopeId ? [scopeId] : scopeIds, hours })
-      .then((b) => live && setBuckets(b))
+      .tenantMetricsSeries({ scopeIds: scopeId ? [scopeId] : undefined, hours })
+      .then((b) => live && setRead({ buckets: b, at: new Date() }))
       .catch((e) => live && setErr(e instanceof Error ? e.message : String(e)));
     return () => {
       live = false;
     };
-  }, [scopeIds, scopeId, hours]);
+  }, [scopeId, hours]);
 
   const view: TrafficChartView | null = useMemo(
     () =>
-      buckets === null
+      read === null
         ? null
         : deriveTrafficChart({
-            buckets,
+            buckets: read.buckets,
             apps: apps.map((a) => ({ scopeId: a.app_scope_id, label: a.name ?? a.app_scope_id })),
             focus: scopeId,
+            hours,
+            now: read.at,
           }),
-    [buckets, apps, scopeId],
+    [read, apps, scopeId, hours],
   );
 
   return (
@@ -157,7 +158,9 @@ const chrome = {
  * one a flat line at the bottom, which is exactly the app somebody is looking for.
  */
 function TrafficChart({ view, hours }: { view: TrafficChartView; hours: number }) {
-  if (view.axis.length === 0) {
+  // The axis always spans the window now, so "nothing ran" is read off the rows: every
+  // app silent (or no app at all) is the one case with no bar worth drawing.
+  if (view.series.every((s) => s.silent)) {
     return (
       <div style={{ ...card, padding: 14, fontSize: 12.5, color: 'var(--text-tertiary)' }}>
         No requests recorded in the last {hours === 1 ? 'hour' : hours === 24 ? '24 hours' : '7 days'}.

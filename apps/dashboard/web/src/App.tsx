@@ -39,9 +39,12 @@ function parsePath(): Route {
   let parts = window.location.pathname.split('/').filter(Boolean);
   // The first segment is the team slug (`/acme-x1y2z3/apps`) unless it's a section
   // (a legacy slug-less path) or a reserved word. Real slugs always carry a ULID
-  // tail (worker's `teamSlug()`), so they can never shadow a section name.
+  // tail (worker's `teamSlug()`), so they can never shadow a section name. A retired
+  // section name stays reserved here for as long as its alias below exists: a slug-less
+  // `/analytics` would otherwise be read as a team called "analytics" and land on the
+  // overview, and the alias would be unreachable.
   let team: string | undefined;
-  if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'api'].includes(parts[0])) {
+  if (parts[0] && !SECTIONS.includes(parts[0] as NavKey) && !['invite', 'deployments', 'analytics', 'api'].includes(parts[0])) {
     team = parts[0];
     parts = parts.slice(1);
   }
@@ -703,12 +706,15 @@ export function App() {
     void loadMoreApps().catch(() => {});
   }, [route.app, apps, appsCursor, appsLoading, loadMoreApps]);
 
-  // The Audit page is a TEAM view over every app: its filter lists them and its rows
-  // name them, and the first page window (20) is neither. So while it is open the same
-  // walk runs to exhaustion, rather than the page showing a shortened scope id for any
-  // app past the window and offering no way to filter on it.
+  // The Audit and Observability pages are TEAM views over every app: their filter lists
+  // them and their rows name them, and the first page window (20) is neither. So while
+  // one is open the same walk runs to exhaustion, rather than the page showing a
+  // shortened scope id for any app past the window and offering no way to filter on it.
+  // Observability's traffic read does not wait on this — the worker resolves "all apps"
+  // itself — but a bucket for an app the index has not reached yet has no row to land
+  // in until the walk gets there.
   useEffect(() => {
-    if (DEV_MOCK || route.section !== 'audit' || appsLoading || !appsCursor) return;
+    if (DEV_MOCK || (route.section !== 'audit' && route.section !== 'observability') || appsLoading || !appsCursor) return;
     void loadMoreApps().catch(() => {});
   }, [route.section, apps, appsCursor, appsLoading, loadMoreApps]);
 

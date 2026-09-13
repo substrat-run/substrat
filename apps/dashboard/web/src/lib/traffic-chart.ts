@@ -56,7 +56,7 @@ export interface TrafficSeriesRow {
 export interface TrafficChartView {
   /** One row per app in scope, busiest first; a single row when one app is chosen. */
   series: TrafficSeriesRow[];
-  /** Every bucket start in the window, ascending — the shared x-axis. */
+  /** Every bucket start in the window, ascending — the shared x-axis, gap-free. */
   axis: string[];
   requests: number;
   errors: number;
@@ -71,19 +71,47 @@ export function deriveTrafficChart(input: {
   apps: readonly { scopeId: string; label: string }[];
   /** Null = all apps. */
   focus: string | null;
+  /** The window asked for — the axis is drawn from it, not from whichever buckets came back. */
+  hours: number;
+  /** The window's end — the caller's clock, so the axis ends where the read did. */
+  now: Date;
 }): TrafficChartView {
-  const { buckets, apps, focus } = input;
+  const { buckets, apps, focus, hours, now } = input;
   const inScope = focus === null ? apps : apps.filter((a) => a.scopeId === focus);
   const wanted = new Set(inScope.map((a) => a.scopeId));
   const rows = buckets.filter((b) => wanted.has(b.scopeId));
 
-  // The axis comes from the buckets that exist. A window with no traffic anywhere has
-  // no axis, and the view says so rather than drawing an empty grid with invented ticks.
-  const axis = [...new Set(rows.map((b) => b.start))].sort();
-  const bucketMinutes = rows[0]?.bucketMinutes ?? 0;
+  // The axis is the WINDOW, not the buckets that happened to come back. The upstream
+  // emits a bucket only where something ran, and an interval every app was quiet in
+  // has no row for any of them — built from rows, the axis would drop it, and the bars
+  // either side would sit adjacent by index with the outage between them compressed to
+  // nothing. So the grid is laid out from the requested hours and the bucket width,
+  // and every slot in it is a point. The width comes from the rows when there are any
+  // and from the plane's own rule (15-minute buckets up to six hours, hourly beyond)
+  // when there are none, so an all-quiet window still has its full run of zeros.
+  const bucketMinutes = rows[0]?.bucketMinutes ?? (hours <= 6 ? 15 : 60);
+  const widthMs = bucketMinutes * 60_000;
+  const end = Math.floor(now.getTime() / widthMs) * widthMs;
+  const start = end - hours * 3_600_000;
+  const axis: string[] = [];
+  for (let t = start; t <= end; t += widthMs) axis.push(new Date(t).toISOString());
+
+  // Snapped to that grid on the way in: the plane's bucket boundary and ours must agree,
+  // or a row lands between two columns and is lost.
+  const slotOf = (iso: string): string | null => {
+    const t = Date.parse(iso);
+    if (Number.isNaN(t)) return null;
+    const slot = Math.floor(t / widthMs) * widthMs;
+    return slot < start || slot > end ? null : new Date(slot).toISOString();
+  };
 
   const series = inScope.map((app) => {
-    const mine = new Map(rows.filter((b) => b.scopeId === app.scopeId).map((b) => [b.start, b]));
+    const mine = new Map<string, TrafficBucketRow>();
+    for (const b of rows) {
+      if (b.scopeId !== app.scopeId) continue;
+      const slot = slotOf(b.start);
+      if (slot !== null) mine.set(slot, b);
+    }
     // Zero-filled across the shared axis: the upstream omits a bucket where nothing
     // happened, so a missing one IS zero, and leaving a hole would draw a line that
     // skips over measured quiet.
