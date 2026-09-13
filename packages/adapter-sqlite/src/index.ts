@@ -297,6 +297,7 @@ import {
   facetEvents,
   readHistory,
   walkEventCause,
+  walkEventEffects,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -5774,6 +5775,14 @@ export class SqliteScopeHost implements ScopeHost {
           result.chain.length,
         );
         return result;
+      },
+      eventEffects: async (actor, tenantId, scopeId, input) => {
+        // #1237 forward: the helper owns the two delivery traps — `delivered_at`
+        // meaning two different things, and an empty list being ambiguous.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const tree = walkEventEffects({ sql: scopedSql(db) }, input.eventId, input.maxNodes);
+        this.recordAccess(actor, 'eventEffects', { tenantId, scopeId }, { eventId: input.eventId }, tree.count);
+        return tree;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeDbFor(tenantId, scopeId);

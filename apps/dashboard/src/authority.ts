@@ -19,6 +19,7 @@ import type {
   HistoryEntry,
   EventFacetResult,
   CauseChain,
+  EffectsTree,
   PermissionRegistry,
   PlatformRequest,
   PrincipalId,
@@ -1612,6 +1613,19 @@ export class TenantNarrowedControlPlane {
     if (input.until !== undefined) q.set('until', input.until);
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/facets?${q}`);
+  }
+
+  /**
+  /**
+   * What one event set off (#1237) — the forward twin of `eventCause`.
+   *
+   * `terminal` rides back untouched, as it does there: a tree that was walked whole
+   * and one cut at the cap are the same shape, and only the flag separates them.
+   */
+  eventEffects(scopeId: ScopeId, input: { eventId: string; maxNodes?: number }): Promise<EffectsTree> {
+    const q = new URLSearchParams({ eventId: input.eventId });
+    if (input.maxNodes !== undefined) q.set('maxNodes', String(input.maxNodes));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/effects?${q}`);
   }
 
   /**

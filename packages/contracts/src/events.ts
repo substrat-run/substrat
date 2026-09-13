@@ -291,6 +291,85 @@ export const causeChain = z.object({
 export type CauseChain = z.infer<typeof causeChain>;
 
 /**
+ * How one consumer's delivery of one event stands (#1237).
+ *
+ * `_substrat_deliveries.delivered_at` carries TWO readings — when a terminal row was
+ * delivered, and when a still-retrying row was last attempted — because the column
+ * predates retry state and is NOT NULL. A view that printed it as "delivered at"
+ * would date a delivery that has not happened, so the state is resolved here and the
+ * timestamp is labelled by it.
+ */
+export const deliveryState = z.enum([
+  /** Ran, and did not throw. */
+  'delivered',
+  /** Ran, threw, and will be tried again — `attempts` says how often it has run. */
+  'retrying',
+  /** Ran, threw, and will not be tried again. The failure stands. */
+  'dead',
+]);
+export type DeliveryState = z.infer<typeof deliveryState>;
+
+export const eventDelivery = z.object({
+  /** The module whose consumer this row is about. */
+  consumer: moduleId,
+  state: deliveryState,
+  /** Delivered: when. Retrying or dead: when it was last attempted. */
+  at: instant,
+  /** The thrown message, for a row that is not `delivered`. */
+  error: z.string().nullable(),
+  attempts: z.number().int().nonnegative(),
+});
+export type EventDelivery = z.infer<typeof eventDelivery>;
+
+/**
+ * One event and what it set off (#1237) — the forward half of the causal spine, and
+ * the honest answer to "expand this invocation".
+ *
+ * Assembled from what is already recorded rather than from spans: which consumers the
+ * event reached (`_substrat_deliveries`), and which events they emitted in turn
+ * (`caused_by`, #1437). What it is NOT is a timing waterfall — nothing in the platform
+ * emits a span for an operation, a permission check or an engine call, so those steps
+ * have no duration to draw and this does not pretend otherwise.
+ */
+export interface EventEffects {
+  event: HistoryEntry;
+  /**
+   * The consumers this event reached.
+   *
+   * EMPTY IS AMBIGUOUS and the reader must be told so: no consumer declares this type,
+   * or dispatch has not run yet. The delivery table records arrivals, not the absence
+   * of them, and nothing here can tell the two apart.
+   */
+  deliveries: EventDelivery[];
+  /** The events emitted in reaction to this one, each with its own effects. */
+  effects: EventEffects[];
+}
+
+/** How far the forward walk got, with the same care as `causeTerminal`. */
+export const effectsTerminal = z.enum([
+  /** Everything reachable was walked. The tree is whole. */
+  'complete',
+  /** The cap was reached; more exists below. */
+  'depth',
+  /** The event asked about is not in this scope's outbox. */
+  'missing',
+  /**
+   * An event was reached twice. Impossible on a sound spine — a cause is always older
+   * than what it caused — so this is an integrity failure rather than a big tree, and
+   * is named as one instead of inviting a reader to ask for a higher limit.
+   */
+  'cycle',
+]);
+export type EffectsTerminal = z.infer<typeof effectsTerminal>;
+
+export interface EffectsTree {
+  root: EventEffects | null;
+  terminal: EffectsTerminal;
+  /** Events in the tree, the root included — what the cap was spent on. */
+  count: number;
+}
+
+/**
  * One event as it leaves the scope for Tier 2 (#1334) — the exact-history lake
  * the master plan commits to (§5.3: "domain events → Pipelines → Iceberg on R2").
  *

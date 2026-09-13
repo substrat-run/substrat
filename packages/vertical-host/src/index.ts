@@ -60,9 +60,12 @@ import {
   entityHistoryInput,
   eventFacetInput,
   eventCauseInput,
+  eventEffectsInput,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventCauseInput,
+  type EventEffectsInput,
+  type EffectsTree,
   type CauseChain,
   type EventFacetResult,
   type HistoryEntry,
@@ -123,6 +126,7 @@ export interface VerticalScopeHost {
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
+  eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -423,6 +427,19 @@ export function mountPlatformSurface<Env extends object>(
   // #1237: the causal walk for a scope THIS vertical holds. Same shape as the two
   // reads below it — the control plane cannot reach a dispatch vertical's DO, so the
   // vertical answers for its own spine.
+  // #1237 forward: what one event set off, for a scope THIS vertical holds.
+  app.get('/internal/effects', async (c) =>
+    c.json(
+      await deps.hostFor(c.env).eventEffectsLocal(
+        scopeIdOf.parse(c.req.query('scopeId')),
+        eventEffectsInput.parse({
+          eventId: c.req.query('eventId'),
+          maxNodes: c.req.query('maxNodes') ? Number(c.req.query('maxNodes')) : undefined,
+        }),
+      ),
+    ),
+  );
+
   app.get('/internal/cause', async (c) =>
     c.json(
       await deps.hostFor(c.env).eventCauseLocal(

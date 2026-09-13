@@ -72,6 +72,8 @@ import {
   type DrainedEvent,
   type EntityHistoryInput,
   type EventCauseInput,
+  type EventEffectsInput,
+  type EffectsTree,
   type CauseChain,
   type EventFacetInput,
   type EventFacetResult,
@@ -942,6 +944,7 @@ interface ScopeStubRpc {
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
   facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   eventCause(input: EventCauseInput): Promise<CauseChain>;
+  eventEffects(input: EventEffectsInput): Promise<EffectsTree>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1692,6 +1695,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */
   async facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
     return this.scopeStub(scopeId).facetEvents(input);
+  }
+
+  /** What one event set off (#1237) on this host's own scope — the vertical-host read. */
+  async eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree> {
+    return this.scopeStub(scopeId).eventEffects(input);
   }
 
   /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
@@ -3963,6 +3971,13 @@ export class CloudflareScopeHost implements ScopeHost {
           result.chain.length,
         );
         return result;
+      },
+      eventEffects: async (actor, tenantId, scopeId, input: EventEffectsInput): Promise<EffectsTree> => {
+        // K-3 cross-check on the directory BEFORE the scope DO, like every read here.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const tree = await this.scopeStub(scopeId).eventEffects(input);
+        await this.recordAccess(actor, 'eventEffects', { tenantId, scopeId }, { eventId: input.eventId }, tree.count);
+        return tree;
       },
       readScopeTable: async (
         actor,

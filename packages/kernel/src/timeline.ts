@@ -8,6 +8,12 @@ import {
   type EventId,
   type HistoryEntry,
   type CauseChain,
+  type EffectsTree,
+  type EffectsTerminal,
+  type EventEffects,
+  type EventDelivery,
+  type DeliveryState,
+  type ModuleId,
   type ImpersonationStamp,
   type Instant,
   type ListPage,
@@ -314,6 +320,125 @@ export function walkEventCause(
   }
   // Only reachable if the loop condition is changed to admit a null start.
   return { chain, terminal: 'missing' };
+}
+
+interface DeliveryRow {
+  consumer_module: string;
+  delivered_at: string;
+  error: string | null;
+  attempts: number;
+  next_attempt_at: string | null;
+}
+
+/**
+ * Resolve one delivery row's state.
+ *
+ * The subtlety the column forces: `delivered_at` is NOT NULL and predates retry state,
+ * so it means "delivered at" on a terminal row and "last attempted at" on a pending
+ * one. Printing it under one label would date a delivery that has not happened.
+ *
+ * `next_attempt_at IS NOT NULL` is the pending marker (#100); consumers leave it at
+ * its default and keep the older semantics, where a row means "do not deliver again".
+ * So: pending → retrying, else an error → dead, else delivered.
+ */
+function deliveryOf(row: DeliveryRow): EventDelivery {
+  const state: DeliveryState =
+    row.next_attempt_at !== null ? 'retrying' : row.error !== null ? 'dead' : 'delivered';
+  return {
+    consumer: row.consumer_module as ModuleId,
+    state,
+    at: row.delivered_at as Instant,
+    error: row.error,
+    attempts: row.attempts,
+  };
+}
+
+/**
+ * Walk forward from one event: what it set off (#1237).
+ *
+ * The mirror of `walkEventCause`, and the honest answer to "expand this invocation".
+ * It is assembled from what the spine already recorded — which consumers the event
+ * reached, and which events they emitted in turn (`caused_by`, #1437) — rather than
+ * from spans, because nothing in the platform emits a span for an operation, a
+ * permission check or an engine call. So this is a tree of recorded steps with real
+ * timestamps, NOT a timing waterfall, and it does not pretend to be one.
+ *
+ * Sanctioned for the same reason the backwards walk is: the two readings of
+ * `delivered_at` and the ambiguity of an empty delivery list are both traps a
+ * hand-rolled join falls into, and both are resolved here once.
+ */
+export function walkEventEffects(
+  ctx: TimelineReader,
+  eventId: EventId,
+  maxNodes = 50,
+): EffectsTree {
+  const cap = Math.min(Math.max(Math.floor(maxNodes) || 1, 1), 500);
+  const seen = new Set<string>();
+  let terminal: EffectsTerminal = 'complete';
+  let count = 0;
+
+  const readEvent = (id: string): HistoryEntry | undefined => {
+    const rows = ctx.sql.query<HistoryRow>(
+      `SELECT ${HISTORY_COLUMNS} FROM _substrat_outbox WHERE id = ? LIMIT 1`,
+      [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapHistoryRow(row);
+  };
+
+  const build = (entry: HistoryEntry): EventEffects => {
+    count += 1;
+    const deliveries = ctx.sql
+      .query<DeliveryRow>(
+        `SELECT consumer_module, delivered_at, error, attempts, next_attempt_at
+           FROM _substrat_deliveries WHERE event_id = ? ORDER BY consumer_module`,
+        [entry.id],
+      )
+      .map(deliveryOf);
+
+    const effects: EventEffects[] = [];
+    // Only descend while there is budget. The cap is on NODES rather than depth: a
+    // wide fan-out exhausts a reader's screen exactly as a deep one does, and a tree
+    // cut without saying so reads as a complete one.
+    if (count < cap) {
+      const children = ctx.sql.query<{ id: string }>(
+        'SELECT id FROM _substrat_outbox WHERE caused_by = ? ORDER BY id',
+        [entry.id],
+      );
+      for (const child of children) {
+        if (count >= cap) {
+          terminal = 'depth';
+          break;
+        }
+        if (seen.has(child.id)) {
+          // A cause is always older than what it caused, so this cannot happen on a
+          // sound spine. Named as the integrity failure it is rather than as `depth`,
+          // which would invite the reader to retry with a bigger limit.
+          terminal = 'cycle';
+          continue;
+        }
+        seen.add(child.id);
+        const row = readEvent(child.id);
+        // The id came from this very table, so its absence is a race with nothing —
+        // reported rather than skipped, for the same reason the backwards walk does.
+        if (row === undefined) {
+          terminal = 'missing';
+          continue;
+        }
+        effects.push(build(row));
+      }
+    } else {
+      terminal = 'depth';
+    }
+
+    return { event: entry, deliveries, effects };
+  };
+
+  seen.add(eventId);
+  const root = readEvent(eventId);
+  if (root === undefined) return { root: null, terminal: 'missing', count: 0 };
+  const tree = build(root);
+  return { root: tree, terminal, count };
 }
 
 /**

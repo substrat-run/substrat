@@ -2040,6 +2040,30 @@ app.get('/api/apps/:scopeId/cause', async (c) => {
   );
 });
 
+/**
+ * #1237 forward: what one event set off — the consumers it reached and the events
+ * they emitted in turn.
+ *
+ * The honest counterpart to a trace view. There is no timing here because the
+ * platform records none per operation; what it does record is which steps happened
+ * and when, which is what this returns.
+ */
+app.get('/api/apps/:scopeId/effects', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.eventEffects(scope, {
+      eventId: c.req.query('eventId') ?? '',
+      maxNodes: c.req.query('maxNodes') ? Number(c.req.query('maxNodes')) : undefined,
+    }),
+  );
+});
+
 app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
