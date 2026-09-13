@@ -14,7 +14,7 @@ Keep the filled files in a password manager; only the `.example` templates are c
 
 `apps/docs` is a static Pages site (no secrets). Demo verticals keep their own `.dev.vars`
 — out of scope here. (Callout, Meridian and Manyfold are OIDC-only and run no credential
-store at all; only the shop, rally, handlebar and the auth-server issuer still use Better
+store at all; only the shop, handlebar and the auth-server issuer still use Better
 Auth.)
 
 ## Connector credentials are a different file, on purpose

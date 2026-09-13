@@ -43,10 +43,12 @@ which keeps the address out of the spine.
 
 ## A worked example
 
-`demos/rally` is the reference: [RallyPoint](/verticals/rallypoint#invites-joining-the-club)
-composes `sendInvite` in `rally/invite-player`, keeps the player's name and party ref in
-its own `rally_invited_player` table keyed by the invitation id, and creates its
-`rally_members` row from a consumer on `invites.accepted`.
+The shape a vertical takes around it: compose `sendInvite` inside your own
+`<vertical>/invite-<person>` operation, keep the invitee's name and party ref in your own
+table keyed by the invitation id, and create your membership row from a consumer on
+`invites.accepted`. No demo in the repo composes this engine today — the racket-club demo
+that did was removed — so the engine's own suite (`engines/invites/test/`) is the working
+reference for each call.
 
 ## Extending it
 

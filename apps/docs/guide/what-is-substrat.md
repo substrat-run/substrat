@@ -97,7 +97,6 @@ Substrat is pre-release (0.x). What exists today:
 | Platform surfaces — [control plane](/platform/control-plane), [console](/platform/console), [router](/platform/router), [dashboard](/platform/dashboard) | private deployments | Working (self-serve deploy foundation) |
 | Callout (field service) — the canonical composition; first CP-less pushable vertical | [`demos/callout`](/verticals/callout) | Working |
 | Handlebar (bike workshop) — engine reuse under new vocabulary | [`demos/handlebar`](/verticals/handlebar) | Working |
-| RallyPoint (padel club) — the booking invariant shape | [`demos/rally`](/verticals/rallypoint) | Working |
 | Kallkälla (coffee shop) — two audiences, one API; commerce | [`demos/shop`](/verticals/shop) | Working |
 | Meridian (HR) — leave/absence, time, expenses, onboarding; one role-adaptive app | [`demos/meridian`](/verticals/meridian) | Working |
 | Manyfold (headless CMS) — multi-scope, *site = scope*; the editorial lifecycle as the invariant | [`demos/manyfold`](/verticals/manyfold) | Working |

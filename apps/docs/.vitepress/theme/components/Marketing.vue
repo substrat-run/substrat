@@ -42,11 +42,6 @@ const demos = [
     uses: 'kernel — protocol for onboarding only',
   },
   {
-    name: 'RallyPoint', domain: 'padel club', layer: 'engine', href: '/verticals/rallypoint',
-    body: 'Allocation over an interval rather than a state machine, the lost race rejected with no locking code anywhere, and a player who holds no role at all reaching their own booking.',
-    uses: 'booking · invoicing · invites',
-  },
-  {
     name: 'Manyfold', domain: 'headless CMS', layer: 'kernel', href: '/verticals/manyfold',
     body: 'Draft → review → publish that cannot skip, append-only revisions, freeze-on-publish with a content hash. One tenant runs many sites, each its own scope.',
     uses: 'kernel only — no engine',
@@ -200,7 +195,7 @@ const stack = [
     key: 'vertical', name: 'Verticals', owner: 'yours',
     role: 'Vocabulary, workflows, screens, pricing.',
     chips: [
-      ['Callout', 'field service'], ['Meridian', 'HR'], ['RallyPoint', 'padel club'],
+      ['Callout', 'field service'], ['Meridian', 'HR'], ['Kallkälla', 'coffee shop'],
       ['Manyfold', 'CMS'], ['ticket0', 'support desk'],
     ],
   },

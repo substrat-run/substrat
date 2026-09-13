@@ -67,7 +67,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `packages/ui` | Shared UI primitives (dashboard + console) | AGPL, private |
 | `engines/*` | The seven domain engines — `workorder`, `invoicing`, `booking`, `protocol`, `invites`, `metering`, `absence` | AGPL + commercial |
 | `connectors/*` | Third-party capability connectors (D-18 bucket 3) — host code, never module code. All three (`scrive`, `fortnox`, `planima`) are published | AGPL + commercial |
-| `demos/*` | Ten directories: the nine demo verticals — `callout`, `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `rally`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
+| `demos/*` | Nine directories: the eight demo verticals — `callout`, `todo`, `ticket0`, `meridian`, `manyfold`, `shop`, `handlebar`, `tock` — plus `auth-server` (a Better Auth issuer, not a vertical) | Apache-2.0, private |
 | `apps/router` | The environment-wide router — hostname → (tenant, scope, surface), then dispatch | private |
 | `apps/control-plane` | The control plane, and the worker that serves the console | private |
 | `apps/console` | Control-plane admin console (tenants, fleet, admin log, permissions) | private |
@@ -201,7 +201,6 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
   API :8873, storefront :5273, back-office :5274 (`ADMIN_PORT=…`). Customer-facing and
   staff-facing surfaces are separate Vite apps against one API — the split is chrome and
   audience, never a second source of truth. Four processes now, with the dev issuer first.
-  Rally is the same shape: issuer + API :8877 + player :5277 + manager console :5278.
 - One vitest scenario per demo vertical: `pnpm --filter @substrat-run/demo-callout test`
 - `pnpm --filter @substrat-run/docs cf:deploy` — build + ship the docs site to
   [substrat.net](https://substrat.net) (Cloudflare Pages). Every **platform** workspace that

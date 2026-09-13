@@ -104,8 +104,6 @@ several are installable from the hosted marketplace.
   metered per tenant.
 - **[Kallkälla Kaffe](demos/shop/)** — e-commerce: catalog, cart, stock, discounts,
   orders; a customer storefront and a staff back-office over one API.
-- **[RallyPoint](demos/rally/)** — racket-club booking on the booking engine, and the
-  end-to-end walk of invites.
 - **[Handlebar](demos/handlebar/)** — Callout's engines re-vocabularied to a bike
   workshop; what `npm create substrat` scaffolds is a smaller cousin.
 - **[Tock](demos/tock/)** — measured file loads: a schema the user edits at runtime and data

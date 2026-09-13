@@ -183,8 +183,8 @@ still be mandatory on your machine, where no such delivery exists.
 - **`autoPort: false` everywhere, deliberately.** Every demo vertical is OIDC-only and
   redirects to a fixed callback, so a silently reassigned port would break the *login*, not
   the boot — a much worse failure to debug. The cost is
-  that a genuine clash is fatal: `demos/rally` and `demos/auth-server` both sit on `:8877`
-  and `:5277`, so they cannot run at the same time without `PORT=… WEB_PORT=…`.
+  that a genuine clash is fatal: two demos declaring the same port cannot run at the same
+  time without `PORT=… WEB_PORT=…`.
 - **A process can bind more than the port it declares.** Callout's `api` entry starts the
   vertical API on `:8871` *and* the co-located control plane on `:8788`; only the first is
   declared, because only the first is the one to attach a browser to. If `:8788` is taken —
@@ -254,10 +254,10 @@ way to change the local world:
 
 ## Adding another application
 
-A "new application" is a new **vertical**. Today each of the nine demo verticals
-(`demos/{callout,handlebar,manyfold,meridian,rally,shop,ticket0,tock,todo}`) ships its own dev server —
+A "new application" is a new **vertical**. Today each of the eight demo verticals
+(`demos/{callout,handlebar,manyfold,meridian,shop,ticket0,tock,todo}`) ships its own dev server —
 Callout's is `demos/callout/src/server.ts` — and each composes its engines + module into a host.
-(A tenth directory, `demos/auth-server`, is a shared OIDC provider, not a business vertical.) To
+(A ninth directory, `demos/auth-server`, is a shared OIDC provider, not a business vertical.) To
 scaffold one, follow [Getting started](/guide/getting-started) with the engines you need, and
 [Deploying a vertical](/guide/deploying) when it's ready to ship.
 
