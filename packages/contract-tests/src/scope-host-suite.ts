@@ -3,6 +3,7 @@ import { connectorCalls, connectorTestFetch, resetConnectorCalls } from './conne
 import {
   connectionId,
   dataSubjectId,
+  eventId,
   instant,
   moduleManifest,
   orgId,
@@ -4357,6 +4358,34 @@ export function scopeHostContractSuite(
       // And the pair is what identifies a consumer emit at all: `operation` alone is
       // null both for a consumer and for a row written before that column existed.
       expect(step2.operation === null && step2.caused_by !== null).toBe(true);
+    });
+
+    it('walks a real chain back to the operation that started it (#1237)', async () => {
+      // The end-to-end half. `walkEventCause`'s own suite pins the five terminals over
+      // a hand-built table; this proves the wiring — that a chain produced by an actual
+      // dispatch is walkable through the platform verb, on both adapters.
+      const sWalk = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sWalk, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sWalk);
+      const stub = await host.getScope(alice, t1, sWalk);
+      await stub.invoke('flow/produce');
+
+      const rows = (await stub.invoke('flow/causes')) as { id: string; type: string }[];
+      const step2 = rows.find((r) => r.type === 'flow.step2')!;
+      const step1 = rows.find((r) => r.type === 'flow.step1')!;
+
+      const result = await host.admin.eventCause(staff, t1, sWalk, {
+        eventId: eventId.parse(step2.id),
+      });
+      // Newest first, and the walk reaches the operation two hops up — the answer to
+      // "why does this exist" that no amount of sampled telemetry can reconstruct.
+      expect(result.chain.map((e) => e.id)).toEqual([step2.id, step1.id]);
+      expect(result.terminal).toBe('operation');
+      expect(result.chain.at(-1)!.operation).toBe('flow/produce');
+      // The consumer hop itself records no operation; that is what made the trail
+      // unfollowable before the cause was stored beside it.
+      expect(result.chain[0]!.operation).toBeNull();
+      expect(result.chain[0]!.causedBy).toBe(step1.id);
     });
 
     it('does not leak a delivered event\'s id onto a later unrelated emit (#1237)', async () => {

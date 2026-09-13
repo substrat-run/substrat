@@ -71,6 +71,8 @@ import {
   type IssueEntry,
   type DrainedEvent,
   type EntityHistoryInput,
+  type EventCauseInput,
+  type CauseChain,
   type EventFacetInput,
   type EventFacetResult,
   type HistoryEntry,
@@ -939,6 +941,7 @@ interface ScopeStubRpc {
   undrainedEvents(limit: number): Promise<DrainedEvent[]>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
   facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
+  eventCause(input: EventCauseInput): Promise<CauseChain>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1689,6 +1692,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Facet this host's own scope's outbox (#1239) — the vertical-host read. */
   async facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult> {
     return this.scopeStub(scopeId).facetEvents(input);
+  }
+
+  /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
+  async eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain> {
+    return this.scopeStub(scopeId).eventCause(input);
   }
 
   /** One record's event history (#1235) on this host's own scope — the vertical-host read. */
@@ -3942,6 +3950,19 @@ export class CloudflareScopeHost implements ScopeHost {
           page.entries.length,
         );
         return page;
+      },
+      eventCause: async (actor, tenantId, scopeId, input: EventCauseInput): Promise<CauseChain> => {
+        // K-3 cross-check on the directory BEFORE the scope DO, like every read here.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const result = await this.scopeStub(scopeId).eventCause(input);
+        await this.recordAccess(
+          actor,
+          'eventCause',
+          { tenantId, scopeId },
+          { eventId: input.eventId },
+          result.chain.length,
+        );
+        return result;
       },
       readScopeTable: async (
         actor,

@@ -1,5 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
-import type { EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { CauseChain, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -421,7 +421,7 @@ export interface AppliedMigration {
  * null = nobody was impersonating, the ordinary case. See `lib/history.ts`, which
  * is where each one is turned into words.
  */
-export type { HistoryEntry } from '@substrat-run/contracts';
+export type { HistoryEntry, CauseChain, CauseTerminal } from '@substrat-run/contracts';
 
 /**
  * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
@@ -1558,6 +1558,12 @@ export const api = {
   /** Facets over an app's events (#1239) — narrow, group, count. Both window bounds
    *  cross: a dropped `until` answers about a wider slice than was asked for, and
    *  nothing about the answer says so. */
+  /** Why one event exists (#1237) — its causal chain, newest first. */
+  appEventCause: (scopeId: string, eventId: string) =>
+    call<CauseChain>(
+      `/apps/${encodeURIComponent(scopeId)}/cause?eventId=${encodeURIComponent(eventId)}`,
+    ),
+
   appFacets: (
     scopeId: string,
     q: { groupBy?: string; field?: string; type?: string; since?: string; until?: string },

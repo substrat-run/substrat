@@ -7,6 +7,7 @@ import {
   type EventAuthorization,
   type EventId,
   type HistoryEntry,
+  type CauseChain,
   type ImpersonationStamp,
   type Instant,
   type ListPage,
@@ -245,6 +246,74 @@ export function readHistory(
   const { sql, params } = timelineQuery(HISTORY_COLUMNS, entity, page, limit);
   const rows = ctx.sql.query<HistoryRow>(sql, params);
   return pageOf(rows.map(mapHistoryRow), limit, (entry) => entry.id);
+}
+
+/**
+ * Walk one event's causal chain backwards (#1237) — "this invoice exists; what
+ * started that?"
+ *
+ * The sanctioned read, for the reason `readHistory` is: the walk's whole value is in
+ * telling five endings apart, and a hand-rolled loop over `caused_by` distinguishes
+ * none of them.
+ *
+ * **A null cause is two different endings, and the pair with `operation` decides
+ * which.** An event with an operation and no cause is a COMPLETE chain: an operation
+ * emitted it directly, and there is nothing above it. An event with neither is a
+ * TRUNCATED one: something emitted it — a consumer, which records no operation — back
+ * when the cause was not being recorded (pre-#1237). Reading the second as the first
+ * presents a fragment as the whole story, which is the single thing this view must
+ * never do; a reader would conclude a consumer started a chain it merely continued.
+ *
+ * Bounded, and terminating even on input the spine should not be able to produce.
+ * `maxDepth` caps the walk and reports `depth` rather than trimming silently, and a
+ * revisited id ends it as `cycle`: ids are monotonic and a cause is always older, so
+ * a cycle is impossible — but "impossible" is not a reason for a read on the audit
+ * spine to be able to hang, and it is a reason to report it as the integrity failure
+ * it is rather than as a long chain. `depth` promises more above; a cycle has none.
+ */
+export function walkEventCause(
+  ctx: TimelineReader,
+  eventId: EventId,
+  maxDepth = 25,
+): CauseChain {
+  const depth = Math.min(Math.max(Math.floor(maxDepth) || 1, 1), 100);
+  const chain: HistoryEntry[] = [];
+  const seen = new Set<string>();
+  let next: string | null = eventId;
+
+  while (next !== null) {
+    if (seen.has(next)) {
+      // Unreachable by construction; see the docstring. Its own terminal, because
+      // every other one is a claim this is not: not a clean ending, and not a cap
+      // with more chain above it to ask for.
+      return { chain, terminal: 'cycle' };
+    }
+    seen.add(next);
+    const rows = ctx.sql.query<HistoryRow>(
+      `SELECT ${HISTORY_COLUMNS} FROM _substrat_outbox WHERE id = ? LIMIT 1`,
+      [next],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      // The FIRST id missing means the caller named an event this scope does not
+      // hold; a later one means the spine lost a row it should still have. Both are
+      // 'missing' — the view says the trail cannot be followed further, and does not
+      // pass either off as a complete chain.
+      return { chain, terminal: 'missing' };
+    }
+    const entry = mapHistoryRow(row);
+    chain.push(entry);
+    if (entry.causedBy === null) {
+      // THE distinction. An operation emitted this: the chain is whole. Neither an
+      // operation nor a cause: something emitted it before causes were recorded, and
+      // the walk has run out of trail rather than reached the beginning.
+      return { chain, terminal: entry.operation === null ? 'unrecorded' : 'operation' };
+    }
+    if (chain.length >= depth) return { chain, terminal: 'depth' };
+    next = entry.causedBy;
+  }
+  // Only reachable if the loop condition is changed to admit a null start.
+  return { chain, terminal: 'missing' };
 }
 
 /**

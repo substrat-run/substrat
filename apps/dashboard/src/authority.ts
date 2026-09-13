@@ -18,6 +18,7 @@ import type {
   Page,
   HistoryEntry,
   EventFacetResult,
+  CauseChain,
   PermissionRegistry,
   PlatformRequest,
   PrincipalId,
@@ -1611,6 +1612,19 @@ export class TenantNarrowedControlPlane {
     if (input.until !== undefined) q.set('until', input.until);
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/facets?${q}`);
+  }
+
+  /**
+   * One event's causal chain (#1237) — "this record exists; what started that?"
+   *
+   * `terminal` rides back untouched: it is the difference between a chain that
+   * reached its beginning and one that ran out of recorded trail, and a caller that
+   * flattened it would present a fragment as the whole story.
+   */
+  eventCause(scopeId: ScopeId, input: { eventId: string; maxDepth?: number }): Promise<CauseChain> {
+    const q = new URLSearchParams({ eventId: input.eventId });
+    if (input.maxDepth !== undefined) q.set('maxDepth', String(input.maxDepth));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/cause?${q}`);
   }
 
   /**

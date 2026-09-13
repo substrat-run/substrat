@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { eventId } from './ids.js';
 
 /**
  * Read-only introspection of a scope's own database — the console/dashboard "Data"
@@ -70,6 +71,17 @@ export const entityHistoryInput = z.object({
   cursor: z.string().min(1).optional(),
 });
 export type EntityHistoryInput = z.infer<typeof entityHistoryInput>;
+
+/** Which event to walk back from (#1237), and how far to follow the trail. */
+export const eventCauseInput = z.object({
+  eventId,
+  /**
+   * How many links to follow. Capped, and the walk reports `depth` rather than
+   * trimming quietly — a chain cut short without saying so reads as a complete one.
+   */
+  maxDepth: z.number().int().positive().max(100).optional(),
+});
+export type EventCauseInput = z.infer<typeof eventCauseInput>;
 
 /**
  * What to group an event facet by (#1239 stage 1). Either an envelope column —
