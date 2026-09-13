@@ -1,4 +1,5 @@
 import type { OpsFailureEntry, SweepRunEntry } from '@substrat-run/contracts';
+import { bucketGrid, bucketMinutesFor } from './releases.js';
 
 /**
  * The overlays an app's traffic chart draws (#1447 step 3b) — the declared facts that
@@ -47,6 +48,19 @@ export const OVERLAY_MARKER_CAP = 300;
 /** How much of a failure's message a tooltip carries — the first line's worth. */
 const DETAIL_CHARS = 120;
 
+/**
+ * The window the overlays cover, as epoch ms — the SAME grid the traffic series is drawn
+ * on, not `now - hours`. The series snaps its start back to a bucket boundary
+ * (`bucketGrid`), so its first column can begin up to a bucket before the exact request
+ * time; a window that started at the request time would drop every marker in that
+ * column's opening minutes and clip a stale span the same distance into the visible
+ * chart. `end` is the clock, since no recorded instant lies past it. The worker windows
+ * its reads with this too, so what is fetched and what is drawn agree.
+ */
+export function overlayWindow(hours: number, now: Date): { start: number; end: number } {
+  return { start: bucketGrid(bucketMinutesFor(hours), hours, now).start, end: now.getTime() };
+}
+
 /** One applied migration, as the plane's schema-history read delivers it. */
 interface AppliedMigrationInput {
   moduleId: string;
@@ -59,15 +73,14 @@ export function deriveAppOverlays(input: {
   migrations: AppliedMigrationInput[];
   sweepRuns: SweepRunEntry[];
   failures: OpsFailureEntry[];
-  /** The app the chart is about — the ops-failure read is per VERTICAL, so it is narrowed here. */
+  /** The app the chart is about. The reads are narrowed to it upstream; this is the check that they were. */
   scopeId: string;
   hours: number;
   /** The window's end — the caller's clock, so the overlays and the series agree. */
   now: Date;
 }): AppOverlays {
   const { migrations, sweepRuns, failures, scopeId, hours, now } = input;
-  const end = now.getTime();
-  const start = end - hours * 3_600_000;
+  const { start, end } = overlayWindow(hours, now);
   const at = (iso: string | null): number => (iso === null ? NaN : Date.parse(iso));
   const inWindow = (iso: string | null): boolean => {
     const t = at(iso);
@@ -94,9 +107,9 @@ export function deriveAppOverlays(input: {
     markers.push({ at: r.at, kind: 'run-failed', label: r.unit, detail: r.error });
   }
 
-  // The ops-failure read is per vertical (the record carries no scope filter), so rows
-  // belonging to the team's OTHER installations of the same vertical are dropped here —
-  // drawing them would put another tenant's incident on this app's chart.
+  // The worker reads failures narrowed to this scope; the check stays here because the
+  // consequence of a row slipping through is drawing another installation's incident on
+  // this app's chart, and a rule that grave belongs where the table test can reach it.
   for (const f of failures) {
     if (f.scopeId !== scopeId || !inWindow(f.at)) continue;
     markers.push({
@@ -128,6 +141,13 @@ export function deriveAppOverlays(input: {
  *
  * `skipped` neither opens nor closes: it means no event of this type has ever landed, and
  * never-seen is not stale — a brand-new install must not shade its whole chart.
+ *
+ * Because the rows are change-gated, the read behind this must NOT be windowed to the
+ * chart: an expectation that went stale last week and has not recovered has exactly one
+ * row, last week's, and a `since` at the window's start would drop it — the app reads
+ * healthy for as long as nothing changes, which is the opposite of what happened. The
+ * worker reads freshness rows unwindowed (there are as many as there were verdict
+ * changes, not passes), and this function windows the SPANS, not the rows.
  */
 function staleSpans(sweepRuns: SweepRunEntry[], start: number, end: number, now: Date): OverlaySpan[] {
   const byUnit = new Map<string, SweepRunEntry[]>();

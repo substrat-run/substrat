@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { OpsFailureEntry, SweepRunEntry } from '@substrat-run/contracts';
-import { OVERLAY_MARKER_CAP, deriveAppOverlays } from '../src/overlays.js';
+import { OVERLAY_MARKER_CAP, deriveAppOverlays, overlayWindow } from '../src/overlays.js';
 
 /**
  * The overlay rules (#1447 step 3b). Every one of them is about what an instant MEANS —
@@ -155,6 +155,43 @@ describe('deriveAppOverlays', () => {
     expect(markers[markers.length - 1]!.detail).toBe('m0');
     expect(markers.some((m) => m.detail === `m${OVERLAY_MARKER_CAP + 4}`)).toBe(false);
     expect(derive({ failures: many.slice(0, OVERLAY_MARKER_CAP) }).truncated).toBe(false);
+  });
+
+  describe('the window is the series\' grid, not the request time', () => {
+    // 12:37 on a 24h chart: the traffic series snaps its first column back to 12:00
+    // yesterday, so the overlays must start there too — a fact at 12:20 yesterday sits
+    // inside the first drawn column and dropping it would leave that column unexplained.
+    const AT_1237 = new Date('2026-09-13T12:37:00.000Z');
+    const unit = `${SCOPE}:receipt.landed`;
+
+    it('starts on the bucket boundary the chart draws from', () => {
+      expect(overlayWindow(24, AT_1237)).toEqual({
+        start: Date.parse('2026-09-12T12:00:00.000Z'),
+        end: AT_1237.getTime(),
+      });
+      // 6h and under buckets by the quarter hour, so the snap is to 12:30.
+      expect(overlayWindow(6, AT_1237).start).toBe(Date.parse('2026-09-13T06:30:00.000Z'));
+    });
+
+    it('keeps a marker inside the first column\'s opening minutes', () => {
+      const { markers } = derive({
+        now: AT_1237,
+        failures: [failure({ at: '2026-09-12T12:20:00.000Z' })],
+      });
+      expect(markers.map((m) => m.at)).toEqual(['2026-09-12T12:20:00.000Z']);
+    });
+
+    it('clips a stale span to the drawn edge, not to the request time', () => {
+      const { spans } = derive({
+        now: AT_1237,
+        sweepRuns: [freshness(unit, '2026-09-10T08:00:00.000Z', 'failed'), freshness(unit, '2026-09-12T12:20:00.000Z', 'ok')],
+      });
+      // The recovery at 12:20 lies inside the first column: the span is 12:00–12:20,
+      // where a request-time window would have dropped it as "closed before the window".
+      expect(spans).toEqual([
+        { from: '2026-09-12T12:00:00.000Z', to: '2026-09-12T12:20:00.000Z', kind: 'stale', label: unit },
+      ]);
+    });
   });
 
   describe('stale spans', () => {

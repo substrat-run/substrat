@@ -33,7 +33,7 @@ import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, 
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTeamSeries, deriveTrafficSeries } from './releases.js';
-import { deriveAppOverlays } from './overlays.js';
+import { deriveAppOverlays, overlayWindow } from './overlays.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
@@ -4080,22 +4080,40 @@ app.get('/api/apps/:scopeId/overlays', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const hours = chartHours(c.req.query('hours'));
   const now = new Date();
-  const since = new Date(now.getTime() - hours * 3_600_000).toISOString();
+  // The series' own grid, not `now - hours`: the chart's first column starts on a bucket
+  // boundary, and a read windowed from the request time would miss that column's
+  // opening minutes (see `overlayWindow`).
+  const since = new Date(overlayWindow(hours, now).start).toISOString();
   const cp = controlPlaneFor(c.env, node.tenantId);
   const scope = scopeId.parse(appRow.app_scope_id);
-  const [migrations, sweepRuns, failures] = await Promise.all([
+  const [migrations, failedRuns, freshness, failures] = await Promise.all([
     // Each read is tolerated on its own: an overlay source that cannot answer costs its
     // kind, not the chart. `appliedMigrations` already answers null for a failed read.
     cp.appliedMigrations(scope),
-    // Every sweep kind, not just `schedule`: the freshness rows are the stale spans.
-    cp.listSweepRuns({ scopeId: scope, since, limit: 500 }).catch(() => []),
-    // The failure record carries no scope filter, so this reads the vertical and the
-    // derivation narrows to the scope — a team may run the same vertical twice.
-    cp.listOpsFailures({ vertical: appRow.vertical_slug, since, limit: 400 }).catch(() => []),
+    // Only the failed schedule runs, and only in the window: the derivation draws nothing
+    // else from this kind, and one shared page would let a busy schedule's `ok` rows
+    // crowd out the failures the chart exists to show.
+    cp.listSweepRuns({ scopeId: scope, kind: 'schedule', outcome: 'failed', since, limit: 500 }).catch(() => []),
+    // Freshness rows UNWINDOWED, on purpose: they are change-gated, so an expectation
+    // that went stale before the window and never recovered has one row, before the
+    // window, and a `since` would drop it — the span it opens is the one that matters
+    // most. Newest-first and capped, which reaches every unit's latest verdict unless a
+    // scope has seen more than 500 verdict CHANGES, not passes.
+    cp.listSweepRuns({ scopeId: scope, kind: 'freshness', limit: 500 }).catch(() => []),
+    // Narrowed to THIS installation at the plane — a team may run the same vertical
+    // twice, and a per-vertical page could fill with the other one's rows.
+    cp.listOpsFailures({ vertical: appRow.vertical_slug, scopeId: scope, since, limit: 400 }).catch(() => []),
   ]);
 
   return c.json(
-    deriveAppOverlays({ migrations: migrations ?? [], sweepRuns, failures, scopeId: scope, hours, now }),
+    deriveAppOverlays({
+      migrations: migrations ?? [],
+      sweepRuns: [...failedRuns, ...freshness],
+      failures,
+      scopeId: scope,
+      hours,
+      now,
+    }),
   );
 });
 

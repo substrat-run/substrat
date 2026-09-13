@@ -77,6 +77,12 @@ export interface ListRead<T> {
 /** Filter for the ops-failure record. `since` windows it; the plane matches `at >= since`. */
 export interface OpsFailureRead {
   vertical?: string;
+  /**
+   * One installation. A team may run the same vertical twice, and a read narrowed only
+   * by `vertical` pages over BOTH — so a capped read could fill with the other
+   * installation's rows and answer "nothing" for the one asked about.
+   */
+  scopeId?: string;
   since?: string;
   limit?: number;
 }
@@ -1278,7 +1284,7 @@ export class TenantNarrowedControlPlane {
   readOpsFailures(filter: OpsFailureRead = {}): Promise<ListRead<OpsFailureEntry>> {
     return this.walkList<OpsFailureEntry>(
       '/ops-failures',
-      { vertical: filter.vertical, since: filter.since },
+      { vertical: filter.vertical, scopeId: filter.scopeId, since: filter.since },
       filter.limit,
     );
   }

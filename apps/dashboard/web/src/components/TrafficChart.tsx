@@ -32,8 +32,18 @@ const OVERLAY_KINDS = {
 
 /** How many glyphs one bucket stacks before the row counts the rest. */
 const STACK_CAP = 3;
-/** The glyph row's line height, in px — the marker layer is drawn in px, see below. */
-const GLYPH_ROW = 9;
+/**
+ * The side of each glyph's hit target, in px — and therefore the glyph row's pitch. The
+ * painted glyph is ~6px, which is a fine mark and a hopeless control: WCAG 2.5.8 wants
+ * 24×24 CSS px for a pointer target, and two stacked glyphs 9px apart could not each
+ * have one. So each glyph sits on an invisible 24×24 pad, and the rows are spaced by
+ * the pad rather than the mark, which is what keeps one bucket's stack from overlapping
+ * itself. Two ADJACENT buckets can still crowd on a dense window — a time axis puts the
+ * glyph where the instant is, and that is the one presentation that cannot move — which
+ * is why every glyph is also reachable by keyboard, and why each kind's sub-view lists
+ * the same facts as rows.
+ */
+const HIT = 24;
 
 /**
  * Traffic over time with the deploys drawn on it (#1236) — hand-rolled SVG
@@ -124,7 +134,8 @@ export function TrafficChart({
     const slot = Math.min(W - 1, Math.floor(xOf(m.at)));
     stacks.set(slot, [...(stacks.get(slot) ?? []), m]);
   }
-  const stackRows = Math.max(0, ...[...stacks.values()].map((s) => Math.min(s.length, STACK_CAP + 1)));
+  const stackRows = Math.max(0, ...[...stacks.values()].map((s) => Math.min(s.length, STACK_CAP)));
+  const anyCounted = [...stacks.values()].some((s) => s.length > STACK_CAP);
   const counts = { migration: 0, 'run-failed': 0, failure: 0 };
   for (const m of overlayMarkers) counts[m.kind] += 1;
   const present = (Object.keys(OVERLAY_KINDS) as Array<keyof typeof OVERLAY_KINDS>).filter((k) => counts[k] > 0);
@@ -225,7 +236,7 @@ export function TrafficChart({
       {overlayMarkers.length > 0 && (
         <svg
           width="100%"
-          height={stackRows * GLYPH_ROW + 2}
+          height={stackRows * HIT + (anyCounted ? 12 : 0)}
           role="group"
           aria-label={`Overlay markers: ${overlayWords.join(', ')}`}
           style={{ display: 'block', overflow: 'visible', marginTop: -2 }}
@@ -234,7 +245,7 @@ export function TrafficChart({
             <g key={slot}>
               {group.slice(0, STACK_CAP).map((m, row) => {
                 const kind = OVERLAY_KINDS[m.kind];
-                const y = row * GLYPH_ROW + 5;
+                const y = row * HIT + HIT / 2;
                 const title = [m.label, m.detail, fmt(m.at)].filter(Boolean).join(' — ');
                 const glyph = kind.round ? (
                   <circle
@@ -267,6 +278,17 @@ export function TrafficChart({
                         }
                       : {})}
                   >
+                    {/* The pad: painted nothing, but it is what the pointer hits. First
+                        in the group so the mark draws over it; `fill="transparent"`
+                        rather than `none`, because `none` is not hit-tested. */}
+                    <rect
+                      x={pctOf(m.at)}
+                      y={y - HIT / 2}
+                      width={HIT}
+                      height={HIT}
+                      fill="transparent"
+                      transform={`translate(${-HIT / 2},0)`}
+                    />
                     {glyph}
                     <title>{title}</title>
                   </g>
@@ -276,7 +298,7 @@ export function TrafficChart({
               {group.length > STACK_CAP && (
                 <text
                   x={pctOf(group[0]!.at)}
-                  y={STACK_CAP * GLYPH_ROW + 7}
+                  y={STACK_CAP * HIT + 9}
                   fontSize={9}
                   fill="var(--text-tertiary)"
                   textAnchor="middle"

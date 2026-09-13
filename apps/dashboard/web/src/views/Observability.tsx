@@ -64,11 +64,11 @@ const VIEWS = [
 
 type ViewKey = (typeof VIEWS)[number]['key'];
 
-/** What one pass of the chart's reads produces — the series, plus whatever explains it. */
+/** What the chart's own read produces — the series and its release markers. The overlays
+ *  are deliberately not here: they are a second read that must not gate this one. */
 interface ChartRead {
   series: TeamTrafficSeries;
   markers: ReleaseMarker[];
-  overlays: AppOverlays | undefined;
 }
 
 /** Whether a sub-view can answer in the mode the app filter selected. */
@@ -132,25 +132,30 @@ export function Observability({
     }
     // One app is the per-app route's question, and it answers the release markers with
     // the series — the team route cannot, because it plots several verticals at once.
-    // The overlays ride a SECOND route, read in parallel and tolerated to nothing: an
-    // overlay source having a bad minute must cost its glyphs, never the chart.
     const read: Promise<ChartRead> = scopeId
-      ? Promise.all([api.appTraffic(scopeId, hours), api.appOverlays(scopeId, hours).catch(() => undefined)]).then(
-          ([traffic, over]) => ({
-            // Adapted to the team shape here rather than branching every reader below —
-            // the rows and totals under the chart are written against one series type.
-            series: { series: [{ scopeId, buckets: traffic.buckets }], bucketMinutes: traffic.bucketMinutes, available: traffic.available },
-            markers: traffic.markers,
-            overlays: over,
-          }),
-        )
-      : api.teamTraffic({ hours }).then((s) => ({ series: s, markers: [], overlays: undefined }));
+      ? api.appTraffic(scopeId, hours).then((traffic) => ({
+          // Adapted to the team shape here rather than branching every reader below —
+          // the rows and totals under the chart are written against one series type.
+          series: { series: [{ scopeId, buckets: traffic.buckets }], bucketMinutes: traffic.bucketMinutes, available: traffic.available },
+          markers: traffic.markers,
+        }))
+      : api.teamTraffic({ hours }).then((s) => ({ series: s, markers: [] }));
+    // The overlays ride a SECOND route, started beside the first and never awaited with
+    // it: the chart draws the moment the series lands, and the glyphs arrive when they
+    // arrive. Joining the two would let a slow overlay source hold the chart at
+    // "Loading…" with the traffic already in hand — the coupling the sibling route
+    // exists to remove. A failure costs the glyphs and nothing else.
+    if (scopeId) {
+      api
+        .appOverlays(scopeId, hours)
+        .then((o) => live && setOverlays(o))
+        .catch(() => {});
+    }
     read
       .then((r) => {
         if (!live) return;
         setSeries(r.series);
         setMarkers(r.markers);
-        setOverlays(r.overlays);
       })
       .catch((e) => {
         if (!live) return;
