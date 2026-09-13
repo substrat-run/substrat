@@ -20,12 +20,13 @@ import { HTTPException } from 'hono/http-exception';
 import { principalId, scopeId, tenantId, z, type PrincipalId, type TenantId, type ScopeId } from '@substrat-run/contracts';
 import { defineScopeDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
-import { PLATFORM_REQUEST_HEADER, readRoutedNode, RouterAssertionError, ulid, type ScopeStub, invocationLog } from '@substrat-run/kernel';
+import { PLATFORM_REQUEST_HEADER, readRoutedNode, RouterAssertionError, type ScopeStub, invocationLog } from '@substrat-run/kernel';
 import {
   AuthConfigError,
   IdentityDO,
   instanceAuthFor,
   mintOwnerClaimLink,
+  mountInviteRoutes,
   sha256Hex,
   type AuthProvider,
 } from '@substrat-run/vertical-auth';
@@ -122,8 +123,7 @@ function hostFor(env: Env): CloudflareScopeHost {
   return host;
 }
 
-const originOf = (req: Request): string => new URL(req.url).origin;
-const identityDo = (env: Env, node: SiteNode) => env.AUTH.get(env.AUTH.idFromName(node.tenantId));
+const identityDo =(env: Env, node: SiteNode) => env.AUTH.get(env.AUTH.idFromName(node.tenantId));
 
 /**
  * Everything this site was configured with, in ONE DO hop — the delivered `substrat:auth`
@@ -308,46 +308,17 @@ async function requireAdmin(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   return scope;
 }
 
-const inviteBody = z.object({ email: z.string().email().optional(), roleKey: z.string().min(1) });
-
-/** Who I am, for the members view (display + role) — needs-setup aware handled by /api/me. */
-app.get('/api/invites', async (c) => {
-  const node = await nodeFor(c.req.raw, c.env);
-  await requireAdmin(c);
-  return c.json({ roles: ROLES.map((r) => r.key), invites: await identityDo(c.env, node).listInvites(node.scopeId) });
-});
-
-/** Create an invite: mint a member principal, grant it the chosen role at scope level, record
- *  the invite by token HASH (the plaintext token rides only in the returned accept link). */
-app.post('/api/invites', async (c) => {
-  const node = await nodeFor(c.req.raw, c.env);
-  await requireAdmin(c);
-  const { email, roleKey } = inviteBody.parse(await c.req.json());
-  if (!ROLES.some((r) => r.key === roleKey)) throw new HTTPException(400, { message: `unknown role '${roleKey}'` });
-  const principal = principalId.parse(ulid());
-  const token = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, ''); // 256 bits, URL-safe
-  await hostFor(c.env).assignScopeRole(node.scopeId, principal, roleKey);
-  await identityDo(c.env, node).createInvite(node.scopeId, principal, roleKey, email ?? null, await sha256Hex(token));
-  return c.json({ principal, roleKey, email: email ?? null, acceptUrl: `${originOf(c.req.raw)}/?invite=${token}` }, 201);
-});
-
-app.post('/api/invites/:principal/revoke', async (c) => {
-  const node = await nodeFor(c.req.raw, c.env);
-  await requireAdmin(c);
-  await identityDo(c.env, node).revokeInvite(node.scopeId, c.req.param('principal'));
-  return c.body(null, 204);
-});
-
-/** Accept an invite: the invitee has signed up (allowed by the token), and now binds their
- *  login to the pre-minted member principal. */
-app.post('/api/accept-invite', async (c) => {
-  const node = await nodeFor(c.req.raw, c.env);
-  const subject = await (await authProviderFor(c.env, c.req.raw)).resolve(c.req.raw.headers);
-  if (!subject) throw new HTTPException(401, { message: 'sign in before accepting an invite' });
-  const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
-  const principal = await identityDo(c.env, node).claimInvite(node.scopeId, subject.sub, await sha256Hex(token));
-  if (!principal) throw new HTTPException(400, { message: 'this invite is invalid or already used' });
-  return c.json({ ok: true, principal });
+/** The four invite routes — list, create, revoke, accept — are `@substrat-run/vertical-auth`'s
+ *  (#1150). Create mints a member principal, grants it the chosen role at scope level and
+ *  records the invite by token HASH; accept binds the invitee's login to that principal. This
+ *  vertical supplies only its roles, its "admin", and the host that grants the role. */
+mountInviteRoutes(app, {
+  nodeFor,
+  requireAdmin,
+  roles: ROLES.map((r) => r.key),
+  directory: identityDo,
+  assignScopeRole: (env, scope, principal, roleKey) => hostFor(env).assignScopeRole(scope, principal, roleKey),
+  authProvider: authProviderFor,
 });
 
 /**

@@ -161,6 +161,15 @@ including the two OIDC ones where Better Auth stays dormant:
   `mintOwnerClaimLink` does the token, the hash and the URL in one call, so the vertical's
   `mintOwnerClaim` hook is a one-liner. A closed window is not a lost instance: the seat stays
   pending — `needsSetup` keeps saying so, and `ownerSeat` says *why* — until a claim binds it.
+- `createInvite` / `listInvites` / `revokeInvite` / `claimInvite` — member invites, the
+  post-setup join path. An invite pre-mints a member principal, grants it a role at scope
+  level, and records the token's hash; accepting binds the invitee's verified `sub` to that
+  principal. The four HTTP routes over these — `GET`/`POST /api/invites`,
+  `POST /api/invites/:principal/revoke`, `POST /api/accept-invite` — are written once as
+  `mountInviteRoutes(app, deps)`, and a vertical supplies only what is its own: how a request
+  resolves to a scope, what "admin" means, which roles a teammate may be invited at, its
+  directory, the host's `assignScopeRole` and its auth provider. Errors are `HTTPException`s,
+  so the vertical's own `onError` renders them.
 
 ## Cookie-domain safety
 
