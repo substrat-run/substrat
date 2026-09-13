@@ -24,7 +24,19 @@
  * reported for a human to resolve, because the resolution is never mechanical.
  *
  * `--recreate` is the one exception, and it is gated on the only condition that makes a
- * teardown free: the bucket holding ZERO objects. An empty lake has no rows, no Iceberg
+ * teardown free: the Iceberg table holding ZERO snapshots, and the bucket ZERO objects.
+ *
+ * It has to drop the TABLE too, not just the three pipelines resources. Deleting a sink
+ * leaves the catalog table it was committing to, and `sinks create` then refuses with
+ * "writing to existing Catalog tables is not yet supported" — so a recreate that skipped
+ * this step tore the lake down and could not build it back. Wrangler has no command for
+ * it either (`r2 bucket catalog` does enable/disable/get/compaction/snapshot-expiration
+ * and nothing else), so the drop goes through the Iceberg REST catalog directly, which
+ * needs a `/v1/config?warehouse=…` handshake first to learn the path prefix.
+ *
+ * An empty bucket is NOT evidence that the table is absent: the table is registered when
+ * the sink is created and holds no data files until the first roll, so `object_count: 0`
+ * and a live table are the normal state of a lake nothing has shipped to yet. An empty lake has no rows, no Iceberg
  * metadata, and nothing referencing it, so tearing it down costs nothing and a schema
  * mistake is repairable for as long as that stays true. One object in, and the same
  * command refuses — because from then on it would be deleting history, which is the one
@@ -172,6 +184,90 @@ if (!catalogToken && !dryRun) {
 }
 
 /**
+ * The Iceberg REST catalog, resolved once: base URL, path prefix and account id.
+ *
+ * Cloudflare's catalog speaks the Iceberg REST spec, which means every real path is
+ * `/v1/{prefix}/…` and the prefix is only discoverable by asking
+ * `/v1/config?warehouse=<warehouse>` first. The warehouse name is `<account>_<bucket>`
+ * and the base URL embeds both again — both facts are on the bucket's Settings → R2 Data
+ * Catalog panel, and are derived here so nothing has to be pasted.
+ */
+async function catalog() {
+  const account = readSecret('CF_ACCOUNT_ID');
+  if (!account) fail(`CF_ACCOUNT_ID blank in ${secretsFile} — needed to address the catalog.`);
+  const token = catalogToken;
+  const base = `https://catalog.cloudflarestorage.com/${account}/${LAKE.bucket}`;
+  const warehouse = `${account}_${LAKE.bucket}`;
+  const res = await fetch(`${base}/v1/config?warehouse=${encodeURIComponent(warehouse)}`, {
+    headers: { authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const prefix = (await res.json())?.overrides?.prefix;
+  return prefix ? { base, prefix, token } : null;
+}
+
+const tableUrl = (c) =>
+  `${c.base}/v1/${c.prefix}/namespaces/${encodeURIComponent(LAKE.namespace)}/tables/${encodeURIComponent(LAKE.table)}`;
+
+/**
+ * Snapshots on the lake table: a number, `'absent'` if there is no such table, or null if
+ * the question could not be answered. Callers treat null as "not empty" — the only safe
+ * direction, since the next step drops the table.
+ */
+async function tableSnapshotCount() {
+  const c = await catalog();
+  if (!c) return null;
+  const res = await fetch(tableUrl(c), { headers: { authorization: `Bearer ${c.token}` } });
+  if (res.status === 404) return 'absent';
+  if (!res.ok) return null;
+  const meta = (await res.json())?.metadata;
+  if (!meta || typeof meta !== 'object') return null;
+  // The key is OMITTED, not empty, on a table nothing has ever written to — so an absent
+  // `snapshots` IS the number zero, and only metadata that will not parse is "unknown".
+  // Reading the two as the same thing made this refuse on exactly the table it is meant
+  // to be able to drop, which is the right direction to be wrong in and still wrong.
+  return Array.isArray(meta.snapshots) ? meta.snapshots.length : 0;
+}
+
+/**
+ * Drop the lake table so a fresh sink can create it with the current schema.
+ *
+ * `purgeRequested=true` asks the catalog to remove the data files too. Only ever reached
+ * behind the snapshot guard above, so there are none — but a drop that leaves files behind
+ * is how a bucket accumulates objects no table references.
+ */
+async function dropTable() {
+  const label = `delete table ${LAKE.namespace}.${LAKE.table}`;
+  const c = await catalog();
+  if (!c) fail(`${label}: could not reach the Iceberg catalog (token? bucket catalog enabled?)`);
+  console.log(`● ${label}: DELETE ${LAKE.namespace}.${LAKE.table}?purgeRequested=true`);
+  if (dryRun) return;
+  const res = await fetch(`${tableUrl(c)}?purgeRequested=true`, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${c.token}` },
+  });
+  // 404 is success here: the table is gone, which is the whole point.
+  if (!res.ok && res.status !== 404) fail(`${label} failed — HTTP ${res.status} ${await res.text()}`);
+}
+
+/** Whether the lake bucket exists at all — `bucket info` exits non-zero when it does not. */
+function bucketExists() {
+  return wrangler(['r2', 'bucket', 'info', LAKE.bucket], { capture: true }).status === 0;
+}
+
+/**
+ * Whether the bucket's Data Catalog is already serving.
+ *
+ * `catalog get` prints `Status: active` once enabled. A bucket that does not exist yet
+ * reports nothing of the sort, so this is false for it too — which is the answer that
+ * makes the create step run in the right order.
+ */
+function catalogActive() {
+  const res = wrangler(['r2', 'bucket', 'catalog', 'get', LAKE.bucket], { capture: true });
+  return res.status === 0 && /Status:\s*active/.test(res.stdout ?? '');
+}
+
+/**
  * Objects currently in the lake bucket, or null if that could not be established.
  *
  * `bucket info` prints `object_count: N`. Anything else — a changed format, a failed
@@ -197,7 +293,20 @@ if (recreate) {
             '  A schema change on a lake with data in it is an Iceberg schema evolution, by hand.',
     );
   }
-  console.log('● recreate: bucket is empty — tearing down pipeline, sink, stream\n');
+  // The sharper question than the object count, and the one asked second because it costs
+  // a round trip: has this table ever held a snapshot? A table with snapshots has had data
+  // committed to it even if compaction or expiry has since removed the files.
+  const snapshots = await tableSnapshotCount();
+  if (snapshots !== 0 && snapshots !== 'absent') {
+    fail(
+      snapshots === null
+        ? `could not read ${LAKE.namespace}.${LAKE.table}'s snapshots — refusing to recreate.\n` +
+            '  "could not tell" is not "empty", and this step would drop the table.'
+        : `${LAKE.namespace}.${LAKE.table} has ${snapshots} snapshot(s) — refusing to recreate.\n` +
+            '  Data has been committed to this table. Dropping it destroys history.',
+    );
+  }
+  console.log('● recreate: lake is empty — tearing down pipeline, sink, stream, table\n');
   // Reverse dependency order: the pipeline references the sink and the stream, so it
   // goes first. The bucket and its catalog stay — nothing is wrong with them, and an
   // empty bucket has no table metadata to orphan.
@@ -212,13 +321,21 @@ if (recreate) {
     }
     step(`delete ${label}`, { args: ['pipelines', ...kind, 'delete', name, '--force'], skip: false });
   }
+  // Last, because the sink must be gone before its table is: the reverse order would drop
+  // a table something is still registered to commit to.
+  await dropTable();
   console.log();
 }
 
-// The bucket and its catalog first — `sinks create` needs both, and both are safely
-// re-runnable (each command is a no-op on something that already exists).
-step('bucket', { args: ['r2', 'bucket', 'create', LAKE.bucket], skip: false });
-step('catalog', { args: ['r2', 'bucket', 'catalog', 'enable', LAKE.bucket], skip: false });
+// The bucket and its catalog first — `sinks create` needs both.
+//
+// Neither create command is a no-op on something that already exists: `r2 bucket create`
+// fails with "already exists, and you own it" (10004), which would abort the whole run on
+// the second pass. So both are existence-checked like the pipelines resources, and for the
+// same reason: re-running this script has to be how you VERIFY an account, which means a
+// fully-provisioned account must run clean.
+step('bucket', { args: ['r2', 'bucket', 'create', LAKE.bucket], skip: bucketExists() });
+step('catalog', { args: ['r2', 'bucket', 'catalog', 'enable', LAKE.bucket], skip: catalogActive() });
 
 step('stream', {
   skip: recreate ? false : exists(['streams'], LAKE.stream),
