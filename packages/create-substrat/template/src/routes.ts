@@ -79,8 +79,8 @@ export function mountApi(
     return c.json((await (await resolveStub(c)).invoke(op, input)) ?? null);
   });
 
-  // Returns what it mounted, in registration order — a test asserts on the count,
-  // so a derived table that silently mounted nothing fails loudly rather than
-  // passing over an empty app.
+  // Returns what it mounted, in registration order — a test pins the complete
+  // method/path set, so a derived table that mounted nothing, moved a path or
+  // changed a verb fails loudly rather than passing over an empty app.
   return mountOperations(app, ROUTED, resolveStub);
 }
