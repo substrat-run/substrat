@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
-import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type FlowFindingsView, type FlowFinding, type FlowView, type FlowGraph, type FlowNode, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
+import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type FlowFindingsView, type FlowFinding, type FlowView, type FlowGraph, type FlowNode, type OperationHealthView, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type AuditEntry, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView } from '../lib/api';
 import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_AUDIT_ENTRIES, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
@@ -1182,6 +1182,87 @@ function FlowMap({ graph, app, onTab }: { graph: FlowGraph; app: AppRow; onTab: 
 }
 
 /**
+ * Per-operation health (#1234's overlay).
+ *
+ * Deliberately NOT a latency table. Nothing in the platform emits a span for an
+ * operation — what reaches the trace dataset is the runtime's own outbound `fetch`
+ * and DO-entry spans — so per-operation timing does not exist to render (#1237). What
+ * does exist is what the spine wrote down: the events an operation emitted, when it
+ * last emitted one, and how often it was refused.
+ *
+ * Two limits the copy states rather than lets a reader assume: an operation that emits
+ * nothing is invisible to the event side however often it runs, and refusals are
+ * counted only over what the denial log still holds, which drains rather than expires.
+ */
+function OperationHealth({ view }: { view: OperationHealthView }) {
+  if (view.rows.length === 0) return null;
+  const since = view.refusalsSince ? new Date(view.refusalsSince).toLocaleDateString() : null;
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Operations</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          What each operation has recorded. An operation that raises no events does not appear here
+          however often it runs &mdash; this counts events, not calls.
+        </p>
+      </div>
+
+      {!view.observedComplete && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          More operations have recorded events than can be counted in one pass, so this is the
+          busiest of them rather than all of them.
+        </p>
+      )}
+
+      <div style={{ display: 'grid', gap: 4 }}>
+        {view.rows.map((r) => (
+          <div
+            key={r.operation}
+            style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12.5 }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', flex: '1 1 220px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {r.operation}
+            </span>
+            <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-tertiary)', minWidth: 96, textAlign: 'right' }}>
+              {/* Null is "not counted", which is not zero. */}
+              {r.events === null ? 'not counted' : `${r.events.toLocaleString()} events`}
+            </span>
+            <span style={{ color: 'var(--text-tertiary)', minWidth: 110, textAlign: 'right', fontSize: 11.5 }}>
+              {r.lastSeen ? new Date(r.lastSeen).toLocaleDateString() : '—'}
+            </span>
+            {r.refusals > 0 && (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'var(--status-warning-bg)',
+                  color: 'var(--status-warning-fg)',
+                }}
+                title={
+                  r.refusedOnly
+                    ? 'every record of this operation is a refusal — it has emitted nothing'
+                    : 'permission refusals recorded for this operation'
+                }
+              >
+                {r.refusals} refused{r.refusedOnly ? ', nothing emitted' : ''}
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <p style={{ margin: 0, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+        {since
+          ? `Refusals counted from ${since}. Older ones are no longer held, so no badge does not mean an operation has never been refused.`
+          : 'No refusals are currently held for this app.'}
+      </p>
+    </div>
+  );
+}
+
+/**
  * The flow read, rendered as both a map and a list from ONE request. They are two
  * resolutions of the same join, and fetching twice would let them disagree about what
  * was observed — the map showing a count for a type the list called silent.
@@ -1206,6 +1287,7 @@ function Flow({ app, onTab }: { app: AppRow; onTab: (t: string) => void }) {
   return (
     <>
       <FlowMap graph={view.graph} app={app} onTab={onTab} />
+      <OperationHealth view={view.operations} />
       <FlowFindings view={view.findings} />
     </>
   );

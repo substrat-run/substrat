@@ -19,6 +19,7 @@ import type {
   HistoryEntry,
   EventFacetResult,
   CauseChain,
+  PermissionDenial,
   PermissionRegistry,
   PlatformRequest,
   PrincipalId,
@@ -1612,6 +1613,21 @@ export class TenantNarrowedControlPlane {
     if (input.until !== undefined) q.set('until', input.until);
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/facets?${q}`);
+  }
+
+  /**
+   * A bounded page of this scope's permission refusals (K-35).
+   *
+   * Exposed at the control plane since K-35 and read by nothing on this side until
+   * now. It is the one failure signal the spine keeps for a vertical's OWN operations:
+   * `_substrat_ops_failures` records control-plane routes (`deploy.upload`), a
+   * different namespace entirely, and joining the two by operation name would be a
+   * false join between two things that merely share a column name.
+   */
+  listDenials(scopeId: ScopeId, filter: { limit?: number } = {}): Promise<PermissionDenial[]> {
+    const q = new URLSearchParams();
+    if (filter.limit !== undefined) q.set('limit', String(filter.limit));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/denials${q.size ? `?${q}` : ''}`);
   }
 
   /**

@@ -497,10 +497,29 @@ export interface FlowGraph {
   declaredComplete: boolean;
 }
 
+/** One operation's recorded facts (#1234). */
+export interface OperationHealthRow {
+  operation: string;
+  /** Events it emitted; null when the facet could not say. */
+  events: number | null;
+  lastSeen: string | null;
+  refusals: number;
+  /** True when refusals are the ONLY evidence — it has emitted nothing. */
+  refusedOnly: boolean;
+}
+
+export interface OperationHealthView {
+  rows: OperationHealthRow[];
+  observedComplete: boolean;
+  /** Oldest refusal still held. Those rows drain, so 0 never means "never refused". */
+  refusalsSince: string | null;
+}
+
 /** The flow read: the same declarations projected as a list and as a map. */
 export interface FlowView {
   findings: FlowFindingsView;
   graph: FlowGraph;
+  operations: OperationHealthView;
 }
 
 /** One declared-vs-observed finding (#1234). */

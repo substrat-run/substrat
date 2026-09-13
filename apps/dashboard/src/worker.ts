@@ -36,6 +36,7 @@ import { deriveReleases, deriveReleaseComparison, deriveTrafficSeries } from './
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
+import { deriveOperationHealth } from './operation-health.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
@@ -2229,6 +2230,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         declaredComplete: true,
         connections: [],
       }),
+      operations: deriveOperationHealth({ observed: [], observedComplete: true, denials: [] }),
       graph: deriveFlowGraph({
         declaredEvents: null,
         schedules: [],
@@ -2244,9 +2246,15 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       }),
     });
   }
-  const [flow, facets, connectionRows] = await Promise.all([
+  const [flow, facets, byOperation, denials, connectionRows] = await Promise.all([
     cp.versionFlow(slug, runningId),
     cp.facetEvents(scope, { groupBy: 'type', limit: FLOW_TYPE_LIMIT }),
+    // #1234's overlay: the same outbox, grouped by the operation that emitted each
+    // event. The one per-operation fact the platform actually records — nothing emits
+    // a span for an operation, so there is no timing to be had (see #1237).
+    cp.facetEvents(scope, { groupBy: 'operation', limit: FLOW_TYPE_LIMIT }),
+    // The refusal half. Capped like every other evidence read here.
+    cp.listDenials(scope, { limit: 400 }).catch(() => []),
     // Revoked ones included deliberately: a revoked connection is a DIFFERENT
     // finding from none at all, and the default filter would hide it behind the
     // wrong one.
@@ -2276,6 +2284,16 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       observedComplete,
       declaredComplete: !flow.declaredEventsTruncated,
       connections,
+    }),
+    operations: deriveOperationHealth({
+      // A null bucket cannot happen grouping by `type`, but it CAN here: a consumer
+      // emit records no operation at all. Dropped rather than shown as an operation
+      // named "null" — it is a fact about consumers, which the map already draws.
+      observed: byOperation.buckets
+        .filter((b): b is { value: string; count: number; lastSeen: string | null } => b.value !== null)
+        .map((b) => ({ operation: b.value, count: b.count, lastSeen: b.lastSeen })),
+      observedComplete: !byOperation.truncated,
+      denials: denials.map((d) => ({ operation: d.operation, at: d.at })),
     }),
     graph: deriveFlowGraph({
       declaredEvents: flow.declaredEvents,
