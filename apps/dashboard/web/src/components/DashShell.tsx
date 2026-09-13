@@ -9,6 +9,7 @@ export type NavKey =
   | 'overview'
   | 'apps'
   | 'verticals'
+  | 'audit'
   | 'domains'
   | 'team'
   | 'integrations'
@@ -25,6 +26,9 @@ const MAIN: NavItem[] = [
   { key: 'overview', label: 'Overview', icon: 'grid' },
   { key: 'apps', label: 'Apps', icon: 'box' },
   { key: 'verticals', label: 'Verticals', icon: 'layers' },
+  // The audit log is the TEAM's, not one app's — role changes and entitlements name no
+  // scope at all — so it is a page here with an app filter rather than a tab on each app (#1447).
+  { key: 'audit', label: 'Audit', icon: 'list' },
   { key: 'domains', label: 'Domains', icon: 'globe' },
   { key: 'team', label: 'Team', icon: 'users' },
   { key: 'integrations', label: 'Integrations', icon: 'plug' },
