@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { instant, type OpsFailureEntry, type SweepRunEntry } from '@substrat-run/contracts';
-import { deriveFleetHealth, type FleetApp } from '../src/fleet-health.js';
+import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable, type FleetApp } from '../src/fleet-health.js';
 
 const A = 'scope-a';
 const B = 'scope-b';
@@ -135,5 +135,150 @@ describe('deriveFleetHealth (#1238)', () => {
     expect(by(C).state).toBe('stale');
     // An app the read DID reach is still answered normally.
     expect(by(D).state).toBe('ok');
+  });
+
+  it('an app that declares nothing to sweep is ok, not silent — its silence is by design', () => {
+    // The sweeper writes a per-scope row only for a declared schedule or freshness
+    // expectation. An app declaring neither is never swept and never will be, so a
+    // "needs attention" row for it is one nobody can act on — which is how a panel
+    // teaches its reader to skip it.
+    const [row] = deriveFleetHealth({ apps: [app(A, { sweepable: false })], failures: [], sweeps: [] });
+    expect(row!.state).toBe('ok');
+    expect(row!.reason).toMatch(/Declares nothing to sweep/);
+    // ...whatever the sweep read's coverage, since there is no row to have missed.
+    const [truncated] = deriveFleetHealth({
+      apps: [app(A, { sweepable: false })],
+      failures: [],
+      sweeps: [],
+      coverage: { failures: true, sweeps: false },
+    });
+    expect(truncated!.state).toBe('ok');
+  });
+
+  it('a declared-but-unswept app is silent, and the reason names the declaration', () => {
+    const [row] = deriveFleetHealth({ apps: [app(A, { sweepable: true })], failures: [], sweeps: [] });
+    expect(row!.state).toBe('silent');
+    expect(row!.reason).toMatch(/^Declares schedules or freshness expectations/);
+  });
+
+  it('a found failure still outranks "nothing to sweep"', () => {
+    const [row] = deriveFleetHealth({ apps: [app(A, { sweepable: false })], failures: [failure(A)], sweeps: [] });
+    expect(row!.state).toBe('failing');
+  });
+
+  it('a narrowed follow-up confirms an app the truncated broad read missed', () => {
+    // A is absent from the truncated read but a follow-up reached the end of ITS
+    // window with nothing: silent, not unknown. B was never followed up: unknown.
+    const rows = deriveFleetHealth({
+      apps: [app(A), app(B)],
+      failures: [],
+      sweeps: [],
+      coverage: { failures: true, sweeps: false, sweepsConfirmed: new Set([A]) },
+    });
+    const by = (id: string) => rows.find((r) => r.scopeId === id)!;
+    expect(by(A).state).toBe('silent');
+    expect(by(B).state).toBe('unknown');
+  });
+});
+
+describe('followUpUnsweptApps', () => {
+  it('reads once per app the broad read missed, skipping the ones it reached or that declare nothing', async () => {
+    const asked: string[] = [];
+    const out = await followUpUnsweptApps({
+      apps: [app(A), app(B), app(C, { sweepable: false }), app(D)],
+      seen: new Set([B]),
+      read: async (scopeId) => {
+        asked.push(scopeId);
+        return scopeId === A ? { entries: [sweep(A)], failed: false } : { entries: [], failed: false };
+      },
+    });
+    expect(asked.sort()).toEqual([A, D]);
+    expect([...out.confirmed].sort()).toEqual([A, D]);
+    expect(out.sweeps.map((s) => s.scopeId)).toEqual([A]);
+  });
+
+  it('a follow-up that fails leaves its app unconfirmed', async () => {
+    const out = await followUpUnsweptApps({
+      apps: [app(A), app(B)],
+      seen: new Set(),
+      read: async (scopeId) => ({ entries: [], failed: scopeId === A }),
+    });
+    expect([...out.confirmed]).toEqual([B]);
+  });
+
+  it('is bounded by max, not by the record', async () => {
+    let n = 0;
+    const out = await followUpUnsweptApps({
+      apps: [app(A), app(B), app(C)],
+      seen: new Set(),
+      read: async () => ({ entries: [], failed: false }) as never,
+      max: 2,
+    });
+    n = out.confirmed.size;
+    expect(n).toBe(2);
+  });
+});
+
+describe('resolveSweepable', () => {
+  // A stub plane: two verticals, one of which pins a scope to an older version.
+  const cp = {
+    listScopes: async (vertical: string) =>
+      vertical === 'manyfold'
+        ? [
+            { id: A, verticalVersionId: 'v-old' },
+            { id: B, verticalVersionId: null },
+          ]
+        : [{ id: C, verticalVersionId: null }],
+    listChannels: async (vertical: string) =>
+      vertical === 'manyfold' ? [{ channel: 'prod', versionId: 'v-new' }] : [{ channel: 'prod', versionId: 'auth-1' }],
+    versionSchedules: async (_slug: string, versionId: string) =>
+      versionId === 'v-new'
+        ? { schedules: [{ operation: 'x', cadence: { everyMinutes: 5 }, permissions: [] }], freshness: null }
+        : { schedules: null, freshness: null },
+  } as unknown as Parameters<typeof resolveSweepable>[0];
+
+  it('resolves the running version per app — its own binding, else the prod head', async () => {
+    const out = await resolveSweepable(cp, [app(A), app(B), app(C, { vertical: 'auth-server' })]);
+    // A is pinned to v-old, which declares nothing; B runs the prod head, which does.
+    expect(out.get(A)).toBe(false);
+    expect(out.get(B)).toBe(true);
+    expect(out.get(C)).toBe(false);
+  });
+
+  it('reads per distinct vertical and version, never per app', async () => {
+    const calls = { scopes: 0, channels: 0, versions: 0 };
+    const counting = {
+      listScopes: async (v: string) => (calls.scopes++, cp.listScopes(v)),
+      listChannels: async (v: string) => (calls.channels++, cp.listChannels(v)),
+      versionSchedules: async (s: string, v: string) => (calls.versions++, cp.versionSchedules(s, v)),
+    } as unknown as Parameters<typeof resolveSweepable>[0];
+    // Thirty clients on one vertical, all on the prod head.
+    const many = Array.from({ length: 30 }, (_, i) => app(`scope-${i}`));
+    await resolveSweepable(counting, many);
+    expect(calls).toEqual({ scopes: 1, channels: 1, versions: 1 });
+  });
+
+  it('answers null, not false, when the running version cannot be named', async () => {
+    const broken = {
+      ...cp,
+      listChannels: async () => {
+        throw new Error('plane away');
+      },
+    } as unknown as Parameters<typeof resolveSweepable>[0];
+    const out = await resolveSweepable(broken, [app(B)]);
+    expect(out.get(B)).toBeNull();
+  });
+
+  it('answers null, not false, when the declaration read itself failed', async () => {
+    // `versionSchedules` hands back the same two nulls for a non-200 as for a
+    // pre-field push; only the second is an absence. A transient fault answered
+    // `false` would turn an unswept app into an `ok` "nothing to sweep".
+    const flaky = {
+      ...cp,
+      versionSchedules: async () => ({ schedules: null, freshness: null, failed: true }),
+    } as unknown as Parameters<typeof resolveSweepable>[0];
+    const out = await resolveSweepable(flaky, [app(A), app(B)]);
+    expect(out.get(A)).toBeNull();
+    expect(out.get(B)).toBeNull();
   });
 });
