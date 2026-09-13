@@ -377,6 +377,22 @@ export function walkEventEffects(
   let terminal: EffectsTerminal = 'complete';
   let count = 0;
 
+  /**
+   * `terminal` is one flag shared by every recursive `build`, so what wins when two
+   * things go wrong is a rule, not an accident of order. An integrity failure (`cycle`,
+   * `missing`) always outranks `depth`: the cap is a budget the reader can raise, while
+   * a cycle or a vanished row is a fact about the spine that no larger limit repairs —
+   * and a walk that hit both must not report only the one it can be talked out of.
+   * Between the two integrity failures, the first found stands.
+   */
+  const markTerminal = (status: EffectsTerminal) => {
+    if (status === 'cycle' || status === 'missing') {
+      if (terminal !== 'cycle' && terminal !== 'missing') terminal = status;
+    } else if (terminal === 'complete') {
+      terminal = status;
+    }
+  };
+
   const readEvent = (id: string): HistoryEntry | undefined => {
     const rows = ctx.sql.query<HistoryRow>(
       `SELECT ${HISTORY_COLUMNS} FROM _substrat_outbox WHERE id = ? LIMIT 1`,
@@ -407,14 +423,14 @@ export function walkEventEffects(
       );
       for (const child of children) {
         if (count >= cap) {
-          terminal = 'depth';
+          markTerminal('depth');
           break;
         }
         if (seen.has(child.id)) {
           // A cause is always older than what it caused, so this cannot happen on a
           // sound spine. Named as the integrity failure it is rather than as `depth`,
           // which would invite the reader to retry with a bigger limit.
-          terminal = 'cycle';
+          markTerminal('cycle');
           continue;
         }
         seen.add(child.id);
@@ -422,13 +438,13 @@ export function walkEventEffects(
         // The id came from this very table, so its absence is a race with nothing —
         // reported rather than skipped, for the same reason the backwards walk does.
         if (row === undefined) {
-          terminal = 'missing';
+          markTerminal('missing');
           continue;
         }
         effects.push(build(row));
       }
     } else {
-      terminal = 'depth';
+      markTerminal('depth');
     }
 
     return { event: entry, deliveries, effects };

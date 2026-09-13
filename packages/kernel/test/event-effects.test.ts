@@ -165,6 +165,26 @@ describe('walkEventEffects (#1237)', () => {
     expect(tree.terminal).toBe('cycle');
   });
 
+  it('lets a cycle found early outrank the cap hit later', () => {
+    // One `terminal` is shared by every level of the walk, so a cycle found under an
+    // early child used to be overwritten by the cap biting under a later one — and
+    // `depth` invites a retry with a bigger limit, which does not mend a cycle. (The
+    // other order cannot happen: once the cap is hit every loop breaks before another
+    // child is examined, so nothing can be found after `depth`.)
+    const sql = readerOver([
+      // 1 claims to be caused by 3, and 3 by 1: the cycle, reached under the second child.
+      { n: 1, operation: 'op', causedBy: 3 },
+      { n: 2, causedBy: 1 },
+      { n: 3, causedBy: 1 },
+      { n: 4, causedBy: 1 },
+      { n: 5, causedBy: 1 },
+    ]);
+    // Cap 4: nodes 1, 2, 3 (whose child 1 is already seen → cycle), 4 — then 5 hits the cap.
+    const tree = walkEventEffects({ sql }, id(1), 4);
+    expect(tree.count).toBe(4);
+    expect(tree.terminal).toBe('cycle');
+  });
+
   it('reports MISSING for an event this scope never had', () => {
     const tree = walkEventEffects({ sql: readerOver([{ n: 1, operation: 'op' }]) }, id(9));
     expect(tree.root).toBeNull();
