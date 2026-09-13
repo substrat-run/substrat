@@ -1,5 +1,37 @@
 # @substrat-run/control-plane-api
 
+## 0.111.0
+
+### Minor Changes
+
+- aaafae3: Every event in an app's history now has a **Why?** beside it, and it answers.
+
+  Open the history of any record and follow one of its events backwards: each step names the event that produced it, back to the request or the scheduled run that set the whole thing off. "This invoice exists because that timesheet closed, because the Monday sweep ran." That chain is read from what was recorded at the time, not reconstructed afterwards and not sampled — so it is the same answer every time, for every event, however long ago.
+
+  The last line of the answer is the part that matters most, because it says how far the trail actually goes. A chain that reached the operation which started it and a chain that ran out of recorded history look identical otherwise, and presenting the second as the first would let someone conclude that an automatic step began work it only continued. So the ending is always stated: this is where it started, or this is where the record stops, or there is more above this than one read follows, or the trail names something the app no longer holds, or — which should never happen — the trail loops back on itself, and the record needs looking at rather than reading further.
+
+  Events recorded before the platform stored causes say exactly that. Nothing guesses at a missing link, and no chain is presented as complete unless it is.
+
+- 1b2506c: Every event in an app's history can now be followed **forwards** as well as backwards: **What did it do?** opens what it set off.
+
+  Each step shows which handlers the event reached, whether they finished, and what they raised in turn — expanding as far as the trail goes. Between this and the existing **Why?**, any event in an app can be opened in either direction: what led here, and what followed from here.
+
+  Handlers are reported in three states that are deliberately not merged. One that finished, one that failed and will be tried again, and one that failed and has been given up on all look alike in the underlying record — and telling a customer something will retry when it will not is the kind of wrong that gets noticed at the worst moment. The number of attempts and the last error travel with each.
+
+  Where an event reached nothing, that reads as "no delivery recorded", and says why it is ambiguous: either nothing handles that kind of event, or the work has not run yet. The record holds arrivals, not their absence, so the two cannot be told apart and the screen does not pretend otherwise.
+
+  There are no timings, on purpose. The platform does not record how long an operation took, and a column of plausible-looking numbers would be worse than an honest absence.
+
+- 39d1236: `tenantMetricsSeries` joins `tenantMetrics` on the observability seam (#1447): the same tenant-grain traffic, bucketed over time, one series per installed app, each bucket carrying requests, errors and the weighted P50/P95 latency, accepting a list of scopes (up to `TENANT_SERIES_SCOPE_CAP`) so "all my apps" is one read. The Cloudflare reader answers it from the router's Analytics Engine dataset — the only place the tenant dimension exists — and a new `GET /observability/tenant-metrics-series` route serves it, 501 when the reader cannot bucket. Additive: an optional seam method and a new route, nothing existing changes shape.
+
+### Patch Changes
+
+- Updated dependencies [f08bfc4]
+- Updated dependencies [aaafae3]
+- Updated dependencies [1b2506c]
+  - @substrat-run/contracts@0.111.0
+  - @substrat-run/kernel@0.111.0
+
 ## 0.110.0
 
 ### Minor Changes

@@ -1,5 +1,63 @@
 # @substrat-run/dashboard
 
+## 0.35.2
+
+### Patch Changes
+
+- 670e9fa: The "Needs attention" panel on the Apps page only lists what someone can act on.
+
+  Two of its states failed that test. An app absent from a truncated sweep read —
+  the broad read that every pass of every unit lands in, which one 5-minute
+  schedule alone fills past its cap in a day — read `unknown`, with a sentence
+  about the read rather than the app, and clicking it opened an overview with no
+  trace of why. And an app that declares no schedules or freshness expectations
+  read `silent` for ever: the sweeper is right to never write a row for it, so
+  there was nothing to do and no way off the list.
+
+  Now a truncated read is repaired one app at a time — a read narrowed to the one
+  scope reaches the end of its window with a single row, bounded by the apps the
+  broad read missed and taken only when the cap was actually hit — so `unknown`
+  survives only a read that failed, and that renders as a footnote about the
+  panel's coverage, never as a verdict on an app. An app whose running version
+  declares nothing to sweep reads `ok` with that reason, and `silent` keeps its
+  meaning for the case it was written for: something declared, and no sweep
+  reaching it. The declaration is resolved per distinct vertical and version, not
+  per app, so thirty clients on one vertical cost three reads. A row now opens the
+  app's Observability tab, where the sweep record it was read from lives.
+
+- 948025a: Observability is a team-level page now, and it shows the team's own numbers.
+
+  It replaces Analytics, which was a preview on estimated figures whose "All apps" selector filtered nothing. In its place: one time axis across every app the team has installed, with a picker for narrowing to one, and totals for requests, errors and the worst latency seen in the window.
+
+  The numbers are the team's own. Traffic has always been measured per deployed unit, and one vertical's code serves every team that installed it — so a team that publishes its own vertical was reading fleet-wide figures in answer to a question about its own installation. These are counted per installation.
+
+  Each app gets its own row rather than sharing one set of axes, because a busy app and a quiet one on a shared scale turn the quiet one into a flat line at the bottom — usually the one being looked for. An app with no requests at all says so in words instead of drawing an empty row that could be read as either.
+
+  And when the figures cannot be read at all, the page says that too, rather than drawing zero. An app that is perfectly busy and an app nobody could ask about look identical as a flat line, and only one of them is a problem with the app.
+
+  Old links keep working: the previous Analytics address and the per-app Observability tab both land here, the second already narrowed to that app.
+
+- 2ded145: An app's operations get their own panel: what each one has recorded, when it last ran, and how often it was refused.
+
+  The refusal half is the useful surprise. Permission refusals have been recorded against each operation since the platform started keeping them, and nothing on the customer side has ever shown them — so an operation somebody keeps calling and keeps being refused was, until now, completely silent. It appears here even if it has never successfully done anything, which is exactly the case a panel built only from successes would miss.
+
+  Two limits are stated on the panel rather than left to be assumed, because both invite a wrong reading. The count is events, not calls: an operation that raises no events shows nothing on that side however often it runs, and is listed only if it has been refused. And refusals are counted over what the refusal log still holds, which is a storage limit rather than a promise to keep them — so no refusals showing does not mean an operation has never been refused, and the panel says from when it can vouch for. When the log holds more than one page, the panel says that too, and shows each count as a floor rather than a total; and when the log could not be read at all it says so, instead of showing the same nothing an empty log would.
+
+  There is deliberately no timing here. Per-operation duration is not something the platform records, and a column of plausible-looking numbers would be worse than the absence.
+
+- Updated dependencies [f08bfc4]
+- Updated dependencies [aaafae3]
+- Updated dependencies [1b2506c]
+  - @substrat-run/contracts@0.111.0
+  - @substrat-run/kernel@0.111.0
+  - @substrat-run/adapter-cloudflare@0.111.0
+  - @substrat-run/connector-fortnox@0.4.13
+  - @substrat-run/demo-callout@0.3.29
+  - @substrat-run/engine-invites@0.7.10
+  - @substrat-run/engine-invoicing@0.10.1
+  - @substrat-run/engine-protocol@0.12.16
+  - @substrat-run/engine-workorder@0.11.10
+
 ## 0.35.1
 
 ### Patch Changes
