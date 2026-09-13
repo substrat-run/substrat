@@ -17,7 +17,7 @@ import { Team } from './views/Team';
 import { Domains } from './views/Domains';
 import { Integrations } from './views/Integrations';
 import { Billing } from './views/Billing';
-import { Analytics } from './views/Analytics';
+import { Observability } from './views/Observability';
 import { AuditLog } from './views/Audit';
 import { Settings } from './views/Settings';
 
@@ -33,7 +33,7 @@ interface Route {
   team?: string;
 }
 
-const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'audit', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'];
+const SECTIONS: NavKey[] = ['overview', 'apps', 'verticals', 'audit', 'domains', 'team', 'integrations', 'observability', 'billing', 'settings'];
 
 function parsePath(): Route {
   let parts = window.location.pathname.split('/').filter(Boolean);
@@ -54,6 +54,13 @@ function parsePath(): Route {
   // The audit page is team-level; an app narrows it, so the scope rides as a query
   // param rather than a path segment — `/audit` and `/audit?app=x` are one page.
   if (parts[0] === 'audit') return { section: 'audit', team, app: new URLSearchParams(window.location.search).get('app') ?? undefined };
+  // #1447: the team-level traffic page, with the same app chip Audit carries.
+  if (parts[0] === 'observability') {
+    return { section: 'observability', team, app: new URLSearchParams(window.location.search).get('app') ?? undefined };
+  }
+  // The page Observability replaced. Resolved here rather than redirected, so an old
+  // link lands without a history entry to bounce off.
+  if (parts[0] === 'analytics') return { section: 'observability', team };
   // Legacy alias: the page was called "Deployments" before the apps/verticals split.
   if (parts[0] === 'deployments') return { section: 'verticals', team };
   const section = (SECTIONS.includes(parts[0] as NavKey) ? parts[0] : 'overview') as NavKey;
@@ -673,6 +680,21 @@ export function App() {
     window.dispatchEvent(new PopStateEvent('popstate'));
   }, [legacyAuditTab, openApp]);
 
+  // #1447 step 3: the app's Observability tab became the team page narrowed to that
+  // app. Replaced rather than pushed, for the reason the Audit redirect above gives.
+  // The flow map's deep link (`observability/<event type>`) is carried across as the
+  // `type` query the Events sub-view reads, so a link out of the map still lands
+  // narrowed rather than on an unfiltered page.
+  const legacyObsTab =
+    route.section === 'apps' && !!openApp && (route.tab === 'observability' || (route.tab ?? '').startsWith('observability/'));
+  useEffect(() => {
+    if (!legacyObsTab || !openApp) return;
+    const focus = (route.tab ?? '').split('/')[1];
+    const q = `app=${openApp.app_scope_id}${focus ? `&type=${focus}` : ''}`;
+    window.history.replaceState(null, '', teamPath(`/observability?${q}`));
+    window.dispatchEvent(new PopStateEvent('popstate'));
+  }, [legacyObsTab, openApp, route.tab]);
+
   // A deep-linked app can sit beyond the loaded page window — keep walking older
   // pages until it turns up (or the list is exhausted), instead of flashing a 404.
   useEffect(() => {
@@ -745,7 +767,7 @@ export function App() {
     crumbs.push({ label: 'Verticals', onClick: route.vertical ? () => go('/verticals') : undefined });
     if (openVertical) crumbs.push({ label: openVertical.name });
   }
-  if (['audit', 'domains', 'team', 'integrations', 'analytics', 'billing', 'settings'].includes(route.section)) {
+  if (['audit', 'domains', 'team', 'integrations', 'observability', 'billing', 'settings'].includes(route.section)) {
     crumbs.push({ label: route.section.charAt(0).toUpperCase() + route.section.slice(1) });
   }
 
@@ -842,8 +864,13 @@ export function App() {
         <Billing />
       ) : route.section === 'audit' ? (
         <AuditLog apps={apps} appsComplete={!appsLoading && appsCursor === null} scopeId={route.app ?? null} onScope={(s) => go(s ? `/audit?app=${s}` : '/audit')} />
-      ) : route.section === 'analytics' ? (
-        <Analytics />
+      ) : route.section === 'observability' ? (
+        <Observability
+          apps={apps}
+          appsComplete={!appsLoading && appsCursor === null}
+          scopeId={route.app ?? null}
+          onScope={(s) => go(s ? `/observability?app=${s}` : '/observability')}
+        />
       ) : route.section === 'settings' ? (
         <Settings org={org} />
       ) : null}

@@ -418,19 +418,6 @@ export const BARS: Array<{ hr: number; ops: number; legal: number }> = [
   { hr: 66, ops: 30, legal: 21 }, { hr: 58, ops: 36, legal: 18 }, { hr: 72, ops: 38, legal: 22 },
   { hr: 50, ops: 24, legal: 13 }, { hr: 68, ops: 40, legal: 24 },
 ];
-export interface AnalyticsRow {
-  app: string;
-  accent: string;
-  requests: string;
-  users: string;
-  errorRate: string;
-  up: boolean;
-}
-export const ANALYTICS_ROWS: AnalyticsRow[] = [
-  { app: 'Acme HR', accent: LAYER.vertical, requests: '712,400', users: '1,904', errorRate: '0.31%', up: true },
-  { app: 'Acme Field Ops', accent: LAYER.engine, requests: '385,900', users: '1,120', errorRate: '0.66%', up: true },
-  { app: 'Acme Legal', accent: LAYER.kernel, requests: '141,700', users: '458', errorRate: '0.28%', up: false },
-];
 
 // -- future: billing --------------------------------------------------------
 
