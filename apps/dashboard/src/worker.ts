@@ -21,7 +21,7 @@ import { HTTPException } from 'hono/http-exception';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import type { SweepRunEntry } from '@substrat-run/contracts';
-import { parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId } from '@substrat-run/contracts';
+import { parsePlatformBaseDomains, principalId, scopeId, tenantId, orgId, platformActorId, connectionId, queryScopeInput, readScopeTableInput, scopeDumpTable, listPageQuery, pageOf, LIST_PAGE_MAX, DENIAL_LIMIT_MAX, z, errorCodeOf, PROBLEM_CONTENT_TYPE, problemForStatus, toProblem, type Connection, type EnvVarSpec, type PermissionKey, type PermissionRegistry, type EmittedModel, type TenantId, type ScopeId, type DeployManifest } from '@substrat-run/contracts';
 import { defineScopeDO, ControlPlaneDO, CloudflareScopeHost } from '@substrat-run/adapter-cloudflare';
 import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type ScopeHost, type SecretBox } from '@substrat-run/kernel';
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
@@ -33,13 +33,14 @@ import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, 
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
 import { deriveFailureGroups } from './failure-groups.js';
 import { deriveReleases, deriveReleaseComparison, deriveTeamSeries, deriveTrafficSeries } from './releases.js';
+import { deriveAppOverlays, overlayWindow } from './overlays.js';
 import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { deriveOperationHealth } from './operation-health.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
-import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair } from './deployments.js';
+import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair, type Deployment } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -1704,6 +1705,34 @@ app.get('/api/apps/:scopeId/release-comparison', async (c) => {
 });
 
 /**
+ * What the RUNNING version of an app declares — its schedules and freshness expectations,
+ * resolved exactly as the Model tab resolves the version: the bound one, else the prod
+ * head. Shared by the schedules panel and the chart overlays so the two agree on which
+ * freshness units exist; `freshTypes` is deduped the way the evaluator dedupes, so a
+ * per-unit read matches the rows the sweeper wrote.
+ */
+async function runningDeclarations(
+  cp: TenantNarrowedControlPlane,
+  scope: ScopeId,
+  slug: string,
+): Promise<{
+  runningId: string | null;
+  runningVersion: Deployment['versions'][number] | undefined;
+  schedules: NonNullable<DeployManifest['schedules']>;
+  freshness: NonNullable<DeployManifest['freshness']>;
+  freshTypes: string[];
+}> {
+  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
+  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
+  const runningId = boundVersionId ?? prod?.versionId ?? null;
+  const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
+  const declared = runningId ? await cp.versionSchedules(slug, runningId) : { schedules: null, freshness: null };
+  const schedules = declared.schedules ?? [];
+  const freshness = declared.freshness ?? [];
+  return { runningId, runningVersion, schedules, freshness, freshTypes: [...new Set(freshness.map((f) => f.eventType))] };
+}
+
+/**
  * Schedule health for one app (#1232): every schedule the RUNNING version declares,
  * joined against the sweep record — last firing, next due, and the verdict. The
  * derivation is pure (`schedules.ts`); this route only composes the reads. The strip
@@ -1723,18 +1752,7 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
   const cp = controlPlaneFor(c.env, node.tenantId);
   const scope = scopeId.parse(appRow.app_scope_id);
   const slug = appRow.vertical_slug;
-  const [deployment, boundVersionId] = await Promise.all([verticalDeploymentFromCp(cp, slug), cp.boundVersionId(scope)]);
-  const prod = deployment.channels.find((ch) => ch.channel === 'prod');
-  // The RUNNING version's declarations, exactly as the Model tab resolves it — an
-  // unpinned scope runs the prod head.
-  const runningId = boundVersionId ?? prod?.versionId ?? null;
-  const runningVersion = runningId ? deployment.versions.find((v) => v.id === runningId) : undefined;
-
-  const declared = runningId
-    ? await cp.versionSchedules(slug, runningId)
-    : { schedules: null, freshness: null };
-  const schedules = declared.schedules ?? [];
-  const freshness = declared.freshness ?? [];
+  const { runningId, runningVersion, schedules, freshness, freshTypes } = await runningDeclarations(cp, scope, slug);
   if (schedules.length === 0 && freshness.length === 0) {
     // A version pushed before the manifest fields, or one declaring neither —
     // the UI hides the panel rather than nagging every app.
@@ -1746,8 +1764,6 @@ app.get('/api/apps/:scopeId/schedules', async (c) => {
     });
   }
 
-  // Dedupe freshness types the way the evaluator does, so the reads match rows.
-  const freshTypes = [...new Set(freshness.map((f) => f.eventType))];
   const [liveness, ...perUnit] = await Promise.all([
     // Liveness deliberately spans EVERY kind: a freshness-only app writes no
     // schedule rows, and a kind-filtered probe would read it as permanently
@@ -4055,6 +4071,77 @@ app.get('/api/apps/:scopeId/traffic', async (c) => {
       prodHistory,
       hours,
       now: new Date(),
+    }),
+  );
+});
+
+/**
+ * The same window's declared facts (#1447 step 3b) — migrations applied, failed schedule
+ * runs, stale freshness spans, recorded failures — for the chart to draw over its bars.
+ *
+ * A SIBLING route rather than three more fields on `/traffic`, and that is the whole
+ * design: the chart draws the moment it has the series, and these reads are slower
+ * and more fragile than the one that produces it. Folded in, an overlay source having a
+ * bad minute would hold the chart up or take it down with it; separate, it costs its own
+ * kind and nothing else. The page reads both in parallel and tolerates this one's absence.
+ */
+app.get('/api/apps/:scopeId/overlays', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const appRow = apps.find((a) => a.app_scope_id === c.req.param('scopeId'));
+  if (!appRow) throw new HTTPException(404, { message: 'app not found' });
+  const hours = chartHours(c.req.query('hours'));
+  const now = new Date();
+  // The series' own grid, not `now - hours`: the chart's first column starts on a bucket
+  // boundary, and a read windowed from the request time would miss that column's
+  // opening minutes (see `overlayWindow`).
+  const since = new Date(overlayWindow(hours, now).start).toISOString();
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  const scope = scopeId.parse(appRow.app_scope_id);
+  // The freshness units are the RUNNING version's declared expectations, resolved as the
+  // schedules panel resolves them, so the two views name the same units. A declaration
+  // that cannot be read costs the stale spans and nothing else.
+  const freshTypes = await runningDeclarations(cp, scope, appRow.vertical_slug)
+    .then((d) => d.freshTypes)
+    .catch((): string[] => []);
+  const [migrations, failedRuns, failures, ...freshnessPerUnit] = await Promise.all([
+    // Each read is tolerated on its own: an overlay source that cannot answer costs its
+    // kind, not the chart. `appliedMigrations` already answers null for a failed read.
+    cp.appliedMigrations(scope),
+    // Only the failed schedule runs, and only in the window: the derivation draws nothing
+    // else from this kind, and one shared page would let a busy schedule's `ok` rows
+    // crowd out the failures the chart exists to show.
+    cp.listSweepRuns({ scopeId: scope, kind: 'schedule', outcome: 'failed', since, limit: 500 }).catch(() => []),
+    // Narrowed to THIS installation at the plane — a team may run the same vertical
+    // twice, and a per-vertical page could fill with the other one's rows.
+    cp.listOpsFailures({ vertical: appRow.vertical_slug, scopeId: scope, since, limit: 400 }).catch(() => []),
+    // Freshness, PER UNIT, in two reads that partition time at the window's start: the
+    // verdict in force when the window began (newest row strictly before it — one row,
+    // however long ago it was written) and every change inside the window. Rows are
+    // change-gated, so a unit that went stale a month ago and stayed stale has exactly
+    // one row, a month old; any read shared across units and capped newest-first could
+    // lose it behind a noisier unit's changes, and the chart would show that unit
+    // healthy. Per unit, nothing another unit does can push a verdict off the page.
+    ...freshTypes.flatMap((t) => {
+      const unit = `${scope}:${t}`;
+      return [
+        cp.listSweepRuns({ kind: 'freshness', unit, until: since, limit: 1 }).catch(() => []),
+        cp.listSweepRuns({ kind: 'freshness', unit, since, limit: 200 }).catch(() => []),
+      ];
+    }),
+  ]);
+
+  return c.json(
+    deriveAppOverlays({
+      migrations: migrations ?? [],
+      sweepRuns: [...failedRuns, ...freshnessPerUnit.flat()],
+      failures,
+      scopeId: scope,
+      hours,
+      now,
     }),
   );
 });

@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Select } from '@substrat-run/ui';
-import { api, ApiError, type AppRow, type TeamTrafficSeries } from '../lib/api';
-import { DEV_MOCK, MOCK_TEAM_TRAFFIC } from '../lib/mock';
+import {
+  api,
+  ApiError,
+  type AppOverlays,
+  type AppRow,
+  type OverlayMarker,
+  type ReleaseMarker,
+  type TeamTrafficSeries,
+} from '../lib/api';
+import { DEV_MOCK, MOCK_APP_OVERLAYS, MOCK_TEAM_TRAFFIC, MOCK_TRAFFIC } from '../lib/mock';
+import { navigate } from '../lib/router';
 import { Page, GridTable, Row } from '../components/layout';
 import { card, MonoTag } from '../components/ui';
 import { TrafficChart } from '../components/TrafficChart';
@@ -55,6 +64,13 @@ const VIEWS = [
 
 type ViewKey = (typeof VIEWS)[number]['key'];
 
+/** What the chart's own read produces — the series and its release markers. The overlays
+ *  are deliberately not here: they are a second read that must not gate this one. */
+interface ChartRead {
+  series: TeamTrafficSeries;
+  markers: ReleaseMarker[];
+}
+
 /** Whether a sub-view can answer in the mode the app filter selected. */
 function available(view: (typeof VIEWS)[number], oneApp: boolean): boolean {
   return view.modes === 'both' || view.modes === (oneApp ? 'one-app' : 'all-apps');
@@ -79,6 +95,10 @@ export function Observability({
   // could not do — its button refreshed the one card it sat in.
   const [nonce, setNonce] = useState(0);
   const [series, setSeries] = useState<TeamTrafficSeries | null>(null);
+  const [markers, setMarkers] = useState<ReleaseMarker[]>([]);
+  // Undefined, never null: the overlays' absence is not a state the chart reports, only
+  // one it survives — the traffic is drawn either way.
+  const [overlays, setOverlays] = useState<AppOverlays | undefined>(undefined);
   const [chartError, setChartError] = useState(false);
 
   const app = scopeId ? apps.find((a) => a.app_scope_id === scopeId) : undefined;
@@ -95,6 +115,8 @@ export function Observability({
     // Cleared before the refetch: a chart drawn for one app under a heading that now
     // names another is the misreading the whole page exists to prevent.
     setSeries(null);
+    setMarkers([]);
+    setOverlays(undefined);
     setChartError(false);
     if (DEV_MOCK) {
       setSeries(
@@ -102,11 +124,39 @@ export function Observability({
           ? { ...MOCK_TEAM_TRAFFIC, series: MOCK_TEAM_TRAFFIC.series.filter((s) => s.scopeId === scopeId) }
           : MOCK_TEAM_TRAFFIC,
       );
+      if (scopeId) {
+        setMarkers(MOCK_TRAFFIC.markers);
+        setOverlays(MOCK_APP_OVERLAYS);
+      }
       return;
     }
-    api
-      .teamTraffic({ ...(scopeId ? { scopeIds: [scopeId] } : {}), hours })
-      .then((s) => live && setSeries(s))
+    // One app is the per-app route's question, and it answers the release markers with
+    // the series — the team route cannot, because it plots several verticals at once.
+    const read: Promise<ChartRead> = scopeId
+      ? api.appTraffic(scopeId, hours).then((traffic) => ({
+          // Adapted to the team shape here rather than branching every reader below —
+          // the rows and totals under the chart are written against one series type.
+          series: { series: [{ scopeId, buckets: traffic.buckets }], bucketMinutes: traffic.bucketMinutes, available: traffic.available },
+          markers: traffic.markers,
+        }))
+      : api.teamTraffic({ hours }).then((s) => ({ series: s, markers: [] }));
+    // The overlays ride a SECOND route, started beside the first and never awaited with
+    // it: the chart draws the moment the series lands, and the glyphs arrive when they
+    // arrive. Joining the two would let a slow overlay source hold the chart at
+    // "Loading…" with the traffic already in hand — the coupling the sibling route
+    // exists to remove. A failure costs the glyphs and nothing else.
+    if (scopeId) {
+      api
+        .appOverlays(scopeId, hours)
+        .then((o) => live && setOverlays(o))
+        .catch(() => {});
+    }
+    read
+      .then((r) => {
+        if (!live) return;
+        setSeries(r.series);
+        setMarkers(r.markers);
+      })
       .catch((e) => {
         if (!live) return;
         // A 501 and a worker predating the route say the same thing to a reader: the
@@ -137,6 +187,20 @@ export function Observability({
     [series, apps],
   );
   const thisApp = scopeId ? totals.find((t) => t.scopeId === scopeId) : undefined;
+
+  /**
+   * A marker opens the sub-view that EXPLAINS it — the run row for a failed schedule, the
+   * log for a recorded failure, the Deployments tab's schema history for a migration.
+   * Step 3c adds the time cursor (`since`/`until` on the logs seam) so the sub-view lands
+   * on the marker's own minutes; until then the narrowing is the app and the panel, which
+   * is still the walk from an aggregate to its evidence rather than a dead tooltip.
+   */
+  const onMarker = (m: OverlayMarker): void => {
+    if (!scopeId) return;
+    if (m.kind === 'run-failed') onNav({ app: scopeId, view: 'schedules' });
+    else if (m.kind === 'failure') onNav({ app: scopeId, view: 'logs' });
+    else navigate(`/apps/${scopeId}/deployments`);
+  };
 
   return (
     <Page>
@@ -180,7 +244,15 @@ export function Observability({
       </div>
 
       <div style={{ ...card, padding: 16, display: 'grid', gap: 10 }}>
-        <Chart series={series} error={chartError} oneApp={oneApp} nameOf={appName} />
+        <Chart
+          series={series}
+          error={chartError}
+          oneApp={oneApp}
+          nameOf={appName}
+          markers={markers}
+          {...(overlays ? { overlays } : {})}
+          onMarker={onMarker}
+        />
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
           Traffic to your installations — approximate, sampled at high volume.
         </span>
@@ -247,11 +319,17 @@ function Chart({
   error,
   oneApp,
   nameOf,
+  markers,
+  overlays,
+  onMarker,
 }: {
   series: TeamTrafficSeries | null;
   error: boolean;
   oneApp: boolean;
   nameOf: (scopeId: string) => string;
+  markers: ReleaseMarker[];
+  overlays?: AppOverlays;
+  onMarker: (marker: OverlayMarker) => void;
 }) {
   if (series === null) {
     return <div style={{ height: 96, display: 'flex', alignItems: 'center', fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading…</div>;
@@ -270,13 +348,25 @@ function Chart({
   if (axis.length === 0) {
     return <div style={{ height: 96, display: 'flex', alignItems: 'center', fontSize: 12.5, color: 'var(--text-tertiary)' }}>No apps to chart yet.</div>;
   }
-  // One app: the bar chart, errors inside their bucket, as the release chart draws it.
-  // Markers are empty in this pass — a per-app deploy/migration marker is its own read,
-  // and drawing a vertical's pushes on one installation's chart before that lands would
-  // be a fact from the wrong grain.
-  if (oneApp) return <TrafficChart buckets={axis} markers={[]} bucketMinutes={series.bucketMinutes} />;
+  // One app: the bar chart, errors inside their bucket, as the release chart draws it —
+  // now with the declared facts on it (#1447 step 3b). The deploy lines come from the
+  // per-app route, so they are this installation's OWN release history rather than a
+  // fact borrowed from another grain.
+  if (oneApp) {
+    return (
+      <TrafficChart
+        buckets={axis}
+        markers={markers}
+        bucketMinutes={series.bucketMinutes}
+        {...(overlays ? { overlays } : {})}
+        onMarker={onMarker}
+      />
+    );
+  }
   // All apps: one line each. The legend names them; the rows under the chart are the
-  // same list made reachable, and each of those narrows the page to its app.
+  // same list made reachable, and each of those narrows the page to its app. No markers
+  // and no overlays here — every one of them is a fact about ONE scope, and drawn across
+  // several lines it would claim an instant most of them never had.
   return (
     <TrafficChart
       buckets={axis}

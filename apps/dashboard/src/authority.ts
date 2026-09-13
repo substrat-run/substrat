@@ -77,11 +77,17 @@ export interface ListRead<T> {
 /** Filter for the ops-failure record. `since` windows it; the plane matches `at >= since`. */
 export interface OpsFailureRead {
   vertical?: string;
+  /**
+   * One installation. A team may run the same vertical twice, and a read narrowed only
+   * by `vertical` pages over BOTH — so a capped read could fill with the other
+   * installation's rows and answer "nothing" for the one asked about.
+   */
+  scopeId?: string;
   since?: string;
   limit?: number;
 }
 
-/** Filter for the sweep record (#1232). */
+/** Filter for the sweep record (#1232). `since` is inclusive, `until` exclusive, on `at`. */
 export interface SweepRunRead {
   kind?: 'connector' | 'schedule' | 'freshness';
   connectionId?: string;
@@ -89,6 +95,12 @@ export interface SweepRunRead {
   unit?: string;
   outcome?: 'ok' | 'failed' | 'skipped';
   since?: string;
+  /**
+   * The upper bound — what makes "the verdict in force when the window began" one
+   * `limit: 1` read (newest-first, `until: <window start>`) rather than a walk back
+   * through everything since.
+   */
+  until?: string;
   limit?: number;
 }
 
@@ -1278,7 +1290,7 @@ export class TenantNarrowedControlPlane {
   readOpsFailures(filter: OpsFailureRead = {}): Promise<ListRead<OpsFailureEntry>> {
     return this.walkList<OpsFailureEntry>(
       '/ops-failures',
-      { vertical: filter.vertical, since: filter.since },
+      { vertical: filter.vertical, scopeId: filter.scopeId, since: filter.since },
       filter.limit,
     );
   }
@@ -1303,6 +1315,7 @@ export class TenantNarrowedControlPlane {
         unit: filter.unit,
         outcome: filter.outcome,
         since: filter.since,
+        until: filter.until,
       },
       filter.limit,
     );

@@ -1,4 +1,4 @@
-import type { AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
+import type { AppOverlays, AppHostnamesView, AppModelView, AppPermissionsView, AppRow, AuditEntry, CatalogEntry, DeployFailureRow, FailureGroupRow, ReleasesView, ReleaseComparison, TrafficSeries, TeamTrafficSeries, AppMigrationsView, Deployment, GitReposResult, Me, Member, ObservabilityLogEvent, TenantMetricsRow, SnapshotRow, VerticalPreview , AppSchedulesView } from './api';
 
 /**
  * Dev-preview mode — the Dashboard's analogue of the console's `VITE_DEV_ACTOR`
@@ -524,6 +524,30 @@ export const MOCK_TENANT_METRICS: TenantMetricsRow[] = [
   { scopeId: MOCK_INSTALLED_APP_SCOPE, vertical: 'protocol', surface: 'app', requests: 4210, errors: 6, durationP50: 84, durationP95: 689 },
   { scopeId: MOCK_INSTALLED_APP_SCOPE, vertical: 'protocol', surface: 'api', requests: 912, errors: 0, durationP50: 31, durationP95: 210 },
 ];
+
+/**
+ * The overlays drawn over a one-app chart (#1447 step 3b) — one of each kind inside the
+ * mock day, so the glyph row, the stacking and the shaded span can all be reviewed
+ * without a control plane. The two failures share an hour deliberately: a burst that
+ * collapsed into one dot is the misdrawing the stacking exists to prevent.
+ */
+export const MOCK_APP_OVERLAYS: AppOverlays = (() => {
+  // Anchored to the clock, NOT to `ago`'s fixed date: these instants are drawn on
+  // `MOCK_TEAM_TRAFFIC`'s axis, which is the last 24 hours, and a fixture dated last
+  // July would pile every glyph on the chart's left edge.
+  const back = (h: number) => new Date(Date.now() - h * 3600e3).toISOString();
+  return {
+    markers: [
+      { at: back(20), kind: 'migration', label: 'crm 0002-contacts', detail: null },
+      { at: back(6), kind: 'migration', label: 'crm 0003-add-owner-index', detail: null },
+      { at: back(5), kind: 'run-failed', label: '01J2Q8…89AB:crm/syncContacts', detail: 'upstream answered 502' },
+      { at: back(3.4), kind: 'failure', label: 'POST /api/orders · commit', detail: 'operation.failed' },
+      { at: back(3.2), kind: 'failure', label: 'POST /api/orders · commit', detail: 'operation.failed' },
+    ],
+    spans: [{ from: back(9), to: back(3), kind: 'stale', label: 'receipt.landed' }],
+    truncated: false,
+  };
+})();
 
 /**
  * The team Observability chart (#1447): a day of hourly buckets for the two mock apps

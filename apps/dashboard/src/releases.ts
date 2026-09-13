@@ -237,18 +237,30 @@ export interface TrafficSeries {
 }
 
 /** The grid a series is drawn on: the bucket width, and the window's two ends. */
-interface BucketGrid {
+export interface BucketGrid {
   widthMs: number;
   start: number;
   end: number;
 }
 
 /**
- * The window, snapped to the bucket boundary the backend buckets on. Shared by both
- * derivations below so a release chart and a team chart drawn over the same hours
- * cannot disagree about where a column begins.
+ * The bucket width the plane answers a window of `hours` in — the same rule the
+ * observability reader applies (`cf-observability.ts`), restated here so a derivation
+ * that has NO rows to read the width from still lands on the grid the rows would have.
  */
-function bucketGrid(bucketMinutes: number, hours: number, now: Date): BucketGrid {
+export function bucketMinutesFor(hours: number): number {
+  return hours <= 6 ? 15 : 60;
+}
+
+/**
+ * The window, snapped to the bucket boundary the backend buckets on. Shared by every
+ * derivation drawn on one chart — the release series, the team series, and the overlays
+ * over them — so nothing drawn over the same hours can disagree about where a column
+ * begins. The snap moves `start` EARLIER than `now - hours` by up to one bucket: the
+ * first column is a whole bucket, and a sibling read that windowed from the exact
+ * request time would drop every fact in that column's opening minutes.
+ */
+export function bucketGrid(bucketMinutes: number, hours: number, now: Date): BucketGrid {
   const widthMs = bucketMinutes * 60_000;
   const end = Math.floor(now.getTime() / widthMs) * widthMs;
   return { widthMs, start: end - hours * 3_600_000, end };
@@ -310,7 +322,7 @@ export function deriveTrafficSeries(input: {
   now: Date;
 }): TrafficSeries {
   const { buckets, releases, prodHistory, hours, now } = input;
-  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? (hours <= 6 ? 15 : 60);
+  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? bucketMinutesFor(hours);
   const grid = bucketGrid(bucketMinutes, hours, now);
   const plotted = fillGrid(buckets ?? [], grid);
 
@@ -382,7 +394,7 @@ export function deriveTeamSeries(input: {
   now: Date;
 }): TeamTrafficSeries {
   const { buckets, scopeIds, hours, now } = input;
-  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? (hours <= 6 ? 15 : 60);
+  const bucketMinutes = buckets?.[0]?.bucketMinutes ?? bucketMinutesFor(hours);
   const grid = bucketGrid(bucketMinutes, hours, now);
 
   const rowsByScope = new Map<string, TenantTrafficBucketInput[]>();
