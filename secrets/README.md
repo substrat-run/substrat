@@ -203,10 +203,19 @@ Key is the SHA-256 of the token value, so they carry nothing the token doesn't.
   `open()` throws on a keyId mismatch; real rotation needs a keyring box plus a re-seal
   sweep, and the keyId field is ready while the implementation is not.
 - **`SESSION_SECRET`** (either) signs cookies — rotating signs everyone out.
-- **The lake tokens** rotate independently and neither is urgent: replacing
-  `R2_LAKE_SQL_TOKEN` interrupts lake queries until the next `push` + deploy, while
-  replacing `R2_LAKE_CATALOG_TOKEN` also means re-running the pipeline's sink config —
-  `push` cannot do that half, because the token does not live on a worker.
+- **The lake tokens** rotate independently, and only one of them rotates at all today.
+  Replacing `R2_LAKE_SQL_TOKEN` interrupts lake queries until the next `push` + deploy,
+  nothing worse. **`R2_LAKE_CATALOG_TOKEN` cannot be rotated on a lake that holds data.**
+  The token lives in the sink's config, Cloudflare has no update for a sink, and
+  `lake:provision --recreate` — the only path that writes a new sink — refuses once the
+  table has a snapshot, because it drops the table on the way. So the token the sink was
+  created with must **stay valid** for as long as that sink exists: revoking it does not
+  fail the next `lake:check` (the token is write-only and cannot be compared), it fails
+  the next roll, and the outbox stops reaching the lake with nothing red to say so. The
+  table-preserving migration — a second sink on a new token committing to a new table, a
+  pipeline pointed at it, and a hand-cutover of the query side — is not written yet; until
+  it is, treat the catalog token like `SECRET_BOX_KEY`: set once, backed up, left out of
+  any rotation.
 - Rotating **`PLATFORM_SECRET` / `ROUTER_SECRET`** is a TWO-step move, and **`push` now
   runs both** (#979): it updates the platform workers, then re-puts the pair on every
   deployed vertical script in the dispatch namespace. Vertical scripts receive these as

@@ -277,6 +277,9 @@ function drift(kind, live) {
     same('format.type', d.format.type, live.format?.type);
     same('http.enabled', d.http.enabled, Boolean(live.http?.enabled));
     same('http.authentication', d.http.authentication, Boolean(live.http?.authentication));
+    // The binding is how the shipper reaches the stream at all: a stream with it off
+    // still lists as healthy and `env.SUBSTRAT_OUTBOX_STREAM.send()` fails at runtime.
+    same('worker_binding.enabled', d.worker_binding.enabled, Boolean(live.worker_binding?.enabled));
     const want = new Map(d.schema.fields.map((f) => [f.name, fieldLine(f)]));
     const got = new Map((live.schema?.fields ?? []).map((f) => [f.name, fieldLine(f)]));
     for (const [name, line] of want) {
