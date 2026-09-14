@@ -156,6 +156,7 @@ export type { ManualClock } from './clock.js';
 export { createUlid, ulid, ulidTime, type UlidMint } from './ulid.js';
 export { assertReadOnlyQuery } from './read-only-sql.js';
 export { assertNoSpineWrite, guardSpine } from './spine-guard.js';
+export { assertModuleEnqueueableKind, PLATFORM_AUTHORED_KINDS } from './platform-kinds.js';
 export { readRoutedNode, RouterAssertionError } from './routed-node.js';
 export type { RoutedNode, HeaderReader, ReadRoutedNodeOptions } from './routed-node.js';
 export {

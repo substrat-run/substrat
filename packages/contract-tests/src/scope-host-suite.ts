@@ -325,6 +325,25 @@ export function scopeHostContractSuite(
       expect(new Date(row.requested_at).getTime()).not.toBeNaN();
     });
 
+    it('refuses a platform-authored intent kind from module code — sweep-runs is the sweeper’s alone (#1474)', async () => {
+      const stub = await host.getScope(alice, t1, s1);
+      const before = (await stub.invoke<PlatformRequestRow[]>('platform/read-requests')).length;
+      await expect(
+        stub.invoke('platform/request', {
+          kind: 'sweep-runs',
+          payload: { entries: [{ kind: 'schedule', operation: 'x/y', outcome: 'ok' }] },
+        }),
+      ).rejects.toThrow(/platform authors that intent kind/);
+      // Refused before the insert: nothing reached the journal the drain reads.
+      const after = await stub.invoke<PlatformRequestRow[]>('platform/read-requests');
+      expect(after.length).toBe(before);
+      expect(after.some((r) => r.kind === 'sweep-runs')).toBe(false);
+      // A vertical-raised kind still goes through.
+      await expect(stub.invoke<string>('platform/request', { kind: 'provision-sibling', payload: {} })).resolves.toMatch(
+        /^[0-9A-HJKMNP-TV-Z]{26}$/,
+      );
+    });
+
     it('rolls back a platform intent with its operation when the handler throws (K-4)', async () => {
       const stub = await host.getScope(alice, t1, s1);
       const before = (await stub.invoke<PlatformRequestRow[]>('platform/read-requests')).length;
