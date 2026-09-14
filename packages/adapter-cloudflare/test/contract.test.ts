@@ -363,6 +363,35 @@ describe('scope-local permissions — automatic fan-out on write (Phase 2)', () 
     expect(await tuplesOf(dead)).not.toContain(dave);
   });
 
+  it('unarchive refreshes the projection — a revoke that landed while archived holds (#1473)', async () => {
+    // The other half of the filter above. An archived scope is skipped by every
+    // fan-out, so a tenant-level revoke never reaches its local projection — and an
+    // unarchive that only flipped the directory status would put that stale
+    // projection back on duty: the revoked principal keeps their access on the
+    // revived scope until the next tenant-level write or the reconciliation sweep.
+    // Before #1386 every fan-out reached archived scopes, so this window is new.
+    const parked = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: parked, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, parked);
+
+    const erin = principalId.parse(ulid());
+    await host.admin.assignRole(staff, { principalId: erin, roleKey: 'admin', node: { tenantId: t, scopeId: null } });
+    expect(await probe(erin, parked, ADMIN)).toBe(true);
+
+    await host.admin.archiveScope(staff, t, parked);
+    // Revoked while archived: the tombstone fans out to the live scopes only.
+    await host.admin.unassignRole(staff, { principalId: erin, roleKey: 'admin', node: { tenantId: t, scopeId: null } });
+    expect(await probe(erin, s1, ADMIN)).toBe(false);
+
+    await host.admin.unarchiveScope(staff, t, parked);
+
+    // Denied on the revived scope — and the positive control beside it is what proves
+    // the denial comes from a REFRESHED projection rather than from an empty one
+    // failing closed: alice's tenant-level role was never revoked, and still serves.
+    expect(await probe(erin, parked, ADMIN)).toBe(false);
+    expect(await probe(alice, parked, ADMIN)).toBe(true);
+  });
+
   it('refuses a projection that arrives AFTER the scope was reaped', async () => {
     // The residual race the status filter alone cannot close: fan-out selects live
     // scopes, then writes, and a reap can land between the two. The selected scope
