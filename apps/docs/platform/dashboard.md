@@ -60,13 +60,19 @@ Login is [AuthHero OIDC](/concepts/identity#two-real-choices-made-differently) t
 gate, the Dashboard does a **JIT tenant bootstrap**: a new user's first sign-in provisions their
 own tenant and dashboard scope, and makes them its owner.
 
-## The app detail: five tabs
+## The app detail: four tabs
 
-Opening an app lands on its detail page, whose tab bar is five real nouns —
-**Overview · Data · Deployments · Previews · Settings**. The day-to-day configuration surfaces
-(Environment, Domains, Integrations) live as sections *inside* Settings rather than as top-level
-tabs, so the bar stays short. Old `snapshots` / `env` / `domains` / `integrations` tab URLs are
-aliased to their new homes, so bookmarks and in-flight links keep working.
+Opening an app lands on its detail page, whose tab bar is the four nouns every service page in
+the field has — **Overview · Deployments · Data · Settings** — rather than one tab per feature
+in merge order. Everything read-only about the *running version* is a fact about the version,
+not a noun of the instance, so it lives inside a tab: **Previews** and **Schema** are sections
+of Data, **Permissions** is a section of Settings, beside the day-to-day configuration surfaces
+(Environment, Domains, Integrations). The two cross-app views — **Observability** and
+**Audit** — belong to the team, so they are pages in the left menu with an app filter rather
+than tabs. Old tab URLs keep working: `snapshots` and `previews` open Data → Previews, `model`
+opens Data → Schema, `permissions` opens Settings → Permissions, and `env` / `domains` /
+`integrations` open their Settings sections; `apps/:id/audit` and `apps/:id/observability`
+redirect to the team-level page, already narrowed to that app.
 
 ### Overview
 
@@ -98,14 +104,22 @@ wires to answer the card are in [Deploying](/guide/deploying#ship-it-substrat-pu
 
 ### Data
 
-A read-only browser of the app's **own** database: the vertical's tables on one side (with the
-`_substrat_*` spine grouped apart), a paged view of the selected table on the other, and a
+Everything that is this scope's data, in four sections — **Tables · Schema · Previews · Export &
+import** — each keeping its own URL (`data/previews` …) the way Settings does.
+
+**Tables** is a read-only browser of the app's **own** database: the vertical's tables on one side
+(with the `_substrat_*` spine grouped apart), a paged view of the selected table on the other, and a
 collapsible **SQL console** for the one read-only `SELECT` the table browser can't express. Read-only
 is enforced below the seam — raw writes would bypass the event log and forge invariants — and every
-read is audited. Below it sits **Export & import**: *Export* downloads the app's data as a
-`.dump.json` the CLI accepts (personal data redacted unless it's a staff/CLI full-fidelity export);
-*Import* replaces the app's data with an uploaded dump, behind a danger dialog and always after the
-platform forks a safety preview first.
+read is audited. **Schema** is the emitted [entity model](/concepts/model) of the version this app
+*runs* — the ER diagram, entity cards and declared lifecycles, rendered by the same
+`@substrat-run/model-view` core `substrat model view` uses — with a **field coverage** card above it
+naming the declared fields no operation can return. It sits next to the tables because the reader
+who opens a table to see its rows is the one who asks what its columns mean. **Previews** is
+[described below](#previews-environments). **Export & import**: *Export* downloads the app's data
+as a `.dump.json` the CLI accepts (personal data redacted unless it's a staff/CLI full-fidelity
+export); *Import* replaces the app's data with an uploaded dump, behind a danger dialog and always
+after the platform forks a safety preview first.
 
 ### Deployments
 
@@ -138,8 +152,8 @@ older, restore a preview instead.
 There are two preview surfaces, because a preview does two jobs — a **data** test copy of one install,
 and a **non-production environment** for a vertical you build.
 
-**Per-app previews** (an install's **Previews** tab) are [test copies](/concepts/snapshots) of *that
-app's* data. **Create preview** forks the app's entire database into an independent copy with a
+**Per-app previews** (an install's **Data → Previews** section) are [test copies](/concepts/snapshots)
+of *that app's* data. **Create preview** forks the app's entire database into an independent copy with a
 retention choice (1/7/30 days, or keep until deleted); the list shows each copy's provenance, its own
 URL, and a live expiry countdown; expired copies are reaped by the platform's scheduled sweep. A
 preview is unmistakably *not* the live app: it receives no traffic, integrations are off, and deleting
@@ -192,6 +206,30 @@ its own URL (`settings/environment` …) so deep links survive:
   `dashboard/bind-app-hostname` / `unbind-app-hostname`.
 - **Integrations** — third-party **connections** (Scrive, Fortnox), begun with
   `dashboard/begin-connection` and its signed OAuth handshake.
+- **Permissions** — the **declared** permission surface of the version this app runs — keys,
+  roles, and entity-grant shapes — read live from the manifest registry, plus the
+  version-to-version diff when an update is available. It only displays: approving a widened role
+  is the [permission-diff checkpoint](/concepts/permissions), and it happens when you press
+  *Update* on Deployments, not here.
+
+## Team-level pages: Observability and Audit
+
+Two views are about the team's apps rather than one instance, so they are pages in the left menu
+with an **app filter** rather than tabs on each app. The app page links into both already narrowed.
+
+- **Observability** — every app on the team on **one chart**, under **one time range** (1h, 24h
+  or 3d), with an app selector that decides the mode rather than merely filtering rows. The
+  sub-views are **Traffic · Health · Logs · Events · Schedules · Flow**, and each answers in the
+  mode it makes sense in: on *All apps* the chart draws one line per installation, followed by a
+  row per app (Traffic) and the worst-first health list (Health); narrowed to one app it is the
+  same chart at tenant grain plus that app's Logs, Events, Schedules and Flow map. A sub-view
+  never carries its own window, so two panels always answer about the same slice. Clicking the time axis sets a **cursor** — one
+  instant worth looking at — which rides the URL beside the app and the sub-view and narrows the
+  panels below to the minutes around it.
+- **Audit** — the platform's control-plane admin log for this team: every privileged action against
+  its apps, append-only, newest first, with the before/after of each entry. It is a team page
+  because the log is written at the tenant grain and some entries — role changes, entitlements —
+  name no app at all, which a per-app tab could never show.
 
 ## Status
 

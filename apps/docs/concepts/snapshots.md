@@ -110,7 +110,7 @@ the copy is handled as personal data either way.
 
 ## Where you meet it
 
-- **Dashboard → app → Snapshots** — create a test copy with a TTL, watch the expiry countdown,
-  delete ([dashboard](/platform/dashboard#snapshots)).
+- **Dashboard → app → Data → Previews** — create a test copy with a TTL, watch the expiry
+  countdown, delete ([dashboard](/platform/dashboard#previews-environments)).
 - **Dashboard → app → Deployments** — "Update to latest" with **Snapshot data first**.
 - **CLI** — [`substrat scope pull`](/reference/cli#scope-pull) for the local inner loop.
