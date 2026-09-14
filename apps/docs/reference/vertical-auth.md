@@ -23,6 +23,7 @@ interface AuthSubject {
   sub: string;           // the provider's stable subject id
   email: string | null;
   name: string | null;
+  emailVerified?: boolean; // what the provider says about `email` — three states, not two
 }
 ```
 
@@ -30,6 +31,16 @@ The provider proves *who* a caller is and nothing more. [Authorization stays in 
 kernel](/concepts/permissions) — roles, grants and tenancy are never this package's concern.
 Mapping `sub` to a Substrat `PrincipalId` is a **separate, per-scope** step (the identity
 directory below), which is what lets the implementation swap without touching the app.
+
+`emailVerified` is **three-state**. `true` and `false` are the provider asserting something
+about the address; `undefined` is the provider saying nothing — what an OIDC issuer that
+never emits `email_verified` looks like, and what a session minted before the field existed
+looks like for the rest of its life. All three providers below populate it: the two OIDC ones
+carry the issuer's `email_verified` claim through unchanged, and `doAuthProvider` reports its
+own directory's flag. Nothing in this package gates on it — an address becomes an identifier
+in invite flows and on a staff roster, and a gate there could not be written against a claim
+nobody transported (#1359, #1373) — so the vertical that eventually writes such a gate decides
+what `undefined` means.
 
 ## `instanceAuthFor` — what a vertical actually mounts
 
@@ -126,7 +137,11 @@ page. The provider keeps that token in its own cookie, scoped to the logout path
 
 Two conditions live at the **issuer**, not here — at an Auth Server app they are the two
 fields on the application: RP-initiated logout must be enabled for the client, and the
-app's origin must be registered as a post-logout redirect URI. The first sign-out after
+**exact** `post_logout_redirect_uri` the provider sends — the app's origin plus the
+post-logout path, `/` by default or the same-origin `returnTo` the logout link carried — must
+be on the post-logout list, which is separate from the sign-in callbacks. An origin alone
+does not match, and the mismatch is quiet: the person is signed out and left at the issuer
+instead of coming back. The first sign-out after
 turning them on can still show the confirmation page: the ID token minted before then
 carries no session id for the issuer to match, and the next sign-in puts one there.
 
