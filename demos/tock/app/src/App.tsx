@@ -1,5 +1,5 @@
 /**
- * Tock's one screen, in five panes.
+ * Tock's one screen, in seven panes: ingest, kinds, schema, outputs, runs, findings, report.
  *
  * The app filters nothing. Every list it renders is what the API answered, so a viewer seeing
  * fewer things than an analyst is the permission model on screen rather than a `if (role ===`
