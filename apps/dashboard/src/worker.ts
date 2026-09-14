@@ -38,6 +38,7 @@ import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { deriveOperationHealth } from './operation-health.js';
+import { deriveConnectionSweep } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair, type Deployment } from './deployments.js';
@@ -2294,6 +2295,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         declaredComplete: true,
         connections: [],
       }),
+      connectionSweep: deriveConnectionSweep({ connections: [], sightings: [] }),
       operations: deriveOperationHealth({
         observed: [],
         observedComplete: true,
@@ -2314,7 +2316,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       }),
     });
   }
-  const [flow, facets, byOperation, denials, connectionRows] = await Promise.all([
+  const [flow, facets, byOperation, denials, sweeps, connectionRows] = await Promise.all([
     cp.versionFlow(slug, runningId),
     cp.facetEvents(scope, { groupBy: 'type', limit: FLOW_TYPE_LIMIT }),
     // #1234's overlay: the same outbox, grouped by the operation that emitted each
@@ -2342,6 +2344,10 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
           : null,
       )
       .catch(() => null),
+    // #1234's last finding: has a bound connection actually been USED? One read of the
+    // connector sweep for the tenant, grouped per connection in the derivation — a
+    // `limit: 1` per connection would be N round trips for a handful of rows.
+    cp.listSweepRuns({ kind: 'connector' }).catch(() => []),
     // Revoked ones included deliberately: a revoked connection is a DIFFERENT
     // finding from none at all, and the default filter would hide it behind the
     // wrong one.
@@ -2371,6 +2377,16 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       observedComplete,
       declaredComplete: !flow.declaredEventsTruncated,
       connections,
+    }),
+    connectionSweep: deriveConnectionSweep({
+      connections: connectionRows.map((conn) => ({
+        connectionId: conn.id,
+        provider: conn.provider,
+        status: conn.status,
+      })),
+      sightings: sweeps
+        .filter((r) => r.connectionId !== null && r.connectionId !== undefined)
+        .map((r) => ({ connectionId: r.connectionId as string, at: r.at, outcome: r.outcome })),
     }),
     operations: deriveOperationHealth({
       // A null bucket cannot happen grouping by `type`, but it CAN here: a consumer

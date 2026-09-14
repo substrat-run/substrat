@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type AppRow, type FlowFindingsView, type FlowFinding, type FlowGraph, type FlowNode, type FlowView, type OperationHealthView } from '../lib/api';
+import { type ConnectionSweepView, api, type AppRow, type FlowFindingsView, type FlowFinding, type FlowGraph, type FlowNode, type FlowView, type OperationHealthView } from '../lib/api';
 import { card } from '../components/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
 
@@ -244,6 +244,85 @@ function FlowMap({ graph, app }: { graph: FlowGraph; app: AppRow }) {
 }
 
 /**
+ * Whether a bound connection has actually been USED (#1234's last finding).
+ *
+ * The wording carries the whole burden here. The sweep log is pruned, so the absence of
+ * a run means "not in the last {windowDays} days" and nothing stronger — a connection
+ * swept monthly has no row either, and calling that unused would send somebody to
+ * disconnect a working integration. The window is stated every time, and comes from the
+ * same constant the pruner uses rather than being written into the copy.
+ *
+ * A LAPSED connection is not also reported as idle. Its story is the lapse; adding "and
+ * it has not been used lately" is the same fact twice, pointing at the wrong fix.
+ */
+function ConnectionSweep({ view }: { view: ConnectionSweepView }) {
+  if (view.rows.length === 0) return null;
+  const when = (iso: string) => new Date(iso).toLocaleDateString();
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Connections</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          When each connection was last used, over the last {view.windowDays} days.
+        </p>
+      </div>
+
+      <div style={{ display: 'grid', gap: 4 }}>
+        {view.rows.map((r) => (
+          <div
+            key={r.connectionId}
+            style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12.5 }}
+          >
+            <span style={{ fontFamily: 'var(--font-mono)', flex: '1 1 160px' }}>{r.provider}</span>
+            {r.status !== 'active' && (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'var(--status-danger-bg)',
+                  color: 'var(--status-danger-fg)',
+                }}
+              >
+                {r.status}
+              </span>
+            )}
+            <span style={{ color: 'var(--text-tertiary)', minWidth: 150, textAlign: 'right' }}>
+              {r.lastSweptAt
+                ? `last used ${when(r.lastSweptAt)}`
+                : /* Bounded, and said so — not "never". */
+                  `not used in ${view.windowDays} days`}
+            </span>
+            {r.lastOutcomeFailed === true && (
+              <span
+                style={{
+                  fontSize: 11,
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  background: 'var(--status-warning-bg)',
+                  color: 'var(--status-warning-fg)',
+                }}
+                title="the most recent run for this connection failed"
+              >
+                last run failed
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {view.idleCount > 0 && (
+        <p style={{ margin: 0, fontSize: 11.5, color: 'var(--text-tertiary)' }}>
+          {view.idleCount === 1 ? 'One connection has' : `${view.idleCount} connections have`} no recorded use in
+          that window. Older runs are not kept, so this is not proof one has never been used.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * Per-operation health (#1234's overlay).
  *
  * Deliberately NOT a latency table. Nothing in the platform emits a span for an
@@ -371,6 +450,7 @@ export function Flow({ app }: { app: AppRow }) {
     <>
       <FlowMap graph={view.graph} app={app} />
       <OperationHealth view={view.operations} />
+      <ConnectionSweep view={view.connectionSweep} />
       <FlowFindings view={view.findings} />
     </>
   );
