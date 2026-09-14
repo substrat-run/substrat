@@ -529,11 +529,15 @@ export interface OperationHealthView {
 export interface ConnectionSweepRow {
   connectionId: string;
   provider: string;
+  /** The human label — a tenant can hold several connections to one provider. */
+  label: string;
   status: string;
-  /** Null = no run retained. Bounded by `windowDays`, NEVER "never". */
+  /** Null = no run through it inside `windowDays`. Bounded by the window, NEVER "never". */
   lastSweptAt: string | null;
   lastOutcomeFailed: boolean | null;
-  /** Usable, and with no retained run. A lapsed connection is not called idle too. */
+  /** The record could not be read: absence proves nothing, and the copy says so. */
+  unknown: boolean;
+  /** Usable, read, and with no run in the window. A lapsed connection is not called idle too. */
   idle: boolean;
 }
 

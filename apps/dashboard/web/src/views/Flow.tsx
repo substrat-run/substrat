@@ -253,7 +253,9 @@ function FlowMap({ graph, app }: { graph: FlowGraph; app: AppRow }) {
  * same constant the pruner uses rather than being written into the copy.
  *
  * A LAPSED connection is not also reported as idle. Its story is the lapse; adding "and
- * it has not been used lately" is the same fact twice, pointing at the wrong fix.
+ * it has not been used lately" is the same fact twice, pointing at the wrong fix. So the
+ * recency copy is gated on `idle`, not on the timestamp being absent: a lapsed row with
+ * no run says nothing there, and a row whose record could not be read says that.
  */
 function ConnectionSweep({ view }: { view: ConnectionSweepView }) {
   if (view.rows.length === 0) return null;
@@ -274,7 +276,10 @@ function ConnectionSweep({ view }: { view: ConnectionSweepView }) {
             key={r.connectionId}
             style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12.5 }}
           >
-            <span style={{ fontFamily: 'var(--font-mono)', flex: '1 1 160px' }}>{r.provider}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', flex: '0 0 auto' }}>{r.provider}</span>
+            <span style={{ flex: '1 1 160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.label}>
+              {r.label}
+            </span>
             {r.status !== 'active' && (
               <span
                 style={{
@@ -291,8 +296,14 @@ function ConnectionSweep({ view }: { view: ConnectionSweepView }) {
             <span style={{ color: 'var(--text-tertiary)', minWidth: 150, textAlign: 'right' }}>
               {r.lastSweptAt
                 ? `last used ${when(r.lastSweptAt)}`
-                : /* Bounded, and said so — not "never". */
-                  `not used in ${view.windowDays} days`}
+                : r.unknown
+                  ? /* The read failed: not a clean bill, not a finding. */
+                    'sweep record unavailable'
+                  : r.idle
+                    ? /* Bounded, and said so — not "never". */
+                      `not used in ${view.windowDays} days`
+                    : /* Lapsed with no run: the status badge is the whole story. */
+                      null}
             </span>
             {r.lastOutcomeFailed === true && (
               <span
