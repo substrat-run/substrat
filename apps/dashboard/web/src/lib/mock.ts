@@ -526,6 +526,37 @@ export const MOCK_TENANT_METRICS: TenantMetricsRow[] = [
 ];
 
 /**
+ * ONE app's own day of traffic — the Overview sparkline (#1447). `MOCK_TRAFFIC` above is
+ * a vertical's, across every team that installed it, so the app page needs its own.
+ *
+ * Anchored to the clock rather than `ago`'s fixed date, like `MOCK_APP_OVERLAYS`: the
+ * series IS the last 24 hours, and a fixture dated last July would draw a day that ended
+ * months ago. Its totals deliberately land near `MOCK_TENANT_METRICS`' — the status band
+ * and the caption under the sparkline are the same app's 24 hours, and a preview where
+ * they disagreed would look like a bug in whichever one the reader trusted less.
+ */
+export const MOCK_APP_TRAFFIC: TrafficSeries = (() => {
+  const now = Date.now();
+  const buckets = Array.from({ length: 24 }, (_, i) => {
+    const busy = i > 6 && i < 21;
+    return {
+      start: new Date(Math.floor((now - (23 - i) * 3600e3) / 3600e3) * 3600e3).toISOString(),
+      requests: busy ? 280 + ((i * 29) % 45) : 85 + ((i * 11) % 15),
+      errors: i === 18 ? 4 : i === 19 ? 2 : 0,
+    };
+  });
+  return {
+    buckets,
+    markers: [
+      { at: buckets[6]!.start, kind: 'went-live' as const, version: '0.0.12', versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR03' },
+      { at: buckets[21]!.start, kind: 'pushed' as const, version: '0.0.13', versionId: '01J2Q8Z3V9K4W7X2M5N6P7VR04' },
+    ],
+    bucketMinutes: 60,
+    available: true,
+  };
+})();
+
+/**
  * The overlays drawn over a one-app chart (#1447 step 3b) — one of each kind inside the
  * mock day, so the glyph row, the stacking and the shaded span can all be reviewed
  * without a control plane. The two failures share an hour deliberately: a burst that
