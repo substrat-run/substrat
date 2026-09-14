@@ -354,8 +354,10 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   `manualClock`/`frozenClock` instead of sleeping or shrinking the window to zero. The
   **Durable-Object** host takes none (`clock?: never`, #956): the reads that matter happen
   inside the ScopeDO workerd constructs, which a host option cannot reach, so an expiry
-  *transition* is held to the contract on SQLite only — `grantExpiryContractSuite` is the
-  one suite the two adapters do not share. Code that must read the *real* clock — a JWT
+  *transition* is held to the contract on SQLite only — `grantExpiryContractSuite` and
+  `facetRecencyContractSuite` (#1234: a facet bucket's `lastSeen` is its *latest* event,
+  which the wall clock cannot tell from its first) are the two suites the two adapters do
+  not share, for that one reason. Code that must read the *real* clock — a JWT
   whose `exp` a remote server judges — opts out with a reviewable
   `boundary-lint-allow R6` … `boundary-lint-end R6` block.
 - Web-standard APIs always, node-only imports never: hashing/crypto is
@@ -459,6 +461,20 @@ so the shorthand puts the login callback on the API's port. Nine of eleven demo 
 carried it and every suite stayed green, because a scenario drives the module and never
 reaches `server.ts`, #1388. A whole file opts out with `vite-proxy-allow: <reason>` —
 `demos/auth-server` does, taking its origin from `PORT` instead),
+`lint:invocation-log` (`tools/invocation-log.mjs`: a **deployable** vertical — one that
+declares `substrat.slug` and ships a `src/worker.ts`, plus the scaffold template — mounts
+`app.use('*', invocationLog({ routerSecret: … }))` as the **first** registration on its
+Hono app, or it has no tenant-facing logs. Observability is keyed on the worker script,
+which serves every tenant that installed the vertical, and a trace does not cross the
+dispatch hop, so the router cannot stamp the tenant onto a vertical's log lines the way it
+does its metrics; the vertical writes the line itself. Order is the property checked, not
+presence: Hono composes handlers in registration order, so a mount below some routes logs
+part of the surface and is silent for the rest, which reads as no traffic. A bare
+`invocationLog()` with no `routerSecret` is refused too — it mounts, verifies nothing and
+writes nothing, which from the outside is the same empty view. Same shape as
+`lint:vite-proxy`, for the same reason: no scenario suite drives the mounted app, #1418.
+Local-only demos with a `server.ts` harness and no worker entry are out of scope, since
+no router fronts them and no request carries an asserted tenant),
 `lint:tests`, `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule

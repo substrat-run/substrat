@@ -96,8 +96,10 @@ The pure host takes a `clock`, so a scenario uses `manualClock` or `frozenClock`
 asserts an elapsed-time transition directly. The Durable-Object host declares
 `clock?: never` and means it: the reads that matter happen inside the ScopeDO that workerd
 constructs, which a host option cannot reach. So grant *expiry transitions* are held to
-the contract on SQLite only — that is the one suite the two adapters do not share, and it
-is written down rather than quietly tolerated.
+the contract on SQLite only, and so is facet *recency* — that a bucket's `lastSeen` is its
+latest event, which the wall clock cannot tell from its first. Those are the two suites the
+two adapters do not share, for that one reason, and it is written down rather than quietly
+tolerated.
 
 Code that must read the real clock — a JWT whose `exp` a remote server judges — opts out
 with a reviewable `boundary-lint-allow R6` block.

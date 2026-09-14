@@ -165,8 +165,9 @@ edges.
 - **Cross-scope reads are a fold, not a join.** Fleet-wide questions cost a read per scope.
   Projections and per-tenant D1 are the current answers, and the many-scope fan-out cost of
   permission projection for a very large tenant is an explicit open question.
-- **Grant expiry transitions are contract-tested on SQLite only**, because the DO host takes no
-  clock. Both hosts run the same predicate; only one can be tested across the transition.
+- **Grant expiry transitions and facet recency are contract-tested on SQLite only**, because
+  the DO host takes no clock. Both hosts run the same SQL; only one can be tested across the
+  passage of time.
 
 [What Substrat doesn't have (yet)](/guide/what-substrat-lacks) is the maintained version of
 this list.
