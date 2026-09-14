@@ -162,6 +162,12 @@ same object feeds `operationInputs: operationInputsOf(bikeShopOperations)`, so t
 schemas the host parses with are the ones the declaration states — they cannot drift,
 because there is only one of them.
 
+The permission list works the same way. `SHOP_PERMISSIONS`, the array handed to
+`defineOperations`, is also the `keys` that `src/provision.ts` hands
+`definePermissions({ modules, roles, entityGrants, keys })` — and `definePermissions`
+throws at module load if those keys and `MODULES` disagree in either direction. Hand
+both readers the same array; a second copy is a list that drifts.
+
 **A list read must declare `paged`.** `defineOperations` refuses a bare-array `output`
 that does not, and it refuses it at module load — so it fires in every build, every
 test and every dev server rather than in a lint tool that has to find you. A list

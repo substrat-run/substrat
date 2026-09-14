@@ -14,10 +14,33 @@ one command, for when you want to build an actual vertical rather than learn the
 
 ## What it writes
 
-**The vertical skeleton** — `src/manifest.ts`, `migrations.ts`, `module.ts`, `provision.ts`,
-`seed.ts`, a Node `server.ts` for local work, a `worker.ts` that mounts the platform contract
-through [`@substrat-run/vertical-host`](/reference/vertical-host), and
-`test/scenario.test.ts`.
+**The vertical skeleton** — a working bike shop, laid out the way the linter and tests expect:
+
+```
+src/entities.ts        defineEntities — what exists
+src/operations.ts      defineOperations — the declared surface (input, output, permission, http)
+src/manifest.ts        the module manifest + permission and env constants
+src/migrations.ts      the append-only SqlMigration[] journal
+src/module.ts          the handler bodies, bound to the declaration
+src/provision.ts       MODULES, ROLES, grant shapes — what `substrat push` reads
+src/seed.ts            a world to develop against
+src/personas.ts        the local dev cast, read by the dev issuer and the seed
+src/routes.ts          the HTTP API, DERIVED from the operations — it holds no table
+src/server.ts          the Node dev server (SQLite adapter, OIDC against the dev issuer)
+src/worker.ts          the deployable Cloudflare worker
+src/config-do.ts       the per-instance config store (Cloudflare only)
+test/scenario.test.ts  the scenario, including the denials
+test/entities.test.ts  the entity registry held to the tables its migrations create
+```
+
+`src/operations.ts` is where an operation is declared; `src/module.ts` holds only its body.
+`src/routes.ts` derives every route from the `http` each operation declares, through
+`mountOperations` from [`@substrat-run/vertical-host`](/reference/vertical-host), and both
+`server.ts` and `worker.ts` mount that one derivation — so a new route is a declaration on its
+operation, never a handler added to one entrypoint. The permission keys `defineOperations`
+takes are the same array `src/provision.ts` hands `definePermissions({ …, keys })`, which throws
+at module load when those keys and `MODULES` disagree. [Agent rules](/guide/agent-rules) is
+the full layout, verbatim from the `AGENTS.md` the scaffolder writes.
 
 **The instruction layer** — `AGENTS.md` (the rules) and `.substrat/playbook.md` (the build
 flow), plus a command stub per tool so Claude Code, Cursor and opencode all read the *same*
@@ -70,6 +93,25 @@ against the issuer with [`@substrat-run/vertical-auth`](/reference/vertical-auth
 `oidcRpAuthProvider`, then map the subject to a `PrincipalId` per scope — locally through
 `host.admin`, hosted through the per-tenant `IdentityDO`, which also brings the owner-claim
 and invite flows a fresh install needs.
+
+The worker's **first** registration is the invocation log, and it must stay first:
+
+```ts
+app.use('*', invocationLog<Env>({
+  routerSecret: (env) => env.ROUTER_SECRET,
+  allowUnsigned: (env) => env.ALLOW_DEV_NODE === 'true',
+}));
+```
+
+[`invocationLog`](/reference/kernel#trusting-the-edges) from `@substrat-run/kernel` writes one
+line per invocation stamped with the tenant and scope the router asserted. Cloudflare keys
+observability on the worker script, and one script serves every tenant that installed the
+vertical, so this line is the only thing that files your invocations under the tenant they
+served — without it the app's Observability page stays empty and says nothing about why. It
+must come before every route because Hono runs handlers in registration order and stops at the
+one that answers, so a route registered above it is never logged. The stamp is taken from the
+*verified* router assertion (`routerSecret`), never from the header. `pnpm lint:invocation-log`
+refuses a missing, late or secretless mount.
 
 ## Dependency-free by design
 

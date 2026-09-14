@@ -46,16 +46,25 @@ skeleton; **the agent writes the vertical**.
 ### What you got
 
 ```
+src/entities.ts     what exists — each entity's table, row shape, key and parents
+src/operations.ts   the operations: input, output, permission, and their http route
 src/manifest.ts     what the module declares — permissions, events, entitlement key
 src/migrations.ts   the append-only journal
-src/module.ts       the operations
+src/module.ts       the operation handlers, bound to operations.ts
 src/provision.ts    roles and the permission surface `substrat push` reads
 src/seed.ts         a world to develop against
+src/personas.ts     the local dev cast you sign in as
+src/routes.ts       the HTTP API, derived from operations.ts — no route table
 src/server.ts       a Node dev server (SQLite adapter)
 src/worker.ts       the Cloudflare entry, via @substrat-run/vertical-host
-test/scenario.test.ts
+src/config-do.ts    per-instance settings (Cloudflare only)
+test/scenario.test.ts · test/entities.test.ts
 AGENTS.md · .substrat/playbook.md · .claude/ · .cursor/ · .opencode/
 ```
+
+A route is never written by hand: declare `http` on the operation in `src/operations.ts` and
+both `server.ts` and `worker.ts` serve it. The one line `src/worker.ts` must keep first is its
+`invocationLog` mount — see [create-substrat](/reference/create-substrat#signing-in-locally).
 
 There is no `wrangler.jsonc` and you never write one. The `substrat` block in
 `package.json` declares what the deploy needs — the entry, the durable-object stores — and
