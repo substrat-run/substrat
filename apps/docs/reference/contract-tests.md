@@ -36,6 +36,7 @@ a fresh host.
 | `impersonationContractSuite` | acting as a principal with the real actor preserved — authority is the impersonated principal's, both actors are stamped, read-only holds on `ctx.sql`, the time box is checked per invoke (K-42) | the **default** checker; half the suite is that the door confers no authority of its own |
 | `spineGuardContractSuite` | the spine guard on `ctx.sql` — module code cannot *write* a `_substrat_*` table through the connection the kernel hands it, and can still read one (#954) | `UNSAFE_allowAllChecker`; a forged grant must be refused by the connection, not by a permission |
 | `grantExpiryContractSuite` | a grant with an `expiresAt` stops granting the moment the **host's** clock passes it — the transition, not the already-dead grant `permissionContractSuite` covers (#956) | the **default** checker, on a `manualClock` the suite advances. **SQLite only** — see below |
+| `facetRecencyContractSuite` | `facetEvents` — a bucket's `lastSeen` is the **latest** event in it, not merely one of them; against the wall clock two events share a millisecond and `MIN` passes the same test `MAX` does (#1234) | the **default** checker, on a `manualClock` the suite advances. **SQLite only** — see below |
 
 ```ts
 // packages/adapter-yours/test/contract.test.ts
@@ -44,7 +45,7 @@ import {
   permissionContractSuite,
   scheduleContractSuite,
   scopeHostContractSuite,
-  // …and the other nine, each with the same (name, factory) signature
+  // …and the rest of the table above, each with the same (name, factory) signature
 } from '@substrat-run/contract-tests';
 import { UNSAFE_allowAllChecker, webCryptoSecretBox } from '@substrat-run/kernel';
 import { YourScopeHost } from '../src/index.js';
@@ -71,36 +72,44 @@ with the reason beside each — is
 [`packages/adapter-sqlite/test/contract.test.ts`](https://github.com/substrat-run/substrat/blob/main/packages/adapter-sqlite/test/contract.test.ts).
 The count is deliberately not written here: it grows with every merged guarantee.
 
-### The one suite the two adapters do not share
+### The two suites the two adapters do not share
 
-Both shipped adapters run every suite in that file **except `grantExpiryContractSuite`,
-which mounts on the SQLite host only** — and the reason is a property of the runtime, not
-an omission.
+Both shipped adapters run every suite in that file **except `grantExpiryContractSuite` and
+`facetRecencyContractSuite`, which mount on the SQLite host only** — and the reason is one
+property of the runtime, not two omissions.
 
-That suite proves the *transition*: a grant that is live now and denied an hour later.
-Reaching it by waiting would mean a test that sleeps for the expiry window, so the fixture
-hands the suite a `manualClock` and moves it instead. The pure host takes one
-(`SqliteScopeHostOptions.clock`) and judges tuple expiry, session expiry, entitlement
-expiry and schedule cadence against it.
+Each of those suites is about the *passage of time*. Grant expiry proves the transition: a
+grant that is live now and denied an hour later. Facet recency proves that a bucket's
+`lastSeen` is its latest event and not its first — which the wall clock cannot tell apart,
+because two events emitted back to back share an `occurred_at`, so `MIN` and `MAX` return
+the same string and a mutated aggregate passes (#1234). Reaching either fact by waiting
+would mean a test that sleeps, so each fixture hands its suite a `manualClock` and moves it
+instead. The pure host takes one (`SqliteScopeHostOptions.clock`) and stamps `ctx.now()`
+from it, and judges tuple expiry, session expiry, entitlement expiry and schedule cadence
+against it.
 
 The Durable-Object host cannot offer the same option, because its elapsed-time reads sit on
 both sides of a boundary. Two of them are **coordinator-side** and a clock would reach
 them: impersonation-session expiry, and schedule cadence. The rest are **DO-local** —
 `ctx.now()`, the permission checker's tuple expiry, the system-grant check, the projected
 entitlement reads — and the ScopeDO is constructed by workerd, not by `CloudflareScopeHost`,
-which only ever holds a stub. Grant expiry, the fact this suite is about, is on the far
-side.
+which only ever holds a stub. Grant expiry and the `occurred_at` stamp, the two facts these
+suites are about, are both on the far side.
 
 So `CloudflareScopeHostOptions` carries no `clock` at all. A partial one would be worse
 than none: it would take the pure adapter's name and signature while silently disagreeing
 with it on exactly the judgement being tested.
 
-Both hosts run the same predicate (`expires_at IS NULL OR expires_at > ?`) and
-`permissionContractSuite` proves an already-expired grant is refused on both. What is
-asserted on one adapter only is that the refusal arrives *when the clock passes*. The suite
-is deliberately not mounted-and-skipped on the Cloudflare host: a skipped test reads as
-coverage the adapter does not have. Its header and the `clock` note in
-`CloudflareScopeHostOptions` carry the two alternatives that were considered and rejected.
+Both hosts run the same SQL — the expiry predicate (`expires_at IS NULL OR expires_at > ?`)
+and the `MAX(occurred_at)` aggregate come from the same kernel helpers — and
+`permissionContractSuite` proves an already-expired grant is refused on both, as
+`scopeHostContractSuite` proves `lastSeen` is present and a real timestamp on both. What is
+asserted on one adapter only is that the refusal arrives *when the clock passes*, and that
+the timestamp is the *latest* one. Neither suite is mounted-and-skipped on the Cloudflare
+host: a skipped test reads as coverage the adapter does not have. The two suite headers
+and the `clock` note in `CloudflareScopeHostOptions` carry the alternatives that were
+considered and rejected. The day the DO host can take a clock, mounting both suites is the
+whole change.
 
 ## What the suites verify
 
@@ -242,13 +251,23 @@ adapter gets it wrong:
   the stub too.
 
 **Grant expiry under an injected clock** (`grantExpiryContractSuite`, #956 —
-[SQLite only](#the-one-suite-the-two-adapters-do-not-share))
+[SQLite only](#the-two-suites-the-two-adapters-do-not-share))
 - a grant with an `expiresAt` is live before it and denied after it, node-level and
   entity-narrowed alike — the transition, which against the wall clock a test could only
   reach by sleeping through the window;
 - expiry is judged at **check** time, not at grant time: the same grant is live again once
   the clock moves back before it, and a re-grant grants on its own `expiresAt`;
 - a grant with no `expiresAt` is not touched by the clock at all.
+
+**Facet recency under an injected clock** (`facetRecencyContractSuite`, #1234 —
+[SQLite only](#the-two-suites-the-two-adapters-do-not-share))
+- a bucket's `lastSeen` is the **latest** event in it: three events a day apart report the
+  third, where `MIN` would report the first and a consumer that stopped two days ago would
+  read as one that just ran;
+- recency moves with the window asked about — narrowed by `until`, the bucket reports the
+  latest event *inside* the window, never an all-time maximum the caller excluded;
+- the payload grouping answers the same way as the envelope grouping — it runs its own
+  query, so it carries its own proof rather than inheriting the other branch's.
 
 ## The entity-check kit
 
