@@ -223,11 +223,13 @@ with an **app filter** rather than tabs on each app. The app page links into bot
   mode it makes sense in: on *All apps* the chart draws one line per installation, followed by a
   row per app (Traffic) and the worst-first health list (Health); narrowed to one app it is the
   same chart at tenant grain plus that app's Logs, Events, Schedules and Flow map. A sub-view
-  never carries its own window, so two panels always answer about the same slice. Clicking the time axis sets a **cursor** — one
-  instant worth looking at — which rides the URL beside the app and the sub-view and narrows the
-  panels below to the minutes around it.
+  never carries its own window, so two panels always answer about the same slice. On the one-app
+  bar chart, clicking a bucket sets a **cursor** — one instant worth looking at — which rides the
+  URL beside the app and the sub-view and narrows the panels below to the minutes around it; the
+  All-apps line chart carries no cursor, because a cursor is a fact about one scope.
 - **Audit** — the platform's control-plane admin log for this team: every privileged action against
-  its apps, append-only, newest first, with the before/after of each entry. It is a team page
+  its apps, append-only, newest first; an entry opens to its before/after state where the platform
+  captured one, and the domain event that caused it when one did. It is a team page
   because the log is written at the tenant grain and some entries — role changes, entitlements —
   name no app at all, which a per-app tab could never show.
 
