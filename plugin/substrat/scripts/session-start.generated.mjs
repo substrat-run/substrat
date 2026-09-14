@@ -21,7 +21,7 @@
  * not in `.claude/`. `.claude/settings.json` is a three-line adapter that runs it,
  * and any other client that grows a session hook binds the same way. It also
  * means the plugin distribution (#753) ships this script unchanged rather than
- * forking it: `plugin/substrat/scripts/session-start.mjs` is emitted from this
+ * forking it: `plugin/substrat/scripts/session-start.generated.mjs` is emitted from this
  * file byte-for-byte, and `pnpm lint:plugin --check` fails if the two diverge.
  *
  * The plugin copy is what reaches a project scaffolded before this hook existed.
