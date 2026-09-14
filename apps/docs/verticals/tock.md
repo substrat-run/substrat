@@ -51,10 +51,10 @@ What it proves:
 |---|---|
 | **Package** | `@substrat-run/demo-tock` |
 | **Engines composed** | *none* — kernel only. The nearest candidate is [metering](/engines/metering/), and the concept says why it does not fit: a one-row-per-observation ledger is the wrong shape at log volume, and its closed-period floor forbids exactly the re-run this app exists to perform |
-| **Own tables** | `tock_sources` · `tock_schemas` · `tock_runs` · `tock_source_files` · `tock_rule_states` · `tock_salts` · `tock_observations` · `tock_field_history` · `tock_rows` · `tock_rollups` · `tock_labels` |
+| **Own tables** | `tock_sources` · `tock_schemas` · `tock_variants` · `tock_output_schemas` · `tock_mappings` · `tock_runs` · `tock_source_files` · `tock_rule_states` · `tock_salts` · `tock_observations` · `tock_field_history` · `tock_rows` · `tock_rollups` · `tock_labels` — fourteen |
 | **Permission surface** | 4 keys — `report:read` · `row:read` · `run:manage` · `schema:manage` |
 | **Auth** | [OIDC only](/concepts/identity), like every other demo here |
-| **Apps** | API (`:8880`) + one React app (`:5280`) — five panes over one API |
+| **Apps** | API (`:8880`) + one React app (`:5280`) — seven panes over one API: ingest, kinds, schema, outputs, runs, findings, report |
 | **Status** | Working — demo seed |
 
 ## The lifecycle
@@ -106,18 +106,28 @@ Sign in as **Ines** to model a schema, **Tomas** to run the lifecycle but not wr
 less is the permission model on screen, and a 403 is rendered as a 403 rather than hidden
 behind a missing button.
 
-Two routes are **not** operations, because they touch bytes and module code cannot:
+Three routes are **not** operations. Two of them touch bytes, which module code cannot; the
+third exists because one scope invocation is too small for a large run:
 
 ```
 POST /api/sources/:key/upload      the file itself; the server hashes it, stores it,
                                    reads the period out of it, and opens the run
 POST /api/runs/:runId/profile      reads those bytes back, re-checks the hash, parses,
                                    and profiles in batches
+POST /api/runs/:runId/count-all    calls tock/count-run again and again until the
+                                   operation reports the run complete
 ```
 
-That split is the whole trust boundary. `tock/profile-run` declares no HTTP route, so nothing
-mounts it and a browser cannot hand records in — the parsing happens on the server, over bytes
-the server stored.
+The first two are the whole trust boundary. `tock/profile-run` declares no HTTP route, so
+nothing mounts it and a browser cannot hand records in — the parsing happens on the server,
+over bytes the server stored.
+
+The third is about size, not bytes. `tock/count-run` is a real operation with its own mounted
+route, and it counts **one chunk** per invocation — that is the honest surface, because an
+operation runs inside a single scope invocation and a big file does not fit in one. A caller
+who wants the whole run asks `count-all`, which is only the loop: the same input, handed to
+every pass, so a run counted through it records the same provenance as one whose chunks the
+caller drove by hand.
 
 **Nothing about a file's shape is assumed.** The server sniffs the format (CSV or JSON lines)
 and, for CSV, the delimiter — comma, semicolon, tab or pipe — because shape is a property of

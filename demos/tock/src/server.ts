@@ -8,11 +8,13 @@
  * `@substrat-run/dev-issuer`, a real provider you sign into by picking a name. There is no dev
  * auth branch, so the local login IS the production round-trip.
  *
- * ## The two routes that are not operations
+ * ## The three routes that are not operations
  *
  * Upload and profile are HOST routes because they touch bytes, which module code cannot. They
  * are the whole reason `tock/profile-run` declares no `http`: the parsing happens here, on the
- * server, over bytes this process stored — never over records a client supplied.
+ * server, over bytes this process stored — never over records a client supplied. The third,
+ * count-all, is here for a different reason — invocation size, not bytes: it loops the mounted
+ * `tock/count-run` operation, one chunk per scope invocation, until the run reports complete.
  */
 import { serve } from '@hono/node-server';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
