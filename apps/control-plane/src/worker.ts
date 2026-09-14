@@ -47,6 +47,7 @@ import {
   createR2BlobStores,
   defineScopeDO,
   type ConnectorDelegation,
+  type EventDrainDelegation,
 } from '@substrat-run/adapter-cloudflare';
 import {
   createControlPlaneApi,
@@ -56,6 +57,7 @@ import {
   createCfObservabilityReader,
   createCfDoNamespaceReader,
   createR2AccessLogSink,
+  createPipelinesEventSink,
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
@@ -137,6 +139,16 @@ interface Env extends OidcEnv, ConnectorEnv {
    * answer 501, which is the loud version of "this deployment keeps no platform copy".
    */
   DIRECTORY_BACKUPS?: R2Bucket;
+  /**
+   * The Tier-2 event stream (#1334, kernel-design §5.3) — where the sweep's drain ships
+   * each scope's outbox on its way to Iceberg. Bound in wrangler.jsonc, PROD ONLY: a
+   * named env inherits no bindings, so the test plane has none and its drain phase stays
+   * unset, which is what keeps a test deploy from writing into the lake that answers
+   * audit. Absent (the workerd test, a self-host, the test plane) ⇒ the kernel skips the
+   * phase and the outbox simply keeps growing — the same opt-in posture as the backups
+   * above, and the reason a deployment that ships nowhere is a supported one.
+   */
+  SUBSTRAT_OUTBOX_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
   /** Shared secret a connected vertical presents (x-service-token) to register. */
   SERVICE_TOKEN?: string;
   /**
@@ -679,6 +691,39 @@ function connectorDelegationFor(env: Env): ConnectorDelegation | undefined {
 }
 
 /**
+ * The Tier-2 drain's platform half (#1334): the sweep's `readUndrainedEvents` and
+ * `markEventsDrained` land on the host below, whose own `SCOPE` namespace is the
+ * module-less placeholder — a hosted scope's outbox lives in its vertical's dispatch
+ * deployment. This is the reach, over the same `/internal/*` seam and the same
+ * serving-ref → bound-version → prod ladder the connector write-back and the intent
+ * drain use. Undefined without DISPATCH/PLATFORM_SECRET, and then the sink is not
+ * bound either (below): a deployment that cannot reach a vertical must not run a
+ * drain that would read empty placeholders and report the fleet as eventless.
+ *
+ * A scope whose vertical has no serving deployment throws, and the sweep records it as
+ * an `event-drain` error for that scope and moves on — unlike the intent drain, which
+ * answers "nothing" for such a scope, because here silence is the failure mode this
+ * seam exists to remove.
+ */
+function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
+  if (!env.DISPATCH || !env.PLATFORM_SECRET) return undefined;
+  const clientFor = async (tenantId: TenantId, scopeId: ScopeId, vertical: string): Promise<VerticalClient> => {
+    const directory = new CloudflareScopeHost({ scope: env.SCOPE, controlPlane: env.CONTROL_PLANE });
+    const rec = await directory.admin.getScopeRecord(SWEEP_ACTOR, tenantId, scopeId);
+    const client = rec ? await resolveVerticalForScopeFor(env)(rec) : undefined;
+    if (!client) {
+      throw new Error(`no deployment serving scope ${scopeId} (vertical '${vertical}') — cannot drain its events`);
+    }
+    return client;
+  };
+  return {
+    readUndrained: async (a) => (await clientFor(a.tenantId, a.scopeId, a.vertical)).undrainedEvents(a.scopeId, a.limit),
+    markDrained: async (a) =>
+      (await clientFor(a.tenantId, a.scopeId, a.vertical)).markEventsDrained(a.scopeId, a.eventIds, a.drainedAt),
+  };
+}
+
+/**
  * The two per-tenant store clients, minted on the platform's own Cloudflare credential.
  *
  * They are built TOGETHER, in one place, because they are one capability with two
@@ -725,6 +770,9 @@ function hostFor(env: Env): CloudflareScopeHost {
     // SCOPE namespace is the module-less placeholder and must never receive one.
     secretBox: secretBoxFor(env),
     connectorDelegation: connectorDelegationFor(env),
+    // The Tier-2 drain (#1334): read and stamp in the deployment serving the scope, for
+    // the same reason as the line above.
+    eventDrainDelegation: eventDrainDelegationFor(env),
   });
 }
 
@@ -1020,6 +1068,17 @@ export default {
       // the same opt-in posture as the two retention windows above.
       ...(env.DIRECTORY_BACKUPS
         ? { accessLogSink: createR2AccessLogSink(env.DIRECTORY_BACKUPS) }
+        : {}),
+      // #1334 — the domain-event drain, the phase this deployment has had implemented on
+      // both adapters and bound to nothing. Pipelines rather than the NDJSON staging sink
+      // beside it: §5.3's adapter table names "Pipelines → Iceberg/R2" as the Cloudflare
+      // row for event transport, and the seam means the drain never learns which it got.
+      // Unbound ⇒ skipped, so a self-host that ships nowhere stays a supported deployment.
+      // Bound but unable to reach a vertical (no DISPATCH / PLATFORM_SECRET) ⇒ ALSO
+      // skipped: the host's own scope namespace is the placeholder, and a drain over it
+      // would read nothing and report a fleet with no events as drained.
+      ...(env.SUBSTRAT_OUTBOX_STREAM && eventDrainDelegationFor(env)
+        ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
         : {}),
     });
     // Log whenever the pass DID something — reaps, errors, or any platform-intent

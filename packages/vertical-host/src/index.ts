@@ -70,6 +70,7 @@ import {
   type EventFacetResult,
   type HistoryEntry,
   type Page,
+  type DrainedEvent,
   queryScopeInput,
   type ScopeId,
   type TenantId,
@@ -123,6 +124,14 @@ export interface VerticalScopeHost {
   appliedMigrationsLocal(
     scopeId: ScopeId,
   ): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
+  /**
+   * The Tier-2 drain's far end (#1334): the oldest not-yet-drained events of a scope
+   * this deployment holds, and the stamp once the platform's sink confirmed them.
+   * Two verbs on purpose — the platform reads, ships, and only then stamps — and the
+   * instant is the platform's, carried through, so its admin receipt and the rows agree.
+   */
+  undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<DrainedEvent[]>;
+  markEventsDrainedLocal(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
@@ -279,6 +288,13 @@ const settleBody = z.object({
   // #841. Optional so a control plane too old to attribute still settles — the column
   // then stays NULL, which reads as "nobody classified this" rather than a guess.
   failure: platformRequestFailure.nullable().optional(),
+});
+
+/** `/internal/mark-drained` body (#1334) — the stamp half of the Tier-2 drain. */
+const markDrainedBody = z.object({
+  scopeId: scopeIdOf,
+  eventIds: z.array(z.string().min(1)).max(1000),
+  drainedAt: instant,
 });
 
 /** `/internal/connector-invoke` body (#574) — one operation, invoked as the connection. */
@@ -488,6 +504,28 @@ export function mountPlatformSurface<Env extends object>(
       ),
     ),
   );
+
+  // #1334: the Tier-2 drain, delegated. The shared control plane's own scope namespace
+  // is a module-less placeholder, so the outbox it drains has to be read where it
+  // lives — here — and stamped here once the sink confirmed durability. Scope bytes DO
+  // cross (event payloads), for the reason `/internal/history` gives: it is the tenant's
+  // own data, on its way to the lake the platform keeps for that tenant, and the
+  // platform's `readUndrainedEvents` / `markEventsDrained` are the audited door.
+  app.get('/internal/undrained-events', async (c) =>
+    c.json(
+      await deps
+        .hostFor(c.env)
+        .undrainedEventsLocal(
+          scopeIdOf.parse(c.req.query('scopeId')),
+          z.coerce.number().int().min(1).max(1000).default(200).parse(c.req.query('limit') ?? undefined),
+        ),
+    ),
+  );
+  app.post('/internal/mark-drained', async (c) => {
+    const body = markDrainedBody.parse(await c.req.json());
+    const drained = await deps.hostFor(c.env).markEventsDrainedLocal(body.scopeId, body.eventIds, body.drainedAt);
+    return c.json({ drained });
+  });
 
   // #1236: when one scope's migrations actually ran — the schema-change annotation
   // release health reads. Metadata only; no scope bytes cross the boundary.

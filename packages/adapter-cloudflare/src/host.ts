@@ -1020,6 +1020,37 @@ export interface ConnectorDelegation {
   }): Promise<void>;
 }
 
+/**
+ * The Tier-2 drain's reach into the deployment actually serving a scope (#1334).
+ *
+ * The same problem `ConnectorDelegation` solves, for the other direction: on the shared
+ * control plane `env.SCOPE` is the module-less placeholder namespace, and a hosted
+ * scope's outbox lives in its vertical's dispatch deployment. Without this, the sweep's
+ * drain phase would construct one empty placeholder DO per active scope per tick, log
+ * an access row for each, and ship nothing — which from the lake's side is
+ * indistinguishable from a fleet with no events. The two verbs are the two the drain
+ * is made of, deliberately kept apart (read, ship, then stamp); the audit rows for
+ * both stay on the host's own `readUndrainedEvents` / `markEventsDrained`, whichever
+ * branch served them — K-24's rule that an auditor cannot tell from the row.
+ */
+export interface EventDrainDelegation {
+  /** The oldest not-yet-drained events of one scope, from the deployment serving it. */
+  readUndrained(args: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    limit: number;
+  }): Promise<DrainedEvent[]>;
+  /** Stamp `drained_at` on shipped events in the serving deployment; returns how many changed. */
+  markDrained(args: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    eventIds: readonly string[];
+    drainedAt: string;
+  }): Promise<number>;
+}
+
 export interface CloudflareScopeHostOptions {
   scope: DurableObjectNamespace;
   /**
@@ -1091,6 +1122,13 @@ export interface CloudflareScopeHostOptions {
    * locally.
    */
   connectorDelegation?: ConnectorDelegation;
+  /**
+   * #1334: route the Tier-2 drain's read and stamp to the deployment actually serving
+   * the scope. Set only on the shared control plane's host, exactly like
+   * `connectorDelegation` and for the same reason — its own `SCOPE` namespace holds no
+   * hosted scope's outbox. A vertical's own host leaves it unset and reads locally.
+   */
+  eventDrainDelegation?: EventDrainDelegation;
   /**
    * **There is deliberately no `clock` here** (#956), and the absence is the fact.
    *
@@ -1210,6 +1248,8 @@ export class CloudflareScopeHost implements ScopeHost {
   private readonly operationEntitlement = new Map<string, string>();
   /** #574: remote connector write-back for scopes served by another deployment. */
   private readonly connectorDelegation?: ConnectorDelegation;
+  /** #1334: the Tier-2 drain's reach into the deployment serving a scope. */
+  private readonly eventDrainDelegation?: EventDrainDelegation;
 
   /**
    * MUST be constructed per request. Never cache an instance across requests.
@@ -1235,6 +1275,7 @@ export class CloudflareScopeHost implements ScopeHost {
       ? (options.controlPlane.get(options.controlPlane.idFromName('control-plane')) as unknown as ControlPlaneStub)
       : nullControlPlane();
     this.connectorDelegation = options.connectorDelegation;
+    this.eventDrainDelegation = options.eventDrainDelegation;
     this.admin = this.buildAdmin();
   }
 
@@ -1716,6 +1757,25 @@ export class CloudflareScopeHost implements ScopeHost {
   /** When this host's own scope applied each migration (#1236) — the vertical-host read. */
   async appliedMigrationsLocal(scopeId: ScopeId): Promise<AppliedMigration[]> {
     return this.scopeStub(scopeId).appliedMigrations();
+  }
+
+  /**
+   * The oldest not-yet-drained events of this host's own scope (#1334) — the far end of
+   * the control plane's `EventDrainDelegation`. Bounded the same way the audited verb is,
+   * so a caller cannot ask this side for more than the other would.
+   */
+  async undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<DrainedEvent[]> {
+    return this.scopeStub(scopeId).undrainedEvents(Math.min(Math.max(limit, 1), 1000));
+  }
+
+  /**
+   * Stamp `drained_at` on this host's own scope (#1334) — the delegation's other half.
+   * The instant is the control plane's, carried through, so the receipt it writes
+   * beside its admin row names the same time the rows hold. No audit here: the
+   * platform's `markEventsDrained` is the door, and this is what stands behind it.
+   */
+  async markEventsDrainedLocal(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number> {
+    return this.scopeStub(scopeId).markEventsDrained(eventIds, drainedAt);
   }
 
   /**
@@ -3907,18 +3967,43 @@ export class CloudflareScopeHost implements ScopeHost {
         return tables;
       },
       readUndrainedEvents: async (actor, tenantId, scopeId, limit): Promise<DrainedEvent[]> => {
-        await this.scopeRecordForRead(tenantId, scopeId);
-        const events = await this.scopeStub(scopeId).undrainedEvents(Math.min(Math.max(limit ?? 200, 1), 1000));
+        const record = await this.scopeRecordForRead(tenantId, scopeId);
+        const bounded = Math.min(Math.max(limit ?? 200, 1), 1000);
+        // #1334: on the shared control plane the scope's outbox is in its vertical's
+        // deployment, and this host's own namespace is the module-less placeholder —
+        // reading it would construct an empty DO and answer "nothing to ship". The
+        // delegation is the reach; the access row below is written either way, so
+        // the branch is invisible to an auditor (K-24).
+        const events =
+          this.eventDrainDelegation && record.vertical
+            ? await this.eventDrainDelegation.readUndrained({
+                tenantId,
+                scopeId,
+                vertical: record.vertical,
+                limit: bounded,
+              })
+            : await this.scopeStub(scopeId).undrainedEvents(bounded);
         await this.recordAccess(actor, 'readUndrainedEvents', { tenantId, scopeId }, { limit }, events.length);
         return events;
       },
       markEventsDrained: async (actor, tenantId, scopeId, eventIds): Promise<number> => {
         // The same refusal the reads carry: a reaped scope's storage is gone, and
         // addressing its DO would construct an empty one to stamp nothing in.
-        await this.scopeRecordForRead(tenantId, scopeId);
+        const record = await this.scopeRecordForRead(tenantId, scopeId);
         if (eventIds.length === 0) return 0;
         const drainedAt = new Date().toISOString();
-        const drained = await this.scopeStub(scopeId).markEventsDrained(eventIds, drainedAt);
+        // Delegated on the same rule as the read above: the stamp has to land where
+        // the rows are, or the next tick reads and ships the same batch again.
+        const drained =
+          this.eventDrainDelegation && record.vertical
+            ? await this.eventDrainDelegation.markDrained({
+                tenantId,
+                scopeId,
+                vertical: record.vertical,
+                eventIds,
+                drainedAt,
+              })
+            : await this.scopeStub(scopeId).markEventsDrained(eventIds, drainedAt);
         // K-24's rule, one tier down (#1334): declaring domain payloads shipped is an
         // EGRESS, and the admin log is where "these events left the platform, at this
         // time, on this actor's say-so" is recorded. `drainAccessLog` audits the same
@@ -4941,12 +5026,13 @@ export class CloudflareScopeHost implements ScopeHost {
    * quietly contradicting the reap that was meant to be irreversible. `archived` still
    * reads: its bytes are there, which is the whole distinction between the two states.
    */
-  private async scopeRecordForRead(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
+  private async scopeRecordForRead(tenantId: TenantId, scopeId: ScopeId): Promise<ScopeRow> {
     const row = await this.cp.getScopeRecord(tenantId, scopeId);
     if (!row) throw new Error(`unknown scope for tenant: (${tenantId}, ${scopeId})`);
     if (row.status === 'reaped') {
       throw new Error(`scope ${scopeId} is reaped — its storage is gone and cannot be read`);
     }
+    return row;
   }
 
   /**

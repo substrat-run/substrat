@@ -90,6 +90,7 @@ throwaway — never reuse a prod secret locally.
 | `secrets.mjs verticals --env prod\|test` | Just that second step, on its own. |
 | `secrets.mjs dev` | Write `apps/*/.dev.vars` from the dev file. |
 | `secrets.mjs generate` | Fill blank *generatable* random secrets in the file. |
+| `secrets.mjs github` | Publish the allow-listed account **ids** to the repo's Actions **variables**. Never secrets. |
 | flags | `--file <path>` · `--only control-plane\|builder\|dashboard\|router` · `--dry-run` · `--skip-verticals` |
 
 Root aliases: `pnpm secrets:check`, `pnpm secrets:push`, `pnpm secrets:dev`.
@@ -194,6 +195,60 @@ sender is a Worker — a binding cannot leak, expire, or be rotated out from und
 The Access Key ID and Secret Access Key that R2 hands you alongside a token are for the
 S3-compatible API, which nothing on this path uses. Don't record them: the Secret Access
 Key is the SHA-256 of the token value, so they carry nothing the token doesn't.
+
+## Account ids the wrangler configs do not name
+
+`apps/*/wrangler.jsonc` are committed in a **public, forkable** repo, and two kinds of
+value sit in their bindings. A **name** — `substrat-verticals`, `substrat-scope-backups` —
+is portable: a fork keeping it creates its own resource under that name and works. An
+**opaque id** is not. A `database_id` or a pipelines `stream` addresses exactly one
+account, so a fork inherits a config pointing at somebody else's resources.
+
+So the ids live here instead, and `tools/wrangler-config.mjs` substitutes them at deploy:
+
+| Key | What |
+|---|---|
+| `CF_D1_AUTH_DB_ID` | the staff roster D1 (control-plane + builder) |
+| `CF_D1_AUTH_DB_ID_TEST` | the same, for the `test` env |
+| `CF_PIPELINE_OUTBOX_STREAM_ID` | the Tier-2 outbox stream (#1334) |
+
+`node scripts/secrets.mjs github` publishes them (`--dry-run` to see what would change).
+It compares before writing, so a re-run reports `unchanged` rather than pushing blind — a
+variable is readable back, which is exactly what makes that possible and what a secret
+could not offer. `GITHUB_VARIABLES` in that script is an explicit allow-list, and that is
+the safety property: the same file pushes credentials to every production worker, so a
+subcommand that also writes the repository's CI configuration must be unable to carry one
+across. Anything not named there is refused by construction.
+
+Values resolve from `process.env` first, then this file. That order is what lets one tool
+serve both paths: CI holds them as GitHub Actions **variables** (`vars.CF_D1_AUTH_DB_ID`,
+beside the `vars.CLOUDFLARE_ACCOUNT_ID` already there — they are identifiers, not
+credentials, and masking them would only make a failed deploy harder to read), while a
+local `cf:deploy` reads this file. The generator refuses to emit a config with an
+unresolved placeholder, because a `${…}` reaching `wrangler deploy` is not an error
+wrangler can explain: `database_id` would simply be a string matching no database.
+
+`pnpm lint:wrangler-config` is the gate, and it judges **shape, not a list**: anything
+looking like a UUID or a 32-hex id in a committed config fails, so pasting a *new* id back
+in is caught too. Comments are exempt — prose explaining how to create a resource may
+legitimately quote one.
+
+**The stream id changes on every `pnpm lake:provision --recreate`**, and a stale value
+means the control plane ships events nowhere until it is redeployed. Nothing currently
+compares this file against the live account; that is the gap to close before the lake is
+load-bearing.
+
+### Deploy-only bindings
+
+`apps/control-plane/wrangler.deploy.json` holds bindings that must not appear in the
+committed config at all, spliced in at the `@deploy-only-bindings` marker. Today that is
+the Tier-2 `pipelines` binding: `wrangler.jsonc` is also what the workers vitest pool
+parses, and the catalog pins that pool's wrangler to 4.44 — which predates the
+`pipelines[].stream` shape and rejects the whole config on sight. Moving past the pin
+needs the vitest 4 migration, tracked on its own.
+
+It is not only a workaround. A test plane must not hold the Tier-2 stream either: writing
+into the lake that answers audit is precisely what a test deploy should not be able to do.
 
 ## Rotation caveats
 
