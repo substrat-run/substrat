@@ -35,15 +35,15 @@ The views map onto the directory the control plane owns:
 - **Admin log** — the append-only audit trail, every entry named to the `PlatformActorId` that
   caused it, with a JSON diff of what changed.
 
-Those are the **Fleet** views — the state of the world. A second nav group, **Operations**, is
+Those are the **documented Fleet** views — the state of the world. A second nav group, **Operations**, is
 what the platform could *not* do: durable rows the admin log deliberately does not hold, since
 it audits successful mutations and a failure changed nothing. A red day is one click there, not
 a filter recipe over Fleet.
 
 - **Failures** — every operational failure the platform recorded, read over `/ops-failures`
-  and narrowable by tenant, vertical, upstream reference and fingerprint. A row names the
-  operation, the stage inside it that failed, who refused (platform, provider or unknown) and
-  the taxonomy code, with the HTTP status it was answered with. It also carries the upstream
+  and narrowable by tenant, vertical and upstream reference. The failure records include the
+  operation, and, when known, its stage, origin, taxonomy code and HTTP status. It also carries
+  the upstream
   `reference = <id>` when one was extracted, so the handle a CI log prints
   resolves to something on our side — and copies out for a provider support ticket, the only
   place a redacted storage fault's reference actually resolves. A vertical's failures strip
@@ -52,8 +52,7 @@ a filter recipe over Fleet.
   counted defects with a lifecycle, read over `/issues`: one row per fingerprint with a rising
   count, not one row per retry. Staff give a verdict — **resolve**, **ignore** or **reopen**
   (`PUT /issues/status`); a fresh arrival after resolve flips the row to *regressed*, and ingest
-  respects an ignore. Each row jumps to its exemplar rows in Failures, narrowed to that
-  fingerprint.
+  respects an ignore. Each row links to its exemplar failure rows.
 - **Sweeps** — the fleet's sweep record, read over `/sweep-runs`: every connector poll, every
   schedule fired or skipped and every freshness verdict, newest first, filterable by tenant,
   kind, outcome and unit. It is the staff twin of the dashboard's per-app strips — where a
