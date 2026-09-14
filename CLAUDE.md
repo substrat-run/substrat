@@ -422,6 +422,14 @@ CI runs more than those. The checks that emit nothing and simply refuse — the 
 turn a rule in this file into a red build — are `lint:boundaries` (`node
 tools/boundary-lint.mjs`), `lint:cycles` (`tools/workspace-cycles.mjs`), `lint:deps`
 (`tools/declared-deps.mjs`: an import whose package the graph does not declare),
+`lint:generated-marks` (`tools/generated-marks.mjs`: marks 1 and 2 of the three above,
+in both directions — a file that SAYS it is generated carries the `.generated` suffix
+(a document may carry the `<!-- GENERATED … -->` marker instead), and a file NAMED
+`*.generated.*` names its producer and source. Mark 3 is deliberately NOT inferred:
+whether a gate exists is a fact about `package.json`, and guessing it from a filename is
+the same guess this gate exists to stop. The rule was prose until #987 found six files
+short of a mark, including `packages/psl/src/data.ts`, which carried a producer header
+and no suffix for a year while this file asserted it had both),
 `lint:spine-ddl` (`tools/spine-ddl-drift.mjs`: the `_substrat_*` spine is built
 independently by each adapter, and the copies have nothing keeping them in step — it
 executes each side's DDL *plus* the columns it ALTERs in afterwards and compares the
@@ -456,7 +464,7 @@ bullet above gives.
 **The one exception, stated rather than hidden:** a file generated from a *remote* source
 cannot be re-emitted hermetically in CI, so it gets marks 1 and 2 plus a `GENERATED_AT`
 stamp instead of mark 3 — `packages/model-providers/src/rate-card.generated.ts` (models.dev),
-`packages/psl/src/data.ts` (the public suffix list). And one accepted shape, not a
+`packages/psl/src/data.generated.ts` (the public suffix list). And one accepted shape, not a
 category: a **JSON** artifact cannot carry a comment, so `model.json`, `openapi.json` and
 `.claude/launch.json` have mark 3 only — their producer is named in the gate list above and
 in the tool that emits them. Never invent a fourth category; an in-repo source with no gate

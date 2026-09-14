@@ -19,4 +19,4 @@ export {
   sameRegistrableDomain,
   normalizeHost,
 } from './list.js';
-export { PSL_VERSION } from './data.js';
+export { PSL_VERSION } from './data.generated.js';

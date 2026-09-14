@@ -19,7 +19,7 @@
  *   - A domain matching no rule has the implicit public suffix `*` (its rightmost
  *     label), so an unknown TLD's registrable domain is `label.tld`.
  */
-import { PSL_RULES } from './data.js';
+import { PSL_RULES } from './data.generated.js';
 
 interface Rules {
   /** Normal + wildcard rules, keyed by rule text (`com`, `*.ck`). */
