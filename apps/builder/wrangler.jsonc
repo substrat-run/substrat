@@ -70,7 +70,7 @@
 		{
 			"binding": "AUTH_DB",
 			"database_name": "substrat-control-plane-auth",
-			"database_id": "da63a4b0-3b45-474f-bce0-1cbe18080906"
+			"database_id": "${CF_D1_AUTH_DB_ID}"
 		}
 	]
 

@@ -56,6 +56,7 @@ import {
   createCfObservabilityReader,
   createCfDoNamespaceReader,
   createR2AccessLogSink,
+  createPipelinesEventSink,
   createR2BackupStore,
   createR2DirectoryBackupStore,
   backupDirectoryIfDue,
@@ -137,6 +138,16 @@ interface Env extends OidcEnv, ConnectorEnv {
    * answer 501, which is the loud version of "this deployment keeps no platform copy".
    */
   DIRECTORY_BACKUPS?: R2Bucket;
+  /**
+   * The Tier-2 event stream (#1334, kernel-design §5.3) — where the sweep's drain ships
+   * each scope's outbox on its way to Iceberg. Bound in wrangler.jsonc, PROD ONLY: a
+   * named env inherits no bindings, so the test plane has none and its drain phase stays
+   * unset, which is what keeps a test deploy from writing into the lake that answers
+   * audit. Absent (the workerd test, a self-host, the test plane) ⇒ the kernel skips the
+   * phase and the outbox simply keeps growing — the same opt-in posture as the backups
+   * above, and the reason a deployment that ships nowhere is a supported one.
+   */
+  SUBSTRAT_OUTBOX_STREAM?: { send(records: readonly Record<string, unknown>[]): Promise<unknown> };
   /** Shared secret a connected vertical presents (x-service-token) to register. */
   SERVICE_TOKEN?: string;
   /**
@@ -1020,6 +1031,14 @@ export default {
       // the same opt-in posture as the two retention windows above.
       ...(env.DIRECTORY_BACKUPS
         ? { accessLogSink: createR2AccessLogSink(env.DIRECTORY_BACKUPS) }
+        : {}),
+      // #1334 — the domain-event drain, the phase this deployment has had implemented on
+      // both adapters and bound to nothing. Pipelines rather than the NDJSON staging sink
+      // beside it: §5.3's adapter table names "Pipelines → Iceberg/R2" as the Cloudflare
+      // row for event transport, and the seam means the drain never learns which it got.
+      // Unbound ⇒ skipped, so a self-host that ships nowhere stays a supported deployment.
+      ...(env.SUBSTRAT_OUTBOX_STREAM
+        ? { eventSink: createPipelinesEventSink(env.SUBSTRAT_OUTBOX_STREAM) }
         : {}),
     });
     // Log whenever the pass DID something — reaps, errors, or any platform-intent

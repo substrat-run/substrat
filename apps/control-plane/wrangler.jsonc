@@ -139,7 +139,7 @@
 		{
 			"binding": "AUTH_DB",
 			"database_name": "substrat-control-plane-auth",
-			"database_id": "da63a4b0-3b45-474f-bce0-1cbe18080906"
+			"database_id": "${CF_D1_AUTH_DB_ID}"
 		}
 	],
 	// The platform's scope-BACKUP bucket (#493) — where a reap's recoverable copy goes.
@@ -182,6 +182,19 @@
 		{ "binding": "SCOPE_BACKUPS", "bucket_name": "substrat-scope-backups" },
 		{ "binding": "DIRECTORY_BACKUPS", "bucket_name": "substrat-directory-backups" }
 	],
+	// DEPLOY-ONLY BINDINGS — tools/wrangler-config.mjs splices apps/control-plane/
+	// wrangler.deploy.json in at this marker, and `wrangler deploy` is pointed at the
+	// result. They are not here because THIS file is also what the workers vitest pool
+	// parses, and the pool's wrangler is pinned to 4.44 by the catalog: it predates the
+	// `pipelines[].stream` shape and rejects the whole config with "bindings must have a
+	// string \"pipeline\" field". The catalog pin is deliberate and documented — moving
+	// past it needs the vitest 4 migration, which is tracked on its own — so the binding
+	// waits outside rather than that migration being dragged into a Tier-2 change.
+	//
+	// The split is not only a workaround. A test plane must not hold the Tier-2 stream
+	// either: writing into the lake that answers audit is exactly what a test deploy
+	// should not be able to do, and a named env inherits no bindings anyway.
+	// @deploy-only-bindings
 	// Serve the built console SPA (apps/console/dist) from the same origin as the
 	// API. run_worker_first sends every request to the Worker first (it owns
 	// /api/*); the catch-all delegates the rest to ASSETS with SPA fallback.
@@ -248,7 +261,7 @@
 				{
 					"binding": "AUTH_DB",
 					"database_name": "substrat-control-plane-auth-test",
-					"database_id": "bcb791f3-f136-43de-b4e6-3739328cada3"
+					"database_id": "${CF_D1_AUTH_DB_ID_TEST}"
 				}
 			],
 			// Own backup buckets (#493, #40) — a test reap must never write into, or read

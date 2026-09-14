@@ -195,6 +195,52 @@ The Access Key ID and Secret Access Key that R2 hands you alongside a token are 
 S3-compatible API, which nothing on this path uses. Don't record them: the Secret Access
 Key is the SHA-256 of the token value, so they carry nothing the token doesn't.
 
+## Account ids the wrangler configs do not name
+
+`apps/*/wrangler.jsonc` are committed in a **public, forkable** repo, and two kinds of
+value sit in their bindings. A **name** — `substrat-verticals`, `substrat-scope-backups` —
+is portable: a fork keeping it creates its own resource under that name and works. An
+**opaque id** is not. A `database_id` or a pipelines `stream` addresses exactly one
+account, so a fork inherits a config pointing at somebody else's resources.
+
+So the ids live here instead, and `tools/wrangler-config.mjs` substitutes them at deploy:
+
+| Key | What |
+|---|---|
+| `CF_D1_AUTH_DB_ID` | the staff roster D1 (control-plane + builder) |
+| `CF_D1_AUTH_DB_ID_TEST` | the same, for the `test` env |
+| `CF_PIPELINE_OUTBOX_STREAM_ID` | the Tier-2 outbox stream (#1334) |
+
+Values resolve from `process.env` first, then this file. That order is what lets one tool
+serve both paths: CI holds them as GitHub Actions **variables** (`vars.CF_D1_AUTH_DB_ID`,
+beside the `vars.CLOUDFLARE_ACCOUNT_ID` already there — they are identifiers, not
+credentials, and masking them would only make a failed deploy harder to read), while a
+local `cf:deploy` reads this file. The generator refuses to emit a config with an
+unresolved placeholder, because a `${…}` reaching `wrangler deploy` is not an error
+wrangler can explain: `database_id` would simply be a string matching no database.
+
+`pnpm lint:wrangler-config` is the gate, and it judges **shape, not a list**: anything
+looking like a UUID or a 32-hex id in a committed config fails, so pasting a *new* id back
+in is caught too. Comments are exempt — prose explaining how to create a resource may
+legitimately quote one.
+
+**The stream id changes on every `pnpm lake:provision --recreate`**, and a stale value
+means the control plane ships events nowhere until it is redeployed. Nothing currently
+compares this file against the live account; that is the gap to close before the lake is
+load-bearing.
+
+### Deploy-only bindings
+
+`apps/control-plane/wrangler.deploy.json` holds bindings that must not appear in the
+committed config at all, spliced in at the `@deploy-only-bindings` marker. Today that is
+the Tier-2 `pipelines` binding: `wrangler.jsonc` is also what the workers vitest pool
+parses, and the catalog pins that pool's wrangler to 4.44 — which predates the
+`pipelines[].stream` shape and rejects the whole config on sight. Moving past the pin
+needs the vitest 4 migration, tracked on its own.
+
+It is not only a workaround. A test plane must not hold the Tier-2 stream either: writing
+into the lake that answers audit is precisely what a test deploy should not be able to do.
+
 ## Rotation caveats
 
 - **`SECRET_BOX_KEY`** seals stored connection credentials at rest. Replacing it orphans
