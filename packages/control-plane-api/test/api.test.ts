@@ -577,6 +577,132 @@ describe('control-plane API', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('leaves a K-24 row NAMING a delegated read, not just getScopeRecord (#1357)', async () => {
+    // Before this, only the CO-LOCATED branch reached `HostAdmin`, where `recordAccess`
+    // lives. So on the production path — a hosted vertical, i.e. every real deployment —
+    // the access log held a `getScopeRecord` entry and nothing saying WHAT was read. An
+    // auditor could not tell a summary page from a table walk from one record's history,
+    // and the history page is the one carrying payloads, a subject and an auth chain.
+    const sA = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sA, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sA);
+
+    const fakeVertical = {
+      entityHistory: async () => ({
+        entries: [
+          { id: '01JZE1', type: 'widget.changed' },
+          { id: '01JZE2', type: 'widget.changed' },
+        ],
+        nextCursor: null,
+      }),
+    } as unknown as VerticalClient;
+
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const res = await delegated.request(
+      `/tenants/${t1}/scopes/${sA}/history?entityType=widget&entityId=w1`,
+      { headers: auth },
+    );
+    expect(res.status).toBe(200);
+
+    // Filtered by METHOD rather than paged: the log is oldest-first, so a bounded
+    // page from a suite this long never reaches the row just written.
+    const log = await host.admin.accessLog(staff, { method: 'entityHistory' });
+    const named = log.filter((e) => e.scopeId === sA);
+    expect(named).toHaveLength(1);
+    // The row says what was read and how much came back — the two facts the delegated
+    // branch dropped entirely.
+    expect(named[0]!.resultCount).toBe(2);
+    expect(named[0]!.params).toContain('widget');
+    // …and it is attributed to THE actor the request authenticated as — the one fact
+    // a caller must not be able to supply. Any non-empty actor would pass a truthy
+    // check; only the request's own passes this one.
+    expect(named[0]!.actor).toBe(staff);
+  });
+
+  it('leaves the SAME row whichever branch served the read, for every delegated method', async () => {
+    // The seam's objective is that an auditor cannot tell from a row which branch
+    // produced it. That is only true if the delegated row carries the same `params`
+    // projection the co-located branch logs — the entity and not the page, the event
+    // and not the walk's depth — so every method is driven both ways here with the same
+    // request, and the two rows are compared. `delegatedReadParams` is the one
+    // definition; this is what holds the API and the SQLite adapter to it.
+    const sC = scopeId.parse(ulid()); // served co-located: no `verticals` mapping
+    const sD = scopeId.parse(ulid()); // served by the (fake) vertical
+    for (const s of [sC, sD]) {
+      await host.provisionScope(staff, { tenantId: t1, scopeId: s, vertical: 'demo-vert' });
+      await host.admin.activateScope(staff, t1, s);
+    }
+    const fakeVertical = {
+      listScopeTables: async () => [],
+      readScopeTable: async () => ({ table: '_substrat_outbox', columns: [], rows: [], rowCount: 0, limit: 5, offset: 0 }),
+      queryScope: async () => ({ columns: [], rows: [], truncated: false }),
+      listDenials: async () => [],
+      summarizeDenials: async () => ({ groupBy: 'actor-permission', total: 0, buckets: [] }),
+      entityHistory: async () => ({ entries: [], nextCursor: null }),
+      facetEvents: async () => ({ groupBy: { kind: 'type' }, total: 0, buckets: [] }),
+      eventCause: async () => ({ chain: [], terminal: 'missing' }),
+      eventEffects: async () => ({ root: null, count: 0 }),
+    } as unknown as VerticalClient;
+    const delegated = createControlPlaneApi({
+      host,
+      authenticate: UNSAFE_devPlatformActorAuth(),
+      verticals: { 'demo-vert': fakeVertical },
+    });
+    const ev = ulid();
+    // Every input carries the argument the co-located branch does NOT log — a page
+    // size, a cursor-less limit, a depth — so a projection that leaked it would differ.
+    const reads: Array<{ method: string; path: (s: string) => string; init?: RequestInit }> = [
+      { method: 'listScopeTables', path: (s) => `/tenants/${t1}/scopes/${s}/tables` },
+      { method: 'readScopeTable', path: (s) => `/tenants/${t1}/scopes/${s}/tables/_substrat_outbox?limit=5&offset=0` },
+      {
+        method: 'queryScope',
+        path: (s) => `/tenants/${t1}/scopes/${s}/query`,
+        init: { method: 'POST', body: JSON.stringify({ sql: 'SELECT 1 AS one' }) },
+      },
+      { method: 'listDenials', path: (s) => `/tenants/${t1}/scopes/${s}/denials?limit=5&permission=widget.read` },
+      { method: 'summarizeDenials', path: (s) => `/tenants/${t1}/scopes/${s}/denials/summary?limit=5` },
+      { method: 'entityHistory', path: (s) => `/tenants/${t1}/scopes/${s}/history?entityType=widget&entityId=w1&limit=5` },
+      { method: 'facetEvents', path: (s) => `/tenants/${t1}/scopes/${s}/facets?groupBy=type&limit=5` },
+      { method: 'eventCause', path: (s) => `/tenants/${t1}/scopes/${s}/cause?eventId=${ev}&maxDepth=3` },
+      { method: 'eventEffects', path: (s) => `/tenants/${t1}/scopes/${s}/effects?eventId=${ev}&maxNodes=3` },
+    ];
+    for (const r of reads) {
+      const co = await app.request(r.path(sC), { headers: auth, ...r.init });
+      const de = await delegated.request(r.path(sD), { headers: auth, ...r.init });
+      expect([r.method, co.status, de.status]).toEqual([r.method, 200, 200]);
+      const log = await host.admin.accessLog(staff, { method: r.method });
+      const rowC = log.filter((e) => e.scopeId === sC);
+      const rowD = log.filter((e) => e.scopeId === sD);
+      // One row each — the co-located branch records inside the read and the route
+      // must not add a second; the delegated branch has only the route's.
+      expect([r.method, rowC.length, rowD.length]).toEqual([r.method, 1, 1]);
+      // The same actor, the same method, the same params. `resultCount` is left out on
+      // purpose: the fake answers nothing and the real scope answers what it holds.
+      const shape = (e: (typeof log)[number]) => ({ method: r.method, actor: e.actor, m: e.method, params: e.params });
+      expect(shape(rowD[0]!)).toEqual(shape(rowC[0]!));
+    }
+  });
+
+  it('does not log a delegated read twice when the scope is co-located', async () => {
+    // The co-located branch already records inside the read. Recording again in the
+    // route would double every row — a different kind of dishonest log, and the easy
+    // mistake when adding a seam that looks like it should always fire.
+    const sB = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t1, scopeId: sB, vertical: 'demo-vert' });
+    await host.admin.activateScope(staff, t1, sB);
+
+    // No `verticals` mapping ⇒ nothing resolves ⇒ the co-located branch.
+    const res = await req(`/tenants/${t1}/scopes/${sB}/tables`);
+    expect(res.status).toBe(200);
+
+    const log = await host.admin.accessLog(staff, { method: 'listScopeTables' });
+    expect(log.filter((e) => e.scopeId === sB)).toHaveLength(1);
+  });
+
   it('delegates introspection to the vertical that owns the scope (connected mode)', async () => {
     // A scope whose data lives in a VERTICAL's deployment, not this control plane's own
     // (empty-module) scope host — the real prod shape (K-31). The route must ask the vertical.

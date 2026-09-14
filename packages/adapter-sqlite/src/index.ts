@@ -153,6 +153,7 @@ import {
   listLimitOf,
   substratError,
   assertReplayableDump,
+  delegatedReadRecord,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -7213,6 +7214,21 @@ export class SqliteScopeHost implements ScopeHost {
           | undefined;
         if (!row) return undefined;
         return resolvedIdentity.parse({ principal: row.principal_id, scopeId: row.scope_id });
+      },
+      /**
+       * #1357: the K-24 row for a read this control plane delegated to a vertical.
+       * Through the SAME `recordAccess` the co-located branch uses, so the two are
+       * indistinguishable in the log — which is what the seam is for.
+       */
+      recordDelegatedRead: async (actor, record) => {
+        const parsed = delegatedReadRecord.parse(record);
+        this.recordAccess(
+          actor,
+          parsed.method,
+          { tenantId: parsed.tenantId, scopeId: parsed.scopeId },
+          parsed.params,
+          parsed.resultCount,
+        );
       },
       accessLog: async (actor, filter?: AccessLogFilter): Promise<AccessLogEntry[]> => {
         const where: string[] = [];

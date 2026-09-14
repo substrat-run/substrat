@@ -12,6 +12,7 @@ import type {
   ProjectedConnectionGrant,
   ProjectedConnectionKey,
   AccessLogEntry,
+  DelegatedReadRecord,
   BindHostnameInput,
   AdminLogEntry,
   OpsFailureEntry,
@@ -2785,6 +2786,33 @@ export interface HostAdmin {
    * the question an incident asks second.
    */
   accessLog(actor: PlatformActorId, filter?: AccessLogFilter): Promise<AccessLogEntry[]>;
+
+  /**
+   * Record a scope read the control plane DELEGATED to the vertical holding the data
+   * (#1357) — the K-24 row the co-located branch would have produced.
+   *
+   * Every scope-addressed read runs the same ladder: resolve the scope record, then ask
+   * the vertical when one resolves and the co-located host otherwise. Only the second
+   * branch reaches `HostAdmin`, where `recordAccess` lives — so on the production path,
+   * which is every hosted vertical, the access log holds a `getScopeRecord` entry and
+   * nothing saying WHAT was read. An auditor could not tell a summary page from a table
+   * walk from one record's history, and the history page is the one carrying payloads,
+   * a data subject and an authorization chain.
+   *
+   * **This is a new power and is shaped to be a narrow one.** Nothing outside an adapter
+   * could add an access row before. So the method comes from a closed set
+   * (`delegatedReadMethod`), the actor comes from the request context the same way every
+   * other verb's does, and the record carries no `id` and no `at` — the adapter stamps
+   * both, so a caller can neither backdate a row nor collide one.
+   *
+   * **It throws if the row cannot be written, and the caller must not swallow that.**
+   * That is not a new trade: on the co-located branch `recordAccess` is awaited inside
+   * the read, so a failed write already fails the request there. Matching it keeps the
+   * two branches indistinguishable in the log, which is the entire objective — and the
+   * alternative, returning rows whose disclosure went unrecorded, is the thing K-24
+   * exists to prevent.
+   */
+  recordDelegatedRead(actor: PlatformActorId, record: DelegatedReadRecord): Promise<void>;
 
   /**
    * Stamp `drainedAt` on every not-yet-drained access row up to and including
