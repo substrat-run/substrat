@@ -1,6 +1,7 @@
 import type {
   AttachmentRecord,
   ConnectionId,
+  DrainedEvent,
   EntityRef,
   EntitlementGrant,
   PermissionKey,
@@ -687,6 +688,31 @@ export class VerticalClient {
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     if (input.cursor !== undefined) q.set('cursor', input.cursor);
     return this.getInternal<Page<HistoryEntry>>(`/internal/history?${q.toString()}`);
+  }
+
+  /**
+   * The Tier-2 drain's read (#1334): the oldest not-yet-drained events of a scope this
+   * deployment serves. Scope bytes cross, on their way to the lake; the control plane's
+   * `readUndrainedEvents` is the audited door this stands behind.
+   */
+  async undrainedEvents(scopeId: ScopeId, limit: number): Promise<DrainedEvent[]> {
+    return this.getInternal<DrainedEvent[]>(
+      `/internal/undrained-events?scopeId=${encodeURIComponent(scopeId)}&limit=${encodeURIComponent(String(limit))}`,
+    );
+  }
+
+  /**
+   * The Tier-2 drain's stamp (#1334), after the sink confirmed the batch. Answers how
+   * many rows changed, which is what lets a retried pass record no egress it did not
+   * perform.
+   */
+  async markEventsDrained(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number> {
+    const answer = await this.postInternal<{ drained: number }>(
+      '/internal/mark-drained',
+      { scopeId, eventIds, drainedAt },
+      'mark-drained',
+    );
+    return answer.drained;
   }
 
   /**

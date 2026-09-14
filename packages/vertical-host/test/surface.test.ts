@@ -33,6 +33,10 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     deleteScopeLocal: async () => note('deleteScopeLocal', undefined),
     migrationBookmarksLocal: async () => note('migrationBookmarksLocal', []),
     appliedMigrationsLocal: async () => note('appliedMigrationsLocal', []),
+    // #1334: the drain's far end echoes what it was asked, like the reads around it.
+    undrainedEventsLocal: async (_s: unknown, limit?: unknown) => note('undrainedEventsLocal', [{ limit }]) as never,
+    markEventsDrainedLocal: async (_s: unknown, ids?: unknown, at?: unknown) =>
+      note('markEventsDrainedLocal', (ids as string[]).length + (at === '2026-09-14T00:00:00.000Z' ? 0 : 1000)),
     entityHistoryLocal: async (_s: unknown, input?: unknown) =>
       note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
     facetEventsLocal: async (_s: unknown, input?: unknown) =>
@@ -222,6 +226,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     [`/internal/facets?scopeId=${SCOPE}&groupBy=type`, { headers: authed() }],
     [`/internal/cause?scopeId=${SCOPE}&eventId=${EVENT}`, { headers: authed() }],
     ['/internal/migrations?scopeId=' + SCOPE, { headers: authed() }],
+    ['/internal/undrained-events?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials/summary?scopeId=' + SCOPE, { headers: authed() }],
   ];
@@ -229,6 +234,28 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     const res = await appWith(fakeHost()).request(path, init, ENV);
     expect(res.status).not.toBe(404);
     expect(res.status).toBeLessThan(500);
+  });
+
+  // #1334: the Tier-2 drain's two verbs. The read's `limit` is parsed and bounded at this
+  // door — a platform asking for 5000 gets 400, not an unbounded page — and the stamp
+  // carries the platform's instant through unchanged, so its admin receipt and the rows
+  // it stamped name the same time.
+  it('serves the drain read with a bounded limit, and the stamp with the instant carried through', async () => {
+    const host = fakeHost();
+    const read = await appWith(host).request(`/internal/undrained-events?scopeId=${SCOPE}&limit=50`, { headers: authed() }, ENV);
+    expect(read.status).toBe(200);
+    expect(await read.json()).toEqual([{ limit: 50 }]);
+    const unbounded = await appWith(host).request(`/internal/undrained-events?scopeId=${SCOPE}&limit=5000`, { headers: authed() }, ENV);
+    expect(unbounded.status).toBe(400);
+    const stamp = await appWith(host).request('/internal/mark-drained', {
+      method: 'POST',
+      headers: { ...authed(), 'content-type': 'application/json' },
+      body: JSON.stringify({ scopeId: SCOPE, eventIds: ['e1', 'e2'], drainedAt: '2026-09-14T00:00:00.000Z' }),
+    }, ENV);
+    expect(stamp.status).toBe(200);
+    // 2 = both ids, and the instant arrived verbatim (the fake adds 1000 otherwise).
+    expect(await stamp.json()).toEqual({ drained: 2 });
+    expect(host.calls).toEqual(expect.arrayContaining(['undrainedEventsLocal', 'markEventsDrainedLocal']));
   });
 
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,

@@ -31,10 +31,41 @@ const ID_SHAPES = [
  * A comment may legitimately quote one — the account id appears in prose explaining how
  * to create a resource, and forbidding that would push the explanation out of the file
  * that needs it. Only what wrangler READS is judged.
+ *
+ * A real JSONC scan, not `indexOf('//')`: that truncated a quoted value at the first
+ * `//` — so an `https://…/<32-hex-id>` string was never judged, and a real id could
+ * ride in on a URL — and it could not see a block comment at all, so an exempt
+ * `/* … *\/` quoting one failed. Comments are blanked to spaces (newlines kept), so the
+ * text that remains is exactly what wrangler parses and every finding keeps its line.
  */
-function withoutComments(line) {
-  const i = line.indexOf('//');
-  return i >= 0 ? line.slice(0, i) : line;
+function withoutComments(text) {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    const next = text[i + 1];
+    if (ch === '"') {
+      // A string, escapes and all — a `//` inside it is a value, not a comment.
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, j + 1);
+      i = j + 1;
+    } else if (ch === '/' && next === '/') {
+      const end = text.indexOf('\n', i);
+      const stop = end === -1 ? text.length : end;
+      out += ' '.repeat(stop - i);
+      i = stop;
+    } else if (ch === '/' && next === '*') {
+      const end = text.indexOf('*/', i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      out += text.slice(i, stop).replace(/[^\n]/g, ' ');
+      i = stop;
+    } else {
+      out += ch;
+      i += 1;
+    }
+  }
+  return out;
 }
 
 const findings = [];
@@ -44,10 +75,9 @@ for (const app of readdirSync(APPS, { withFileTypes: true }).filter((d) => d.isD
   for (const name of ['wrangler.jsonc', 'wrangler.deploy.json']) {
     const file = join(APPS, app.name, name);
     if (!existsSync(file)) continue;
-    readFileSync(file, 'utf8')
+    withoutComments(readFileSync(file, 'utf8'))
       .split('\n')
-      .forEach((raw, i) => {
-        const line = withoutComments(raw);
+      .forEach((line, i) => {
         for (const { what, re } of ID_SHAPES) {
           re.lastIndex = 0;
           for (const m of line.matchAll(re)) {
