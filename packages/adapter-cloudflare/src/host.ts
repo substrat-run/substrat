@@ -4093,8 +4093,34 @@ export class CloudflareScopeHost implements ScopeHost {
         // Also from `provisioning`: a scope whose provisioning never completed (a failed
         // create) must be abandonable, or its slug is stranded forever.
         transitionScope(actor, 'archiveScope', tenantId, scopeId, ['provisioning', 'active', 'suspended'], 'archived'),
-      unarchiveScope: async (actor, tenantId, scopeId) =>
-        transitionScope(actor, 'unarchiveScope', tenantId, scopeId, ['archived'], 'active'),
+      unarchiveScope: async (actor, tenantId, scopeId) => {
+        // An archived scope is outside `fanOut`'s status filter (#1386), so every
+        // tenant-level revoke that landed while it sat archived never reached its local
+        // projection — and a bare flip would put that stale projection back on duty:
+        // a principal removed from the tenant meanwhile keeps their access on the
+        // unarchived scope until the next fan-out or sweep (#1473). So the flip is
+        // preceded by a push of the tenant's CURRENT state into this one scope.
+        //
+        // Push BEFORE the flip, deliberately. A push that throws then leaves the scope
+        // archived — where the coordinator already fails closed and the operator simply
+        // retries — rather than active behind a projection nobody refreshed. And the
+        // order is safe in every state the flip would refuse: on a live scope the push
+        // is one idempotent write, and on a reaped scope the DO drops it (the reaped
+        // marker survives `deleteAll()`), so nothing is resurrected.
+        await this.projectScope(tenantId, scopeId);
+        await transitionScope(actor, 'unarchiveScope', tenantId, scopeId, ['archived'], 'active');
+        // And push AGAIN after it. The first push is a snapshot, and the directory does
+        // not stop for it: a revoke that commits between that snapshot's read and the
+        // flip fans out to every scope that is live at that moment — which this one is
+        // not yet — so its own fan-out misses this scope and the flip puts the older
+        // snapshot on duty. Once flipped, the scope is inside every later fan-out's
+        // set, and a read taken now holds everything that committed before it; the
+        // two together close the window, the way `fanOut` includes `provisioning`
+        // scopes beside their own pull rather than leaving a gap between the two.
+        // What remains is the race every pair of concurrent fan-outs has — snapshots
+        // can land out of order — and the reconciliation sweep is what repairs that.
+        await this.projectScope(tenantId, scopeId);
+      },
       reapScope: async (actor, tenantId, scopeId, opts) => {
         // Reap an ARCHIVED scope's DO storage (Cloudflare never GCs a DO) while keeping
         // the directory row as a tombstone (§4.4). Storage BEFORE the status flip, the
