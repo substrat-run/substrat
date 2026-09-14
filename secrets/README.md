@@ -90,6 +90,7 @@ throwaway — never reuse a prod secret locally.
 | `secrets.mjs verticals --env prod\|test` | Just that second step, on its own. |
 | `secrets.mjs dev` | Write `apps/*/.dev.vars` from the dev file. |
 | `secrets.mjs generate` | Fill blank *generatable* random secrets in the file. |
+| `secrets.mjs github` | Publish the allow-listed account **ids** to the repo's Actions **variables**. Never secrets. |
 | flags | `--file <path>` · `--only control-plane\|builder\|dashboard\|router` · `--dry-run` · `--skip-verticals` |
 
 Root aliases: `pnpm secrets:check`, `pnpm secrets:push`, `pnpm secrets:dev`.
@@ -210,6 +211,14 @@ So the ids live here instead, and `tools/wrangler-config.mjs` substitutes them a
 | `CF_D1_AUTH_DB_ID` | the staff roster D1 (control-plane + builder) |
 | `CF_D1_AUTH_DB_ID_TEST` | the same, for the `test` env |
 | `CF_PIPELINE_OUTBOX_STREAM_ID` | the Tier-2 outbox stream (#1334) |
+
+`node scripts/secrets.mjs github` publishes them (`--dry-run` to see what would change).
+It compares before writing, so a re-run reports `unchanged` rather than pushing blind — a
+variable is readable back, which is exactly what makes that possible and what a secret
+could not offer. `GITHUB_VARIABLES` in that script is an explicit allow-list, and that is
+the safety property: the same file pushes credentials to every production worker, so a
+subcommand that also writes the repository's CI configuration must be unable to carry one
+across. Anything not named there is refused by construction.
 
 Values resolve from `process.env` first, then this file. That order is what lets one tool
 serve both paths: CI holds them as GitHub Actions **variables** (`vars.CF_D1_AUTH_DB_ID`,

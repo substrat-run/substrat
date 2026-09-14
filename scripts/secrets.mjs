@@ -17,6 +17,8 @@
  *   node scripts/secrets.mjs verticals --env prod  # just step 2: PLATFORM_SECRET/ROUTER_SECRET on every
  *                                                  # dispatch-namespace vertical script
  *   node scripts/secrets.mjs dev                    # write each worker's .dev.vars for `wrangler dev`
+ *   node scripts/secrets.mjs github                 # publish the allow-listed account IDS to
+ *                                                  # the repo's Actions VARIABLES (never secrets)
  *
  * --file <path>   override the env file (defaults: secrets/platform.<env>.env, and
  *                 secrets/platform.dev.env for `dev`)
@@ -222,6 +224,26 @@ const MANIFEST = {
 const STORE_ONLY = {
   R2_LAKE_CATALOG_TOKEN: 'handed to `wrangler pipelines setup` — lives in the pipeline config',
   R2_LAKE_SEND_TOKEN: 'only for a sender outside Workers; the shipper uses a [[pipelines]] binding',
+};
+
+/**
+ * Keys `github` may publish as repository VARIABLES → `key: why CI needs it`.
+ *
+ * An explicit allow-list, and that is the whole safety property. This file's other job
+ * is pushing credentials to every production worker, so a subcommand that also writes
+ * the repository's CI configuration has to be unable to carry one across: `github`
+ * refuses any key not named here, which makes "it pushed PLATFORM_SECRET to a public
+ * repo's variables" not a mistake that can be made.
+ *
+ * VARIABLES, never secrets. These are identifiers rather than credentials — masking them
+ * would only make a failed deploy harder to read — and a secret pushed here would be
+ * unreadable afterwards, so drift could never be detected. If something genuinely secret
+ * ever needs to reach CI, it wants its own command with its own reasoning, not this list.
+ */
+const GITHUB_VARIABLES = {
+  CF_D1_AUTH_DB_ID: 'the staff-roster D1, which the committed wrangler config does not name',
+  CF_D1_AUTH_DB_ID_TEST: 'the same for the test env',
+  CF_PIPELINE_OUTBOX_STREAM_ID: 'the Tier-2 outbox stream (#1334) — CHANGES on every lake --recreate',
 };
 
 /** Canonical keys `generate` fills when blank — the random shared/session tokens. */
@@ -600,6 +622,61 @@ function randBase64(bytes) {
   return Buffer.from(crypto.getRandomValues(new Uint8Array(bytes))).toString('base64');
 }
 
+/**
+ * Publish the allow-listed ids to the repository's GitHub Actions variables.
+ *
+ * `tools/wrangler-config.mjs` resolves them from `process.env` before this file, which is
+ * how one declaration serves both paths — but only if CI actually holds them. Doing it by
+ * hand works exactly once and then rots: the stream id changes on every
+ * `pnpm lake:provision --recreate`, and a stale one means the control plane ships events
+ * nowhere, silently, until somebody redeploys.
+ *
+ * Values are compared, never printed. A variable is readable back (that is what makes it
+ * a variable), so this can say "unchanged" honestly instead of re-pushing blind.
+ */
+async function cmdGithub() {
+  const values = parseEnvFile(filePath);
+  const probe = spawnSync('gh', ['variable', 'list', '--json', 'name,value'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
+  if (probe.status !== 0) {
+    fail(
+      'could not list the repository variables — is the GitHub CLI installed and logged in?\n' +
+        '  `gh auth status` should show a token with the `repo` scope, which is what Actions\n' +
+        '  variables are covered by.',
+    );
+  }
+  let live = new Map();
+  try {
+    live = new Map(JSON.parse(probe.stdout).map((v) => [v.name, v.value]));
+  } catch {
+    fail('could not parse `gh variable list` output');
+  }
+
+  console.log(`GitHub Actions variables from ${filePath}${dryRun ? '  [dry-run]' : ''}\n`);
+  let changed = 0;
+  for (const [key, why] of Object.entries(GITHUB_VARIABLES)) {
+    const want = values[key];
+    if (!want) {
+      console.log(`    · ${key}  (blank in the file — skipped)   ${why}`);
+      continue;
+    }
+    if (live.get(key) === want) {
+      console.log(`    = ${key}  unchanged`);
+      continue;
+    }
+    const verb = live.has(key) ? 'updates' : 'creates';
+    console.log(`    ● ${key}  ${verb}   ${why}`);
+    changed += 1;
+    if (dryRun) continue;
+    const res = spawnSync('gh', ['variable', 'set', key, '--body', want], { cwd: ROOT, stdio: 'inherit' });
+    if (res.status !== 0) fail(`gh variable set ${key} failed (exit ${res.status})`);
+  }
+  console.log(`\n${changed === 0 ? 'nothing to do' : `${changed} variable(s) ${dryRun ? 'would change' : 'set'}`}.`);
+  console.log('Values are never printed. Anything not in GITHUB_VARIABLES is refused by construction.');
+}
+
 switch (cmd) {
   case 'check':
     cmdCheck();
@@ -618,6 +695,9 @@ switch (cmd) {
     break;
   case 'generate':
     cmdGenerate();
+    break;
+  case 'github':
+    await cmdGithub();
     break;
   default:
     // Lines 3–30 of this file: the intro, the command list and the flags. Kept as a
