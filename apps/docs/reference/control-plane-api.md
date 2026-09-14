@@ -39,8 +39,21 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
 - **Tenants** — `/tenants` (+ `/status`, `/reap`, `/identities`, `/entitlements`): the
   tenant registry, lifecycle, identity links, and per-tenant SKU grants.
 - **Scopes** — `/scopes`, `/tenants/:t/scopes/:s` and its lifecycle verbs (`configure`,
-  `version`, `snapshots`, `restore`, `rewind`, `bookmarks`, `reap`), the read-only data
-  window (`tables`, `tables/:table`, `query`, `export`, `health`), and `/fleet/migrations`.
+  `version`, `snapshots`, `restore`, `rewind`, `bookmarks`, `migrations`, `reap`), the
+  read-only data window (`tables`, `tables/:table`, `query`, `export`, `health`, and the
+  four event reads over it — `history`, one record's story; `facets`, the outbox narrowed,
+  grouped and counted; `cause` and `effects`, one event walked backwards to what started it
+  or forwards to what it set off), and `/fleet/migrations`. The table, query, health,
+  denial and event reads (`tables`, `tables/:table`, `query`, `health`, `denials`,
+  `denials/summary`, `history`, `facets`, `cause`, `effects`) run one ladder: resolve the
+  scope record, then ask the vertical's own `/internal/*` route when one is bound and the
+  co-located host otherwise — and on the delegated branch the transport writes the K-24
+  access row itself, through `HostAdmin.recordDelegatedRead`, so an auditor cannot tell
+  which branch served a read from the row it left. Two scope reads sit outside that
+  ladder on purpose: `export` always goes through `HostAdmin.exportScope` first, because
+  that is the call that writes its access-log entry (the vertical supplies only the bytes
+  when one is bound), and `migrations` is schema metadata, read from whichever side holds
+  it with no access row at all.
   Two routes are forwarded to the scope's own [vertical host](/reference/vertical-host)
   rather than answered from the directory: `GET …/owner-seat` reads whether the instance's
   owner seat has been claimed, and `POST …/owner-claim` mints the short-lived claim link
@@ -74,8 +87,28 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   `/verticals/:slug/tenant-provisioner`: the capabilities a vertical must be *granted*
   rather than configure for itself.
 - **Roles**, **admin-log**, **ops-failures**, **meters**, **model-usage** (meter 3: the lines a vertical's model host raised as `model-usage` intents, listed and folded per tenant × model with the platform's margin applied at read time), and **observability**
-  (`/observability/logs`, `/observability/metrics`) — the permission surface, the
-  append-only audit history, operational failures, billable readings, and fleet telemetry.
+  (`/observability/logs`, `/observability/metrics`, `/observability/metrics-series` —
+  staff-only, script-grain, and `/observability/tenant-metrics`,
+  `/observability/tenant-metrics-series`, `/observability/tenant-logs` — the only
+  observability routes a non-staff builder may reach, because they answer about one
+  tenant: a builder's tenant is forced from the principal, and a staff caller must name
+  one, since answering fleet-wide on a forgotten parameter is the leak these exist to
+  close) — the permission surface, the append-only audit history, operational failures,
+  billable readings, and fleet telemetry.
+- **Sweep runs** — `/sweep-runs`: the durable record of what a sweep pass touched, one row
+  per unit (a connection swept, skipped or failed, a schedule run, a freshness verdict).
+  Staff read fleet-wide; a builder's tenant is forced from the principal, the
+  `/ops-failures` posture exactly.
+- **Service refs** — `/service-refs`: what a Cloudflare service ref *means* — each owned
+  vertical's serving script and per-version archive scripts, mapped to the signals stamp
+  `{vertical, version}` plus the label beside it. A directory read, deliberately outside the
+  observability `501` guard, so the release-health and issues views can join whether or
+  not a telemetry backend is configured.
+- **Issues** — `/issues` and `PUT /issues/status`: operational failures grouped by
+  fingerprint into failure classes, most recently seen first, and the staff verdict on one
+  (resolve, ignore, reopen — `regressed` is ingest's word and is refused). Staff-only: an
+  issue is a fleet-scoped aggregate with no tenant column, so the forced-filter posture
+  cannot narrow it. No cursor, by design — the grouping is the compression.
 - **Denials** — `/tenants/:t/scopes/:s/denials` and `…/denials/summary`: the refusals a
   scope recorded (K-35). The third log beside the two above — the admin log holds staff
   *mutations*, the K-24 access log staff *reads*, and this one the operations that were

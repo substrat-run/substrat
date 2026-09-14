@@ -32,7 +32,12 @@ and a connector is small because they exist:
 1. **The connection store.** A tenant's authorization for one provider, held by one vertical,
    keyed **(tenant, vertical, provider)**. Credentials are sealed at rest by a `SecretBox`
    adapter — the metadata is readable, the secret never is. See
-   [Permissions](/concepts/permissions) for how a connection becomes a subject.
+   [Permissions](/concepts/permissions) for how a connection becomes a subject. The hub is
+   not the only way in: a vertical whose users have no dashboard account starts a
+   provider's consent round itself with
+   [`requestConnectUrl`](/reference/vertical-host#requestconnecturl-request), and the
+   connection still lands in this store, stamped with the principal whose permission
+   check authorized it.
 
 2. **The connector runtime.** `registerConnector(id, eventType, handler)` binds a handler to an
    event. When a module emits that event, the runtime hands the handler an opened credential and

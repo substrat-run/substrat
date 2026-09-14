@@ -44,10 +44,28 @@ export default app;
 
 ### What it owns vs. what you supply
 
-- **Generic routes** — `export`, `restore`, `bookmarks`, `rewind`, `snapshot`,
-  `delete-scope`, `tables`, `tables/:table`, `query`, `platform-requests`,
+- **Generic routes** — `export`, `restore`, `bookmarks`, `migrations`, `rewind`, `snapshot`,
+  `delete-scope`, `tables`, `tables/:table`, `query`, `history`, `facets`, `cause`,
+  `effects`, `denials`, `denials/summary`, `platform-requests`, `platform-requests/history`,
   `platform-requests/settle` — pure delegations to your scope host, owned entirely by the
-  package.
+  package. The table, query, denial and event reads (`tables`, `tables/:table`, `query`,
+  `denials`, `denials/summary`, `history`, `facets`, `cause`, `effects`) are how the
+  control plane answers those questions for a *hosted* vertical, whose scope it cannot
+  open itself: the transport delegates the read here, then records the K-24 access row
+  for it as if it had served the read (see
+  [`HostAdmin.recordDelegatedRead`](/reference/kernel)). `migrations` is delegated the
+  same way but is schema metadata, and leaves no access row.
+- **Connector write-back routes** — `connector-invoke`, `connector-attachment`,
+  `connector-attachment/:attachmentId`, `connector-grant` — the far end of the shared
+  control plane running this vertical's connectors (#574, #711): the connection directory
+  and its sealed secrets live platform-side, so what comes *back* over these verbs carries
+  no credential — an operation invoked as the connection, provider bytes in (multipart:
+  a `meta` JSON field beside the `body` file) or out (the raw bytes, with the record in
+  a header), and the `connection:<id>` grant tuple the first two are checked against.
+  Each is authorized in the scope's own DO like any other caller, and the grant has no
+  revoke mirror because every delegated call re-passes the platform's live-connection
+  gate first. Generic in the same sense as the group above: owned by the package,
+  answered by your host's `connector…Local` members.
 - **Flavored routes** — `provision`, `reconcile`, `configure`, `owner-seat`,
   `owner-claim` — the package keeps the platform-secret gate, body parse and response
   envelope; you supply only the hook. Omit `resolveOwner` / `onConfigure` / `ownerSeat` /
@@ -113,9 +131,20 @@ without standing up a server. See [the MCP surface](/concepts/mcp).
 ### The scope host is structural
 
 `hostFor` returns anything satisfying the `VerticalScopeHost` interface — the `…Local`
-methods plus the introspection and platform-request reads. The package therefore depends on
-neither `@substrat-run/adapter-cloudflare` nor any concrete host, and a future adapter fits
-the same shape.
+methods plus the introspection and platform-request reads. Every member is required, and
+the list grows with the routes above: beside the lifecycle halves (`provisionScopeLocal`,
+`restoreScopeLocal`, `projectRolesLocal`, `exportScopeLocal`, `snapshotScopeLocal`,
+`deleteScopeLocal`, `migrationBookmarksLocal`, `rewindScopeLocal`) it now needs
+`appliedMigrationsLocal` (#1320) and the four event reads — `entityHistoryLocal`,
+`facetEventsLocal`, `eventCauseLocal`, `eventEffectsLocal` — plus the introspection trio
+(`introspectScopeTables`, `introspectScopeTable`, `introspectScopeQuery`), the denial reads
+(`listDenialsLocal`, `summarizeDenialsLocal`), the platform-request reads and settle
+(`listPlatformRequests`, `listPlatformRequestHistory`, `settlePlatformRequest`), and the
+connector write-back's far end (`connectorInvokeLocal`, `connectorAttachmentUploadLocal`,
+`connectorAttachmentOpenLocal`, `connectorGrantLocal`). A host written against an older
+list fails to compile, which is the point of the interface being structural. The package therefore depends on neither
+`@substrat-run/adapter-cloudflare` nor any concrete host, and a future adapter fits the
+same shape.
 
 ### Self-enforcing
 
@@ -173,6 +202,55 @@ the same `onError` every other refusal on the worker does. Paths are relative to
 so a route cannot be declared outside the middleware guarding it, and the preflight
 advertises exactly the methods the surface registered. `demos/ticket0` is the worked
 reference. Rate limiting is not here yet.
+
+## `requestConnectUrl(request)`
+
+How a vertical starts a provider consent round **itself** (#1310), for the case the
+[connections hub](/connectors/) does not fit: the people connecting a new client company
+to its bookkeeping provider work inside the vertical and have no dashboard account, and
+there is no credential to paste until the round has happened.
+
+```ts
+import { requestConnectUrl, ConnectUrlRequestError } from '@substrat-run/vertical-host';
+
+// module.ts — the authorizing act, and the only place a permission is checked
+const connectClientBooks: OperationHandler<{ clientId: string }, ConnectRequest> = async (ctx, raw) => {
+  assertAllowed(await ctx.check(PERM.manageIntegrations));
+  // …
+  return { provider: 'fortnox', subjectRef: client.id };   // no URL yet, and no secret ever
+};
+
+// server.ts — the effect
+const request = await scope.invoke('crm/connect-client-books', { clientId });
+const { url, expiresAt, vertical } = await requestConnectUrl({
+  controlPlaneUrl: env.CONTROL_PLANE_URL,
+  platformSecret: env.PLATFORM_SECRET,
+  tenantId, scopeId,
+  provider: request.provider,
+  createdBy: principal,                       // the principal whose check just passed
+  subjectRef: request.subjectRef,             // your name for what is being connected, echoed back
+  returnUrl: `https://${host}/clients/${clientId}`,
+});
+return Response.redirect(url, 302);
+```
+
+The permission check lives in the operation and the call lives in the harness, the shape
+the credential relay established: module code cannot `fetch`, and the authority behind a
+connect URL is a decision the scope already made. The vertical never learns the provider's
+client credentials, the consent code or the token — it receives a link and forgets it —
+and the resulting connection is stamped `createdBy` the principal named here, so the audit
+trail leads back to that `ctx.check` rather than to a platform actor. What the platform
+decides, not the caller: which vertical the connection lands on is re-derived from the
+directory's record for `(tenantId, scopeId)` and again at the callback, `returnUrl` must be
+an https surface bound to this scope, `ttlSeconds` may not exceed 900 (a longer value is
+refused with `400`, not clamped — 15 minutes is the ceiling, and the default when it is
+omitted), and a provider with no platform consent round is refused, naming the paste door.
+A refusal throws `ConnectUrlRequestError`, carrying the relay's status so a route can map
+it. An *unreachable* control plane is a different failure: the `fetch` itself rejects, and
+that rejection is passed through as-is — a `TypeError` with no `status` — so a handler
+that wants to answer `502` for both catches the two separately. The call goes through
+`POST /internal/connections/connect-url` on the control plane, under the platform secret
+injected into every dispatch script.
 
 ## `createModelHost(options)` — from `@substrat-run/vertical-host/model`
 
