@@ -23,7 +23,16 @@ import {
   connectionProvider,
   connectionSecret,
 } from './connections.js';
-import { scopeDump } from './introspection.js';
+import {
+  scopeDump,
+  type EntityHistoryInput,
+  type EventCauseInput,
+  type EventEffectsInput,
+  type EventFacetInput,
+  type QueryScopeInput,
+  type ReadScopeTableInput,
+} from './introspection.js';
+import type { DenialFilter } from './denial.js';
 import { errorCode } from './errors.js';
 import { platformRequestFailureOrigin } from './platform-request.js';
 
@@ -400,6 +409,45 @@ export const delegatedReadMethod = z.enum([
   'eventEffects',
 ]);
 export type DelegatedReadMethod = z.infer<typeof delegatedReadMethod>;
+
+/** The route input each delegated read is made with — what `delegatedReadParams` projects. */
+export interface DelegatedReadInput {
+  readScopeTable: ReadScopeTableInput;
+  listScopeTables: null;
+  queryScope: QueryScopeInput;
+  listDenials: DenialFilter | undefined;
+  summarizeDenials: DenialFilter | undefined;
+  entityHistory: EntityHistoryInput;
+  facetEvents: EventFacetInput;
+  eventCause: EventCauseInput;
+  eventEffects: EventEffectsInput;
+}
+
+/**
+ * What the K-24 row for each read carries as `params` — ONE definition, so a delegated
+ * row and a co-located row for the same request are the same row.
+ *
+ * Each projection is exactly what the adapters' co-located branch logs for that method
+ * today, and the two are deliberately not the same as "the whole input": a paged history
+ * read logs the entity and not its `limit`/`cursor`, a cause walk logs the event and not
+ * its `maxDepth`. Log the full input on one branch and the row would carry the paging
+ * arguments only when a vertical served it — and an auditor could tell the branches
+ * apart, which is the property the seam exists to deny. The API applies this on the
+ * delegated path and a test drives every method both ways and compares the rows.
+ */
+export const delegatedReadParams: {
+  [M in DelegatedReadMethod]: (input: DelegatedReadInput[M]) => unknown;
+} = {
+  readScopeTable: (i) => ({ table: i.table, limit: i.limit, offset: i.offset }),
+  listScopeTables: () => null,
+  queryScope: (i) => ({ sql: i.sql }),
+  listDenials: (f) => f ?? null,
+  summarizeDenials: (f) => f ?? null,
+  entityHistory: (i) => ({ entityType: i.entityType, entityId: i.entityId }),
+  facetEvents: (i) => i,
+  eventCause: (i) => ({ eventId: i.eventId }),
+  eventEffects: (i) => ({ eventId: i.eventId }),
+};
 
 /**
  * What the control plane reports after a read it delegated to a vertical.

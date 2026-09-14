@@ -13,6 +13,7 @@ import {
   type PermissionKey,
   type OrgId,
   type PrincipalId,
+  delegatedReadParams,
 } from '@substrat-run/contracts';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
 import type { ScopeHostFixture } from './scope-host-suite.js';
@@ -896,6 +897,59 @@ export function permissionContractSuite(
       // listTenants" against "enumerated every tenant on the platform".
       expect(listed?.resultCount).toBeGreaterThan(0);
       expect(listed?.drainedAt).toBeNull();
+    });
+
+    it('records a DELEGATED read as the row the co-located branch would leave (#1357)', async () => {
+      // A control plane that asked a vertical for a scope's data reports the read here,
+      // and the row must be indistinguishable from one the co-located branch wrote:
+      // same actor, method, target and params, with the id and the instant stamped by
+      // THIS adapter — a caller cannot backdate or collide a row, because it never
+      // supplies either. Held on both adapters because only one of them serves
+      // production, and it is the one an API test never reaches.
+      const reporter = platformActorId.parse(ulid());
+      const input = { table: '_substrat_outbox', limit: 5, offset: 0 };
+      const before = Date.now();
+      await host.admin.recordDelegatedRead(reporter, {
+        method: 'readScopeTable',
+        tenantId: t1,
+        scopeId: s1,
+        params: delegatedReadParams.readScopeTable(input),
+        resultCount: 3,
+      });
+      const rows = await host.admin.accessLog(staff, { actor: reporter });
+      expect(rows).toHaveLength(1);
+      const row = rows[0]!;
+      expect(row).toMatchObject({
+        actor: reporter,
+        method: 'readScopeTable',
+        tenantId: t1,
+        scopeId: s1,
+        resultCount: 3,
+        drainedAt: null,
+      });
+      expect(row.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
+      const at = Date.parse(row.at);
+      expect(at).toBeGreaterThanOrEqual(before - 1_000);
+      expect(at).toBeLessThanOrEqual(Date.now() + 1_000);
+
+      // The same request served co-located leaves the same params: the projection in
+      // contracts is what this adapter's own read logs, not merely what it accepts.
+      await host.admin.readScopeTable(reporter, t1, s1, input);
+      const both = await host.admin.accessLog(staff, { actor: reporter, method: 'readScopeTable' });
+      expect(both).toHaveLength(2);
+      expect(both[0]!.params).toBe(both[1]!.params);
+
+      // The method set is closed: the seam cannot be used to write an arbitrary row.
+      await expect(
+        host.admin.recordDelegatedRead(reporter, {
+          method: 'listTenants' as never,
+          tenantId: t1,
+          scopeId: s1,
+          params: null,
+          resultCount: 0,
+        }),
+      ).rejects.toThrow();
+      expect((await host.admin.accessLog(staff, { actor: reporter })).length).toBe(2);
     });
 
     it('audits reading the audit trail, and reading the access log itself', async () => {

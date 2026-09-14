@@ -37,6 +37,8 @@ import {
   eventCauseInput,
   eventEffectsInput,
   type DelegatedReadMethod,
+  type DelegatedReadInput,
+  delegatedReadParams,
   createOrgInput,
   roleKey as roleKeySchema,
   DEFAULT_DENIAL_LIMIT,
@@ -2115,14 +2117,21 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
    * fails the request. That is the co-located branch's existing trade, where
    * `recordAccess` is awaited inside the read — and returning rows whose disclosure went
    * unrecorded is the thing K-24 exists to prevent.
+   *
+   * `input` is the ROUTE's input, and what the row carries is `delegatedReadParams`'s
+   * projection of it — never the input itself. The co-located branch logs a chosen
+   * subset per method (the entity, not the page; the event, not the walk's depth), and
+   * a row that carried the whole input on this branch alone would tell an auditor which
+   * branch served the request. The projection lives in contracts so it is one
+   * definition; the test drives every method both ways and compares the rows.
    */
-  async function delegatedRead<T>(
+  async function delegatedRead<M extends DelegatedReadMethod, T>(
     c: { get: (k: 'actor') => PlatformActorId },
     tenantId: TenantId,
     scopeId: ScopeId,
     scope: { tenantId?: TenantId; vertical: string | null; verticalVersionId: string | null; servingRef?: string | null },
-    method: DelegatedReadMethod,
-    params: unknown,
+    method: M,
+    input: DelegatedReadInput[M],
     run: { viaVertical: (v: VerticalClient) => Promise<T>; colocated: () => Promise<T> },
     count: (answer: T) => number,
   ): Promise<T> {
@@ -2135,7 +2144,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       method,
       tenantId,
       scopeId,
-      params,
+      params: delegatedReadParams[method](input),
       resultCount: count(answer),
     });
     return answer;
