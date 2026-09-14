@@ -392,6 +392,68 @@ describe('scope-local permissions — automatic fan-out on write (Phase 2)', () 
     expect(await probe(alice, parked, ADMIN)).toBe(true);
   });
 
+  it('unarchive holds a revoke that lands BETWEEN its snapshot and the flip (#1473)', async () => {
+    // The interleaving a single push-then-flip cannot cover. `projectScope` reads the
+    // tenant's state, then writes it; a revoke that commits in between fans out to the
+    // scopes live at that moment — and this one is still archived, so its fan-out
+    // skips it — and the flip then puts the OLDER snapshot on duty. The revoked
+    // principal keeps their access on the revived scope until the next fan-out or the
+    // sweep, exactly the window the unarchive refresh was meant to close.
+    //
+    // Pinned by driving the revoke from inside the gap: a second host over the same
+    // DOs, whose control-plane stub runs the revoke the first time `getScopeRecord` is
+    // read — which `projectScope` does after its snapshot and before its write.
+    const parked = scopeId.parse(ulid());
+    await host.provisionScope(staff, { tenantId: t, scopeId: parked, vertical: 'perm-vertical' });
+    await host.admin.activateScope(staff, t, parked);
+    const frank = principalId.parse(ulid());
+    await host.admin.assignRole(staff, { principalId: frank, roleKey: 'admin', node: { tenantId: t, scopeId: null } });
+    expect(await probe(frank, parked, ADMIN)).toBe(true);
+    await host.admin.archiveScope(staff, t, parked);
+
+    let armed = true;
+    const real = env.CONTROL_PLANE.get(env.CONTROL_PLANE.idFromName('control-plane')) as unknown as Record<string, unknown>;
+    const tapped = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'getScopeRecord') {
+          return async (...args: unknown[]) => {
+            const record = await (target.getScopeRecord as (...a: unknown[]) => Promise<unknown>)(...args);
+            if (armed) {
+              armed = false;
+              // The revoke lands on the directory and fans out — to the live scopes.
+              await host.admin.unassignRole(staff, { principalId: frank, roleKey: 'admin', node: { tenantId: t, scopeId: null } });
+            }
+            return record;
+          };
+        }
+        // Every other method forwards through a closure. Not `.bind`: a property of an
+        // RPC stub is itself a pipelined call, so binding it would try to send the
+        // stub over the wire.
+        const v = Reflect.get(target, prop);
+        return typeof v === 'function'
+          ? (...args: unknown[]) => (target[prop as string] as (...a: unknown[]) => unknown)(...args)
+          : v;
+      },
+    });
+    const racing = new CloudflareScopeHost({
+      scope: env.SCOPE,
+      controlPlane: { idFromName: () => ({}) as never, get: () => tapped as never } as unknown as typeof env.CONTROL_PLANE,
+      secretBox: webCryptoSecretBox('test-key', new Uint8Array(32).fill(7)),
+      scopeLocalPermissions: true,
+    });
+    try {
+      await racing.admin.unarchiveScope(staff, t, parked);
+    } finally {
+      await racing.close();
+    }
+    expect(armed).toBe(false); // the revoke really ran inside the gap
+    expect(await probe(frank, s1, ADMIN)).toBe(false);
+    // Denied on the revived scope too — the post-flip refresh caught the revoke the
+    // first snapshot predated. The positive control is the same as above.
+    expect(await probe(frank, parked, ADMIN)).toBe(false);
+    expect(await probe(alice, parked, ADMIN)).toBe(true);
+  });
+
   it('refuses a projection that arrives AFTER the scope was reaped', async () => {
     // The residual race the status filter alone cannot close: fan-out selects live
     // scopes, then writes, and a reap can land between the two. The selected scope
