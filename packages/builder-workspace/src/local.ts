@@ -16,12 +16,70 @@
  * reachable from a ModuleRegistration.
  */
 import { spawn } from 'node:child_process';
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ExecOptions, ExecResult, ExposedPort, Workspace } from './workspace.js';
 import { WorkspacePathError } from './workspace.js';
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
+
+/** How many links a path may pass through before it is a loop rather than a path. */
+const MAX_LINK_HOPS = 32;
+
+/**
+ * Where a path really points, resolving as much of it as exists.
+ *
+ * `realpathSync` throws on a path that is not there yet, which every write to a new
+ * file is. So it walks up to the nearest existing ancestor and resolves that: the
+ * segments below cannot be symlinks, because they do not exist.
+ *
+ * Except when one of them is a link to NOWHERE. `realpath` reports a dangling symlink
+ * as `ENOENT` too, and a walk that read every failure as "not there" then treated the
+ * link as an absent segment and returned its lexical, in-root path — while `writeFile`
+ * followed the link and created its target outside the root. So a failed segment is
+ * asked, with `lstat`, whether it is there after all: a link is followed by hand,
+ * relative to its own directory, and the walk continues from where it points. A
+ * segment that exists, is not a link, and still will not resolve is not ours to
+ * guess at — that error propagates, because a jail that guesses is not one.
+ */
+function realpathOfNearest(full: string, hops = 0): string {
+	let cur = full;
+	for (;;) {
+		try {
+			const real = realpathSync(cur);
+			return cur === full ? real : join(real, relative(cur, full));
+		} catch (err) {
+			const link = danglingLinkTarget(cur, err);
+			if (link !== null) {
+				if (hops >= MAX_LINK_HOPS) throw new Error(`too many levels of symbolic links: ${full}`);
+				const rest = relative(cur, full);
+				return realpathOfNearest(rest ? join(link, rest) : link, hops + 1);
+			}
+			const parent = dirname(cur);
+			// The filesystem root has no parent; nothing above it to ask about.
+			if (parent === cur) return full;
+			cur = parent;
+		}
+	}
+}
+
+/**
+ * Where a symlink that `realpath` could not resolve points — an absolute path, or
+ * `null` when the segment genuinely does not exist. Any other state rethrows the
+ * original `realpath` error.
+ */
+function danglingLinkTarget(path: string, realpathError: unknown): string | null {
+	let isLink: boolean;
+	try {
+		isLink = lstatSync(path).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+		throw err;
+	}
+	if (!isLink) throw realpathError;
+	return resolve(dirname(path), readlinkSync(path));
+}
 
 export interface LocalWorkspaceOptions {
 	/** Absolute path to the workspace root. Every path is resolved inside it. */
@@ -52,11 +110,16 @@ function minimalEnv(): Record<string, string> {
 export class LocalWorkspace implements Workspace {
 	readonly id: string;
 	readonly #root: string;
+	readonly #rootReal: string;
 	readonly #env: Record<string, string>;
 	readonly #timeoutMs: number;
 
 	constructor(opts: LocalWorkspaceOptions) {
 		this.#root = resolve(opts.root);
+		// The ROOT's own real path: a scratch root is routinely reached through a link
+		// (`/var/folders/...` is `/private/var/folders/...` on macOS), and comparing a
+		// realpath against a lexical root would then reject every path in the workspace.
+		this.#rootReal = realpathOfNearest(this.#root);
 		this.id = opts.id ?? `local:${this.#root}`;
 		this.#env = { ...(opts.env ?? minimalEnv()) };
 		this.#timeoutMs = opts.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -67,18 +130,48 @@ export class LocalWorkspace implements Workspace {
 	}
 
 	/**
-	 * The path boundary. Rejects absolute paths and anything that resolves
-	 * outside the root — including via `..` and via a symlink whose target
-	 * escapes, which is why this resolves rather than string-matching.
+	 * The path boundary. Rejects absolute paths, anything that climbs out with
+	 * `..`, and anything that leaves the root through a SYMLINK.
+	 *
+	 * The symlink half needs `realpath` and used to say it did not. `resolve()` is
+	 * purely lexical — it normalises `..` and never looks at the filesystem — so a
+	 * link inside the root pointing anywhere on the machine resolved to a path
+	 * inside the root and was allowed through, while the comment here claimed the
+	 * opposite. Verified rather than reasoned about: a link at `<root>/escape.txt`
+	 * → `../outside.txt` read the outside file.
+	 *
+	 * For mode A that was defence in depth rather than a breach — `exec` runs
+	 * `shell: true` on the host, so an agent that can run a command can already
+	 * read anything this would have stopped. It still mattered, because a guard
+	 * that ADVERTISES a protection invites a caller to lean on it: the next
+	 * surface to hand this a path from somewhere less trusted would have been
+	 * relying on a check that was not happening.
+	 *
+	 * A path that does not exist yet — every `writeFile` to a new file — has no
+	 * realpath, so the nearest existing ancestor is resolved instead. That is the
+	 * component a symlink could have redirected; the segments below it cannot be
+	 * links, because they do not exist.
 	 */
 	#resolve(path: string): string {
 		if (isAbsolute(path)) throw new WorkspacePathError(path, 'absolute paths are not allowed');
 		const full = resolve(this.#root, path);
-		const rel = relative(this.#root, full);
+		// Each check against its OWN base. The lexical path is compared with the
+		// lexical root and the real path with the real one: a scratch root is routinely
+		// reached through a link (`/var/folders/…` is `/private/var/folders/…` on
+		// macOS), so crossing them rejects every path in the workspace — which is what
+		// the first version of this did, and what the first test below catches.
+		this.#assertWithin(path, full, this.#root);
+		// Then the same question of where it REALLY points.
+		this.#assertWithin(path, realpathOfNearest(full), this.#rootReal);
+		return full;
+	}
+
+	/** Containment: `full` is `base` or below it. */
+	#assertWithin(path: string, full: string, base: string): void {
+		const rel = relative(base, full);
 		if (rel.startsWith('..') || (rel !== '' && isAbsolute(rel))) {
 			throw new WorkspacePathError(path, 'escapes the workspace root');
 		}
-		return full;
 	}
 
 	async exec(cmd: string, opts: ExecOptions = {}): Promise<ExecResult> {
