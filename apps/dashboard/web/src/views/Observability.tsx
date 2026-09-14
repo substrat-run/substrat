@@ -43,6 +43,13 @@ import { EventExplorer, TenantLogs, TenantTrafficTable } from './ObservabilityPa
  * The time range is local state and deliberately NOT in the URL: a shared link should
  * open on the thing that was worth sharing, which is the app and the sub-view, and the
  * window a reader wants is the window they are in now.
+ *
+ * The time CURSOR (step 3c) is the exception, and it follows that rule rather than
+ * breaking it. A range is "how far back am I looking"; a cursor is one instant somebody
+ * decided was worth looking at — a marker that fired, a bar that spiked — which is
+ * precisely the thing a link should carry, so it rides the URL beside the app and the
+ * sub-view. Clicking the axis narrows the panels below to the minutes around that
+ * instant, and the chart shades the window so the two are visibly one screen.
  */
 
 /** Query windows offered — capped at 72h because that is the plane's cap. */
@@ -64,6 +71,24 @@ const VIEWS = [
 
 type ViewKey = (typeof VIEWS)[number]['key'];
 
+/**
+ * How wide "what was happening when this fired" is — five minutes either side of the
+ * instant. A whole request's life fits inside that with room to spare, and the log read's
+ * limit of 100 lines still means something over it; a wider window turns the cursor back
+ * into the range control it exists to be different from.
+ */
+const CURSOR_PAD_MS = 5 * 60_000;
+
+/** The window a cursor covers, as the two ISO instants every seam below it speaks in. */
+function windowAround(at: string, padMs = CURSOR_PAD_MS): { from: string; to: string } {
+  const t = Date.parse(at);
+  return { from: new Date(t - padMs).toISOString(), to: new Date(t + padMs).toISOString() };
+}
+
+/** A cursor's endpoints, short — the chip is a reminder, not a timestamp. */
+const shortTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
 /** What the chart's own read produces — the series and its release markers. The overlays
  *  are deliberately not here: they are a second read that must not gate this one. */
 interface ChartRead {
@@ -81,6 +106,7 @@ export function Observability({
   scopeId,
   view,
   focusEventType,
+  cursor,
   onNav,
 }: {
   apps: AppRow[];
@@ -88,7 +114,9 @@ export function Observability({
   scopeId: string | null;
   view: string | null;
   focusEventType: string | null;
-  onNav: (q: { app?: string; view?: string; type?: string }) => void;
+  /** The instant the page is looking at, as a window — or null for the whole range. */
+  cursor: { from: string; to: string } | null;
+  onNav: (q: { app?: string; view?: string; type?: string; from?: string; to?: string }) => void;
 }) {
   const [hours, setHours] = useState<(typeof RANGES)[number]['hours']>(24);
   // One nonce for the whole page: Refresh re-asks every question on it, which the old tab
@@ -189,17 +217,41 @@ export function Observability({
   const thisApp = scopeId ? totals.find((t) => t.scopeId === scopeId) : undefined;
 
   /**
+   * The event type the URL carries, for a rebuild that keeps the explorer on screen. The
+   * explorer seeds its filter from `type` and then holds it as its own state, so a URL
+   * rebuilt without it — the cursor cleared, a bar clicked — would show one thing and
+   * name another: reload or share it and the results change. Carried only where the
+   * destination is the explorer; on any other sub-view `type` would be a claim about a
+   * panel that is not showing.
+   */
+  const typeFor = (view: string): { type?: string } =>
+    view === 'events' && focusEventType ? { type: focusEventType } : {};
+
+  /** Where the × on the chip, and a range change that outran the cursor, land: the page
+   *  as it is, minus the window. */
+  const withoutCursor = (): void =>
+    onNav({ ...(scopeId ? { app: scopeId } : {}), view: active, ...typeFor(active) });
+
+  /**
    * A marker opens the sub-view that EXPLAINS it — the run row for a failed schedule, the
-   * log for a recorded failure, the Deployments tab's schema history for a migration.
-   * Step 3c adds the time cursor (`since`/`until` on the logs seam) so the sub-view lands
-   * on the marker's own minutes; until then the narrowing is the app and the panel, which
-   * is still the walk from an aggregate to its evidence rather than a dead tooltip.
+   * log for a recorded failure, the Deployments tab's schema history for a migration —
+   * and, since step 3c, on the marker's own MINUTES rather than its app's whole window.
+   * A recorded failure inside a three-day range is one line among thousands otherwise,
+   * and "here is the panel, now go find it" is not a walk from an aggregate to evidence.
+   *
+   * A failed run lands on Schedules with the window, and the panel answers it: the
+   * schedule whose run fell inside those minutes is hoisted, the run is named on its
+   * line and ringed in its strip — the run row #1447 asks the click to reach. A migration
+   * leaves for the Deployments tab, which is a different page with a different axis — no
+   * cursor travels there.
    */
   const onMarker = (m: OverlayMarker): void => {
     if (!scopeId) return;
-    if (m.kind === 'run-failed') onNav({ app: scopeId, view: 'schedules' });
-    else if (m.kind === 'failure') onNav({ app: scopeId, view: 'logs' });
-    else navigate(`/apps/${scopeId}/deployments`);
+    if (m.kind === 'migration') {
+      navigate(`/apps/${scopeId}/deployments`);
+      return;
+    }
+    onNav({ app: scopeId, view: m.kind === 'run-failed' ? 'schedules' : 'logs', ...windowAround(m.at) });
   };
 
   return (
@@ -221,7 +273,9 @@ export function Observability({
           // The sub-view is carried across a mode change only where it still means
           // something — narrowing from the all-apps Traffic view lands on that app's
           // traffic, and widening out of Logs drops it rather than leaving the URL
-          // claiming a sub-view the page is not showing.
+          // claiming a sub-view the page is not showing. The cursor is never carried: it
+          // is one app's minute, and pointing it at another app's chart would name an
+          // instant that app may have had no traffic in at all.
           onChange={(e) => {
             const next = e.target.value;
             const wanted = VIEWS.find((v) => v.key === active);
@@ -236,8 +290,32 @@ export function Observability({
           label="Time range"
           options={RANGES.map((r) => ({ key: String(r.hours), label: r.label }))}
           value={String(hours)}
-          onPick={(k) => setHours(Number(k) as (typeof RANGES)[number]['hours'])}
+          onPick={(k) => {
+            const next = Number(k) as (typeof RANGES)[number]['hours'];
+            setHours(next);
+            // A cursor is a window INSIDE the page's range. Widening keeps it — the same
+            // minutes are still on the chart — but narrowing past it would leave the chip
+            // naming minutes the axis no longer draws and the panels answering about a
+            // slice the chart above them cannot show.
+            if (cursor && Date.parse(cursor.from) < Date.now() - next * 3_600_000) withoutCursor();
+          }}
         />
+        {cursor && (
+          <span
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, padding: '0 4px 0 10px', fontSize: 12.5, color: 'var(--text-secondary)', background: 'var(--surface-inset)', border: '1px solid var(--border-subtle)', borderRadius: 8 }}
+          >
+            Around {shortTime(cursor.from)}–{shortTime(cursor.to)}
+            <button
+              type="button"
+              aria-label="Clear the time cursor"
+              title="Back to the whole range"
+              onClick={withoutCursor}
+              style={{ appearance: 'none', border: 0, background: 'transparent', color: 'var(--text-tertiary)', cursor: 'pointer', fontSize: 14, lineHeight: 1, padding: '0 6px' }}
+            >
+              ×
+            </button>
+          </span>
+        )}
         <Button variant="ghost" size="sm" onClick={() => setNonce((n) => n + 1)}>
           Refresh
         </Button>
@@ -252,6 +330,24 @@ export function Observability({
           markers={markers}
           {...(overlays ? { overlays } : {})}
           onMarker={onMarker}
+          {...(cursor ? { cursor } : {})}
+          // A bar already IS a span of time, so the window it opens is its own — no
+          // padding, because the reader picked that bucket rather than an instant inside
+          // it. From Traffic it lands on Logs: that panel is the same aggregate this
+          // chart draws, so a click that left the reader on it would shade the chart and
+          // change nothing below it. Any other sub-view is one the reader chose, and the
+          // window narrows it where it can.
+          onBucket={(start, minutes) => {
+            if (!scopeId) return;
+            const view = active === 'traffic' ? 'logs' : active;
+            onNav({
+              app: scopeId,
+              view,
+              ...typeFor(view),
+              from: start,
+              to: new Date(Date.parse(start) + minutes * 60_000).toISOString(),
+            });
+          }}
         />
         <span style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
           Traffic to your installations — approximate, sampled at high volume.
@@ -268,7 +364,12 @@ export function Observability({
         value={active}
         // Disabled entries stay VISIBLE rather than disappearing: a control bar that
         // changes length with the filter reads as a page that lost something.
-        onPick={(k) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: k })}
+        //
+        // The cursor comes along. "What was happening at 09:13" is one question asked of
+        // several panels, and dropping the window on the way from Logs to Events would
+        // answer the second one about three days instead — silently, since the count
+        // would simply be larger.
+        onPick={(k) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: k, ...typeFor(k), ...(cursor ?? {}) })}
       />
 
       {/* Not drawn under an unavailable chart: `deriveTeamSeries` zero-fills every line
@@ -289,6 +390,7 @@ export function Observability({
           // Straight off the chart above, so the log panel can tell "no traffic" from
           // "traffic whose lines are not attributed yet" without a second read.
           {...(series?.available && thisApp ? { hadTraffic: thisApp.requests > 0 } : {})}
+          {...(cursor ? { window: cursor } : {})}
         />
       )}
       {/* The page-level Refresh reaches every panel. The three below take no nonce of
@@ -301,9 +403,12 @@ export function Observability({
           scopeId={scopeId}
           hours={hours}
           {...(focusEventType ? { focusEventType } : {})}
+          {...(cursor ? { window: cursor } : {})}
         />
       )}
-      {scopeId && active === 'schedules' && <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} />}
+      {scopeId && active === 'schedules' && (
+        <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} {...(cursor ? { window: cursor } : {})} />
+      )}
       {app && active === 'flow' && <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />}
     </Page>
   );
@@ -322,6 +427,8 @@ function Chart({
   markers,
   overlays,
   onMarker,
+  onBucket,
+  cursor,
 }: {
   series: TeamTrafficSeries | null;
   error: boolean;
@@ -330,6 +437,8 @@ function Chart({
   markers: ReleaseMarker[];
   overlays?: AppOverlays;
   onMarker: (marker: OverlayMarker) => void;
+  onBucket: (start: string, bucketMinutes: number) => void;
+  cursor?: { from: string; to: string };
 }) {
   if (series === null) {
     return <div style={{ height: 96, display: 'flex', alignItems: 'center', fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading…</div>;
@@ -360,13 +469,16 @@ function Chart({
         bucketMinutes={series.bucketMinutes}
         {...(overlays ? { overlays } : {})}
         onMarker={onMarker}
+        onBucket={onBucket}
+        {...(cursor ? { cursor } : {})}
       />
     );
   }
   // All apps: one line each. The legend names them; the rows under the chart are the
   // same list made reachable, and each of those narrows the page to its app. No markers
   // and no overlays here — every one of them is a fact about ONE scope, and drawn across
-  // several lines it would claim an instant most of them never had.
+  // several lines it would claim an instant most of them never had. No cursor either,
+  // for the same reason, and no bar to click: this mode draws lines.
   return (
     <TrafficChart
       buckets={axis}

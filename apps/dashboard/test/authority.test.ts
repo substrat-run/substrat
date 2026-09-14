@@ -756,6 +756,32 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     });
   });
 
+  // The tenant grain's log read, and the one thing step 3c added to it: the chart's time
+  // cursor. `hours` can only end at now, so the window a marker or a bar names — minutes
+  // in the past — reaches the plane as two instants or not at all.
+  describe('tenantLogs window (#1447)', () => {
+    const since = '2026-09-13T10:00:00.000Z';
+    const until = '2026-09-13T10:10:00.000Z';
+
+    it('puts the cursor’s instants on the wire beside the pinned tenant', async () => {
+      const { cp, calls } = routedHarness({ '/observability/tenant-logs': [] });
+      await cp.tenantLogs({ scopeId: S, hours: 24, limit: 100, since, until });
+      const ask = new URL(calls.find((u) => u.includes('/observability/tenant-logs'))!);
+      expect(ask.searchParams.get('tenantId')).toBe(T);
+      expect(ask.searchParams.get('since')).toBe(since);
+      expect(ask.searchParams.get('until')).toBe(until);
+    });
+
+    it('sends neither when the caller has no cursor — the trailing window is the plane’s default', async () => {
+      const { cp, calls } = routedHarness({ '/observability/tenant-logs': [] });
+      await cp.tenantLogs({ scopeId: S, hours: 24, limit: 100 });
+      const ask = new URL(calls.find((u) => u.includes('/observability/tenant-logs'))!);
+      expect(ask.searchParams.has('since')).toBe(false);
+      expect(ask.searchParams.has('until')).toBe(false);
+      expect(ask.searchParams.get('hours')).toBe('24');
+    });
+  });
+
   // The permission-registry read (D-39, #336) the Permissions tab consumes.
   it('versionRegistry reads one version’s declared surface at the right route', async () => {
     const reg = {

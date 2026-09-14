@@ -297,12 +297,15 @@ export function SweepStrip({
   runs,
   label = 'Last sweep',
   skippedNote,
+  ringed,
 }: {
   runs: SweepTick[];
   /** Leads the trailing sentence — "Last sweep 20m ago" / "Last run 4h ago". */
   label?: string;
   /** What a trailing `skipped` outcome means on THIS surface. */
   skippedNote: string;
+  /** Run ids to draw a ring around — the ones a time cursor landed on (#1447 step 3c). */
+  ringed?: ReadonlySet<string>;
 }) {
   if (runs.length === 0) return null;
   const last = runs[0]!;
@@ -320,9 +323,17 @@ export function SweepStrip({
             // A colored tick alone is invisible to a screen reader and the title
             // tooltip is mouse-only; the label carries the same fact for both.
             role="img"
-            aria-label={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}`}
+            aria-label={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}${ringed?.has(r.id) ? ' (in the selected window)' : ''}`}
             title={`${r.outcome}${r.error ? `: ${r.error}` : ''} — ${relativeTime(r.at)}`}
-            style={{ width: 5, height: 12, borderRadius: 1, background: COLOR[r.outcome], display: 'inline-block' }}
+            style={{
+              width: 5,
+              height: 12,
+              borderRadius: 1,
+              background: COLOR[r.outcome],
+              display: 'inline-block',
+              // The ring is the cursor's answer: THIS tick is the one the click named.
+              ...(ringed?.has(r.id) ? { boxShadow: '0 0 0 2px var(--brand-500)' } : {}),
+            }}
           />
         ))}
       </span>

@@ -4571,7 +4571,35 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         level: z.enum(['log', 'info', 'warn', 'error', 'debug']).optional(),
         search: z.string().min(1).max(200).optional(),
         hours: z.coerce.number().int().min(1).max(72).default(24),
+        // The chart's time cursor (#1447): a window that ENDS in the past, which `hours`
+        // cannot spell — it always ends at now.
+        since: z.string().datetime({ offset: true }).optional(),
+        until: z.string().datetime({ offset: true }).optional(),
         limit: z.coerce.number().int().min(1).max(200).default(100),
+      })
+      .superRefine((v, ctx) => {
+        const now = Date.now();
+        const to = v.until ? Date.parse(v.until) : now;
+        const from = v.since ? Date.parse(v.since) : to - v.hours * 3_600_000;
+        // On the resolved bounds rather than on the pair, so a lone `since` in the future
+        // is refused by the same line: with no `until` it is measured against now, and
+        // without this it would reach the backend as a window that cannot contain
+        // anything and come back as an empty page nobody could explain.
+        if (from >= to) {
+          ctx.addIssue({ code: 'custom', path: ['since'], message: 'since must be before until' });
+        }
+        // The SAME ceiling `hours` carries, applied to the window however it was spelled.
+        // Otherwise the pair is a second door onto a read the first one caps at three
+        // days, and the two spellings together would read past what either allows.
+        if (to - from > 72 * 3_600_000) {
+          ctx.addIssue({ code: 'custom', path: ['since'], message: 'the window may not exceed 72 hours' });
+        }
+        // A window ending in the future returns nothing and says nothing about why, which
+        // a reader takes for "my app was quiet". Five minutes of slack, because the
+        // instant is stamped by a browser's clock rather than by ours.
+        if (to > now + 5 * 60_000) {
+          ctx.addIssue({ code: 'custom', path: ['until'], message: 'until may not be more than 5 minutes in the future' });
+        }
       })
       .parse({
         tenantId,
@@ -4580,6 +4608,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         level: c.req.query('level') || undefined,
         search: c.req.query('search') || undefined,
         hours: c.req.query('hours'),
+        since: c.req.query('since') || undefined,
+        until: c.req.query('until') || undefined,
         limit: c.req.query('limit'),
       });
     return c.json(await options.observability.tenantLogs(input));

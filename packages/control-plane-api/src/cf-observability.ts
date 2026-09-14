@@ -617,8 +617,21 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     level?: string;
     search?: string;
     hours: number;
+    since?: string;
+    until?: string;
     limit: number;
   }): Promise<RecentLogEvent[]> {
+    // ONE timeframe, computed once and handed to every query below — the phases are not
+    // independent reads. Phase two expands an invocation the earlier phases found, and a
+    // phase that recomputed `Date.now()` for itself would search a window shifted by the
+    // time the previous one took: a sibling line near the edge would fall outside and the
+    // page would show half an invocation. The cursor makes that sharper still — a
+    // five-minute window has edges a whole request can straddle.
+    const to = input.until ? Date.parse(input.until) : Date.now();
+    const timeframe = {
+      from: input.since ? Date.parse(input.since) : to - input.hours * 3_600_000,
+      to,
+    };
     const base = [
       { key: 'tenantId', operation: 'eq', type: 'string', value: input.tenantId },
       { key: 'substrat', operation: 'eq', type: 'string', value: 'invocation' },
@@ -662,22 +675,22 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
           Promise.all([
             queryRaw(
               [...base, { key: 'status', operation: 'gte', type: 'number', value: 500 }],
-              input.hours,
+              timeframe,
               phaseOneLimit,
             ),
             queryRaw(
               [...base, { key: 'threw', operation: 'eq', type: 'boolean', value: true }],
-              input.hours,
+              timeframe,
               phaseOneLimit,
             ),
           ]).then((pages) => pages.flat()),
           queryRaw(
             [{ key: '$metadata.level', operation: 'eq', type: 'string', value: 'error' }],
-            input.hours,
+            timeframe,
             phaseOneLimit,
           ),
         ])
-      : [await queryRaw(base, input.hours, phaseOneLimit), []];
+      : [await queryRaw(base, timeframe, phaseOneLimit), []];
 
     const trusted = invocationIds(stamped);
     const trustedIds = new Set(trusted);
@@ -694,7 +707,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       requestIds.map(async (id) => {
         const events = await queryRaw(
           [{ key: '$metadata.requestId', operation: 'eq', type: 'string', value: id }],
-          input.hours,
+          timeframe,
           MAX_LINES_PER_INVOCATION,
         );
         // An account-wide candidate earns its place only by producing this tenant's
@@ -758,16 +771,18 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // the error read needed `status >= 500` (the one numeric comparison in this file) and
     // `threw = true` (the one boolean).
     filters: Array<{ key: string; operation: string; type: string; value: string | number | boolean }>,
-    hours: number,
+    // The window, already decided by the caller — every phase of one tenant-log read
+    // searches the same one, so this takes the instants rather than a duration it would
+    // have to re-anchor to a `Date.now()` of its own.
+    timeframe: { from: number; to: number },
     limit: number,
   ): Promise<Array<Record<string, unknown>>> {
-    const to = Date.now();
     const res = await authed(
       `https://api.cloudflare.com/client/v4/accounts/${opts.accountId}/workers/observability/telemetry/query`,
       {
         queryId: 'substrat-tenant-logs',
         view: 'events',
-        timeframe: { from: to - hours * 3_600_000, to },
+        timeframe,
         parameters: { datasets: ['cloudflare-workers'], filters, limit },
         limit,
       },

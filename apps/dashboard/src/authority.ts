@@ -1192,6 +1192,10 @@ export class TenantNarrowedControlPlane {
     level?: string;
     search?: string;
     hours: number;
+    /** The chart's time cursor (#1447) — a window that ENDS in the past, which `hours`
+     *  cannot name. Sent only when the caller has one; the plane defaults the rest. */
+    since?: string;
+    until?: string;
     limit: number;
   }): Promise<
     Array<{
@@ -1218,6 +1222,8 @@ export class TenantNarrowedControlPlane {
     if (input.vertical) q.set('vertical', input.vertical);
     if (input.level) q.set('level', input.level);
     if (input.search) q.set('search', input.search);
+    if (input.since) q.set('since', input.since);
+    if (input.until) q.set('until', input.until);
     const events =
       (await this.call<Array<Record<string, unknown>>>(`/observability/tenant-logs?${q.toString()}`)) ?? [];
     const str = (v: unknown) => (typeof v === 'string' ? v : null);

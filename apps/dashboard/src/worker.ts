@@ -3999,6 +3999,11 @@ app.get('/api/apps/:scopeId/observability/logs', async (c) => {
         level: c.req.query('level') || undefined,
         search: c.req.query('search') || undefined,
         hours: Number.isFinite(hours) ? hours : 24,
+        // The chart's time cursor, passed on as the strings they arrived as: the plane
+        // is what judges an instant (ISO, ordered, inside the same 72h ceiling `hours`
+        // carries), and a second reading of them here could only disagree with it.
+        since: c.req.query('since') || undefined,
+        until: c.req.query('until') || undefined,
         limit: Number.isFinite(limit) ? limit : 100,
       }),
     ),

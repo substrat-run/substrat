@@ -1590,12 +1590,19 @@ export const api = {
     const qs = p.toString();
     return call<TeamTrafficSeries>(`/observability/traffic${qs ? `?${qs}` : ''}`);
   },
-  appTenantLogs: (scopeId: string, q: { level?: string; search?: string; hours?: number; limit?: number }) => {
+  /** `since`/`until` are the chart's time cursor — a window ending in the past, which
+   *  `hours` cannot name. Sent instead of `hours`, never beside it. */
+  appTenantLogs: (
+    scopeId: string,
+    q: { level?: string; search?: string; hours?: number; limit?: number; since?: string; until?: string },
+  ) => {
     const p = new URLSearchParams();
     if (q.level) p.set('level', q.level);
     if (q.search) p.set('search', q.search);
     if (q.hours) p.set('hours', String(q.hours));
     if (q.limit) p.set('limit', String(q.limit));
+    if (q.since) p.set('since', q.since);
+    if (q.until) p.set('until', q.until);
     return call<ObservabilityLogEvent[]>(
       `/apps/${encodeURIComponent(scopeId)}/observability/logs?${p.toString()}`,
     );

@@ -223,6 +223,82 @@ describe('cf tenant logs', () => {
   });
 });
 
+/**
+ * The window the read searches (#1447 step 3c) — the chart's time cursor asks about
+ * minutes in the PAST, which `hours` alone cannot name.
+ *
+ * Asserted on the request body rather than the answer, for the reason the suite above
+ * gives: what decides whether a cursor read finds anything is the timeframe the backend
+ * was handed, and every phase must be handed the SAME one. A phase that re-anchored to
+ * its own `Date.now()` would search a window shifted by however long the phase before it
+ * took, and a sibling line near the edge would simply not be there.
+ */
+describe('cf tenant logs — the searched window', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /** `readerOver`'s twin, keeping the WHOLE body: the timeframe is what is being read. */
+  function bodiesOver(handler: (filters: Array<Record<string, unknown>>) => unknown[]) {
+    const bodies: Array<{ timeframe: { from: number; to: number }; parameters: { filters: Array<Record<string, unknown>> } }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        const body = JSON.parse(init.body);
+        bodies.push(body);
+        return new Response(
+          JSON.stringify({ success: true, result: { events: { events: handler(body.parameters.filters) } } }),
+          { status: 200 },
+        );
+      }),
+    );
+    return {
+      reader: createCfObservabilityReader({ accountId: 'acct', apiToken: 't', routerDataset: 'substrat_router_test' }),
+      bodies,
+    };
+  }
+
+  const SINCE = '2026-09-13T10:00:00.000Z';
+  const UNTIL = '2026-09-13T10:10:00.000Z';
+
+  it('sends the cursor’s window on every phase, not only the first', async () => {
+    // An error read is the widest fan-out this reader has: three phase-one queries plus
+    // one per correlated invocation. Every one of them is checked, because the bug this
+    // pins is a later phase quietly using a different window.
+    const { reader, bodies } = bodiesOver((f) => (keyed(f, 'status') ? [invocation({ status: 500 })] : []));
+    await reader.tenantLogs!({
+      tenantId: '01TENANT',
+      level: 'error',
+      hours: 24,
+      since: SINCE,
+      until: UNTIL,
+      limit: 10,
+    });
+    // Three phase-one queries and at least one phase-two expansion actually happened —
+    // otherwise "every body agrees" would be a claim about one body.
+    expect(bodies.length).toBeGreaterThanOrEqual(4);
+    expect(bodies.some((b) => keyed(b.parameters.filters, '$metadata.requestId'))).toBe(true);
+    for (const b of bodies) {
+      expect(b.timeframe).toEqual({ from: Date.parse(SINCE), to: Date.parse(UNTIL) });
+    }
+  });
+
+  it('falls back to the trailing window when neither instant is given', async () => {
+    const { reader, bodies } = bodiesOver(() => []);
+    const before = Date.now();
+    await reader.tenantLogs!({ tenantId: '01TENANT', hours: 6, limit: 10 });
+    const after = Date.now();
+    const { from, to } = bodies[0]!.timeframe;
+    expect(to).toBeGreaterThanOrEqual(before);
+    expect(to).toBeLessThanOrEqual(after);
+    expect(from).toBe(to - 6 * 3_600_000);
+  });
+
+  it('anchors `hours` to `until` when only the upper bound is given', async () => {
+    const { reader, bodies } = bodiesOver(() => []);
+    await reader.tenantLogs!({ tenantId: '01TENANT', hours: 3, until: UNTIL, limit: 10 });
+    expect(bodies[0]!.timeframe).toEqual({ from: Date.parse(UNTIL) - 3 * 3_600_000, to: Date.parse(UNTIL) });
+  });
+});
+
 describe('cf tenant metrics', () => {
   afterEach(() => vi.unstubAllGlobals());
 
