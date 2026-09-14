@@ -139,8 +139,10 @@ scheduled work the system has: draining retryable effects, reconciling connector
 reaping expired snapshots, running each vertical's declared
 [`schedules`](/concepts/modules#recurring-work-schedules), judging its declared freshness
 expectations, and draining each scope's domain events to Tier 2 through the injected
-`EventSink` — absent a sink, nothing drains. Each unit's outcome lands in the sweep record
-the console and `/sweep-runs` read. It is *the scheduler's unit of
+`EventSink` — absent a sink, nothing drains. Three of those phases leave a durable
+per-unit record that the console and `/sweep-runs` read — each live connection swept,
+each schedule run, each freshness verdict — when a deployment configures the recorder;
+the rest report through the pass's own summary. It is *the scheduler's unit of
 work*; it holds no timer of its own. A deployment drives it — a node server calls
 `startPlatformSweeper` at boot, a Cloudflare deployment arms a singleton
 `PlatformSweeperDO` alarm (a dispatch namespace doesn't honour `wrangler` crons, so an

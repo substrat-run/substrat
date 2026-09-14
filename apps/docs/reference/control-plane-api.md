@@ -43,11 +43,17 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   read-only data window (`tables`, `tables/:table`, `query`, `export`, `health`, and the
   four event reads over it — `history`, one record's story; `facets`, the outbox narrowed,
   grouped and counted; `cause` and `effects`, one event walked backwards to what started it
-  or forwards to what it set off), and `/fleet/migrations`. Every scope-addressed read runs
-  one ladder: resolve the scope record, then ask the vertical's own `/internal/*` route when
-  one is bound and the co-located host otherwise — and on the delegated branch the transport
-  writes the K-24 access row itself, through `HostAdmin.recordDelegatedRead`, so an auditor
-  cannot tell which branch served a read from the row it left.
+  or forwards to what it set off), and `/fleet/migrations`. The table, query, health,
+  denial and event reads (`tables`, `tables/:table`, `query`, `health`, `denials`,
+  `denials/summary`, `history`, `facets`, `cause`, `effects`) run one ladder: resolve the
+  scope record, then ask the vertical's own `/internal/*` route when one is bound and the
+  co-located host otherwise — and on the delegated branch the transport writes the K-24
+  access row itself, through `HostAdmin.recordDelegatedRead`, so an auditor cannot tell
+  which branch served a read from the row it left. Two scope reads sit outside that
+  ladder on purpose: `export` always goes through `HostAdmin.exportScope` first, because
+  that is the call that writes its access-log entry (the vertical supplies only the bytes
+  when one is bound), and `migrations` is schema metadata, read from whichever side holds
+  it with no access row at all.
   Two routes are forwarded to the scope's own [vertical host](/reference/vertical-host)
   rather than answered from the directory: `GET …/owner-seat` reads whether the instance's
   owner seat has been claimed, and `POST …/owner-claim` mints the short-lived claim link

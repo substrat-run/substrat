@@ -48,11 +48,24 @@ export default app;
   `delete-scope`, `tables`, `tables/:table`, `query`, `history`, `facets`, `cause`,
   `effects`, `denials`, `denials/summary`, `platform-requests`, `platform-requests/history`,
   `platform-requests/settle` — pure delegations to your scope host, owned entirely by the
-  package. The four event reads (`history`, `facets`, `cause`, `effects`) and `migrations`
-  are how the control plane answers those questions for a *hosted* vertical, whose scope
-  it cannot open itself: the transport delegates the read here, then records the K-24
-  access row for it as if it had served the read (see
-  [`HostAdmin.recordDelegatedRead`](/reference/kernel)).
+  package. The table, query, denial and event reads (`tables`, `tables/:table`, `query`,
+  `denials`, `denials/summary`, `history`, `facets`, `cause`, `effects`) are how the
+  control plane answers those questions for a *hosted* vertical, whose scope it cannot
+  open itself: the transport delegates the read here, then records the K-24 access row
+  for it as if it had served the read (see
+  [`HostAdmin.recordDelegatedRead`](/reference/kernel)). `migrations` is delegated the
+  same way but is schema metadata, and leaves no access row.
+- **Connector write-back routes** — `connector-invoke`, `connector-attachment`,
+  `connector-attachment/:attachmentId`, `connector-grant` — the far end of the shared
+  control plane running this vertical's connectors (#574, #711): the connection directory
+  and its sealed secrets live platform-side, so what comes *back* over these verbs carries
+  no credential — an operation invoked as the connection, provider bytes in (multipart:
+  a `meta` JSON field beside the `body` file) or out (the raw bytes, with the record in
+  a header), and the `connection:<id>` grant tuple the first two are checked against.
+  Each is authorized in the scope's own DO like any other caller, and the grant has no
+  revoke mirror because every delegated call re-passes the platform's live-connection
+  gate first. Generic in the same sense as the group above: owned by the package,
+  answered by your host's `connector…Local` members.
 - **Flavored routes** — `provision`, `reconcile`, `configure`, `owner-seat`,
   `owner-claim` — the package keeps the platform-secret gate, body parse and response
   envelope; you supply only the hook. Omit `resolveOwner` / `onConfigure` / `ownerSeat` /
@@ -124,11 +137,12 @@ the list grows with the routes above: beside the lifecycle halves (`provisionSco
 `deleteScopeLocal`, `migrationBookmarksLocal`, `rewindScopeLocal`) it now needs
 `appliedMigrationsLocal` (#1320) and the four event reads — `entityHistoryLocal`,
 `facetEventsLocal`, `eventCauseLocal`, `eventEffectsLocal` — plus the introspection trio
-(`introspectScopeTables`, `introspectScopeTable`, `introspectScopeQuery`), the denial reads,
-the platform-request reads and settle, and the connector write-back's far end
-(`connectorInvokeLocal`, `connectorAttachmentUploadLocal`, `connectorAttachmentOpenLocal`,
-`connectorGrantLocal`). A host written against an older list fails to compile, which is
-the point of the interface being structural. The package therefore depends on neither
+(`introspectScopeTables`, `introspectScopeTable`, `introspectScopeQuery`), the denial reads
+(`listDenialsLocal`, `summarizeDenialsLocal`), the platform-request reads and settle
+(`listPlatformRequests`, `listPlatformRequestHistory`, `settlePlatformRequest`), and the
+connector write-back's far end (`connectorInvokeLocal`, `connectorAttachmentUploadLocal`,
+`connectorAttachmentOpenLocal`, `connectorGrantLocal`). A host written against an older
+list fails to compile, which is the point of the interface being structural. The package therefore depends on neither
 `@substrat-run/adapter-cloudflare` nor any concrete host, and a future adapter fits the
 same shape.
 
@@ -228,11 +242,15 @@ and the resulting connection is stamped `createdBy` the principal named here, so
 trail leads back to that `ctx.check` rather than to a platform actor. What the platform
 decides, not the caller: which vertical the connection lands on is re-derived from the
 directory's record for `(tenantId, scopeId)` and again at the callback, `returnUrl` must be
-an https surface bound to this scope, `ttlSeconds` is clamped to 15 minutes, and a provider
-with no platform consent round is refused, naming the paste door. A refusal — or an
-unreachable relay — throws `ConnectUrlRequestError`, carrying the status so a route can map
-it. The call goes through `POST /internal/connections/connect-url` on the control plane, under
-the platform secret injected into every dispatch script.
+an https surface bound to this scope, `ttlSeconds` may not exceed 900 (a longer value is
+refused with `400`, not clamped — 15 minutes is the ceiling, and the default when it is
+omitted), and a provider with no platform consent round is refused, naming the paste door.
+A refusal throws `ConnectUrlRequestError`, carrying the relay's status so a route can map
+it. An *unreachable* control plane is a different failure: the `fetch` itself rejects, and
+that rejection is passed through as-is — a `TypeError` with no `status` — so a handler
+that wants to answer `502` for both catches the two separately. The call goes through
+`POST /internal/connections/connect-url` on the control plane, under the platform secret
+injected into every dispatch script.
 
 ## `createModelHost(options)` — from `@substrat-run/vertical-host/model`
 
