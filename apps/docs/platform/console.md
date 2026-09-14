@@ -35,6 +35,35 @@ The views map onto the directory the control plane owns:
 - **Admin log** — the append-only audit trail, every entry named to the `PlatformActorId` that
   caused it, with a JSON diff of what changed.
 
+Those are the **documented Fleet** views — the state of the world. A second nav group, **Operations**, is
+what the platform could *not* do: durable rows the admin log deliberately does not hold, since
+it audits successful mutations and a failure changed nothing. A red day is one click there, not
+a filter recipe over Fleet.
+
+- **Failures** — every operational failure the platform recorded, read over `/ops-failures`.
+  The page narrows by tenant (a picker), by vertical and by upstream reference (both exact),
+  and a text box filters the loaded rows by operation, message or scope. The failure records
+  include the operation, and, when known, its stage, origin, taxonomy code and HTTP status. It also carries
+  the upstream
+  `reference = <id>` when one was extracted, so the handle a CI log prints
+  resolves to something on our side — and copies out for a provider support ticket, the only
+  place a redacted storage fault's reference actually resolves. A vertical's failures strip
+  jumps here pre-narrowed to that vertical.
+- **Issues** — the same failures grouped by fingerprint (operation + stage + taxonomy code) into
+  counted defects with a lifecycle, read over `/issues`: one row per fingerprint with a rising
+  count, not one row per retry. Staff give a verdict — **resolve**, **ignore** or **reopen**
+  (`PUT /issues/status`); a fresh arrival after resolve flips the row to *regressed*, and ingest
+  respects an ignore. Each row links to its exemplar failure rows. The page narrows by status
+  (a picker: all, new, regressed, resolved, ignored) and a text box filters the loaded rows by
+  operation, code, message or vertical.
+- **Sweeps** — the fleet's sweep record, read over `/sweep-runs`: every connector poll, every
+  schedule fired or skipped and every freshness verdict, newest first. The page narrows by
+  tenant, kind and outcome (pickers) and by unit (exact — `scopeId:operation` or a connection
+  id), and a text box filters the loaded rows by unit, operation, event type or error. It is the staff twin of the dashboard's per-app strips — where a
+  tenant sees their own connection, staff see the whole fleet's units on one page, so "the
+  Tuesday cron never ran anywhere" reads at a glance rather than as a per-tenant tour. Rows
+  are kept for 14 days.
+
 ## Auth
 
 Login is [AuthHero OIDC](/concepts/identity#two-real-choices-made-differently) through the shared
