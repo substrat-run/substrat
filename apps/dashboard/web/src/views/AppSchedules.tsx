@@ -60,7 +60,23 @@ function statusLine(row: AppScheduleRow): string {
   return row.nextDueAt ? `${ran} · next due ${untilTime(row.nextDueAt)}` : ran;
 }
 
-export function AppSchedules({ scopeId }: { scopeId: string }) {
+/** A cursor's endpoints, short — a reminder of where the page is looking, not a timestamp. */
+const shortTime = (iso: string) =>
+  new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+/**
+ * Schedule health for one app, optionally answering a time cursor (#1447 step 3c).
+ *
+ * `window` is the minutes a failed-run marker on the chart named. A marker click that
+ * merely opened this panel would leave the reader to find the run among twenty ticks
+ * per schedule — so the schedules with a run inside the window are hoisted, that run is
+ * named on the row's own line, and its tick is ringed. Nothing is hidden: a schedule
+ * with no run in the window is still a schedule, and dropping it would make "none of
+ * them fired then" look like "this app has fewer schedules". When no run at all falls
+ * inside, the panel says so, and says why it might — the strip keeps the last twenty
+ * runs, so an old cursor can name minutes the strip no longer reaches.
+ */
+export function AppSchedules({ scopeId, window }: { scopeId: string; window?: { from: string; to: string } }) {
   const [view, setView] = useState<AppSchedulesView | null>(null);
 
   useEffect(() => {
@@ -83,8 +99,18 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
     };
   }, [scopeId]);
 
-  const schedules = view?.schedules ?? [];
   const freshness = view?.freshness ?? [];
+  // The runs inside the window, per schedule — ISO strings compare as instants.
+  const inWindow = (at: string): boolean => !!window && at >= window.from && at <= window.to;
+  const hits = new Map<AppScheduleRow, AppScheduleRow['runs']>(
+    (view?.schedules ?? []).map((row) => [row, row.runs.filter((r) => inWindow(r.at))]),
+  );
+  const ringed = new Set([...hits.values()].flat().map((r) => r.id));
+  // Hoisted, not filtered: the rows with a run in the window come first, in their own
+  // order; every other row keeps its place after them.
+  const schedules = window
+    ? [...(view?.schedules ?? [])].sort((a, b) => Number((hits.get(b)?.length ?? 0) > 0) - Number((hits.get(a)?.length ?? 0) > 0))
+    : (view?.schedules ?? []);
   if (!view || (schedules.length === 0 && freshness.length === 0)) return null;
   const silent = [...schedules, ...freshness].every((s) => s.health === 'sweeper-silent');
 
@@ -100,6 +126,13 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
       {silent && view.lastSweepAt === null && (
         <div style={{ fontSize: 12, color: 'var(--status-warning-fg)' }}>
           No sweep has reached this app yet — schedule health appears after the first pass.
+        </div>
+      )}
+      {window && schedules.length > 0 && ringed.size === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+          No run of any schedule is recorded between {shortTime(window.from)} and {shortTime(window.to)}.
+          Each strip keeps the last {Math.max(...schedules.map((r) => r.runs.length), 0)} runs, so an
+          older window may lie past what it reaches.
         </div>
       )}
       {schedules.map((row) => (
@@ -126,7 +159,13 @@ export function AppSchedules({ scopeId }: { scopeId: string }) {
               {statusLine(row)}
             </div>
           )}
-          <SweepStrip runs={row.runs} label="Last run" skippedNote="not due yet" />
+          {(hits.get(row) ?? []).map((r) => (
+            // The run the cursor landed on, in words: what the click was for.
+            <div key={r.id} style={{ fontSize: 11.5, color: r.outcome === 'failed' ? 'var(--status-danger-fg)' : 'var(--text-secondary)' }}>
+              In this window: {r.outcome === 'failed' ? `failed ${shortTime(r.at)}: ${r.error ?? 'no error recorded'}` : `${r.outcome} ${shortTime(r.at)}`}
+            </div>
+          ))}
+          <SweepStrip runs={row.runs} label="Last run" skippedNote="not due yet" ringed={ringed} />
         </div>
       ))}
       {freshness.length > 0 && (

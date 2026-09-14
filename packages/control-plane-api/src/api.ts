@@ -4495,7 +4495,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         // a reader takes for "my app was quiet". Five minutes of slack, because the
         // instant is stamped by a browser's clock rather than by ours.
         if (to > now + 5 * 60_000) {
-          ctx.addIssue({ code: 'custom', path: ['until'], message: 'until may not be in the future' });
+          ctx.addIssue({ code: 'custom', path: ['until'], message: 'until may not be more than 5 minutes in the future' });
         }
       })
       .parse({

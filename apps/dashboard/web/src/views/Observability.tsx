@@ -216,9 +216,21 @@ export function Observability({
   );
   const thisApp = scopeId ? totals.find((t) => t.scopeId === scopeId) : undefined;
 
+  /**
+   * The event type the URL carries, for a rebuild that keeps the explorer on screen. The
+   * explorer seeds its filter from `type` and then holds it as its own state, so a URL
+   * rebuilt without it — the cursor cleared, a bar clicked — would show one thing and
+   * name another: reload or share it and the results change. Carried only where the
+   * destination is the explorer; on any other sub-view `type` would be a claim about a
+   * panel that is not showing.
+   */
+  const typeFor = (view: string): { type?: string } =>
+    view === 'events' && focusEventType ? { type: focusEventType } : {};
+
   /** Where the × on the chip, and a range change that outran the cursor, land: the page
    *  as it is, minus the window. */
-  const withoutCursor = (): void => onNav({ ...(scopeId ? { app: scopeId } : {}), view: active });
+  const withoutCursor = (): void =>
+    onNav({ ...(scopeId ? { app: scopeId } : {}), view: active, ...typeFor(active) });
 
   /**
    * A marker opens the sub-view that EXPLAINS it — the run row for a failed schedule, the
@@ -227,10 +239,11 @@ export function Observability({
    * A recorded failure inside a three-day range is one line among thousands otherwise,
    * and "here is the panel, now go find it" is not a walk from an aggregate to evidence.
    *
-   * A failed run lands on Schedules, which does not read the window yet; the chip still
-   * shows it, so the reader is told where the page is looking rather than left to assume
-   * the list was narrowed. A migration leaves for the Deployments tab, which is a
-   * different page with a different axis — no cursor travels there.
+   * A failed run lands on Schedules with the window, and the panel answers it: the
+   * schedule whose run fell inside those minutes is hoisted, the run is named on its
+   * line and ringed in its strip — the run row #1447 asks the click to reach. A migration
+   * leaves for the Deployments tab, which is a different page with a different axis — no
+   * cursor travels there.
    */
   const onMarker = (m: OverlayMarker): void => {
     if (!scopeId) return;
@@ -326,9 +339,11 @@ export function Observability({
           // window narrows it where it can.
           onBucket={(start, minutes) => {
             if (!scopeId) return;
+            const view = active === 'traffic' ? 'logs' : active;
             onNav({
               app: scopeId,
-              view: active === 'traffic' ? 'logs' : active,
+              view,
+              ...typeFor(view),
               from: start,
               to: new Date(Date.parse(start) + minutes * 60_000).toISOString(),
             });
@@ -354,7 +369,7 @@ export function Observability({
         // several panels, and dropping the window on the way from Logs to Events would
         // answer the second one about three days instead — silently, since the count
         // would simply be larger.
-        onPick={(k) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: k, ...(cursor ?? {}) })}
+        onPick={(k) => onNav({ ...(scopeId ? { app: scopeId } : {}), view: k, ...typeFor(k), ...(cursor ?? {}) })}
       />
 
       {/* Not drawn under an unavailable chart: `deriveTeamSeries` zero-fills every line
@@ -391,7 +406,9 @@ export function Observability({
           {...(cursor ? { window: cursor } : {})}
         />
       )}
-      {scopeId && active === 'schedules' && <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} />}
+      {scopeId && active === 'schedules' && (
+        <AppSchedules key={`${scopeId}:${nonce}`} scopeId={scopeId} {...(cursor ? { window: cursor } : {})} />
+      )}
       {app && active === 'flow' && <Flow key={`${app.app_scope_id}:${nonce}`} app={app} />}
     </Page>
   );
