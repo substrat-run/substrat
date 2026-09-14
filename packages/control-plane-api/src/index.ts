@@ -132,9 +132,16 @@ export {
   createR2AccessLogSink,
   createR2BackupStore,
   createR2DirectoryBackupStore,
+  // The `EventSink` seam's NDJSON shape (#1334). Written and tested since the seam
+  // landed and NOT exported until now, which is why nothing could bind it: the drain
+  // phase has been complete on both adapters and unreachable from any deployment.
+  createR2EventSink,
   pruneAccessLogBatches,
   pruneScopeBackups,
 } from './r2-backups.js';
+// The same seam's Pipelines shape — kernel-design §5.3's Cloudflare row for event
+// transport. Which one a deployment binds is its choice; the drain never learns.
+export { createPipelinesEventSink } from './pipelines-sink.js';
 // #40 — the scheduled directory copy. Exported as a function the CP worker's cron calls,
 // not as a route with a timer behind it: this package stays library-only, exactly as the
 // platform-request drain does (the recurrence has to come from a deployment, #444).
