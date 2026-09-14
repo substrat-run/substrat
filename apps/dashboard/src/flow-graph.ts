@@ -185,6 +185,21 @@ export function deriveFlowGraph(input: {
   observed: readonly ObservedType[];
   /** False when the facet was truncated, so a missing type proves nothing. */
   observedComplete: boolean;
+  /**
+   * Per provider, whether a bound connection has actually been USED (#1234 asks for
+   * "sweep state on connection edges"). Already derived by `deriveConnectionSweep`,
+   * which owns the one judgement that matters — that no retained run means "not in
+   * the window", never "never".
+   */
+  connectionUse?: readonly {
+    provider: string;
+    lastSweptAt: string | null;
+    idle: boolean;
+    /** The sweep record could not be read — neither used nor unused is known. */
+    unknown: boolean;
+  }[];
+  /** The window a missing run is bounded by, for the node's own wording. */
+  sweepWindowDays?: number;
   /** False when the manifest says its declared surface was cut at the cap (#1234). */
   declaredComplete: boolean;
   /** Now, as the caller reads it — one instant for the whole map. */
@@ -204,6 +219,8 @@ export function deriveFlowGraph(input: {
     declaredComplete,
     now,
     staleAfterDays,
+    connectionUse,
+    sweepWindowDays,
   } = input;
   if (declaredEvents === null) {
     return {
@@ -347,17 +364,37 @@ export function deriveFlowGraph(input: {
       const forProvider = connections.filter((c) => c.provider === provider);
       const live = forProvider.some((c) => c.status === 'active');
       const status: FlowNode['status'] = live ? 'ok' : forProvider.length === 0 ? 'warn' : 'danger';
+      // #1234: the USE state, not only the binding state. A connection can be perfectly
+      // connected and doing nothing, which the map could not previously say.
+      const use = connectionUse?.find((u) => u.provider === provider);
+      // Only meaningful for a LIVE connection: an unusable one's silence is explained
+      // by the lapse, and the sweep derivation already declines to call it idle.
+      const idle = live && use?.idle === true;
       return {
         id: `connection:${provider}`,
         kind: 'connection' as const,
         label: provider,
-        sublabel: live ? 'connected' : forProvider.length === 0 ? 'not connected' : 'needs reconnecting',
+        sublabel: !live
+          ? forProvider.length === 0
+            ? 'not connected'
+            : 'needs reconnecting'
+          : idle
+            ? `connected · unused ${sweepWindowDays ?? 14}d`
+            : 'connected',
         observed: null,
-        silent: false,
+        // Reuses the dashed treatment an unfired declaration gets: present, wired, and
+        // with nothing recorded through it.
+        silent: idle,
         stale: false,
         status,
         title: live
-          ? `${provider} is connected.`
+          ? idle
+            ? `${provider} is connected, and nothing has passed through it in the last ${sweepWindowDays ?? 14} days. Older runs are not kept, so this is not proof it has never been used.`
+            : use?.unknown === true
+              ? `${provider} is connected. Whether anything has passed through it could not be read, which is not the same as nothing having.`
+              : use?.lastSweptAt
+                ? `${provider} is connected; last used ${new Date(use.lastSweptAt).toLocaleDateString()}.`
+                : `${provider} is connected.`
           : forProvider.length === 0
             ? `This app is set up to use ${provider}, and nobody has connected it. Work that needs it waits rather than failing.`
             : `${provider} is connected but not usable (${[...new Set(forProvider.map((c) => c.status))].sort().join(', ')}).`,

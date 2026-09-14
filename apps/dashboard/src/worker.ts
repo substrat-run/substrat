@@ -2409,6 +2409,20 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
   // One read, two projections of it: the findings list and the graph answer the same
   // question at different resolutions, and paying for the facet twice to serve them
   // separately would also let the two disagree about what was observed.
+  // Derived ONCE and handed to both projections: the card below the map and the
+  // connection nodes on it must not be able to disagree about whether something has
+  // been used, which two calls with two clocks could manage.
+  const connectionSweep = deriveConnectionSweep({
+    connections: connectionRows.map((conn) => ({
+      connectionId: conn.id,
+      provider: conn.provider,
+      label: conn.label,
+      status: conn.status,
+    })),
+    sightings: sweeps.sightings,
+    now,
+    unread: sweeps.unread,
+  });
   return c.json({
     findings: deriveFlowFindings({
       declaredEvents: flow.declaredEvents,
@@ -2421,17 +2435,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       declaredComplete: !flow.declaredEventsTruncated,
       connections,
     }),
-    connectionSweep: deriveConnectionSweep({
-      connections: connectionRows.map((conn) => ({
-        connectionId: conn.id,
-        provider: conn.provider,
-        label: conn.label,
-        status: conn.status,
-      })),
-      sightings: sweeps.sightings,
-      now,
-      unread: sweeps.unread,
-    }),
+    connectionSweep,
     operations: deriveOperationHealth({
       // A null bucket cannot happen grouping by `type`, but it CAN here: a consumer
       // emit records no operation at all. Dropped rather than shown as an operation
@@ -2443,6 +2447,14 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       denials,
     }),
     graph: deriveFlowGraph({
+      // #1234 asks for sweep state ON the connection edges, not only beside them.
+      connectionUse: connectionSweep.rows.map((r) => ({
+        provider: r.provider,
+        lastSweptAt: r.lastSweptAt,
+        idle: r.idle,
+        unknown: r.unknown,
+      })),
+      sweepWindowDays: connectionSweep.windowDays,
       declaredEvents: flow.declaredEvents,
       schedules: flow.schedules,
       requires: flow.requires,

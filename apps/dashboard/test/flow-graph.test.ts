@@ -307,4 +307,84 @@ describe('deriveFlowGraph (#1234)', () => {
       expect(absenceFindings).toEqual(observedComplete ? ['unseen.type'] : []);
     }
   });
+  it('says on the MAP when a connected provider has not been used (#1234)', () => {
+    // The issue asks for sweep state on the connection edges, not only in a panel
+    // beside them: the point of the map is that one look answers "is this wired and
+    // is it doing anything".
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [{ provider: 'scrive', status: 'active' }],
+      connectionUse: [{ provider: 'scrive', lastSweptAt: null, idle: true, unknown: false }],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.sublabel).toBe('connected · unused 14d');
+    // Dashed, like a declared event nothing has recorded — present, wired, nothing
+    // through it.
+    expect(node.silent).toBe(true);
+    // …and the tooltip carries the bound, so it never reads as "never used".
+    expect(node.title).toMatch(/last 14 days/);
+    expect(node.title).toMatch(/not proof it has never been used/);
+  });
+
+  it('shows a live connection as plain connected, with its last use in the tooltip', () => {
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [{ provider: 'scrive', status: 'active' }],
+      connectionUse: [
+        { provider: 'scrive', lastSweptAt: '2026-09-10T00:00:00Z', idle: false, unknown: false },
+      ],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.sublabel).toBe('connected');
+    expect(node.silent).toBe(false);
+    expect(node.title).toMatch(/last used/);
+  });
+
+  it('makes NO claim when the sweep record could not be read', () => {
+    // "Could not be read" and "nothing went through" are different answers, and only
+    // one of them is about the connection.
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [{ provider: 'scrive', status: 'active' }],
+      connectionUse: [{ provider: 'scrive', lastSweptAt: null, idle: false, unknown: true }],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.silent).toBe(false);
+    expect(node.sublabel).toBe('connected');
+    expect(node.title).toMatch(/could not be read/);
+  });
+
+  it('does not call a LAPSED connection unused as well', () => {
+    // Its story is the lapse. The sweep derivation already declines to call it idle;
+    // the map must not reintroduce the second finding.
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [{ provider: 'scrive', status: 'expired' }],
+      connectionUse: [{ provider: 'scrive', lastSweptAt: null, idle: false, unknown: false }],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.sublabel).toBe('needs reconnecting');
+    expect(node.silent).toBe(false);
+  });
+
+  it('renders a connection unchanged when no sweep data was passed at all', () => {
+    // The map predates this input and must keep working without it — absence of the
+    // optional field is not evidence of idleness.
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [{ provider: 'scrive', status: 'active' }],
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.sublabel).toBe('connected');
+    expect(node.silent).toBe(false);
+  });
 });
