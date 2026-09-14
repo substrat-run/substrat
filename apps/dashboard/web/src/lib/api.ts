@@ -525,11 +525,35 @@ export interface OperationHealthView {
   refusals: RefusalWindow | null;
 }
 
+/** One bound connection and whether it has actually been used (#1234). */
+export interface ConnectionSweepRow {
+  connectionId: string;
+  provider: string;
+  /** The human label — a tenant can hold several connections to one provider. */
+  label: string;
+  status: string;
+  /** Null = no run through it inside `windowDays`. Bounded by the window, NEVER "never". */
+  lastSweptAt: string | null;
+  lastOutcomeFailed: boolean | null;
+  /** The record could not be read: absence proves nothing, and the copy says so. */
+  unknown: boolean;
+  /** Usable, read, and with no run in the window. A lapsed connection is not called idle too. */
+  idle: boolean;
+}
+
+export interface ConnectionSweepView {
+  rows: ConnectionSweepRow[];
+  /** What "no runs" is bounded by — the sweep log's retention, not a promise. */
+  windowDays: number;
+  idleCount: number;
+}
+
 /** The flow read: the same declarations projected as a list and as a map. */
 export interface FlowView {
   findings: FlowFindingsView;
   graph: FlowGraph;
   operations: OperationHealthView;
+  connectionSweep: ConnectionSweepView;
 }
 
 /** One declared-vs-observed finding (#1234). */

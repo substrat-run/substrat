@@ -38,11 +38,12 @@ import { deriveFieldCoverage } from './field-coverage.js';
 import { deriveFlowFindings } from './flow-findings.js';
 import { deriveFlowGraph } from './flow-graph.js';
 import { deriveOperationHealth } from './operation-health.js';
+import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
 import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair, type Deployment } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
-import { ControlPlaneError, TenantNarrowedControlPlane, type PreviewRecord } from './authority.js';
+import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
@@ -2256,6 +2257,44 @@ const FLOW_TYPE_LIMIT = 200;
 const FLOW_STALE_DAYS = 30;
 
 /**
+ * The newest run through each connection inside the window (#1234), read one
+ * connection at a time so the answer is per connection rather than a window over the
+ * tenant's whole connector record.
+ *
+ * Two `limit: 1` reads per connection, its newest `ok` and its newest `failed`, and the
+ * derivation keeps the newer. Not one unfiltered read: the newest row can be `skipped`
+ * (no sweeper registered), which went through nothing, and the `outcome` filter is a
+ * single value. A read that fails — a plane predating the route, a transport error —
+ * puts the connection in `unread`, where the derivation refuses to call it idle: a
+ * missing row is only a fact when the read that would have found it succeeded.
+ */
+async function readConnectionSightings(
+  cp: { readSweepRuns: (filter: SweepRunRead) => Promise<ListRead<SweepRunEntry>> },
+  connectionIds: readonly string[],
+  since: string,
+): Promise<{ sightings: SweepSighting[]; unread: Set<string> }> {
+  const sightings: SweepSighting[] = [];
+  const unread = new Set<string>();
+  await Promise.all(
+    connectionIds.map(async (connectionId) => {
+      const reads = await Promise.all(
+        (['ok', 'failed'] as const).map((outcome) =>
+          cp.readSweepRuns({ kind: 'connector', connectionId, outcome, since, limit: 1 }),
+        ),
+      );
+      if (reads.some((r) => r.failed)) {
+        unread.add(connectionId);
+        return;
+      }
+      for (const r of reads) {
+        for (const e of r.entries) sightings.push({ connectionId, at: e.at, outcome: e.outcome });
+      }
+    }),
+  );
+  return { sightings, unread };
+}
+
+/**
  * Declared-vs-observed findings (#1234): what this app says it emits, consumes and
  * requires, joined against what its scope has actually carried.
  *
@@ -2294,6 +2333,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
         declaredComplete: true,
         connections: [],
       }),
+      connectionSweep: deriveConnectionSweep({ connections: [], sightings: [], now: new Date().toISOString() }),
       operations: deriveOperationHealth({
         observed: [],
         observedComplete: true,
@@ -2314,7 +2354,15 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       }),
     });
   }
-  const [flow, facets, byOperation, denials, connectionRows] = await Promise.all([
+  // Revoked ones included deliberately: a revoked connection is a DIFFERENT finding
+  // from none at all, and the default filter would hide it behind the wrong one. Read
+  // first, because the sweep reads below are one per connection.
+  const connectionRows = await cp.listConnections({ vertical: slug, includeRevoked: true });
+  // ONE instant for every projection. Reading the clock twice would let the map and
+  // the list land on opposite sides of the staleness cutoff for the same event, and
+  // the connection window on the wrong side of a run.
+  const now = new Date().toISOString();
+  const [flow, facets, byOperation, denials, sweeps] = await Promise.all([
     cp.versionFlow(slug, runningId),
     cp.facetEvents(scope, { groupBy: 'type', limit: FLOW_TYPE_LIMIT }),
     // #1234's overlay: the same outbox, grouped by the operation that emitted each
@@ -2342,10 +2390,14 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
           : null,
       )
       .catch(() => null),
-    // Revoked ones included deliberately: a revoked connection is a DIFFERENT
-    // finding from none at all, and the default filter would hide it behind the
-    // wrong one.
-    cp.listConnections({ vertical: slug, includeRevoked: true }),
+    // #1234's last finding: has a bound connection actually been USED? Two `limit: 1`
+    // reads per connection — its newest `ok` and its newest `failed` run inside the
+    // window — rather than one tenant-wide read: that read is capped, fills with other
+    // verticals' rows and a busy connection's own, and answers "nothing" for whatever
+    // fell past the cap, which the derivation would then call idle. A `skipped` run is
+    // not asked for: it went through nothing. A read that fails leaves its connection
+    // `unknown` — absence is only evidence when the record was actually read.
+    readConnectionSightings(cp, connectionRows.map((conn) => conn.id), sweepWindowCutoff(now)),
   ]);
   // A null bucket cannot happen grouping by `type` (the envelope always has one), and
   // is dropped rather than joined against a declared type named "null".
@@ -2354,9 +2406,6 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
     .map((b) => ({ type: b.value, count: b.count, lastSeen: b.lastSeen }));
   const connections = connectionRows.map((conn) => ({ provider: conn.provider, status: conn.status }));
   const observedComplete = !facets.truncated;
-  // ONE instant for both projections. Reading the clock twice would let the map and
-  // the list land on opposite sides of the staleness cutoff for the same event.
-  const now = new Date().toISOString();
   // One read, two projections of it: the findings list and the graph answer the same
   // question at different resolutions, and paying for the facet twice to serve them
   // separately would also let the two disagree about what was observed.
@@ -2371,6 +2420,17 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       observedComplete,
       declaredComplete: !flow.declaredEventsTruncated,
       connections,
+    }),
+    connectionSweep: deriveConnectionSweep({
+      connections: connectionRows.map((conn) => ({
+        connectionId: conn.id,
+        provider: conn.provider,
+        label: conn.label,
+        status: conn.status,
+      })),
+      sightings: sweeps.sightings,
+      now,
+      unread: sweeps.unread,
     }),
     operations: deriveOperationHealth({
       // A null bucket cannot happen grouping by `type`, but it CAN here: a consumer
