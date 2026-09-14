@@ -24,8 +24,18 @@ version to the registry. A promotion changes what a live tenant sees.
 Before a version can be promoted it must be **admitted** — the answer to *"may this code run on
 our infrastructure at all?"* Admission is answered **mechanically**, by the sandbox contract: the
 bundle may declare only its own durable stores (a positive binding allowlist — no
-`CONTROL_PLANE`, no platform secret), it runs inside a Workers-for-Platforms isolate, and it is
-held to quotas. If the bundle satisfies the contract, nothing else is in question.
+`CONTROL_PLANE`, no platform secret, and no binding whose name starts with `SUBSTRAT_`), it
+runs inside a Workers-for-Platforms isolate, and it is held to quotas. If the bundle satisfies
+the contract, nothing else is in question.
+
+The `SUBSTRAT_` refusal is by **name prefix**, whatever type the binding claims, and the reason
+admission gives is the whole rule: *"the `SUBSTRAT_` binding namespace is the platform's — these
+names are injected at deploy, never declared"*. A vertical that could declare
+`SUBSTRAT_VERSION_ID` itself would collide with the injected one — a duplicate name on the upload
+at best, a forged version stamp at worst — so the namespace is reserved as a whole, and a push
+whose declared bindings carry any `SUBSTRAT_*` name (a Durable Object namespace or a D1 store
+bound under it, or anything a future client declares) is refused with that message rather than
+admitted. Name your own bindings and config outside the prefix.
 
 **Reaching the outside world is not a binding — it is a granted capability.** The allowlist
 deliberately excludes egress-shaped bindings (`send_email`, `ai`, `browser`, …): a hosted vertical
@@ -58,6 +68,14 @@ What the platform hands back differs by capability, and the difference is worth 
   carries. The credential stays the platform's — the binding runs on the platform's own AI
   account, and nothing about it is in the bundle — but the honest bound is that a vertical
   holding it can call `env.AI.run()` outside the metered path.
+- **A version identity, on every deploy.** The uploader also appends a `plain_text` binding
+  named `SUBSTRAT_VERSION_ID`, carrying the id of the version being served. Nothing has to be
+  declared for it: it is the platform's stamp, not a requested capability, and it is what lets
+  the scope host record which push wrote an event — the `version` that
+  [`readHistory`](/concepts/events#reading-one-entitys-history) surfaces and the dimension the
+  observability views group by. An in-place promote refreshes it to the version now being served
+  rather than inheriting the outgoing one. Read it from `env.SUBSTRAT_VERSION_ID` if you need it;
+  never declare it, or anything else under that prefix — admission refuses the namespace, as above.
 
 Either way, "how a vertical gets a dependency" is: declare the request, get it granted, call what
 the platform hands over — never bind the raw resource yourself.

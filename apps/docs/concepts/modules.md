@@ -1,5 +1,5 @@
 ---
-description: "Engines and verticals join a scope host the same way — as modules bundling a manifest, migrations, operations and consumers. Covers envSpec, schedules, and attachment contracts."
+description: "Engines and verticals join a scope host the same way — as modules bundling a manifest, migrations, operations and consumers. Covers envSpec, schedules, freshness, and attachment contracts."
 ---
 
 # Modules & the manifest
@@ -75,6 +75,7 @@ Field by field:
 | `envSpec` | declared environment variables (label, description, placeholder, `required`, `secret`) a deployment must provide | host/console config forms — carried on the registry (see below) |
 | `guards` | manifest-declared operation pre-conditions: a named predicate the kernel runs inside the operation's transaction, before the handler (a throw blocks it) | kernel |
 | `schedules` | recurring work — operations the platform invokes on every live scope of this vertical, on a cadence, under a system actor (a date-triggered business rule) | the platform sweep ([recurring work](#recurring-work-schedules)) |
+| `freshness` | freshness expectations — event types this module expects to keep arriving, and how many hours of silence is too many (the alert no error can raise) | the platform sweep ([freshness expectations](#freshness-expectations-freshness)), the dashboard's app page |
 | `withdraws` | operation names whose default binding this module suppresses — the name stops resolving, so a vertical can re-offer the transition behind its own guarded operation | kernel operation resolver |
 | `searchables` | entity types and fields to index for search — the kernel derives a per-scope FTS5 index and the triggers that maintain it | kernel ([Reads & scaling](/concepts/reads#finding-a-row-by-what-someone-typed)) |
 | `api` | path to the emitted OpenAPI for the module's HTTP surface, if any | tooling / SDK generation |
@@ -199,6 +200,47 @@ The sweep must run in the vertical's **own** runtime, where its modules and scop
 live — a node server calls `startPlatformSweeper` at boot, a Cloudflare deployment arms
 a `PlatformSweeperDO` alarm. See [the platform sweep](/concepts/platform#scheduled-work).
 :::
+
+## Freshness expectations (`freshness`)
+
+A schedule is work that should *happen*; a freshness expectation is an event that should
+*keep arriving*. Some failures raise no error at all — a connector poll that quietly stops
+finding anything, an upstream that went silent, a webhook nobody re-registered — and the
+only symptom is that a scope which used to see a `receipt.landed` every day has not seen
+one for a while. A vertical declares what "a while" is in `freshness`:
+
+```ts
+freshness: [
+  { eventType: 'receipt.landed', within: { hours: 24 } },
+],
+```
+
+Each entry names an event type and a window. The [platform sweep](/concepts/platform#scheduled-work)
+judges every expectation against the scope's **own outbox** on each pass: the newest
+matching event is inside the window (`ok`), outside it (`failed`), or has never been
+observed (`skipped`). Verdicts are recorded as `freshness` sweep-run rows, rendered beside
+schedule health on the [dashboard](/platform/dashboard)'s app page, and visible to staff
+on the [console](/platform/console)'s Sweeps page. A row is written when the verdict
+*changes* and on an hourly heartbeat, not on every pass, so a long green run does not
+drown the one red row.
+
+Two rules are held at parse time rather than left to the reader:
+
+- **The window is in hours, deliberately.** `within.hours` is a positive integer, and
+  there is no minutes form: a freshness window under an hour is a schedule wearing a
+  disguise, and the declaration should read the way the alert will ("no `receipt.landed`
+  in 26h").
+- **The event type must be one this module emits or consumes.** `moduleManifest.parse`
+  refuses an `eventType` that is in neither `events.emits` nor `events.consumes`: an
+  expectation on a type that can never arrive would read as permanently stale forever, a
+  typo becoming a permanent red pill. A vertical watching an engine's events lists the
+  type in `consumes`, which star topology already requires of it. The refusal lands at
+  push and at registration, where the message is readable.
+
+Unlike a schedule, a freshness expectation needs **no permission**: it invokes nothing,
+and reading the scope's own outbox is not a grant. It is optional and additive like every
+field past `entitlementKey` — a vertical that declares none has no freshness verdicts, and
+every earlier manifest still parses.
 
 ## Migrations
 

@@ -218,9 +218,13 @@ entity relations, entitlement key, searchables (`{ entityType, fields, tokenizer
 table and id column are filled in by `manifestEntities` from the entity registry, and the
 kernel derives a per-scope FTS5 index from the result), UI contributions, `envSpec`
 (`envVarSpec[]` — the declared environment that the Dashboard's Env form renders from),
-and `schedules` (`scheduleSpec[]` — recurring work: `{ operation, cadence: { everyMinutes },
-input?, permissions }` the platform sweep runs on every live scope under a system actor).
-Field-by-field walkthrough in [Modules & the manifest](/concepts/modules).
+`schedules` (`scheduleSpec[]` — recurring work: `{ operation, cadence: { everyMinutes },
+input?, permissions }` the platform sweep runs on every live scope under a system actor),
+and `freshness` (`freshnessSpec[]` — freshness expectations: `{ eventType, within: { hours } }`,
+hours by design; the `eventType` must be in the module's own `events.emits ∪ consumes`, or
+`moduleManifest.parse` refuses it, since an expectation on a type that can never arrive would
+read as permanently stale). Field-by-field walkthrough in
+[Modules & the manifest](/concepts/modules).
 
 `checkSubject` — who a permission check is *about*: `{ kind: 'principal' | 'connection'
 | 'system', id }`. `systemGrant` grants a permission to a module's system principal
