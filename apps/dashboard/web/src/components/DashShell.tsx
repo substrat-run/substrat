@@ -22,25 +22,49 @@ interface NavItem {
   label: string;
   icon: IconName;
 }
-const MAIN: NavItem[] = [
-  { key: 'overview', label: 'Overview', icon: 'grid' },
-  { key: 'apps', label: 'Apps', icon: 'box' },
-  { key: 'verticals', label: 'Verticals', icon: 'layers' },
-  // Observability replaces the demo Analytics page (#1447): every app on the team on one
-  // chart with one time range, and an app filter that narrows the page to one of them.
-  // It sits here rather than beside Billing because it is about the team's apps, not the
-  // account — grouping the menu into Build / Operate / Configure is a later step.
-  { key: 'observability', label: 'Observability', icon: 'chart' },
-  // The audit log is the TEAM's, not one app's — role changes and entitlements name no
-  // scope at all — so it is a page here with an app filter rather than a tab on each app (#1447).
-  { key: 'audit', label: 'Audit', icon: 'list' },
-  { key: 'domains', label: 'Domains', icon: 'globe' },
-  { key: 'team', label: 'Team', icon: 'users' },
-  { key: 'integrations', label: 'Integrations', icon: 'plug' },
-];
-const ACCOUNT: NavItem[] = [
-  { key: 'billing', label: 'Billing', icon: 'card' },
-  { key: 'settings', label: 'Settings', icon: 'settings' },
+/**
+ * The left menu, grouped by what a person is doing (#1447): what you build, what you
+ * run, what you configure — the three audiences observability.md names, and the split
+ * the app page's tab bar could not carry once Observability and Audit moved up here. A
+ * left menu scales where a tab bar does not, which is the whole reason those two moved;
+ * ten items under three headings is what that scaling looks like. Overview stands alone
+ * above the groups because it is the one page that is about none of them in particular.
+ */
+interface NavGroup {
+  /** Absent for the ungrouped items at the top. */
+  title?: string;
+  items: NavItem[];
+}
+const GROUPS: NavGroup[] = [
+  { items: [{ key: 'overview', label: 'Overview', icon: 'grid' }] },
+  {
+    title: 'Build',
+    items: [
+      { key: 'apps', label: 'Apps', icon: 'box' },
+      { key: 'verticals', label: 'Verticals', icon: 'layers' },
+    ],
+  },
+  {
+    title: 'Operate',
+    items: [
+      // Every app on the team on one chart with one time range, and an app filter that
+      // narrows the page to one of them — the page that replaced the demo Analytics screen.
+      { key: 'observability', label: 'Observability', icon: 'chart' },
+      // The audit log is the TEAM's, not one app's — role changes and entitlements name no
+      // scope at all — so it is a page here with an app filter rather than a tab on each app.
+      { key: 'audit', label: 'Audit', icon: 'list' },
+    ],
+  },
+  {
+    title: 'Configure',
+    items: [
+      { key: 'domains', label: 'Domains', icon: 'globe' },
+      { key: 'integrations', label: 'Integrations', icon: 'plug' },
+      { key: 'team', label: 'Team', icon: 'users' },
+      { key: 'billing', label: 'Billing', icon: 'card' },
+      { key: 'settings', label: 'Settings', icon: 'settings' },
+    ],
+  },
 ];
 
 function NavRow({ item, active, onNav }: { item: NavItem; active: boolean; onNav: (k: NavKey) => void }) {
@@ -125,19 +149,33 @@ export function DashShell(props: DashShellProps) {
           </div>
           <TeamSwitcher org={props.org} teams={props.teams} currentTeamId={props.currentTeamId} onSwitch={props.onSwitchTeam} onNewTeam={props.onNewTeam} />
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {MAIN.map((it) => (
-            <NavRow key={it.key} item={it} active={props.active === it.key} onNav={props.onNav} />
-          ))}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <div style={{ fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', padding: '0 10px 6px' }}>
-            Account
-          </div>
-          {ACCOUNT.map((it) => (
-            <NavRow key={it.key} item={it} active={props.active === it.key} onNav={props.onNav} />
-          ))}
-        </div>
+        {GROUPS.map((group, i) => {
+          // A titled group is a labelled group, not a run of links under a caption: the
+          // title is a heading and the group points at it, so assistive technology reads
+          // "Operate, group" and lets a reader jump by heading — the structure sighted
+          // readers get from the uppercase label. The untitled first group (Overview)
+          // stays a plain container; a group with no name is no group to announce.
+          const labelId = group.title ? `nav-group-${group.title.toLowerCase()}` : undefined;
+          return (
+            <div
+              key={group.title ?? i}
+              style={{ display: 'flex', flexDirection: 'column', gap: 1 }}
+              {...(labelId ? { role: 'group', 'aria-labelledby': labelId } : {})}
+            >
+              {group.title && (
+                <h2
+                  id={labelId}
+                  style={{ margin: 0, fontSize: 11, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--text-tertiary)', padding: '0 10px 6px' }}
+                >
+                  {group.title}
+                </h2>
+              )}
+              {group.items.map((it) => (
+                <NavRow key={it.key} item={it} active={props.active === it.key} onNav={props.onNav} />
+              ))}
+            </div>
+          );
+        })}
         <div style={{ flex: 1 }} />
         <SidebarAccount
           userName={props.userName}
