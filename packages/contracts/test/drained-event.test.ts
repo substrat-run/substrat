@@ -27,15 +27,22 @@ describe('drainedEvent', () => {
     // Two facts the spine cannot separate afterwards: a CONSUMER emitted this (no
     // operation ran), or the row predates the column. Both adapters return null for
     // them, so a schema that rejects it rejects real rows.
-    const parsed = drainedEvent.parse({ ...base, operation: null, version: null });
+    const parsed = drainedEvent.parse({ ...base, operation: null, version: null, causedBy: null });
     expect(parsed.operation).toBeNull();
     expect(parsed.version).toBeNull();
+    expect(parsed.causedBy).toBeNull();
   });
 
   it('parses a stamped operation and version too', () => {
-    const parsed = drainedEvent.parse({ ...base, operation: 'test/emit-event', version: 'v-7' });
+    const parsed = drainedEvent.parse({
+      ...base,
+      operation: 'test/emit-event',
+      version: 'v-7',
+      causedBy: '01J0000000000000000000000F',
+    });
     expect(parsed.operation).toBe('test/emit-event');
     expect(parsed.version).toBe('v-7');
+    expect(parsed.causedBy).toBe('01J0000000000000000000000F');
   });
 
   it('keeps the envelope’s PII rule — a classified event must name its subject', () => {
@@ -43,7 +50,7 @@ describe('drainedEvent', () => {
     // carries a refinement, and rebuilding the shape must not drop it. Losing it
     // would let personal data into the lake with no key an erasure could follow.
     expect(() =>
-      drainedEvent.parse({ ...base, piiClass: 'direct', operation: null, version: null }),
+      drainedEvent.parse({ ...base, piiClass: 'direct', operation: null, version: null, causedBy: null }),
     ).toThrow(/subjectId is required/);
     expect(
       drainedEvent.parse({
@@ -52,6 +59,7 @@ describe('drainedEvent', () => {
         subjectId: '01J0000000000000000000000E',
         operation: null,
         version: null,
+        causedBy: null,
       }).subjectId,
     ).toBe('01J0000000000000000000000E');
   });
@@ -60,8 +68,21 @@ describe('drainedEvent', () => {
     // The drain WIDENS `operation` from absent to null; widening past that would
     // admit `''`, which is neither a fact about the event nor a value anything can
     // group by, and which `domainEvent` has always rejected.
-    expect(() => drainedEvent.parse({ ...base, operation: '', version: null })).toThrow();
-    expect(() => drainedEvent.parse({ ...base, operation: null, version: '' })).toThrow();
+    expect(() => drainedEvent.parse({ ...base, operation: '', version: null, causedBy: null })).toThrow();
+    expect(() => drainedEvent.parse({ ...base, operation: null, version: '', causedBy: null })).toThrow();
+  });
+
+  it('requires causedBy, and keeps it off the envelope (#1237)', () => {
+    // REQUIRED-and-nullable, like `operation` and `version` beside it: the drain always
+    // has an answer, and "nothing was being delivered" is spelled null rather than by
+    // omitting the key. Optional would let a sink ship rows where the field's absence
+    // and a genuine lack of cause are the same bytes — and the generated stream schema
+    // declares the column, so a row that omits it is one the stream would reject.
+    expect(() => drainedEvent.parse({ ...base, operation: null, version: null })).toThrow();
+    // Not on the envelope: the host stamps it during a delivery, so module code neither
+    // supplies nor suppresses it — `version`'s precedent, not `operation`'s.
+    expect(() => domainEvent.parse({ ...base, causedBy: null })).not.toThrow();
+    expect((domainEvent.parse({ ...base, causedBy: '01J0000000000000000000000F' }) as Record<string, unknown>).causedBy).toBeUndefined();
   });
 
   it('leaves the envelope itself unchanged — operation stays optional there', () => {

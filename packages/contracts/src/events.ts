@@ -385,6 +385,14 @@ export interface EffectsTree {
  * - **`authorization`, `impersonation`, `operation`, `version`** — the K-34 chain,
  *   the K-42 stamp and the signals dimensions, whose nulls stay facts on the way
  *   out exactly as `historyEntry` documents them.
+ * - **`causedBy`** (#1237) — the event this one was emitted in reaction to. Tier 2
+ *   is where a causal walk over MANY scopes or a long history is answerable at
+ *   all, so the one column that makes the walk possible cannot be the one the
+ *   drain drops. It was: the outbox has carried `caused_by` since #1237 and the
+ *   generated stream schema declares it, while this shape did not — so the lake's
+ *   column would have been null on every row, reading as "nothing ever had a
+ *   cause" rather than "we never shipped it". The schema gate pins the declared
+ *   columns to the adapters' DDL; nothing pins them to what this type can supply.
  */
 // Built from the SHAPE, not from `domainEvent` — and deliberately not as an
 // intersection of the two. `operation` is `.optional()` on the envelope and
@@ -414,6 +422,19 @@ export const drainedEvent = domainEventShape
      * handle.
      */
     version: z.string().min(1).nullable(),
+    /**
+     * The event this one was emitted in REACTION to (#1237), or null. Read from
+     * the outbox COLUMN, on `version`'s precedent rather than `operation`'s: the
+     * host stamps it during a delivery, so it is no more part of the envelope
+     * module code hands in than the script a push deployed.
+     *
+     * Null carries the three meanings `historyEntry` sets out and a reader must
+     * not collapse — nothing was being delivered (an operation emitted this
+     * directly, the ordinary case), or the row predates the column. Where
+     * `operation` is null and this is set, the pair is decisive: the event came
+     * from a consumer, which neither field establishes alone.
+     */
+    causedBy: eventId.nullable(),
   })
   .superRefine(piiInvariant);
 export type DrainedEvent = z.infer<typeof drainedEvent>;

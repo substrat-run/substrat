@@ -5689,6 +5689,10 @@ export class SqliteScopeHost implements ScopeHost {
           ...this.parseOutboxRow(r as never),
           operation: (r.operation as string | null) ?? null,
           version: (r.version as string | null) ?? null,
+          // #1237 — lifted like the two above, and for the same reason: the column
+          // exists on the outbox but not on the envelope `parseOutboxRow` returns,
+          // whose `domainEvent.parse` strips anything it does not declare.
+          causedBy: (r.caused_by as string | null) ?? null,
         })) as never;
       },
       markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {

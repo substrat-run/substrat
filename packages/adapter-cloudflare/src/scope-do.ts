@@ -1026,6 +1026,10 @@ export function defineScopeDO(
         ...this.parseOutboxRow(r),
         operation: r.operation ?? null,
         version: r.version ?? null,
+        // #1237 — lifted like the two above, and for the same reason: the column
+        // exists on the outbox but not on the envelope `parseOutboxRow` returns,
+        // whose `domainEvent.parse` strips anything it does not declare.
+        causedBy: r.caused_by ?? null,
       })) as DrainedEvent[];
     }
 
