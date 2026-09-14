@@ -16,7 +16,7 @@
  * reachable from a ModuleRegistration.
  */
 import { spawn } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ExecOptions, ExecResult, ExposedPort, Workspace } from './workspace.js';
@@ -24,26 +24,61 @@ import { WorkspacePathError } from './workspace.js';
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 
+/** How many links a path may pass through before it is a loop rather than a path. */
+const MAX_LINK_HOPS = 32;
+
 /**
  * Where a path really points, resolving as much of it as exists.
  *
  * `realpathSync` throws on a path that is not there yet, which every write to a new
  * file is. So it walks up to the nearest existing ancestor and resolves that: the
  * segments below cannot be symlinks, because they do not exist.
+ *
+ * Except when one of them is a link to NOWHERE. `realpath` reports a dangling symlink
+ * as `ENOENT` too, and a walk that read every failure as "not there" then treated the
+ * link as an absent segment and returned its lexical, in-root path — while `writeFile`
+ * followed the link and created its target outside the root. So a failed segment is
+ * asked, with `lstat`, whether it is there after all: a link is followed by hand,
+ * relative to its own directory, and the walk continues from where it points. A
+ * segment that exists, is not a link, and still will not resolve is not ours to
+ * guess at — that error propagates, because a jail that guesses is not one.
  */
-function realpathOfNearest(full: string): string {
+function realpathOfNearest(full: string, hops = 0): string {
 	let cur = full;
 	for (;;) {
 		try {
 			const real = realpathSync(cur);
 			return cur === full ? real : join(real, relative(cur, full));
-		} catch {
+		} catch (err) {
+			const link = danglingLinkTarget(cur, err);
+			if (link !== null) {
+				if (hops >= MAX_LINK_HOPS) throw new Error(`too many levels of symbolic links: ${full}`);
+				const rest = relative(cur, full);
+				return realpathOfNearest(rest ? join(link, rest) : link, hops + 1);
+			}
 			const parent = dirname(cur);
 			// The filesystem root has no parent; nothing above it to ask about.
 			if (parent === cur) return full;
 			cur = parent;
 		}
 	}
+}
+
+/**
+ * Where a symlink that `realpath` could not resolve points — an absolute path, or
+ * `null` when the segment genuinely does not exist. Any other state rethrows the
+ * original `realpath` error.
+ */
+function danglingLinkTarget(path: string, realpathError: unknown): string | null {
+	let isLink: boolean;
+	try {
+		isLink = lstatSync(path).isSymbolicLink();
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+		throw err;
+	}
+	if (!isLink) throw realpathError;
+	return resolve(dirname(path), readlinkSync(path));
 }
 
 export interface LocalWorkspaceOptions {

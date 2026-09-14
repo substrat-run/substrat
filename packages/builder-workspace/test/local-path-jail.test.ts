@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -70,6 +70,36 @@ describe('LocalWorkspace path jail (#1225)', () => {
     // workspace rather than merely reading one.
     symlinkSync(join(dir, 'outside.txt'), join(dir, 'root', 'escape.txt'));
     await expect(ws.writeFile('escape.txt', 'clobbered')).rejects.toThrow(/escapes the workspace root/);
+  });
+
+  it('refuses a WRITE through a DANGLING symlink that leaves the root', async () => {
+    // The bypass a "nearest existing ancestor" walk hands over on its own: the link
+    // exists but its target does not, so `realpath` reports ENOENT exactly as it does
+    // for a missing segment, the walk resolves the parent instead, and the link's
+    // lexical in-root path passes. `writeFile` then follows the link and CREATES the
+    // target outside the root — a write to a file that did not exist, outside the
+    // jail, from a path the jail approved.
+    symlinkSync(join(dir, 'outside-new.txt'), join(dir, 'root', 'escape.txt'));
+    await expect(ws.writeFile('escape.txt', 'planted')).rejects.toThrow(/escapes the workspace root/);
+    expect(existsSync(join(dir, 'outside-new.txt'))).toBe(false);
+  });
+
+  it('refuses a write under a DANGLING symlinked directory', async () => {
+    // Same bypass one level up: the link's target directory does not exist, so nothing
+    // under it has a realpath, and only following the link by hand shows where the
+    // write would have landed.
+    symlinkSync(join(dir, 'elsewhere-new'), join(dir, 'root', 'link'));
+    await expect(ws.writeFile('link/planted.txt', 'planted')).rejects.toThrow(/escapes the workspace root/);
+    expect(existsSync(join(dir, 'elsewhere-new'))).toBe(false);
+  });
+
+  it('allows a dangling symlink that stays INSIDE the root', async () => {
+    // The dangling half of containment-not-a-ban: a link to a not-yet-written file in
+    // the root is a legitimate first write, and refusing every dangling link would be
+    // a different bug with the same test count.
+    symlinkSync(join(dir, 'root', 'target-new.txt'), join(dir, 'root', 'alias.txt'));
+    await ws.writeFile('alias.txt', 'through the link');
+    await expect(ws.readFile('target-new.txt')).resolves.toBe('through the link');
   });
 
   it('still writes a file that does not exist yet', async () => {
