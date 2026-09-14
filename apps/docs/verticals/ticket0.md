@@ -10,8 +10,10 @@ documentation and is honest about what it cost. Tenant one is Substrat itself �
 ticket0 is the demo with a **public surface**. Every other vertical begins at a login; this one
 begins with a stranger in a chat bubble on somebody else's page. It proves:
 
-- **An unauthenticated surface on a vertical, without a hole in it.** Three widget routes —
-  open a session, post a message, read the thread — run with no principal. A visitor is confined
+- **An unauthenticated surface on a vertical, without a hole in it.** Four widget routes —
+  open a session, post a message, read the thread, and *Talk to a human*
+  (`POST /sessions/:sessionId/handoff`, which records the request and tells the desk in one
+  transaction) — run with no principal. A visitor is confined
   by a **session token** rather than a login, the request's `Origin` header is checked against
   the desk's allowlist *in middleware, before the handler*, and the one permission the surface
   needs (`conversation:widget`) is held by the widget's service principal alone. An embedding
@@ -43,9 +45,9 @@ begins with a stranger in a chat bubble on somebody else's page. It proves:
 |---|---|
 | **Package** | `@substrat-run/demo-ticket0` |
 | **Engines composed** | [`metering`](/engines/metering/) — the concept also names `invites`, but staff join through the platform's own identity invites, so no invites engine is composed |
-| **Own tables** | `ticket0_conversations` · `ticket0_messages` · `ticket0_contacts` · `ticket0_conversation_tags` · `ticket0_csat` · `ticket0_ai_turns` · `ticket0_usage_rates` · `ticket0_kb_sources` · `ticket0_kb_articles` · `ticket0_saved_replies` · `ticket0_agent_profiles` · `ticket0_notifications` · `ticket0_desk_settings` · `ticket0_widget_sessions` · `ticket0_widget_openings` |
-| **Roles** | `desk-admin` · `agent` · `customer` — plus four service roles: `assistant`, `assistant-autonomous`, `relay` (email in and out) and `widget`; a customer reaches their own conversation through an entity-narrowed `conversation:read-own` |
-| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/ticket0/PERMISSIONS.md) — 19 keys, 2 modules, 7 roles |
+| **Own tables** | `ticket0_conversations` · `ticket0_messages` · `ticket0_contacts` · `ticket0_conversation_tags` · `ticket0_csat` · `ticket0_ai_turns` · `ticket0_usage_rates` · `ticket0_kb_sources` · `ticket0_kb_articles` · `ticket0_saved_replies` · `ticket0_agent_profiles` · `ticket0_notifications` · `ticket0_desk_settings` · `ticket0_widget_sessions` · `ticket0_widget_openings` · `ticket0_signups` |
+| **Roles** | `desk-admin` · `agent` · `customer` — plus six service roles: `assistant`, `assistant-autonomous`, `relay` (email in and out), `widget`, `signup` (holds `signup:submit` alone — the public signup form and its confirm/unsubscribe tokens) and `ingest` (holds `kb:refresh` alone — the principal a docs refresh hook runs as); a customer reaches their own conversation through an entity-narrowed `conversation:read-own` |
+| **Permission surface** | [`PERMISSIONS.md`](https://github.com/substrat-run/substrat/blob/main/demos/ticket0/PERMISSIONS.md) — 22 keys · 2 modules · 9 roles |
 | **Auth** | [OIDC only](/concepts/identity) — no credential store; the dev issuer lists names instead of asking for a password |
 | **Apps** | issuer (`:8879`) · API and the public widget surface (`:8874`) · the desk — inbox, settings, portal (`:5281`) · a stand-in customer site with the widget on it (`:5279`) |
 | **Status** | Working — hosted at `ticket0.substrat.net`, serving the widget on [/guide/support](/guide/support) |
