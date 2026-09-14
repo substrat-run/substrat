@@ -42,7 +42,7 @@ const check = process.argv.includes('--check');
 
 /** The scaffold's copy is the source: it ships beside the playbook it points at. */
 const SOURCE = 'packages/create-substrat/template/.substrat/hooks/session-start.mjs';
-const TARGET = 'plugin/substrat/scripts/session-start.mjs';
+const TARGET = 'plugin/substrat/scripts/session-start.generated.mjs';
 
 const MANIFEST = 'plugin/substrat/.claude-plugin/plugin.json';
 const MARKETPLACE = '.claude-plugin/marketplace.json';

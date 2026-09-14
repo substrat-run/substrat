@@ -121,6 +121,12 @@ jobs:
       # function the engine does not export is drift a reader copies into an
       # editor. #811 made `listOrders` paged and the page went on documenting
       # `listOrders(ctx, status?)` for weeks.
+      # The three marks (#987). Mark 3 — a --check re-emit — was always enforced, by
+      # the gates themselves; marks 1 and 2 were prose, and prose drifted. `psl/src/data.ts`
+      # carried a producer header and no `.generated` suffix for a year while CLAUDE.md
+      # asserted it had both. This checks both directions: a file that SAYS it is
+      # generated carries the suffix, and a file NAMED generated says by what.
+      - run: pnpm lint:generated-marks
       - run: pnpm lint:docs --check
       # The machine-readable-docs checkpoint (#751). llms.txt is emitted from the
       # sidebar, so a page nobody added there is invisible to every agent while

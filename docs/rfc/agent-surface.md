@@ -95,7 +95,7 @@ leaks into a client-specific file. The resolution is that the plugin *creates* t
 before routing to it: on an empty directory its skill runs `npm create substrat` and then
 reads the `AGENTS.md` and `.substrat/playbook.md` that produced, pinned to the kernel that
 project installed. So it carries no flow, no rules, and no copy of the playbook — one file
-in it is substance-bearing, `scripts/session-start.mjs`, and only because a script cannot be
+in it is substance-bearing, `scripts/session-start.generated.mjs`, and only because a script cannot be
 routed to: it has to be somewhere the client can execute. That one is emitted from the
 scaffold's copy and gated by `lint:plugin`, per §6's first row.
 
