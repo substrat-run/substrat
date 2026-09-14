@@ -135,11 +135,15 @@ write to the table, so a status is only ever the platform's answer.
 ## Scheduled work {#scheduled-work}
 
 The platform runs one recurring pass — the **platform sweep** — that does every unit of
-scheduled work the system has: draining retryable effects, reconciling connectors,
-reaping expired snapshots, running each vertical's declared
-[`schedules`](/concepts/modules#recurring-work-schedules), judging its declared freshness
-expectations, and draining each scope's domain events to Tier 2 through the injected
-`EventSink` — absent a sink, nothing drains. Three of those phases leave a durable
+scheduled work the system has, in a fixed order: reconciling stragglers' migrations,
+draining retryable effects and pending platform intents, re-running the provision hook
+where a scope's bound version has moved past the one it was provisioned against, running
+each vertical's declared [`schedules`](/concepts/modules#recurring-work-schedules),
+judging its declared freshness expectations, reaping expired previews and
+long-archived scopes and lapsed tenants, reconciling connectors, draining each scope's
+domain events to Tier 2 through the injected `EventSink` — absent a sink, nothing
+drains — and shipping the staff access log last. The full list with what each phase
+skips is on the [`platform-sweep.ts` row](/reference/kernel). Three of those phases leave a durable
 per-unit record that the console and `/sweep-runs` read — each live connection swept,
 each schedule run, each freshness verdict — when a deployment configures the recorder;
 the rest report through the pass's own summary. It is *the scheduler's unit of
