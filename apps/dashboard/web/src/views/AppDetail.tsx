@@ -349,13 +349,18 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   const [eventsCursor, setEventsCursor] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
   // The app's REAL running version (the version its scope is bound to — what the router
-  // serves), not a hardcoded label. Same source as the Deployments tab.
-  const [dep, setDep] = useState<Deployment | null>(null);
+  // serves), not a hardcoded label. Same source as the Deployments tab. `undefined` while
+  // asking, `null` when the read failed: the two render differently ('…' against '—'), and
+  // the Running tile is derived from this, so a scope change clears it — or the tile
+  // would caption the previous app's version until the new read lands, and for ever if
+  // it does not.
+  const [dep, setDep] = useState<Deployment | null | undefined>(undefined);
   // The app's own last 24 hours (#1447), for the sparkline card below the Production card.
-  // `undefined` while asking; a series with `available: false` when the plane cannot bucket
-  // or the route isn't there — the same honest sentence covers both, and the card never
-  // draws a flat line that would read as an app nobody used.
-  const [traffic, setTraffic] = useState<TrafficSeries | undefined>(undefined);
+  // `undefined` while asking; `'error'` when the read failed — a transient 500 or a lost
+  // connection, which is not the same fact as a plane that cannot bucket; a series with
+  // `available: false` for that (and for a worker predating the route, which answers the
+  // same way a 501 does). The card draws a flat line for none of them.
+  const [traffic, setTraffic] = useState<TrafficSeries | 'error' | undefined>(undefined);
   // The owner seat, read ONCE here for both the status band's tile and the card below —
   // see OwnerSeatCard. `undefined` = still asking, `null` = the platform cannot answer.
   const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
@@ -363,6 +368,24 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // answer for the app we navigated away from has to be dropped rather than rendered
   // under the new app's name.
   const seatScope = useRef(app.app_scope_id);
+  /** The traffic read, on its own so the card's retry can ask again without a remount. */
+  const readTraffic = (forScope: string, still: () => boolean) => {
+    setTraffic(undefined);
+    api
+      .appTraffic(forScope, 24)
+      .then((t) => still() && setTraffic(t))
+      // A 501 (or a worker predating the route) says the plane cannot bucket, which is
+      // what `available: false` means; anything else is a read that failed, and the
+      // card must not present that as a capability the plane lacks.
+      .catch((e) =>
+        still() &&
+        setTraffic(
+          e instanceof ApiError && (e.status === 501 || e.status === 404)
+            ? { buckets: [], markers: [], bucketMinutes: 60, available: false }
+            : 'error',
+        ),
+      );
+  };
   const readSeat = (forScope: string) => {
     api
       .appOwnerSeat(forScope)
@@ -379,14 +402,12 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     }
     let live = true;
     seatScope.current = app.app_scope_id;
+    setDep(undefined);
     setTraffic(undefined);
     setSeat(undefined);
     if (app.status === 'active') readSeat(app.app_scope_id);
     else setSeat(null);
-    api
-      .appTraffic(app.app_scope_id, 24)
-      .then((t) => live && setTraffic(t))
-      .catch(() => live && setTraffic({ buckets: [], markers: [], bucketMinutes: 60, available: false }));
+    readTraffic(app.app_scope_id, () => live);
     api
       .appEvents(app.app_scope_id)
       .then((p) => {
@@ -398,7 +419,9 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     api
       .appDeployments(app.app_scope_id)
       .then((d) => live && setDep(d))
-      .catch(() => {});
+      // Settled as unavailable, never left loading: '—' is what the other three tiles
+      // say when a read fails, and a '…' that never resolves is a claim of progress.
+      .catch(() => live && setDep(null));
     return () => {
       live = false;
     };
@@ -421,11 +444,13 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // The version the app actually runs: its scope's bound version (fall back to the prod
   // channel only when unpinned). '…' while loading; '—' when nothing is deployed.
   const prodVersionId = dep?.channels.find((c) => c.channel === 'prod')?.versionId;
-  const runningVersion = dep
-    ? dep.versions.find((v) => v.id === (dep.boundVersionId ?? prodVersionId))
-    : undefined;
-  const versionLabel = runningVersion ? `v${runningVersion.version}` : dep ? '—' : '…';
-  const updateAvailable = !!dep && !!prodVersionId && prodVersionId !== dep.boundVersionId;
+  // The EFFECTIVE running id: the pin, else the prod head — the same fallback the label
+  // uses, and the one `updateAvailable` must compare against. Comparing prod with the
+  // raw pin made an unpinned scope read "running v3" and "update available" at once.
+  const runningId = dep ? (dep.boundVersionId ?? prodVersionId) : undefined;
+  const runningVersion = dep ? dep.versions.find((v) => v.id === runningId) : undefined;
+  const versionLabel = runningVersion ? `v${runningVersion.version}` : dep === undefined ? '…' : '—';
+  const updateAvailable = !!dep && !!prodVersionId && prodVersionId !== runningId;
   // One visitable URL per surface (K-26), derived once by the parent and shared with the
   // header's Visit control — see deriveSurfaceUrls.
   const multiSurface = surfaceUrls.length > 1;
@@ -501,6 +526,17 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
           <Eyebrow>Last 24 hours</Eyebrow>
           {traffic === undefined ? (
             <div style={{ fontSize: 12.5, color: 'var(--text-tertiary)' }}>Loading traffic…</div>
+          ) : traffic === 'error' ? (
+            <div style={{ fontSize: 12.5, color: 'var(--status-danger-fg)' }}>
+              Traffic could not be read just now.{' '}
+              <a
+                href="#"
+                onClick={(e) => { e.preventDefault(); readTraffic(app.app_scope_id, () => seatScope.current === app.app_scope_id); }}
+                style={{ color: 'var(--text-brand)' }}
+              >
+                Try again
+              </a>
+            </div>
           ) : (
             <Sparkline series={traffic} />
           )}
@@ -575,9 +611,9 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
 }
 
 /** The sparkline's caption — totals in mono, or the honest absence of them. */
-function trafficTotals(series: TrafficSeries | undefined): string {
-  if (!series) return '…';
-  if (!series.available || series.buckets.length === 0) return '—';
+function trafficTotals(series: TrafficSeries | 'error' | undefined): string {
+  if (series === undefined) return '…';
+  if (series === 'error' || !series.available || series.buckets.length === 0) return '—';
   const requests = series.buckets.reduce((n, b) => n + b.requests, 0);
   const errors = series.buckets.reduce((n, b) => n + b.errors, 0);
   const rate = requests === 0 ? '—' : `${((errors / requests) * 100).toFixed(2)}%`;
@@ -710,7 +746,9 @@ function Deployments({ app }: { app: AppRow }) {
   const bound = dep.boundVersionId ? dep.versions.find((v) => v.id === dep.boundVersionId) : undefined;
   const running = bound ?? (dep.boundVersionId == null ? prodVersion : undefined);
   // An update is offered when prod points somewhere other than where this scope is pinned.
-  const updateAvailable = !!prod && prod.versionId !== dep.boundVersionId;
+  // Against the EFFECTIVE running version, not the raw pin: an unpinned scope runs the
+  // prod head, and comparing prod with `null` offered it an update to what it runs.
+  const updateAvailable = !!prod && prod.versionId !== (dep.boundVersionId ?? prod.versionId);
   // Owned + private ⇒ prod promotion is self-serve (Verticals page); listed hands prod
   // back to staff, and someone else's vertical was never this team's to promote.
   const selfServe = !!dep.owned && !dep.listed;

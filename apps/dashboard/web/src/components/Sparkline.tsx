@@ -62,8 +62,13 @@ export function Sparkline({ series }: { series: TrafficSeries }) {
           y2={H}
           stroke={m.kind === 'went-live' ? 'var(--status-success-fg, #16a34a)' : 'var(--text-tertiary, #6b7280)'}
           strokeWidth={1}
+          // Dashed for a push, solid for a go-live — the treatment `TrafficChart` uses,
+          // so the two kinds are told apart by shape and not only by hue.
+          strokeDasharray={m.kind === 'pushed' ? '3 3' : undefined}
           vectorEffect="non-scaling-stroke"
-        />
+        >
+          <title>{`${m.version} ${m.kind === 'went-live' ? 'went live' : 'pushed'}`}</title>
+        </line>
       ))}
     </svg>
   );
