@@ -241,10 +241,11 @@ so every event one operation emits carries the *identical* instant — a cursor 
 `readHistory` is the same walk with `payload`, `authorization` (which permission and
 which grant allowed the change), `impersonation` (the staff actor behind the change, when
 there was one — see [Impersonation](#impersonation)), `piiClass`/`subjectId`, `operation`
-(the exact `invoke()` string the event was emitted from) and `version` (the version the
-emitting code was deployed as). The last two are stamped kernel-side on the same pattern as
+(the exact `invoke()` string the event was emitted from), `version` (the version the
+emitting code was deployed as) and `causedBy` (the event whose delivery was in flight when
+this one was emitted). The last three are stamped kernel-side on the same pattern as
 the authorization chain and the impersonation stamp: module code can neither forge nor
-suppress them. Five nullables there are facts rather than gaps, and they are five
+suppress them. Six nullables there are facts rather than gaps, and they are six
 *different* facts:
 
 - `payload` is **null after an erasure** — the envelope survives a shred, so a history
@@ -269,9 +270,19 @@ suppress them. Five nullables there are facts rather than gaps, and they are fiv
   sanctioned way to join an event to the deploy that produced it. A reader who expects it
   on the envelope, or hand-rolls a `SELECT` without the column, gets a null that looks like
   missing data.
+- `causedBy` is set **only when the emit happened inside a delivery in flight** — a module
+  consumer, or a connector or platform executor, handling an event — because that is the
+  only time a cause exists to record. It is the step `authorization` and `operation` never
+  wrote down: neither says *why* a consumer emitted, so a backwards walk used to stop at
+  the first consumer hop. Null means an operation emitted the event directly (the ordinary
+  case) or the row predates the column. Where `operation` is also null and this is set,
+  the pair is decisive: the event came from a consumer, which neither field could establish
+  alone. `walkEventCause` and `walkEventEffects` in the kernel follow it in each direction,
+  and name why a chain ends rather than stopping silently.
 
-`readTimeline`'s entry deliberately gains neither `operation` nor `version`: the timeline is
-the envelope and nothing more, so there is still no disclosure decision to make there.
+`readTimeline`'s entry deliberately gains none of `operation`, `version` or `causedBy`: the
+timeline is the envelope and nothing more, so there is still no disclosure decision to make
+there.
 
 Field-level "X → Y" comes from diffing consecutive payloads; nothing stores a
 before-state. For the few fields a history strip actually shows — status, owner, value —
