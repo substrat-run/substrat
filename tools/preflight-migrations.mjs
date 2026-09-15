@@ -28,7 +28,34 @@ import { join, resolve } from 'node:path';
 const argv = process.argv.slice(2);
 const envIdx = argv.indexOf('--env');
 const envName = envIdx !== -1 ? argv[envIdx + 1] : undefined;
-const positional = argv.filter((a, i) => a !== '--env' && i !== envIdx + 1);
+/**
+ * The package directory, which is whatever is left once the flags and their values are
+ * removed. Written as a set of consumed indices rather than a chain of per-flag
+ * comparisons: adding `--config` to the old chain silently left it in `positional`, so
+ * `pkgDir` became the string "--config" and every path derived from it was nonsense.
+ */
+const FLAGS_WITH_VALUES = ['--env', '--config'];
+const consumed = new Set();
+for (const f of FLAGS_WITH_VALUES) {
+  const i = argv.indexOf(f);
+  if (i !== -1) {
+    consumed.add(i);
+    consumed.add(i + 1);
+  }
+}
+const positional = argv.filter((_, i) => !consumed.has(i));
+/**
+ * Which config to read, and to hand on to wrangler (#1498 follow-up).
+ *
+ * The committed `wrangler.jsonc` names no account ids — they are `${…}` placeholders
+ * `tools/wrangler-config.mjs` resolves at deploy. This check runs against a REAL D1, so
+ * it has to read the resolved file: auto-discovery finds the template, whose
+ * `database_id` matches no database, and the `d1 execute` below fails with a message
+ * about migration state that says nothing about the actual cause. Callers whose config
+ * carries no placeholders (the dashboard) pass nothing and keep auto-discovery.
+ */
+const cfgIdx = argv.indexOf('--config');
+const configOverride = cfgIdx !== -1 ? argv[cfgIdx + 1] : undefined;
 const pkgDir = resolve(positional[0] ?? process.cwd());
 
 /**
@@ -68,7 +95,16 @@ function parseJsonc(text) {
   return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'));
 }
 
-const configPath = ['wrangler.jsonc', 'wrangler.json'].map((f) => join(pkgDir, f)).find(existsSync);
+const configPath = configOverride
+  ? join(pkgDir, configOverride)
+  : ['wrangler.jsonc', 'wrangler.json'].map((f) => join(pkgDir, f)).find(existsSync);
+if (configOverride && !existsSync(configPath)) {
+  // Not a silent skip: the caller ASKED for this file, and a deploy that checked nothing
+  // because a generated config was missing is the failure this whole check exists to catch.
+  console.error(`preflight-migrations: --config ${configOverride} does not exist in ${pkgDir}.`);
+  console.error('  Run tools/wrangler-config.mjs first — it is what produces it.');
+  process.exit(2);
+}
 if (!configPath) {
   console.log('preflight-migrations: no wrangler config here — nothing to check.');
   process.exit(0);
@@ -105,7 +141,19 @@ for (const db of databases) {
   try {
     const raw = execFileSync(
       'npx',
-      ['wrangler', 'd1', 'execute', name, '--remote', '--json', '--command', 'SELECT name FROM d1_migrations'],
+      [
+        'wrangler',
+        'd1',
+        'execute',
+        name,
+        // Same file this script parsed. Without it wrangler auto-discovers `wrangler.jsonc`
+        // — the template — and resolves `database_id` to the literal placeholder.
+        ...(configOverride ? ['--config', configOverride] : []),
+        '--remote',
+        '--json',
+        '--command',
+        'SELECT name FROM d1_migrations',
+      ],
       { cwd: pkgDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
     const rows = JSON.parse(raw)?.[0]?.results ?? [];
