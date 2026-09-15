@@ -48,7 +48,13 @@ function rememberedAbsent(store: SeatMemoStore, scopeId: string, versionId: stri
     const raw = store.getItem(keyFor(scopeId));
     if (!raw) return false;
     const entry = JSON.parse(raw) as { versionId?: unknown; at?: unknown };
-    if (entry.versionId === versionId && typeof entry.at === 'number' && now - entry.at < ABSENT_TTL_MS) return true;
+    // `at` must be a real instant in the PAST. A negative age satisfies the TTL just as
+    // happily as a fresh one, so a clock rolled back — or an `at` of `1e999`, which
+    // `JSON.parse` hands back as `Infinity` from a corrupted entry — would otherwise
+    // remember an absent seat for good, which is the one thing the TTL exists to stop.
+    const at = entry.at;
+    const fresh = typeof at === 'number' && Number.isFinite(at) && now >= at && now - at < ABSENT_TTL_MS;
+    if (entry.versionId === versionId && fresh) return true;
     // Another version's (or an expired) answer: it can never match again, so drop it.
     store.removeItem(keyFor(scopeId));
     return false;
@@ -56,6 +62,19 @@ function rememberedAbsent(store: SeatMemoStore, scopeId: string, versionId: stri
     return false;
   }
 }
+
+/**
+ * Reads already in flight, keyed by the pair the memo is keyed by.
+ *
+ * The memo is written only once `ask` has REJECTED, so two reads that start before that
+ * both miss it and both issue the 501 — navigating away and back while the first is
+ * pending, or the two cards on this page landing on one scope. "One ask per version" is
+ * the whole claim of #1345, so the second read joins the first instead of racing it.
+ *
+ * Entries clear themselves when the promise settles, so this holds nothing between
+ * renders; it is a coalescing window, not a second cache.
+ */
+const inFlight = new Map<string, Promise<unknown>>();
 
 /**
  * Read the owner seat of `scopeId`, which runs `runningVersionId`, through `ask`. Resolves
@@ -72,17 +91,33 @@ export async function readOwnerSeat<T>(
   const store = opts.store === undefined ? browserStore() : opts.store;
   const now = opts.now ?? Date.now;
   if (store && runningVersionId && rememberedAbsent(store, scopeId, runningVersionId, now())) return null;
-  try {
-    return await ask(scopeId);
-  } catch (e) {
-    if (!isNotImplemented(e)) throw e;
-    if (store && runningVersionId) {
-      try {
-        store.setItem(keyFor(scopeId), JSON.stringify({ versionId: runningVersionId, at: now() }));
-      } catch {
-        // Quota or denied storage: the next render asks again, which is today's behaviour.
+
+  const key = `${scopeId}\u0000${runningVersionId ?? ''}`;
+  const joined = inFlight.get(key);
+  if (joined) return (await joined) as T | null;
+
+  const pending = (async () => {
+    try {
+      return await ask(scopeId);
+    } catch (e) {
+      if (!isNotImplemented(e)) throw e;
+      if (store && runningVersionId) {
+        try {
+          store.setItem(keyFor(scopeId), JSON.stringify({ versionId: runningVersionId, at: now() }));
+        } catch {
+          // Quota or denied storage: the next render asks again, which is today's behaviour.
+        }
       }
+      return null;
     }
-    return null;
-  }
+  })();
+  inFlight.set(key, pending);
+  // Both handlers, so the derived promise SETTLES: a bare `.finally` would reject in
+  // parallel with nobody holding it, which is an unhandled rejection in the console for
+  // every non-501 failure. The identity check leaves a newer entry alone.
+  const clear = () => {
+    if (inFlight.get(key) === pending) inFlight.delete(key);
+  };
+  pending.then(clear, clear);
+  return pending;
 }

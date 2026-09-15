@@ -110,4 +110,78 @@ describe('readOwnerSeat', () => {
     const b = asker(present);
     expect(await readOwnerSeat('scope-a', 'v1', b.ask, { store })).toEqual(SEAT);
   });
+  it('coalesces reads in flight for one scope and version — the memo is written too late to', async () => {
+    // The memo only exists once `ask` has REJECTED. Two reads that start before that
+    // both miss it, so "ask once per version" needed the in-flight join as well: this is
+    // navigating away and back while the first 501 is still outstanding.
+    const store = memoryStore();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const a = asker(async () => {
+      await gate;
+      throw new StatusError(501);
+    });
+    const both = Promise.all([
+      readOwnerSeat('scope-join', 'v1', a.ask, { store }),
+      readOwnerSeat('scope-join', 'v1', a.ask, { store }),
+    ]);
+    release!();
+    expect(await both).toEqual([null, null]);
+    expect(a.calls).toEqual(['scope-join']);
+  });
+
+  it('does not join reads for different versions of one scope', async () => {
+    const store = memoryStore();
+    const a = asker(present);
+    const [x, y] = await Promise.all([
+      readOwnerSeat('scope-split', 'v1', a.ask, { store }),
+      readOwnerSeat('scope-split', 'v2', a.ask, { store }),
+    ]);
+    expect([x, y]).toEqual([SEAT, SEAT]);
+    expect(a.calls).toHaveLength(2);
+  });
+
+  it('shares a non-501 rejection with the joined read, and remembers neither', async () => {
+    const store = memoryStore();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((r) => (release = r));
+    const a = asker(async () => {
+      await gate;
+      throw new StatusError(502);
+    });
+    const first = readOwnerSeat('scope-boom', 'v1', a.ask, { store });
+    const second = readOwnerSeat('scope-boom', 'v1', a.ask, { store });
+    release!();
+    await expect(first).rejects.toMatchObject({ status: 502 });
+    await expect(second).rejects.toMatchObject({ status: 502 });
+    expect(a.calls).toEqual(['scope-boom']);
+    expect(store.data.size).toBe(0);
+    // The window closed, so the next read is a real one rather than a joined corpse.
+    const b = asker(present);
+    expect(await readOwnerSeat('scope-boom', 'v1', b.ask, { store })).toEqual(SEAT);
+  });
+
+  it('refuses a stamp from the future, which a negative age would otherwise keep fresh', async () => {
+    // A clock rolled back between the write and the read. `now - at` goes negative, which
+    // satisfies the TTL just as a fresh entry does — so the seat would stay hidden until
+    // the clock caught up, which is exactly what the TTL exists to prevent.
+    const store = memoryStore();
+    store.data.set(
+      'substrat.dash.owner-seat-absent:scope-a',
+      JSON.stringify({ versionId: 'v1', at: 5_000_000 }),
+    );
+    const a = asker(present);
+    expect(await readOwnerSeat('scope-a', 'v1', a.ask, { store, now: () => 1_000 })).toEqual(SEAT);
+    expect(a.calls).toEqual(['scope-a']);
+  });
+
+  it('refuses a non-finite stamp, which JSON.parse produces from a corrupted entry', async () => {
+    // `1e999` is valid JSON and parses to Infinity, which passes a `typeof === 'number'`
+    // check and makes the age -Infinity — remembered for ever.
+    const store = memoryStore();
+    store.data.set('substrat.dash.owner-seat-absent:scope-a', '{"versionId":"v1","at":1e999}');
+    const a = asker(present);
+    expect(await readOwnerSeat('scope-a', 'v1', a.ask, { store, now: () => 1_000 })).toEqual(SEAT);
+    expect(a.calls).toEqual(['scope-a']);
+  });
 });

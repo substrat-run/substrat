@@ -313,21 +313,31 @@ function OwnerSeatCard({ scopeId, seat, onClaimed }: { scopeId: string; seat: Ow
 /**
  * The owner-seat card for a scope that has nobody else reading its seat — the test
  * environment, whose page carries no status band. It owns the read that Overview owns
- * for the production scope, with the same scope guard: a late answer for an environment
- * the reader has left is dropped rather than shown under the next one's name.
+ * for the production scope, and drops a late answer the same way: one that arrives for
+ * an environment the reader has left, or for a version it has stopped running, is not
+ * shown under the next one's name.
  * `versionId` is the version the environment runs: a seat its code does not keep is
  * remembered against it rather than asked for (and 501'd) on every render (#1345).
  */
 function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versionId: string | null; active: boolean }) {
   const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
-  const shown = useRef(scopeId);
+  // A generation rather than the scope alone: the read is keyed by VERSION too, so an
+  // environment rebound to a new version re-runs this effect without the scope ever
+  // changing, and a scope guard would let the old version's slow answer land on the new
+  // one. Every call takes the next number and only the newest may write.
+  const gen = useRef(0);
   const read = (forScope: string) => {
+    const mine = ++gen.current;
+    const newest = () => gen.current === mine;
     readOwnerSeat(forScope, versionId, api.appOwnerSeat)
-      .then((s) => shown.current === forScope && setSeat(s))
-      .catch(() => shown.current === forScope && setSeat(null));
+      .then((s) => newest() && setSeat(s))
+      .catch(() => newest() && setSeat(null));
   };
   useEffect(() => {
-    shown.current = scopeId;
+    // Retire any read still in flight before this run decides anything: the branches
+    // below that answer without reading (dev preview, an inactive environment) set the
+    // state themselves, and an older answer landing after them would undo it.
+    gen.current++;
     setSeat(undefined);
     if (DEV_MOCK) {
       setSeat({ state: 'claimed', owner: null, firstSignIn: null, claimLink: null });
@@ -370,6 +380,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // answer for the app we navigated away from has to be dropped rather than rendered
   // under the new app's name.
   const seatScope = useRef(app.app_scope_id);
+  const seatRead = useRef(0);
   // The scope `dep` was read for. The seat read waits for `dep` (it is keyed by the running
   // version, #1345), and in the render right after navigating `dep` still holds the
   // previous app's deployments — which must not become this app's version key.
@@ -392,10 +403,15 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
         ),
       );
   };
+  // Its own generation, beside `seatScope` (which the traffic read also uses): the seat
+  // effect re-runs on the running VERSION as well as the scope, so a scope guard alone
+  // lets a slow answer for the version this app just moved off overwrite the new one's.
   const readSeat = (forScope: string) => {
+    const mine = ++seatRead.current;
+    const newest = () => seatRead.current === mine && seatScope.current === forScope;
     readOwnerSeat(forScope, runningId ?? null, api.appOwnerSeat)
-      .then((s) => seatScope.current === forScope && setSeat(s))
-      .catch(() => seatScope.current === forScope && setSeat(null));
+      .then((s) => newest() && setSeat(s))
+      .catch(() => newest() && setSeat(null));
   };
   useEffect(() => {
     if (DEV_MOCK) {
