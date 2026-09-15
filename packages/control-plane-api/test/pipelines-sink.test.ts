@@ -108,7 +108,10 @@ describe('createPipelinesEventSink', () => {
 
   it('carries the row’s own UTF-8 size, so per-tenant volume is answerable', async () => {
     // Every tenant's events share one parquet file (a Data Catalog sink cannot partition),
-    // so R2 reports no per-tenant storage and this column is the only honest measure.
+    // so R2 reports no per-tenant storage and this column is the only honest measure —
+    // summed over rows deduplicated by `(tenant_id, id)`, since shipping is at-least-once
+    // and a retried batch re-lands its prefix. `bytes` is deterministic per event, which
+    // is what lets a DISTINCT collapse those duplicates instead of doubling them.
     const { requests, stream } = fakeStream();
     await createPipelinesEventSink(stream).ship(scope, [event({ payload: { blob: 'x'.repeat(1000) } })]);
     const row = requests[0]![0]!;

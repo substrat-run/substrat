@@ -380,7 +380,8 @@ async function tableSnapshotCount() {
 
 /** Refuse unless the table has never received a row. `when` names which read this is. */
 /**
- * `--discard-history=<namespace>.<table>` — the deliberate override of the snapshot gate.
+ * `--discard-history=<account>/<bucket>/<namespace>.<table>` — the deliberate override of
+ * the snapshot gate.
  *
  * The gate exists because dropping a table with snapshots destroys exact history, and no
  * flag should make that casual. But there IS a legitimate case: a lake days old, holding
@@ -388,21 +389,32 @@ async function tableSnapshotCount() {
  * since a stream's schema cannot be updated and a sink refuses to write to an existing
  * table. Forbidding it outright would only push someone to the REST API with less care.
  *
- * So it takes the table's own name as its VALUE rather than being a bare `--force`. You
- * cannot type it from muscle memory, it cannot be copied between lakes, and a reviewer
- * reading the command in a runbook sees exactly what was destroyed.
+ * So it takes the lake's own identity as its VALUE rather than being a bare `--force`.
+ * You cannot type it from muscle memory, and a reviewer reading the command in a runbook
+ * sees exactly what was destroyed.
+ *
+ * The ACCOUNT is in that value, and it is the half that does the work. `LAKE.namespace`
+ * and `LAKE.table` are constants, so a token naming only the table is the same string in
+ * every account — and `--file` exists precisely to point this script at a different
+ * account, where "the same names are the right names". A confirmation that is identical
+ * everywhere confirms nothing about WHICH lake is being dropped, which was the opposite
+ * of this flag's stated property. Scoping it to `<account>/<bucket>/…` — the same pair
+ * the Iceberg warehouse name is built from — restores it: a value copied out of one
+ * account's runbook is refused against another's.
  */
-// Both spellings, because `--discard-history=kernel.events` is the natural one for a flag
-// whose value IS the confirmation, and the shared `flag()` only reads the separated form.
+// Both spellings, because `--discard-history=<…>` is the natural one for a flag whose
+// value IS the confirmation, and the shared `flag()` only reads the separated form.
 const discardTarget = (() => {
   const eq = argv.find((a) => a.startsWith('--discard-history='));
   return eq ? eq.slice('--discard-history='.length) : flag('discard-history');
 })();
-const discarding = discardTarget === `${LAKE.namespace}.${LAKE.table}`;
+const DISCARD_TOKEN = `${account}/${LAKE.bucket}/${LAKE.namespace}.${LAKE.table}`;
+const discarding = discardTarget === DISCARD_TOKEN;
 if (discardTarget !== undefined && !discarding) {
   fail(
-    `--discard-history=${discardTarget} does not name this lake's table.\n` +
-      `  It must be exactly '${LAKE.namespace}.${LAKE.table}' — the value is the confirmation.`,
+    `--discard-history=${discardTarget} does not name this lake.\n` +
+      `  It must be exactly '${DISCARD_TOKEN}' — the value is the confirmation,\n` +
+      '  and it names the ACCOUNT so a value from another lake cannot be reused here.',
   );
 }
 
@@ -412,7 +424,7 @@ function assertNoSnapshots(snapshots, when) {
     // Announced, never silent: the one line in the output that says history was thrown
     // away, and how much of it.
     console.log(
-      `⚠ --discard-history: dropping ${LAKE.namespace}.${LAKE.table} with ${snapshots} snapshot(s) (${when}).`,
+      `⚠ --discard-history: dropping ${DISCARD_TOKEN} with ${snapshots} snapshot(s) (${when}).`,
     );
     return;
   }

@@ -76,7 +76,11 @@ const NOT_SHIPPED = new Set(['drained_at']);
  *
  * `bytes` is the row's serialized UTF-8 size, which is what makes per-tenant volume
  * answerable at all: every tenant's events share one parquet file, so R2 reports no
- * per-tenant storage and `SUM(bytes) GROUP BY tenant_id` is the only honest measure.
+ * per-tenant storage and summing this column per tenant is the only honest measure.
+ * Sum it over DEDUPLICATED rows — `SELECT DISTINCT tenant_id, id, bytes` first — because
+ * the sink is at-least-once and a retried batch re-lands its already-ingested prefix;
+ * a bare `SUM(bytes)` bills a tenant for the platform's retry. See the sink's own header
+ * (packages/control-plane-api/src/pipelines-sink.ts) for the query.
  * It counts the row AS SHIPPED, not as stored — parquet is columnar and zstd-compressed,
  * and a tenant's share of a shared compressed file is not attributable to them anyway.
  * Billing on logical volume is the more defensible basis for exactly that reason: it does

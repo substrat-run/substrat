@@ -96,10 +96,27 @@ function toRow(e: DrainedEvent): Record<string, unknown> {
  * The row, plus its own serialized size.
  *
  * Every tenant's events share one parquet file — a Data Catalog sink cannot partition —
- * so R2 reports no per-tenant storage and `SUM(bytes) GROUP BY tenant_id` is the only
+ * so R2 reports no per-tenant storage and summing this column per tenant is the only
  * honest per-tenant measure the lake can offer. It is the row AS SHIPPED, not as stored;
  * see SINK_COMPUTED in tools/lake-schema-emit.mjs for why that is the better billing
  * basis rather than a concession.
+ *
+ * **Deduplicate before summing.** A bare `SUM(bytes) GROUP BY tenant_id` is wrong here,
+ * and this file's own delivery contract is why: `ship` is at-least-once, so a batch whose
+ * later chunk failed re-sends the prefix that already landed, and those rows are real rows
+ * in the table. Summing them bills a tenant for the platform's retry. The lake is keyed by
+ * event id, which is what makes the duplicate reconcilable — so collapse on `(tenant_id,
+ * id)` first and sum one row per event:
+ *
+ * ```sql
+ * SELECT tenant_id, SUM(bytes) FROM (
+ *   SELECT DISTINCT tenant_id, id, bytes FROM kernel.events
+ * ) GROUP BY tenant_id
+ * ```
+ *
+ * `bytes` is deterministic for a given event — the same row serializes to the same
+ * length — so `DISTINCT` over the triple collapses duplicates rather than multiplying
+ * them, which would not hold for a column the shipper recomputed per attempt.
  *
  * Measured on the row WITHOUT this field, then the field added — the alternative is a
  * fixpoint, since writing the number changes the length that produced it. So `bytes` is
