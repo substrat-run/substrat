@@ -52,11 +52,13 @@ src/migrations.ts      the SqlMigration[]                         ← module cod
 src/module.ts          the handlers, bound to the declaration      ← module code
 src/provision.ts       MODULES, ROLES, grant shapes — node-free    ← module code
 src/seed.ts            host, tenants, demo cast, seed world        ← harness
+src/personas.ts        the dev cast, read by the issuer and the seed ← harness
 src/routes.ts          the routes, DERIVED from the operations     ← harness
 src/server.ts          the dev entrypoint (node + persona picker)   ← harness
 src/worker.ts          the deployable Cloudflare worker             ← harness
 src/config-do.ts       per-instance config store (Cloudflare only)  ← harness
 test/scenario.test.ts  the scenario — including the denials
+test/entities.test.ts  the registry, held to the tables it migrates
 ```
 
 **A new route is an `http` declaration on its operation, never a handler in an
@@ -161,6 +163,12 @@ operation declared and not implemented, and one implemented and not declared. Th
 same object feeds `operationInputs: operationInputsOf(bikeShopOperations)`, so the
 schemas the host parses with are the ones the declaration states — they cannot drift,
 because there is only one of them.
+
+The permission list works the same way. `SHOP_PERMISSIONS`, the array handed to
+`defineOperations`, is also the `keys` that `src/provision.ts` hands
+`definePermissions({ modules, roles, entityGrants, keys })` — and `definePermissions`
+throws at module load if those keys and `MODULES` disagree in either direction. Hand
+both readers the same array; a second copy is a list that drifts.
 
 **A list read must declare `paged`.** `defineOperations` refuses a bare-array `output`
 that does not, and it refuses it at module load — so it fires in every build, every
