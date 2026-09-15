@@ -462,6 +462,36 @@ export function walkEventEffects(
 }
 
 /**
+ * Everything ONE call did (#1237), oldest first.
+ *
+ * The third of the three reads, and the one neither walk can reach. `walkEventCause`
+ * goes backwards along a chain and `walkEventEffects` goes forwards down a tree — both
+ * follow CAUSE, so both miss a sibling. An operation that emits `order.placed` and
+ * `stock.reserved` independently has two events with no causal edge between them, and
+ * from either one the other is invisible. They are still the same call, and that is what
+ * a reader means by "what did this request do".
+ *
+ * Ordered by id, which is ULID and therefore chronological — the same ordering the
+ * timeline and the drain use, so an invocation's events read in the order they happened
+ * without a second sort key.
+ *
+ * Bounded like every other read here. `truncated` says the call did more than is shown,
+ * which is a different statement from the call having done this much.
+ */
+export function readInvocation(
+  ctx: TimelineReader,
+  invocationId: string,
+  limit = 200,
+): { events: HistoryEntry[]; truncated: boolean } {
+  const capped = Math.min(Math.max(Math.floor(limit) || 1, 1), 500);
+  const rows = ctx.sql.query<HistoryRow>(
+    `SELECT ${HISTORY_COLUMNS} FROM _substrat_outbox WHERE invocation_id = ? ORDER BY id LIMIT ?`,
+    [invocationId, capped + 1],
+  );
+  return { events: rows.slice(0, capped).map(mapHistoryRow), truncated: rows.length > capped };
+}
+
+/**
  * Facet a scope's own outbox (#1239 stage 1): narrow by type and window, group by
  * one envelope column or one payload field, count.
  *
@@ -572,4 +602,7 @@ const ENVELOPE_COLUMN: Record<string, string> = {
   version: 'version',
   entityType: 'entity_type',
   piiClass: 'pii_class',
+  // #1237: which CALL the events came from. The dimension #1231's vocabulary was
+  // missing, because until the invocation id existed there was nothing to group on.
+  invocation: 'invocation_id',
 };
