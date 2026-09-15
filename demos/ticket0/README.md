@@ -245,6 +245,14 @@ made, because a desk that looks answered and is not is the worse failure. Locall
 loop is off unless `TICKET0_RELAY=1`, so a demo with no key does not fill the terminal
 with refusals.
 
+Receiving mail is the other half (#934): a Resend inbound webhook pointed at
+`POST /api/email/inbound` on the desk's hostname. It needs `RESEND_WEBHOOK_SECRET` beside
+`RESEND_API_KEY` and answers 404 until both are set. The signature is verified, the email
+is re-read from Resend by id, and the re-read is what `ticket0/ingest-message` records.
+Attachments are named in an internal note rather than stored. Not yet done: threading a
+reply onto its conversation (each mail opens its own), and a live check against a real
+Resend account.
+
 Note what this is **not**: `packages/adapter-email`, which sends platform mail from
 `substrat.run` (invites, signup confirmations) on the platform's onboarded sender. A
 desk's reply is the tenant's own mail from the tenant's own `from_address`, and one

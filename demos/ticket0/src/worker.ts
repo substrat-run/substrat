@@ -86,6 +86,7 @@ import {
 import { mountAssistantStatus } from '../harness/assistant-status.js';
 import { mountKbRefresh } from '../harness/kb-refresh.js';
 import { senderFor, sweepOutbound } from '../harness/relay.js';
+import { inboundConfigFor, receiveInbound } from '../harness/inbound.js';
 import { mountInvites, recordStaffProfile } from '../harness/invites.js';
 import { mountWidgetSurface } from '../harness/widget-surface.js';
 import {
@@ -972,6 +973,56 @@ async function sweepFor(env: Env, req: Request): Promise<void> {
     });
   }
 }
+
+/**
+ * Mail arriving (#934): Resend's inbound webhook, received as the desk's `relay`.
+ *
+ * Inert unless this desk was given BOTH `RESEND_WEBHOOK_SECRET` and `RESEND_API_KEY` —
+ * a 404 then, the same answer as a route that does not exist, rather than a door that
+ * refuses signatures and so advertises itself. `harness/inbound.ts` holds the rules:
+ * verify the Svix signature, re-read the email by id, ingest the re-read.
+ *
+ * Under `/api/*` so the runtime routes it to the worker rather than the asset layer,
+ * and registered BEFORE `mountApi` so the declared table's `/api` mount never sees it.
+ */
+app.post('/api/email/inbound', async (c) => {
+  const env = c.env as Env;
+  const node = nodeFor(c.req.raw, env);
+  const relay = await serviceStub(env, node, 'relay');
+  const { settings } = await instanceConfig(env, node);
+  const config = inboundConfigFor(
+    settings as { RESEND_API_KEY?: string; RESEND_WEBHOOK_SECRET?: string },
+    globalFetch,
+  );
+  if (!relay || !config) return c.json({ error: 'not found' }, 404);
+  try {
+    const result = await receiveInbound({
+      config,
+      headers: c.req.raw.headers,
+      body: await c.req.text(),
+      invoke: <T,>(op: string, input: unknown) => relay.invoke(op, input) as Promise<T>,
+    });
+    if (result.status !== 200 || 'ignored' in result.body) {
+      console.warn('ticket0: inbound mail not ingested', { scope: node.scopeId, status: result.status, ...result.body });
+    } else if ('attachmentsNoted' in result.body && result.body.attachmentsNoted > 0) {
+      // Counts only: the bytes were not kept, and the desk's note names the files.
+      console.warn('ticket0: inbound mail attachments not stored', {
+        scope: node.scopeId,
+        messageId: result.body.messageId,
+        attachments: result.body.attachmentsNoted,
+      });
+    }
+    return new Response(JSON.stringify(result.body), {
+      status: result.status,
+      headers: { 'content-type': 'application/json' },
+    });
+  } catch (error) {
+    // The ingest refused. A 500 asks Resend to retry, which is right for a desk that is
+    // briefly unavailable and harmless otherwise — the ingest is idempotent.
+    console.error('ticket0: inbound mail ingest failed', { scope: node.scopeId, error: errorText(error) });
+    return c.json({ error: 'ingest failed' }, 500);
+  }
+});
 
 // ── The declared API, the spec, and the platform contract ────────────────────
 

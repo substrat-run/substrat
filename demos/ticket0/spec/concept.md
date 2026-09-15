@@ -180,9 +180,12 @@ Honest, and they are the schedule risk:
 
    This used to say an anonymous *principal* was needed too. It is not — see section 4.
 2. **Inbound webhooks.** Outbound email is an afternoon. *Receiving* email needs webhook
-   ingress with signature verification and replay protection — scoped long ago, never
-   built, because the one existing connector polls instead, which is fine for a signature
-   ceremony and wrong for an inbox. ticket0 is the thing that forces it.
+   ingress with signature verification and replay protection. The platform has that
+   shape now — #96 landed it for Scrive, body as a hint and the re-read as the fact — and
+   ticket0's receiver (#934, `harness/inbound.ts`) follows it as a route on the desk's own
+   worker: Svix signature and a five-minute replay window, re-read by id, then
+   `ingest-message` as the `relay` principal. It exists but is not live-verified against
+   a real Resend account, and thread stitching is not in it yet.
 
 ### Ours — and it is most of the app
 
@@ -444,9 +447,10 @@ Each with a recommendation, so this is a choice and not a specification exercise
    vertical on its own hostname, with the embedding-origin allowlist in desk settings and
    CORS support added to the vertical host.* Routing already supports this; the anonymous
    principal and the CORS layer do not exist. Platform work, sequenced before the widget.
-3. **How email arrives.** *Recommended: the Resend inbound webhook*, which forces the
-   webhook-ingress work — signature verification and replay protection — that has been
-   scoped and never built. The alternative is Cloudflare Email Routing, which is a
+3. **How email arrives.** *Recommended: the Resend inbound webhook*, which needs
+   webhook ingress with signature verification and replay protection. That is now built:
+   `harness/inbound.ts` receives it on the desk's own worker (#934), not yet
+   live-verified. The alternative is Cloudflare Email Routing, which is a
    different shape (an adapter, not a connector) and does not obviously reach a vertical
    running in a dispatch namespace.
 4. **How the knowledge base is searched.** *Recommended: full-text search first, in the
