@@ -23,6 +23,22 @@ interface PipelineStreamLike {
 const MAX_REQUEST_BYTES = 4 * 1024 * 1024;
 
 /**
+ * The serialized size of one row in BYTES.
+ *
+ * `JSON.stringify(x).length` is not this, and the difference is not academic: `.length`
+ * counts UTF-16 code units, so ordinary Swedish text measures ~13% under its real UTF-8
+ * size and CJK or emoji can measure at a third of it. Cloudflare's ceiling is bytes.
+ * Measuring a byte budget with a code-unit ruler means a batch can pass the check here
+ * and be rejected there — and a rejected batch is a scope that never drains, because the
+ * next pass rebuilds exactly the same one.
+ *
+ * `TextEncoder` is the web-standard UTF-8 encoder, available identically in Workers and
+ * Node — the same reason the repo reaches for `globalThis.crypto` over a node import.
+ */
+const UTF8 = new TextEncoder();
+const byteLength = (row: Record<string, unknown>): number => UTF8.encode(JSON.stringify(row)).length;
+
+/**
  * An event the platform cannot ship at all, because one event exceeds a whole request.
  * Left as a throw rather than a skip: skipping it would drain the scope past a row the
  * lake never received, and `drainedAt` would then claim exact history that has a hole in
@@ -77,6 +93,25 @@ function toRow(e: DrainedEvent): Record<string, unknown> {
 }
 
 /**
+ * The row, plus its own serialized size.
+ *
+ * Every tenant's events share one parquet file — a Data Catalog sink cannot partition —
+ * so R2 reports no per-tenant storage and `SUM(bytes) GROUP BY tenant_id` is the only
+ * honest per-tenant measure the lake can offer. It is the row AS SHIPPED, not as stored;
+ * see SINK_COMPUTED in tools/lake-schema-emit.mjs for why that is the better billing
+ * basis rather than a concession.
+ *
+ * Measured on the row WITHOUT this field, then the field added — the alternative is a
+ * fixpoint, since writing the number changes the length that produced it. So `bytes` is
+ * the size of the event's own data and excludes itself, which is both computable and the
+ * quantity anyone would actually want to be charged for.
+ */
+function toSizedRow(e: DrainedEvent): Record<string, unknown> {
+  const row = toRow(e);
+  return { ...row, bytes: byteLength(row) };
+}
+
+/**
  * The Pipelines implementation of the `EventSink` seam (#1334) — Tier 2 proper, the row
  * kernel-design §5.3 names for the Cloudflare adapter: "Event transport | Pipelines →
  * Iceberg/R2". `createR2EventSink` is the same seam's NDJSON staging shape, and the pure
@@ -123,9 +158,12 @@ export function createPipelinesEventSink(stream: unknown): EventSink {
         bytes = 0;
       };
       for (const event of events) {
-        const row = toRow(event);
-        // +1 for the comma this row would contribute to the encoded array.
-        const size = JSON.stringify(row).length + 1;
+        const row = toSizedRow(event);
+        // The BUDGET measures the row as actually sent, `bytes` field included — what
+        // Cloudflare weighs is the request, not the event. Deliberately not the same
+        // number as the column: one answers "will this request fit", the other "what did
+        // this tenant store". +1 for the comma this row contributes to the encoded array.
+        const size = byteLength(row) + 1;
         if (size > MAX_REQUEST_BYTES) throw tooLarge(event, size);
         if (bytes + size > MAX_REQUEST_BYTES) await flush();
         batch.push(row);

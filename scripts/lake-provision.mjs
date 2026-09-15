@@ -379,12 +379,48 @@ async function tableSnapshotCount() {
 }
 
 /** Refuse unless the table has never received a row. `when` names which read this is. */
+/**
+ * `--discard-history=<namespace>.<table>` — the deliberate override of the snapshot gate.
+ *
+ * The gate exists because dropping a table with snapshots destroys exact history, and no
+ * flag should make that casual. But there IS a legitimate case: a lake days old, holding
+ * a few hundred rows, whose schema needs a column — and Cloudflare gives no other route,
+ * since a stream's schema cannot be updated and a sink refuses to write to an existing
+ * table. Forbidding it outright would only push someone to the REST API with less care.
+ *
+ * So it takes the table's own name as its VALUE rather than being a bare `--force`. You
+ * cannot type it from muscle memory, it cannot be copied between lakes, and a reviewer
+ * reading the command in a runbook sees exactly what was destroyed.
+ */
+// Both spellings, because `--discard-history=kernel.events` is the natural one for a flag
+// whose value IS the confirmation, and the shared `flag()` only reads the separated form.
+const discardTarget = (() => {
+  const eq = argv.find((a) => a.startsWith('--discard-history='));
+  return eq ? eq.slice('--discard-history='.length) : flag('discard-history');
+})();
+const discarding = discardTarget === `${LAKE.namespace}.${LAKE.table}`;
+if (discardTarget !== undefined && !discarding) {
+  fail(
+    `--discard-history=${discardTarget} does not name this lake's table.\n` +
+      `  It must be exactly '${LAKE.namespace}.${LAKE.table}' — the value is the confirmation.`,
+  );
+}
+
 function assertNoSnapshots(snapshots, when) {
   if (snapshots === 0 || snapshots === 'absent') return;
+  if (discarding && typeof snapshots === 'number') {
+    // Announced, never silent: the one line in the output that says history was thrown
+    // away, and how much of it.
+    console.log(
+      `⚠ --discard-history: dropping ${LAKE.namespace}.${LAKE.table} with ${snapshots} snapshot(s) (${when}).`,
+    );
+    return;
+  }
   fail(
     snapshots === null
       ? `could not read ${LAKE.namespace}.${LAKE.table}'s snapshots (${when}) — refusing to recreate.\n` +
-          '  "could not tell" is not "empty", and the next step would drop the table.'
+          '  "could not tell" is not "empty", and the next step would drop the table.\n' +
+          '  --discard-history does not override this: it accepts a KNOWN loss, not an unknown one.'
       : `${LAKE.namespace}.${LAKE.table} has ${snapshots} snapshot(s) (${when}) — refusing to recreate.\n` +
           '  Data has been committed to this table. Dropping it destroys history, which is\n' +
           '  what this tier exists not to do. A schema change here is an Iceberg schema\n' +
@@ -502,10 +538,14 @@ if (drifted.length > 0) {
 }
 
 console.log(`
-Bind it in a worker that ships to the lake (the stream id is in
-\`wrangler pipelines streams list\`):
+A NEW STREAM HAS A NEW ID, and the control plane binds it by id. Three steps, or the
+plane keeps shipping to the stream that no longer exists — silently, because a drain
+with nowhere to go still stamps nothing and reports no error a human reads:
 
-  "pipelines": [{ "stream": "<stream id>", "binding": "SUBSTRAT_OUTBOX_STREAM" }]
+  1. wrangler pipelines streams list            # copy the new id
+  2. $EDITOR secrets/platform.prod.env          # CF_PIPELINE_OUTBOX_STREAM_ID=<id>
+     node scripts/secrets.mjs github            # publish it to CI
+  3. pnpm --filter @substrat-run/control-plane cf:deploy
 
-then \`await env.SUBSTRAT_OUTBOX_STREAM.send(rows)\`. Prefer the binding over the HTTP
-endpoint wherever the sender is a Worker: it cannot leak, expire, or be rotated out.`);
+The binding itself is declared in apps/control-plane/wrangler.deploy.json and resolved
+by tools/wrangler-config.mjs, so step 2 is the only place the id is written by hand.`);

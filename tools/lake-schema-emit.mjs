@@ -65,6 +65,31 @@ const STREAM_TYPE = {
  */
 const NOT_SHIPPED = new Set(['drained_at']);
 
+/**
+ * Columns the SINK computes, which exist in no DDL and so cannot be derived.
+ *
+ * The third category, and it needs naming rather than smuggling: the two above are about
+ * which outbox columns travel, while these are facts about the SHIPMENT that only the
+ * thing doing the shipping knows. They are appended after the derived fields and
+ * deliberately exempt from the drift check below — a `seen.has()` over them would fail
+ * every time, since the whole point is that the outbox does not have them.
+ *
+ * `bytes` is the row's serialized UTF-8 size, which is what makes per-tenant volume
+ * answerable at all: every tenant's events share one parquet file, so R2 reports no
+ * per-tenant storage and `SUM(bytes) GROUP BY tenant_id` is the only honest measure.
+ * It counts the row AS SHIPPED, not as stored — parquet is columnar and zstd-compressed,
+ * and a tenant's share of a shared compressed file is not attributable to them anyway.
+ * Billing on logical volume is the more defensible basis for exactly that reason: it does
+ * not move when compaction runs, or when another tenant's data happens to compress well.
+ *
+ * Anything added here is a schema change, and a stream's schema cannot be updated — see
+ * the --check message. Adding one after data exists means a NEW TABLE, because a sink
+ * refuses to write to an existing one.
+ */
+const SINK_COMPUTED = [
+  { name: 'bytes', type: 'int64', required: true },
+];
+
 /** A stream type's SQL storage class, so the table above cannot mis-declare a column. */
 const STORAGE_OF = { string: 'TEXT', json: 'TEXT', timestamp: 'TEXT', int64: 'INTEGER' };
 
@@ -91,6 +116,13 @@ function emit() {
       required: Boolean(col.notnull || col.pk),
       ...(type === 'timestamp' ? { unit: 'millisecond' } : {}),
     });
+  }
+  for (const f of SINK_COMPUTED) {
+    if (STREAM_TYPE[f.name]) {
+      problems.push(`${f.name} is both SINK_COMPUTED and STREAM_TYPE — it cannot be derived and supplied`);
+      continue;
+    }
+    fields.push({ name: f.name, type: f.type, required: f.required });
   }
   const seen = new Set(columns.map((c) => c.name));
   for (const name of [...Object.keys(STREAM_TYPE), ...NOT_SHIPPED]) {
