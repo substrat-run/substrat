@@ -34,13 +34,17 @@ test/entities.test.ts  the entity registry held to the tables its migrations cre
 ```
 
 `src/operations.ts` is where an operation is declared; `src/module.ts` holds only its body.
-`src/routes.ts` derives every route from the `http` each operation declares, through
+`src/routes.ts` derives every *operation* route from the `http` each operation declares, through
 `mountOperations` from [`@substrat-run/vertical-host`](/reference/vertical-host), and both
-`server.ts` and `worker.ts` mount that one derivation — so a new route is a declaration on its
-operation, never a handler added to one entrypoint. The permission keys `defineOperations`
+`server.ts` and `worker.ts` mount that one derivation — so a new operation route is a declaration
+on its operation, never a handler added to one entrypoint. Two kinds of route stay hand-written
+and are meant to: the generic `POST /api/invoke` transport `routes.ts` registers above the
+derived table, which keeps an operation that declares no `http` of its own reachable on both
+hosts; and each entrypoint's own auth-shaped routes, which answer "who am I on THIS host" and
+cannot be shared — `/api/auth/*` and `/api/me` in `server.ts`, `/api/me` in `worker.ts`. The permission keys `defineOperations`
 takes are the same array `src/provision.ts` hands `definePermissions({ …, keys })`, which throws
 at module load when those keys and `MODULES` disagree. [Agent rules](/guide/agent-rules) is
-the full layout, verbatim from the `AGENTS.md` the scaffolder writes.
+the same layout, emitted from the `AGENTS.md` the scaffolder writes.
 
 **The instruction layer** — `AGENTS.md` (the rules) and `.substrat/playbook.md` (the build
 flow), plus a command stub per tool so Claude Code, Cursor and opencode all read the *same*
@@ -104,14 +108,23 @@ app.use('*', invocationLog<Env>({
 ```
 
 [`invocationLog`](/reference/kernel#trusting-the-edges) from `@substrat-run/kernel` writes one
-line per invocation stamped with the tenant and scope the router asserted. Cloudflare keys
+line per *routed* invocation, stamped with the tenant and scope the router asserted. An
+invocation whose assertion it cannot accept — an un-routed local request, a missing, malformed or
+unverifiable one — emits no line at all, deliberately: a line with no tenant is one nothing may
+show a tenant, and inventing one is the only way this could leak. So an empty local log is the
+contract working, not a fault to chase. Cloudflare keys
 observability on the worker script, and one script serves every tenant that installed the
 vertical, so this line is the only thing that files your invocations under the tenant they
 served — without it the app's Observability page stays empty and says nothing about why. It
 must come before every route because Hono runs handlers in registration order and stops at the
-one that answers, so a route registered above it is never logged. The stamp is taken from the
-*verified* router assertion (`routerSecret`), never from the header. `pnpm lint:invocation-log`
-refuses a missing, late or secretless mount.
+one that answers, so a route registered above it is never logged. On the deployed path the stamp
+is taken from the *verified* router assertion (`routerSecret`), never from the header — the same
+verification the vertical's own `nodeFor` does, with the same secret, and a failed one writes
+nothing. `allowUnsigned` is the local-only exception to that, and the two knobs must be given the
+same answers here as in `nodeFor`: it accepts the `x-substrat-*` headers unverified so an
+un-routed dev instance still logs, which anywhere a secret is configured would make the tenant a
+caller-controlled claim again. Keep it bound to `ALLOW_DEV_NODE`, and keep `ALLOW_DEV_NODE` out of
+production. `pnpm lint:invocation-log` refuses a missing, late or secretless mount.
 
 ## Dependency-free by design
 

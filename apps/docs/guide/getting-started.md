@@ -54,7 +54,7 @@ src/module.ts       the operation handlers, bound to operations.ts
 src/provision.ts    roles and the permission surface `substrat push` reads
 src/seed.ts         a world to develop against
 src/personas.ts     the local dev cast you sign in as
-src/routes.ts       the HTTP API, derived from operations.ts — no route table
+src/routes.ts       the HTTP API — operation routes derived from operations.ts
 src/server.ts       a Node dev server (SQLite adapter)
 src/worker.ts       the Cloudflare entry, via @substrat-run/vertical-host
 src/config-do.ts    per-instance settings (Cloudflare only)
@@ -62,8 +62,11 @@ test/scenario.test.ts · test/entities.test.ts
 AGENTS.md · .substrat/playbook.md · .claude/ · .cursor/ · .opencode/
 ```
 
-A route is never written by hand: declare `http` on the operation in `src/operations.ts` and
-both `server.ts` and `worker.ts` serve it. The one line `src/worker.ts` must keep first is its
+An operation route is never written by hand: declare `http` on the operation in
+`src/operations.ts` and both `server.ts` and `worker.ts` serve it. What stays hand-written is
+only what the operations do not declare — the generic `POST /api/invoke` transport in
+`routes.ts`, and each entrypoint's own auth routes (`/api/auth/*` and `/api/me` in `server.ts`,
+`/api/me` in `worker.ts`). The one line `src/worker.ts` must keep first is its
 `invocationLog` mount — see [create-substrat](/reference/create-substrat#signing-in-locally).
 
 There is no `wrangler.jsonc` and you never write one. The `substrat` block in

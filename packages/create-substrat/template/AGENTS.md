@@ -46,11 +46,13 @@ src/migrations.ts      the SqlMigration[]                         ← module cod
 src/module.ts          the handlers, bound to the declaration      ← module code
 src/provision.ts       MODULES, ROLES, grant shapes — node-free    ← module code
 src/seed.ts            host, tenants, demo cast, seed world        ← harness
+src/personas.ts        the dev cast, read by the issuer and the seed ← harness
 src/routes.ts          the routes, DERIVED from the operations     ← harness
 src/server.ts          the dev entrypoint (node + persona picker)   ← harness
 src/worker.ts          the deployable Cloudflare worker             ← harness
 src/config-do.ts       per-instance config store (Cloudflare only)  ← harness
 test/scenario.test.ts  the scenario — including the denials
+test/entities.test.ts  the registry, held to the tables it migrates
 ```
 
 **A new route is an `http` declaration on its operation, never a handler in an
