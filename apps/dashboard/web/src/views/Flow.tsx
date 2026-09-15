@@ -209,8 +209,14 @@ function FlowMap({ graph, app }: { graph: FlowGraph; app: AppRow }) {
         {graph.nodes.map((n) => {
           const href = n.kind === 'event' ? eventPath(n.label) : null;
           const reaches = graph.edges.filter((e) => e.from === n.id).map((e) => byId.get(e.to)?.label ?? e.to);
+          // `silent` is one dashed treatment carrying two claims, and only the event
+          // one is unbounded: a declared type with nothing in the retained events has
+          // never been recorded, while a connection dashed by #1234 has merely had
+          // nothing through it in the sweep window. Its own sublabel — read out just
+          // above — states that bound, so appending "never recorded" here would tell a
+          // screen-reader user something stronger than the node itself says.
           const text = `${n.kind}: ${n.label}${n.sublabel ? `, ${n.sublabel}` : ''}${
-            n.silent ? ', never recorded' : ''
+            n.silent && n.kind === 'event' ? ', never recorded' : ''
           }${reaches.length > 0 ? `. Reaches ${reaches.join(', ')}` : '. Reaches nothing declared'}.`;
           return (
             <li key={`sr:${n.id}`}>

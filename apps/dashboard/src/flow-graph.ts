@@ -186,13 +186,20 @@ export function deriveFlowGraph(input: {
   /** False when the facet was truncated, so a missing type proves nothing. */
   observedComplete: boolean;
   /**
-   * Per provider, whether a bound connection has actually been USED (#1234 asks for
-   * "sweep state on connection edges"). Already derived by `deriveConnectionSweep`,
-   * which owns the one judgement that matters — that no retained run means "not in
-   * the window", never "never".
+   * Whether a bound connection has actually been USED (#1234 asks for "sweep state on
+   * connection edges"). Already derived by `deriveConnectionSweep`, which owns the one
+   * judgement that matters — that no retained run means "not in the window", never
+   * "never".
+   *
+   * One entry per CONNECTION, not per provider, and the node aggregates them itself: a
+   * tenant can hold several connections to one provider (the key includes the external
+   * account) while the map draws the provider once. Handing this in pre-reduced would
+   * decide that aggregation somewhere that cannot see which of them the node calls live.
    */
   connectionUse?: readonly {
     provider: string;
+    /** `status === 'active'` — the rest are lapsed, and the node's `live` excludes them. */
+    usable: boolean;
     lastSweptAt: string | null;
     idle: boolean;
     /** The sweep record could not be read — neither used nor unused is known. */
@@ -366,10 +373,26 @@ export function deriveFlowGraph(input: {
       const status: FlowNode['status'] = live ? 'ok' : forProvider.length === 0 ? 'warn' : 'danger';
       // #1234: the USE state, not only the binding state. A connection can be perfectly
       // connected and doing nothing, which the map could not previously say.
-      const use = connectionUse?.find((u) => u.provider === provider);
-      // Only meaningful for a LIVE connection: an unusable one's silence is explained
-      // by the lapse, and the sweep derivation already declines to call it idle.
-      const idle = live && use?.idle === true;
+      //
+      // Aggregated across every LIVE connection to this provider, because the node is
+      // drawn once per provider and a tenant may hold several — one per external
+      // account. Taking any single row to speak for the node was wrong in the direction
+      // that matters: the sweep rows sort idle-first, so one dormant account would have
+      // dashed a provider another account was driving daily. The lapsed rows are
+      // dropped here rather than judged: their silence is explained by the lapse, which
+      // the sweep derivation already declines to call idle, and a use recorded before
+      // one lapsed is not evidence the live one is doing anything.
+      const uses = (connectionUse ?? []).filter((u) => u.provider === provider && u.usable);
+      const lastUsed = uses.reduce<string | null>(
+        (newest, u) => (u.lastSweptAt !== null && (newest === null || u.lastSweptAt > newest) ? u.lastSweptAt : newest),
+        null,
+      );
+      // Every live account known to be idle, and none of them unreadable: one account
+      // still working, or one record that could not be read, is enough to withhold the
+      // claim — `idle` is already false on an unread row, so `every` carries both.
+      const idle = live && uses.length > 0 && uses.every((u) => u.idle);
+      // Nothing used, nothing claimable: at least one record we could not read.
+      const unreadable = !idle && lastUsed === null && uses.some((u) => u.unknown);
       return {
         id: `connection:${provider}`,
         kind: 'connection' as const,
@@ -390,10 +413,10 @@ export function deriveFlowGraph(input: {
         title: live
           ? idle
             ? `${provider} is connected, and nothing has passed through it in the last ${sweepWindowDays ?? 14} days. Older runs are not kept, so this is not proof it has never been used.`
-            : use?.unknown === true
+            : unreadable
               ? `${provider} is connected. Whether anything has passed through it could not be read, which is not the same as nothing having.`
-              : use?.lastSweptAt
-                ? `${provider} is connected; last used ${new Date(use.lastSweptAt).toLocaleDateString()}.`
+              : lastUsed !== null
+                ? `${provider} is connected; last used ${new Date(lastUsed).toLocaleDateString()}.`
                 : `${provider} is connected.`
           : forProvider.length === 0
             ? `This app is set up to use ${provider}, and nobody has connected it. Work that needs it waits rather than failing.`

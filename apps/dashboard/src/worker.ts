@@ -2450,6 +2450,7 @@ app.get('/api/apps/:scopeId/flow', async (c) => {
       // #1234 asks for sweep state ON the connection edges, not only beside them.
       connectionUse: connectionSweep.rows.map((r) => ({
         provider: r.provider,
+        usable: r.status === 'active',
         lastSweptAt: r.lastSweptAt,
         idle: r.idle,
         unknown: r.unknown,

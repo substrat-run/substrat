@@ -315,7 +315,7 @@ describe('deriveFlowGraph (#1234)', () => {
       ...base,
       requires: ['scrive'],
       connections: [{ provider: 'scrive', status: 'active' }],
-      connectionUse: [{ provider: 'scrive', lastSweptAt: null, idle: true, unknown: false }],
+      connectionUse: [{ provider: 'scrive', usable: true, lastSweptAt: null, idle: true, unknown: false }],
       sweepWindowDays: 14,
     });
     const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
@@ -334,7 +334,7 @@ describe('deriveFlowGraph (#1234)', () => {
       requires: ['scrive'],
       connections: [{ provider: 'scrive', status: 'active' }],
       connectionUse: [
-        { provider: 'scrive', lastSweptAt: '2026-09-10T00:00:00Z', idle: false, unknown: false },
+        { provider: 'scrive', usable: true, lastSweptAt: '2026-09-10T00:00:00Z', idle: false, unknown: false },
       ],
       sweepWindowDays: 14,
     });
@@ -351,7 +351,7 @@ describe('deriveFlowGraph (#1234)', () => {
       ...base,
       requires: ['scrive'],
       connections: [{ provider: 'scrive', status: 'active' }],
-      connectionUse: [{ provider: 'scrive', lastSweptAt: null, idle: false, unknown: true }],
+      connectionUse: [{ provider: 'scrive', usable: true, lastSweptAt: null, idle: false, unknown: true }],
       sweepWindowDays: 14,
     });
     const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
@@ -367,7 +367,7 @@ describe('deriveFlowGraph (#1234)', () => {
       ...base,
       requires: ['scrive'],
       connections: [{ provider: 'scrive', status: 'expired' }],
-      connectionUse: [{ provider: 'scrive', lastSweptAt: null, idle: false, unknown: false }],
+      connectionUse: [{ provider: 'scrive', usable: false, lastSweptAt: null, idle: false, unknown: false }],
       sweepWindowDays: 14,
     });
     const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
@@ -386,5 +386,94 @@ describe('deriveFlowGraph (#1234)', () => {
     const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
     expect(node.sublabel).toBe('connected');
     expect(node.silent).toBe(false);
+  });
+  it('does not let ONE idle account speak for a provider another is driving', () => {
+    // A tenant can hold several connections to one provider — the key includes the
+    // external account — while the map draws the provider once. The sweep rows arrive
+    // sorted idle-first, so reading the first row for the provider dashed a connection
+    // that was being used daily: the worst direction to be wrong in, because the node
+    // then sends somebody to investigate a working integration.
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [
+        { provider: 'scrive', status: 'active' },
+        { provider: 'scrive', status: 'active' },
+      ],
+      connectionUse: [
+        { provider: 'scrive', usable: true, lastSweptAt: null, idle: true, unknown: false },
+        { provider: 'scrive', usable: true, lastSweptAt: '2026-09-14T00:00:00Z', idle: false, unknown: false },
+      ],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.sublabel).toBe('connected');
+    expect(node.silent).toBe(false);
+    expect(node.title).toMatch(/last used/);
+  });
+
+  it('calls a provider unused only when EVERY live account is idle', () => {
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [
+        { provider: 'scrive', status: 'active' },
+        { provider: 'scrive', status: 'active' },
+      ],
+      connectionUse: [
+        { provider: 'scrive', usable: true, lastSweptAt: null, idle: true, unknown: false },
+        { provider: 'scrive', usable: true, lastSweptAt: null, idle: true, unknown: false },
+      ],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.sublabel).toBe('connected · unused 14d');
+    expect(node.silent).toBe(true);
+  });
+
+  it('withholds the idle claim when one of several accounts could not be read', () => {
+    // Absence is only evidence when the record was read, and that holds per account:
+    // one unreadable record is enough to make "nothing has passed through" unprovable
+    // for the provider as a whole.
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [
+        { provider: 'scrive', status: 'active' },
+        { provider: 'scrive', status: 'active' },
+      ],
+      connectionUse: [
+        { provider: 'scrive', usable: true, lastSweptAt: null, idle: true, unknown: false },
+        { provider: 'scrive', usable: true, lastSweptAt: null, idle: false, unknown: true },
+      ],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.silent).toBe(false);
+    expect(node.sublabel).toBe('connected');
+    expect(node.title).toMatch(/could not be read/);
+  });
+
+  it("does not let a LAPSED account's last use vouch for the live one", () => {
+    // The lapsed row can carry a real `lastSweptAt` from before it lapsed. Reading it
+    // here would answer "last used <date>" for a live account that has had nothing
+    // through it at all — the idle finding, hidden by a connection the node's own
+    // `live` flag already excludes.
+    const g = deriveFlowGraph({
+      ...base,
+      requires: ['scrive'],
+      connections: [
+        { provider: 'scrive', status: 'active' },
+        { provider: 'scrive', status: 'expired' },
+      ],
+      connectionUse: [
+        { provider: 'scrive', usable: true, lastSweptAt: null, idle: true, unknown: false },
+        { provider: 'scrive', usable: false, lastSweptAt: '2026-09-14T00:00:00Z', idle: false, unknown: false },
+      ],
+      sweepWindowDays: 14,
+    });
+    const node = g.nodes.find((n) => n.id === 'connection:scrive')!;
+    expect(node.sublabel).toBe('connected · unused 14d');
+    expect(node.silent).toBe(true);
   });
 });
