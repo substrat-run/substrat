@@ -68,6 +68,7 @@ import {
   type DenialWindowRow,
   PermissionDenied,
   assertImpersonationWrites,
+  assertModuleEnqueueableKind,
   impersonationStampOf,
   type ConsumerHandler,
   type GuardPredicate,
@@ -3101,6 +3102,9 @@ export function defineScopeDO(
         requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
           assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
           const input = platformRequestInput.parse(request);
+          // #1474: a platform-authored kind (`sweep-runs`) never comes from module code —
+          // the sweeper enqueues it through `enqueueSweepRuns`, which does not pass here.
+          assertModuleEnqueueableKind(input.kind);
           // Backpressure (platform-intents.md): refuse when the scope already holds too many pending
           // intents, so a stuck or runaway vertical cannot flood the platform drain.
           const pending = Number(

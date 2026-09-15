@@ -211,6 +211,7 @@ import {
   IMPERSONATION_DDL,
   ImpersonationRefused,
   assertImpersonationWrites,
+  assertModuleEnqueueableKind,
   assertSessionUsable,
   impersonationByIdQuery,
   impersonationListQuery,
@@ -8174,6 +8175,9 @@ export class SqliteScopeHost implements ScopeHost {
       requestPlatform: (request: PlatformRequestInput): PlatformRequestId => {
         assertImpersonationWrites(impersonation, 'ctx.requestPlatform');
         const input = platformRequestInput.parse(request);
+        // #1474: a platform-authored kind (`sweep-runs`) is the platform's to enqueue, never
+        // module code's — its drain handler writes schedule verdicts the dashboard trusts.
+        assertModuleEnqueueableKind(input.kind);
         // Backpressure (platform-intents.md): refuse when the scope already holds too many pending
         // intents, so a stuck or runaway vertical cannot flood the platform drain.
         const pending = (
