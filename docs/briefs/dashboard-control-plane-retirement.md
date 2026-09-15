@@ -96,14 +96,29 @@ instance — a different Durable Object namespace.
 
 A DO is reachable only through a binding, so the rows to be migrated can be addressed by
 **the dashboard worker and nothing else**. Not the console, not the CP API, not a script
-with staff credentials. Every step below therefore executes inside that worker, which is
-the fact that makes this a code change rather than an operator task.
+with staff credentials. Steps 1–4 — the ones that touch rows: inventory, backfill,
+reconciliation and the delta — therefore execute inside that worker, which is the fact that
+makes this a code change rather than an operator task. Steps 5–7 are deployment and binding
+changes rather than operations against the data, and are ordinary shipping.
 
 That does **not** mean a staff surface in the dashboard's UI, and it should not become a
 standing route: this is a one-off migration, and a permanent privileged endpoint outliving
 a job that runs a handful of times is a worse trade than the migration itself. Whatever
 entry point the inventory and backfill use is expected to be removed in the same series
 that drops the binding — step 7 already deletes more than this.
+
+**What that entry point iterates, since "for every team" has to come from somewhere.** The
+two sides are reached asymmetrically, and only one of them enumerates. The local directory
+is read through `hostFor(env)`, whose `admin.listTenants(actor)` is unnarrowed and pages
+the whole `ControlPlaneDO` — that list, not the authenticated user's, is the migration's
+inventory; `/api/me` answers only for the caller's own teams and is the wrong source by
+construction. The shared side is reached through `controlPlaneFor(env, tenantId)`, which
+returns a `TenantNarrowedControlPlane` pinned to one tenant and injects it into every
+write. So the backfill is a loop: enumerate locally once, then construct one narrowed
+plane per tenant and write that tenant's rows through it. The narrowing is a property
+worth keeping rather than a limit to work around — it is what stops a mis-keyed row
+landing under another team — and `listTenants` records a K-24 access entry as it reads,
+so the enumeration is itself in the trail.
 
 ## Proposed sequence
 
