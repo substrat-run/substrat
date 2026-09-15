@@ -1,5 +1,53 @@
 # @substrat-run/dashboard
 
+## 0.35.3
+
+### Patch Changes
+
+- cb0c9b0: An app's connections now show when each was last actually used.
+
+  A connection can be set up perfectly and never do anything — the credential is valid, the integration is listed, and nothing has passed through it for weeks. That gap was invisible: the only signal was whether a connection existed and whether it still worked, never whether it was earning its keep.
+
+  Each connection now shows when it was last used, and whether that most recent use failed — a failure that a later successful use has already superseded is not carried forward. A connection with nothing recorded is called out, with one important qualification stated in the copy rather than left to be inferred: the usage record is kept for a fixed window and then discarded, so "nothing recorded" means nothing in that window — not that a connection has never been used. Something that runs monthly looks the same as something abandoned, and telling a customer to disconnect a working integration would be a worse failure than staying quiet.
+
+  A connection that has expired or been revoked is not also reported as unused. That is the same fact twice, and it points at the wrong fix: the thing to do is reconnect it, not wonder why it is idle.
+
+- 0639bbb: The flow map now shows whether a connection is actually doing anything, not just whether it is connected.
+
+  A connection that works and carries nothing looked identical on the map to one carrying the whole app. That fact arrived recently but only as a list underneath; the map — the thing you look at to answer "is this wired and is it running" in one glance — still showed only whether the credential was good.
+
+  A connected provider that nothing has passed through in the retained window is now drawn the same way as a declared event that has never happened: present, wired, and with nothing recorded through it. The tooltip states the window, because older activity is not kept and something used monthly looks the same as something abandoned.
+
+  Where a provider holds more than one connection — one per external account — the map draws it once and answers for all of them together. It calls the provider unused only when every live account is known to be idle: one account still carrying traffic keeps it plain, and one account whose record could not be read withholds the claim rather than guessing at it.
+
+  Two states it refuses to collapse into that. A connection whose usage record could not be read says exactly that, rather than appearing unused — those are different answers and only one is about the connection. And a connection that has expired or been revoked is not also marked unused: that is one fact twice, and the fix is to reconnect it.
+
+  The map and the list underneath are now worked out once and shown twice, so they cannot disagree about what has been used.
+
+- a847a75: Documentation only: an inventory and migration plan for retiring the dashboard's own control-plane directory, plus a correction to the architecture note describing it.
+
+  The note said that directory holds identity links, mirrored into the shared one. It holds considerably more — the dashboard runs as a vertical with a scope per team, so it is that host's whole directory: tenants, scopes, roles, grants, entitlements, its catalogue and its audit log. Only the tenant row and the identity links are mirrored anywhere; the scope, roles, grants and entitlements exist in one place and nowhere else, and the catalogue is half local and half the shared plane's, merged when read.
+
+  That difference changes what the move is. The plan now lists what is held and who writes it, the three questions that can only be answered by reading production, the part that cannot be moved at all without someone deciding to lose it, and a sequence where everything before the cutover is reversible by putting one binding back.
+
+  Nothing has been run. This is the data move written down for review, which is what the migration checkpoint asks for.
+
+- Updated dependencies [c697b15]
+- Updated dependencies [db6a96f]
+- Updated dependencies [221f94a]
+- Updated dependencies [a5d24f7]
+- Updated dependencies [f4d12b7]
+- Updated dependencies [5dde6a5]
+  - @substrat-run/contracts@0.112.0
+  - @substrat-run/kernel@0.112.0
+  - @substrat-run/adapter-cloudflare@0.112.0
+  - @substrat-run/connector-fortnox@0.4.14
+  - @substrat-run/demo-callout@0.3.30
+  - @substrat-run/engine-invites@0.7.11
+  - @substrat-run/engine-invoicing@0.10.2
+  - @substrat-run/engine-protocol@0.12.17
+  - @substrat-run/engine-workorder@0.11.11
+
 ## 0.35.2
 
 ### Patch Changes
