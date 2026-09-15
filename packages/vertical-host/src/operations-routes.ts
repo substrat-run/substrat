@@ -484,6 +484,13 @@ export function mountOperations(
       // BODY for a read — a cache with none of a cache's rules about freshness,
       // and one a client never asked for.
       const idempotencyKey = unsafe ? c.req.header(IDEMPOTENCY_KEY_HEADER) : undefined;
+      // #1237: set by `invocationLog`, which wraps every route (`lint:invocation-log`
+      // refuses a vertical that mounts it below only part of its surface). Read
+      // defensively: a host that somehow lacks it emits events with no invocation id,
+      // which reads as unrecorded rather than failing the call.
+      const invocationId = (c as { get?: (k: string) => unknown }).get?.('substratInvocationId') as
+        | string
+        | undefined;
       let version: string | null | undefined;
       let replayed = false;
       // Options are supplied when EITHER concern applies: `concurrency` is an
@@ -494,6 +501,11 @@ export function mountOperations(
           ? {
               ...(ifMatch === undefined ? {} : { ifMatch }),
               ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+              // #1237: the id `invocationLog` minted for this request, so every event
+              // the call emits carries it and the trace view can group them — and join
+              // them to the line that knows the call's duration. Absent when the
+              // middleware is not mounted, which `lint:invocation-log` already refuses.
+              ...(invocationId === undefined ? {} : { invocationId }),
               ...(guarded
                 ? {
                     onEntityVersion: (v: string | null) => {

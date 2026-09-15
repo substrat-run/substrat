@@ -1021,6 +1021,13 @@ export const flowMod: ModuleRegistration = {
     // #1237: the causal edge, straight off the spine. Both types, so a test can see
     // that the operation-emitted one records no cause and the consumer-emitted one
     // names the event it reacted to.
+    // #1237: the invocation column, straight off the spine — so a test can see that
+    // an operation's own event and the events its CONSUMERS emitted share one id.
+    'flow/invocations': ((ctx) =>
+      ctx.sql.query(
+        `SELECT id, type, invocation_id FROM _substrat_outbox
+         WHERE type IN ('flow.step1', 'flow.step2') ORDER BY id`,
+      )) as OperationHandler<never, unknown>,
     'flow/causes': ((ctx) =>
       ctx.sql.query(
         `SELECT id, type, operation, caused_by FROM _substrat_outbox

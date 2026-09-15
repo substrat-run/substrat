@@ -4406,6 +4406,53 @@ export function scopeHostContractSuite(
       expect(tree.count).toBe(2);
     });
 
+    it('stamps every event of ONE call with the invocation, consumers included (#1237)', async () => {
+      // The join the spine could not make. `causedBy` links one event to one other;
+      // this groups everything a single call did — and a consumer's emit belongs to it,
+      // because dispatch runs in the same post-commit tail.
+      const sInv = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sInv, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sInv);
+      const stub = await host.getScope(alice, t1, sInv);
+
+      const first = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: first });
+
+      const rows = (await stub.invoke('flow/invocations')) as {
+        type: string;
+        invocation_id: string | null;
+      }[];
+      expect(rows).toHaveLength(2);
+      // BOTH: the operation's own event, and the one its consumer emitted.
+      expect(rows.map((r) => r.invocation_id)).toEqual([first, first]);
+
+      // A SECOND call does not inherit the first's id — the field is cleared after each
+      // invocation, which is the leak that would otherwise file one call's work under
+      // another's.
+      const second = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: second });
+      const after = (await stub.invoke('flow/invocations')) as {
+        type: string;
+        invocation_id: string | null;
+      }[];
+      expect(after).toHaveLength(4);
+      expect(new Set(after.map((r) => r.invocation_id))).toEqual(new Set([first, second]));
+    });
+
+    it('records no invocation id when the caller carried none (#1237)', async () => {
+      // A seed, a test, an internal call. Null is the honest answer — not an invented
+      // id, which would group unrelated work under one call.
+      const sNone = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sNone, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sNone);
+      const stub = await host.getScope(alice, t1, sNone);
+      await stub.invoke('flow/produce');
+
+      const rows = (await stub.invoke('flow/invocations')) as { invocation_id: string | null }[];
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r) => r.invocation_id === null)).toBe(true);
+    });
+
     it('walks a real chain back to the operation that started it (#1237)', async () => {
       // The end-to-end half. `walkEventCause`'s own suite pins the five terminals over
       // a hand-built table; this proves the wiring — that a chain produced by an actual

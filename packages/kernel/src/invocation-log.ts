@@ -54,6 +54,7 @@
  * verification the vertical does for its own routing happens here, with the same secret
  * and the same dev opt-out, and a failed one writes nothing at all.
  */
+import { ulid } from './ulid.js';
 import { readRoutedNode, RouterAssertionError } from './routed-node.js';
 import type { HeaderReader } from './routed-node.js';
 
@@ -74,6 +75,13 @@ import type { HeaderReader } from './routed-node.js';
 export interface InvocationLogContext<Env = unknown> {
   req: { method: string; raw: { url: string; headers: HeaderReader } };
   res?: { status: number };
+  /**
+   * The framework's per-request store (#1237). Hono's `Context` has one; the type is
+   * structural and narrow on purpose, so it is declared optional — a caller that does
+   * not provide it simply gets no invocation id on the scope's events, which reads as
+   * unrecorded exactly like every other absent stamp.
+   */
+  set?: (key: 'substratInvocationId', value: string) => void;
   /** The worker's bindings — read ONLY through the options below, never otherwise. */
   env: Env;
 }
@@ -135,6 +143,18 @@ export interface InvocationLogLine {
   method: string;
   /** Path ONLY — see `pathOf`. */
   path: string;
+  /**
+   * #1237: the id every event this invocation emitted is stamped with.
+   *
+   * The join nothing could make before. `$metadata.requestId` correlates the LINES of
+   * one invocation, and it is stamped by the log platform at ingestion — no code here
+   * can read it, and the spine could not have been given it. So the platform mints its
+   * own, writes it here, and carries it to the scope on `InvokeOptions`.
+   *
+   * Which makes this line the other half of a trace: the events say what happened and
+   * in what order, and this says how long the whole call took and how it ended.
+   */
+  invocationId: string;
   /**
    * The response status as the caller received it — including the status `onError`
    * mapped a thrown error to.
@@ -207,6 +227,10 @@ export function invocationLog<Env = unknown>(
     // Host code, so a real clock is correct here — `ctx.now()` is the module-code rule,
     // and this middleware runs outside any operation's transaction.
     const started = Date.now();
+    // Minted per request, before anything can emit. A ULID so it sorts by time like
+    // every other id on the spine.
+    const invocationId = ulid();
+    c.set?.('substratInvocationId', invocationId);
     let threw = false;
     try {
       await next();
@@ -234,6 +258,7 @@ export function invocationLog<Env = unknown>(
           status: threw ? null : (c.res?.status ?? null),
           threw,
           durationMs: Date.now() - started,
+          invocationId,
         };
         console.log(JSON.stringify(line));
       }

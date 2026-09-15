@@ -559,6 +559,26 @@ export interface InvokeOptions {
    * a first request — which is enough of a debugging cost to be worth a callback.
    */
   readonly onIdempotentReplay?: () => void;
+  /**
+   * An id for the INVOCATION this call belongs to (#1237), minted by the transport.
+   *
+   * The spine records what each event was caused by (#1437) and which operation
+   * emitted it (#1231), and still cannot say which two events came from the same
+   * call. That is the join a trace view needs and the one nothing could make: the
+   * runtime's own request id is stamped by the log platform at ingestion, so no
+   * vertical code can read it, and a trace does not cross the dispatch hop
+   * (`invocation-log.ts`, verified in production).
+   *
+   * So the platform mints one, puts it in the invocation log line, and carries it
+   * here — where it is stamped onto every event the call emits. That makes an
+   * invocation's events groupable, and joins them to the line that knows the call's
+   * duration and status.
+   *
+   * Advisory and optional: absent, events carry no invocation id and read as
+   * unrecorded, exactly as they did before. It is never a permission or a filter —
+   * a caller inventing one can group its own events and nothing else.
+   */
+  readonly invocationId?: string;
 }
 
 /** The capability stub — the ONLY way code outside the scope reaches it. */
