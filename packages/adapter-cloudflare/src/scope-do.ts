@@ -1440,11 +1440,6 @@ export function defineScopeDO(
        */
       impersonation?: { honoured: boolean };
     }> {
-      // #1237: the invocation this call belongs to, for the duration of it. Cleared in
-      // the `finally` at the end — the DO outlives the request, and a value left set
-      // would stamp a later alarm-driven drain with a call it had nothing to do with.
-      this.invocationId = invokeOptions?.invocationId ?? null;
-      try {
       await this.ensureMigrations();
       const handler = this.operations.get(operation);
       // `not_found`, not a bare throw (#113): every vertical hand-matched this message
@@ -1532,6 +1527,18 @@ export function defineScopeDO(
       // runs its `finally` when the RETURN executes rather than when `p` settles — so
       // the invocation id was cleared before the queued body had emitted anything.
       return await this.queue.enqueue(async () => {
+        // #1237: the invocation this call belongs to, for the duration of it.
+        //
+        // Set INSIDE the queued body, which is the only region where one call holds the
+        // DO to itself. The input gate reopens around every await, and there are two
+        // before this point (`ensureMigrations`, `requestFingerprint`) — so assigning at
+        // the top of the RPC let a second call overwrite the field while the first was
+        // suspended, and the first would then emit under the second's id and clear it on
+        // the way out. `OperationQueue` is what makes this a plain field rather than a
+        // stack: the bodies do not interleave, so set-and-clear here brackets exactly
+        // one call. Same placement as the SQLite adapter's actor task, for this reason.
+        this.invocationId = invokeOptions?.invocationId ?? null;
+        try {
         let result: unknown;
         let committedVersion: string | null = null;
         // #116: set when this invocation was answered from a recording rather
@@ -1700,14 +1707,14 @@ export function defineScopeDO(
               }
             : {}),
         };
+        } finally {
+          // Cleared on BOTH paths. The DO outlives the request, so a value left set here
+          // is read by whatever runs next — an alarm-driven drain, a consumer retry —
+          // and stamps its events with a call they had nothing to do with. A wrong
+          // recorded fact, which is worse than the honest NULL this column uses.
+          this.invocationId = null;
+        }
       });
-      } finally {
-        // Cleared on BOTH paths. The DO outlives the request, so a value left set here
-        // is read by whatever runs next — an alarm-driven drain, a consumer retry —
-        // and stamps its events with a call they had nothing to do with. A wrong
-        // recorded fact, which is worse than the honest NULL this column uses.
-        this.invocationId = null;
-      }
     }
 
     // -- attachments (#473): the metadata half of the attachment surface --------

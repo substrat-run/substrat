@@ -5727,6 +5727,10 @@ export class SqliteScopeHost implements ScopeHost {
           // exists on the outbox but not on the envelope `parseOutboxRow` returns,
           // whose `domainEvent.parse` strips anything it does not declare.
           causedBy: (r.caused_by as string | null) ?? null,
+          // Same lift, same reason. `drainedEvent` requires this field, and the `as never`
+          // below is what let it be missed: without it a SQLite-backed lake loses the
+          // call grouping permanently, while a Cloudflare-backed one keeps it.
+          invocationId: (r.invocation_id as string | null) ?? null,
         })) as never;
       },
       markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {
