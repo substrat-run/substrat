@@ -48,6 +48,7 @@ describe('createPipelinesEventSink', () => {
         'actor', 'caused_by', 'entity_id', 'entity_type', 'id', 'impersonation',
         'occurred_at', 'operation', 'payload', 'pii_class', 'authorization',
         'schema_version', 'scope_id', 'subject_id', 'tenant_id', 'type', 'version',
+        'bytes',
       ].sort(),
     );
     // `entity` is ONE ref on the envelope and TWO columns in the outbox; the schema
@@ -103,6 +104,57 @@ describe('createPipelinesEventSink', () => {
       '01J000000000000000000000A1', '01J000000000000000000000A2',
       '01J000000000000000000000A3', '01J000000000000000000000A4',
     ]);
+  });
+
+  it('carries the row’s own UTF-8 size, so per-tenant volume is answerable', async () => {
+    // Every tenant's events share one parquet file (a Data Catalog sink cannot partition),
+    // so R2 reports no per-tenant storage and this column is the only honest measure —
+    // summed over rows deduplicated by `(tenant_id, id)`, since shipping is at-least-once
+    // and a retried batch re-lands its prefix. `bytes` is deterministic per event, which
+    // is what lets a DISTINCT collapse those duplicates instead of doubling them.
+    const { requests, stream } = fakeStream();
+    await createPipelinesEventSink(stream).ship(scope, [event({ payload: { blob: 'x'.repeat(1000) } })]);
+    const row = requests[0]![0]!;
+    expect(typeof row.bytes).toBe('number');
+    // It measures the event's data and EXCLUDES itself — the alternative is a fixpoint,
+    // since writing the number changes the length that produced it.
+    const { bytes, ...withoutBytes } = row;
+    expect(bytes).toBe(new TextEncoder().encode(JSON.stringify(withoutBytes)).length);
+    expect(bytes as number).toBeGreaterThan(1000);
+  });
+
+  it('counts multibyte characters as their UTF-8 size, so billing is not 1/3 short', async () => {
+    // The same ruler bug, on the billing side rather than the budget: `.length` would
+    // report a third of the truth for three-byte characters, and undercharge every tenant
+    // whose data is not ASCII — which in this repo's own market is most of them.
+    const { requests, stream } = fakeStream();
+    await createPipelinesEventSink(stream).ship(scope, [event({ payload: { blob: '一'.repeat(100) } })]);
+    const row = requests[0]![0]!;
+    const { bytes, ...rest } = row;
+    expect(bytes).toBe(new TextEncoder().encode(JSON.stringify(rest)).length);
+    // 100 three-byte characters ⇒ ~300 bytes of payload alone; a code-unit count is ~100.
+    expect(bytes as number).toBeGreaterThan(300);
+  });
+
+  it('measures UTF-8 bytes, not UTF-16 code units, against the request budget', async () => {
+    // `.length` counts code units: ordinary Swedish text measures ~13% under its real
+    // UTF-8 size, and a three-byte character measures at a third. Cloudflare's ceiling is
+    // BYTES, so the wrong ruler lets a batch pass here and be rejected there — and a
+    // rejected batch is a scope that never drains, because the next pass rebuilds the
+    // same one. Every character below is 3 bytes and 1 code unit, so a budget measured
+    // the old way sees a third of the truth and packs everything into one request.
+    const { requests, stream } = fakeStream();
+    const threeByte = '一'.repeat(700_000); // 2.1 MB in UTF-8, 700k UTF-16 units
+    await createPipelinesEventSink(stream).ship(scope, [
+      event({ id: '01J000000000000000000000B1', payload: { blob: threeByte } }),
+      event({ id: '01J000000000000000000000B2', payload: { blob: threeByte } }),
+    ]);
+    // 2 x 2.1 MB = 4.2 MB against a 4 MB budget ⇒ must split. Measured by `.length` it
+    // would read as 1.4 MB and ship as one request.
+    expect(requests.length).toBe(2);
+    for (const r of requests) {
+      expect(new TextEncoder().encode(JSON.stringify(r)).length).toBeLessThan(5 * 1024 * 1024);
+    }
   });
 
   it('refuses a single event too large to ship, instead of skipping it', async () => {
