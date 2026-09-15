@@ -21,8 +21,15 @@
  */
 import { SWEEP_RUNS_KIND, substratError } from '@substrat-run/contracts';
 
-/** Kinds `ctx.requestPlatform` refuses: the platform enqueues these itself. */
-export const PLATFORM_AUTHORED_KINDS: ReadonlySet<string> = new Set([SWEEP_RUNS_KIND]);
+/**
+ * Kinds `ctx.requestPlatform` refuses: the platform enqueues these itself.
+ *
+ * Deliberately NOT exported. `ReadonlySet` is a claim the type checker makes and
+ * the runtime does not, so an exported set is one `(s as Set<string>).delete(kind)`
+ * away from module code disarming its own guard. The assertion below is the whole
+ * public surface; the data behind it stays in this module.
+ */
+const PLATFORM_AUTHORED_KINDS: ReadonlySet<string> = new Set([SWEEP_RUNS_KIND]);
 
 /**
  * Refuse a platform-authored kind from module code. Throws a `forbidden`
