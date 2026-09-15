@@ -206,6 +206,8 @@ interface OutboxRow {
   /** #1237: the event this one reacted to. NULL = nothing was being delivered when
    *  it was emitted, or the row predates the column. */
   caused_by: string | null;
+  /** #1237: the invocation this event was emitted during. NULL = none was carried. */
+  invocation_id: string | null;
   payload: string | null;
 }
 
@@ -276,6 +278,12 @@ const KERNEL_DDL = `
     -- nothing was being delivered (an operation emitted it directly), or the row
     -- predates the column.
     caused_by TEXT,
+    -- #1237: the INVOCATION this event belongs to, minted by the transport and carried
+    -- on InvokeOptions. The spine could say what caused an event and which operation
+    -- emitted it, and still not say which two events came from the same call — the
+    -- runtime's request id is stamped by the log platform at ingestion, so no vertical
+    -- code can read it. NULL = the transport minted none, or the row predates the column.
+    invocation_id TEXT,
     drained_at TEXT
   );
   -- #1232: the freshness evaluator's read - MAX(occurred_at) per type, every pass,
@@ -1031,6 +1039,10 @@ export function defineScopeDO(
         // exists on the outbox but not on the envelope `parseOutboxRow` returns,
         // whose `domainEvent.parse` strips anything it does not declare.
         causedBy: r.caused_by ?? null,
+        // …and the invocation, for the same reason again: a lake that kept cause and
+        // dropped the call could say what set an event off and never which request did
+        // it, which is the grouping a trace is built on.
+        invocationId: r.invocation_id ?? null,
       })) as DrainedEvent[];
     }
 
@@ -1511,7 +1523,22 @@ export function defineScopeDO(
       // a pure hash of what the caller sent has no business inside a transaction.
       const fingerprint =
         idempotencyKey === undefined ? undefined : await requestFingerprint(operation, parsed);
-      return this.queue.enqueue(async () => {
+      // `return await`, not a bare return: the work is QUEUED, and `try { return p }`
+      // runs its `finally` when the RETURN executes rather than when `p` settles — so
+      // the invocation id was cleared before the queued body had emitted anything.
+      return await this.queue.enqueue(async () => {
+        // #1237: the invocation this call belongs to, for the duration of it.
+        //
+        // Set INSIDE the queued body, which is the only region where one call holds the
+        // DO to itself. The input gate reopens around every await, and there are two
+        // before this point (`ensureMigrations`, `requestFingerprint`) — so assigning at
+        // the top of the RPC let a second call overwrite the field while the first was
+        // suspended, and the first would then emit under the second's id and clear it on
+        // the way out. `OperationQueue` is what makes this a plain field rather than a
+        // stack: the bodies do not interleave, so set-and-clear here brackets exactly
+        // one call. Same placement as the SQLite adapter's actor task, for this reason.
+        this.invocationId = invokeOptions?.invocationId ?? null;
+        try {
         let result: unknown;
         let committedVersion: string | null = null;
         // #116: set when this invocation was answered from a recording rather
@@ -1680,6 +1707,13 @@ export function defineScopeDO(
               }
             : {}),
         };
+        } finally {
+          // Cleared on BOTH paths. The DO outlives the request, so a value left set here
+          // is read by whatever runs next — an alarm-driven drain, a consumer retry —
+          // and stamps its events with a call they had nothing to do with. A wrong
+          // recorded fact, which is worse than the honest NULL this column uses.
+          this.invocationId = null;
+        }
       });
     }
 
@@ -2583,6 +2617,9 @@ export function defineScopeDO(
         // null is honestly "unrecorded" for every legacy row — nothing can go back and
         // decide what a past consumer was reacting to.
         'ALTER TABLE _substrat_outbox ADD COLUMN caused_by TEXT',
+        // #1237: the invocation column on a DO created before it. Nullable, and the
+        // null is honestly "none was carried" for every legacy row.
+        'ALTER TABLE _substrat_outbox ADD COLUMN invocation_id TEXT',
       ]) {
         try {
           this.sql.exec(alter);
@@ -2792,6 +2829,15 @@ export function defineScopeDO(
      * another scope's emit the moment a consumer awaits.
      */
     private causedBy: string | null = null;
+    /**
+     * #1237: the invocation currently running in this DO, or null.
+     *
+     * DO-local, like `causedBy` and for a simpler reason: a Durable Object IS one
+     * scope, so there is no other scope's call to confuse it with. It still has to be
+     * cleared, because the DO outlives the request and a value left set would stamp a
+     * later alarm-driven drain with a call it had nothing to do with.
+     */
+    private invocationId: string | null = null;
 
     private async dispatch(tenantId: TenantId, scopeId: ScopeId): Promise<void> {
       for (let round = 0; round < 50; round++) {
@@ -3072,8 +3118,8 @@ export function defineScopeDO(
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, version, caused_by, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, caused_by, invocation_id, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             full.id,
             full.type,
             full.schemaVersion,
@@ -3096,6 +3142,8 @@ export function defineScopeDO(
             // way the version is read off its env. A fact about the surrounding
             // dispatch, never envelope data module code could set or branch on.
             this.causedBy,
+            // #1237: a fact about the surrounding CALL, like the version above.
+            this.invocationId,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
         },

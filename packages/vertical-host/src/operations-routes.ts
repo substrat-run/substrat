@@ -484,16 +484,35 @@ export function mountOperations(
       // BODY for a read — a cache with none of a cache's rules about freshness,
       // and one a client never asked for.
       const idempotencyKey = unsafe ? c.req.header(IDEMPOTENCY_KEY_HEADER) : undefined;
+      // #1237: set by `invocationLog`, which wraps every route (`lint:invocation-log`
+      // refuses a vertical that mounts it below only part of its surface). Read
+      // defensively: a host that somehow lacks it emits events with no invocation id,
+      // which reads as unrecorded rather than failing the call.
+      const invocationId = (c as { get?: (k: string) => unknown }).get?.('substratInvocationId') as
+        | string
+        | undefined;
       let version: string | null | undefined;
       let replayed = false;
-      // Options are supplied when EITHER concern applies: `concurrency` is an
-      // operation's declaration, a key is the caller's choice, and the two are
-      // independent. One bag, one pass — the seam #129 built and this declared into.
+      // Options are supplied when ANY of the three concerns applies: `concurrency` is an
+      // operation's declaration, a key is the caller's choice, and the invocation id is
+      // the platform's — all independent. One bag, one pass — the seam #129 built and
+      // this declared into.
+      //
+      // #1237 belongs in this condition and not only in the bag: the ordinary operation
+      // declares no concurrency and is called without an idempotency header, so gating on
+      // the first two left `invokeOptions` undefined and the id never reached the scope.
+      // That is the common path — most events would have gone unstamped while the two
+      // guarded kinds looked fine.
       const invokeOptions =
-        guarded || idempotencyKey !== undefined
+        guarded || idempotencyKey !== undefined || invocationId !== undefined
           ? {
               ...(ifMatch === undefined ? {} : { ifMatch }),
               ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
+              // #1237: the id `invocationLog` minted for this request, so every event
+              // the call emits carries it and the trace view can group them — and join
+              // them to the line that knows the call's duration. Absent when the
+              // middleware is not mounted, which `lint:invocation-log` already refuses.
+              ...(invocationId === undefined ? {} : { invocationId }),
               ...(guarded
                 ? {
                     onEntityVersion: (v: string | null) => {

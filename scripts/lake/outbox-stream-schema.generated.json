@@ -85,6 +85,11 @@
       "name": "caused_by",
       "type": "string",
       "required": false
+    },
+    {
+      "name": "invocation_id",
+      "type": "string",
+      "required": false
     }
   ]
 }

@@ -238,6 +238,23 @@ export const historyEntry = timelineEntry.extend({
    * the event came from a consumer, which neither field could establish alone.
    */
   causedBy: eventId.nullable(),
+  /**
+   * The INVOCATION this event was emitted during (#1237), or null.
+   *
+   * What `causedBy` cannot give: two events that came from the same call. A cause links
+   * one event to one other; an invocation groups everything a single request did,
+   * including what its consumers emitted in the same post-commit tail.
+   *
+   * Minted by the transport and carried on `InvokeOptions`, because nothing else could
+   * be: the runtime's own request id is stamped by the log platform at ingestion, so no
+   * vertical code can read it, and a trace does not cross the dispatch hop. The same id
+   * goes into the invocation log line, which is what joins an event to the call's
+   * duration and status.
+   *
+   * Null is two facts, as ever: the transport carried none (a seed, a test, an internal
+   * call), or the row predates the column.
+   */
+  invocationId: z.string().nullable(),
 });
 export type HistoryEntry = z.infer<typeof historyEntry>;
 
@@ -435,6 +452,13 @@ export const drainedEvent = domainEventShape
      * from a consumer, which neither field establishes alone.
      */
     causedBy: eventId.nullable(),
+    /**
+     * #1237, and here for the reason `causedBy` is (#1471): an event that leaves for
+     * the lake without it loses the grouping permanently. A cause survives the trip and
+     * the call it belonged to would not, so the lake could say what set an event off
+     * and never which request did it.
+     */
+    invocationId: z.string().nullable(),
   })
   .superRefine(piiInvariant);
 export type DrainedEvent = z.infer<typeof drainedEvent>;

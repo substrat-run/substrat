@@ -90,7 +90,7 @@ export interface TimelineReader {
 /** The envelope columns, in the order `mapTimelineRow` expects. */
 const TIMELINE_COLUMNS = 'id, type, occurred_at, actor';
 /** …plus what a history VIEW needs. See `historyEntry` for why two are nullable. */
-const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id, operation, version, caused_by`;
+const HISTORY_COLUMNS = `${TIMELINE_COLUMNS}, payload, authorization, impersonation, pii_class, subject_id, operation, version, caused_by, invocation_id`;
 
 interface TimelineRow {
   id: string;
@@ -108,6 +108,7 @@ interface HistoryRow extends TimelineRow {
   operation: string | null;
   version: string | null;
   caused_by: string | null;
+  invocation_id: string | null;
 }
 
 /**
@@ -193,6 +194,9 @@ function mapHistoryRow(row: HistoryRow): HistoryEntry {
     // distinction, and the pair (operation null + this set) is what finally
     // identifies a consumer emit, which neither field could do alone.
     causedBy: row.caused_by as EventId | null,
+    // #1237: which CALL this event belongs to — what groups an invocation's events,
+    // and joins them to the log line that knows its duration.
+    invocationId: row.invocation_id,
   };
 }
 

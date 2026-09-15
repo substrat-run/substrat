@@ -35,7 +35,8 @@ const DDL = `
     subject_id TEXT,
     operation TEXT,
     version TEXT,
-    caused_by TEXT
+    caused_by TEXT,
+    invocation_id TEXT
   )`;
 
 /** A ULID-shaped id, since `eventId` is branded and the walk binds it as one. */

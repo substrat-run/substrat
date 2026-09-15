@@ -4406,6 +4406,53 @@ export function scopeHostContractSuite(
       expect(tree.count).toBe(2);
     });
 
+    it('stamps every event of ONE call with the invocation, consumers included (#1237)', async () => {
+      // The join the spine could not make. `causedBy` links one event to one other;
+      // this groups everything a single call did — and a consumer's emit belongs to it,
+      // because dispatch runs in the same post-commit tail.
+      const sInv = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sInv, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sInv);
+      const stub = await host.getScope(alice, t1, sInv);
+
+      const first = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: first });
+
+      const rows = (await stub.invoke('flow/invocations')) as {
+        type: string;
+        invocation_id: string | null;
+      }[];
+      expect(rows).toHaveLength(2);
+      // BOTH: the operation's own event, and the one its consumer emitted.
+      expect(rows.map((r) => r.invocation_id)).toEqual([first, first]);
+
+      // A SECOND call does not inherit the first's id — the field is cleared after each
+      // invocation, which is the leak that would otherwise file one call's work under
+      // another's.
+      const second = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: second });
+      const after = (await stub.invoke('flow/invocations')) as {
+        type: string;
+        invocation_id: string | null;
+      }[];
+      expect(after).toHaveLength(4);
+      expect(new Set(after.map((r) => r.invocation_id))).toEqual(new Set([first, second]));
+    });
+
+    it('records no invocation id when the caller carried none (#1237)', async () => {
+      // A seed, a test, an internal call. Null is the honest answer — not an invented
+      // id, which would group unrelated work under one call.
+      const sNone = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sNone, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sNone);
+      const stub = await host.getScope(alice, t1, sNone);
+      await stub.invoke('flow/produce');
+
+      const rows = (await stub.invoke('flow/invocations')) as { invocation_id: string | null }[];
+      expect(rows).toHaveLength(2);
+      expect(rows.every((r) => r.invocation_id === null)).toBe(true);
+    });
+
     it('walks a real chain back to the operation that started it (#1237)', async () => {
       // The end-to-end half. `walkEventCause`'s own suite pins the five terminals over
       // a hand-built table; this proves the wiring — that a chain produced by an actual
@@ -4445,6 +4492,30 @@ export function scopeHostContractSuite(
       // And null where there genuinely is no cause — the ordinary case, kept
       // distinguishable from the bug above by being asserted alongside it.
       expect(undrained.find((e) => e.id === step1.id)?.causedBy).toBeNull();
+    });
+
+    it('carries the invocation out to Tier 2, on BOTH adapters (#1237)', async () => {
+      // The same class of bug as the `causedBy` drop above, and it happened again one
+      // column later: the SQLite drain lifted `operation`, `version` and `causedBy` off
+      // the row and not this one, so a self-hosted lake lost the call grouping entirely
+      // while a hosted one kept it. `drainedEvent` requires the field, but the mapper
+      // casts, so nothing typed caught it.
+      //
+      // Asserted against a NON-NULL id for the reason the cause is: a presence check
+      // over a directly-emitted event would pass against a hard-coded null.
+      const sShip = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sShip, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sShip);
+      const stub = await host.getScope(alice, t1, sShip);
+
+      const call = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: call });
+
+      const undrained = await host.admin.readUndrainedEvents(staff, t1, sShip, 200);
+      expect(undrained.length).toBeGreaterThanOrEqual(2);
+      // Every event of the call, the consumer's emit included — the grouping is the
+      // whole point, so one row carrying it is not enough.
+      expect(undrained.map((e) => e.invocationId)).toEqual(undrained.map(() => call));
     });
 
     it('does not leak a delivered event\'s id onto a later unrelated emit (#1237)', async () => {

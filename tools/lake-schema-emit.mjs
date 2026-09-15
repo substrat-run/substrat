@@ -56,6 +56,7 @@ const STREAM_TYPE = {
   operation: 'string',
   version: 'string',
   caused_by: 'string',
+  invocation_id: 'string',
 };
 
 /**

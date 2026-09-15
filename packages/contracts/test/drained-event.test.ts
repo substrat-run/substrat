@@ -27,10 +27,19 @@ describe('drainedEvent', () => {
     // Two facts the spine cannot separate afterwards: a CONSUMER emitted this (no
     // operation ran), or the row predates the column. Both adapters return null for
     // them, so a schema that rejects it rejects real rows.
-    const parsed = drainedEvent.parse({ ...base, operation: null, version: null, causedBy: null });
+    const parsed = drainedEvent.parse({
+      ...base,
+      operation: null,
+      version: null,
+      causedBy: null,
+      invocationId: null,
+    });
     expect(parsed.operation).toBeNull();
     expect(parsed.version).toBeNull();
     expect(parsed.causedBy).toBeNull();
+    // #1237: the same argument a third time — a caller that carried none (a seed, an
+    // internal call) is a real row, and a schema that rejected it would drop it.
+    expect(parsed.invocationId).toBeNull();
   });
 
   it('parses a stamped operation and version too', () => {
@@ -39,10 +48,12 @@ describe('drainedEvent', () => {
       operation: 'test/emit-event',
       version: 'v-7',
       causedBy: '01J0000000000000000000000F',
+      invocationId: '01J0000000000000000000000G',
     });
     expect(parsed.operation).toBe('test/emit-event');
     expect(parsed.version).toBe('v-7');
     expect(parsed.causedBy).toBe('01J0000000000000000000000F');
+    expect(parsed.invocationId).toBe('01J0000000000000000000000G');
   });
 
   it('keeps the envelope’s PII rule — a classified event must name its subject', () => {
@@ -50,7 +61,14 @@ describe('drainedEvent', () => {
     // carries a refinement, and rebuilding the shape must not drop it. Losing it
     // would let personal data into the lake with no key an erasure could follow.
     expect(() =>
-      drainedEvent.parse({ ...base, piiClass: 'direct', operation: null, version: null, causedBy: null }),
+      drainedEvent.parse({
+        ...base,
+        piiClass: 'direct',
+        operation: null,
+        version: null,
+        causedBy: null,
+        invocationId: null,
+      }),
     ).toThrow(/subjectId is required/);
     expect(
       drainedEvent.parse({
@@ -59,6 +77,7 @@ describe('drainedEvent', () => {
         subjectId: '01J0000000000000000000000E',
         operation: null,
         version: null,
+        invocationId: null,
         causedBy: null,
       }).subjectId,
     ).toBe('01J0000000000000000000000E');

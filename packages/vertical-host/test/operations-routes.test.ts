@@ -881,3 +881,78 @@ describe('a concurrency-checked operation on the wire (#129)', () => {
     expect(JSON.stringify(problem)).not.toMatch(/version|etag/i);
   });
 });
+
+/**
+ * The invocation id (#1237) reaches the scope for an operation with NO concurrency
+ * declaration and NO idempotency key.
+ *
+ * That is the ORDINARY operation, and it was the one the first cut missed: the options
+ * bag was built only when one of the other two concerns applied, so the id was computed
+ * from the context and then dropped for most of the surface. The two guarded kinds
+ * carried it and looked like proof the feature worked.
+ */
+function invocationHarness() {
+  const seen: (string | undefined)[] = [];
+  const app = new Hono();
+  app.use('*', async (c, next) => {
+    (c as unknown as { set: (k: string, v: unknown) => void }).set('substratInvocationId', 'inv-1');
+    await next();
+  });
+  mountOperations(
+    app,
+    {
+      'acme/plain': {
+        input: z.object({ name: z.string().optional() }),
+        http: { method: 'POST', path: '/plain' },
+      },
+    },
+    async () =>
+      ({
+        invoke: async (_name: string, _input: unknown, options?: { invocationId?: string }) => {
+          seen.push(options?.invocationId);
+          return { ok: true };
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any,
+  );
+  return { app, seen };
+}
+
+describe('the invocation id (#1237)', () => {
+  it('reaches an unguarded operation called without an idempotency key', async () => {
+    const { app, seen } = invocationHarness();
+    const res = await app.request('/api/plain', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'x' }),
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual(['inv-1']);
+  });
+
+  it('passes nothing when the middleware is not mounted', async () => {
+    // No id in the context is not an id of `undefined` inside a bag that then exists
+    // for no reason — the ordinary pre-#1237 call must still reach the scope unchanged.
+    const seen: (string | undefined)[] = [];
+    const app = new Hono();
+    mountOperations(
+      app,
+      { 'acme/plain': { input: z.object({}), http: { method: 'POST', path: '/plain' } } },
+      async () =>
+        ({
+          invoke: async (_n: string, _i: unknown, options?: { invocationId?: string }) => {
+            seen.push(options?.invocationId);
+            return { ok: true };
+          },
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        }) as any,
+    );
+    const res = await app.request('/api/plain', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([undefined]);
+  });
+});
