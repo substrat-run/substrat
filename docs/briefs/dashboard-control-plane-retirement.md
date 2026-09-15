@@ -50,7 +50,7 @@ see the first verification step.
 
 ## What has to be checked against live data
 
-Four questions the code cannot answer, each of which changes the plan:
+Questions the code cannot answer, each of which changes the plan:
 
 1. **Which tables actually have rows in production?** The table above says what the code
    *can* write, not what is there. A table that is empty needs no backfill, and one that
@@ -70,21 +70,47 @@ Four questions the code cannot answer, each of which changes the plan:
 
 These are reads of production state. They are not run here.
 
-## What cannot move, and should be said out loud
+## What cannot move — decided
 
 The **admin and access logs** in the local DO are history. They can be copied, but a copy
 is not the same artifact: the entries were written by a different directory about actions
-taken against it. Two honest options — leave the DO in place, read-only, as an archive
-until its retention lapses; or accept the loss and record that the dashboard's own
-audit history before the cutover lives elsewhere. The second is only acceptable if
-someone decides it is, which is why it is a question and not a step.
+taken against it, so the copy would be a log claiming to record events it was not present
+for. Everything else in this migration is a fact that is still true (this team has this
+scope, this role exists); a log entry is a claim about a past event in a particular place.
+
+**Decided 2026-09-15: accept the loss.** They are the dashboard's own directory trail —
+teams created, roles defined, scopes activated — plus the K-24 record of staff reads.
+Nothing a customer sees and nothing another system reads. They are not carried across and
+not archived, so the cutover is where the dashboard's own audit history begins.
+
+The one thing worth re-reading before the DO is dropped: the access-log half is the "who
+read this tenant's data" trail, and it becomes unrecoverable at step 7 rather than at the
+cutover. If that answer changes, it has to change before then — which is why the sequence
+below drops the class last.
+
+## Where any of this runs — the constraint the sequence hangs off
+
+`ControlPlaneDO` is bound in **two workers**: `apps/control-plane` holds the shared
+directory (what the console reads, through the CP API), and `apps/dashboard` holds its own
+instance — a different Durable Object namespace.
+
+A DO is reachable only through a binding, so the rows to be migrated can be addressed by
+**the dashboard worker and nothing else**. Not the console, not the CP API, not a script
+with staff credentials. Every step below therefore executes inside that worker, which is
+the fact that makes this a code change rather than an operator task.
+
+That does **not** mean a staff surface in the dashboard's UI, and it should not become a
+standing route: this is a one-off migration, and a permanent privileged endpoint outliving
+a job that runs a handful of times is a worse trade than the migration itself. Whatever
+entry point the inventory and backfill use is expected to be removed in the same series
+that drops the binding — step 7 already deletes more than this.
 
 ## Proposed sequence
 
 Each step is separately revertible, and nothing before step 5 changes what a signed-in
 user resolves to.
 
-1. **Inventory against production** (read-only). Answer the four questions above. Output
+1. **Inventory against production** (read-only). Answer the questions above. Output
    is a row count per table on both sides, and a diff of the identity links.
 2. **Backfill the facts that are only local** — scopes, entitlements, roles, tuples —
    into the shared directory, for every team. Idempotent, so it can be re-run: every
