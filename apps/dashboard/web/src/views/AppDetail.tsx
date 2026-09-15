@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
 import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
+import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_APP_TRAFFIC, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
 import { renderModelHtml } from '@substrat-run/model-view';
@@ -314,13 +315,14 @@ function OwnerSeatCard({ scopeId, seat, onClaimed }: { scopeId: string; seat: Ow
  * environment, whose page carries no status band. It owns the read that Overview owns
  * for the production scope, with the same scope guard: a late answer for an environment
  * the reader has left is dropped rather than shown under the next one's name.
+ * `versionId` is the version the environment runs: a seat its code does not keep is
+ * remembered against it rather than asked for (and 501'd) on every render (#1345).
  */
-function ScopeOwnerSeat({ scopeId, active }: { scopeId: string; active: boolean }) {
+function ScopeOwnerSeat({ scopeId, versionId, active }: { scopeId: string; versionId: string | null; active: boolean }) {
   const [seat, setSeat] = useState<OwnerSeatView | null | undefined>(undefined);
   const shown = useRef(scopeId);
   const read = (forScope: string) => {
-    api
-      .appOwnerSeat(forScope)
+    readOwnerSeat(forScope, versionId, api.appOwnerSeat)
       .then((s) => shown.current === forScope && setSeat(s))
       .catch(() => shown.current === forScope && setSeat(null));
   };
@@ -336,7 +338,7 @@ function ScopeOwnerSeat({ scopeId, active }: { scopeId: string; active: boolean 
       return;
     }
     read(scopeId);
-  }, [scopeId, active]);
+  }, [scopeId, versionId, active]);
 
   return <OwnerSeatCard scopeId={scopeId} seat={seat} onClaimed={read} />;
 }
@@ -368,6 +370,10 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   // answer for the app we navigated away from has to be dropped rather than rendered
   // under the new app's name.
   const seatScope = useRef(app.app_scope_id);
+  // The scope `dep` was read for. The seat read waits for `dep` (it is keyed by the running
+  // version, #1345), and in the render right after navigating `dep` still holds the
+  // previous app's deployments — which must not become this app's version key.
+  const depScope = useRef<string | null>(null);
   /** The traffic read, on its own so the card's retry can ask again without a remount. */
   const readTraffic = (forScope: string, still: () => boolean) => {
     setTraffic(undefined);
@@ -387,8 +393,7 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       );
   };
   const readSeat = (forScope: string) => {
-    api
-      .appOwnerSeat(forScope)
+    readOwnerSeat(forScope, runningId ?? null, api.appOwnerSeat)
       .then((s) => seatScope.current === forScope && setSeat(s))
       .catch(() => seatScope.current === forScope && setSeat(null));
   };
@@ -405,8 +410,8 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
     setDep(undefined);
     setTraffic(undefined);
     setSeat(undefined);
-    if (app.status === 'active') readSeat(app.app_scope_id);
-    else setSeat(null);
+    // An active app's seat is read by the effect below, once its running version is known.
+    if (app.status !== 'active') setSeat(null);
     readTraffic(app.app_scope_id, () => live);
     api
       .appEvents(app.app_scope_id)
@@ -418,10 +423,18 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
       .catch(() => live && setEvents([]));
     api
       .appDeployments(app.app_scope_id)
-      .then((d) => live && setDep(d))
+      .then((d) => {
+        if (!live) return;
+        depScope.current = app.app_scope_id;
+        setDep(d);
+      })
       // Settled as unavailable, never left loading: '—' is what the other three tiles
       // say when a read fails, and a '…' that never resolves is a claim of progress.
-      .catch(() => live && setDep(null));
+      .catch(() => {
+        if (!live) return;
+        depScope.current = app.app_scope_id;
+        setDep(null);
+      });
     return () => {
       live = false;
     };
@@ -451,6 +464,16 @@ function Overview({ app, meta, statusKind, statusLabel, surfaceUrls }: { app: Ap
   const runningVersion = dep ? dep.versions.find((v) => v.id === runningId) : undefined;
   const versionLabel = runningVersion ? `v${runningVersion.version}` : dep === undefined ? '…' : '—';
   const updateAvailable = !!dep && !!prodVersionId && prodVersionId !== runningId;
+  // The seat read, once the deployments read has settled for THIS scope: a vertical that
+  // keeps no seat answers 501, and that answer is remembered per running version so a
+  // re-render does not ask again (#1345). A failed deployments read leaves the id null,
+  // which asks without the memo.
+  const seatVersion = dep !== undefined && depScope.current === app.app_scope_id ? (runningId ?? null) : undefined;
+  useEffect(() => {
+    if (DEV_MOCK || app.status !== 'active' || seatVersion === undefined) return;
+    readSeat(app.app_scope_id);
+    // readSeat is recreated per render; the scope, status and version are what it reads.
+  }, [app.app_scope_id, app.status, seatVersion]);
   // One visitable URL per surface (K-26), derived once by the parent and shared with the
   // header's Visit control — see deriveSurfaceUrls.
   const multiSurface = surfaceUrls.length > 1;
@@ -1714,7 +1737,7 @@ function TestEnvironment({ app }: { app: AppRow }) {
               A new environment starts empty — for a short window after it comes up, the first person to sign in at its address claims ownership (first-run setup), exactly like a fresh install; after that, the owner seat below mints a claim link.
               It runs the same code as production but never receives production traffic or data.
             </HonestyBanner>
-            <ScopeOwnerSeat key={env.scopeId} scopeId={env.scopeId} active={!!env.url} />
+            <ScopeOwnerSeat key={env.scopeId} scopeId={env.scopeId} versionId={env.versionId ?? null} active={!!env.url} />
 
             {customDomains.length > 0 && (
               <div style={{ ...card, overflow: 'hidden' }}>
