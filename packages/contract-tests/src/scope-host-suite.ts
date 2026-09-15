@@ -4406,6 +4406,30 @@ export function scopeHostContractSuite(
       expect(tree.count).toBe(2);
     });
 
+    it('facets by INVOCATION, the dimension #1231 could not have (#1237)', async () => {
+      // #1231 named the signals vocabulary — tenant, scope, vertical, version,
+      // operation, event type, connection — and could not name the call, because until
+      // the invocation id existed there was nothing to group on. Now "which calls did
+      // the most" is a query rather than a guess.
+      const sFacet = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sFacet, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sFacet);
+      const stub = await host.getScope(alice, t1, sFacet);
+
+      const busy = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: busy });
+      await stub.invoke('flow/produce', undefined, { invocationId: ulid() });
+
+      const facet = await host.admin.facetEvents(staff, t1, sFacet, {
+        groupBy: { kind: 'invocation' },
+      });
+      // Each call emitted its own event plus its consumer's, so two buckets of two.
+      const buckets = facet.buckets.filter((b) => b.value !== null);
+      expect(buckets).toHaveLength(2);
+      expect(buckets.every((b) => b.count === 2)).toBe(true);
+      expect(buckets.map((b) => b.value)).toContain(busy);
+    });
+
     it('stamps every event of ONE call with the invocation, consumers included (#1237)', async () => {
       // The join the spine could not make. `causedBy` links one event to one other;
       // this groups everything a single call did — and a consumer's emit belongs to it,
