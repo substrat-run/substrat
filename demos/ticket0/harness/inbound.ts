@@ -254,7 +254,9 @@ export async function receiveInbound(options: {
     };
   }
 
-  const sender = parseFrom(email.from);
+  // The `From` HEADER first: Resend's top-level `from` on a received email can be the
+  // bare address, and the header is where the sender's display name survives.
+  const sender = parseFrom(headerOf(email, 'from')) ?? parseFrom(email.from);
   if (!sender) {
     // Permanent: a retry re-reads the same sender. Accepted so Resend stops, and said.
     return { status: 200, body: { ignored: 'the received email names no usable sender address' } };

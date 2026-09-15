@@ -196,6 +196,29 @@ describe('a delivery the desk must not believe', () => {
   });
 });
 
+describe('the sender', () => {
+  it('keeps the display name the From header carries when the top-level from is bare', async () => {
+    const { fetchImpl } = fakeResend({
+      em_4: {
+        from: 'robin@customer.example',
+        subject: 'Named sender',
+        text: 'Hi.',
+        message_id: '<robin-1@customer.example>',
+        headers: [{ name: 'From', value: 'Robin Customer <robin@customer.example>' }],
+      },
+    });
+    const result = await receive(world.substrat, fetchImpl, await delivery('em_4'));
+    expect(result.status).toBe(200);
+    const agent = await at(world.substrat, 'agent');
+    const found = (await agent.invoke('ticket0/search-contacts', { q: 'robin@customer.example' })) as {
+      entries: { email: string; display_name: string | null }[];
+    };
+    expect(found.entries.find((c) => c.email === 'robin@customer.example')?.display_name).toBe(
+      'Robin Customer',
+    );
+  });
+});
+
 describe('attachments', () => {
   it('are named on the thread as an internal note, and counted in the answer', async () => {
     const { fetchImpl } = fakeResend({
