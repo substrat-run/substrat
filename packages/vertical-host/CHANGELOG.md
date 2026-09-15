@@ -1,5 +1,37 @@
 # @substrat-run/vertical-host
 
+## 0.112.0
+
+### Minor Changes
+
+- db6a96f: The denial summary can bucket per operation (#1456). `denialFilter` takes an optional
+  `groupBy: 'actor-permission' | 'operation'`; with `operation`, `summarizeDenials` and
+  `GET …/denials/summary` answer one `{ operation, count, firstAt, lastAt }` bucket per
+  operation, busiest first, with the same `total` and filter-free window facts beside it.
+  `operation` is nullable in that bucket: refusals that unwound no operation invocation are
+  one `null`-keyed bucket, counted toward `total` rather than dropped.
+  The answer echoes the grouping it carries as `groupBy`, so `DenialSummary` is now a
+  discriminated union on that field — a consumer narrows on it before reading a bucket's
+  fields. Absent `groupBy`, the (actor, permission) buckets are unchanged. The dashboard's
+  per-operation health panel reads the aggregate instead of counting from a capped page.
+- a5d24f7: The Tier-2 drain reaches the deployment that actually holds a scope's outbox (#1334).
+
+  The shared control plane's own `SCOPE` namespace is the module-less placeholder — a hosted scope's events live in its vertical's dispatch deployment. So a drain over the platform's own namespace, which is what binding the sink alone would have run, constructs one empty placeholder DO per active scope per tick, writes an access row for each, and ships nothing: from the lake's side, a fleet with no events.
+
+  `CloudflareScopeHost` gains an `eventDrainDelegation` option on the model of `connectorDelegation`: when it is set, `readUndrainedEvents` and `markEventsDrained` go to the serving deployment, and the access row and the `drainEvents` admin receipt are written on the platform host either way, so an auditor cannot tell which branch served a read from the row it left (K-24). The far end is two new required members of `VerticalScopeHost` — `undrainedEventsLocal` and `markEventsDrainedLocal`, both implemented by the adapter — behind `GET /internal/undrained-events` and `POST /internal/mark-drained` on the platform-gated surface, with `VerticalClient.undrainedEvents` / `markEventsDrained` as the calls. The read is bounded at the door (a `limit` above 1000 is a 400), and the stamp carries the platform's instant through so its receipt and the rows agree.
+
+  The control plane wires the delegation beside the connector one and binds the sink only when it can also reach a vertical: a deployment without `DISPATCH` / `PLATFORM_SECRET` keeps the drain phase skipped rather than running it over placeholders. A scope whose vertical has no serving deployment is recorded as an `event-drain` error for that scope and stepped over — silence is the failure mode this seam exists to remove, so it is not answered with "nothing".
+
+### Patch Changes
+
+- Updated dependencies [c697b15]
+- Updated dependencies [db6a96f]
+- Updated dependencies [221f94a]
+- Updated dependencies [f4d12b7]
+  - @substrat-run/contracts@0.112.0
+  - @substrat-run/kernel@0.112.0
+  - @substrat-run/model-providers@0.5.2
+
 ## 0.111.0
 
 ### Minor Changes

@@ -1,5 +1,66 @@
 # @substrat-run/control-plane-api
 
+## 0.112.0
+
+### Minor Changes
+
+- c697b15: The access log now says what was read, on the path every real deployment takes.
+
+  Reading a customer's data through the platform has always been recorded. But the record was only complete when the data happened to sit alongside the control plane — and in production it never does: it lives with the app that owns it. On that path the log held only the fact that a scope had been looked up, with nothing about what was then read. Opening an app's summary, paging one of its tables and reading a single record's full history all left the same entry, and the last of those carries the actual contents of events, the person they concern, and the authority the change was made under.
+
+  Ten reads now leave the same entry either way: which read it was, what was asked for, and how many rows came back. An auditor cannot tell from the record where the data was served from, which is the point — that was never a distinction the log was meant to be making.
+
+  Writing one of those entries is a new capability, and a deliberately small one. The kind of read is drawn from a fixed list, the person it is attributed to comes from the authenticated request and never from anything the caller sends, and neither the timestamp nor the row's identity can be supplied. If the entry cannot be written the read fails rather than returning data whose disclosure went unrecorded — which is the same trade the other path has always made.
+
+- db6a96f: The denial summary can bucket per operation (#1456). `denialFilter` takes an optional
+  `groupBy: 'actor-permission' | 'operation'`; with `operation`, `summarizeDenials` and
+  `GET …/denials/summary` answer one `{ operation, count, firstAt, lastAt }` bucket per
+  operation, busiest first, with the same `total` and filter-free window facts beside it.
+  `operation` is nullable in that bucket: refusals that unwound no operation invocation are
+  one `null`-keyed bucket, counted toward `total` rather than dropped.
+  The answer echoes the grouping it carries as `groupBy`, so `DenialSummary` is now a
+  discriminated union on that field — a consumer narrows on it before reading a bucket's
+  fields. Absent `groupBy`, the (actor, permission) buckets are unchanged. The dashboard's
+  per-operation health panel reads the aggregate instead of counting from a capped page.
+- a5d24f7: The Tier-2 drain reaches the deployment that actually holds a scope's outbox (#1334).
+
+  The shared control plane's own `SCOPE` namespace is the module-less placeholder — a hosted scope's events live in its vertical's dispatch deployment. So a drain over the platform's own namespace, which is what binding the sink alone would have run, constructs one empty placeholder DO per active scope per tick, writes an access row for each, and ships nothing: from the lake's side, a fleet with no events.
+
+  `CloudflareScopeHost` gains an `eventDrainDelegation` option on the model of `connectorDelegation`: when it is set, `readUndrainedEvents` and `markEventsDrained` go to the serving deployment, and the access row and the `drainEvents` admin receipt are written on the platform host either way, so an auditor cannot tell which branch served a read from the row it left (K-24). The far end is two new required members of `VerticalScopeHost` — `undrainedEventsLocal` and `markEventsDrainedLocal`, both implemented by the adapter — behind `GET /internal/undrained-events` and `POST /internal/mark-drained` on the platform-gated surface, with `VerticalClient.undrainedEvents` / `markEventsDrained` as the calls. The read is bounded at the door (a `limit` above 1000 is a 400), and the stamp carries the platform's instant through so its receipt and the rows agree.
+
+  The control plane wires the delegation beside the connector one and binds the sink only when it can also reach a vertical: a deployment without `DISPATCH` / `PLATFORM_SECRET` keeps the drain phase skipped rather than running it over placeholders. A scope whose vertical has no serving deployment is recorded as an `event-drain` error for that scope and stepped over — silence is the failure mode this seam exists to remove, so it is not answered with "nothing".
+
+- 55d7da4: The `EventSink` seam gets its Pipelines implementation, and both implementations get exported.
+
+  `createPipelinesEventSink` binds the drain to a Workers `[[pipelines]]` stream — kernel-design §5.3's Cloudflare row for event transport, "Pipelines → Iceberg/R2". A binding rather than the stream's HTTP endpoint: the endpoint needs a Workers Pipeline Send token, and a credential that ships the audit spine is one more thing to store, rotate and leak.
+
+  Three shape changes at the seam, each forced by the stream's declared schema rather than chosen. `entity` flattens to `entity_type`/`entity_id`, because the envelope holds one ref while the outbox has always held two columns. `occurredAt` becomes epoch milliseconds, because the spine stores ISO 8601 text and the column is a millisecond timestamp. And absent optional fields are stated as `null` rather than omitted, because JSON drops an `undefined` value entirely and a row missing a declared column is a rejected row, not a tolerant one.
+
+  Batches are packed by **bytes**, not by row count. Cloudflare's ceiling is 5 MB per ingestion request while the drain's budget is a row count, so a scope emitting fat payloads reaches the limit in far fewer rows than one emitting thin ones — a count-based split would work right up until a vertical started attaching documents. The budget is set deliberately under the ceiling, because `JSON.stringify` here and the encoder on Cloudflare's side need not agree byte for byte, and a batch rejected for being a kilobyte over is a scope that never drains again.
+
+  A single event larger than a whole request throws rather than being skipped: skipping would drain the scope past a row the lake never received, and `drainedAt` would then claim exact history with a hole in it.
+
+  `createR2EventSink` is now exported too. It has been written and tested since the seam landed and was never on the package's surface, which is why nothing could bind it — the drain phase has been complete on both adapters and unreachable from any deployment.
+
+- d22eb68: An app's logs can now be read for an exact window rather than only the last few hours, and
+  the Observability chart's time axis became a cursor for it. Click a bar, or one of the
+  glyphs drawn over the chart, and the Logs and Events panels below narrow to the minutes
+  around that instant — the chart shades the window it is showing, a chip in the header says
+  which minutes those are, and the link in your address bar carries them, so a chart you
+  share opens on the minute that was worth sharing instead of on whatever happened since.
+  Clearing the cursor puts the panels back on the page's own time range.
+
+### Patch Changes
+
+- Updated dependencies [c697b15]
+- Updated dependencies [db6a96f]
+- Updated dependencies [221f94a]
+- Updated dependencies [79308fb]
+- Updated dependencies [f4d12b7]
+  - @substrat-run/contracts@0.112.0
+  - @substrat-run/kernel@0.112.0
+  - @substrat-run/psl@0.2.5
+
 ## 0.111.0
 
 ### Minor Changes

@@ -1,5 +1,36 @@
 # @substrat-run/kernel
 
+## 0.112.0
+
+### Minor Changes
+
+- c697b15: The access log now says what was read, on the path every real deployment takes.
+
+  Reading a customer's data through the platform has always been recorded. But the record was only complete when the data happened to sit alongside the control plane — and in production it never does: it lives with the app that owns it. On that path the log held only the fact that a scope had been looked up, with nothing about what was then read. Opening an app's summary, paging one of its tables and reading a single record's full history all left the same entry, and the last of those carries the actual contents of events, the person they concern, and the authority the change was made under.
+
+  Ten reads now leave the same entry either way: which read it was, what was asked for, and how many rows came back. An auditor cannot tell from the record where the data was served from, which is the point — that was never a distinction the log was meant to be making.
+
+  Writing one of those entries is a new capability, and a deliberately small one. The kind of read is drawn from a fixed list, the person it is attributed to comes from the authenticated request and never from anything the caller sends, and neither the timestamp nor the row's identity can be supplied. If the entry cannot be written the read fails rather than returning data whose disclosure went unrecorded — which is the same trade the other path has always made.
+
+- db6a96f: The denial summary can bucket per operation (#1456). `denialFilter` takes an optional
+  `groupBy: 'actor-permission' | 'operation'`; with `operation`, `summarizeDenials` and
+  `GET …/denials/summary` answer one `{ operation, count, firstAt, lastAt }` bucket per
+  operation, busiest first, with the same `total` and filter-free window facts beside it.
+  `operation` is nullable in that bucket: refusals that unwound no operation invocation are
+  one `null`-keyed bucket, counted toward `total` rather than dropped.
+  The answer echoes the grouping it carries as `groupBy`, so `DenialSummary` is now a
+  discriminated union on that field — a consumer narrows on it before reading a bucket's
+  fields. Absent `groupBy`, the (actor, permission) buckets are unchanged. The dashboard's
+  per-operation health panel reads the aggregate instead of counting from a capped page.
+
+### Patch Changes
+
+- f4d12b7: `ctx.requestPlatform` refuses the platform-authored `sweep-runs` intent kind, so module code can no longer forge its own schedule and freshness verdicts. The scope sweeper's own enqueue path is unchanged.
+- Updated dependencies [c697b15]
+- Updated dependencies [db6a96f]
+- Updated dependencies [221f94a]
+  - @substrat-run/contracts@0.112.0
+
 ## 0.111.0
 
 ### Minor Changes
@@ -4268,7 +4299,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                  z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                    z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is
