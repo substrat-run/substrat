@@ -4518,6 +4518,30 @@ export function scopeHostContractSuite(
       expect(undrained.find((e) => e.id === step1.id)?.causedBy).toBeNull();
     });
 
+    it('carries the invocation out to Tier 2, on BOTH adapters (#1237)', async () => {
+      // The same class of bug as the `causedBy` drop above, and it happened again one
+      // column later: the SQLite drain lifted `operation`, `version` and `causedBy` off
+      // the row and not this one, so a self-hosted lake lost the call grouping entirely
+      // while a hosted one kept it. `drainedEvent` requires the field, but the mapper
+      // casts, so nothing typed caught it.
+      //
+      // Asserted against a NON-NULL id for the reason the cause is: a presence check
+      // over a directly-emitted event would pass against a hard-coded null.
+      const sShip = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sShip, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sShip);
+      const stub = await host.getScope(alice, t1, sShip);
+
+      const call = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: call });
+
+      const undrained = await host.admin.readUndrainedEvents(staff, t1, sShip, 200);
+      expect(undrained.length).toBeGreaterThanOrEqual(2);
+      // Every event of the call, the consumer's emit included — the grouping is the
+      // whole point, so one row carrying it is not enough.
+      expect(undrained.map((e) => e.invocationId)).toEqual(undrained.map(() => call));
+    });
+
     it('does not leak a delivered event\'s id onto a later unrelated emit (#1237)', async () => {
       // The failure mode of a field held on the host across a dispatch: left set, the
       // next operation's own event is stamped as caused by whatever was delivered

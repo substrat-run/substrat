@@ -15,4 +15,4 @@ Each request now carries an identifier that goes onto every event it produces, i
 
 There was no existing identifier to reuse: the one the platform stamps on logs is added after the fact and is not visible to running code, and it does not survive the hop to an installed app. Nothing is invented where an identifier was not supplied — a seeding script or an internal call records none, which reads as unrecorded rather than as a request that never happened.
 
-Existing apps pick this up on their own; nothing needs redeploying for events to start carrying it.
+No application code changes to adopt it — an app writes nothing to opt in, and the operations it already has start carrying it. It does take a redeploy, though: the identifier is minted and forwarded by the platform code an app bundles into its own deployment, so an app already running keeps recording nothing until it is rebuilt on this version and pushed.

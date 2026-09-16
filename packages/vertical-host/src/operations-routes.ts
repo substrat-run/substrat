@@ -493,11 +493,18 @@ export function mountOperations(
         | undefined;
       let version: string | null | undefined;
       let replayed = false;
-      // Options are supplied when EITHER concern applies: `concurrency` is an
-      // operation's declaration, a key is the caller's choice, and the two are
-      // independent. One bag, one pass — the seam #129 built and this declared into.
+      // Options are supplied when ANY of the three concerns applies: `concurrency` is an
+      // operation's declaration, a key is the caller's choice, and the invocation id is
+      // the platform's — all independent. One bag, one pass — the seam #129 built and
+      // this declared into.
+      //
+      // #1237 belongs in this condition and not only in the bag: the ordinary operation
+      // declares no concurrency and is called without an idempotency header, so gating on
+      // the first two left `invokeOptions` undefined and the id never reached the scope.
+      // That is the common path — most events would have gone unstamped while the two
+      // guarded kinds looked fine.
       const invokeOptions =
-        guarded || idempotencyKey !== undefined
+        guarded || idempotencyKey !== undefined || invocationId !== undefined
           ? {
               ...(ifMatch === undefined ? {} : { ifMatch }),
               ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
