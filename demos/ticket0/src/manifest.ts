@@ -128,6 +128,22 @@ export const TICKET0_ENV: EnvVarSpec[] = [
     secret: true,
     group: 'Email',
   },
+  /**
+   * The inbound half (#934): the signing secret of the Resend webhook that posts
+   * received mail to `/api/email/inbound`. Together with `RESEND_API_KEY` — which is
+   * what re-reads the received email — it opens that door; either one absent and the
+   * route answers 404, so a desk that only uses the widget has no mail door at all.
+   */
+  {
+    key: 'RESEND_WEBHOOK_SECRET',
+    label: 'Resend inbound webhook secret',
+    description:
+      'The signing secret (`whsec_…`) of the Resend webhook that delivers mail sent to this desk’s support address. With the API key set too, mail arriving there becomes conversations; without it, nothing is received.',
+    placeholder: 'whsec_…',
+    required: false,
+    secret: true,
+    group: 'Email',
+  },
 ];
 
 export const ticket0Manifest = moduleManifest.parse({
