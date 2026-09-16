@@ -8641,6 +8641,19 @@ export class SqliteScopeHost implements ScopeHost {
     // #1237: existing scopes get it on next wake. Rows already written keep NULL, which
     // honestly means "no invocation id was carried" — nothing can decide one afterwards.
     this.ensureColumn(db, '_substrat_outbox', 'invocation_id', 'invocation_id TEXT');
+    // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
+    // that is never pruned. No index leads with invocation_id, so without this one SQLite
+    // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a
+    // recent invocation costs the scope's lifetime event count. The trailing id gives the
+    // ORDER BY for free, as it does on `_substrat_outbox_drained`.
+    //
+    // HERE, after the column is ensured, and deliberately NOT in KERNEL_DDL beside the
+    // other outbox indexes. KERNEL_DDL runs FIRST on every wake, and on a scope created
+    // before #1237 its `CREATE TABLE IF NOT EXISTS` does not add the column — so an index
+    // naming invocation_id there throws "no such column" and every existing scope fails to
+    // boot. `lint:spine-ddl` compares KERNEL_DDL's indexes only, so this one is held to
+    // both adapters by the query-plan test rather than by that gate.
+    db.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
   }
 
   private runtime(tenantId: TenantId, scopeId: ScopeId): ScopeRuntime {
