@@ -216,7 +216,7 @@ export {
   newImpersonationSession,
   type ImpersonationRow,
 } from './impersonation.js';
-export { readTimeline, readHistory, facetEvents, walkEventCause, walkEventEffects } from './timeline.js';
+export { readTimeline, readHistory, facetEvents, walkEventCause, walkEventEffects, readInvocation } from './timeline.js';
 export type { TimelineReader } from './timeline.js';
 export {
   IDEMPOTENCY_DDL,

@@ -2627,6 +2627,19 @@ export function defineScopeDO(
           if (!/duplicate column name/i.test((err as Error).message)) throw err;
         }
       }
+      // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
+      // that is never pruned. No index leads with invocation_id, so without this one SQLite
+      // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a
+      // recent invocation costs the scope's lifetime event count. The trailing id gives the
+      // ORDER BY for free, as it does on `_substrat_outbox_drained`.
+      //
+      // HERE, after the column is ensured, and deliberately NOT in KERNEL_DDL beside the
+      // other outbox indexes. KERNEL_DDL runs FIRST on every wake, and on a scope created
+      // before #1237 its `CREATE TABLE IF NOT EXISTS` does not add the column — so an index
+      // naming invocation_id there throws "no such column" and every existing scope fails to
+      // boot. `lint:spine-ddl` compares KERNEL_DDL's indexes only, so this one is held to
+      // both adapters by the query-plan test rather than by that gate.
+      this.sql.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
     }
 
     async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {
