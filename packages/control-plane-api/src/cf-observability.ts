@@ -709,7 +709,10 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
               timeframe,
               phaseOneLimit,
             ),
-          ]).then((pages) => pages.flat()),
+            // Newest first across the pages, not page order: the correlation cap is spent
+            // in this order, and a busy `= 500` page must not crowd out a newer 502 or
+            // escape just because its query was listed first.
+          ]).then((pages) => pages.flat().sort((a, b) => rawTime(b) - rawTime(a))),
           queryRaw(
             [{ key: '$metadata.level', operation: 'eq', type: 'string', value: 'error' }],
             timeframe,
@@ -781,6 +784,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
         events.map((e) => idOf(e)).filter((id): id is string => typeof id === 'string' && id !== ''),
       ),
     ];
+  }
+
+  /** A raw event's `timestamp`, or 0 when it carries none (sorted last). */
+  function rawTime(e: Record<string, unknown>): number {
+    return typeof e['timestamp'] === 'number' ? e['timestamp'] : 0;
   }
 
   /** `$metadata.requestId`, the key every line of one invocation shares. */

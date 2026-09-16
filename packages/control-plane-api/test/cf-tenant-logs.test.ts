@@ -154,6 +154,29 @@ describe('cf tenant logs', () => {
     expect(keyed(escapes!, 'tenantId')).toMatchObject({ value: '01TENANT' });
   });
 
+  /**
+   * The failure queries are separate pages, and the correlation cap (40) is spent in the
+   * order their invocations are listed. Page order would let a busy `= 500` page spend it
+   * all on old failures and never expand a newer 502 or escape.
+   */
+  it('spends the correlation budget on the newest failures across every failure page', async () => {
+    const old500s = Array.from({ length: 45 }, (_, i) =>
+      invocation({ status: 500 }, `01OLD${String(i).padStart(2, '0')}`),
+    ).map((e, i) => ({ ...e, timestamp: 100 + i }));
+    const { reader, sent } = readerOver((f) => {
+      const status = keyed(f, 'status');
+      if (status?.['operation'] === 'eq') return old500s;
+      if (status?.['operation'] === 'gte') return [{ ...invocation({ status: 502 }, '01NEW502'), timestamp: 5000 }];
+      if (keyed(f, 'threw')) return [{ ...invocation({ status: null, threw: true }, '01NEWESC'), timestamp: 4000 }];
+      return [];
+    });
+    await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 100 });
+    const expanded = sent.map((f) => keyed(f, '$metadata.requestId')?.['value']).filter(Boolean);
+    expect(expanded).toContain('req-01NEW502');
+    expect(expanded).toContain('req-01NEWESC');
+    expect(expanded).toHaveLength(40);
+  });
+
   it('does not narrow to failures for any other level', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', level: 'info', hours: 24, limit: 10 });
