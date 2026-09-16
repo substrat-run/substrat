@@ -10,6 +10,7 @@ import {
   type CauseChain,
   type EffectsTree,
   type EffectsTerminal,
+  type InvocationEvents,
   type EventEffects,
   type EventDelivery,
   type DeliveryState,
@@ -482,7 +483,7 @@ export function readInvocation(
   ctx: TimelineReader,
   invocationId: string,
   limit = 200,
-): { events: HistoryEntry[]; truncated: boolean } {
+): InvocationEvents {
   const capped = Math.min(Math.max(Math.floor(limit) || 1, 1), 500);
   const rows = ctx.sql.query<HistoryRow>(
     `SELECT ${HISTORY_COLUMNS} FROM _substrat_outbox WHERE invocation_id = ? ORDER BY id LIMIT ?`,

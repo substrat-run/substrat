@@ -646,6 +646,7 @@ describe('control-plane API', () => {
       facetEvents: async () => ({ groupBy: { kind: 'type' }, total: 0, buckets: [] }),
       eventCause: async () => ({ chain: [], terminal: 'missing' }),
       eventEffects: async () => ({ root: null, count: 0 }),
+      invocationEvents: async () => ({ events: [], truncated: false }),
     } as unknown as VerticalClient;
     const delegated = createControlPlaneApi({
       host,
@@ -669,6 +670,7 @@ describe('control-plane API', () => {
       { method: 'facetEvents', path: (s) => `/tenants/${t1}/scopes/${s}/facets?groupBy=type&limit=5` },
       { method: 'eventCause', path: (s) => `/tenants/${t1}/scopes/${s}/cause?eventId=${ev}&maxDepth=3` },
       { method: 'eventEffects', path: (s) => `/tenants/${t1}/scopes/${s}/effects?eventId=${ev}&maxNodes=3` },
+      { method: 'invocationEvents', path: (s) => `/tenants/${t1}/scopes/${s}/invocation?invocationId=${ev}&limit=3` },
     ];
     for (const r of reads) {
       const co = await app.request(r.path(sC), { headers: auth, ...r.init });

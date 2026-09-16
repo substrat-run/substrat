@@ -135,8 +135,8 @@ methods plus the introspection and platform-request reads. Every member is requi
 the list grows with the routes above: beside the lifecycle halves (`provisionScopeLocal`,
 `restoreScopeLocal`, `projectRolesLocal`, `exportScopeLocal`, `snapshotScopeLocal`,
 `deleteScopeLocal`, `migrationBookmarksLocal`, `rewindScopeLocal`) it now needs
-`appliedMigrationsLocal` (#1320) and the four event reads — `entityHistoryLocal`,
-`facetEventsLocal`, `eventCauseLocal`, `eventEffectsLocal` — plus the introspection trio
+`appliedMigrationsLocal` (#1320) and the five event reads — `entityHistoryLocal`,
+`facetEventsLocal`, `eventCauseLocal`, `eventEffectsLocal`, `invocationEventsLocal` — plus the introspection trio
 (`introspectScopeTables`, `introspectScopeTable`, `introspectScopeQuery`), the denial reads
 (`listDenialsLocal`, `summarizeDenialsLocal`), the platform-request reads and settle
 (`listPlatformRequests`, `listPlatformRequestHistory`, `settlePlatformRequest`), and the

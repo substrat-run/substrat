@@ -2106,6 +2106,26 @@ app.get('/api/apps/:scopeId/effects', async (c) => {
   );
 });
 
+/**
+ * #1237: everything one call emitted — the events an operation raised side by side,
+ * which neither walk can reach from each other, and what its handlers raised after.
+ */
+app.get('/api/apps/:scopeId/invocation', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.invocationEvents(scope, {
+      invocationId: c.req.query('invocationId') ?? '',
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    }),
+  );
+});
+
 app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

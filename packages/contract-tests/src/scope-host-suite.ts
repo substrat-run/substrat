@@ -4463,6 +4463,31 @@ export function scopeHostContractSuite(
       expect(new Set(after.map((r) => r.invocation_id))).toEqual(new Set([first, second]));
     });
 
+    it('reads one call back whole through the platform verb, and only that call (#1237)', async () => {
+      // `readInvocation`'s own suite pins siblings, ordering and truncation over a
+      // hand-built table; this proves the wiring — that ids stamped by a real dispatch
+      // come back through `invocationEvents` on both adapters, the consumer's emit with them.
+      const sRead = scopeId.parse(ulid());
+      await host.provisionScope(staff, { tenantId: t1, scopeId: sRead, vertical: 'flow-vertical' });
+      await host.admin.activateScope(staff, t1, sRead);
+      const stub = await host.getScope(alice, t1, sRead);
+
+      const wanted = ulid();
+      await stub.invoke('flow/produce', undefined, { invocationId: wanted });
+      await stub.invoke('flow/produce', undefined, { invocationId: ulid() });
+
+      const read = await host.admin.invocationEvents(staff, t1, sRead, { invocationId: wanted });
+      expect(read.truncated).toBe(false);
+      // Oldest first: the operation's event, then the one its consumer emitted.
+      expect(read.events.map((e) => e.type)).toEqual(['flow.step1', 'flow.step2']);
+      expect(read.events.every((e) => e.invocationId === wanted)).toBe(true);
+
+      // The cap says so rather than presenting half a call as the whole of it.
+      const cut = await host.admin.invocationEvents(staff, t1, sRead, { invocationId: wanted, limit: 1 });
+      expect(cut.events).toHaveLength(1);
+      expect(cut.truncated).toBe(true);
+    });
+
     it('records no invocation id when the caller carried none (#1237)', async () => {
       // A seed, a test, an internal call. Null is the honest answer — not an invented
       // id, which would group unrelated work under one call.

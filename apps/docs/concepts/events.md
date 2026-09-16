@@ -278,7 +278,9 @@ suppress them. Six nullables there are facts rather than gaps, and they are six
   case) or the row predates the column. Where `operation` is also null and this is set,
   the pair is decisive: the event came from a consumer, which neither field could establish
   alone. `walkEventCause` and `walkEventEffects` in the kernel follow it in each direction,
-  and name why a chain ends rather than stopping silently.
+  and name why a chain ends rather than stopping silently. `readInvocation` groups by the
+  call instead, which is how two events one operation raised independently — no cause
+  between them — are read together.
 
 `readTimeline`'s entry deliberately gains none of `operation`, `version` or `causedBy`: the
 timeline is the envelope and nothing more, so there is still no disclosure decision to make
