@@ -140,6 +140,7 @@ heading; `push` excludes them by construction, since it only ever walks the mani
 |---|---|
 | `R2_LAKE_CATALOG_TOKEN` | the sink's own config, written once by `scripts/lake-provision.mjs` |
 | `R2_LAKE_SEND_TOKEN` | nowhere by default — only a non-Workers sender needs it |
+| `CF_LAKE_ADMIN_TOKEN` | nowhere — read by `scripts/lake-provision.mjs` only |
 
 They are recorded here anyway because **Cloudflare never gives a token back**: the same
 reason `generate` writes new values into the file before pushing them. A token that exists
@@ -249,6 +250,35 @@ needs the vitest 4 migration, tracked on its own.
 
 It is not only a workaround. A test plane must not hold the Tier-2 stream either: writing
 into the lake that answers audit is precisely what a test deploy should not be able to do.
+
+## The lake admin token, and rebuilding a lake table
+
+`scripts/lake-provision.mjs` calls the account API with **`CF_LAKE_ADMIN_TOKEN`**, a custom
+account token holding Workers Pipelines Edit, Workers R2 Storage Edit and Workers R2 Data
+Catalog Edit. Not `CF_API_TOKEN`, though that would work mechanically: `CF_API_TOKEN` is
+pushed to the running control plane as a worker secret, so every permission on it belongs
+to anything that compromises the plane — and this token's permissions include deleting the
+audit lake. It is store-only and read by that script alone.
+
+A Pipelines stream cannot change its schema in place and a sink refuses to write to an
+existing table, so **adding a lake column means dropping the table**. Dropping it does not
+clear the `drained_at` stamps in the outboxes, which means every event already shipped is
+history the drain will never offer again. `pnpm lake:redrain` is the other half: it reopens
+rows stamped before an instant you name, across every active scope, and the ordinary drain
+ships them into the new table. The whole sequence, one command at a time:
+
+```bash
+pnpm lake:provision --recreate --discard-history=<account>/<bucket>/<namespace>.<table>
+# set CF_PIPELINE_OUTBOX_STREAM_ID to the id it prints
+node scripts/secrets.mjs github
+pnpm --filter @substrat-run/control-plane cf:deploy        # note when it FINISHES
+pnpm lake:redrain --drained-before=<that instant>
+```
+
+The instant is the **deploy**, not the teardown: until the new stream id is live, the old
+plane may keep stamping rows into a stream that no longer exists. Earlier than the deploy
+leaves holes; later re-sends a few rows the new table already has. Pick later when unsure.
+It only works while the outboxes still hold the rows — true while no outbox pruning exists.
 
 ## Rotation caveats
 

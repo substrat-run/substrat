@@ -642,6 +642,43 @@ export function scopeHostContractSuite(
       expect(next.length).toBe(1);
       expect(first.map((e) => e.id)).not.toContain(next[0]!.id);
 
+      // REDRAIN (#1334) — the stamp's inverse, and the rebuild path for a dropped lake table.
+      // Deterministic rather than timed: one mark call stamps every row with ONE instant (the
+      // receipt names it), so the boundary can be probed exactly instead of by sleeping.
+      const stampedAt = (receipt!.after as { drainedAt: string }).drainedAt;
+      // STRICTLY before. At exactly the stamp instant nothing reopens — a row stamped at the
+      // rebuild instant went to the new table, and reopening it would write it there twice.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: stampedAt }),
+      ).resolves.toBe(0);
+      const justAfter = new Date(Date.parse(stampedAt) + 1).toISOString();
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: justAfter }),
+      ).resolves.toBe(first.length);
+      // The reopened rows come back through the ordinary read, unchanged — nothing about the
+      // event moves except that it may leave again.
+      const reopened = await host.admin.readUndrainedEvents(staff, t1, sDrain, 200);
+      expect(reopened.map((e) => e.id)).toEqual(expect.arrayContaining(first.map((e) => e.id)));
+      const again1 = reopened.find((e) => e.id === first[0]!.id)!;
+      expect(again1).toEqual(first[0]);
+      // A second egress of the same payloads is evidence on K-24's rule — one receipt naming
+      // the window, and a re-run over a window already reopened writes none.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: justAfter }),
+      ).resolves.toBe(0);
+      const redrains = (await host.admin.auditLog(staff, { tenantId: t1 })).filter(
+        (r) => r.action === 'redrainEvents' && r.scopeId === sDrain,
+      );
+      expect(redrains).toHaveLength(1);
+      expect(redrains[0]!.after).toEqual({ redrained: first.length, drainedBefore: justAfter });
+      // The instant is the guard, so no instant is not "everything".
+      await expect(host.admin.redrainEvents(staff, t1, sDrain, {} as never)).rejects.toThrow();
+      // And K-3 holds here as on the stamp: another tenant's pair is refused, never answered 0,
+      // since "nothing to reopen" would read as a successful rebuild of a scope it never touched.
+      await expect(
+        host.admin.redrainEvents(staff, t2, sDrain, { drainedBefore: justAfter }),
+      ).rejects.toThrow(/unknown scope/);
+
       // An empty mark is a no-op, not an error — a drain with nothing to ship.
       await expect(host.admin.markEventsDrained(staff, t1, sDrain, [])).resolves.toBe(0);
       // But "nothing to mark" and "you may not address this scope" stay different

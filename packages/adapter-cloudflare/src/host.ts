@@ -145,6 +145,7 @@ import {
   type TenantStoreHandle,
   outboundOfManifestJson,
   substratError,
+  redrainEventsInput,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -943,6 +944,7 @@ interface ScopeStubRpc {
   }): Promise<Page<HistoryEntry>>;
   undrainedEvents(limit: number): Promise<DrainedEvent[]>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
+  redrainEvents(drainedBefore: string): Promise<number>;
   facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   eventCause(input: EventCauseInput): Promise<CauseChain>;
   eventEffects(input: EventEffectsInput): Promise<EffectsTree>;
@@ -1049,6 +1051,13 @@ export interface EventDrainDelegation {
     eventIds: readonly string[];
     drainedAt: string;
   }): Promise<number>;
+  /**
+   * Reopen rows stamped before `drainedBefore` in the serving deployment, so the drain
+   * ships them again; returns how many (#1334). The third verb, and it must be delegated
+   * for the same reason as the stamp it undoes: the rows live there, and clearing stamps
+   * in the placeholder namespace would report success while reopening nothing.
+   */
+  redrain(args: { tenantId: TenantId; scopeId: ScopeId; vertical: string; drainedBefore: string }): Promise<number>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -1776,6 +1785,14 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async markEventsDrainedLocal(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number> {
     return this.scopeStub(scopeId).markEventsDrained(eventIds, drainedAt);
+  }
+
+  /**
+   * Reopen this host's own scope's drained rows (#1334) — the delegation's third half.
+   * No audit here, as with the stamp: the platform's `redrainEvents` is the door.
+   */
+  async redrainEventsLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
+    return this.scopeStub(scopeId).redrainEvents(drainedBefore);
   }
 
   /**
@@ -4020,6 +4037,29 @@ export class CloudflareScopeHost implements ScopeHost {
           );
         }
         return drained;
+      },
+      redrainEvents: async (actor, tenantId, scopeId, input): Promise<number> => {
+        // The same refusal the stamp carries: a reaped scope's storage is gone, and
+        // addressing its DO would construct an empty one and report nothing reopened.
+        const record = await this.scopeRecordForRead(tenantId, scopeId);
+        const { drainedBefore } = redrainEventsInput.parse(input);
+        // Delegated on the stamp's rule: the rows live in the vertical's deployment, and
+        // clearing stamps in the placeholder namespace would succeed while reopening nothing.
+        const redrained =
+          this.eventDrainDelegation && record.vertical
+            ? await this.eventDrainDelegation.redrain({
+                tenantId,
+                scopeId,
+                vertical: record.vertical,
+                drainedBefore,
+              })
+            : await this.scopeStub(scopeId).redrainEvents(drainedBefore);
+        // A second egress of the same payloads, on purpose — evidence on K-24's rule, only
+        // when something changed, so a re-run over a window already reopened writes nothing.
+        if (redrained > 0) {
+          await this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, { redrained, drainedBefore });
+        }
+        return redrained;
       },
       facetEvents: async (actor, tenantId, scopeId, input: EventFacetInput): Promise<EventFacetResult> => {
         await this.scopeRecordForRead(tenantId, scopeId);

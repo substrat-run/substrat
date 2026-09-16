@@ -2044,6 +2044,34 @@ export interface HostAdmin {
   ): Promise<number>;
 
   /**
+   * Clear `drained_at` on events stamped BEFORE `drainedBefore`, so the drain ships them
+   * again (#1334). Returns how many rows it reopened.
+   *
+   * Why it exists: the outbox is the source of truth and the lake is derived from it, but
+   * the stamp is one-way. Once a lake table is dropped — to change its schema, which a
+   * Pipelines stream cannot do in place — every stamped row is history the drain will
+   * never offer again, and the new table starts with a silent hole behind it. This is the
+   * rebuild: nothing about the rows changes except that they are eligible to leave again.
+   * It works only while the outbox still holds them, which is true while no outbox
+   * pruning exists.
+   *
+   * `drainedBefore` is REQUIRED, and it is the whole safety property. Clearing every stamp
+   * would also reopen rows shipped AFTER the table was rebuilt, putting them in the new
+   * table twice. The caller names the instant the lost window ended — the moment the old
+   * table stopped receiving — and only rows stamped before it are reopened. Strictly
+   * before: a row stamped at exactly that instant went to the new table.
+   *
+   * A re-ship is a second egress of domain payloads, so it is audited on K-24's rule like
+   * the stamp it undoes: a `redrainEvents` admin row, written only when something changed.
+   */
+  redrainEvents(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: { drainedBefore: string },
+  ): Promise<number>;
+
+  /**
    * Facet a CO-LOCATED scope's outbox (#1239) — narrow, group, count. For a
    * dispatch vertical the route reads it through the vertical's own
    * `/internal/facets`; this is the co-located fallback, like `entityHistory`.

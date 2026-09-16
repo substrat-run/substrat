@@ -1085,6 +1085,35 @@ export function defineScopeDO(
     }
 
     /**
+     * Reopen rows stamped strictly before `drainedBefore`, so the drain ships them again
+     * (#1334). The kernel contract says why the instant is required; this is the mechanism.
+     *
+     * Counted BEFORE the update, on `markEventsDrained`'s reasoning: `rowsWritten` includes
+     * index entries, and `_substrat_outbox_drained` leads with `drained_at`, so clearing N
+     * rows reports more than N writes. The queue has this scope to itself, so the count
+     * taken here is the count the update goes on to change.
+     */
+    async redrainEvents(drainedBefore: string): Promise<number> {
+      return await this.queue.enqueue(() => {
+        const redrained = (
+          this.sql
+            .exec(
+              `SELECT COUNT(*) AS c FROM _substrat_outbox WHERE drained_at IS NOT NULL AND drained_at < ?`,
+              drainedBefore,
+            )
+            .toArray()[0] as { c: number }
+        ).c;
+        if (redrained > 0) {
+          this.sql.exec(
+            `UPDATE _substrat_outbox SET drained_at = NULL WHERE drained_at IS NOT NULL AND drained_at < ?`,
+            drainedBefore,
+          );
+        }
+        return redrained;
+      });
+    }
+
+    /**
      * Facet this scope's own outbox (#1239) — `facetEvents`, which is the
      * sanctioned read: an erased payload yields the same NULL a missing field
      * does, and only the helper keeps them apart.

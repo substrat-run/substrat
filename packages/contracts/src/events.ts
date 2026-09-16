@@ -462,3 +462,14 @@ export const drainedEvent = domainEventShape
   })
   .superRefine(piiInvariant);
 export type DrainedEvent = z.infer<typeof drainedEvent>;
+
+/**
+ * `redrainEvents` input (#1334): reopen rows stamped strictly before this instant.
+ *
+ * `instant`, so it is the same ISO 8601 shape `drained_at` holds and the adapters' string
+ * comparison stays a time comparison. Required with no default on purpose — see the
+ * contract in the kernel: the instant IS the guard against reopening rows that already
+ * reached the rebuilt table.
+ */
+export const redrainEventsInput = z.object({ drainedBefore: instant });
+export type RedrainEventsInput = z.infer<typeof redrainEventsInput>;

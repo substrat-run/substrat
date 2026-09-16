@@ -132,6 +132,8 @@ export interface VerticalScopeHost {
    */
   undrainedEventsLocal(scopeId: ScopeId, limit: number): Promise<DrainedEvent[]>;
   markEventsDrainedLocal(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number>;
+  /** Reopen rows stamped before an instant so they ship again (#1334) — the stamp's inverse. */
+  redrainEventsLocal(scopeId: ScopeId, drainedBefore: string): Promise<number>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
@@ -296,6 +298,13 @@ const markDrainedBody = z.object({
   eventIds: z.array(z.string().min(1)).max(1000),
   drainedAt: instant,
 });
+
+/**
+ * `/internal/redrain-events` body (#1334) — reopen stamped rows so the drain ships them
+ * again. `drainedBefore` required, as on the platform verb: it is what keeps rows that
+ * already reached a rebuilt table from being reopened and landing there twice.
+ */
+const redrainEventsBody = z.object({ scopeId: scopeIdOf, drainedBefore: instant });
 
 /** `/internal/connector-invoke` body (#574) — one operation, invoked as the connection. */
 const connectorInvokeBody = z.object({
@@ -525,6 +534,13 @@ export function mountPlatformSurface<Env extends object>(
     const body = markDrainedBody.parse(await c.req.json());
     const drained = await deps.hostFor(c.env).markEventsDrainedLocal(body.scopeId, body.eventIds, body.drainedAt);
     return c.json({ drained });
+  });
+  // The stamp's inverse. No audit here, as with the stamp: the platform's `redrainEvents`
+  // is the door and writes the receipt, whichever deployment held the rows.
+  app.post('/internal/redrain-events', async (c) => {
+    const body = redrainEventsBody.parse(await c.req.json());
+    const redrained = await deps.hostFor(c.env).redrainEventsLocal(body.scopeId, body.drainedBefore);
+    return c.json({ redrained });
   });
 
   // #1236: when one scope's migrations actually ran — the schema-change annotation

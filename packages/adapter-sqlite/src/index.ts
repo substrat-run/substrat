@@ -154,6 +154,7 @@ import {
   substratError,
   assertReplayableDump,
   delegatedReadRecord,
+  redrainEventsInput,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -5774,6 +5775,29 @@ export class SqliteScopeHost implements ScopeHost {
           );
         }
         return drained;
+      },
+      redrainEvents: async (actor, tenantId, scopeId, input) => {
+        // Directory check first, on mark's reasoning: "nothing to reopen" and "you may not
+        // address this scope" are different answers.
+        this.assertScopeReachable(tenantId, scopeId);
+        const { drainedBefore } = redrainEventsInput.parse(input);
+        const db = this.scopeDbFor(tenantId, scopeId);
+        // `drained_at` is ISO 8601 text written by `toISOString()` on both adapters — one
+        // fixed-width UTC format — so a string comparison is a time comparison. STRICTLY
+        // before: a row stamped at exactly `drainedBefore` went to the new table.
+        const redrained = db
+          .prepare(
+            `UPDATE _substrat_outbox SET drained_at = NULL
+              WHERE drained_at IS NOT NULL AND drained_at < ?`,
+          )
+          .run(drainedBefore).changes;
+        // A second egress of the same payloads, on purpose — evidence on K-24's rule, and
+        // only when something changed, so a re-run over an already reopened window leaves
+        // no row claiming it did something.
+        if (redrained > 0) {
+          this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, { redrained, drainedBefore });
+        }
+        return redrained;
       },
       facetEvents: async (actor, tenantId, scopeId, input) => {
         // `facetEvents` is the sanctioned read: an erased payload yields the same

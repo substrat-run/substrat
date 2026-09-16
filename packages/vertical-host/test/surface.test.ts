@@ -37,6 +37,9 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     undrainedEventsLocal: async (_s: unknown, limit?: unknown) => note('undrainedEventsLocal', [{ limit }]) as never,
     markEventsDrainedLocal: async (_s: unknown, ids?: unknown, at?: unknown) =>
       note('markEventsDrainedLocal', (ids as string[]).length + (at === '2026-09-14T00:00:00.000Z' ? 0 : 1000)),
+    // Answers 7 only when the instant arrives verbatim, so the route cannot quietly drop it.
+    redrainEventsLocal: async (_s: unknown, before?: unknown) =>
+      note('redrainEventsLocal', before === '2026-09-16T00:00:00.000Z' ? 7 : -1),
     entityHistoryLocal: async (_s: unknown, input?: unknown) =>
       note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
     facetEventsLocal: async (_s: unknown, input?: unknown) =>
@@ -256,6 +259,25 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     // 2 = both ids, and the instant arrived verbatim (the fake adds 1000 otherwise).
     expect(await stamp.json()).toEqual({ drained: 2 });
     expect(host.calls).toEqual(expect.arrayContaining(['undrainedEventsLocal', 'markEventsDrainedLocal']));
+  });
+
+  // #1334: the stamp's inverse. The instant is the guard against reopening rows that already
+  // reached a rebuilt table, so a body without one is refused HERE rather than reaching a
+  // host that would reopen everything.
+  it('serves the redrain with the instant carried through, and refuses one without it', async () => {
+    const host = fakeHost();
+    const post = (body: unknown) =>
+      appWith(host).request('/internal/redrain-events', {
+        method: 'POST',
+        headers: { ...authed(), 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }, ENV);
+    const ok = await post({ scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z' });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ redrained: 7 });
+    expect((await post({ scopeId: SCOPE })).status).toBe(400);
+    expect((await post({ scopeId: SCOPE, drainedBefore: 'yesterday' })).status).toBe(400);
+    expect(host.calls.filter((c) => c === 'redrainEventsLocal')).toHaveLength(1);
   });
 
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,
