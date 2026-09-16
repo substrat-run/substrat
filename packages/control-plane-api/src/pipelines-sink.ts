@@ -89,6 +89,11 @@ function toRow(e: DrainedEvent): Record<string, unknown> {
     // because nothing supplied it would read as the same thing, which is why the shape
     // makes it required.
     caused_by: e.causedBy,
+    // #1237, and the third time this exact omission has been caught: the stream schema
+    // derives its columns from the outbox, so declaring one here is not what fills it —
+    // this mapper is. A column declared and never written is null on every row in the
+    // lake, which reads as "no call was ever recorded" rather than as a gap.
+    invocation_id: e.invocationId,
   };
 }
 

@@ -32,6 +32,7 @@ const event = (over: Record<string, unknown> = {}) =>
     operation: 'mod/op',
     version: 'v-7',
     causedBy: null,
+    invocationId: null,
     ...over,
   }) as never;
 
@@ -48,7 +49,7 @@ describe('createPipelinesEventSink', () => {
         'actor', 'caused_by', 'entity_id', 'entity_type', 'id', 'impersonation',
         'occurred_at', 'operation', 'payload', 'pii_class', 'authorization',
         'schema_version', 'scope_id', 'subject_id', 'tenant_id', 'type', 'version',
-        'bytes',
+        'invocation_id', 'bytes',
       ].sort(),
     );
     // `entity` is ONE ref on the envelope and TWO columns in the outbox; the schema
@@ -80,6 +81,16 @@ describe('createPipelinesEventSink', () => {
     const { requests, stream } = fakeStream();
     await createPipelinesEventSink(stream).ship(scope, [event({ causedBy: '01J0000000000000000000000B' })]);
     expect(requests[0]![0]!.caused_by).toBe('01J0000000000000000000000B');
+  });
+
+  it('carries invocationId through, so the lake can group a call (#1237)', async () => {
+    // The schema derives its columns from the outbox, so declaring `invocation_id` there
+    // is not what fills it — this mapper is. Asserted against a NON-NULL id, because the
+    // failure being guarded is a column that is null on every row: a presence check over
+    // the default would pass against a mapper that never wrote the field at all.
+    const { requests, stream } = fakeStream();
+    await createPipelinesEventSink(stream).ship(scope, [event({ invocationId: '01J0000000000000000000000D' })]);
+    expect(requests[0]![0]!.invocation_id).toBe('01J0000000000000000000000D');
   });
 
   it('splits on BYTES, not on a row count, so one fat payload cannot overflow a request', async () => {

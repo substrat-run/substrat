@@ -26,7 +26,8 @@ const DDL = `
     subject_id TEXT,
     operation TEXT,
     version TEXT,
-    caused_by TEXT
+    caused_by TEXT,
+    invocation_id TEXT
   );
   CREATE TABLE _substrat_deliveries (
     event_id TEXT NOT NULL,

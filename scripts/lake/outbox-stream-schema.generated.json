@@ -87,6 +87,11 @@
       "required": false
     },
     {
+      "name": "invocation_id",
+      "type": "string",
+      "required": false
+    },
+    {
       "name": "bytes",
       "type": "int64",
       "required": true

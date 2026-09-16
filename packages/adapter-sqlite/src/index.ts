@@ -329,6 +329,16 @@ interface ScopeRuntime {
    * actor serializes invoke and dispatch alike.
    */
   causedBy: string | null;
+  /**
+   * #1237: the invocation currently running in this scope, or null.
+   *
+   * Per-runtime for the same reason `causedBy` is — the host serves every scope in the
+   * process, and a host-wide field would stamp one scope's events with another's
+   * invocation the moment an operation awaited. Set for the duration of one `invoke`
+   * and cleared after, so a consumer running later carries none rather than the last
+   * caller's.
+   */
+  invocationId: string | null;
 }
 
 /** One `_substrat_attachments` row (#473), as SELECTed. */
@@ -467,6 +477,12 @@ const KERNEL_DDL = `
     -- nothing was being delivered (an operation emitted it directly), or the row
     -- predates the column.
     caused_by TEXT,
+    -- #1237: the INVOCATION this event belongs to, minted by the transport and carried
+    -- on InvokeOptions. The spine could say what caused an event and which operation
+    -- emitted it, and still not say which two events came from the same call — the
+    -- runtime's request id is stamped by the log platform at ingestion, so no vertical
+    -- code can read it. NULL = the transport minted none, or the row predates the column.
+    invocation_id TEXT,
     drained_at TEXT
   );
   -- #1232: the freshness evaluator's read — MAX(occurred_at) per type, every pass,
@@ -997,6 +1013,8 @@ interface OutboxRow {
   /** #1237: the event this one reacted to. NULL = nothing was being delivered when
    *  it was emitted, or the row predates the column. */
   caused_by: string | null;
+  /** #1237: the invocation this event was emitted during. NULL = none was carried. */
+  invocation_id: string | null;
   payload: string | null;
 }
 
@@ -3357,6 +3375,13 @@ export class SqliteScopeHost implements ScopeHost {
         // about the response, and the response is not one until it is returned.
         let replayed = false;
         const invoked = await rt.actor.enqueue(async () => {
+          // #1237: the invocation this call belongs to, for the duration of it. Set
+          // INSIDE the actor task — the actor serializes invoke and dispatch alike, so
+          // nothing else in this scope runs between here and the clear below. Cleared in
+          // `finally` so a later consumer carries none rather than the last caller's,
+          // which is the leak `causedBy` had to be moved off the host to avoid.
+          rt.invocationId = invokeOptions?.invocationId ?? null;
+          try {
           // Fresh per operation: the context carries the K-34 authorization accumulator,
           // which must not leak across operations (invokes are serialized per scope).
           const ctx = this.operationContext(rt, subject, undefined, signals, session, operation);
@@ -3488,6 +3513,14 @@ export class SqliteScopeHost implements ScopeHost {
             await this.dispatchExecutors(rt);
           }
           return structuredClone(result);
+          } finally {
+            // Cleared on BOTH paths, inside the task. The actor runs one task at a
+            // time, so a value left set here would be read by whichever task ran next
+            // and did not set its own — a connector drain, say — stamping its events
+            // with a call they had nothing to do with. The same leak `causedBy` was
+            // moved off the host to avoid.
+            rt.invocationId = null;
+          }
         });
         if (signals.platformRequests > 0) options?.onPlatformRequests?.(signals.platformRequests);
         if (committedVersion !== undefined) invokeOptions?.onEntityVersion?.(committedVersion);
@@ -5694,6 +5727,10 @@ export class SqliteScopeHost implements ScopeHost {
           // exists on the outbox but not on the envelope `parseOutboxRow` returns,
           // whose `domainEvent.parse` strips anything it does not declare.
           causedBy: (r.caused_by as string | null) ?? null,
+          // Same lift, same reason. `drainedEvent` requires this field, and the `as never`
+          // below is what let it be missed: without it a SQLite-backed lake loses the
+          // call grouping permanently, while a Cloudflare-backed one keeps it.
+          invocationId: (r.invocation_id as string | null) ?? null,
         })) as never;
       },
       markEventsDrained: async (actor, tenantId, scopeId, eventIds) => {
@@ -8142,8 +8179,8 @@ export class SqliteScopeHost implements ScopeHost {
             `INSERT INTO _substrat_outbox
                (id, type, schema_version, occurred_at, tenant_id, scope_id, actor,
                 entity_type, entity_id, pii_class, subject_id, authorization,
-                impersonation, operation, version, caused_by, payload)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                impersonation, operation, version, caused_by, invocation_id, payload)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             full.id,
@@ -8169,6 +8206,9 @@ export class SqliteScopeHost implements ScopeHost {
             // and this context outlives an `await`. A fact about the surrounding
             // dispatch, never envelope data module code could set or branch on.
             rt.causedBy,
+            // #1237: a fact about the surrounding CALL, like the version above — never
+            // envelope data module code could set or branch on.
+            rt.invocationId,
             full.payload === undefined ? null : JSON.stringify(full.payload),
           );
       },
@@ -8598,6 +8638,9 @@ export class SqliteScopeHost implements ScopeHost {
     // above. Rows already written keep NULL, which is honestly "unrecorded" — the
     // reason the column is nullable rather than defaulted.
     this.ensureColumn(db, '_substrat_outbox', 'caused_by', 'caused_by TEXT');
+    // #1237: existing scopes get it on next wake. Rows already written keep NULL, which
+    // honestly means "no invocation id was carried" — nothing can decide one afterwards.
+    this.ensureColumn(db, '_substrat_outbox', 'invocation_id', 'invocation_id TEXT');
   }
 
   private runtime(tenantId: TenantId, scopeId: ScopeId): ScopeRuntime {
@@ -8634,6 +8677,7 @@ export class SqliteScopeHost implements ScopeHost {
       appliedMigrations,
       mintEventId,
       causedBy: null,
+      invocationId: null,
     };
     this.scopes.set(key, created);
     this.scopesById.set(scopeId, created);
