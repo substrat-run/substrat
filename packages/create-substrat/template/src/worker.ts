@@ -47,7 +47,13 @@ import {
   SCOPE_SWEEPER_NAME,
   type ScopeSweeperDo,
 } from '@substrat-run/adapter-cloudflare';
-import { readRoutedNode, RouterAssertionError, type ScopeStub, invocationLog } from '@substrat-run/kernel';
+import {
+  PLATFORM_REQUEST_HEADER,
+  readRoutedNode,
+  RouterAssertionError,
+  type ScopeStub,
+  invocationLog,
+} from '@substrat-run/kernel';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { MODULES, OWNER_ROLE_KEY, ROLES } from './provision.js';
 import { SHOP_ENV } from './manifest.js';
@@ -213,7 +219,13 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   const node = nodeFor(c.req.raw, c.env);
   const principal = await authenticatedPrincipal(c.req.raw, c.env);
   if (!principal) throw new HTTPException(401, { message: await unauthorizedReason(c.env, node) });
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
+  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
+    // An operation that called `ctx.requestPlatform` flags its response, and the router
+    // drains this scope within seconds instead of at the next sweep. Leave it wired even
+    // if nothing requests anything yet: a spurious flag costs one empty drain, a missing
+    // one makes every platform intent wait up to a quarter of an hour.
+    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+  });
 }
 
 /**

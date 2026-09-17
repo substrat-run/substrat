@@ -50,7 +50,15 @@ import {
   type TenantId,
 } from '@substrat-run/contracts';
 import { CloudflareScopeHost, cloudflareClientContext, defineScopeDO } from '@substrat-run/adapter-cloudflare';
-import { globalFetch, readRoutedNode, RouterAssertionError, ulid, type ScopeStub, invocationLog } from '@substrat-run/kernel';
+import {
+  globalFetch,
+  PLATFORM_REQUEST_HEADER,
+  readRoutedNode,
+  RouterAssertionError,
+  ulid,
+  type ScopeStub,
+  invocationLog,
+} from '@substrat-run/kernel';
 import { mountPlatformSurface } from '@substrat-run/vertical-host';
 import { createModelHost, type ModelAttribution } from '@substrat-run/vertical-host/model';
 import { createAnthropic } from '@ai-sdk/anthropic';
@@ -427,7 +435,14 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   if (!principal) throw new HTTPException(401, { message: 'unauthorized' });
   // CP-less: lifecycle is the router's gate — it forwards only an active scope and
   // asserts the node. Permissions evaluate locally, from this desk's own storage.
-  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId);
+  return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
+    // #458/#1526: an invoke that enqueued platform intents flags the response, so the
+    // router kicks an immediate drain of this scope instead of leaving it to the sweep.
+    // Only a caller's own invoke can flag anything: the assistant's `record-answer`
+    // (the desk's `model-usage` line) runs in `waitUntil` after the response has gone,
+    // through `serviceStub`, and still waits for the sweep.
+    onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+  });
 }
 
 // ── Identity: the login round-trip and who I am ──────────────────────────────
