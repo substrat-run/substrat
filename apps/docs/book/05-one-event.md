@@ -348,10 +348,10 @@ during a deprecation window.
 The reason is mechanical rather than philosophical. Consumer dispatch selects on event
 *type* alone (`WHERE o.type = ?`), and the `schemaVersion` a manifest's `consumes` entry
 carries is discarded at registration. So emitting both versions delivers **both** to the
-same consumer. For the invoicing engine's export event, whose consumer is by design an
-accounting connector, that is a double invoice in production, silently. That is not
-hypothetical: the export event has been through exactly one version bump, and it was shipped
-as a replace.
+same consumer. The invoicing engine's export event is meant to be consumed by an accounting
+connector. None consumes it yet (chapter 12), but once one does, a dual-emit is a double
+invoice in production, silently. The rule is not hypothetical either: the export event has
+been through exactly one version bump, and it was shipped as a replace.
 
 A replace fails loudly instead: a v1 consumer's strict parse rejects v2, and the event
 dead-letters where somebody sees it. Loud and stopped beats quiet and doubled.
