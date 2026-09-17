@@ -1,7 +1,7 @@
 /**
  * The single-file editions of the book (#1401).
  *
- * The book is eleven chapter pages with prev/next, which is the right shape for
+ * The book is one page per chapter with prev/next, which is the right shape for
  * reading it in a browser and the wrong shape for printing it, converting it with
  * `pandoc`, or handing it to a model in one shot. So the build also emits the whole
  * thing twice more:
@@ -10,7 +10,7 @@
  *   - **`/book/read.html`** — the same content as one scrolling, printable page.
  *
  * Why this rides `buildEnd` rather than checking a concatenated file into the repo:
- * a checked-in copy would be a second, drifting transcript of eleven files, and the
+ * a checked-in copy would be a second, drifting transcript of every chapter file, and the
  * repo's rule for a generated file is that something must *refuse* when it drifts.
  * Emitting into `outDir` removes the drift instead of policing it — there is no
  * second copy to fall behind. `pnpm lint:llms --check` covers the same ground for
@@ -48,7 +48,7 @@ const stripNextLink = (body: string): string =>
  * Push every heading down one level, so the concatenated book has ONE `h1` (its
  * title), each chapter as an `h2`, and each chapter's sections below that. On the
  * web each chapter is its own page and owns an `h1`; stacked into one document
- * those eleven `h1`s would be eleven documents rather than one book, and the print
+ * those `h1`s would be one document per chapter rather than one book, and the print
  * rule below — a page break per chapter — would have nothing to key on.
  *
  * Fenced code is skipped: a `# comment` inside a shell block is not a heading.

@@ -33,7 +33,7 @@
     <text x="160" y="580" font-size="146" font-weight="600" letter-spacing="-4">end to end</text>
     <rect x="163" y="660" width="132" height="6" fill="#5fd3c4"/>
     <text x="160" y="790" font-size="54" font-weight="300" fill="#9aa4b2">How the pieces join.</text>
-    <text x="160" y="866" font-size="54" font-weight="300" fill="#9aa4b2">Ten chapters, front to back.</text>
+    <text x="160" y="866" font-size="54" font-weight="300" fill="#9aa4b2">Thirteen chapters, front to back.</text>
   </g>
 
   <!-- Twelve scopes: each its own closed box, nothing joining them. One is lit. -->
