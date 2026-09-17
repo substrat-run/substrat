@@ -353,24 +353,29 @@ decision-log event, not a patch.
 **Ordering: the row follows the mutation, in a separate write, and the window between them is
 accepted ([#1292](https://github.com/substrat-run/substrat/issues/1292)).** An audited
 `HostAdmin` verb commits its mutation first and writes its `_substrat_admin_log` row
-afterwards. On the Cloudflare adapter those are two `ControlPlaneDO` RPCs. On the SQLite
-adapter the row is a second statement, outside any transaction the mutation ran in. Neither
+afterwards. On the Cloudflare adapter the row is its own `ControlPlaneDO` RPC, separate from
+the mutation's write or writes, which may land in that DO, in a scope DO, or in D1 or R2. On
+the SQLite adapter the row is a later statement, outside any transaction the mutation ran in. Neither
 adapter swallows a failed log write: `recordAdmin` throws and the verb fails, but the
 mutation has already committed, so the caller sees an error for a change that stands. If the
 process dies between the two writes, the mutation has no row at all. Retrying the verb then
 reads the already-mutated state as its `before`, so the retry's row lands and the original
-transition's diff is lost. A verb that skips no-ops (`setTenantName`, `createTenant`) records
-nothing on that retry. What the log promises is that **every verb that returns has written
-its row**. It does not promise that no mutation stands without one, and the gap matters most
-for the grant writes above, where the row is the only provenance. Two verbs reverse the order
-deliberately, because there the missing row is the harmful half-state:
-`rewindScope` records its intent before the destructive PITR (K-33), and `beginImpersonation`
-writes its row before it returns the session, so no caller holds a session the log does not
-name (K-42; a crash in between leaves an unreturned session row, which is a credential nobody
-has). Closing the window is still an option, not a rejected one: a `mutateAudited` seam on
-the `ControlPlaneDO` could run a mutation and its row inside one storage transaction, and the
-~15 call sites could move onto it one at a time. Until then, this paragraph is the contract,
-and a new verb follows the mutation-then-row shape unless it has a reason like the two above.
+transition's diff is lost. A verb that skips no-ops (for example `setTenantName`,
+`createTenant` or `createOrg`) records nothing on that retry. What the log promises is that **every verb that returns having changed
+something has written its row**. A verb that found nothing to change returns without one. It
+does not promise that no mutation stands without one, and the gap matters most
+for the grant writes above, where the row is the only provenance. Two verbs place the row on
+purpose, because for them a missing row is the harmful half-state. `rewindScope` on the
+Cloudflare adapter records its intent **before** the destructive PITR (K-33); on SQLite there is
+no PITR and the verb only refuses. `beginImpersonation` still writes its session row first, but
+it writes the log row **before returning** the session, so no caller ever holds a session the log
+does not name (K-42). A crash in between leaves a session row that was never handed to anyone.
+Closing the window is still an option, not a rejected one: a `mutateAudited` seam on
+the `ControlPlaneDO` could run a directory mutation and its row inside one storage
+transaction, and the call sites (about sixty per adapter) could move onto it one at a time.
+Mutations that land outside the directory (a scope DO, D1, R2) would stay two writes even then.
+Until then, this paragraph is the contract, and a new verb follows the mutation-then-row shape
+unless it has a reason like the two above.
 
 **Retention: the admin log is never swept ([#36](https://github.com/substrat-run/substrat/issues/36)).**
 Because it is the sole witness of grant provenance (above), and because Tier-2 directory

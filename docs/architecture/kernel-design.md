@@ -137,9 +137,9 @@ hostname map, and admin audit log live here, and the admin's *effecting* surface
 suspend, entitlement flips, admin-query RPC) is out-of-band host code rather than module
 code, because K-8 leaves a vertical no addressable path to another vertical's scopes (K-20).
 [control-plane.md](control-plane.md) is that design. Unlike the outbox, the admin log is
-**not** transactional with what it records: its row is a separate write after the mutation
-commits, so a crash between the two leaves a mutation without its row (control-plane.md §4.4,
-#1292). Note that as of today the *tenant* half
+**not** transactional with what it records: its row is a separate write, and for almost every
+verb it comes after the mutation commits, so a crash between the two leaves a mutation without
+its row (control-plane.md §4.4 names the exceptions, #1292). Note that as of today the *tenant* half
 of "complete inventory of tenants and scopes" above is **specified but not implemented**: no
 adapter has a `tenants` table, and a tenant is a foreign-key string on scope rows.
 
