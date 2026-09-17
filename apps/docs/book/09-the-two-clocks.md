@@ -93,7 +93,9 @@ handler straight at the pass, on a fifteen-minute cron.
 **What it holds:** nothing — it reads the directory.
 
 This is the fleet-wide maintenance pass. One pass, in this order, each phase recording
-per-unit outcomes and **stepping over** failures rather than letting one sink the pass:
+per-unit outcomes and **stepping over** failures rather than letting one sink the pass. Every
+unit of work also leaves a durable **sweep run** record, which is how "this schedule never ran"
+becomes a visible verdict rather than an absence (chapter 10):
 
 **1. Migration reconciliation.** First, deliberately. The drain phase below wakes scopes,
 and waking migrates lazily — so running this after it would count every failed scope's
@@ -127,7 +129,12 @@ produces no row anywhere.
 **9. Reap tenants past their grace window.** After the scope reap, so a tenant's scopes are
 gone before its row becomes a tombstone.
 
-**10. Access-log drain and prune.** Ship staff access rows to durable storage, stamp them
+**10. Event drain to the lake.** Ship each active scope's undrained outbox rows to the event sink
+(Tier 2, chapter 11), up to 200 per scope per pass, then stamp them drained. With no sink bound,
+the phase does not run and nothing is marked. Draining copies events and never prunes the
+outbox.
+
+**11. Access-log drain and prune.** Ship staff access rows to durable storage, stamp them
 drained, then prune what was shipped. The sink must be **durable before it resolves** —
 everything downstream treats a resolved ship as proof the evidence survives outside the
 directory, so a sink that buffers and returns early turns a retention policy into data loss.
@@ -187,8 +194,9 @@ Both sweepers return a report rather than logging and forgetting. `retrying` and
 failed connector reconciliation does not hide behind a green pass.
 
 A caller that ignores those learns nothing, which is exactly the failure mode the older
-silent drain had — and why the reports exist in the shape they do.
+silent drain had, and it is why the reports exist in the shape they do. The next chapter is
+about the reading.
 
 ---
 
-**Next:** [Operating it →](/book/10-operating-it)
+**Next:** [Seeing what happened →](/book/10-seeing-what-happened)

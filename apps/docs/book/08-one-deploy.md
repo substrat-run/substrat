@@ -17,7 +17,7 @@ migration digest.
 
 That is all. Nothing is serving the new code. A push is cheap and reversible — it adds a
 row to a registry. The reason for the split is that "here is a new build" and "run this
-build against real data" are different decisions with very different blast radii, and
+build against real data" are different decisions, and a mistake in the second costs far more than a mistake in the first, and
 fusing them means you can only ever make both at once.
 
 Before the upload, the CLI runs the layer rules on the **source tree** — the same
@@ -25,6 +25,13 @@ Before the upload, the CLI runs the layer rules on the **source tree** — the s
 preflight that derives your declared surface and refuses a drifted one. Both run before the
 wrangler build, because a refusal is worth more in a second than at the end of a build that
 was going to ship broken.
+
+The push carries more than code. It flattens what each module **declares**, including the events
+it emits and consumes, its schedules and its freshness expectations, onto the version's manifest.
+That is what lets the dashboard later draw declared behaviour against observed behaviour
+(chapter 10). It also refuses a manifest that declares a binding in the `SUBSTRAT_*` namespace,
+because the platform injects names there, such as the version id every event is stamped with,
+and a vertical must not be able to shadow them.
 
 That gate is newer than it sounds, and the gap it closed is worth knowing. Until it existed,
 the mechanical rules this book has been describing ran **only in this repo's CI**. A vertical

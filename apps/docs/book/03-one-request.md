@@ -119,8 +119,13 @@ and a third enforcement point here could only ever disagree with those two.
 
 ## [3] The vertical authenticates a person
 
-Now we are inside the vertical's own worker — an ordinary Hono app. It does three things
-before any Substrat API is involved.
+Now we are inside the vertical's own worker, an ordinary Hono app. The first thing registered
+on it is the invocation log, which writes one tenant-stamped line for this request and mints the
+**invocation id** that every event the request emits will carry (chapter 10). It is first
+because Hono runs handlers in registration order, and a log mounted below a route cannot see
+that route.
+
+Then the worker does three things before any Substrat API is involved.
 
 **It reads the asserted node.** `readRoutedNode(request.headers, { expectedSecret })`
 returns `(tenantId, scopeId, surface, verticalSlug)` or throws. This is the vertical's
@@ -140,11 +145,18 @@ The important thing about this step is that it is the *vertical's* code, not the
 Substrat has an opinion about authorization and only a seam for authentication.
 [Authentication & identity](/concepts/identity) is that seam.
 
+The same declared operations are served twice over, with no extra declaration: as REST routes
+described by an OpenAPI document, and as an **MCP server at `/api/mcp`**, with one tool per
+operation that faces HTTP. An agent holding a user's token can do exactly what that user could
+do with `curl`, behind the same authentication and the same `ctx.check` inside the operation.
+Exposing an operation is not authorizing it. A refused tool call comes back as a tool error the
+agent can read, not as a failed session.
+
 Alongside this, the platform's own management routes are mounted in one call —
 `mountPlatformSurface(app, deps)` — which owns every `/internal/*` route the control plane
 calls to provision, reconcile, snapshot, export, restore and configure this install,
 behind a platform-secret gate that fails closed when the secret is unset. Those are not on
-the request path a user takes; they are how chapters 8 and 10 reach in.
+the request path a user takes; they are how chapters 8 and 13 reach in.
 
 ## [4] Getting a scope stub
 
@@ -207,9 +219,13 @@ erase the only evidence the refusal happened. Chapter 6 returns to it.
 
 ## [6] After the commit
 
-The moment the transaction commits, the DO drains its outbox to consumers — each delivery
-in its own transaction. That is chapter 5, and it is where most of the system's
-interesting behaviour lives.
+The moment the transaction commits, the DO drains its outbox to consumers, each delivery in
+its own transaction and still inside this operation's turn in the queue. That is chapter 5, and
+it is where most of the system's interesting behaviour lives.
+
+Back on the coordinator, outside the scope, any executors and connectors due for the new events
+run next. If the operation raised platform intents, the vertical flags its response so the
+router can ask the control plane to act on them straight away (chapter 5, "the kick").
 
 Then the result travels back out: clone boundary, coordinator, vertical worker, JSON,
 router, browser.

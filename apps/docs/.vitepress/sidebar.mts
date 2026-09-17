@@ -102,14 +102,17 @@ export function bookChapters(): { text: string; link: string }[] {
     { text: '7. Engines, verticals, composition', link: '/book/07-engines-and-verticals' },
     { text: '8. The life of one deploy', link: '/book/08-one-deploy' },
     { text: '9. The two clocks', link: '/book/09-the-two-clocks' },
-    { text: '10. Operating it', link: '/book/10-operating-it' },
+    { text: '10. Seeing what happened', link: '/book/10-seeing-what-happened' },
+    { text: '11. The audit trail and the lake', link: '/book/11-audit-and-the-lake' },
+    { text: '12. Metering and billing', link: '/book/12-metering-and-billing' },
+    { text: '13. Operating it', link: '/book/13-operating-it' },
   ];
 }
 
 export function guideSidebar() {
   return [
     // The book comes first because it is the only section with a reading ORDER —
-    // ten chapters, front to back. Everything below it is a reference a reader
+    // chapters read front to back. Everything below it is a reference a reader
     // arrives at with a question. Putting it last would bury the one part that
     // answers "how does this thing actually work" for someone who has not used it.
     {
