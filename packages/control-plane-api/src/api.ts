@@ -61,6 +61,8 @@ import {
   z,
   PROBLEM_CONTENT_TYPE,
   toProblem,
+  redrainEventsInput,
+  REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import type {
   Connection,
@@ -2793,6 +2795,42 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
   // vertical must never be asked to wipe a live scope) and re-checked below the seam by
   // reapScope. Same storage-before-row ordering as deleteSnapshot: the vertical wipes its
   // co-located DO first, then the in-process reapScope flips the status and audits.
+  // #1334 — reopen one scope's drained events so the Tier-2 drain ships them again: the
+  // rebuild path for a lake table that was dropped (a Pipelines stream cannot change its
+  // schema in place, so a new column means a new table, and every stamped row would
+  // otherwise be history the drain never offers again). Staff/service only — deliberately
+  // absent from BUILDER_ROUTES: it re-exports a tenant's payloads, and nothing a builder
+  // does should be able to cause that. `scripts/lake-redrain.mjs` walks the fleet with it.
+  app.post('/tenants/:tenantId/scopes/:scopeId/redrain-events', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const parsed = redrainEventsInput.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: 'body must be { drainedBefore: <ISO 8601 instant> } — the end of the window to reopen' }, 400);
+    }
+    // Refused at the door rather than left to the adapters: an instant in the future
+    // reopens rows the drain shipped AFTER the rebuild, which is exactly the double-write
+    // the required instant exists to prevent. Host code, so it may read the real clock.
+    if (Date.parse(parsed.data.drainedBefore) > Date.now()) {
+      return c.json(
+        {
+          error:
+            `drainedBefore ${parsed.data.drainedBefore} is in the future — it would reopen rows ` +
+            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.',
+        },
+        400,
+      );
+    }
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const redrained = await admin.redrainEvents(actor, tenantId, scopeId, parsed.data);
+    // `more` rather than silence: the verb reopens a bounded batch, so a caller that posts
+    // once can be holding a partial reopen. Saying so is what stops it reading as a finished
+    // window — the operator (or `pnpm lake:redrain`) posts again until `redrained` is 0.
+    return c.json({ redrained, more: redrained >= REDRAIN_BATCH, drainedBefore: parsed.data.drainedBefore });
+  });
+
   app.post('/tenants/:tenantId/scopes/:scopeId/reap', async (c) => {
     const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
     const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));

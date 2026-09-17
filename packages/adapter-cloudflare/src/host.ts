@@ -147,6 +147,7 @@ import {
   type TenantStoreHandle,
   outboundOfManifestJson,
   substratError,
+  redrainEventsInput,
 } from '@substrat-run/contracts';
 import { normalizeHostname, toRouteTarget } from './route-resolver.js';
 import {
@@ -219,6 +220,7 @@ import {
   type FreshnessRegistration,
   type FreshnessReport,
   globalFetch,
+  assertRedrainWindow,
 } from '@substrat-run/kernel';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
 import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
@@ -945,6 +947,7 @@ interface ScopeStubRpc {
   }): Promise<Page<HistoryEntry>>;
   undrainedEvents(limit: number): Promise<DrainedEvent[]>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
+  redrainEvents(drainedBefore: string): Promise<number>;
   facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   eventCause(input: EventCauseInput): Promise<CauseChain>;
   eventEffects(input: EventEffectsInput): Promise<EffectsTree>;
@@ -1052,6 +1055,13 @@ export interface EventDrainDelegation {
     eventIds: readonly string[];
     drainedAt: string;
   }): Promise<number>;
+  /**
+   * Reopen rows stamped before `drainedBefore` in the serving deployment, so the drain
+   * ships them again; returns how many (#1334). The third verb, and it must be delegated
+   * for the same reason as the stamp it undoes: the rows live there, and clearing stamps
+   * in the placeholder namespace would report success while reopening nothing.
+   */
+  redrain(args: { tenantId: TenantId; scopeId: ScopeId; vertical: string; drainedBefore: string }): Promise<number>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -1784,6 +1794,14 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async markEventsDrainedLocal(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number> {
     return this.scopeStub(scopeId).markEventsDrained(eventIds, drainedAt);
+  }
+
+  /**
+   * Reopen this host's own scope's drained rows (#1334) — the delegation's third half.
+   * No audit here, as with the stamp: the platform's `redrainEvents` is the door.
+   */
+  async redrainEventsLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
+    return this.scopeStub(scopeId).redrainEvents(drainedBefore);
   }
 
   /**
@@ -4028,6 +4046,45 @@ export class CloudflareScopeHost implements ScopeHost {
           );
         }
         return drained;
+      },
+      redrainEvents: async (actor, tenantId, scopeId, input): Promise<number> => {
+        // The same refusal the stamp carries: a reaped scope's storage is gone, and
+        // addressing its DO would construct an empty one and report nothing reopened.
+        const record = await this.scopeRecordForRead(tenantId, scopeId);
+        const { drainedBefore } = redrainEventsInput.parse(input);
+        // The window rule at the HostAdmin boundary, not only at the control-plane door:
+        // this verb is public, so an in-process caller reaches it without that route. Host
+        // code, so the real clock is the right one to read (the DO host injects none).
+        assertRedrainWindow(drainedBefore, new Date().toISOString());
+        // Audit FIRST, on `rewindScope`'s rule (K-33), because this has the same shape: the
+        // mutation commits in a DO and the row is a separate write afterwards, so a failure
+        // between them left a reopen that had happened with no receipt — and the retry could
+        // not repair it, because the stamps were already clear and a second call returns 0
+        // and writes nothing. The intent row is what cannot be lost that way; the outcome row
+        // below still records how much actually moved. A second egress of a tenant's payloads
+        // is exactly the thing K-24 must not lose track of.
+        await this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, {
+          intent: 'redrain',
+          drainedBefore,
+          delegated: Boolean(this.eventDrainDelegation && record.vertical),
+        });
+        // Delegated on the stamp's rule: the rows live in the vertical's deployment, and
+        // clearing stamps in the placeholder namespace would succeed while reopening nothing.
+        const redrained =
+          this.eventDrainDelegation && record.vertical
+            ? await this.eventDrainDelegation.redrain({
+                tenantId,
+                scopeId,
+                vertical: record.vertical,
+                drainedBefore,
+              })
+            : await this.scopeStub(scopeId).redrainEvents(drainedBefore);
+        // The outcome beside the intent above — only when something changed, so a re-run over
+        // a window already reopened adds no row claiming it moved anything.
+        if (redrained > 0) {
+          await this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, { redrained, drainedBefore });
+        }
+        return redrained;
       },
       facetEvents: async (actor, tenantId, scopeId, input: EventFacetInput): Promise<EventFacetResult> => {
         await this.scopeRecordForRead(tenantId, scopeId);

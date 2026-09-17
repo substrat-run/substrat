@@ -224,6 +224,9 @@ const MANIFEST = {
 const STORE_ONLY = {
   R2_LAKE_CATALOG_TOKEN: 'handed to `wrangler pipelines setup` — lives in the pipeline config',
   R2_LAKE_SEND_TOKEN: 'only for a sender outside Workers; the shipper uses a [[pipelines]] binding',
+  // Can delete the audit lake. That is exactly why it is never pushed: CF_API_TOKEN lives
+  // inside the running control plane, and this one must not.
+  CF_LAKE_ADMIN_TOKEN: 'read by scripts/lake-provision.mjs only — never pushed to a worker or CI',
 };
 
 /**

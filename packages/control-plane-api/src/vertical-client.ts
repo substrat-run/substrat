@@ -725,6 +725,19 @@ export class VerticalClient {
   }
 
   /**
+   * Reopen rows stamped before `drainedBefore` so the drain ships them again (#1334).
+   * Answers how many changed, which is what the platform's receipt is written from.
+   */
+  async redrainEvents(scopeId: ScopeId, drainedBefore: string): Promise<number> {
+    const answer = await this.postInternal<{ redrained: number }>(
+      '/internal/redrain-events',
+      { scopeId, drainedBefore },
+      'redrain-events',
+    );
+    return answer.redrained;
+  }
+
+  /**
    * When one scope's migrations actually ran (#1236) — the schema-change
    * annotation release health reads. Metadata only; no scope bytes cross.
    */

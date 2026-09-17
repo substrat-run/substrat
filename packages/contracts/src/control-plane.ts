@@ -90,6 +90,12 @@ export const adminAction = z.enum([
   // a batch shipped is evidence in its own right: without this action nothing durable
   // says who marked a customer's events as having left the platform, or when.
   'drainEvents',
+  // #1334 — the inverse, and evidence for the same reason. Clearing `drained_at` makes
+  // rows that already left the platform eligible to leave AGAIN: a second egress of a
+  // customer's payloads, done on purpose, typically to rebuild a lake table that lost
+  // them. The receipt names the window it reopened, so "why is this event in the lake
+  // twice" and "who put history back" both have a durable answer.
+  'redrainEvents',
   'pruneAccessLog', // K-24 — deleting drained access rows is itself a mutation // K-23 — a provider declares its topology before it may link
   'createTenant', // §4.1
   // §4.1/§4.8 — before/after carry the transitioned status. Starting the delete grace

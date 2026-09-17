@@ -60,11 +60,16 @@
  * the secrets filename would inspect and reuse the production lake, which is worse than
  * refusing. `--file` is for a different ACCOUNT, where the same names are the right names.
  *
- * Credentials come from the secrets file, never from argv: `CF_API_TOKEN` for the account
- * API (needs Workers Pipelines read for a check, write to provision, plus Workers R2
- * Storage write and R2 Data Catalog write for the bucket half) and `R2_LAKE_CATALOG_TOKEN`
- * for the sink and the Iceberg catalog — see secrets/README.md for why that key is
- * store-only: its real home is the sink config this script writes it into.
+ * Credentials come from the secrets file, never from argv: `CF_LAKE_ADMIN_TOKEN` for the
+ * account API (Workers Pipelines write, Workers R2 Storage write, R2 Data Catalog write —
+ * a check needs only the read halves) and `R2_LAKE_CATALOG_TOKEN` for the sink and the
+ * Iceberg catalog.
+ *
+ * Its OWN token, deliberately not `CF_API_TOKEN`. That one is pushed to the running control
+ * plane as a worker secret, so every permission on it is a permission anything that
+ * compromises the plane inherits — and this script's permissions include deleting the
+ * audit lake. `CF_LAKE_ADMIN_TOKEN` is store-only: it lives in the env file, is read here,
+ * and is never pushed to a worker or to CI. See secrets/README.md.
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -153,8 +158,16 @@ function readSecret(key) {
 
 const account = readSecret('CF_ACCOUNT_ID');
 if (!account) fail(`CF_ACCOUNT_ID blank in ${secretsFile}.`);
-const apiToken = readSecret('CF_API_TOKEN');
-if (!apiToken) fail(`CF_API_TOKEN blank in ${secretsFile} — the account API needs it (see the header).`);
+const apiToken = readSecret('CF_LAKE_ADMIN_TOKEN');
+if (!apiToken) {
+  fail(
+    `CF_LAKE_ADMIN_TOKEN blank in ${secretsFile}.\n` +
+      '  Create it: Manage account → Account API tokens → Create → Custom token, with\n' +
+      '  Workers Pipelines: Edit, Workers R2 Storage: Edit, Workers R2 Data Catalog: Edit, on this\n' +
+      '  account only. NOT CF_API_TOKEN — that one lives inside the running control plane, and\n' +
+      '  this one can delete the audit lake.',
+  );
+}
 const catalogToken = readSecret('R2_LAKE_CATALOG_TOKEN');
 // A dry run needs it only to READ the snapshot gate, which a dry-run recreate still does.
 if (!catalogToken && (!dryRun || recreate)) {
@@ -197,7 +210,7 @@ async function cf(method, path, body) {
 /** A 401/403 or an auth error code names the token, since that is what it always is. */
 const authHint = (r) =>
   r.status === 401 || r.status === 403 || r.codes.has(10000) || r.codes.has(9109)
-    ? '\n  CF_API_TOKEN lacks a permission this needs — see the header for the list.'
+    ? '\n  CF_LAKE_ADMIN_TOKEN lacks a permission this needs — see the header for the list.'
     : '';
 
 /** Values never printed: a dry run has to be safe to paste into a ticket. */
@@ -317,16 +330,17 @@ async function ensure(kind, existing, path, body) {
     const lines = drift(kind, existing);
     if (lines.length === 0) {
       console.log(`· ${kind}: exists and matches — left alone`);
-      return;
+      return { created: false, live: existing };
     }
     drifted.push(kind);
     console.log(`! ${kind}: exists and DIFFERS — left alone\n${lines.map((l) => `    ${l}`).join('\n')}`);
-    return;
+    return { created: false, live: existing };
   }
   console.log(`● ${kind}: POST ${path} ${redact(body)}`);
-  if (dryRun) return;
+  if (dryRun) return { created: true, live: null };
   const r = await cf('POST', path, body);
   if (!r.ok) fail(`create ${kind} — ${r.why}${authHint(r)}`);
+  return { created: true, live: r.result };
 }
 
 // ── The Iceberg catalog, for the table itself ────────────────────────────────────────
@@ -467,8 +481,16 @@ if (recreate) {
   if (dryRun) {
     console.log('● recreate [dry-run]: the snapshot gate is read for real; nothing is deleted\n');
   }
-  assertNoSnapshots(await tableSnapshotCount(), 'before teardown');
-  console.log(`● recreate: ${LAKE.namespace}.${LAKE.table} has no snapshots — nothing committed`);
+  const snapshotsBefore = await tableSnapshotCount();
+  assertNoSnapshots(snapshotsBefore, 'before teardown');
+  // Says what is TRUE, which after --discard-history is the opposite of "nothing committed".
+  // This line used to be unconditional and printed exactly that directly below the warning
+  // that N snapshots were being dropped — wrong at the one moment somebody reads carefully.
+  console.log(
+    typeof snapshotsBefore === 'number' && snapshotsBefore > 0
+      ? `● recreate: discarding ${snapshotsBefore} snapshot(s) — re-send them with \`pnpm lake:redrain\` afterwards`
+      : `● recreate: ${LAKE.namespace}.${LAKE.table} has no snapshots — nothing committed`,
+  );
   console.log('  tearing down pipeline, sink, stream, then the table\n');
   // Reverse dependency order: the pipeline references the sink and the stream, so it
   // goes first. The bucket and its catalog stay — nothing is wrong with them.
@@ -536,7 +558,7 @@ if (recreate) {
 // After a recreate the three are known gone, and a dry-run recreate must still print
 // the creates it would run rather than "exists" — so the lookup is skipped, not repeated.
 const lookup = (kind, name) => (recreate ? null : find(kind, name));
-await ensure('stream', await lookup('streams', LAKE.stream), '/pipelines/v1/streams', DECLARED.stream);
+const stream = await ensure('stream', await lookup('streams', LAKE.stream), '/pipelines/v1/streams', DECLARED.stream);
 await ensure('sink', await lookup('sinks', LAKE.sink), '/pipelines/v1/sinks', DECLARED.sink);
 await ensure('pipeline', await lookup('pipelines', LAKE.pipeline), '/pipelines/v1/pipelines', DECLARED.pipeline);
 
@@ -549,15 +571,26 @@ if (drifted.length > 0) {
   );
 }
 
-console.log(`
-A NEW STREAM HAS A NEW ID, and the control plane binds it by id. Three steps, or the
-plane keeps shipping to the stream that no longer exists — silently, because a drain
-with nowhere to go still stamps nothing and reports no error a human reads:
+// Printed only when a stream was actually made. On a plain check nothing changed and a
+// paragraph of next steps would be noise that trains people to skip it.
+if (stream.created) {
+  const id = stream.live?.id;
+  console.log(`
+A NEW STREAM HAS A NEW ID, and the control plane binds it by id. Until these run it ships
+to a stream that no longer exists. Run them ONE AT A TIME — pasted as a block, the shell
+carries on past a failure and can publish the old id:
 
-  1. wrangler pipelines streams list            # copy the new id
-  2. $EDITOR secrets/platform.prod.env          # CF_PIPELINE_OUTBOX_STREAM_ID=<id>
-     node scripts/secrets.mjs github            # publish it to CI
+  1. In secrets/platform.prod.env set:
+       CF_PIPELINE_OUTBOX_STREAM_ID=${id ?? '<the id the create returned — dry run, none yet>'}
+  2. node scripts/secrets.mjs github
   3. pnpm --filter @substrat-run/control-plane cf:deploy
+       — note the time it FINISHES; step 4 needs it
+  4. pnpm lake:redrain --drained-before=<that time, ISO 8601>
 
-The binding itself is declared in apps/control-plane/wrangler.deploy.json and resolved
-by tools/wrangler-config.mjs, so step 2 is the only place the id is written by hand.`);
+Step 4 is what makes a recreate lose nothing. Every row the drain already shipped is
+stamped in its outbox, and dropping the table did not clear those stamps, so without it the
+new table starts here with a hole behind it. The instant is the DEPLOY, not this teardown:
+until the new id is live the old plane may keep stamping rows into the stream that is gone.
+When unsure, pick later rather than earlier — later can duplicate a few rows, earlier loses
+them.`);
+}

@@ -642,6 +642,62 @@ export function scopeHostContractSuite(
       expect(next.length).toBe(1);
       expect(first.map((e) => e.id)).not.toContain(next[0]!.id);
 
+      // REDRAIN (#1334) — the stamp's inverse, and the rebuild path for a dropped lake table.
+      // Deterministic rather than timed: one mark call stamps every row with ONE instant (the
+      // receipt names it), so the boundary can be probed exactly instead of by sleeping.
+      const stampedAt = (receipt!.after as { drainedAt: string }).drainedAt;
+      // STRICTLY before. At exactly the stamp instant nothing reopens — a row stamped at the
+      // rebuild instant went to the new table, and reopening it would write it there twice.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: stampedAt }),
+      ).resolves.toBe(0);
+      const justAfter = new Date(Date.parse(stampedAt) + 1).toISOString();
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: justAfter }),
+      ).resolves.toBe(first.length);
+      // The reopened rows come back through the ordinary read, unchanged — nothing about the
+      // event moves except that it may leave again.
+      const reopened = await host.admin.readUndrainedEvents(staff, t1, sDrain, 200);
+      expect(reopened.map((e) => e.id)).toEqual(expect.arrayContaining(first.map((e) => e.id)));
+      const again1 = reopened.find((e) => e.id === first[0]!.id)!;
+      expect(again1).toEqual(first[0]);
+      // A second egress of the same payloads is evidence on K-24's rule — and the receipt is
+      // written in two halves, because the mutation and the row are separate writes: the
+      // INTENT goes down before anything is reopened, so a crash in between cannot leave a
+      // reopen with no trace (the retry could not repair it — the stamps are already clear,
+      // so it would return 0 and record nothing). The OUTCOME follows only when something
+      // moved, so a re-run over an already reopened window claims nothing.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: justAfter }),
+      ).resolves.toBe(0);
+      const redrains = (await host.admin.auditLog(staff, { tenantId: t1 })).filter(
+        (r) => r.action === 'redrainEvents' && r.scopeId === sDrain,
+      );
+      const intents = redrains.filter((r) => (r.after as { intent?: string }).intent === 'redrain');
+      const outcomes = redrains.filter((r) => (r.after as { intent?: string }).intent !== 'redrain');
+      // Three calls above, each on the record before it touched anything.
+      expect(intents).toHaveLength(3);
+      // …and exactly one of them reopened rows.
+      expect(outcomes).toHaveLength(1);
+      expect(outcomes[0]!.after).toEqual({ redrained: first.length, drainedBefore: justAfter });
+      // The instant is the guard, so no instant is not "everything".
+      await expect(host.admin.redrainEvents(staff, t1, sDrain, {} as never)).rejects.toThrow();
+      // …and neither is an instant in the future. Enforced at the HostAdmin boundary rather
+      // than at the control-plane route alone: this verb is public, so the fleet script and
+      // any other in-process caller reach the adapters without passing that door. A future
+      // cutoff clears the stamps on rows the drain shipped AFTER the rebuild, which is the
+      // double-write the required instant exists to prevent.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, {
+          drainedBefore: new Date(Date.now() + 60_000).toISOString(),
+        }),
+      ).rejects.toThrow(/future/);
+      // And K-3 holds here as on the stamp: another tenant's pair is refused, never answered 0,
+      // since "nothing to reopen" would read as a successful rebuild of a scope it never touched.
+      await expect(
+        host.admin.redrainEvents(staff, t2, sDrain, { drainedBefore: justAfter }),
+      ).rejects.toThrow(/unknown scope/);
+
       // An empty mark is a no-op, not an error — a drain with nothing to ship.
       await expect(host.admin.markEventsDrained(staff, t1, sDrain, [])).resolves.toBe(0);
       // But "nothing to mark" and "you may not address this scope" stay different
@@ -1646,7 +1702,13 @@ export function scopeHostContractSuite(
 
         // The restore is audited, in the log it just replaced: the entry after a
         // restored history is the restore itself, so the seam is legible.
-        const log = await host.admin.auditLog(staff, { limit: 50 });
+        //
+        // A wide window on purpose: this asks whether the entry EXISTS, and the 50 it used
+        // to read was incidental. `redrainEvents` now records an intent row per call (#1334
+        // review — the receipt must survive a crash between the reopen and its row), so the
+        // suite writes more admin rows than it did and a narrow window stopped reaching back
+        // this far. Nothing about what is asserted changes.
+        const log = await host.admin.auditLog(staff, { limit: 500 });
         expect(log.some((e) => e.action === 'restoreDirectory')).toBe(true);
       });
     });

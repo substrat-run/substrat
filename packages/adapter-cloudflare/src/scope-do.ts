@@ -45,6 +45,7 @@ import {
   requestFingerprint,
   substratError,
   assertReplayableDump,
+  REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import {
   ulid,
@@ -1082,6 +1083,44 @@ export function defineScopeDO(
           );
         }
         return drained;
+      });
+    }
+
+    /**
+     * Reopen rows stamped strictly before `drainedBefore`, so the drain ships them again
+     * (#1334). The kernel contract says why the instant is required; this is the mechanism.
+     *
+     * Counted BEFORE the update, on `markEventsDrained`'s reasoning: `rowsWritten` includes
+     * index entries, and `_substrat_outbox_drained` leads with `drained_at`, so clearing N
+     * rows reports more than N writes. The queue has this scope to itself, so the count
+     * taken here is the count the update goes on to change.
+     *
+     * BOUNDED at `REDRAIN_BATCH`, and the caller loops until this returns 0. The outbox is
+     * never pruned, so "every stamped row before an instant" grows with the scope's whole
+     * lifetime — and this runs inside ONE Durable Object request, against a fixed budget.
+     * Unbounded, a big enough scope would exceed it, and exceed it again on every retry, so
+     * the one scope that most needs reopening could never make progress. Oldest first, so a
+     * partial run leaves a prefix of the window rather than holes scattered through it.
+     */
+    async redrainEvents(drainedBefore: string): Promise<number> {
+      return await this.queue.enqueue(() => {
+        const ids = this.sql
+          .exec(
+            `SELECT id FROM _substrat_outbox
+              WHERE drained_at IS NOT NULL AND drained_at < ?
+              ORDER BY id LIMIT ?`,
+            drainedBefore,
+            REDRAIN_BATCH,
+          )
+          .toArray() as { id: string }[];
+        if (ids.length === 0) return 0;
+        // By id, not by the window again: the rows just chosen are exactly the rows
+        // cleared, so the count returned cannot drift from what the statement touched.
+        this.sql.exec(
+          `UPDATE _substrat_outbox SET drained_at = NULL WHERE id IN (${ids.map(() => '?').join(',')})`,
+          ...ids.map((r) => r.id),
+        );
+        return ids.length;
       });
     }
 

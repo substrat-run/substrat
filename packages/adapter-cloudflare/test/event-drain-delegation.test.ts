@@ -22,7 +22,7 @@ describe('event-drain delegation (#1334)', () => {
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
 
-  const seen: { read: unknown[]; mark: unknown[] } = { read: [], mark: [] };
+  const seen: { read: unknown[]; mark: unknown[]; redrain: unknown[] } = { read: [], mark: [], redrain: [] };
   const delegation: EventDrainDelegation = {
     readUndrained: async (a) => {
       seen.read.push(a);
@@ -31,6 +31,12 @@ describe('event-drain delegation (#1334)', () => {
     markDrained: async (a) => {
       seen.mark.push(a);
       return a.eventIds.length;
+    },
+    // The far end answers how many it reopened; 3 then 0, so the test can tell a receipt
+    // written for real work from one written for a no-op re-run.
+    redrain: async (a) => {
+      seen.redrain.push(a);
+      return seen.redrain.length === 1 ? 3 : 0;
     },
   };
   const hostFor = () =>
@@ -59,6 +65,37 @@ describe('event-drain delegation (#1334)', () => {
     const receipts = await hostFor().admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'drainEvents' });
     expect(receipts).toHaveLength(1);
     expect((receipts[0]!.after as { drainedAt: string }).drainedAt).toBe(call.drainedAt);
+  });
+
+  it('reopens through the delegation, recording the intent before the outcome', async () => {
+    // Clearing stamps in the placeholder namespace would report success while reopening
+    // nothing — the same false "the fleet has no events" the read delegation removes.
+    const drainedBefore = '2026-09-16T00:00:00.000Z';
+    await expect(hostFor().admin.redrainEvents(staff, t, s, { drainedBefore })).resolves.toBe(3);
+    expect(seen.redrain).toEqual([{ tenantId: t, scopeId: s, vertical: 'docs', drainedBefore }]);
+    // A re-run over a window already reopened changes nothing.
+    await expect(hostFor().admin.redrainEvents(staff, t, s, { drainedBefore })).resolves.toBe(0);
+
+    const receipts = await hostFor().admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'redrainEvents' });
+    const intents = receipts.filter((r) => (r.after as { intent?: string }).intent === 'redrain');
+    const outcomes = receipts.filter((r) => (r.after as { intent?: string }).intent !== 'redrain');
+    // Two calls, each on the record BEFORE it reopened anything: the mutation commits in the
+    // far end and the row is a separate write here, so a failure between them would leave a
+    // reopen no receipt could be written for — the retry finds the stamps clear, returns 0
+    // and records nothing. The intent row is the half that cannot be lost that way.
+    expect(intents).toHaveLength(2);
+    expect(intents[0]!.after).toEqual({ intent: 'redrain', drainedBefore, delegated: true });
+    // …and only the call that actually moved rows records an outcome, so the re-run over an
+    // exhausted window still claims nothing.
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.after).toEqual({ redrained: 3, drainedBefore });
+  });
+
+  it('refuses a redrain with no instant, rather than reopening everything', async () => {
+    // The instant IS the guard: without it, rows already shipped to the rebuilt table
+    // would be reopened and land there twice.
+    await expect(hostFor().admin.redrainEvents(staff, t, s, {} as never)).rejects.toThrow();
+    await expect(hostFor().admin.redrainEvents(staff, t, s, { drainedBefore: 'yesterday' })).rejects.toThrow();
   });
 
   it('leaves the access row on this host, so the branch is invisible to an auditor', async () => {

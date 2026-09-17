@@ -720,6 +720,7 @@ function eventDrainDelegationFor(env: Env): EventDrainDelegation | undefined {
     readUndrained: async (a) => (await clientFor(a.tenantId, a.scopeId, a.vertical)).undrainedEvents(a.scopeId, a.limit),
     markDrained: async (a) =>
       (await clientFor(a.tenantId, a.scopeId, a.vertical)).markEventsDrained(a.scopeId, a.eventIds, a.drainedAt),
+    redrain: async (a) => (await clientFor(a.tenantId, a.scopeId, a.vertical)).redrainEvents(a.scopeId, a.drainedBefore),
   };
 }
 
