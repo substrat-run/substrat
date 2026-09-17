@@ -92,9 +92,50 @@ describe('cf tenant logs', () => {
   it('narrows phase one to failing invocations when asked for errors', async () => {
     const { reader, sent } = readerOver(() => []);
     await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
-    const failed = sent.find((f) => keyed(f, 'status'));
-    expect(failed).toBeDefined();
-    expect(keyed(failed!, 'status')).toEqual({ key: 'status', operation: 'gte', type: 'number', value: 500 });
+    const statuses = sent.filter((f) => keyed(f, 'status')).map((f) => keyed(f, 'status'));
+    expect(statuses).toEqual([
+      { key: 'status', operation: 'eq', type: 'number', value: 500 },
+      { key: 'status', operation: 'gte', type: 'number', value: 502 },
+    ]);
+  });
+
+  /**
+   * #1345: a 501 is a declared-absent capability — the vertical answering "this version has
+   * no owner-seat hook" to a dashboard that asks on render. Correct behaviour, so it is
+   * labelled rather than coloured as a failure, and rather than hidden: the line is the
+   * evidence that something is asking at all.
+   */
+  it('labels a 501 as an absent capability, at info, instead of an error row', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat') ? [invocation({ method: 'GET', path: '/internal/owner-seat', status: 501, durationMs: 3 })] : [],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.message).toBe('GET /internal/owner-seat → 501 capability absent (3 ms)');
+    expect(events[0]!.level).toBe('info');
+  });
+
+  it('still reads a 500 as an error row', async () => {
+    const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ status: 500 })] : []));
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events[0]!.message).toBe('POST /api/orders → 500 (42 ms)');
+    expect(events[0]!.level).toBe('error');
+  });
+
+  it('reads a thrown invocation as an error even where a 501 status is present', async () => {
+    const { reader } = readerOver((f) =>
+      keyed(f, 'substrat') ? [invocation({ status: 501, threw: true })] : [],
+    );
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', hours: 24, limit: 10 });
+    expect(events[0]!.message).toBe('POST /api/orders → threw (42 ms)');
+    expect(events[0]!.level).toBe('error');
+  });
+
+  it('keeps a 501 out of an error read', async () => {
+    // Whatever phase one is asked, a 501 that reaches the merge is not an error row.
+    const { reader } = readerOver((f) => (keyed(f, 'substrat') ? [invocation({ status: 501 })] : []));
+    const events = await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 10 });
+    expect(events).toEqual([]);
   });
 
   /**
@@ -111,6 +152,29 @@ describe('cf tenant logs', () => {
     expect(keyed(escapes!, 'threw')).toEqual({ key: 'threw', operation: 'eq', type: 'boolean', value: true });
     // Still the tenant's own — an escape query that forgot the tenant is a fleet read.
     expect(keyed(escapes!, 'tenantId')).toMatchObject({ value: '01TENANT' });
+  });
+
+  /**
+   * The failure queries are separate pages, and the correlation cap (40) is spent in the
+   * order their invocations are listed. Page order would let a busy `= 500` page spend it
+   * all on old failures and never expand a newer 502 or escape.
+   */
+  it('spends the correlation budget on the newest failures across every failure page', async () => {
+    const old500s = Array.from({ length: 45 }, (_, i) =>
+      invocation({ status: 500 }, `01OLD${String(i).padStart(2, '0')}`),
+    ).map((e, i) => ({ ...e, timestamp: 100 + i }));
+    const { reader, sent } = readerOver((f) => {
+      const status = keyed(f, 'status');
+      if (status?.['operation'] === 'eq') return old500s;
+      if (status?.['operation'] === 'gte') return [{ ...invocation({ status: 502 }, '01NEW502'), timestamp: 5000 }];
+      if (keyed(f, 'threw')) return [{ ...invocation({ status: null, threw: true }, '01NEWESC'), timestamp: 4000 }];
+      return [];
+    });
+    await reader.tenantLogs!({ tenantId: '01TENANT', level: 'error', hours: 24, limit: 100 });
+    const expanded = sent.map((f) => keyed(f, '$metadata.requestId')?.['value']).filter(Boolean);
+    expect(expanded).toContain('req-01NEW502');
+    expect(expanded).toContain('req-01NEWESC');
+    expect(expanded).toHaveLength(40);
   });
 
   it('does not narrow to failures for any other level', async () => {
