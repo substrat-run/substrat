@@ -6,20 +6,25 @@
   "description": "A Substrat vertical built from published packages — the 'build an app outside the repo' example, deliberately not a workspace member so it proves an npm install works",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "wrangler dev --var ALLOW_DEV_HEADER:true",
+    "dev": "concurrently -n issuer,worker -c magenta,blue \"npm run issuer\" \"npm run worker\"",
+    "issuer": "substrat-dev-issuer --personas src/personas.ts",
+    "worker": "wrangler dev --var OIDC_ISSUER:http://localhost:8879 --var OIDC_CLIENT_ID:substrat-dev --var OIDC_CLIENT_SECRET:dev-issuer-checks-no-secret --var SESSION_SECRET:substrat-local-dev-session-secret",
     "cf:deploy": "wrangler deploy",
     "dry-run": "wrangler deploy --dry-run --outdir dist-worker"
   },
   "dependencies": {
-    "@substrat-run/adapter-cloudflare": "^0.106.0",
-    "@substrat-run/contracts": "^0.106.0",
-    "@substrat-run/engine-workorder": "^0.11.5",
-    "@substrat-run/kernel": "^0.106.0",
+    "@substrat-run/adapter-cloudflare": "^0.113.0",
+    "@substrat-run/contracts": "^0.113.0",
+    "@substrat-run/engine-workorder": "^0.11.12",
+    "@substrat-run/kernel": "^0.113.0",
+    "@substrat-run/vertical-auth": "^0.14.2",
     "hono": "^4.12.30",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260908.1",
+    "@substrat-run/dev-issuer": "^0.1.28",
+    "concurrently": "^10.0.5",
     "typescript": "^7.0.0",
     "wrangler": "^4.110.0"
   }

@@ -17,6 +17,8 @@ One deployable Cloudflare Worker that composes:
 
 - `@substrat-run/kernel` + `@substrat-run/contracts` — the runtime and vocabulary
 - `@substrat-run/adapter-cloudflare` — the Durable-Object scope host
+- `@substrat-run/vertical-auth` — the OIDC relying party (login, callback,
+  session cookie); `@substrat-run/dev-issuer` is the local issuer it signs in at
 - `@substrat-run/engine-workorder` — a **published engine**, proving engines
   resolve and bundle from npm
 - [`src/notes.ts`](src/notes.ts) — **your own module**, a minimal one
@@ -29,13 +31,15 @@ scope. Registering into a separately-deployed shared control plane is what
 
 ```sh
 npm install        # or pnpm install --ignore-workspace, from inside this repo
-npm run dev        # wrangler dev on real workerd — no Cloudflare account needed
+npm run dev        # the dev issuer on :8879 + wrangler dev on :8787 — no Cloudflare account needed
 ```
 
 Then **open <http://localhost:8787> in your browser**: a tiny built-in page lets
-you *Seed world*, add notes, and see them — driving the same API below. (The `dev`
-script turns on the `x-principal` dev-header auth the page uses — a placeholder,
-see [What this example does *not* show yet](#what-this-example-does-not-show-yet).)
+you *Seed world*, **Sign in**, add notes, and see them — driving the same API
+below. Signing in is a real OpenID Connect round-trip to
+`@substrat-run/dev-issuer`, whose only shortcut is that it lists names instead of
+asking for a password. Pick **Ada** (a member) to write notes, or **Bo** (signed
+in, holds no role) to see the permission check refuse.
 
 > **Running from inside this repo:** `examples/` is deliberately **not** a pnpm
 > workspace member, so a plain `pnpm install` here would target the whole
@@ -52,22 +56,25 @@ see [What this example does *not* show yet](#what-this-example-does-not-show-yet
 ### Or drive the API directly
 
 ```sh
-# provision the world once (tenant → entitlements → scope → activate → role)
+# provision the world once (tenant → entitlements → scope → activate → role → identity links)
 curl -s -X POST http://localhost:8787/seed
 
-# act as the seeded user
-U=01JZ0000000000000000000003
-curl -s -X POST -H "x-principal: $U" -H 'content-type: application/json' \
+# a token for a persona, minted by the dev issuer — impersonation lives at the
+# issuer, never in the vertical
+T=$(curl -s -X POST localhost:8879/dev/token -d '{"sub":"dev|ada"}' | jq -r .access_token)
+A="authorization: Bearer $T"
+curl -s -H "$A" http://localhost:8787/api/me
+curl -s -X POST -H "$A" -H 'content-type: application/json' \
   -d '{"text":"first note"}' http://localhost:8787/api/notes
-curl -s -H "x-principal: $U" http://localhost:8787/api/notes
-curl -s -H "x-principal: $U" http://localhost:8787/api/workorders   # [] — engine registered
+curl -s -H "$A" http://localhost:8787/api/notes
+curl -s -H "$A" http://localhost:8787/api/workorders   # [] — engine registered
 ```
 
 Both list routes are **paged**. The body is the entries and the walk rides in a
 `Link` header, so a client follows a URL rather than assembling a cursor:
 
 ```sh
-curl -si -H "x-principal: $U" 'http://localhost:8787/api/notes?limit=2' | grep -i '^link:'
+curl -si -H "$A" 'http://localhost:8787/api/notes?limit=2' | grep -i '^link:'
 # link: <http://localhost:8787/api/notes?limit=2&cursor=01M1…>; rel="next"
 ```
 
@@ -79,11 +86,21 @@ No `rel="next"` means the walk is over.
 npm run cf:deploy   # needs a Workers Paid plan (Durable Object SQLite)
 ```
 
-`ALLOW_DEV_HEADER` is **not** set on deploy, so a deployed worker is fail-closed
-until you wire real auth — which you must, because the dev header is a
-placeholder and not a shape to copy (see below). See `packages/vertical-auth` for
-the OIDC composition a vertical mounts; the kernel only ever receives the
-resolved `PrincipalId`.
+The four OIDC settings are passed by the `dev` script only, so a deployed worker
+authenticates nobody until you give it an issuer — every `/api/*` call answers
+401 and says which settings are missing:
+
+```sh
+npx wrangler secret put OIDC_ISSUER          # your issuer's origin
+npx wrangler secret put OIDC_CLIENT_ID
+npx wrangler secret put OIDC_CLIENT_SECRET
+npx wrangler secret put SESSION_SECRET       # signs the session cookie
+```
+
+`POST /seed` links the dev cast **only when `OIDC_ISSUER` is a local origin**:
+anyone can pick those names at the dev issuer, so linking them against a real
+issuer would hand principals to whoever it happens to call `dev|ada`. Against a
+real issuer, link your own subjects with `host.admin.linkIdentity`.
 
 ## The shape to copy
 
@@ -96,8 +113,10 @@ resolved `PrincipalId`.
   scope parses an invocation against them before the guards and the handler run,
   on every path in (HTTP, test, seed, schedule). Handlers do not hand-parse.
 - **The worker** ([`src/worker.ts`](src/worker.ts)) bundles the modules into a
-  `ScopeDO`, exports the `ControlPlaneDO`, and resolves a principal → `getScope` →
-  `invoke`. Adding another engine is one import plus one entry in `MODULES` and its
+  `ScopeDO`, exports the `ControlPlaneDO`, and resolves the caller → `getScope` →
+  `invoke`. Resolving the caller is two steps, the same two every OIDC-only
+  vertical takes: verify the request against the issuer to get a `sub`, then ask
+  the identity directory which principal that subject is. Adding another engine is one import plus one entry in `MODULES` and its
   entitlement key in the seed.
 - **Provisioning is two calls, not one** (K-31): `provisionScope` writes the
   directory row as `provisioning` and `activateScope` is the vertical's
@@ -124,13 +143,11 @@ If `npm install` refuses on a peer, or `typecheck` reports a surface that moved,
 that is the example doing its job: it is the earliest place an external consumer's
 breakage shows up.
 
-## What this example does *not* show yet
+## What this example does *not* show
 
-Auth. The `x-principal` dev header here is a **dev-only placeholder that no
-vertical in this repo uses any more** — do not copy it. Every demo vertical is
-now **OIDC-only** ([`docs/architecture/oidc-only-demos.md`](../../docs/architecture/oidc-only-demos.md)):
-they run no credential store, start a real OIDC issuer in dev
-(`@substrat-run/dev-issuer`), and map the authenticated `sub` onto a scope
-principal, so the local login is the production round-trip. A project from
-`npm create substrat` is scaffolded that way too. Porting this example onto that
-shape is the remaining half of #983.
+The per-tenant `IdentityDO` from `@substrat-run/vertical-auth`, with its
+owner-claim and invite flows. This example is self-contained and embeds its own
+control plane, so that control plane's identity directory is where `sub` →
+principal lives. A vertical deployed with `substrat push` keeps no control plane
+and would use the `IdentityDO` instead — the auth seam in the `npm create substrat`
+template's `src/worker.ts` marks where it goes.

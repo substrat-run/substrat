@@ -14,6 +14,7 @@
 			"new_sqlite_classes": ["ScopeDO", "ControlPlaneDO"]
 		}
 	]
-	// No `vars`: ALLOW_DEV_HEADER is deliberately absent so a real `wrangler deploy`
-	// is fail-closed. `pnpm dev` sets it for local use only.
+	// No `vars`: the OIDC settings are deliberately absent so a real `wrangler deploy`
+	// authenticates nobody until it is given an issuer. `npm run dev` passes the local
+	// dev issuer's for local use only.
 }
