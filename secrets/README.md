@@ -260,7 +260,9 @@ rights is a standing capability used a handful of times ever — and `CF_API_TOK
 since it lives inside the running control plane, which never needs them. A login expires on
 its own and puts a person in Cloudflare's audit log. It also means the script does not run in
 CI, on purpose. Each run prints `As:` first: an exported `CLOUDFLARE_API_TOKEN` silently
-overrides your login, and that is the one to `unset`.
+overrides your login, and that is the one to `unset`. A `CLOUDFLARE_API_KEY` +
+`CLOUDFLARE_EMAIL` pair overrides it too, and the script refuses to run as one — a global
+API key carries every permission its user holds.
 
 A Pipelines stream cannot change its schema in place and a sink refuses to write to an
 existing table, so **adding a lake column means dropping the table**. Dropping it does not

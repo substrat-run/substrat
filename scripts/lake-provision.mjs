@@ -175,7 +175,8 @@ if (!account) fail(`CF_ACCOUNT_ID blank in ${secretsFile}.`);
  * The credential this run acts as — normally your `wrangler login`.
  *
  * `wrangler auth token` has one behaviour worth surfacing rather than inheriting: a
- * `CLOUDFLARE_API_TOKEN` in the environment silently wins over the login. A narrow token
+ * `CLOUDFLARE_API_TOKEN` — or a `CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL` pair — in the
+ * environment silently wins over the login. A narrow token
  * left exported in a terminal is how a command that works for you fails for you with an
  * authorization error naming your own account — so the run prints which one it got. The
  * token stays in this process and reaches the API through `fetch`, never a child's argv.
@@ -190,11 +191,30 @@ function wranglerCredential() {
   } catch {
     parsed = null;
   }
+  // Checked BEFORE "is there a token", because the answer to it is different. A global API
+  // key + email in the environment also outranks the login, and `--json` reports it as
+  // `{ type: 'api_key', key, email }` — no `token` field. Falling through to the check below
+  // would tell the operator to `wrangler login`, which cannot help while those variables are
+  // set: the login is already there, and it is being overridden (review, #1522).
+  if (parsed?.type === 'api_key') {
+    fail(
+      'CLOUDFLARE_API_KEY and CLOUDFLARE_EMAIL are set, and they override your wrangler login.\n' +
+        '  `unset CLOUDFLARE_API_KEY CLOUDFLARE_EMAIL` and run again. Not supported as a credential\n' +
+        '  here on purpose: a global API key carries every permission its user holds, which is the\n' +
+        '  opposite of what this script is trying to act as.',
+    );
+  }
   if (r.status !== 0 || typeof parsed?.token !== 'string' || parsed.token === '') {
     fail(
       'no Cloudflare credential — this script acts as your own login.\n' +
         '  Run `pnpm exec wrangler login` and try again. It does not run in CI, on purpose (see the header).',
     );
+  }
+  // A closed list. The `As:` line below names the credential by its type, and a type this
+  // script was not written for — a future wrangler adding one — would otherwise be announced
+  // as something it is not.
+  if (parsed.type !== 'oauth' && parsed.type !== 'api_token') {
+    fail(`\`wrangler auth token\` returned a credential of type '${parsed.type}', which this script does not know how to announce.`);
   }
   return parsed;
 }
