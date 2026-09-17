@@ -99,6 +99,7 @@ import { VerticalClient } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
+import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
@@ -295,6 +296,14 @@ interface Env extends StaffAuthEnv, ConnectorEnv {
    */
   EMAIL?: SendEmailBinding;
   EMAIL_FROM?: string;
+  /**
+   * Where the scheduled pass mails its failure digest (#1416): comma-separated staff
+   * addresses. OPT-IN — unset ⇒ no digest is ever sent, and the ledger stays the only
+   * record, exactly as before. Sent through the same `EMAIL` binding as the relay, so
+   * without that binding it lands in the drop-mock (dev) and nobody is paged from a
+   * laptop. A var, not a secret: who gets paged is a deployment fact worth a diff.
+   */
+  STAFF_ALERT_EMAIL?: string;
   /**
    * The control plane's own public origin (e.g. `https://console.substrat.net`) — injected
    * into every pushed vertical as `CONTROL_PLANE_URL` so a vertical granted `emailSender` knows
@@ -1007,6 +1016,13 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
+    // #1416 — the failure digest's "since the previous pass", read BEFORE the sweep:
+    // a drained batch this pass lands carries its vertical's own pass time, and read
+    // afterwards it would pose as the previous pass and hide failures nobody mailed.
+    // Skipped entirely when nobody has opted in — no read, no ledger row.
+    const digestSince = env.STAFF_ALERT_EMAIL
+      ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
+      : undefined;
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
@@ -1115,6 +1131,26 @@ export default {
         ...(al ? { accessLog: al } : {}),
         errors: report.errors,
       });
+    }
+
+    // #1416 — the one push in the observability stack. Everything above records; this
+    // reads what was recorded since the previous pass (the ops-failure ledger plus the
+    // pass's own errors) and mails ONE digest to the opted-in staff address. Unset
+    // STAFF_ALERT_EMAIL ⇒ nothing sent — the same opt-in posture as every phase below.
+    // A send failure is its own ledger row and never sinks the pass (`sendFailureDigest`
+    // does not throw); it is logged here so the tail shows a digest that did not go.
+    if (digestSince !== undefined) {
+      const digest = await sendFailureDigest({
+        admin: host.admin,
+        actor: SWEEP_ACTOR,
+        transport: transportFor(env),
+        from: senderFor(env, 'Substrat alerts'),
+        recipients: env.STAFF_ALERT_EMAIL,
+        since: digestSince,
+        reportErrors: report.errors,
+        consoleUrl: env.PLATFORM_CP_URL,
+      });
+      if (digest.status !== 'skipped') console.log('failure-digest', digest);
     }
 
     // #305 §4.7 — the custom-hostname reconcile pass: unbind rows whose scope is

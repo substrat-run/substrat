@@ -76,6 +76,11 @@
 		// would answer questions about prod traffic with no error to notice. Unset ⇒ the
 		// tenant-metrics route 501s.
 		"ROUTER_ANALYTICS_DATASET": "substrat_router"
+		// Opt-in, off until set (#1416): the scheduled pass mails ONE digest of the failures
+		// recorded since the previous pass (the ops-failure ledger + the pass's own errors)
+		// to these comma-separated staff addresses, through the EMAIL binding below. Unset ⇒
+		// nothing is sent and the console's Issues view stays the only place failures show.
+		//   "STAFF_ALERT_EMAIL": "ops@example.com"
 	},
 	// Staff sign-in is OIDC against AuthHero (jose + Web Crypto) — no Node built-ins.
 	// OIDC config is entirely secrets, nothing checked in (locally: .dev.vars):
