@@ -25,12 +25,12 @@
  * The comparison is `crypto.subtle.verify`, which is constant-time, rather than a string
  * compare somebody has to get right by hand.
  *
- * ── What this does NOT do yet ────────────────────────────────────────────────
- * Thread stitching. The concept puts it here, and the relay principal has no read that
- * maps an `In-Reply-To` onto a conversation, so every mail is ingested with
- * `conversationId: null` and opens a conversation of its own; the header is still
- * recorded on the message, so a later stitch has what it needs. Adding that read is a
- * change to the model and belongs in its own PR.
+ * ── Threading ────────────────────────────────────────────────────────────────
+ * Every mail is ingested with `conversationId: null` and its `In-Reply-To` header, and
+ * `ingest-message` does the stitch itself: a reply to a message the desk sent or
+ * received joins that conversation when the sender is its contact, and opens one of its
+ * own otherwise (`threadRepliedTo` in the module says why the address must match). The
+ * relay holds no read that maps a header onto a conversation, and needs none.
  *
  * Attachments arrive as METADATA: `ingest-message` writes the internal note naming each
  * file (#1080), and the bytes are not fetched, because the desk has nowhere to put them.

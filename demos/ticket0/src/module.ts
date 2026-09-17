@@ -872,6 +872,45 @@ function followUp(
 }
 
 /**
+ * The conversation an inbound mail's `In-Reply-To` names, when it is the sender's own (#934).
+ *
+ * A reply the customer's mail client sends carries the `Message-ID` of the mail it
+ * answers, and every message this desk sent or received records that id — so the
+ * header alone finds the thread. The header is also the one part of a mail the sender
+ * writes freely, which is why it is not enough on its own: anyone who has seen one
+ * `Message-ID` from a thread (a forwarded mail, a CC) could otherwise post into
+ * somebody else's conversation, where an agent reads it as that customer and answers
+ * them. So the thread is taken only when the sending address is that conversation's
+ * contact; anything else falls back to a conversation of its own, which is what every
+ * inbound mail got before this, and loses nothing but the stitch.
+ *
+ * `contactByEmail` matches exactly, so a sender whose address differs in case from the
+ * contact's is also a new conversation. The conservative miss, on purpose: an agent can
+ * merge two conversations from one person, and nobody can un-read a misdelivered one.
+ *
+ * A merged-away conversation needs no case of its own — merging moves its messages, so
+ * the id already resolves to the survivor.
+ */
+function threadRepliedTo(
+  ctx: OperationContext,
+  sender: ContactRow,
+  inReplyTo: string | null | undefined,
+): ConversationRow | undefined {
+  if (!inReplyTo) return undefined;
+  // One id in angle brackets is the header's shape; tolerate the whitespace and
+  // trailing comments some clients add around it.
+  const id = /<[^<>\s]+>/.exec(inReplyTo)?.[0] ?? inReplyTo.trim();
+  if (!id) return undefined;
+  const repliedTo = ctx.sql.query<{ conversation_id: string }>(
+    'SELECT conversation_id FROM ticket0_messages WHERE email_message_id = ?',
+    [id],
+  )[0];
+  if (!repliedTo) return undefined;
+  const conversation = conversationOrThrow(ctx, repliedTo.conversation_id);
+  return conversation.contact_id === sender.id ? conversation : undefined;
+}
+
+/**
  * What gets stored is an ORIGIN, because that is what the browser sends and what
  * `widget-start` compares by string. The input schema only asks for a URL, so
  * `https://example.com/` or `https://example.com/pricing` would otherwise be saved
@@ -3147,7 +3186,8 @@ const operations = {
 
     const bound = input.conversationId
       ? conversationOrThrow(ctx, input.conversationId)
-      : openConversation(ctx, contact, 'email', input.subject);
+      : (threadRepliedTo(ctx, contact, input.emailInReplyTo) ??
+        openConversation(ctx, contact, 'email', input.subject));
     // A reply to a thread the desk has closed is a new thread, for the reason
     // `followUp` gives. The relay is told which conversation the message landed in by
     // the row it gets back, so a threading header pointing at the closed one does not
@@ -3157,9 +3197,11 @@ const operations = {
     // address resolves to. Those can differ — `contactByEmail` matches exactly, so one
     // capital letter is a second contact — and a follow-up that crossed contacts would
     // put another person's conversation id in `follows` on a row its owner can read.
-    // It is also what already happens one line up: a message threading into a live
-    // conversation lands in it whatever address it came from, because a message
-    // carries no contact of its own. The two paths agree rather than differ.
+    // It is also what already happens one line up: a message the relay binds to a live
+    // conversation BY ID lands in it whatever address it came from, because a message
+    // carries no contact of its own. The two paths agree rather than differ. (Binding by
+    // `In-Reply-To` is the one path that does compare addresses — see `threadRepliedTo`
+    // — because there the sender chose the thread, not the relay.)
     const conversation =
       bound.state === 'closed'
         ? followUp(ctx, bound, contactOrThrow(ctx, bound.contact_id), input.subject)
