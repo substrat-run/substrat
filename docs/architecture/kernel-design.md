@@ -1209,7 +1209,8 @@ externalization convention is day one; translations are not).
     **Partly answered (#37): the SPINE is inside; a vertical's own tables are outside, and
     the seam that would bring them in is named but unbuilt.** The erasure mechanism now
     exists — `shredSubject` (§13.1 below) — and it reaches every event the kernel
-    classified, in the live scope and in every platform-retained copy of it. It does not
+    classified, in the live scope and in its backups and stored dumps (not in the Tier-2 lake;
+    see limit 6 in §13.1). It does not
     reach `hr_employees.national_id`, and saying so is the point: an undocumented limit is
     the one that gets oversold. The remaining half of this question — a declared
     `onSubjectErased` hook a module fills so its own tables participate in the same
@@ -1241,7 +1242,7 @@ store's independence"*).
 The mechanism is staff-triggered and audited in **both** logs — the admin log because it is
 a mutation, the access log because it destroys evidence.
 
-**Five limits, stated so nobody has to discover them:**
+**Six limits, stated so nobody has to discover them** (the sixth added once the lake existed):
 
 1. **One subject per event.** The spine keys erasure on a single `subjectId`; a transcript
    naming a dozen people is keyed to one of them. *"I cannot do 'erase Jens Palmgren from
@@ -1258,6 +1259,13 @@ a mutation, the access log because it destroys evidence.
 5. **A directory restore can resurrect a key.** Restoring the directory to a point before a
    shred restores that subject's key row with it. The admin log — the compliance witness,
    never swept — is what records which erasures must then be re-applied.
+6. **The Tier-2 lake is not reached.** When K-37 was decided, nothing drained the event
+   outbox, so there was no lake to design for. Now there is: the control plane's sweep ships
+   each scope's outbox to Pipelines → Iceberg in production (#1334, #1413, #1485, #1498,
+   #1517, #1522). The mechanism has not been extended to it. The drain ships each payload
+   unsealed, as it stands in the outbox. An event redacted before it drains reaches the lake
+   with a null payload. An event drained before its subject was erased keeps its payload
+   in the lake, and nothing here removes it.
 
 ## 14. Design log
 

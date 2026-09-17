@@ -273,15 +273,17 @@ export function Meters({ api, tenants, onOpenTenant, onToast }: MetersProps) {
 
       <Card
         title="What meter 3 still cannot count, and why meter 4 is not shown"
-        description="Not unbuilt — uncomputable, by construction. Writing it here so it stops being re-proposed."
+        description="Storage is unbuilt; API reads and meter 4 are uncomputable, by construction. Writing it here so it stops being re-proposed."
       >
         <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7 }}>
           <li>
             <strong>Meter 3 beyond model usage (events retained, storage, API calls).</strong> Model
             calls fan in because each one is raised as a platform intent and drained here; nothing
-            else does. The outbox is one table per scope database, queryable only from inside that
-            scope — there is no cross-tenant aggregate path and no Tier-2 sink to fan into. Reads emit
-            nothing at all, so API volume is unmeterable from the event spine by design, not by omission.
+            else does. The Tier-2 sink exists: the sweep drains every scope's outbox to the lake, and
+            each row carries its tenant and its serialized size in bytes. What is missing is a reader.
+            Nothing aggregates those rows per tenant yet, and a scope's database size is not collected
+            at all, so storage stays unmetered (#1524). Reads emit nothing at all, so API volume is
+            unmeterable from the event spine by design, not by omission.
           </li>
           <li>
             <strong>Meter 4 (network transactions).</strong> Needs the cross-tenant order flow, which
