@@ -140,7 +140,6 @@ heading; `push` excludes them by construction, since it only ever walks the mani
 |---|---|
 | `R2_LAKE_CATALOG_TOKEN` | the sink's own config, written once by `scripts/lake-provision.mjs` |
 | `R2_LAKE_SEND_TOKEN` | nowhere by default — only a non-Workers sender needs it |
-| `CF_LAKE_ADMIN_TOKEN` | nowhere — read by `scripts/lake-provision.mjs` only |
 
 They are recorded here anyway because **Cloudflare never gives a token back**: the same
 reason `generate` writes new values into the file before pushing them. A token that exists
@@ -174,10 +173,9 @@ Two traps worth knowing before debugging one:
 
 `scripts/lake-provision.mjs` is where the lake's shape is declared — bucket, namespace,
 table, compression, rolling policy, and the pipeline SQL. It speaks to the Pipelines and
-R2 account API directly rather than through wrangler, and reads `CF_LAKE_ADMIN_TOKEN` and
-`R2_LAKE_CATALOG_TOKEN` out of this file (**not** `CF_API_TOKEN` — see
-[The lake admin token](#the-lake-admin-token-and-rebuilding-a-lake-table) for why the
-account call was split off it): the catalog token goes into the sink's request
+R2 account API directly rather than through wrangler, as **your `wrangler login`** (see
+[Rebuilding a lake table](#rebuilding-a-lake-table) for why no token is stored for it), and
+reads `R2_LAKE_CATALOG_TOKEN` out of this file: the catalog token goes into the sink's request
 body over TLS, so it reaches neither shell history nor any process's argv (wrangler's only
 transport for it is `--catalog-token <value>`, which is a child process's command line for
 as long as it runs — redacting the log does not take it out of `ps`). `pnpm lake:check`
@@ -253,14 +251,16 @@ needs the vitest 4 migration, tracked on its own.
 It is not only a workaround. A test plane must not hold the Tier-2 stream either: writing
 into the lake that answers audit is precisely what a test deploy should not be able to do.
 
-## The lake admin token, and rebuilding a lake table
+## Rebuilding a lake table
 
-`scripts/lake-provision.mjs` calls the account API with **`CF_LAKE_ADMIN_TOKEN`**, a custom
-account token holding Workers Pipelines Edit, Workers R2 Storage Edit and Workers R2 Data
-Catalog Edit. Not `CF_API_TOKEN`, though that would work mechanically: `CF_API_TOKEN` is
-pushed to the running control plane as a worker secret, so every permission on it belongs
-to anything that compromises the plane — and this token's permissions include deleting the
-audit lake. It is store-only and read by that script alone.
+`scripts/lake-provision.mjs` stores no Cloudflare token of its own: it acts as **your
+`wrangler login`**, fetched with `wrangler auth token`. Provisioning and recreating the lake
+are rare, deliberate, human acts that can delete the audit lake, so a stored token with those
+rights is a standing capability used a handful of times ever — and `CF_API_TOKEN` is worse,
+since it lives inside the running control plane, which never needs them. A login expires on
+its own and puts a person in Cloudflare's audit log. It also means the script does not run in
+CI, on purpose. Each run prints `As:` first: an exported `CLOUDFLARE_API_TOKEN` silently
+overrides your login, and that is the one to `unset`.
 
 A Pipelines stream cannot change its schema in place and a sink refuses to write to an
 existing table, so **adding a lake column means dropping the table**. Dropping it does not
