@@ -64,6 +64,7 @@ import {
 	buildContext,
 	writeGuardFor,
 } from './phase.js';
+import { withinProject } from './project-path.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -420,10 +421,13 @@ async function handleFileWrite(req: IncomingMessage, res: ServerResponse): Promi
 	if (!path || content === undefined) return json(res, 400, { error: 'path and content required' });
 	// Writes are confined to the current project — everything else is foreign
 	// work the studio must not touch (same rule the commit scope enforces).
-	if (!path.startsWith(`${cur.entry.dir}/`)) {
+	// Judged on the normalised path, never the text: a `..` segment after the
+	// project prefix otherwise lands anywhere in the repo (#1225).
+	const rel = withinProject(path, cur.entry.dir);
+	if (rel === null) {
 		return json(res, 403, { error: `writes are limited to ${cur.entry.dir}/` });
 	}
-	await ws.writeFile(path, content);
+	await cur.projectWs.writeFile(rel, content);
 	json(res, 200, { ok: true });
 }
 
