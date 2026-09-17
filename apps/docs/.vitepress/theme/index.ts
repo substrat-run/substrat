@@ -27,6 +27,7 @@ import Marketing from './components/Marketing.vue';
 import LayerStack from './components/LayerStack.vue';
 import RuntimeTopology from './components/RuntimeTopology.vue';
 import PermissionPipeline from './components/PermissionPipeline.vue';
+import ScopeDrain from './components/ScopeDrain.vue';
 import InstanceResolution from './components/InstanceResolution.vue';
 import TenancyTree from './components/TenancyTree.vue';
 import ReadPaths from './components/ReadPaths.vue';
@@ -44,6 +45,7 @@ export default {
     app.component('LayerStack', LayerStack);
     app.component('RuntimeTopology', RuntimeTopology);
     app.component('PermissionPipeline', PermissionPipeline);
+    app.component('ScopeDrain', ScopeDrain);
     app.component('InstanceResolution', InstanceResolution);
     app.component('TenancyTree', TenancyTree);
     app.component('ReadPaths', ReadPaths);
