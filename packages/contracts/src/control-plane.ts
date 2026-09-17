@@ -29,6 +29,7 @@ import {
   type EventCauseInput,
   type EventEffectsInput,
   type InvocationEventsInput,
+  type DeadLettersInput,
   type EventFacetInput,
   type QueryScopeInput,
   type ReadScopeTableInput,
@@ -415,6 +416,7 @@ export const delegatedReadMethod = z.enum([
   'eventCause',
   'eventEffects',
   'invocationEvents',
+  'deadLetters',
 ]);
 export type DelegatedReadMethod = z.infer<typeof delegatedReadMethod>;
 
@@ -430,6 +432,7 @@ export interface DelegatedReadInput {
   eventCause: EventCauseInput;
   eventEffects: EventEffectsInput;
   invocationEvents: InvocationEventsInput;
+  deadLetters: DeadLettersInput;
 }
 
 /**
@@ -457,6 +460,9 @@ export const delegatedReadParams: {
   eventCause: (i) => ({ eventId: i.eventId }),
   eventEffects: (i) => ({ eventId: i.eventId }),
   invocationEvents: (i) => ({ invocationId: i.invocationId }),
+  // A page of the scope's dead letters names no subject, so there is nothing to log
+  // beyond the method — the page itself is left out, as every other read leaves it.
+  deadLetters: () => null,
 };
 
 /**

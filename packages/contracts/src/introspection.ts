@@ -109,6 +109,18 @@ export const invocationEventsInput = z.object({
 export type InvocationEventsInput = z.infer<typeof invocationEventsInput>;
 
 /**
+ * One page of a scope's dead-lettered deliveries (#1525), newest event first.
+ *
+ * The cursor is the last entry's `eventId|consumer` — the pair the walk orders by, since
+ * one event can give up on several consumers — and is exclusive, like every list read.
+ */
+export const deadLettersInput = z.object({
+  limit: z.number().int().positive().max(SCOPE_TABLE_PAGE_MAX).optional(),
+  cursor: z.string().min(1).max(512).optional(),
+});
+export type DeadLettersInput = z.infer<typeof deadLettersInput>;
+
+/**
  * What to group an event facet by (#1239 stage 1). Either an envelope column —
  * facts the kernel stamps and can never be erased — or one field of the fat
  * payload, which CAN be erased and is therefore counted differently (see

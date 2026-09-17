@@ -77,6 +77,8 @@ import {
   type EffectsTree,
   type InvocationEventsInput,
   type InvocationEvents,
+  type DeadLettersInput,
+  type DeadLetter,
   type CauseChain,
   type EventFacetInput,
   type EventFacetResult,
@@ -952,6 +954,7 @@ interface ScopeStubRpc {
   eventCause(input: EventCauseInput): Promise<CauseChain>;
   eventEffects(input: EventEffectsInput): Promise<EffectsTree>;
   invocationEvents(input: InvocationEventsInput): Promise<InvocationEvents>;
+  deadLetters(input: DeadLettersInput): Promise<Page<DeadLetter>>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1760,6 +1763,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** Everything one call emitted (#1237) on this host's own scope — the vertical-host read. */
   async invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents> {
     return this.scopeStub(scopeId).invocationEvents(input);
+  }
+
+  /** Every delivery that gave up (#1525) on this host's own scope — the vertical-host read. */
+  async deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>> {
+    return this.scopeStub(scopeId).deadLetters(input);
   }
 
   /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
@@ -4138,6 +4146,13 @@ export class CloudflareScopeHost implements ScopeHost {
           actor, 'invocationEvents', { tenantId, scopeId }, { invocationId: input.invocationId }, read.events.length,
         );
         return read;
+      },
+      deadLetters: async (actor, tenantId, scopeId, input: DeadLettersInput): Promise<Page<DeadLetter>> => {
+        // K-3 cross-check on the directory BEFORE the scope DO, like every read here.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const page = await this.scopeStub(scopeId).deadLetters(input);
+        await this.recordAccess(actor, 'deadLetters', { tenantId, scopeId }, null, page.entries.length);
+        return page;
       },
       readScopeTable: async (
         actor,

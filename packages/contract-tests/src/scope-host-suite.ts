@@ -1047,6 +1047,20 @@ export function scopeHostContractSuite(
       expect(after).toHaveLength(before.length);
     });
 
+    it('lists the scope\'s dead letters through the platform verb, and not a retrying one (#1525)', async () => {
+      // `readDeadLetters`' own suite pins the predicate and the paging over a hand-built
+      // table; this proves the wiring — that a delivery a real drain gave up on comes back
+      // through `deadLetters` on both adapters, and one still being retried does not.
+      const page = await host.admin.deadLetters(staff, t1, s1, {});
+      const doomed = page.entries.find((d) => d.consumer === 'executor:doomed-effector');
+      expect(doomed).toBeDefined();
+      expect(doomed!.eventType).toBe('effect.doomed');
+      expect(doomed!.attempts).toBe(2);
+      expect(doomed!.error).toContain('always fails');
+      // `poison-a` failed and is backed off: an error on the row, but a retry still due.
+      expect(page.entries.some((d) => d.consumer === 'executor:flaky-effector')).toBe(false);
+    });
+
     // -- scope data introspection: the §5.4 admin-query RPC --------------------
     //
     // A read-only window into a scope's OWN database (the console/dashboard Data

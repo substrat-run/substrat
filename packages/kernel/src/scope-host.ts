@@ -108,6 +108,8 @@ import type {
   EffectsTree,
   InvocationEventsInput,
   InvocationEvents,
+  DeadLettersInput,
+  DeadLetter,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -2180,6 +2182,21 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: InvocationEventsInput,
   ): Promise<InvocationEvents>;
+
+  /**
+   * Every delivery in the scope that gave up (#1525), newest event first —
+   * `readDeadLetters`, hoisted.
+   *
+   * The scope-wide read the walks cannot make: they reach a delivery only through its
+   * event, so a dead letter was visible only to someone who already knew which record to
+   * open. Envelopes only, no payloads; logged against the actor like every read here.
+   */
+  deadLetters(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: DeadLettersInput,
+  ): Promise<Page<DeadLetter>>;
 
   /**
    * One read-only SQL statement against the scope's database — the console the two

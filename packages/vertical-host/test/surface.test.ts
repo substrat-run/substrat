@@ -52,6 +52,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
       note('eventEffectsLocal', { root: null, terminal: JSON.stringify(input), count: 0 }) as never,
     invocationEventsLocal: async (_s: unknown, input?: unknown) =>
       note('invocationEventsLocal', { events: [input], truncated: false }) as never,
+    deadLettersLocal: async (_s: unknown, input?: unknown) =>
+      note('deadLettersLocal', { entries: [input], nextCursor: null }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
@@ -232,6 +234,7 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     [`/internal/cause?scopeId=${SCOPE}&eventId=${EVENT}`, { headers: authed() }],
     [`/internal/effects?scopeId=${SCOPE}&eventId=${EVENT}`, { headers: authed() }],
     [`/internal/invocation?scopeId=${SCOPE}&invocationId=${EVENT}`, { headers: authed() }],
+    [`/internal/dead-letters?scopeId=${SCOPE}`, { headers: authed() }],
     ['/internal/migrations?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/undrained-events?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
@@ -498,6 +501,35 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       expect(res.status, `limit=${limit}`).toBe(400);
     }
     expect(host.calls).not.toContain('invocationEventsLocal');
+  });
+
+  // #1525: the scope's dead letters. Paged, so the cap and the cursor are parsed at this
+  // door — a request for a page bigger than the ceiling is refused, not quietly clipped.
+  it('passes the dead-letter page through to the host', async () => {
+    const host = fakeHost();
+    const cursor = `${EVENT}|@test/doomed`;
+    const res = await appWith(host).request(
+      `/internal/dead-letters?scopeId=${SCOPE}&limit=5&cursor=${encodeURIComponent(cursor)}`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    // The fake echoes the parsed input: `limit` arrived as a number, the cursor whole.
+    expect(await res.json()).toEqual({ entries: [{ limit: 5, cursor }], nextCursor: null });
+    expect(host.calls).toContain('deadLettersLocal');
+  });
+
+  it('refuses a malformed dead-letter page rather than widening it', async () => {
+    const host = fakeHost();
+    for (const limit of ['5000', '0', 'ten']) {
+      const res = await appWith(host).request(
+        `/internal/dead-letters?scopeId=${SCOPE}&limit=${limit}`,
+        { headers: authed() },
+        ENV,
+      );
+      expect(res.status, `limit=${limit}`).toBe(400);
+    }
+    expect(host.calls).not.toContain('deadLettersLocal');
   });
 
   it('refuses a malformed history input rather than widening it', async () => {

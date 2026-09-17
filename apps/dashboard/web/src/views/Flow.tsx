@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
-import { type ConnectionSweepView, api, type AppRow, type FlowFindingsView, type FlowFinding, type FlowGraph, type FlowNode, type FlowView, type OperationHealthView } from '../lib/api';
+import { type ConnectionSweepView, api, type AppRow, type DeadLetter, type FlowFindingsView, type FlowFinding, type FlowGraph, type FlowNode, type FlowView, type OperationHealthView } from '../lib/api';
 import { card } from '../components/ui';
+import { Button } from '@substrat-run/ui';
 import { navigate, obsPath, teamPath } from '../lib/router';
 
 /**
@@ -442,6 +443,128 @@ function OperationHealth({ view }: { view: OperationHealthView }) {
 }
 
 /**
+ * Deliveries that gave up (#1525) — "which deliveries in this app gave up?", the first
+ * question in most incidents.
+ *
+ * Its own request rather than part of the flow read: the map and its findings must agree
+ * with each other, and this list is a different question about different rows. An
+ * in-scope consumer does not retry, so every row here waits for a person, and a list that
+ * failed to load says so rather than reading as a clean bill.
+ */
+function DeadLetters({ app }: { app: AppRow }) {
+  const [entries, setEntries] = useState<DeadLetter[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    setEntries(null);
+    setNextCursor(null);
+    setFailed(false);
+    api
+      .appDeadLetters(app.app_scope_id)
+      .then((page) => {
+        if (!live) return;
+        setEntries(page.entries);
+        setNextCursor(page.nextCursor);
+      })
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+    };
+  }, [app.app_scope_id]);
+
+  const more = () => {
+    if (nextCursor === null || loading) return;
+    setLoading(true);
+    api
+      .appDeadLetters(app.app_scope_id, nextCursor)
+      .then((page) => {
+        setEntries((prev) => [...(prev ?? []), ...page.entries]);
+        setNextCursor(page.nextCursor);
+      })
+      .catch(() => setFailed(true))
+      .finally(() => setLoading(false));
+  };
+
+  if (entries === null && !failed) return null;
+
+  return (
+    <div style={{ ...card, padding: 14, display: 'grid', gap: 10 }}>
+      <div>
+        <h3 style={{ margin: 0, fontSize: 15 }}>Deliveries that gave up</h3>
+        <p style={{ margin: '4px 0 0', fontSize: 12.5, color: 'var(--text-tertiary)' }}>
+          Events a handler failed on and will not retry, newest first. Each one needs someone to look at it;
+          a delivery that is still being retried is not listed.
+        </p>
+      </div>
+
+      {failed && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--status-warning-fg)' }}>
+          {entries === null
+            ? 'The delivery record could not be read, so this is not a statement that nothing gave up.'
+            : 'The next page could not be read; the list below is not the whole of it.'}
+        </p>
+      )}
+
+      {entries !== null && entries.length === 0 && (
+        <p style={{ margin: 0, fontSize: 12.5, color: 'var(--text-secondary)' }}>No delivery in this app has given up.</p>
+      )}
+
+      {entries !== null && entries.length > 0 && (
+        <div style={{ display: 'grid', gap: 8 }}>
+          {entries.map((d) => {
+            const href = obsPath({ app: app.app_scope_id, view: 'events', type: d.eventType });
+            return (
+              <div key={`${d.eventId}|${d.consumer}`} style={{ display: 'grid', gap: 3 }}>
+                <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 12.5 }}>
+                  <a
+                    href={teamPath(href)}
+                    onClick={(e) => {
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                      e.preventDefault();
+                      navigate(href);
+                    }}
+                    style={{ fontFamily: 'var(--font-mono)' }}
+                    title="open this event type in the event explorer"
+                  >
+                    {d.eventType}
+                  </a>
+                  <span style={{ color: 'var(--text-tertiary)' }}>
+                    {d.entity.entityType} {d.entity.entityId}
+                  </span>
+                  <span style={{ fontFamily: 'var(--font-mono)', flex: '1 1 160px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    &rarr; {d.consumer}
+                  </span>
+                  <span style={{ color: 'var(--text-tertiary)', fontSize: 11.5 }}>
+                    {d.attempts === 1 ? '1 attempt' : `${d.attempts} attempts`}, last {new Date(d.at).toLocaleString()}
+                  </span>
+                </div>
+                <p
+                  style={{ margin: 0, fontSize: 12, fontFamily: 'var(--font-mono)', color: 'var(--status-danger-fg)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  title={d.error}
+                >
+                  {d.error}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {nextCursor !== null && (
+        <div>
+          <Button variant="secondary" onClick={more} disabled={loading}>
+            {loading ? 'Loading…' : 'Load older'}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * The flow read, rendered as both a map and a list from ONE request. They are two
  * resolutions of the same join, and fetching twice would let them disagree about what
  * was observed — the map showing a count for a type the list called silent.
@@ -466,6 +589,7 @@ export function Flow({ app }: { app: AppRow }) {
   return (
     <>
       <FlowMap graph={view.graph} app={app} />
+      <DeadLetters app={app} />
       <OperationHealth view={view.operations} />
       <ConnectionSweep view={view.connectionSweep} />
       <FlowFindings view={view.findings} />

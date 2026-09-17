@@ -41,12 +41,13 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
 - **Scopes** — `/scopes`, `/tenants/:t/scopes/:s` and its lifecycle verbs (`configure`,
   `version`, `snapshots`, `restore`, `rewind`, `bookmarks`, `migrations`, `reap`), the
   read-only data window (`tables`, `tables/:table`, `query`, `export`, `health`, and the
-  five event reads over it — `history`, one record's story; `facets`, the outbox narrowed,
+  six event reads over it — `history`, one record's story; `facets`, the outbox narrowed,
   grouped and counted; `cause` and `effects`, one event walked backwards to what started it
   or forwards to what it set off; `invocation`, everything one call recorded, which is the
-  grouping neither walk can reach), and `/fleet/migrations`. The table, query, health,
+  grouping neither walk can reach; `dead-letters`, every delivery in the scope that gave up,
+  newest event first), and `/fleet/migrations`. The table, query, health,
   denial and event reads (`tables`, `tables/:table`, `query`, `health`, `denials`,
-  `denials/summary`, `history`, `facets`, `cause`, `effects`, `invocation`) run one ladder: resolve the
+  `denials/summary`, `history`, `facets`, `cause`, `effects`, `invocation`, `dead-letters`) run one ladder: resolve the
   scope record, then ask the vertical's own `/internal/*` route when one is bound and the
   co-located host otherwise — and on the delegated branch the transport writes the K-24
   access row itself, through `HostAdmin.recordDelegatedRead`, so an auditor cannot tell

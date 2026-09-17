@@ -37,6 +37,7 @@ import {
   eventCauseInput,
   eventEffectsInput,
   invocationEventsInput,
+  deadLettersInput,
   type DelegatedReadMethod,
   type DelegatedReadInput,
   delegatedReadParams,
@@ -2218,6 +2219,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           colocated: () => admin.invocationEvents(c.get('actor'), tenantId, scopeId, input),
         },
         (r) => r.events.length,
+      ),
+    );
+  });
+
+  // #1525: every delivery in the scope that gave up — the list the walks can only reach
+  // one event at a time. Delegated like them; the row names no subject, so it logs none.
+  app.get('/tenants/:tenantId/scopes/:scopeId/dead-letters', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = deadLettersInput.parse({
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+      cursor: c.req.query('cursor') ?? undefined,
+    });
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    return c.json(
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'deadLetters', input,
+        {
+          viaVertical: (v) => v.deadLetters(scopeId, input),
+          colocated: () => admin.deadLetters(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.entries.length,
       ),
     );
   });
