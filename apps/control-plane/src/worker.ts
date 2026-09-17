@@ -99,7 +99,7 @@ import { VerticalClient } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
 import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
-import { sendFailureDigest } from './failure-alerts.js';
+import { failureDigestWatermark, sendFailureDigest } from './failure-alerts.js';
 import { oidcStaffSessionReader, oidcStaffBearerReader, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
@@ -1016,8 +1016,13 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
     const host = hostFor(env);
     const resolveVersion = resolveVerticalVersionFor(env);
-    // Read before the sweep: the failure digest below bounds "the previous pass" by it.
-    const passStartedAt = new Date();
+    // #1416 — the failure digest's "since the previous pass", read BEFORE the sweep:
+    // a drained batch this pass lands carries its vertical's own pass time, and read
+    // afterwards it would pose as the previous pass and hide failures nobody mailed.
+    // Skipped entirely when nobody has opted in — no read, no ledger row.
+    const digestSince = env.STAFF_ALERT_EMAIL
+      ? await failureDigestWatermark({ admin: host.admin, actor: SWEEP_ACTOR, passStartedAt: new Date() })
+      : undefined;
     const report = await runPlatformSweep(host, {
       actor: SWEEP_ACTOR,
       // Sanctioned egress for the connector sweepers below.
@@ -1134,17 +1139,19 @@ export default {
     // STAFF_ALERT_EMAIL ⇒ nothing sent — the same opt-in posture as every phase below.
     // A send failure is its own ledger row and never sinks the pass (`sendFailureDigest`
     // does not throw); it is logged here so the tail shows a digest that did not go.
-    const digest = await sendFailureDigest({
-      admin: host.admin,
-      actor: SWEEP_ACTOR,
-      transport: transportFor(env),
-      from: senderFor(env, 'Substrat alerts'),
-      recipients: env.STAFF_ALERT_EMAIL,
-      passStartedAt,
-      reportErrors: report.errors,
-      consoleUrl: env.PLATFORM_CP_URL,
-    });
-    if (digest.status !== 'skipped') console.log('failure-digest', digest);
+    if (digestSince !== undefined) {
+      const digest = await sendFailureDigest({
+        admin: host.admin,
+        actor: SWEEP_ACTOR,
+        transport: transportFor(env),
+        from: senderFor(env, 'Substrat alerts'),
+        recipients: env.STAFF_ALERT_EMAIL,
+        since: digestSince,
+        reportErrors: report.errors,
+        consoleUrl: env.PLATFORM_CP_URL,
+      });
+      if (digest.status !== 'skipped') console.log('failure-digest', digest);
+    }
 
     // #305 §4.7 — the custom-hostname reconcile pass: unbind rows whose scope is
     // archived/reaped (a deleted app's hostnames must not linger), poll every `verifying`

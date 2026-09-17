@@ -7,6 +7,7 @@ import { ulid, type OpsFailureInput, type SweepRunInput } from '@substrat-run/ke
 import {
   SWEEP_INTERVAL_MS,
   failureDigestEmail,
+  failureDigestWatermark,
   parseRecipients,
   sendFailureDigest,
   type FailureDigestOptions,
@@ -24,6 +25,7 @@ import {
 const ACTOR = platformActorId.parse(ulid());
 const FROM = { email: 'no-reply@send.substrat.net', name: 'Substrat alerts' };
 const T0 = new Date('2026-09-18T10:00:00.000Z');
+const FLOOR = new Date(T0.getTime() - SWEEP_INTERVAL_MS).toISOString();
 
 function failure(at: string, message: string, extra: Partial<OpsFailureEntry> = {}): OpsFailureEntry {
   return {
@@ -77,8 +79,8 @@ function stubAdmin(seed: { failures?: OpsFailureEntry[]; sweepRuns?: SweepRunEnt
     },
     listSweepRuns: async (_actor, filter) => {
       calls.sweepFilters.push(filter);
-      const until = filter?.until ?? '￿';
-      const rows = (seed.sweepRuns ?? []).filter((r) => r.at < until).sort((a, b) => (a.at < b.at ? 1 : -1));
+      // Newest WRITTEN first — by id, as the adapter orders — never by `at`.
+      const rows = [...(seed.sweepRuns ?? [])].sort((a, b) => (a.id < b.id ? 1 : -1));
       return filter?.limit !== undefined ? rows.slice(0, filter.limit) : rows;
     },
     recordOpsFailure: async (entry) => {
@@ -88,30 +90,71 @@ function stubAdmin(seed: { failures?: OpsFailureEntry[]; sweepRuns?: SweepRunEnt
   return { admin, calls };
 }
 
-function optionsFor(
+/** The worker's two calls in order: watermark before the sweep, digest after it. */
+async function runPhase(
   stub: ReturnType<typeof stubAdmin>,
   transport: MockEmailTransport,
   overrides: Partial<FailureDigestOptions> = {},
-): FailureDigestOptions {
-  return {
+) {
+  const since = await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 });
+  return sendFailureDigest({
     admin: stub.admin,
     actor: ACTOR,
     transport,
     from: FROM,
     recipients: 'ops@example.com',
-    passStartedAt: T0,
+    since,
     reportErrors: [],
     now: () => new Date(T0.getTime() + 5_000),
     ...overrides,
-  };
+  });
 }
+
+describe('failureDigestWatermark', () => {
+  it('is the newest `at` among the last rows written, not the newest row by id', async () => {
+    // A drained CP-less batch (#1232) is written AFTER the previous pass's own rows —
+    // newest by id — but carries the older pass time its vertical stamped.
+    const previousPass = '2026-09-18T09:45:03.000Z';
+    const direct = sweepRun(previousPass);
+    const drained = sweepRun('2026-09-18T09:46:00.000Z');
+    const older = sweepRun('2026-09-18T09:30:02.000Z');
+    // ids are ULIDs minted in construction order; make the drained row the newest.
+    const stub = stubAdmin({ sweepRuns: [older, direct, drained] });
+    expect(await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 })).toBe(
+      '2026-09-18T09:46:00.000Z',
+    );
+    // Bounded: it reads the recent tail, never the whole table.
+    expect(stub.calls.sweepFilters).toEqual([{ limit: 25 }]);
+  });
+
+  it('no sweep-run rows at all: one cron interval before the pass, not forever', async () => {
+    const stub = stubAdmin();
+    expect(await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 })).toBe(FLOOR);
+  });
+
+  it('a stale row (a missed tick) does not widen the window past the floor', async () => {
+    const stub = stubAdmin({ sweepRuns: [sweepRun('2026-09-18T08:00:00.000Z')] });
+    expect(await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 })).toBe(FLOOR);
+  });
+
+  it('a sweep-run read that fails falls back to the floor AND is a ledger row', async () => {
+    const stub = stubAdmin();
+    stub.admin.listSweepRuns = async () => {
+      throw new Error('DO unavailable');
+    };
+    expect(await failureDigestWatermark({ admin: stub.admin, actor: ACTOR, passStartedAt: T0 })).toBe(FLOOR);
+    expect(stub.calls.recorded).toEqual([
+      { actor: ACTOR, operation: 'alerts.digest', stage: 'watermark', message: 'DO unavailable' },
+    ]);
+  });
+});
 
 describe('sendFailureDigest', () => {
   it('unset recipient: nothing is read and nothing is sent', async () => {
     const stub = stubAdmin({ failures: [failure('2026-09-18T09:55:00.000Z', 'boom')] });
     const transport = new MockEmailTransport();
     for (const recipients of [undefined, '', '  ', ' , ']) {
-      const out = await sendFailureDigest(optionsFor(stub, transport, { recipients }));
+      const out = await runPhase(stub, transport, { recipients });
       expect(out).toEqual({ status: 'skipped', reason: 'no-recipient' });
     }
     expect(transport.sent).toHaveLength(0);
@@ -135,11 +178,9 @@ describe('sendFailureDigest', () => {
       ],
     });
     const transport = new MockEmailTransport();
-    const out = await sendFailureDigest(optionsFor(stub, transport, { recipients: 'ops@example.com, oncall@example.com' }));
+    const out = await runPhase(stub, transport, { recipients: 'ops@example.com, oncall@example.com' });
 
     expect(out).toMatchObject({ status: 'sent', since: previousPass, failures: 2, reportErrors: 0 });
-    // The watermark is the previous pass's newest row: bounded by THIS pass's start.
-    expect(stub.calls.sweepFilters).toEqual([{ until: T0.toISOString(), limit: 1 }]);
     expect(stub.calls.opsFilters).toEqual([{ since: previousPass, order: 'asc' }]);
 
     expect(transport.sent).toHaveLength(1);
@@ -160,11 +201,9 @@ describe('sendFailureDigest', () => {
   it("the pass's own errors ride the digest even when the ledger is empty", async () => {
     const stub = stubAdmin();
     const transport = new MockEmailTransport();
-    const out = await sendFailureDigest(
-      optionsFor(stub, transport, {
-        reportErrors: [{ kind: 'sweep', id: 'conn-9', error: 'connection secret cannot be opened' }],
-      }),
-    );
+    const out = await runPhase(stub, transport, {
+      reportErrors: [{ kind: 'sweep', id: 'conn-9', error: 'connection secret cannot be opened' }],
+    });
     expect(out).toMatchObject({ status: 'sent', failures: 0, reportErrors: 1 });
     expect(transport.sent).toHaveLength(1);
     expect(transport.last!.subject).toMatch(/^\[substrat\] 1 failure since /);
@@ -177,37 +216,38 @@ describe('sendFailureDigest', () => {
       failures: [failure('2026-09-18T09:44:00.000Z', 'older than the previous pass')],
     });
     const transport = new MockEmailTransport();
-    const out = await sendFailureDigest(optionsFor(stub, transport));
+    const out = await runPhase(stub, transport);
     expect(out).toEqual({ status: 'skipped', reason: 'nothing-to-report' });
     expect(transport.sent).toHaveLength(0);
   });
 
-  it('no sweep-run rows at all: the window is one cron interval, not forever', async () => {
+  it('with no sweep-run rows the window is one cron interval, and the digest says so', async () => {
     const stub = stubAdmin({ failures: [failure('2026-09-18T09:50:00.000Z', 'recent')] });
     const transport = new MockEmailTransport();
-    const out = await sendFailureDigest(optionsFor(stub, transport));
-    const floor = new Date(T0.getTime() - SWEEP_INTERVAL_MS).toISOString();
-    expect(out).toMatchObject({ status: 'sent', since: floor });
-    expect(stub.calls.opsFilters).toEqual([{ since: floor, order: 'asc' }]);
-  });
-
-  it('a stale sweep-run row (a missed tick) does not widen the window past the floor', async () => {
-    const stub = stubAdmin({ sweepRuns: [sweepRun('2026-09-18T08:00:00.000Z')] });
-    const transport = new MockEmailTransport();
-    const out = await sendFailureDigest(optionsFor(stub, transport));
-    expect(out).toEqual({ status: 'skipped', reason: 'nothing-to-report' });
-    const floor = new Date(T0.getTime() - SWEEP_INTERVAL_MS).toISOString();
-    expect(stub.calls.opsFilters).toEqual([{ since: floor, order: 'asc' }]);
+    const out = await runPhase(stub, transport);
+    expect(out).toMatchObject({ status: 'sent', since: FLOOR });
+    expect(stub.calls.opsFilters).toEqual([{ since: FLOOR, order: 'asc' }]);
+    expect(transport.last!.subject).toBe(`[substrat] 1 failure since ${FLOOR}`);
   });
 
   it('a send that fails is a ledger row of its own, never a thrown pass', async () => {
     const stub = stubAdmin({ failures: [failure('2026-09-18T09:50:00.000Z', 'recent')] });
     const transport = new MockEmailTransport({ failWith: 'provider down' });
-    const out = await sendFailureDigest(optionsFor(stub, transport));
+    const out = await runPhase(stub, transport);
     expect(out).toMatchObject({ status: 'failed', error: 'provider down' });
+    // Recorded BEFORE the phase answers — a row still in flight when `scheduled` returns may never land.
     expect(stub.calls.recorded).toEqual([
       { actor: ACTOR, operation: 'alerts.digest', stage: 'send', message: 'provider down' },
     ]);
+  });
+
+  it('a recorder that itself fails does not mask the phase answer', async () => {
+    const stub = stubAdmin({ failures: [failure('2026-09-18T09:50:00.000Z', 'recent')] });
+    stub.admin.recordOpsFailure = async () => {
+      throw new Error('ledger down too');
+    };
+    const transport = new MockEmailTransport({ failWith: 'provider down' });
+    await expect(runPhase(stub, transport)).resolves.toMatchObject({ status: 'failed', error: 'provider down' });
   });
 
   it('a ledger that cannot be read is reported as failed, not mailed as quiet', async () => {
@@ -216,7 +256,7 @@ describe('sendFailureDigest', () => {
       throw new Error('DO unavailable');
     };
     const transport = new MockEmailTransport();
-    const out = await sendFailureDigest(optionsFor(stub, transport));
+    const out = await runPhase(stub, transport);
     expect(out).toMatchObject({ status: 'failed', error: 'DO unavailable' });
     expect(transport.sent).toHaveLength(0);
     expect(stub.calls.recorded).toEqual([
@@ -232,8 +272,10 @@ describe('sendFailureDigest', () => {
       await host.admin.recordSweepRun(run);
       await host.admin.recordOpsFailure({ actor: ACTOR, operation: 'deploy.upload', message: marker });
 
-      // "This pass" begins after both rows landed; storage is shared across suites, so
-      // assert that OUR row is named, not that it is the only one.
+      // The worker's order: watermark first ("this pass" begins after both rows landed),
+      // then the digest. Storage is shared across suites, so assert that OUR row is
+      // named, not that it is the only one.
+      const since = await failureDigestWatermark({ admin: host.admin, actor: ACTOR, passStartedAt: new Date() });
       const transport = new MockEmailTransport();
       const out = await sendFailureDigest({
         admin: host.admin,
@@ -241,7 +283,7 @@ describe('sendFailureDigest', () => {
         transport,
         from: FROM,
         recipients: 'ops@example.com',
-        passStartedAt: new Date(Date.now() + 1_000),
+        since,
         reportErrors: [],
       });
       expect(out.status).toBe('sent');

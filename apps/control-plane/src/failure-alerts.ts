@@ -28,9 +28,13 @@ import type { HostAdmin, PlatformSweepReport } from '@substrat-run/kernel';
  *     that has not asked for mail gets none, exactly the posture the retention
  *     windows and the backup phase take.
  *
- * The watermark is the previous pass's newest sweep-run row (#1232) — the durable
- * trace every pass leaves — so "since the previous pass" is read from storage
- * rather than remembered by an isolate that does not persist. It is capped from
+ * The watermark is the previous pass's sweep-run trace (#1232) — the durable mark
+ * every pass leaves — so "since the previous pass" is read from storage rather than
+ * remembered by an isolate that does not persist. It is read BEFORE the sweep runs
+ * (`failureDigestWatermark`, then `sendFailureDigest` after): a drained CP-less
+ * batch written during this pass carries the `at` its vertical stamped, which can
+ * sit later than the previous pass's own rows, and reading it as "the previous
+ * pass" would move the window past failures nobody has mailed. It is capped from
  * below at one cron interval before this pass began: with no sweep-run rows at all
  * (a deployment with nothing to sweep) the window would otherwise be unbounded, and
  * the same failures would be re-sent every quarter hour. The residual imprecision
@@ -45,15 +49,26 @@ export const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 /** How many failures the digest lists in full before it counts the rest. */
 const DIGEST_ROW_CAP = 50;
 
+/**
+ * How many of the most recently WRITTEN sweep-run rows the watermark considers. A
+ * row's id is a ULID stamped at write time while its `at` may be older (a drained
+ * batch carries the pass time its vertical stamped), so the newest row by id is not
+ * always the newest `at`; the max over the previous pass's tail is.
+ */
+const WATERMARK_ROWS = 25;
+
+/** The ledger a digest reads, and the one it writes its own failures to. */
+export type FailureDigestAdmin = Pick<HostAdmin, 'listOpsFailures' | 'listSweepRuns' | 'recordOpsFailure'>;
+
 export interface FailureDigestOptions {
-  admin: Pick<HostAdmin, 'listOpsFailures' | 'listSweepRuns' | 'recordOpsFailure'>;
+  admin: FailureDigestAdmin;
   actor: PlatformActorId;
   transport: EmailTransport;
   from: EmailAddress;
   /** The raw `STAFF_ALERT_EMAIL` value — comma-separated addresses; blank/unset ⇒ skipped. */
   recipients: string | undefined;
-  /** When this pass began — the upper bound of "the previous pass" for the watermark. */
-  passStartedAt: Date;
+  /** The lower bound of the window — `failureDigestWatermark`, read before the sweep. */
+  since: string;
   /** The pass's own per-unit failures, which live in memory only until they are mailed. */
   reportErrors: PlatformSweepReport['errors'];
   /** Where the digest says the reader can look — the console origin, when known. */
@@ -68,6 +83,32 @@ export type FailureDigestOutcome =
   | { status: 'failed'; since: string; error: string };
 
 /**
+ * The lower bound of this pass's window, read BEFORE the sweep so nothing this pass
+ * writes can be mistaken for the previous one: the newest `at` among the last few
+ * sweep-run rows written, floored at one cron interval before the pass. A read that
+ * fails falls back to the floor rather than failing the phase — one interval of
+ * failures is still mailed — and is recorded as a ledger row of its own, so the
+ * digest it feeds carries it.
+ */
+export async function failureDigestWatermark(opts: {
+  admin: FailureDigestAdmin;
+  actor: PlatformActorId;
+  /** When this pass begins — the floor is one cron interval before it. */
+  passStartedAt: Date;
+}): Promise<string> {
+  const floor = new Date(opts.passStartedAt.getTime() - SWEEP_INTERVAL_MS).toISOString();
+  let previous: string | undefined;
+  try {
+    const rows = await opts.admin.listSweepRuns(opts.actor, { limit: WATERMARK_ROWS });
+    for (const row of rows) if (previous === undefined || row.at > previous) previous = row.at;
+  } catch (err) {
+    await recordOwnFailure(opts, 'watermark', messageOf(err));
+    previous = undefined;
+  }
+  return previous !== undefined && previous > floor ? previous : floor;
+}
+
+/**
  * The phase. Never throws: a send failure is recorded as an ops failure of its own
  * (so the NEXT digest carries it, and the Issues view shows it) and returned, and the
  * pass it rides on is never sunk by its reporter — the recorder's own rule.
@@ -77,7 +118,7 @@ export async function sendFailureDigest(opts: FailureDigestOptions): Promise<Fai
   if (to.length === 0) return { status: 'skipped', reason: 'no-recipient' };
 
   const now = opts.now ?? (() => new Date());
-  const since = await watermarkFor(opts.admin, opts.actor, opts.passStartedAt);
+  const { since } = opts;
   let failures: OpsFailureEntry[];
   try {
     failures = await opts.admin.listOpsFailures(opts.actor, { since, order: 'asc' });
@@ -86,7 +127,7 @@ export async function sendFailureDigest(opts: FailureDigestOptions): Promise<Fai
     // what cannot be trusted now, so say so rather than sending a digest that reads
     // "nothing happened" over a read that failed.
     const error = messageOf(err);
-    recordOwnFailure(opts, 'read', error);
+    await recordOwnFailure(opts, 'read', error);
     return { status: 'failed', since, error };
   }
 
@@ -107,44 +148,28 @@ export async function sendFailureDigest(opts: FailureDigestOptions): Promise<Fai
     await opts.transport.send(message);
   } catch (err) {
     const error = messageOf(err);
-    recordOwnFailure(opts, 'send', error);
+    await recordOwnFailure(opts, 'send', error);
     return { status: 'failed', since, error };
   }
   return { status: 'sent', since, failures: failures.length, reportErrors: opts.reportErrors.length, to };
 }
 
 /**
- * The lower bound of this pass's window: the newest sweep-run row recorded BEFORE
- * this pass began (the previous pass's trace), floored at one cron interval before
- * the pass. A sweep-run read that fails falls back to the floor rather than failing
- * the phase — one interval of failures is still mailed, and the read failure is its
- * own ledger row on the next pass.
+ * Awaited, not fire-and-forget: the scheduled handler returns as soon as the phase
+ * does, and a row still in flight at that point may never land. The recorder's own
+ * failure is swallowed so it cannot mask the phase's answer — the rule the drain's
+ * recorder follows — but the write is given the chance to finish.
  */
-async function watermarkFor(
-  admin: FailureDigestOptions['admin'],
-  actor: PlatformActorId,
-  passStartedAt: Date,
-): Promise<string> {
-  const floor = new Date(passStartedAt.getTime() - SWEEP_INTERVAL_MS).toISOString();
-  const until = passStartedAt.toISOString();
-  let previous: string | undefined;
+async function recordOwnFailure(
+  opts: { admin: FailureDigestAdmin; actor: PlatformActorId },
+  stage: 'watermark' | 'read' | 'send',
+  error: string,
+): Promise<void> {
   try {
-    // Newest by id, and a sweep-run id is a ULID stamped at write time — so this is
-    // the row most recently WRITTEN before the pass, not the oldest `at` a drained
-    // batch happened to carry.
-    const [last] = await admin.listSweepRuns(actor, { until, limit: 1 });
-    previous = last?.at;
+    await opts.admin.recordOpsFailure({ actor: opts.actor, operation: 'alerts.digest', stage, message: error });
   } catch {
-    previous = undefined;
+    // deliberately swallowed — see above
   }
-  return previous !== undefined && previous > floor ? previous : floor;
-}
-
-function recordOwnFailure(opts: FailureDigestOptions, stage: 'read' | 'send', error: string): void {
-  // Fire-and-forget — the recorder's failure must not mask the phase's answer.
-  void opts.admin
-    .recordOpsFailure({ actor: opts.actor, operation: 'alerts.digest', stage, message: error })
-    .catch(() => undefined);
 }
 
 /** Comma-separated addresses; whitespace tolerated, empties dropped. */
