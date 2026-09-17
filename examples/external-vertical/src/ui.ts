@@ -1,8 +1,9 @@
 /**
  * A tiny, buildless web page served by the worker at `GET /`, so the vertical is
  * clickable in a browser without a separate frontend build. It calls the same
- * API routes with the seeded user's `x-principal` header (a dev affordance — real
- * auth replaces it). Inline HTML/CSS/JS, no external resources.
+ * API routes as whoever signed in: the session is an HttpOnly cookie the OIDC
+ * callback set, so a same-origin `fetch` carries it and the page never holds a
+ * credential. Inline HTML/CSS/JS, no external resources.
  */
 export const PAGE = /* html */ `<!doctype html>
 <html lang="en">
@@ -40,7 +41,7 @@ export const PAGE = /* html */ `<!doctype html>
   <div class="card">
     <button id="seed">Seed world</button>
     <span id="msg"></span>
-    <p class="mono" style="margin:12px 0 0">acting as user 01JZ0000000000000000000003</p>
+    <p style="margin:12px 0 0"><span id="who" class="mono">…</span> <a id="auth" href="/api/auth/login"></a></p>
   </div>
 
   <div class="card">
@@ -49,7 +50,7 @@ export const PAGE = /* html */ `<!doctype html>
       <input id="text" placeholder="Write a note…" />
       <button id="add">Add</button>
     </div>
-    <ul id="notes"><li class="empty">Seed the world, then add a note.</li></ul>
+    <ul id="notes"><li class="empty">Seed the world, sign in, then add a note.</li></ul>
   </div>
 
   <div class="card">
@@ -58,8 +59,7 @@ export const PAGE = /* html */ `<!doctype html>
   </div>
 
 <script>
-  const USER = '01JZ0000000000000000000003';
-  const H = { 'x-principal': USER, 'content-type': 'application/json' };
+  const H = { 'content-type': 'application/json' };
   const $ = (id) => document.getElementById(id);
   const say = (t, cls = '') => { const m = $('msg'); m.textContent = t; m.className = cls; };
 
@@ -77,7 +77,7 @@ export const PAGE = /* html */ `<!doctype html>
   async function walk(url) {
     const all = [];
     while (url) {
-      const r = await fetch(url, { headers: H });
+      const r = await fetch(url);
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status);
       all.push(...(await r.json()));
       const link = r.headers.get('Link');
@@ -87,7 +87,24 @@ export const PAGE = /* html */ `<!doctype html>
     return all;
   }
 
+  // Who is signed in. Sign-in is a navigation to the issuer and back, never a form
+  // here: accounts live at the issuer. Pick "Ada" (a member) or "Bo" (no role).
+  async function whoami() {
+    const r = await fetch('/api/me');
+    const body = await r.json().catch(() => ({}));
+    const a = $('auth');
+    if (r.ok) {
+      $('who').textContent = 'signed in as ' + body.display + ' (' + body.principal + ')';
+      a.textContent = 'Sign out'; a.href = '/api/auth/logout?federated';
+    } else {
+      $('who').textContent = body.error || 'not signed in';
+      a.textContent = 'Sign in'; a.href = '/api/auth/login';
+    }
+    return r.ok;
+  }
+
   async function refresh() {
+    if (!(await whoami())) return;
     try {
       const [notes, wos] = await Promise.all([walk('/api/notes'), walk('/api/workorders')]);
       render('notes', notes.map((n) => esc(n.text) + ' <span class="mono">' + n.created_at.slice(0, 19) + '</span>'),
@@ -100,7 +117,8 @@ export const PAGE = /* html */ `<!doctype html>
   $('seed').onclick = async () => {
     say('seeding…');
     const r = await fetch('/seed', { method: 'POST' });
-    say(r.ok ? 'world seeded ✓' : 'seed failed', r.ok ? 'ok' : 'err');
+    const body = await r.json().catch(() => ({}));
+    say(r.ok ? 'world seeded ✓ — personas ' + body.personas : 'seed failed', r.ok ? 'ok' : 'err');
     refresh();
   };
   $('add').onclick = async () => {
