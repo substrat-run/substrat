@@ -95,12 +95,26 @@ npx wrangler secret put OIDC_ISSUER          # your issuer's origin
 npx wrangler secret put OIDC_CLIENT_ID
 npx wrangler secret put OIDC_CLIENT_SECRET
 npx wrangler secret put SESSION_SECRET       # signs the session cookie
+npx wrangler secret put OIDC_AUDIENCE        # optional — the `aud` your issuer sets, if any
 ```
 
 `POST /seed` links the dev cast **only when `OIDC_ISSUER` is a local origin**:
 anyone can pick those names at the dev issuer, so linking them against a real
 issuer would hand principals to whoever it happens to call `dev|ada`. Against a
-real issuer, link your own subjects with `host.admin.linkIdentity`.
+real issuer, link your own subjects yourself — two calls, not one, because a link
+into an unregistered pool is refused:
+
+```ts
+const provider = `oidc:${OIDC_ISSUER}`; // the pool key the contract names, per issuer
+await host.admin.registerIdentityPool(STAFF, { provider, topology: 'tenant-bound', tenantId: T });
+await host.admin.linkIdentity(STAFF, { provider, externalId: sub, principal, tenantId: T, scopeId: S });
+```
+
+The pool is keyed by issuer because a `sub` only means something within the issuer
+that minted it — the worker resolves logins under the same key, so repointing
+`OIDC_ISSUER` starts a fresh namespace rather than inheriting the old one's links.
+If your issuer sets an `aud` on the tokens it mints, set `OIDC_AUDIENCE` too, or a
+token it minted for some other API is accepted here.
 
 ## The shape to copy
 

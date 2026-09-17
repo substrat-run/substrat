@@ -16,5 +16,5 @@
 	]
 	// No `vars`: the OIDC settings are deliberately absent so a real `wrangler deploy`
 	// authenticates nobody until it is given an issuer. `npm run dev` passes the local
-	// dev issuer's for local use only.
+	// dev issuer's settings, for local use only.
 }

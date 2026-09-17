@@ -85,6 +85,12 @@ interface Env {
   OIDC_CLIENT_SECRET?: string;
   /** Signs the session cookie. A deploy sets it with `wrangler secret put`. */
   SESSION_SECRET?: string;
+  /**
+   * Expected `aud` for a PRESENTED bearer token (the script path). Optional because
+   * the dev issuer mints none; set it against a real issuer that does, or that issuer
+   * will hand any of its tokens — one minted for a different API — a session here.
+   */
+  OIDC_AUDIENCE?: string;
 }
 
 /** The coordinator is stateless — rebuilt per request; durable state is in the DOs. */
@@ -107,6 +113,7 @@ function authFor(env: Env): AuthProvider | null {
     clientId: OIDC_CLIENT_ID,
     clientSecret: OIDC_CLIENT_SECRET,
     sessionSecret: SESSION_SECRET,
+    ...(env.OIDC_AUDIENCE ? { audience: env.OIDC_AUDIENCE } : {}),
   });
 }
 
@@ -124,7 +131,7 @@ async function callerOf(env: Env, req: Request) {
   if (!auth) throw new HTTPException(401, { message: `unauthorized — ${NO_ISSUER}` });
   const subject = await auth.resolve(req.headers);
   if (!subject) throw new HTTPException(401, { message: 'unauthorized' });
-  const identity = await hostFor(env).admin.resolveIdentity(T, DEV_PROVIDER, subject.sub);
+  const identity = await hostFor(env).admin.resolveIdentity(T, providerOf(env), subject.sub);
   if (!identity) {
     throw new HTTPException(403, {
       message: `signed in as ${subject.sub}, but that login is linked to no principal here — seed the world first`,
@@ -157,6 +164,18 @@ function isLocalIssuer(issuer: string | undefined): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Which identity pool a `sub` is read against — `oidc:<issuer>`, the key the contract
+ * names (`identityLink` in `@substrat-run/contracts`). It is per-issuer because a `sub`
+ * is only stable WITHIN its issuer: repointing `OIDC_ISSUER` at a different provider
+ * must not let its `dev|ada` resolve to the principal the previous one's `dev|ada` holds.
+ * The local cast keeps its own fixed name, so moving the dev issuer's port does not
+ * orphan the links the seed wrote.
+ */
+function providerOf(env: Env): string {
+  return isLocalIssuer(env.OIDC_ISSUER) ? DEV_PROVIDER : `oidc:${env.OIDC_ISSUER}`;
 }
 
 const app = new Hono<{ Bindings: Env }>();
