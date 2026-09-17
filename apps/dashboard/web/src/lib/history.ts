@@ -84,6 +84,22 @@ export function operationLabel(operation: string | null): string {
   return operation ?? 'no operation — a consumer, or unrecorded';
 }
 
+/**
+ * Why the "Same call" control is open or shut (#1237).
+ *
+ * One string for both `title` and `aria-description`, because the control is
+ * `aria-disabled` rather than `disabled` and therefore stays focusable: the sighted
+ * reader gets the greyed styling and the tooltip, and a screen-reader user gets the
+ * same sentence from the same source. A null id is a FACT — a seed or internal call
+ * carried none, or the event predates the column — so the shut state says that rather
+ * than reading as a broken button.
+ */
+export function callButtonTitle(invocationId: string | null): string {
+  return invocationId === null
+    ? 'no call was recorded for this event — a seed or internal call, or an event from before calls were recorded'
+    : 'everything else the same request recorded, including events with no causal link to this one';
+}
+
 /** Which cell in a browsed table opens that record's story. */
 export interface TimelineTarget {
   /** The entity type a history read is keyed by — the model's own name for it. */

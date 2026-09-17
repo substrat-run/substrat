@@ -106,6 +106,8 @@ import type {
   EventCauseInput,
   EventEffectsInput,
   EffectsTree,
+  InvocationEventsInput,
+  InvocationEvents,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -2117,6 +2119,24 @@ export interface HostAdmin {
     scopeId: ScopeId,
     input: EventEffectsInput,
   ): Promise<EffectsTree>;
+
+  /**
+   * Everything ONE call emitted (#1237), oldest first — `readInvocation`, hoisted.
+   *
+   * The third event read beside the two walks, and the one they cannot make: both follow
+   * cause, so an operation's two independent events are invisible from each other. The
+   * id is the one `invocationLog` wrote on the call's log line, which is what joins an
+   * event to how long its call took and how it ended.
+   *
+   * Same posture as `eventEffects`: payloads are decoded, so the caller's permission
+   * check comes first and the read is logged against the actor.
+   */
+  invocationEvents(
+    actor: PlatformActorId,
+    tenantId: TenantId,
+    scopeId: ScopeId,
+    input: InvocationEventsInput,
+  ): Promise<InvocationEvents>;
 
   /**
    * One read-only SQL statement against the scope's database — the console the two

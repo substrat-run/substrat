@@ -387,6 +387,22 @@ export interface EffectsTree {
 }
 
 /**
+ * Everything one call emitted (#1237), oldest first — `readInvocation`'s answer.
+ *
+ * The read neither walk can make: the two follow cause, so both miss a SIBLING, and
+ * two events one operation emitted independently are most of "what did this request
+ * do". Consumers' emits in the same post-commit tail share the id and are included.
+ */
+export interface InvocationEvents {
+  events: HistoryEntry[];
+  /**
+   * The call did MORE than is shown. A different claim from "the call did this much",
+   * and a reader must be told which one they are looking at.
+   */
+  truncated: boolean;
+}
+
+/**
  * One event as it leaves the scope for Tier 2 (#1334) — the exact-history lake
  * the master plan commits to (§5.3: "domain events → Pipelines → Iceberg on R2").
  *

@@ -242,10 +242,11 @@ so every event one operation emits carries the *identical* instant — a cursor 
 which grant allowed the change), `impersonation` (the staff actor behind the change, when
 there was one — see [Impersonation](#impersonation)), `piiClass`/`subjectId`, `operation`
 (the exact `invoke()` string the event was emitted from), `version` (the version the
-emitting code was deployed as) and `causedBy` (the event whose delivery was in flight when
-this one was emitted). The last three are stamped kernel-side on the same pattern as
+emitting code was deployed as), `causedBy` (the event whose delivery was in flight when
+this one was emitted) and `invocationId` (the call the event belongs to). The last four are
+stamped kernel-side on the same pattern as
 the authorization chain and the impersonation stamp: module code can neither forge nor
-suppress them. Six nullables there are facts rather than gaps, and they are six
+suppress them. Seven nullables there are facts rather than gaps, and they are seven
 *different* facts:
 
 - `payload` is **null after an erasure** — the envelope survives a shred, so a history
@@ -278,9 +279,19 @@ suppress them. Six nullables there are facts rather than gaps, and they are six
   case) or the row predates the column. Where `operation` is also null and this is set,
   the pair is decisive: the event came from a consumer, which neither field could establish
   alone. `walkEventCause` and `walkEventEffects` in the kernel follow it in each direction,
-  and name why a chain ends rather than stopping silently.
+  and name why a chain ends rather than stopping silently. `readInvocation` groups by the
+  call instead, which is how two events one operation raised independently — no cause
+  between them — are read together.
 
-`readTimeline`'s entry deliberately gains none of `operation`, `version` or `causedBy`: the
+- `invocationId` is null when **no call carried one** — a seed, an internal call, or a row
+  written before the column. It is the grouping key rather than a link: `causedBy` joins one
+  event to one other, while this says two events were the same unit of work even when
+  nothing causal connects them. Stamped once per invocation and carried through the
+  post-commit tail, so a consumer's emit shares the id of the call that set it off.
+  `readInvocation` is the read that uses it.
+
+`readTimeline`'s entry deliberately gains none of `operation`, `version`, `causedBy` or
+`invocationId`: the
 timeline is the envelope and nothing more, so there is still no disclosure decision to make
 there.
 

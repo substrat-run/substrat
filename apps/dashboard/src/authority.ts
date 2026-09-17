@@ -22,6 +22,7 @@ import type {
   DenialFilter,
   DenialSummary,
   EffectsTree,
+  InvocationEvents,
   PermissionDenial,
   PermissionRegistry,
   PlatformRequest,
@@ -1730,6 +1731,18 @@ export class TenantNarrowedControlPlane {
     const q = new URLSearchParams({ eventId: input.eventId });
     if (input.maxNodes !== undefined) q.set('maxNodes', String(input.maxNodes));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/effects?${q}`);
+  }
+
+  /**
+   * Everything one call emitted (#1237) — the siblings neither walk reaches.
+   *
+   * `truncated` rides back untouched: "the call did this much" and "the call did more
+   * than is shown" are the same list, and only the flag separates them.
+   */
+  invocationEvents(scopeId: ScopeId, input: { invocationId: string; limit?: number }): Promise<InvocationEvents> {
+    const q = new URLSearchParams({ invocationId: input.invocationId });
+    if (input.limit !== undefined) q.set('limit', String(input.limit));
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/invocation?${q}`);
   }
 
   /**

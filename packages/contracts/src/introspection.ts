@@ -95,6 +95,20 @@ export const eventEffectsInput = z.object({
 export type EventEffectsInput = z.infer<typeof eventEffectsInput>;
 
 /**
+ * Which call to read whole (#1237), and how many of its events.
+ *
+ * The id is the one `invocationLog` mints and writes on the call's log line, so a string
+ * rather than a ULID schema: the transport carries it through `InvokeOptions` and the
+ * read's job is to match it, not to judge it. Bounded so a crafted id stays a lookup.
+ */
+export const invocationEventsInput = z.object({
+  invocationId: z.string().min(1).max(128),
+  /** Capped like the other reads; a call that did more says `truncated` rather than trimming quietly. */
+  limit: z.number().int().positive().max(500).optional(),
+});
+export type InvocationEventsInput = z.infer<typeof invocationEventsInput>;
+
+/**
  * What to group an event facet by (#1239 stage 1). Either an envelope column —
  * facts the kernel stamps and can never be erased — or one field of the fat
  * payload, which CAN be erased and is therefore counted differently (see

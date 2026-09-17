@@ -36,6 +36,7 @@ import {
   eventFacetInput,
   eventCauseInput,
   eventEffectsInput,
+  invocationEventsInput,
   type DelegatedReadMethod,
   type DelegatedReadInput,
   delegatedReadParams,
@@ -2192,6 +2193,29 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
           colocated: () => admin.eventEffects(c.get('actor'), tenantId, scopeId, input),
         },
         (r) => r.count,
+      ),
+    );
+  });
+
+  // #1237: everything one call emitted — the siblings neither walk reaches. Delegated
+  // like the two walks, and logged against the call id rather than its page size.
+  app.get('/tenants/:tenantId/scopes/:scopeId/invocation', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const input = invocationEventsInput.parse({
+      invocationId: c.req.query('invocationId'),
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+    });
+    const scope = await admin.getScopeRecord(c.get('actor'), tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    return c.json(
+      await delegatedRead(
+        c, tenantId, scopeId, scope, 'invocationEvents', input,
+        {
+          viaVertical: (v) => v.invocationEvents(scopeId, input),
+          colocated: () => admin.invocationEvents(c.get('actor'), tenantId, scopeId, input),
+        },
+        (r) => r.events.length,
       ),
     );
   });
