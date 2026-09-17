@@ -5,8 +5,10 @@
  * scope's transaction — through the PLATFORM's model host (#1054), which resolves the
  * desk's `provider:model` against the platform's credential and hands back one usage
  * line — and the result comes back in through `ticket0/record-answer`, line included.
- * In a hosted deployment this is a registered connector; on the demo's Node server it
- * is a function the widget surface calls. The operations either end are identical.
+ * In a hosted deployment the worker runs it after the widget's response has gone out,
+ * under `executionCtx.waitUntil` (`onCustomerMessage` in `src/worker.ts`); on the demo's
+ * Node server it is a function the widget surface calls. Neither is a registered
+ * connector. The operations either end are identical.
  *
  * ## The thing worth reading
  *

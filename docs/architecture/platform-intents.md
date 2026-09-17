@@ -64,12 +64,14 @@ contract is **untouched**.
 
 ## Latency: durable pull, router-kicked, sweep-backstopped
 
-Naive pull is too slow — the platform sweep runs every **~2 minutes**
-([`platform-sweeper-do.ts`](../../packages/adapter-cloudflare/src/platform-sweeper-do.ts),
-`intervalMs: 120_000`). But the sweeper is explicitly *kickable*: it exposes `sweepNow`, and its
-alarm is armed **fire-and-forget from ordinary request paths** (`ctx.waitUntil(stub.ensureArmed())`)
-— the 2-minute alarm is the *safety net*, not the only trigger. So real latency is "how fast we
-kick it," and a platform component sits right in the request path to do so: **the router.**
+Naive pull is too slow — the hosted control plane runs the platform sweep from its
+`scheduled()` handler on a cron of **every 15 minutes** (`*/15 * * * *`,
+[`apps/control-plane/wrangler.jsonc`](../../apps/control-plane/wrangler.jsonc)). It binds no
+[`PlatformSweeperDO`](../../packages/adapter-cloudflare/src/platform-sweeper-do.ts); that
+alarm-driven, kickable trigger exists for a deployment that wants one, and the `intervalMs: 120_000`
+in its docstring is a wire-up example, not the hosted cadence. The sweep is the *safety net*, not
+the trigger. So real latency is "how fast we kick a drain," and a platform component sits right in
+the request path to do so: **the router.**
 
 Three layers, each doing one job:
 
@@ -81,8 +83,8 @@ Three layers, each doing one job:
    ([`router worker`](../../apps/router/src/worker.ts)), fires `ctx.waitUntil(promptDrain(tenant, scope))`.
    This is **router→platform, not vertical→platform** — the vertical made no outbound call. The
    intent executes in **seconds**.
-3. **Periodic sweep (backstop).** The existing ~2-min sweep gains a platform-request drain phase,
-   so a missed kick still lands.
+3. **Periodic sweep (backstop).** The existing 15-minute sweep gains a platform-request drain
+   phase, so a missed kick still lands — within a quarter of an hour, not seconds.
 
 ## The pieces
 
@@ -200,7 +202,7 @@ an implementation detail below.
   `x-substrat-platform-request` response header from a dispatched vertical, it fires
   `ctx.waitUntil(cp.drainScope(tenant, scope))` against a new **platform-secret-gated
   `POST /internal/drain-scope`** on the control plane, which runs the drain-executor scoped to that
-  one scope. Best-effort: a failed kick is caught by the ~2-min sweep.
+  one scope. Best-effort: a failed kick is caught by the 15-minute sweep.
 - **Result delivery.** v1 relied on the **domain-observable effect** — `provision-sibling` completes
   when the site shows up in the M2 registry, so the app polls `GET /api/sites`. The generic form
   landed with **#618**, when the first intent kind with no observable domain effect arrived:

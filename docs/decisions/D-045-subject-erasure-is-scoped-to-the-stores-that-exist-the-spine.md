@@ -10,6 +10,13 @@ tracking: ["#37", "#493", "#40", "#36"]
 ---
 # D-45 — Subject erasure is scoped to the stores that exist: the spine is redacted,…
 
+> **A finding the code has since overtaken (#1527); the decision stands.** "The lake is not there" was true on
+> 2026-08-08 and is not true now. The control plane's sweep ships each scope's outbox to
+> Pipelines → Iceberg in production (#1334, #1413, #1485, #1498, #1517, #1522). The lake did
+> **not** inherit the mechanism. The drain ships payloads unsealed, so an erasure after an
+> event drained does not reach its lake copy. That is limit 6 in kernel-design §13.1. The
+> row below keeps the text as decided.
+
 **Subject erasure is scoped to the stores that exist: the spine is redacted, platform-retained copies are crypto-shredded, and the keys sit in the directory** ([#37](https://github.com/substrat-run/substrat/issues/37); K-37 is the kernel-side twin; implements §5.3's crypto-shredding sentence and answers kernel open question 17's spine half). §5.3 promised "PII tokenized/encrypted per-subject with crypto-shredding for erasure" and the contracts package enforced its precondition totally — `piiClass` requires a `subjectId`, message and all — while `packages/` contained no key store, no shred, and no cipher. Two findings shaped what was actually built. **The lake is not there**: `_substrat_outbox.drained_at` is still dead (K-24 built the Tier-2 sink for the ACCESS log only), so the "immutable lake" §5.3's GDPR sentence is about does not exist, and building the mechanism for it would have been building against an absent store. **The un-deletable copies that DO exist are last week's work** — the reap backup (#493), the stored dumps (#40), the tenant export (#36) — all full-fidelity by deliberate design, and therefore all unreachable by a `DELETE`. So: erase in Tier 1 by redaction (mutable store, ordinary UPDATE, envelope kept), erase in every retained copy by destroying a per-subject key that sealed it on the way out, and let the Tier-2 drain inherit the same seam when it is built. Staff-triggered, audited in both logs, and NOT self-service — a builder forwards the DSAR, the platform executes it and returns a receipt (hosting-and-certification.md §3's shared-responsibility line, "we provide extraction, they define scope")
 
 ## Why
