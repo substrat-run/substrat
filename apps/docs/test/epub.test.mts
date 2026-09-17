@@ -119,6 +119,7 @@ describe('the figures', () => {
       'LayerStack',
       'TenancyTree',
       'ScopeTopology',
+      'ScopeDrain',
       'PermissionPipeline',
       'BlastRadius',
     ]);
