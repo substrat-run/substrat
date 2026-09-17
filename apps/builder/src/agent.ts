@@ -63,6 +63,7 @@ import {
 	type ProviderSecrets,
 } from './providers-worker.js';
 import { reportTurnUsage } from './metering.js';
+import { withinProject } from './project-path.js';
 
 const REPO = '/workspace/substrat';
 const PROJECTS = '.builder/projects';
@@ -667,9 +668,17 @@ export class BuilderAgent extends DurableObject<Env> {
 				};
 				if (!path || content === undefined)
 					return json(400, { error: 'path and content required' });
-				if (!path.startsWith(`${entry.dir}/`))
-					return json(403, { error: `writes are limited to ${entry.dir}/` });
-				await this.#rootWs(this.#sandbox(entry.id)).writeFile(path, content);
+				// The same containment the local server applies, and this is the half that
+				// is deployed: judged on the NORMALISED path, never the text. A `..` segment
+				// after the project prefix passes a `startsWith` test and still names a file
+				// anywhere in the repo — which the repo-rooted workspace writes happily,
+				// because its own jail only refuses paths that leave the REPO (#1225).
+				const rel = withinProject(path, entry.dir);
+				if (rel === null) return json(403, { error: `writes are limited to ${entry.dir}/` });
+				// Through the PROJECT-rooted workspace, so the write is confined twice: once
+				// by the check above, and again by that workspace's own jail, which is also
+				// what judges a symlink pointing out of the project.
+				await this.#projectWs(this.#sandbox(entry.id), entry.dir).writeFile(rel, content);
 				// Patch the stored snapshot so a reload before the next commit still
 				// shows this save. Best-effort: absent snapshot → next commit builds it.
 				try {
@@ -677,7 +686,10 @@ export class BuilderAgent extends DurableObject<Env> {
 					const obj = await this.env.PROJECT_REPOS.get(key);
 					if (obj) {
 						const snap = (await obj.json()) as { files: Record<string, string> };
-						snap.files[path.slice(entry.dir.length + 1)] = content;
+						// `rel`, not a slice of the raw path: the slice of a traversal path
+						// keyed the snapshot under `../../…`, so the entry a reload read back
+						// was not the file that had been written.
+						snap.files[rel] = content;
 						await this.env.PROJECT_REPOS.put(key, JSON.stringify(snap));
 					}
 				} catch {

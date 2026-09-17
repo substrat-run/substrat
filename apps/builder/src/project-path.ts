@@ -13,12 +13,36 @@
  * `null` when the path is absolute, is the project directory itself, or
  * resolves anywhere outside it.
  */
-import { posix } from 'node:path';
+/**
+ * `posix.normalize`, hand-rolled, because this module is imported by the hosted
+ * `BuilderAgent` — Worker code, which compiles with no node types and has no
+ * `node:path` at runtime. The rule it enforces has to hold on the deployed half
+ * above all, so the helper cannot be the thing that keeps it off there.
+ *
+ * Same answers as `posix.normalize` for the inputs this asks about: `.` and empty
+ * segments drop, `..` pops the segment before it, and a `..` with nothing left to
+ * pop is KEPT — which is what makes a path that climbs above the project fail the
+ * prefix test below rather than silently resolving back into it.
+ */
+function normalise(path: string): string {
+	const out: string[] = [];
+	for (const seg of path.split('/')) {
+		if (seg === '' || seg === '.') continue;
+		if (seg !== '..') {
+			out.push(seg);
+		} else if (out.length > 0 && out[out.length - 1] !== '..') {
+			out.pop();
+		} else {
+			out.push('..');
+		}
+	}
+	return out.join('/');
+}
 
 export function withinProject(path: string, dir: string): string | null {
-	if (path === '' || posix.isAbsolute(path)) return null;
-	const base = posix.normalize(dir).replace(/\/+$/, '');
-	const normalised = posix.normalize(path);
+	if (path === '' || path.startsWith('/')) return null;
+	const base = normalise(dir).replace(/\/+$/, '');
+	const normalised = normalise(path);
 	// A sibling that merely shares the prefix (`x-2/` beside `x/`) is outside:
 	// the trailing slash is what makes this a directory test, not a string one.
 	if (!normalised.startsWith(`${base}/`)) return null;
