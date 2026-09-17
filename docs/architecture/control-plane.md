@@ -350,6 +350,28 @@ Any future write path that touches tuples without landing here (a scope-local mi
 migration backfill) silently destroys provenance; per §4.2's algebra rule, that is a
 decision-log event, not a patch.
 
+**Ordering: the row follows the mutation, in a separate write, and the window between them is
+accepted ([#1292](https://github.com/substrat-run/substrat/issues/1292)).** An audited
+`HostAdmin` verb commits its mutation first and writes its `_substrat_admin_log` row
+afterwards. On the Cloudflare adapter those are two `ControlPlaneDO` RPCs. On the SQLite
+adapter the row is a second statement, outside any transaction the mutation ran in. Neither
+adapter swallows a failed log write: `recordAdmin` throws and the verb fails, but the
+mutation has already committed, so the caller sees an error for a change that stands. If the
+process dies between the two writes, the mutation has no row at all. Retrying the verb then
+reads the already-mutated state as its `before`, so the retry's row lands and the original
+transition's diff is lost. A verb that skips no-ops (`setTenantName`, `createTenant`) records
+nothing on that retry. What the log promises is that **every verb that returns has written
+its row**. It does not promise that no mutation stands without one, and the gap matters most
+for the grant writes above, where the row is the only provenance. Two verbs reverse the order
+deliberately, because there the missing row is the harmful half-state:
+`rewindScope` records its intent before the destructive PITR (K-33), and `beginImpersonation`
+writes its row before it returns the session, so no caller holds a session the log does not
+name (K-42; a crash in between leaves an unreturned session row, which is a credential nobody
+has). Closing the window is still an option, not a rejected one: a `mutateAudited` seam on
+the `ControlPlaneDO` could run a mutation and its row inside one storage transaction, and the
+~15 call sites could move onto it one at a time. Until then, this paragraph is the contract,
+and a new verb follows the mutation-then-row shape unless it has a reason like the two above.
+
 **Retention: the admin log is never swept ([#36](https://github.com/substrat-run/substrat/issues/36)).**
 Because it is the sole witness of grant provenance (above), and because Tier-2 directory
 history is kept indefinitely for bokföringslagen (kernel-design §5.3), the admin log has **no
