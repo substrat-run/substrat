@@ -60,11 +60,17 @@ jobs:
   external-vertical:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # `npm install` runs registry packages' lifecycle scripts, so the job holds a
+    # read-only token and checkout does not leave it in the git config.
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: examples/external-vertical
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v6
         with:
           node-version: 22
