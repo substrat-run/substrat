@@ -44,3 +44,39 @@ jobs:
       # checkout — the create-substrat version to pull from npm, and whether unreleased
       # changesets are pending — and gets everything else from the registry.
       - run: node tools/scaffold-check.mjs --from=${{ inputs.from || 'registry' }}
+
+  # The other registry consumer (#983): `examples/external-vertical` depends on
+  # `@substrat-run/*` at literal semver ranges and is not a workspace member, so no PR
+  # gate resolves it and its pins rot silently — #1347 found them a release behind and
+  # `npm install` refusing on a stale peer, with every check green. Same triggers and
+  # same reason as the job above: the registry is the artifact under test.
+  #
+  # Separate job, so a red example never reads as a red scaffold or hides one. It runs
+  # the three scripts the example's README tells a user to run, with npm rather than
+  # pnpm because npm refuses an unmet peer where pnpm only warns. What it proves is that
+  # the pins still install, compile and bundle — not that they are the latest release;
+  # a caret on a `0.x` pin keeps resolving the older minor, and bumping it stays a
+  # maintenance edit. `inputs.from` does not apply: the example has no local mode.
+  external-vertical:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # `npm install` runs registry packages' lifecycle scripts, so the job holds a
+    # read-only token and checkout does not leave it in the git config.
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: examples/external-vertical
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      # No `pnpm install`, as above: nothing on disk may resolve `@substrat-run/*` but
+      # the registry. The lockfile npm writes is gitignored — pinning the resolution is
+      # exactly what this example must not do.
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run dry-run
