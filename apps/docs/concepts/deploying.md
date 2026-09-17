@@ -72,7 +72,7 @@ What the platform hands back differs by capability, and the difference is worth 
   named `SUBSTRAT_VERSION_ID`, carrying the id of the version being served. Nothing has to be
   declared for it: it is the platform's stamp, not a requested capability, and it is what lets
   the scope host record which push wrote an event — the `version` that
-  [`readHistory`](/concepts/events#reading-one-entitys-history) surfaces and the dimension the
+  [`readHistory`](/concepts/events#reading-one-entity-s-history) surfaces and the dimension the
   observability views group by. An in-place promote refreshes it to the version now being served
   rather than inheriting the outgoing one. Read it from `env.SUBSTRAT_VERSION_ID` if you need it;
   never declare it, or anything else under that prefix — admission refuses the namespace, as above.
