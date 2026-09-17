@@ -67,17 +67,28 @@ describe('event-drain delegation (#1334)', () => {
     expect((receipts[0]!.after as { drainedAt: string }).drainedAt).toBe(call.drainedAt);
   });
 
-  it('reopens through the delegation, and receipts only real work', async () => {
+  it('reopens through the delegation, recording the intent before the outcome', async () => {
     // Clearing stamps in the placeholder namespace would report success while reopening
     // nothing — the same false "the fleet has no events" the read delegation removes.
     const drainedBefore = '2026-09-16T00:00:00.000Z';
     await expect(hostFor().admin.redrainEvents(staff, t, s, { drainedBefore })).resolves.toBe(3);
     expect(seen.redrain).toEqual([{ tenantId: t, scopeId: s, vertical: 'docs', drainedBefore }]);
-    // A re-run over a window already reopened changes nothing and writes nothing.
+    // A re-run over a window already reopened changes nothing.
     await expect(hostFor().admin.redrainEvents(staff, t, s, { drainedBefore })).resolves.toBe(0);
+
     const receipts = await hostFor().admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'redrainEvents' });
-    expect(receipts).toHaveLength(1);
-    expect(receipts[0]!.after).toEqual({ redrained: 3, drainedBefore });
+    const intents = receipts.filter((r) => (r.after as { intent?: string }).intent === 'redrain');
+    const outcomes = receipts.filter((r) => (r.after as { intent?: string }).intent !== 'redrain');
+    // Two calls, each on the record BEFORE it reopened anything: the mutation commits in the
+    // far end and the row is a separate write here, so a failure between them would leave a
+    // reopen no receipt could be written for — the retry finds the stamps clear, returns 0
+    // and records nothing. The intent row is the half that cannot be lost that way.
+    expect(intents).toHaveLength(2);
+    expect(intents[0]!.after).toEqual({ intent: 'redrain', drainedBefore, delegated: true });
+    // …and only the call that actually moved rows records an outcome, so the re-run over an
+    // exhausted window still claims nothing.
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.after).toEqual({ redrained: 3, drainedBefore });
   });
 
   it('refuses a redrain with no instant, rather than reopening everything', async () => {
