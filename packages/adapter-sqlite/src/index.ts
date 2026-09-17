@@ -155,6 +155,7 @@ import {
   assertReplayableDump,
   delegatedReadRecord,
   redrainEventsInput,
+  REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import {
   asPrincipal,
@@ -300,6 +301,7 @@ import {
   readHistory,
   walkEventCause,
   walkEventEffects,
+  assertRedrainWindow,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -5781,19 +5783,40 @@ export class SqliteScopeHost implements ScopeHost {
         // address this scope" are different answers.
         this.assertScopeReachable(tenantId, scopeId);
         const { drainedBefore } = redrainEventsInput.parse(input);
+        // The window rule, enforced HERE and not only at the control-plane door: this verb
+        // is public `HostAdmin`, so the fleet script reaches it without passing that route.
+        // The injected clock, so a test pins the boundary rather than racing it.
+        assertRedrainWindow(drainedBefore, this.clock());
         const db = this.scopeDbFor(tenantId, scopeId);
+        // Audit FIRST, matching the Cloudflare adapter and `rewindScope` (K-33): the row is
+        // a separate statement outside the update's transaction, so a failure between them
+        // would leave a reopen with no receipt — and the retry cannot repair it, because the
+        // stamps are already clear and a second call returns 0. The outcome row below still
+        // records how much moved.
+        this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, {
+          intent: 'redrain',
+          drainedBefore,
+        });
         // `drained_at` is ISO 8601 text written by `toISOString()` on both adapters — one
         // fixed-width UTC format — so a string comparison is a time comparison. STRICTLY
         // before: a row stamped at exactly `drainedBefore` went to the new table.
+        //
+        // BOUNDED, and the caller loops until this returns 0 (`REDRAIN_BATCH`). The outbox
+        // is never pruned, so the unbounded form scales with the scope's whole history.
+        // SQLite is built here without UPDATE...LIMIT, so the batch is a subselect over the
+        // primary key — oldest first, so a partial run leaves a prefix rather than holes.
         const redrained = db
           .prepare(
             `UPDATE _substrat_outbox SET drained_at = NULL
-              WHERE drained_at IS NOT NULL AND drained_at < ?`,
+              WHERE id IN (
+                SELECT id FROM _substrat_outbox
+                 WHERE drained_at IS NOT NULL AND drained_at < ?
+                 ORDER BY id LIMIT ?
+              )`,
           )
-          .run(drainedBefore).changes;
-        // A second egress of the same payloads, on purpose — evidence on K-24's rule, and
-        // only when something changed, so a re-run over an already reopened window leaves
-        // no row claiming it did something.
+          .run(drainedBefore, REDRAIN_BATCH).changes;
+        // The outcome beside the intent above — only when something changed, so a re-run
+        // over an already reopened window leaves no row claiming it did something.
         if (redrained > 0) {
           this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, { redrained, drainedBefore });
         }

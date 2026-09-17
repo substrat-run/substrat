@@ -471,5 +471,21 @@ export type DrainedEvent = z.infer<typeof drainedEvent>;
  * contract in the kernel: the instant IS the guard against reopening rows that already
  * reached the rebuilt table.
  */
+/**
+ * How many rows one `redrainEvents` call reopens at most (#1334).
+ *
+ * The outbox is never pruned, so "every stamped row before an instant" is unbounded by
+ * construction: on an old, busy scope a single UPDATE would scan and rewrite the whole
+ * history, and on the Durable-Object host that is one request against a fixed budget —
+ * it would fail, and fail again on every retry, so the scope could never make progress.
+ * A bounded call always finishes, which is what makes the operation retryable at all.
+ *
+ * The protocol is therefore a LOOP, not a single shot: call until it returns 0. A call
+ * that returns the cap has almost certainly left rows behind; one that returns fewer has
+ * not, and the final 0 is the only proof the window is exhausted.
+ */
+export const REDRAIN_BATCH = 5_000;
+
 export const redrainEventsInput = z.object({ drainedBefore: instant });
 export type RedrainEventsInput = z.infer<typeof redrainEventsInput>;
+

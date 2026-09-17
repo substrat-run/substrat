@@ -61,6 +61,7 @@ import {
   PROBLEM_CONTENT_TYPE,
   toProblem,
   redrainEventsInput,
+  REDRAIN_BATCH,
 } from '@substrat-run/contracts';
 import type {
   Connection,
@@ -2800,7 +2801,10 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     const redrained = await admin.redrainEvents(actor, tenantId, scopeId, parsed.data);
-    return c.json({ redrained, drainedBefore: parsed.data.drainedBefore });
+    // `more` rather than silence: the verb reopens a bounded batch, so a caller that posts
+    // once can be holding a partial reopen. Saying so is what stops it reading as a finished
+    // window — the operator (or `pnpm lake:redrain`) posts again until `redrained` is 0.
+    return c.json({ redrained, more: redrained >= REDRAIN_BATCH, drainedBefore: parsed.data.drainedBefore });
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/reap', async (c) => {

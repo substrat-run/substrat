@@ -174,8 +174,10 @@ Two traps worth knowing before debugging one:
 
 `scripts/lake-provision.mjs` is where the lake's shape is declared — bucket, namespace,
 table, compression, rolling policy, and the pipeline SQL. It speaks to the Pipelines and
-R2 account API directly rather than through wrangler, and reads `CF_API_TOKEN` and
-`R2_LAKE_CATALOG_TOKEN` out of this file: the catalog token goes into the sink's request
+R2 account API directly rather than through wrangler, and reads `CF_LAKE_ADMIN_TOKEN` and
+`R2_LAKE_CATALOG_TOKEN` out of this file (**not** `CF_API_TOKEN` — see
+[The lake admin token](#the-lake-admin-token-and-rebuilding-a-lake-table) for why the
+account call was split off it): the catalog token goes into the sink's request
 body over TLS, so it reaches neither shell history nor any process's argv (wrangler's only
 transport for it is `--catalog-token <value>`, which is a child process's command line for
 as long as it runs — redacting the log does not take it out of `ps`). `pnpm lake:check`

@@ -151,15 +151,30 @@ for (const scope of scopes) {
     console.log(`  · would reopen  ${label}`);
     continue;
   }
-  const r = await cp('POST', `/tenants/${scope.tenantId}/scopes/${scope.id}/redrain-events`, { drainedBefore });
-  if (!r.ok) {
-    // One scope failing — typically a vertical with no serving deployment — never stops the
-    // walk. Reported, and the exit code says the run is not finished.
-    errors.push({ label, why: `${r.status} ${r.json?.error ?? r.text.slice(0, 200)}` });
-    console.log(`  ✗ ${label}  ${r.status}`);
-    continue;
+  // LOOP until the scope answers 0. One call reopens a bounded batch (`REDRAIN_BATCH`),
+  // because the outbox is never pruned and an unbounded update on an old scope would not
+  // fit in a single Durable Object request — it would fail, and fail again on every retry.
+  // A caller that asked once would silently reopen a prefix of the window and report it as
+  // the whole thing, which is the reading this loop exists to make impossible.
+  let n = 0;
+  let failed = false;
+  for (;;) {
+    const r = await cp('POST', `/tenants/${scope.tenantId}/scopes/${scope.id}/redrain-events`, { drainedBefore });
+    if (!r.ok) {
+      // One scope failing — typically a vertical with no serving deployment — never stops the
+      // walk. Reported, and the exit code says the run is not finished. Whatever earlier
+      // batches reopened stands: each is committed on its own, which is what makes the
+      // operation resumable by simply running it again with the same instant.
+      errors.push({ label, why: `${r.status} ${r.json?.error ?? r.text.slice(0, 200)}` });
+      console.log(`  ✗ ${label}  ${r.status}${n > 0 ? `  (${n} reopened before the failure)` : ''}`);
+      failed = true;
+      break;
+    }
+    const batch = r.json?.redrained ?? 0;
+    if (batch === 0) break;
+    n += batch;
   }
-  const n = r.json?.redrained ?? 0;
+  if (failed) continue;
   total += n;
   if (n > 0) changed += 1;
   console.log(`  ${n > 0 ? '●' : '='} ${label}  ${n > 0 ? `${n} reopened` : 'nothing to reopen'}`);

@@ -218,6 +218,7 @@ import {
   type FreshnessRegistration,
   type FreshnessReport,
   globalFetch,
+  assertRedrainWindow,
 } from '@substrat-run/kernel';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
 import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
@@ -4043,6 +4044,22 @@ export class CloudflareScopeHost implements ScopeHost {
         // addressing its DO would construct an empty one and report nothing reopened.
         const record = await this.scopeRecordForRead(tenantId, scopeId);
         const { drainedBefore } = redrainEventsInput.parse(input);
+        // The window rule at the HostAdmin boundary, not only at the control-plane door:
+        // this verb is public, so an in-process caller reaches it without that route. Host
+        // code, so the real clock is the right one to read (the DO host injects none).
+        assertRedrainWindow(drainedBefore, new Date().toISOString());
+        // Audit FIRST, on `rewindScope`'s rule (K-33), because this has the same shape: the
+        // mutation commits in a DO and the row is a separate write afterwards, so a failure
+        // between them left a reopen that had happened with no receipt — and the retry could
+        // not repair it, because the stamps were already clear and a second call returns 0
+        // and writes nothing. The intent row is what cannot be lost that way; the outcome row
+        // below still records how much actually moved. A second egress of a tenant's payloads
+        // is exactly the thing K-24 must not lose track of.
+        await this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, {
+          intent: 'redrain',
+          drainedBefore,
+          delegated: Boolean(this.eventDrainDelegation && record.vertical),
+        });
         // Delegated on the stamp's rule: the rows live in the vertical's deployment, and
         // clearing stamps in the placeholder namespace would succeed while reopening nothing.
         const redrained =
@@ -4054,8 +4071,8 @@ export class CloudflareScopeHost implements ScopeHost {
                 drainedBefore,
               })
             : await this.scopeStub(scopeId).redrainEvents(drainedBefore);
-        // A second egress of the same payloads, on purpose — evidence on K-24's rule, only
-        // when something changed, so a re-run over a window already reopened writes nothing.
+        // The outcome beside the intent above — only when something changed, so a re-run over
+        // a window already reopened adds no row claiming it moved anything.
         if (redrained > 0) {
           await this.recordAdmin(actor, 'redrainEvents', { tenantId, scopeId }, null, { redrained, drainedBefore });
         }

@@ -115,6 +115,7 @@ import type {
   IssueStatus,
   IssueStatusInput,
 } from '@substrat-run/contracts';
+import { substratError } from '@substrat-run/contracts';
 import type { ModelUsageFilter, ModelUsageInput, ModelUsageWindow } from './model-usage.js';
 import type { SealedSecret } from './secret-box.js';
 import type { SearchHit, SearchOptions } from './search-index.js';
@@ -2062,7 +2063,21 @@ export interface HostAdmin {
    * before: a row stamped at exactly that instant went to the new table.
    *
    * A re-ship is a second egress of domain payloads, so it is audited on K-24's rule like
-   * the stamp it undoes: a `redrainEvents` admin row, written only when something changed.
+   * the stamp it undoes — in two halves. The INTENT row goes down before anything is
+   * reopened, because the mutation and the row are separate writes and a failure between
+   * them would otherwise leave a reopen no receipt could be written for: the retry finds
+   * the stamps already clear, returns 0, and records nothing. The OUTCOME row follows only
+   * when something moved, so a re-run over an exhausted window claims nothing.
+   *
+   * **Returns the count reopened by THIS call, which is bounded** (`REDRAIN_BATCH`), so the
+   * protocol is a loop: call until it returns 0. The outbox is never pruned, so "every
+   * stamped row before an instant" grows with the scope's whole lifetime, and on the
+   * Durable-Object host that is one request against a fixed budget — unbounded, the scope
+   * that most needs reopening is the one that could never finish, on every retry. A caller
+   * that asks once reopens a prefix of the window, and must not report it as the whole.
+   *
+   * A cutoff in the FUTURE is refused here, at the boundary, not only by the control-plane
+   * route: this is a public verb and in-process callers never pass that door.
    */
   redrainEvents(
     actor: PlatformActorId,
@@ -3858,4 +3873,28 @@ export interface ScopeHost {
   defineOperation<I, O>(name: string, handler: OperationHandler<I, O>): void;
 
   close(): Promise<void>;
+}
+
+/**
+ * Refuse a cutoff in the future — at the HostAdmin boundary, not only at the HTTP door.
+ *
+ * A future instant clears the stamps on rows the drain shipped AFTER the rebuild, which
+ * is the exact double-write the required instant exists to prevent: those payloads go to
+ * the new table a second time. The control-plane route checked it, and that was enough
+ * only while the route was the single way in — `redrainEvents` is a public `HostAdmin`
+ * verb, so the fleet script and any other in-process caller reach the adapters directly.
+ * An invariant one caller enforces is a convention; this is the same rule where every
+ * caller must pass it.
+ *
+ * `now` is supplied rather than read so the pure host can pass its injected clock and a
+ * test can pin the boundary instead of racing the wall clock.
+ */
+export function assertRedrainWindow(drainedBefore: string, now: string): void {
+  if (Date.parse(drainedBefore) <= Date.parse(now)) return;
+  throw substratError(
+    'validation_failed',
+    `drainedBefore ${drainedBefore} is in the future — it would reopen rows already shipped ` +
+      'to the rebuilt table. Pass the instant the old table stopped receiving.',
+    { errors: [{ path: 'drainedBefore', message: 'must not be in the future' }] },
+  );
 }

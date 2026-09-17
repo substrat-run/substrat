@@ -60,6 +60,7 @@ export type {
   TenantStoreRecord,
 } from './scope-host.js';
 export {
+  assertRedrainWindow,
   attachmentBlobKey,
   consumersFor,
   entitlementDenial,
