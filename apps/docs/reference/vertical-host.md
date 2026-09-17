@@ -46,10 +46,11 @@ export default app;
 
 - **Generic routes** — `export`, `restore`, `bookmarks`, `migrations`, `rewind`, `snapshot`,
   `delete-scope`, `tables`, `tables/:table`, `query`, `history`, `facets`, `cause`,
-  `effects`, `denials`, `denials/summary`, `platform-requests`, `platform-requests/history`,
+  `effects`, `invocation`, `denials`, `denials/summary`, `platform-requests`,
+  `platform-requests/history`,
   `platform-requests/settle` — pure delegations to your scope host, owned entirely by the
   package. The table, query, denial and event reads (`tables`, `tables/:table`, `query`,
-  `denials`, `denials/summary`, `history`, `facets`, `cause`, `effects`) are how the
+  `denials`, `denials/summary`, `history`, `facets`, `cause`, `effects`, `invocation`) are how the
   control plane answers those questions for a *hosted* vertical, whose scope it cannot
   open itself: the transport delegates the read here, then records the K-24 access row
   for it as if it had served the read (see

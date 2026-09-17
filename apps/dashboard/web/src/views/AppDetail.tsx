@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Dialog, Input, Select, Table, Tabs, type TableColumn } from '@substrat-run/ui';
 import { api, ApiError, type HistoryEntry, type CauseChain, type CauseTerminal, type FieldCoverageView, type EffectsTree, type EffectsTerminal, type EventEffects, type EventDelivery, type InvocationEvents, type AppRow, type AppDeployments, type AppEvent, type AppAuthChoice, type AppAuthView, type AppHostnameRow, type AppHostnamesView, type DeclaredSurface, type AppModelView, type AppPermissionsView, type AppScope, type AssetEntry, type DeployAssets, type Deployment, type DeploymentVersion, type DumpTable, type MigrationBookmark, type PermissionRegistry, type PermissionRegistryEntry, type ScopeTable, type ScopeTablePage, type ScopeQueryResult, type AppEnvView, type SnapshotRow, type VerticalPreview, type OwnerSeatView, type OwnerClaimLinkView, type TrafficSeries } from '../lib/api';
-import { actorLabel, authorizationLabel, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
+import { actorLabel, authorizationLabel, callButtonTitle, impersonationLabel, operationLabel, payloadText, timelineTargets, type TimelineTarget } from '../lib/history';
 import { readOwnerSeat } from '../lib/owner-seat';
 import { verticalMeta, APP_TABS, MOCK_SCOPE_TABLES, MOCK_SCOPE_TABLE_PAGES, MOCK_APP_ENV, MOCK_APP_SCOPES } from '../lib/demo';
 import { DEV_MOCK, MOCK_APP_HOSTNAMES, MOCK_APP_MODEL, MOCK_APP_PERMISSIONS, MOCK_APP_TRAFFIC, MOCK_DEPLOYMENTS, MOCK_SNAPSHOTS } from '../lib/mock';
@@ -2862,13 +2862,18 @@ function EntityTimeline({
               from before calls were recorded never had one. The button says so and stays shut. */}
           <button
             type="button"
-            onClick={() => setCall((w) => (w === e.id ? null : e.id))}
-            disabled={e.invocationId === null}
-            title={
-              e.invocationId === null
-                ? 'no call was recorded for this event — a seed or internal call, or an event from before calls were recorded'
-                : 'everything else the same request recorded, including events with no causal link to this one'
-            }
+            onClick={() => {
+              if (e.invocationId === null) return;
+              setCall((w) => (w === e.id ? null : e.id));
+            }}
+            // `aria-disabled`, not `disabled`, on Observability.tsx's precedent: a natively
+            // disabled button leaves the tab order, taking the `title` with it — so the one
+            // place the "why" is written would be unreachable by exactly the people who
+            // cannot see the greyed styling. It stays focusable, announces itself as
+            // unavailable, and the click is guarded above instead.
+            aria-disabled={e.invocationId === null}
+            title={callButtonTitle(e.invocationId)}
+            aria-description={callButtonTitle(e.invocationId)}
             style={{ ...pagerBtn(e.invocationId !== null), justifySelf: 'start', fontSize: 11.5, padding: '2px 8px' }}
           >
             {call === e.id ? 'Hide call' : 'Same call'}
