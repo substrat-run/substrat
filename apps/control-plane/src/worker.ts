@@ -97,9 +97,9 @@ import {
 } from '@substrat-run/control-plane-api';
 import { VerticalClient } from '@substrat-run/control-plane-api';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
-import { mountOidcRoutes, signVisitorIdentity, type OidcEnv } from '@substrat-run/oidc-rp';
+import { mountOidcRoutes, sessionFromHeaders, signVisitorIdentity } from '@substrat-run/oidc-rp';
 import { transportFor, senderFor } from './email.js';
-import { oidcStaffSessionReader, oidcStaffBearerReader } from './staff-auth.js';
+import { oidcStaffSessionReader, oidcStaffBearerReader, type StaffAuthEnv } from './staff-auth.js';
 import { d1StaffRoster, grantStaff, listStaff, revokeStaff } from './staff-roster.js';
 import { mountCliAuthRoutes } from './cli-auth.js';
 import { studioTenantsFor, oidcBuilderReader, resolveWhoami } from './builder-auth.js';
@@ -118,7 +118,7 @@ import {
 export const ScopeDO = defineScopeDO([], {});
 export { ControlPlaneDO };
 
-interface Env extends OidcEnv, ConnectorEnv {
+interface Env extends StaffAuthEnv, ConnectorEnv {
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /** The staff roster's D1 store (#42). Absent in the workerd test (dev-actor path only). */
@@ -1203,9 +1203,14 @@ export default {
     mountCliAuthRoutes(app);
 
     // Who is signed in — the console SPA polls this (null when there is no session).
+    // Authentication only, so deliberately NOT the staff reader: with
+    // OIDC_REQUIRE_EMAIL_VERIFIED on, an unverified address is still signed in, and the
+    // console hands a null straight back to the IdP — whose SSO session returns the same
+    // unverified address, forever. It lands signed in with nothing it may act on instead,
+    // exactly like an address the roster does not list (#1359).
     app.get('/api/auth/session', async (c) => {
-      const staff = await oidcStaffSessionReader(c.env)(c.req.raw.headers);
-      return c.json({ user: staff ? { email: staff.email } : null });
+      const user = await sessionFromHeaders(c.env, c.req.raw.headers);
+      return c.json({ user: user?.email ? { email: user.email } : null });
     });
 
     // The support desk's identity claim for the signed-in staff member — what the
