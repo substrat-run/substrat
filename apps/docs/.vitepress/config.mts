@@ -73,7 +73,7 @@ export default withMermaid(defineConfig({
     const repoRoot = resolve(siteConfig.srcDir, '../..');
     emitInto(siteConfig.outDir, buildArtifacts(siteConfig.srcDir, repoRoot));
     // The book's single-file editions (#1401): /book.txt and /book/read.html, the
-    // same eleven chapters concatenated for printing, pandoc, or one-shot ingestion.
+    // same chapters concatenated for printing, pandoc, or one-shot ingestion.
     // Emitted rather than checked in, so there is no second copy to drift — see book.mts.
     emitInto(siteConfig.outDir, bookArtifacts(siteConfig.srcDir));
     // And /book.epub — the same chapters packaged for a phone: a real EPUB 3 with a

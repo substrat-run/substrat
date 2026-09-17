@@ -33,7 +33,7 @@
  * ## Why it is generated and not checked in
  *
  * Same reason as the other two editions (book.mts): a committed `.epub` is a second,
- * drifting transcript of eleven chapters, and a binary one nobody can review in a
+ * drifting transcript of every chapter, and a binary one nobody can review in a
  * diff. It is built in `buildEnd` from `bookPages()` — the same list the nav renders
  * — so it cannot contain a different book from the one on the site.
  *
@@ -168,7 +168,7 @@ function titlePage(): string {
 <body epub:type="frontmatter">
 <section epub:type="titlepage" class="titlepage">
 <h1 class="booktitle">Substrat,<br/>end to end</h1>
-<p class="subtitle">How the pieces join — ten chapters, front to back.</p>
+<p class="subtitle">How the pieces join — thirteen chapters, front to back.</p>
 <p class="imprint">${xml(SITE)}</p>
 </section>
 </body>

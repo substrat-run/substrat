@@ -187,6 +187,41 @@ That is the event id rather than a separate correlation field: the envelope alre
 carries a unique kernel-stamped id, and reusing it avoids widening a frozen contract to
 say something it already says.
 
+## How work leaves the scope {#drain}
+
+Consumers run inside the scope. Two kinds of work cannot: a **platform intent** needs
+authority the vertical does not hold, and an **event bound for the long-term lake** has to
+leave the scope's storage. Both are written in the operation's own transaction, and both
+are carried out later by the control plane, which is the only thing that acts on them.
+
+<ScopeDrain />
+
+The control plane learns there is work in two ways, and it needs both:
+
+- **The kick is the fast path.** When an operation queued an intent, the vertical flags its
+  response. The router, the one hop that already knows which tenant and scope it served,
+  returns the response first and then asks the control plane to drain that scope. Intents
+  settle in seconds instead of waiting for the next sweep.
+- **The sweep is the guarantee.** Every 15 minutes the platform walks every active scope and
+  drains whatever is pending, kick or no kick. A kick that was lost, failed, or never sent
+  costs a wait, never a missed intent or event.
+
+**A kick carries no data.** It names a scope, and the control plane reads that scope's
+rows itself, re-deriving the tenant and vertical from its own directory. So a kick can only
+make a scope's *own* pending work happen sooner. It cannot put anything into the scope or
+the lake, which is what makes a flag any vertical can set safe to act on.
+
+**Events leave through the sweep.** Each pass reads a scope's unshipped events, sends them
+to the platform's Tier-2 event lake, and marks them shipped only once the lake has confirmed
+it holds them. The order is the safety property: a failure between sending and marking sends
+the same events again, which is harmless because every event has a unique `id`, while marking
+first could lose events and nothing downstream would notice. There is no kick for events
+yet, so they reach the lake on the sweep's schedule.
+
+Shipping does not remove anything. The outbox is also what consumers are delivered from, what
+[an entity's history](#reading-one-entity-s-history) is read from, and where an entity's
+version comes from, so a shipped event stays in the scope.
+
 ## Audit as a product feature
 
 Because every event carries tenant, scope, actor, entity, and time — stamped, not

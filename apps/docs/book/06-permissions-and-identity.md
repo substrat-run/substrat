@@ -139,7 +139,7 @@ neither that access was revoked nor that it was ever granted.
 
 "Ever" means for as long as the scope does. Reaping is the one thing that takes a tuple
 away, because reaping takes the whole database the projection lives in; what outlives it is
-the admin log, which is never swept (chapter 10).
+the admin log, which is never swept (chapter 11).
 
 Liveness is therefore one predicate applied identically everywhere: a tuple grants only
 while it is **unexpired and unrevoked**. Expiry and revocation are siblings, not separate

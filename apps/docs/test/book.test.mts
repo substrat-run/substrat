@@ -1,7 +1,7 @@
 /**
  * The single-file book editions (#1401).
  *
- * The web book and the printed book are the same eleven files, transformed —
+ * The web book and the printed book are the same chapter files, transformed —
  * headings pushed down a level, the front matter's duplicate title dropped, each
  * chapter's "Next" link removed because in one file the next chapter is the next
  * paragraph. Those transformations are exactly where a silent regression would
@@ -18,7 +18,7 @@ const SRC = resolve(fileURLToPath(import.meta.url), '../..');
 const md = bookMarkdown(SRC);
 
 describe('the concatenated book', () => {
-  it('has exactly one h1 — the book is one document, not eleven', () => {
+  it('has exactly one h1 — the book is one document, not one per chapter', () => {
     expect(md.split('\n').filter((l) => /^# /.test(l))).toEqual(['# Substrat, end to end']);
   });
 

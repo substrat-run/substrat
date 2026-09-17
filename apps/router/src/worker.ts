@@ -242,7 +242,7 @@ function record(
  * A vertical enqueues a platform intent in its own scope DO and flags it on the response
  * with `x-substrat-platform-request`. The router is the one hop that already knows the
  * resolved `(tenant, scope)`, so it pings the control plane to drain that scope NOW —
- * collapsing the ~2-min sweep latency to seconds.
+ * collapsing the control plane's 15-minute cron sweep latency to seconds.
  *
  * Deliberately best-effort and out of band (`ctx.waitUntil`, after the response is
  * returned): the header is a HINT, not a dependency. The intent is already durably
@@ -260,7 +260,7 @@ async function kickDrain(env: Env, target: RouteTarget): Promise<void> {
     // Wired but unable to authenticate: still not a failure of the request — the sweep
     // drains this scope — but never a silent one (#966). A kick binding with no secret
     // is a half-provisioned router, and the only sign of it used to be that every
-    // platform intent took ~2 minutes instead of seconds.
+    // platform intent took up to 15 minutes instead of seconds.
     console.error(
       `router: CONTROL_PLANE_KICK is bound but PLATFORM_SECRET is not configured — ` +
         `skipping the drain kick for scope ${target.scopeId}; the periodic sweep is the backstop`,

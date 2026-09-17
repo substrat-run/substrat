@@ -822,7 +822,7 @@ function resolveVerticalForScopeFor(
  * Drain one scope's pending platform-intents now: pull them from the vertical's
  * `/internal` surface (its DO lives in the vertical's deployment, K-31), execute each
  * with platform authority via the registered handlers, settle back. The unit shared by
- * the ~2-min periodic sweep (reliability) and the router kick (latency, platform-intents.md
+ * the 15-minute cron sweep (reliability) and the router kick (latency, platform-intents.md
  * §"router kick") — a vertical whose response carried `x-substrat-platform-request` gets
  * drained in seconds instead of at the next sweep. A scope with no bound deployment drains
  * nothing. The identity is inherent: the tenant/vertical come from THIS directory's record
@@ -1070,8 +1070,8 @@ export default {
       ...(env.DIRECTORY_BACKUPS
         ? { accessLogSink: createR2AccessLogSink(env.DIRECTORY_BACKUPS) }
         : {}),
-      // #1334 — the domain-event drain, the phase this deployment has had implemented on
-      // both adapters and bound to nothing. Pipelines rather than the NDJSON staging sink
+      // #1334 — the domain-event drain, bound in prod to the `SUBSTRAT_OUTBOX_STREAM`
+      // pipeline that feeds the Iceberg lake. Pipelines rather than the NDJSON staging sink
       // beside it: §5.3's adapter table names "Pipelines → Iceberg/R2" as the Cloudflare
       // row for event transport, and the seam means the drain never learns which it got.
       // Unbound ⇒ skipped, so a self-host that ships nowhere stays a supported deployment.
@@ -1318,7 +1318,7 @@ export default {
     // The router kick (platform-intents.md §"router kick"). When a vertical's response
     // carried `x-substrat-platform-request`, the router — the one hop that already knows the
     // resolved (tenant, scope) — calls this to drain that scope's intents NOW, turning the
-    // ~2-min sweep latency into seconds. Platform-secret gated (an unset secret refuses, never
+    // 15-minute cron sweep latency into seconds. Platform-secret gated (an unset secret refuses, never
     // bypasses). The body only NAMES which scope to drain: the tenant/vertical are re-derived
     // from this directory's own record and the intents run are the scope's own, so a caller with
     // the global secret can at most accelerate a scope's own pending work — never act across it.

@@ -212,10 +212,14 @@ follows, not a per-vertical invention.
 
 **Built, and narrower than this paragraph reads** (D-45, #37). The mechanism ships against
 the stores that exist *today* — the live spine (redacted, because Tier 1 is mutable) and
-the platform-retained copies of it (crypto-shredded, because a backup is not). Tier 2 is
-not among them: nothing drains the event outbox to a lake yet, so the immutable-lake half
-of this sentence remains a design, and the seam is shaped so it inherits the mechanism when
-it lands. Five limits are enumerated in
+the platform-retained copies of it (crypto-shredded, because a backup is not). Tier 2 was
+not among them when D-45 was decided, because nothing drained the event outbox then. It
+does now: the control plane's sweep ships each scope's outbox to Pipelines → Iceberg in
+production (#1334, #1413, #1485, #1498, #1517, #1522). The mechanism has **not** been
+extended to it. The drain ships each payload as it stands in the outbox, unsealed, so an
+erasure redacted before the drain reaches the lake as a null payload, and an erasure after
+it does not reach the lake at all. The immutable-lake half of this sentence is still a
+design. Six limits are enumerated in
 [kernel-design §13.1](./architecture/kernel-design.md) — read them before this paragraph reaches a
 sales deck, because *"erase X from everywhere"* is not among the things it can do.
 

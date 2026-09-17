@@ -469,8 +469,8 @@ const bookTakeaways = [
           <div class="kicker">The ebook · free</div>
           <h2>Get the book: <em>Substrat, end to end.</em></h2>
           <p class="muted lede-narrow">
-            The docs answer a question and let you go. The book is the other thing: ten
-            chapters, read front to back in an afternoon, on how the pieces actually
+            The docs answer a question and let you go. The book is the other thing: thirteen
+            chapters, read front to back, on how the pieces actually
             join. It assumes nothing except that you have written server software before.
           </p>
           <ul class="ebook-list">

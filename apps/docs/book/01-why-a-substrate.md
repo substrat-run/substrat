@@ -53,7 +53,7 @@ special-case one.
 
 **Engines** own invariants inside a domain. The work-order engine knows that a completed
 order cannot go back to scheduled, that every state change emits an event, that an
-exported billing basis is immutable afterwards. There are seven of them, each headless —
+exported billing basis is immutable afterwards. There are seven of them, each headless:
 no screens, no vocabulary, no opinion about what you call things.
 
 **Verticals** own everything a user touches: the words, the roles, the prices, the
@@ -104,6 +104,60 @@ CSS.
 It is also not finished. [What Substrat doesn't have (yet)](/guide/what-substrat-lacks)
 is the current list, and this book flags the relevant gaps where they arise rather than
 saving them up.
+
+## The words this book uses
+
+A handful of terms carry most of the weight from here on. Each one gets its full chapter later,
+but none of them should be used before it is defined, so here they are in one place.
+
+**Tenant.** The business that pays. It is the billing and identity boundary.
+
+**Scope.** One isolation domain inside a tenant, such as a branch, a client or a property. Each
+scope is its own database (chapter 2). An installed app is a scope running a vertical.
+
+**Module.** The unit of code the kernel loads into a scope. A module is one registration: a
+**manifest** (its id, the permission keys it declares, the events it emits and consumes, its
+schedules), plus its SQL migrations, its operation handlers, their input schemas, and its event
+consumers. **Every engine is a module, and so is every vertical.** A deployed app registers its
+own vertical module next to the engine modules it composes, in a fixed order, because that order
+is also the order migrations run in.
+
+**Operation.** A named, permission-checked, transactional entry point into a module, invoked as
+`module/name`, such as `workorder/create`. The only way anything changes a scope's data.
+
+**Engine.** A module that owns invariants in one domain, such as work orders, invoicing or
+booking, and has no screens and no vocabulary.
+
+**Vertical.** A module that owns everything a user touches in one trade: the words, roles,
+prices and workflow. It composes engines. It also ships the worker around the module: HTTP
+routes, authentication and the app.
+
+**Harness.** Code in the vertical's worker that is *not* module code: the server, the seed, the
+routes, the tests. The rules in chapter 4 bind module code, and harness code is where the
+exempt work, such as calling a model, happens.
+
+**The spine.** The kernel's own tables, all named `_substrat_*`, inside every scope and in the
+directory: the event outbox, the delivery journal, the denial log, the permission tuples, the
+platform-intent queue, the admin log. Module code may read the spine and may never write it.
+It is the record the rest of the system trusts.
+
+**Event.** A kernel-stamped fact that a mutation happened, written to the **outbox** in the same
+transaction as the mutation (chapter 5).
+
+**Consumer.** A module's handler for another module's event. It runs inside the same scope, in
+its own transaction, as a system actor.
+
+**Executor.** A handler the *host* registers for an event, which runs outside the scope with
+platform authority, for effects one scope cannot make on its own. **Connector** is the executor
+you will meet most: one that is also given a credential and permission to call exactly one
+outside provider.
+
+**Platform intent.** A request, written by an operation into the spine, for the platform to do
+something privileged on the scope's behalf, such as provisioning another scope. The platform
+executes it later and writes the outcome back.
+
+**Control plane, directory.** The platform's own service, and the database it keeps: which
+tenants and scopes exist, where they route, who holds which role, and the admin log.
 
 ## Two pictures, one system
 

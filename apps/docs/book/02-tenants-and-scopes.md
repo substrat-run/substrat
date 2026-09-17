@@ -56,7 +56,7 @@ thing. On a shared cluster this is a export-filter-import project; here it is a 
 **Deleting a customer is deleting databases.** Reaping one scope destroys one file;
 reaping a tenant walks every scope beneath it and then clears the tenant's own PII and
 configuration rows. Which is a real property when somebody invokes a right to erasure, and
-a real hazard too — chapter 10 covers what actually frees those bytes, because the answer
+a real hazard too — chapter 13 covers what actually frees those bytes, because the answer
 is less automatic than you would expect, and because the tombstones and the admin log are
 built to survive it.
 
@@ -99,6 +99,11 @@ strict serialization and nothing weaker, so the adapter enforces strict serializ
 itself instead of inheriting whatever the platform happens to provide. The two adapters
 then mean the same thing by "serialized", which is what lets one conformance suite hold
 both.
+
+Serialization is **per scope**. Two operations on the same scope queue. Two operations on
+different scopes, whether in the same tenant or not, run at the same moment on different
+databases, and neither can slow the other. Chapter 4 covers what a slow operation holds, and how
+a vertical keeps genuinely slow work out of the queue.
 
 The thing to notice is the pattern, because it repeats: where the platform's guarantee is
 *close* to the contract, Substrat implements the contract anyway rather than documenting
@@ -170,7 +175,7 @@ Tenants have a parallel ladder — `active`, `suspended`, `deleting`, `reaped` �
 `deleting` is a reversible grace state that makes every scope under it inert without
 reclaiming anything.
 
-What is worth flagging here, and what chapter 10 returns to: **nothing moves a scope from
+What is worth flagging here, and what chapter 13 returns to: **nothing moves a scope from
 `archived` to `reaped` on its own unless you have configured it to**. Cloudflare never
 garbage-collects a Durable Object. An archived scope's bytes persist indefinitely until
 something explicitly wipes them, and the sweep that can do that is opt-in because the

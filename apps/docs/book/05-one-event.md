@@ -98,7 +98,13 @@ inability to reach another scope.
 
 **The loop rounds because consumers emit.** A consumer's own `ctx.emit` writes another
 outbox row, which the next round picks up. Fifty rounds is the cascade limit, and the loop
-exits as soon as a round delivers nothing.
+exits as soon as a round delivers nothing. An event emitted this way records **`causedBy`**, the
+id of the event whose delivery emitted it. It also inherits the originating request's
+**invocation id**, because the drain is part of the same call. Chapter 10 walks both links.
+
+**All of this happens inside the scope's turn.** The drain runs after the commit, but before the
+queue lets the next operation in. A slow consumer therefore delays the next operation on its
+own scope (chapter 4), and no other scope.
 
 ### When a consumer throws
 
@@ -165,6 +171,25 @@ membership if the scope rolls back after the directory write lands.
 
 The event has no such hazard, because it enters the outbox in the **same transaction** as
 the domain write. A rollback leaves no event and therefore nothing to effect.
+
+### Who registers executors in practice
+
+The membership example above is the textbook one, and it lives in the contract suite. In the
+running platform, the executor you will actually meet is a **connector**: an executor that is
+also handed a credential and one provider's worth of egress. An e-signature connector is the
+reference, registered against the event a protocol emits when it requests signatures.
+
+Where it runs depends on the host, and the difference matters:
+
+- **Self-hosted, or with a control-plane binding**, the host runs the connector on the
+  coordinator, with the retry policy below.
+- **A hosted, sandbox-clean vertical has no credentials to hand anyone.** It declares the
+  connector as a routing entry only, and the host turns each due delivery into a
+  `connector:<provider>` **platform intent** (below). The control plane, which holds the
+  credential, runs the connector when it drains that intent.
+
+A third kind of connector subscribes to no event. An accounting or planning integration that
+*pulls* data runs as a sweeper inside the platform sweep (chapter 9), on a schedule.
 
 ### Executors retry, and the ordering is the point
 
@@ -242,6 +267,59 @@ Call it **after** your own permission check. Authorization is the vertical's dec
 isolation is the platform's. And it applies backpressure: a scope holding the maximum
 pending intents throws rather than queueing without limit.
 
+Intent kinds are a closed set: provisioning a sibling scope or a whole tenant, archiving a
+scope, reconciling a managed tenant's entitlements, recording a model-usage line (chapter 12),
+and the `connector:<provider>` family. The platform uses one more kind for its own sweep
+records, and module code is refused it, so a vertical cannot forge a verdict about its own
+schedules.
+
+### How fast an intent runs, and the kick
+
+An intent is **pulled**, never pushed, and by default the pull is the platform sweep: a
+fifteen-minute cron on the hosted control plane (chapter 9). An intent raised at 10:01 can
+therefore sit until 10:15. For an intent a user is waiting on, such as "provision my new
+branch", that is too slow.
+
+So there is a fast path, and it has three parts, each owned by a different party:
+
+```
+operation commits with ≥1 intent
+  │  host fires onPlatformRequests(count)      ← only after COMMIT, never on rollback
+  ▼
+vertical sets response header  x-substrat-platform-request: 1
+  │
+  ▼
+router sees the header → waitUntil(kickDrain)  ← after the response has gone
+  │  POST /internal/drain-scope {tenantId, scopeId}   (service binding + platform secret)
+  ▼
+control plane drains that one scope now
+```
+
+The header carries no payload and no privilege. The control plane re-derives the tenant and
+vertical from the directory and simply pulls. A forged or spurious header costs one empty pull.
+The user never waits for the kick either, because the router runs it after returning the
+response. With it, an intent settles in seconds.
+
+**The part people miss is the vertical's.** The kernel exposes the signal and does not set the
+header for you. A vertical opts in when it mints its stub:
+
+```ts
+const stub = await host.getScope(principal, tenantId, scopeId, {
+  onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
+});
+```
+
+A vertical that skips this still works, and its intents wait for the sweep. That is the
+designed failure direction: the kick is advisory, and **a missed kick costs one sweep interval,
+never an intent**. It is also why "provisioning works but takes a quarter of an hour" is almost
+always a vertical that never wired the header, and not a slow platform.
+
+A drain that throws leaves the intent `pending` for the next pull. After 100 attempts (about a
+day at sweep cadence) it settles as `failed` and records an operational failure, so a stuck
+intent eventually becomes a visible one.
+
+### Reading the outcome
+
 The outcome comes back. `ctx.platformRequests(filter)` reads this scope's own intent
 journal — newest first, filterable by kind and status — with the `result` or `lastError`
 the platform settled. That read exists for one concrete reason: a contract whose signature
@@ -249,10 +327,28 @@ request settled `failed` can say so on its own screen, instead of showing a docu
 appears to be out for signature and is not. The kernel owns every write to that table, so a
 status is only ever the platform's answer.
 
+### How the platform finds out
+
+Nothing leaves the scope inside the transaction. The intent is a row; something outside has
+to notice it. Two things do, and they are not alternatives.
+
+<ScopeDrain />
+
+The **kick** is the fast path. The vertical flags its response, and the router — the one hop
+that already knows which tenant and scope it just served — returns the response and then asks
+the control plane to drain that scope. The **sweep** is the guarantee: every 15 minutes the
+platform walks every active scope and drains what is pending, so a kick that was lost costs a
+wait and never an intent.
+
+The kick is safe for a reason worth stating. It carries no data. It names a scope, and the
+control plane reads that scope itself and re-derives the tenant from its own directory, so the
+most a kick can do is make a scope's own work happen sooner.
+
 ## Why an engine composed by event has no exports
 
-The invoicing engine consumes `workorder.completed` *and* `commerce.order-placed` — events
-from two different domains — without importing a single type from either producer. It has
+The invoicing engine consumes `workorder.completed` *and* `commerce.order-placed`, events from
+two different domains, without importing a single type from either producer. From them it
+builds a customer's **billing basis**, the lines an invoice will be issued from (chapter 12). It has
 deliberately **no in-scope exports**: the vertical emits, the engine consumes, and the
 vertical reads results back through the engine's own operations or by consuming its events.
 
@@ -269,8 +365,10 @@ during a deprecation window.
 The reason is mechanical rather than philosophical. Consumer dispatch selects on event
 *type* alone (`WHERE o.type = ?`), and the `schemaVersion` a manifest's `consumes` entry
 carries is discarded at registration. So emitting both versions delivers **both** to the
-same consumer. For `invoicing.underlag-exported`, whose consumer is by design an accounting
-connector, that is a double invoice in production, silently.
+same consumer. The invoicing engine's export event is meant to be consumed by an accounting
+connector. None consumes it yet (chapter 12), but once one does, a dual-emit is a double
+invoice in production, silently. The rule is not hypothetical either: the export event has
+been through exactly one version bump, and it was shipped as a replace.
 
 A replace fails loudly instead: a v1 consumer's strict parse rejects v2, and the event
 dead-letters where somebody sees it. Loud and stopped beats quiet and doubled.
@@ -288,6 +386,13 @@ entity" is a query, and the answer is the same data reporting runs on.
 Which is why reading one entity's history is a sanctioned projection over
 `_substrat_outbox` — rule 3 bans *writes* to the spine, not reads — and why `readTimeline`
 and `readHistory` exist rather than everyone writing their own `SELECT`.
+
+The same events also leave for a longer-lived store. The sweep drawn above ships each scope's
+unshipped events to the platform's Tier-2 event lake, where history across scopes and over
+long periods can be queried, and marks each one shipped only after the lake has confirmed it.
+A failure in between sends the same events again, which the event `id` makes harmless; marking
+first would risk a gap nothing could detect. Shipping removes nothing from the scope — the
+outbox still serves consumers, entity history, and each entity's version.
 
 ---
 

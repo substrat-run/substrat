@@ -28,14 +28,19 @@ Vocabulary, roles, pricing, screens, workflow, the shape of the API its own app 
 vertical composes engines the way an application composes libraries, except the library's
 invariants are enforced from below rather than trusted.
 
-The repo carries nine demo verticals, and two are the reference implementations because
-they are different shapes:
+The repo carries eight demo verticals. Two of them are the reference implementations. They
+answer different questions, and they are references *because they are used*. A demo nobody
+runs rots, however complete it looks.
 
-- **`demos/callout`** — an engine-composing workflow: a vertical that orchestrates the
-  work-order engine inside its own operations.
-- **`demos/todo`** — a record app with user-initiated sharing and **no engine at all**. Not
-  every vertical needs one, and pretending otherwise leads to engines that exist to be
-  composed rather than to hold an invariant.
+- **`demos/todo`: the shape.** A record app built forward from its declared model, with
+  per-list sharing by email, revoke, and a React app that tells a 403 from an empty list. It
+  has **no engine at all**. Not every vertical needs one, and pretending otherwise leads to
+  engines that exist to be composed rather than to hold an invariant. It is what a scaffolded
+  project's docs point at.
+- **`demos/ticket0`: a deployed vertical.** A support desk that runs in production. It composes
+  the metering engine by call, runs sandbox-clean on the hosted runtime, sends and receives mail
+  through a relay, answers with a model around its operations (chapter 4), and ships through a
+  CI push. It is the one to read for how a real vertical meets the platform.
 
 ## Star topology: engines never call each other
 
@@ -66,7 +71,7 @@ bug report about the engine, not a fork to maintain.
 
 An engine is composed in one of two modes, and which one it is determines its whole shape.
 
-### By call (work orders, protocols, booking)
+### By call (work orders, protocols, booking, metering)
 
 Operations are thin: the permission check, plus one exported in-scope function. All the
 logic lives in composable exports, so a vertical wraps them inside its **own** transaction:

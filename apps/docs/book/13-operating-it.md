@@ -1,9 +1,9 @@
-# 10. Operating it
+# 13. Operating it
 
-The last nine chapters were how the system works. This one is how it behaves when something
-is wrong, which is a different subject.
+The last twelve chapters were how the system works and what it records. This one is how it
+behaves when something is wrong, which is a different subject.
 
-## Four surfaces
+## Four surfaces, and three more
 
 The pieces that turn "a vertical" into "a vertical serving a customer at a hostname" are four
 separate deployments.
@@ -22,6 +22,23 @@ called a "portal", which is reserved for a *vertical's* own end-user surface.
 
 The Dashboard is itself a Substrat vertical, which is the useful kind of dogfooding: the
 tenancy model either works for the platform's own product or it does not.
+
+Its shape is worth knowing before you go looking for something in it. Each app has **four
+tabs**: *Overview*, *Deployments*, *Data* and *Settings*. Anything about more than one app is a
+team page in the left menu, narrowed with an app filter: *Observability* (chapter 10) and
+*Audit* (chapter 11) sit under **Operate**, next to Domains, Integrations, Team and Billing under
+**Configure**. The rule is deliberate: a fifth tab on the app is almost always a filter on a team
+page instead.
+
+Three more deployments sit beside those four:
+
+- **The builder studio**: where a vertical is written with an agent, against its own workspace
+  and snapshots.
+- **The egress worker**: the hop every outbound call from a dispatched vertical takes, which
+  enforces the version's declared allowlist (chapter 8).
+- **The hosted issuer**: an OIDC provider that verticals can sign users in against. It runs as
+  a vertical, with its own admin console and sign-in log, rather than as a special platform
+  component, because authentication is a seam and not something the kernel owns (chapter 6).
 
 ## The lifecycle states, operationally
 
@@ -96,28 +113,26 @@ secrets, or the key any sealed credential was sealed with.
 
 ## Where to look when something is wrong
 
-Four logs, and they witness different things. Reaching for the wrong one is the usual reason
-an investigation stalls.
+Chapters 10 and 11 describe the instruments. What matters when something is wrong is which one
+witnessed the thing you are asking about, because reaching for the wrong one is the usual
+reason an investigation stalls:
 
-**The outbox** (`_substrat_outbox`, per scope) records every **allowed mutation**, with the
-full envelope. This is the audit trail and the timeline. Read it through `readTimeline` /
-`readHistory` rather than hand-rolled SQL, because those decode the envelope and — importantly
-— distinguish a `null` that is a *fact* from one that is missing data.
+| Question | Instrument | In the dashboard |
+|---|---|---|
+| Is it slow, or failing, for everyone? | router traffic (sampled) | Observability → Traffic, Health |
+| What did this request do, and what did it print? | invocation log | Observability → Logs |
+| What happened to this record, and who did it? | the outbox, via `readHistory` | the app's Data tab → a record |
+| Why does this event exist? | `causedBy` | a record's event → *Why?* |
+| Did the consumer ever handle it? | the delivery journal | a record's event → *What did it do?* |
+| Everything this request changed | `invocation_id` | a record's event → *Same call* |
+| Has this job stopped running? | sweep runs, freshness | Observability → Schedules |
+| Why was this person refused? | the denial log | Observability → Flow (per-operation health) |
+| Who changed this app's configuration? | the admin log | Audit |
+| Who looked at this tenant's data? | the access log | no view yet: it drains to R2 (chapter 11) |
+| Did the platform act on what the app asked for? | the platform-request journal | Settings → Integrations |
 
-**The delivery journal** (`_substrat_deliveries`, per scope) records what happened to each
-event per consumer. A row with an `error` is a dead letter. This is where "the invoice never
-appeared" is actually answered.
-
-**The denial log** (`_substrat_denials`, per scope) records refusals — the one moment where an
-actor's intent and the permission model visibly disagree. No other log witnesses it. When a
-user says "it says I can't", this names the permission key.
-
-**The admin log** (control plane, append-only) records directory changes: who provisioned,
-suspended, granted, admitted, reaped. It is the compliance witness and is **never swept**, even
-when a tenant is reaped.
-
-Add to those the sweep reports from chapter 9 — `retrying`, `deadLettered`, and per-unit
-`errors` — which are the signal that background work is degrading rather than failing loudly.
+Add to those the sweep reports from chapter 9 (`retrying`, `deadLettered`, and per-unit
+`errors`), which are the signal that background work is degrading rather than failing loudly.
 
 ## A short diagnostic index
 
@@ -130,10 +145,22 @@ the version was promoted, and whether the scope is bound to it.
 scope. It fails closed and serves nothing by design. The migration-reconciliation phase records
 why; the scope's `migrationFailure` carries the version and the error.
 
-**"The event fired but nothing happened."** Check the delivery journal. If the consumer is
+**"The event fired but nothing happened."** Open the event's *What did it do?* tree, which is
+the delivery journal. If the consumer is
 in-scope, remember from chapter 5 that it **does not retry** — one failure is terminal for that
 pair, and waiting will not fix it. If it is an executor, check `next_attempt_at`: it may be
 backing off, or already dead-lettered at `maxAttempts`.
+
+**"The app asked for something and it took a quarter of an hour."** The platform intent waited
+for the sweep. The vertical is not flagging its responses, so the router never kicked a drain.
+Wire `onPlatformRequests` when minting the stub (chapter 5). If the intent never settles at
+all, find it in the platform-request journal (Settings → Integrations for a connector's
+intents). A handler that keeps throwing leaves the intent pending for about a day and then fails
+it, with the last error kept.
+
+**"Observability shows no traffic for an app that is clearly in use."** Either the version
+predates the invocation log, or the log is mounted below some routes, or it has no
+`routerSecret` and verifies nothing. All three produce silence rather than an error (chapter 10).
 
 **"Recurring work stopped."** Check the scope sweeper's roster. The alarm **lapses on an empty
 roster**, and the roster is maintained by `/internal/provision` and `/internal/delete-scope`
@@ -165,6 +192,17 @@ edges.
 - **Cross-scope reads are a fold, not a join.** Fleet-wide questions cost a read per scope.
   Projections and per-tenant D1 are the current answers, and the many-scope fan-out cost of
   permission projection for a very large tenant is an explicit open question.
+- **The lake has no query gateway, no tenant scoping and no erasure.** Tier 2 is filled and
+  queried by operators. A subject erased in Tier 1 still has payloads in Tier 2 until lake
+  erasure is built (chapter 11).
+- **Storage is not metered, and quotas are not enforced.** The platform counts installations,
+  engine licences and model calls. It cannot yet say how many bytes a tenant holds, and an
+  entitlement's quota is information a module may act on, not a limit the platform applies
+  (chapter 12).
+- **Denials and deliveries carry no invocation id**, so "same call" reaches a request's events
+  but not its refusals.
+- **Executors hold the scope's turn on the local SQLite adapter** and not on Durable Objects.
+  The two hosts differ only under a slow connector, but they do differ.
 - **Grant expiry transitions and facet recency are contract-tested on SQLite only**, because
   the DO host takes no clock. Both hosts run the same SQL; only one can be tested across the
   passage of time.
@@ -181,6 +219,8 @@ You now have the shape. The reference is the right tool from here:
 - Choosing an engine — [What is an engine?](/engines/) and the five pages each one carries.
 - Shipping — [Deploying a vertical](/guide/deploying) and [Environments &
   previews](/guide/environments-and-previews).
+- Billing your own customers — the [metering](/engines/metering/) and
+  [invoicing](/engines/invoicing/) engines.
 - Operating — the four [platform surfaces](/platform/).
 
 And if you are an agent rather than a person: [Agent rules](/guide/agent-rules) is the page to

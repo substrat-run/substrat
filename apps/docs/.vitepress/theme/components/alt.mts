@@ -14,6 +14,7 @@
  * forgotten — see `ALT_NOT_NEEDED` in tools/llms-index.mts.
  */
 import { alt as permissionPipeline } from './PermissionPipeline.content.mjs';
+import { alt as scopeDrain } from './ScopeDrain.content.mjs';
 import { alt as instanceResolution } from './InstanceResolution.content.mjs';
 import { alt as tenancyTree } from './TenancyTree.content.mjs';
 import { alt as readPaths } from './ReadPaths.content.mjs';
@@ -32,6 +33,7 @@ export const COMPONENT_ALT: Record<string, (props: Record<string, string>) => st
   TenancyTree: tenancyTree,
   InstanceResolution: instanceResolution,
   PermissionPipeline: permissionPipeline,
+  ScopeDrain: scopeDrain,
   LayerStack: layerStack,
   RuntimeTopology: runtimeTopology,
   ScopeTopology: scopeTopology,
