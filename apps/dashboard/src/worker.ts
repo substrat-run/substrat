@@ -45,7 +45,7 @@ import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp,
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
-import { emailRefusedAsIdentifier, type EmailIdentifierEnv } from './email-identifier.js';
+import { identifyingEmailOf, type EmailIdentifierEnv } from './email-identifier.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
@@ -580,9 +580,11 @@ async function resolveAccount(
   const node = await resolveNode(host, tenants, user.id, selectedTeamId);
   // Pre-roster teams (#191) get their empty roster seeded here — the email is only
   // in hand at this layer (the session), which is why the heal lives on this path.
-  // An address the gate refuses (#1359) seeds nothing, so the heal runs again once the
-  // issuer vouches for it rather than writing an unverified owner row for good.
-  if (node && !emailRefusedAsIdentifier(env, user)) await ensureRosterSeeded(host, STAFF, node, user.email ?? '');
+  // A session with no usable address — none at all, or one the gate refuses (#1359) —
+  // seeds nothing, so the heal runs again once there is one rather than writing an
+  // empty or unverified owner row for good.
+  const ownerEmail = identifyingEmailOf(env, user);
+  if (node && ownerEmail) await ensureRosterSeeded(host, STAFF, node, ownerEmail);
   return node;
 }
 
@@ -839,8 +841,9 @@ app.get('/api/me', async (c) => {
  * The claim is the session's own email and no other. A session whose OIDC identity
  * carries no email cannot be vouched for at all, so it gets `{ desk: null }` — the
  * same answer as an unconfigured deployment, because from the page's side it is the
- * same fact: nothing to embed. So does an address `OIDC_REQUIRE_EMAIL_VERIFIED` refuses
- * (#1359): the signature would vouch for a person the issuer did not.
+ * same fact: nothing to embed. So does a session whose address the
+ * `OIDC_REQUIRE_EMAIL_VERIFIED` gate refuses (#1359): the signature would vouch for a
+ * person the issuer did not.
  */
 app.get('/api/support/identity', async (c) => {
   const desk = c.env.SUPPORT_DESK_ORIGIN;
@@ -849,9 +852,10 @@ app.get('/api/support/identity', async (c) => {
   if (!desk || !secret) return c.json({ desk: null });
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   if (!user) return c.json({ error: 'unauthorized' }, 401);
-  if (!user.email || emailRefusedAsIdentifier(c.env, user)) return c.json({ desk: null });
+  const email = identifyingEmailOf(c.env, user);
+  if (!email) return c.json({ desk: null });
   c.header('cache-control', 'no-store');
-  return c.json({ desk, user: user.email, signature: await signVisitorIdentity(secret, user.email) });
+  return c.json({ desk, user: email, signature: await signVisitorIdentity(secret, email) });
 });
 
 /**
@@ -1218,9 +1222,11 @@ app.get('/api/invites/preview', async (c) => {
 app.post('/api/invites/accept', async (c) => {
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   if (!user) throw new HTTPException(401, { message: 'unauthorized' });
-  // The invite is addressed to an email, so the address IS the identity being claimed —
-  // with the gate on (#1359) only one the issuer verified may claim it.
-  if (emailRefusedAsIdentifier(c.env, user)) {
+  // The invite is addressed to an email, so the address IS the identity being claimed. A
+  // session with none cannot claim it, and with the gate on (#1359) neither can one the
+  // issuer did not verify.
+  const email = identifyingEmailOf(c.env, user);
+  if (!email) {
     throw new HTTPException(403, {
       message: 'this invite needs a verified email address — verify it with your sign-in provider, then open the link again',
     });
@@ -1244,7 +1250,7 @@ app.post('/api/invites/accept', async (c) => {
   // The engine verifies the hash of the recipient's VERIFIED email; a mismatch throws.
   const { roleKey } = (await scope.invoke('dashboard/accept-invite', {
     invitationId: claim.invitationId,
-    identifier: user.email ?? '',
+    identifier: email,
   })) as { roleKey: string };
 
   // Effect access: the role at the tenant node (§5.1 was enforced when it was sent),

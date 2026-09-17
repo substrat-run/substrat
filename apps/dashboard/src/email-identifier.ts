@@ -16,17 +16,20 @@ export interface EmailIdentifierEnv {
 }
 
 /**
- * Whether the gate refuses this session's address as an identifier. With the gate on it
- * fails closed: `false` and an absent claim are both refused. Off, nothing is refused, so
- * every call site keeps exactly the behaviour it had before the gate existed.
+ * The address a session may be identified by, or null — the one place the dashboard
+ * decides it, mirroring `staffIdentityOf`. No address is always null. With the gate on it
+ * fails closed: `false` and an absent claim both resolve to null. Off, any address the
+ * session carries is returned, as before the gate existed.
  *
  * Only where an address BECOMES an identity — accepting an invite, seeding a roster owner,
  * signing a support-desk identity. Authentication itself stays ungated: a session with an
  * unverified address is still a valid sign-in, it just may not be someone by address.
  */
-export function emailRefusedAsIdentifier(
+export function identifyingEmailOf(
   env: EmailIdentifierEnv,
-  user: Pick<SessionUser, 'emailVerified'>,
-): boolean {
-  return env.OIDC_REQUIRE_EMAIL_VERIFIED === 'true' && user.emailVerified !== true;
+  user: Pick<SessionUser, 'email' | 'emailVerified'>,
+): string | null {
+  if (!user.email) return null;
+  if (env.OIDC_REQUIRE_EMAIL_VERIFIED === 'true' && user.emailVerified !== true) return null;
+  return user.email;
 }

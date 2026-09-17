@@ -83,9 +83,10 @@
 	//   wrangler secret put OIDC_CLIENT_ID
 	//   wrangler secret put OIDC_CLIENT_SECRET
 	//   wrangler secret put SESSION_SECRET       # random 32+ bytes; signs the cookies
-	// OIDC_REQUIRE_EMAIL_VERIFIED (#1359, opt-in, off unless exactly "true"): accepting an
-	// invite, seeding a legacy team's owner row and signing the support-desk identity then
-	// trust the session's address only when the issuer asserted `email_verified: true`.
+	// OIDC_REQUIRE_EMAIL_VERIFIED (#1359, opt-in, off unless exactly "true"): when it is on,
+	// three code paths trust the session's address only if the issuer asserted
+	// `email_verified: true` — accepting an invite, seeding a legacy team's owner row, and
+	// signing the support-desk identity.
 	// The control plane's staff roster reads the same variable. Turn it on once the issuer
 	// is known to send the claim — against one that omits it, every invite accept is
 	// refused. As a var:
