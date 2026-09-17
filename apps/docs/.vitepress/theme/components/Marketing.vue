@@ -25,6 +25,10 @@
  */
 defineProps<{ desk: string }>();
 
+// The ebook's own cover (the EPUB's cover.png), imported so Vite fingerprints it
+// rather than the page naming a path the build does not publish.
+import cover from '../../../assets/book-cover.png';
+
 // The eight demo verticals, in the order they make the argument. `kernel` marks the
 // four whose CORE domain no engine matched: Manyfold, Todo and Tock compose nothing at
 // all, and Meridian composes `protocol` only for onboarding, at the edge of a domain —
@@ -224,6 +228,15 @@ const stack = [
 ];
 
 const repo = 'https://github.com/substrat-run/substrat';
+
+// What the book answers, taken from "What you will know at the end" in book/index.md —
+// four of its nine, not the chapter list, so a renamed chapter cannot leave this stale.
+const bookTakeaways = [
+  ['The path of one request', 'from hostname to SQL and back, with every hop named'],
+  ['The life of one event', 'from ctx.emit to a consumer, and which failures retry'],
+  ['What a push does', 'to your data across a version change'],
+  ['What breaks in production', 'where you look, and what the lifecycle states mean'],
+];
 </script>
 
 <template>
@@ -436,6 +449,46 @@ const repo = 'https://github.com/substrat-run/substrat';
         <a href="/guide/comparisons">How Substrat compares</a>
         <a href="/guide/what-substrat-lacks">What Substrat doesn’t have (yet)</a>
         <a href="/guide/faq">FAQ</a>
+      </div>
+    </section>
+
+    <!--
+      The ebook. Offered here rather than in the docs' nav: it is the one thing on the
+      site meant to be read front to back, which makes it something to hand a reader who
+      has just been persuaded, not a section to navigate past while looking something up.
+      The EPUB link is a plain download (the router leaves non-.html paths alone); the
+      printable page is a .html the router would swallow, hence target="_self" (#1420).
+    -->
+    <section class="wrap section">
+      <div class="ebook">
+        <a class="ebook-cover" href="/book.epub" download aria-label="Download the ebook (EPUB)">
+          <img :src="cover" alt="Cover of Substrat, end to end — twelve closed boxes, one of them lit"
+            width="1600" height="2400" loading="lazy" decoding="async" />
+        </a>
+        <div class="ebook-copy">
+          <div class="kicker">The ebook · free</div>
+          <h2>Get the book: <em>Substrat, end to end.</em></h2>
+          <p class="muted lede-narrow">
+            The docs answer a question and let you go. The book is the other thing: thirteen
+            chapters, read front to back, on how the pieces actually
+            join. It assumes nothing except that you have written server software before.
+          </p>
+          <ul class="ebook-list">
+            <li v-for="[title, desc] in bookTakeaways" :key="title">
+              <span class="c">→</span>
+              <span><b>{{ title }}</b> <span class="muted">{{ desc }}</span></span>
+            </li>
+          </ul>
+          <div class="cta-row">
+            <a class="btn btn-primary" href="/book.epub" download>Download the ebook</a>
+            <a class="btn btn-secondary" href="/book/">Read it online</a>
+          </div>
+          <p class="mono-xs ebook-formats">
+            EPUB for Apple Books, Kobo and any e-reader ·
+            also as <a href="/book/read.html" target="_self">one printable page</a>
+            or <a href="/book.txt">plain text</a>
+          </p>
+        </div>
       </div>
     </section>
 
@@ -1245,6 +1298,87 @@ h2 {
   border-bottom-color: var(--text-primary);
 }
 
+/* The ebook: the real cover, stood up like a book, beside the offer. */
+.ebook {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 56px;
+  align-items: center;
+}
+.ebook-cover {
+  position: relative;
+  display: block;
+  border-radius: 3px 8px 8px 3px;
+  overflow: hidden;
+  box-shadow: var(--shadow-md), 0 24px 48px -16px rgba(9, 11, 16, 0.45);
+  transform: perspective(1200px) rotateY(-9deg);
+  transition: transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+/* The spine: a lit edge and a fold, so a flat PNG reads as a bound book. */
+.ebook-cover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.14) 0, rgba(255, 255, 255, 0.04) 3%,
+    rgba(0, 0, 0, 0.35) 4.5%, rgba(0, 0, 0, 0) 9%);
+  pointer-events: none;
+}
+.ebook-cover:hover {
+  transform: perspective(1200px) rotateY(-3deg) translateY(-4px);
+  box-shadow: var(--shadow-md), 0 32px 56px -16px rgba(9, 11, 16, 0.5);
+}
+/* The cover is near-black in both themes, so on the dark page it needs an edge. */
+.ebook-cover::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border-default);
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 1;
+}
+.ebook-cover img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.ebook-copy h2 em {
+  font-style: normal;
+  color: var(--text-secondary);
+}
+.ebook-list {
+  list-style: none;
+  margin: 22px 0 26px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 28px;
+}
+.ebook-list li {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--lh-sm);
+}
+.ebook-list .c {
+  color: var(--text-brand);
+}
+.ebook-list b {
+  font-weight: var(--weight-semibold);
+  display: block;
+}
+.ebook-formats {
+  margin: 16px 0 0;
+}
+.ebook-formats a {
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 /* CTA */
 .cta {
   background: var(--gray-950);
@@ -1290,6 +1424,11 @@ h2 {
   .split,
   .slayer {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .ebook {
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 32px;
+    align-items: start;
   }
   .lrow {
     grid-template-columns: 28px minmax(0, 1fr);
@@ -1338,6 +1477,14 @@ h2 {
   }
   .section {
     padding: 56px 24px;
+  }
+  .ebook,
+  .ebook-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ebook-cover {
+    width: 160px;
+    transform: none;
   }
 }
 </style>

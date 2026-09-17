@@ -5,7 +5,7 @@ import { buildArtifacts, emitInto } from './llms.mjs';
 import { bookArtifacts } from './book.mjs';
 import { epubArtifacts } from './epub.mjs';
 import { emitHeaders } from './headers.mjs';
-import { changelogSidebar, guideSidebar } from './sidebar.mjs';
+import { bookSidebar, changelogSidebar, guideSidebar } from './sidebar.mjs';
 
 /**
  * The ticket0 support desk every page embeds — named once, because it is read
@@ -94,9 +94,6 @@ export default withMermaid(defineConfig({
 
   themeConfig: {
     nav: [
-      // First in the nav for the same reason it is first in the sidebar: it is the
-      // only section with a reading order, and it is what a newcomer wants.
-      { text: 'Book', link: '/book/', activeMatch: '/book/' },
       { text: 'Guide', link: '/guide/what-is-substrat', activeMatch: '/guide/' },
       { text: 'Concepts', link: '/concepts/tenancy', activeMatch: '/concepts/' },
       { text: 'Engines', link: '/engines/', activeMatch: '/engines/' },
@@ -111,7 +108,10 @@ export default withMermaid(defineConfig({
     ],
 
     sidebar: {
-      '/book/': guideSidebar(),
+      // The book is not in the nav or the docs sidebar: the landing page offers it as
+      // the ebook. Inside it, the sidebar is its chapters alone, which is also what
+      // gives every chapter the Next link its reading order depends on.
+      '/book/': bookSidebar(),
       '/guide/': guideSidebar(),
       '/concepts/': guideSidebar(),
       '/engines/': guideSidebar(),
