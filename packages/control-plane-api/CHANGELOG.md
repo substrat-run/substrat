@@ -1,5 +1,53 @@
 # @substrat-run/control-plane-api
 
+## 0.113.0
+
+### Minor Changes
+
+- c146761: Any event in an app's history can now show **the rest of the request it came from**: **Same call** lists everything that request recorded, in order.
+
+  **Why?** and **What did it do?** both follow cause, so neither can show two things one request did side by side — placing an order and reserving its stock, say, when neither caused the other. **Same call** can, and it marks which entries were raised by a handler reacting to another event in the same request.
+
+  It shows only what the request recorded. A read, or a check that changed nothing, leaves no record, so it isn't listed, and the view says so rather than letting a short list pass for a quiet request. A request that recorded more than one read shows says that it did. Events from seeds and internal calls, and events from before requests were recorded, carry no request, and the button says why it is unavailable instead of opening onto nothing.
+
+- 2fc7187: A dropped Tier-2 lake table can now be rebuilt without losing history.
+
+  The drain stamps `drained_at` on every outbox row it ships, and until now the stamp was one-way. That mattered as soon as a lake table had to be dropped: a Pipelines stream cannot change its schema in place and a sink refuses to write to an existing table, so adding a column means a new table. Dropping the old one did not clear the stamps, so every event already shipped became history the drain would never offer again, and the new table started with a silent hole behind it.
+
+  `HostAdmin.redrainEvents(actor, tenantId, scopeId, { drainedBefore })` clears the stamp on rows stamped strictly before an instant, so the ordinary drain ships them again. The instant is required and is the whole safety property: clearing every stamp would also reopen rows already shipped to the rebuilt table and write them there twice. Strictly before, because a row stamped at exactly that instant went to the new table. An instant in the future is refused outright, wherever the call comes from: it would clear the stamps on rows the drain shipped _after_ the rebuild, which is the double-write the required instant exists to prevent.
+
+  It is delegated to the vertical's deployment like the stamp it undoes, and exposed on the control plane as a staff/service-only route. Each call reopens a bounded batch rather than the whole window at once — the outbox is never pruned, so on a long-lived scope "every stamped row before an instant" is unbounded work, and one oversized attempt would fail and keep failing, leaving the scope that most needed reopening unable to finish. The call reports how many rows it reopened, and the caller repeats until that is zero; `pnpm lake:redrain` does this per scope, and the route says whether more remain so a single request is never mistaken for a finished window.
+
+  The audit trail is written in two parts, because the reopen and the record of it are separate writes. An **intent** row goes down before anything is reopened, naming the window: if the process dies in between, the attempt is still on the record — a retry would find the stamps already cleared, reopen nothing, and otherwise have had nothing to report. An **outcome** row follows only when rows actually moved, so re-running over a window already reopened still leaves no receipt claiming work it did not do. A second egress of a tenant's payloads is exactly what the audit log must not lose track of.
+
+  `scripts/lake-redrain.mjs` (`pnpm lake:redrain`) walks every active scope with it and is safe to re-run.
+
+  `scripts/lake-provision.mjs` now authenticates with its own `CF_LAKE_ADMIN_TOKEN` rather than `CF_API_TOKEN`. `CF_API_TOKEN` is pushed to the running control plane as a worker secret, so widening it would hand deletion of the audit lake to anything that compromises the plane. After creating a stream it prints the new id directly and the full rebuild sequence including the re-send, and it no longer prints "has no snapshots — nothing committed" directly below a warning that snapshots are being discarded.
+
+- 450f971: The Tier-2 sink measures UTF-8 bytes, and ships each row's size so per-tenant volume is answerable.
+
+  `JSON.stringify(row).length` counts UTF-16 code units, not bytes. Ordinary Swedish text measures about 13% under its real UTF-8 size and a three-byte character measures at a third of it — while Cloudflare's 5 MB ingestion ceiling is in bytes. Measuring a byte budget with a code-unit ruler means a batch can pass the check locally and be rejected remotely, and a rejected batch is a scope that never drains: the next pass rebuilds exactly the same one. `TextEncoder` is the web-standard UTF-8 encoder and works identically in Workers and Node.
+
+  The same ruler now produces a `bytes` column. Every tenant's events share one parquet file — a Data Catalog sink cannot partition — so R2 reports no per-tenant storage, and summing that column per tenant is the only honest per-tenant measure the lake can offer. Sum it over deduplicated rows: delivery to the lake is at-least-once, so a batch whose later chunk failed re-sends the part that already landed, and totalling those rows as they sit would bill a tenant for the platform's own retry. The lake is keyed by event id, which is exactly what makes that collapsible — the sink's documentation carries the query. It counts the row **as shipped**, not as stored: parquet is columnar and zstd-compressed, and a tenant's share of a shared compressed file is not attributable to them anyway. Billing on logical volume is the more defensible basis for exactly that reason — it does not move when compaction runs, or when an unrelated tenant's data happens to compress well.
+
+  The column measures the event's data and excludes itself, because the alternative is a fixpoint: writing the number changes the length that produced it.
+
+  `tools/lake-schema-emit.mjs` gains a third category for this. The two it had are about which outbox columns travel; `SINK_COMPUTED` is for facts about the shipment that only the shipper knows, appended after the derived fields and exempt from the drift check — since the whole point is that the outbox does not have them.
+
+  `scripts/lake-provision.mjs` gains `--discard-history=<account>/<bucket>/<namespace>.<table>`, the deliberate override of the snapshot gate. The gate exists because dropping a table with snapshots destroys exact history, but there is a legitimate case — a lake days old whose schema needs a column — and Cloudflare offers no other route, since a stream's schema cannot be updated and a sink refuses to write to an existing table. It takes the lake's own identity — account, bucket and table — as its value rather than being a bare `--force`: it cannot be typed from muscle memory, cannot be reused against a different account (the table name alone is the same string everywhere, so it would have confirmed nothing about _which_ lake was being dropped), and a reviewer reading it in a runbook sees exactly what was destroyed. An unreadable snapshot count still refuses — it accepts a known loss, not an unknown one.
+
+  The provisioning output now also spells out the three steps a new stream id requires, because a stale id means the control plane ships to a stream that no longer exists, silently.
+
+### Patch Changes
+
+- 876b958: The tenant log view labels a 501 as `capability absent` at `info` level instead of rendering it as a red error row, and an error read no longer selects 501 invocations. A 501 is a vertical saying a version does not declare a capability, which the failure record already treats as a refusal rather than a failure (#1345).
+- Updated dependencies [c146761]
+- Updated dependencies [c3c92e9]
+- Updated dependencies [2fc7187]
+- Updated dependencies [7e6f925]
+  - @substrat-run/contracts@0.113.0
+  - @substrat-run/kernel@0.113.0
+
 ## 0.112.0
 
 ### Minor Changes
