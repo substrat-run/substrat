@@ -61,11 +61,14 @@ import {
   eventFacetInput,
   eventCauseInput,
   eventEffectsInput,
+  invocationEventsInput,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventCauseInput,
   type EventEffectsInput,
   type EffectsTree,
+  type InvocationEventsInput,
+  type InvocationEvents,
   type CauseChain,
   type EventFacetResult,
   type HistoryEntry,
@@ -138,6 +141,7 @@ export interface VerticalScopeHost {
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
   eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree>;
+  invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -461,6 +465,20 @@ export function mountPlatformSurface<Env extends object>(
         eventEffectsInput.parse({
           eventId: c.req.query('eventId'),
           maxNodes: c.req.query('maxNodes') ? Number(c.req.query('maxNodes')) : undefined,
+        }),
+      ),
+    ),
+  );
+
+  // #1237: everything one call emitted, for a scope THIS vertical holds — the siblings
+  // neither walk reaches. Payloads cross, so the id and the cap are parsed at this door.
+  app.get('/internal/invocation', async (c) =>
+    c.json(
+      await deps.hostFor(c.env).invocationEventsLocal(
+        scopeIdOf.parse(c.req.query('scopeId')),
+        invocationEventsInput.parse({
+          invocationId: c.req.query('invocationId'),
+          limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
         }),
       ),
     ),

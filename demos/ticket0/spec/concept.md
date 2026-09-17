@@ -185,7 +185,8 @@ Honest, and they are the schedule risk:
    ticket0's receiver (#934, `harness/inbound.ts`) follows it as a route on the desk's own
    worker: Svix signature and a five-minute replay window, re-read by id, then
    `ingest-message` as the `relay` principal. It exists but is not live-verified against
-   a real Resend account, and thread stitching is not in it yet.
+   a real Resend account. Replies thread on `In-Reply-To` inside `ingest-message`, and
+   only when the sender is the conversation's own contact.
 
 ### Ours — and it is most of the app
 

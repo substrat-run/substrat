@@ -106,10 +106,13 @@ resolved `PrincipalId`.
 ## Keeping it alive
 
 This example is only worth having if it still installs. The pins in
-`package.json` are literal semver ranges, `catalog:` does not reach here, and
-nothing in CI resolves them — so they go stale silently, and a caret on a `0.x`
-package pins the *minor*, which means a stale pin installs an older release
-rather than failing. Re-check it by hand after a release:
+`package.json` are literal semver ranges, `catalog:` does not reach here, and no
+PR gate resolves them. The `external-vertical` job in
+[`.github/workflows/scaffold.yml`](../../.github/workflows/scaffold.yml) runs the
+three commands below against the registry after every release and weekly, so a
+pin that no longer installs or compiles goes red there. It does not catch a pin
+that is merely *behind*: a caret on a `0.x` package pins the *minor*, so a stale
+pin installs an older release rather than failing. To check by hand:
 
 ```sh
 npm install                                # must not error on a peer

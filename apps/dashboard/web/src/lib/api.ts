@@ -1,5 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
-import type { CauseChain, EffectsTree, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { CauseChain, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -421,7 +421,7 @@ export interface AppliedMigration {
  * null = nobody was impersonating, the ordinary case. See `lib/history.ts`, which
  * is where each one is turned into words.
  */
-export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects, EventDelivery, EffectsTerminal } from '@substrat-run/contracts';
+export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects, EventDelivery, EffectsTerminal, InvocationEvents } from '@substrat-run/contracts';
 
 /**
  * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
@@ -1729,6 +1729,12 @@ export const api = {
   appEventEffects: (scopeId: string, eventId: string) =>
     call<EffectsTree>(
       `/apps/${encodeURIComponent(scopeId)}/effects?eventId=${encodeURIComponent(eventId)}`,
+    ),
+
+  /** Everything one call emitted (#1237), oldest first — siblings included. */
+  appInvocationEvents: (scopeId: string, invocationId: string) =>
+    call<InvocationEvents>(
+      `/apps/${encodeURIComponent(scopeId)}/invocation?invocationId=${encodeURIComponent(invocationId)}`,
     ),
 
   /** Why one event exists (#1237) — its causal chain, newest first. */

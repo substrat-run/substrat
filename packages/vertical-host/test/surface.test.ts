@@ -50,6 +50,8 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
       note('eventCauseLocal', { chain: [], terminal: JSON.stringify(input) }) as never,
     eventEffectsLocal: async (_s: unknown, input?: unknown) =>
       note('eventEffectsLocal', { root: null, terminal: JSON.stringify(input), count: 0 }) as never,
+    invocationEventsLocal: async (_s: unknown, input?: unknown) =>
+      note('invocationEventsLocal', { events: [input], truncated: false }) as never,
     rewindScopeLocal: async () => note('rewindScopeLocal', { rewindingTo: 'bm' }),
     introspectScopeTables: async () => note('introspectScopeTables', []),
     introspectScopeTable: async () => note('introspectScopeTable', { rows: [] }),
@@ -228,6 +230,8 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     ],
     [`/internal/facets?scopeId=${SCOPE}&groupBy=type`, { headers: authed() }],
     [`/internal/cause?scopeId=${SCOPE}&eventId=${EVENT}`, { headers: authed() }],
+    [`/internal/effects?scopeId=${SCOPE}&eventId=${EVENT}`, { headers: authed() }],
+    [`/internal/invocation?scopeId=${SCOPE}&invocationId=${EVENT}`, { headers: authed() }],
     ['/internal/migrations?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/undrained-events?scopeId=' + SCOPE, { headers: authed() }],
     ['/internal/denials?scopeId=' + SCOPE, { headers: authed() }],
@@ -463,6 +467,37 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
       expect(res.status, `maxDepth=${depth}`).toBe(400);
     }
     expect(host.calls).not.toContain('eventCauseLocal');
+  });
+
+  // #1237: one call's events. Payloads cross here too, so the id and the cap are parsed at
+  // this door — and a missing id is refused, because a read matching nothing-in-particular
+  // is the one that would gather every unattributed event under one imaginary call.
+  it('passes the invocation and the cap through to the host', async () => {
+    const host = fakeHost();
+    const res = await appWith(host).request(
+      `/internal/invocation?scopeId=${SCOPE}&invocationId=${EVENT}&limit=5`,
+      { headers: authed() },
+      ENV,
+    );
+    expect(res.status).toBe(200);
+    // The fake echoes the parsed input: `limit` arrived as a number, not the query's string.
+    expect(await res.json()).toEqual({ events: [{ invocationId: EVENT, limit: 5 }], truncated: false });
+    expect(host.calls).toContain('invocationEventsLocal');
+  });
+
+  it('refuses a malformed invocation input rather than widening it', async () => {
+    const host = fakeHost();
+    const bare = await appWith(host).request(`/internal/invocation?scopeId=${SCOPE}`, { headers: authed() }, ENV);
+    expect(bare.status).toBe(400);
+    for (const limit of ['5000', '0', 'ten']) {
+      const res = await appWith(host).request(
+        `/internal/invocation?scopeId=${SCOPE}&invocationId=${EVENT}&limit=${limit}`,
+        { headers: authed() },
+        ENV,
+      );
+      expect(res.status, `limit=${limit}`).toBe(400);
+    }
+    expect(host.calls).not.toContain('invocationEventsLocal');
   });
 
   it('refuses a malformed history input rather than widening it', async () => {

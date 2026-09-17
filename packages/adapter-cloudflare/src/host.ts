@@ -75,6 +75,8 @@ import {
   delegatedReadRecord,
   type EventEffectsInput,
   type EffectsTree,
+  type InvocationEventsInput,
+  type InvocationEvents,
   type CauseChain,
   type EventFacetInput,
   type EventFacetResult,
@@ -949,6 +951,7 @@ interface ScopeStubRpc {
   facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   eventCause(input: EventCauseInput): Promise<CauseChain>;
   eventEffects(input: EventEffectsInput): Promise<EffectsTree>;
+  invocationEvents(input: InvocationEventsInput): Promise<InvocationEvents>;
   /** Rewind storage to a bookmark (#286's backout) — completes on the DO's restart. */
   rewindToBookmark(bookmark: string, opts?: { force?: boolean }): Promise<{ rewindingTo: string }>;
 }
@@ -1752,6 +1755,11 @@ export class CloudflareScopeHost implements ScopeHost {
   /** What one event set off (#1237) on this host's own scope — the vertical-host read. */
   async eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree> {
     return this.scopeStub(scopeId).eventEffects(input);
+  }
+
+  /** Everything one call emitted (#1237) on this host's own scope — the vertical-host read. */
+  async invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents> {
+    return this.scopeStub(scopeId).invocationEvents(input);
   }
 
   /** One event's causal chain (#1237) on this host's own scope — the vertical-host read. */
@@ -4121,6 +4129,15 @@ export class CloudflareScopeHost implements ScopeHost {
         const tree = await this.scopeStub(scopeId).eventEffects(input);
         await this.recordAccess(actor, 'eventEffects', { tenantId, scopeId }, { eventId: input.eventId }, tree.count);
         return tree;
+      },
+      invocationEvents: async (actor, tenantId, scopeId, input: InvocationEventsInput): Promise<InvocationEvents> => {
+        // K-3 cross-check on the directory BEFORE the scope DO, like every read here.
+        await this.scopeRecordForRead(tenantId, scopeId);
+        const read = await this.scopeStub(scopeId).invocationEvents(input);
+        await this.recordAccess(
+          actor, 'invocationEvents', { tenantId, scopeId }, { invocationId: input.invocationId }, read.events.length,
+        );
+        return read;
       },
       readScopeTable: async (
         actor,

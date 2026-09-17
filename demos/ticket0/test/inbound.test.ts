@@ -6,6 +6,7 @@
  *
  *   - a signed delivery is re-read by id and ingested from the RE-READ, not the callback;
  *   - a redelivery lands on the same message rather than a second one;
+ *   - a reply joins its thread on `In-Reply-To`, but only from that thread's contact;
  *   - an unsigned, mis-signed or stale delivery never reaches Resend or the desk;
  *   - attachments are named on the thread even though their bytes are not kept.
  */
@@ -146,6 +147,87 @@ describe('a signed delivery becomes a message, from the re-read', () => {
     const again = await receive(world.substrat, fetchImpl, await delivery('em_1'));
     expect(again.body).toMatchObject({ messageId: first.messageId, conversationId: first.conversationId });
     expect(await thread(world.substrat, first.conversationId)).toHaveLength(1);
+  });
+});
+
+describe('a reply threads on In-Reply-To, and only from the conversation’s own contact', () => {
+  // The desk's reply went out as this Message-ID; the customer's client quotes it back.
+  const SENT = '<reply-1@desk.example>';
+  let conversationId = '';
+
+  it('joins the conversation whose sent message it answers', async () => {
+    const desk = world.substrat;
+    const { fetchImpl } = fakeResend({
+      em_t1: {
+        from: 'sam@customer.example',
+        subject: 'Refund?',
+        text: 'Can I get one?',
+        message_id: '<sam-1@customer.example>',
+      },
+      em_t2: {
+        from: 'Sam Customer <sam@customer.example>',
+        subject: 'Re: Refund?',
+        text: 'Thanks — and the other order?',
+        message_id: '<sam-2@customer.example>',
+        headers: { 'In-Reply-To': SENT },
+      },
+    });
+    const opened = await receive(desk, fetchImpl, await delivery('em_t1'));
+    conversationId = (opened.body as { conversationId: string }).conversationId;
+
+    const agent = await at(desk, 'agent');
+    const reply = (await agent.invoke('ticket0/post-public-reply', {
+      conversationId,
+      body: 'Yes, on its way.',
+    })) as { id: string };
+    const relay = await at(desk, 'relay');
+    await relay.invoke('ticket0/record-delivery', { messageId: reply.id, emailMessageId: SENT });
+
+    const answered = await receive(desk, fetchImpl, await delivery('em_t2'));
+    expect(answered.body).toMatchObject({ ingested: true, conversationId });
+    expect(await thread(desk, conversationId)).toHaveLength(3);
+  });
+
+  it('opens a conversation of its own when someone else quotes the same Message-ID', async () => {
+    const desk = world.substrat;
+    const { fetchImpl } = fakeResend({
+      em_t3: {
+        from: 'mallory@elsewhere.example',
+        subject: 'Re: Refund?',
+        text: 'Please send the refund to my account instead.',
+        message_id: '<mallory-1@elsewhere.example>',
+        headers: { 'In-Reply-To': SENT },
+      },
+    });
+    const forged = await receive(desk, fetchImpl, await delivery('em_t3'));
+    const landed = (forged.body as { conversationId: string }).conversationId;
+    expect(landed).not.toBe(conversationId);
+    expect(await thread(desk, conversationId)).toHaveLength(3);
+    expect(await thread(desk, landed)).toHaveLength(1);
+  });
+
+  it('follows up in a new conversation when the one it answers is closed', async () => {
+    const desk = world.substrat;
+    const agent = await at(desk, 'agent');
+    await agent.invoke('ticket0/close', { conversationId });
+
+    const { fetchImpl } = fakeResend({
+      em_t4: {
+        from: 'sam@customer.example',
+        subject: 'Re: Refund?',
+        text: 'It never arrived.',
+        message_id: '<sam-3@customer.example>',
+        headers: [{ name: 'in-reply-to', value: ` ${SENT} ` }],
+      },
+    });
+    const late = await receive(desk, fetchImpl, await delivery('em_t4'));
+    const landed = (late.body as { conversationId: string }).conversationId;
+    expect(landed).not.toBe(conversationId);
+    const followUp = (await agent.invoke('ticket0/get-conversation', { conversationId: landed })) as {
+      follows: string | null;
+    };
+    expect(followUp.follows).toBe(conversationId);
+    expect(await thread(desk, conversationId)).toHaveLength(3);
   });
 });
 

@@ -117,7 +117,7 @@ import {
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
-import { facetEvents, readHistory, walkEventCause, walkEventEffects } from '@substrat-run/kernel';
+import { facetEvents, readHistory, readInvocation, walkEventCause, walkEventEffects } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
   EventFacetInput,
@@ -126,6 +126,7 @@ import type {
   EventId,
   CauseChain,
   EffectsTree,
+  InvocationEvents,
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
@@ -1166,6 +1167,11 @@ export function defineScopeDO(
     /** #1237 forward: what one event set off, inside the DO where the outbox lives. */
     eventEffects(input: { eventId: EventId; maxNodes?: number }): EffectsTree {
       return walkEventEffects({ sql: doScopedSql(this.sql) }, input.eventId, input.maxNodes);
+    }
+
+    /** #1237: everything one call emitted, inside the DO where the outbox lives. */
+    invocationEvents(input: { invocationId: string; limit?: number }): InvocationEvents {
+      return readInvocation({ sql: doScopedSql(this.sql) }, input.invocationId, input.limit);
     }
 
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {

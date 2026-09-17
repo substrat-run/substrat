@@ -302,6 +302,7 @@ import {
   walkEventCause,
   walkEventEffects,
   assertRedrainWindow,
+  readInvocation,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -5872,6 +5873,13 @@ export class SqliteScopeHost implements ScopeHost {
         const tree = walkEventEffects({ sql: scopedSql(db) }, input.eventId, input.maxNodes);
         this.recordAccess(actor, 'eventEffects', { tenantId, scopeId }, { eventId: input.eventId }, tree.count);
         return tree;
+      },
+      invocationEvents: async (actor, tenantId, scopeId, input) => {
+        // #1237: one call's events, siblings included — what neither walk reaches.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const read = readInvocation({ sql: scopedSql(db) }, input.invocationId, input.limit);
+        this.recordAccess(actor, 'invocationEvents', { tenantId, scopeId }, { invocationId: input.invocationId }, read.events.length);
+        return read;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeDbFor(tenantId, scopeId);

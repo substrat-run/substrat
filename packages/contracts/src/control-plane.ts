@@ -28,6 +28,7 @@ import {
   type EntityHistoryInput,
   type EventCauseInput,
   type EventEffectsInput,
+  type InvocationEventsInput,
   type EventFacetInput,
   type QueryScopeInput,
   type ReadScopeTableInput,
@@ -413,6 +414,7 @@ export const delegatedReadMethod = z.enum([
   'facetEvents',
   'eventCause',
   'eventEffects',
+  'invocationEvents',
 ]);
 export type DelegatedReadMethod = z.infer<typeof delegatedReadMethod>;
 
@@ -427,6 +429,7 @@ export interface DelegatedReadInput {
   facetEvents: EventFacetInput;
   eventCause: EventCauseInput;
   eventEffects: EventEffectsInput;
+  invocationEvents: InvocationEventsInput;
 }
 
 /**
@@ -453,6 +456,7 @@ export const delegatedReadParams: {
   facetEvents: (i) => i,
   eventCause: (i) => ({ eventId: i.eventId }),
   eventEffects: (i) => ({ eventId: i.eventId }),
+  invocationEvents: (i) => ({ invocationId: i.invocationId }),
 };
 
 /**

@@ -19,12 +19,22 @@ import type {
 const MAX_CORRELATED_INVOCATIONS = 40;
 const MAX_LINES_PER_INVOCATION = 20;
 
+/**
+ * A 501 is an honest refusal, not a failure: the route exists to say "this version does
+ * not declare that capability" (an undeclared owner-seat or configure hook, #1345). The
+ * failure record already keeps it out (`recordOpsFailure`); the log view agrees with it.
+ */
+const CAPABILITY_ABSENT = 501;
+
 /** The event is a stamped invocation line whose request FAILED. */
 function isFailedInvocation(e: RecentLogEvent): boolean {
   const source = ((e.raw as Record<string, unknown>)?.['source'] ?? {}) as Record<string, unknown>;
   if (source['substrat'] !== 'invocation') return false;
   const status = source['status'];
-  return source['threw'] === true || (typeof status === 'number' && status >= 500);
+  return (
+    source['threw'] === true ||
+    (typeof status === 'number' && status >= 500 && status !== CAPABILITY_ABSENT)
+  );
 }
 
 /**
@@ -69,7 +79,14 @@ function describeInvocation(e: RecentLogEvent): RecentLogEvent {
   const path = typeof source['path'] === 'string' ? source['path'] : '?';
   const status = typeof source['status'] === 'number' ? source['status'] : null;
   const ms = typeof source['durationMs'] === 'number' ? source['durationMs'] : null;
-  const outcome = source['threw'] === true ? 'threw' : (status ?? '—');
+  const outcome =
+    source['threw'] === true
+      ? 'threw'
+      : status === CAPABILITY_ABSENT
+        ? // Labelled rather than hidden: the line is still the evidence that something
+          // asked, and it reads as the answer it is instead of a red error row.
+          `${status} capability absent`
+        : (status ?? '—');
   return {
     ...e,
     message: `${method} ${path} → ${outcome}${ms === null ? '' : ` (${ms} ms)`}`,
@@ -649,10 +666,14 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     // recent invocations and answer "none" if the error was the 41st: an empty page that
     // reads as "nothing is wrong" and means "I did not look".
     //
-    // So an error read selects the invocations to expand itself. It takes three queries,
+    // So an error read selects the invocations to expand itself. It takes four queries,
     // because "an error" arrives in three shapes and no single filter spans them:
     //
-    //   1. a FAILED response — the stamped line carries `status >= 500`;
+    //   1. a FAILED response — the stamped line carries `status >= 500`, less 501, which
+    //      is a declared-absent capability rather than a failure (`isFailedInvocation`).
+    //      It is asked for as `= 500` plus `>= 502` rather than filtered afterwards, so a
+    //      page-render trickle of 501s cannot fill phase one and spend phase two's budget
+    //      on invocations the level filter below would only throw away;
     //   2. an ESCAPE — the error got past `onError` itself, so the line carries
     //      `threw: true` and `status: null`, which no comparison on `status` can match.
     //      These are the rarest lines and the most interesting ones on the page;
@@ -674,7 +695,12 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
       ? await Promise.all([
           Promise.all([
             queryRaw(
-              [...base, { key: 'status', operation: 'gte', type: 'number', value: 500 }],
+              [...base, { key: 'status', operation: 'eq', type: 'number', value: 500 }],
+              timeframe,
+              phaseOneLimit,
+            ),
+            queryRaw(
+              [...base, { key: 'status', operation: 'gte', type: 'number', value: CAPABILITY_ABSENT + 1 }],
               timeframe,
               phaseOneLimit,
             ),
@@ -683,7 +709,10 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
               timeframe,
               phaseOneLimit,
             ),
-          ]).then((pages) => pages.flat()),
+            // Newest first across the pages, not page order: the correlation cap is spent
+            // in this order, and a busy `= 500` page must not crowd out a newer 502 or
+            // escape just because its query was listed first.
+          ]).then((pages) => pages.flat().sort((a, b) => rawTime(b) - rawTime(a))),
           queryRaw(
             [{ key: '$metadata.level', operation: 'eq', type: 'string', value: 'error' }],
             timeframe,
@@ -757,6 +786,11 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
     ];
   }
 
+  /** A raw event's `timestamp`, or 0 when it carries none (sorted last). */
+  function rawTime(e: Record<string, unknown>): number {
+    return typeof e['timestamp'] === 'number' ? e['timestamp'] : 0;
+  }
+
   /** `$metadata.requestId`, the key every line of one invocation shares. */
   function idOf(e: Record<string, unknown>): string | null {
     const metadata = (e['$metadata'] ?? {}) as Record<string, unknown>;
@@ -768,7 +802,7 @@ export function createCfObservabilityReader(opts: CfObservabilityOptions): Obser
   /** A telemetry `events` query returning the raw events, filters passed through. */
   async function queryRaw(
     // `value` is `string | number | boolean`: every filter was an equality on an id until
-    // the error read needed `status >= 500` (the one numeric comparison in this file) and
+    // the error read needed `status = 500` / `status >= 502` (the numeric comparisons) and
     // `threw = true` (the one boolean).
     filters: Array<{ key: string; operation: string; type: string; value: string | number | boolean }>,
     // The window, already decided by the caller — every phase of one tenant-log read
