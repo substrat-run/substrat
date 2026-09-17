@@ -1070,8 +1070,8 @@ export default {
       ...(env.DIRECTORY_BACKUPS
         ? { accessLogSink: createR2AccessLogSink(env.DIRECTORY_BACKUPS) }
         : {}),
-      // #1334 — the domain-event drain, the phase this deployment has had implemented on
-      // both adapters and bound to nothing. Pipelines rather than the NDJSON staging sink
+      // #1334 — the domain-event drain, bound in prod to the `SUBSTRAT_OUTBOX_STREAM`
+      // pipeline that feeds the Iceberg lake. Pipelines rather than the NDJSON staging sink
       // beside it: §5.3's adapter table names "Pipelines → Iceberg/R2" as the Cloudflare
       // row for event transport, and the seam means the drain never learns which it got.
       // Unbound ⇒ skipped, so a self-host that ships nowhere stays a supported deployment.

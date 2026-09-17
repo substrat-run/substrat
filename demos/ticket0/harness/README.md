@@ -20,6 +20,8 @@ making that trade.
 | `dev-invites.ts` | The node half of that — a file-backed pending-invite store and the identity link an acceptance makes, standing in for the worker's identity DO. |
 
 Both `assistant.ts` and `kb-ingest.ts` are **connector-shaped**: they run outside the
-scope's transaction and come back in through ordinary operations. In a hosted deployment
-they are registered connectors; here they are functions the server calls. The operations
+scope's transaction and come back in through ordinary operations. Neither is a registered
+connector. Both hosts run them as plain functions: the worker runs the assistant under
+`executionCtx.waitUntil` once the widget's response has gone out, and both hosts mount
+`kb-refresh.ts`'s route to run the ingest when someone asks for a re-read. The operations
 at either end are identical, which is the point.
