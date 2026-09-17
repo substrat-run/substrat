@@ -2158,7 +2158,9 @@ app.get('/api/apps/:scopeId/dead-letters', async (c) => {
   return c.json(
     await cp.deadLetters(scope, {
       limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
-      cursor: c.req.query('cursor') || undefined,
+      // `??`, not `||`: an explicit empty `cursor=` must reach the control plane's parse
+      // and be refused there, not be quietly widened into a request for the first page.
+      cursor: c.req.query('cursor') ?? undefined,
     }),
   );
 });
