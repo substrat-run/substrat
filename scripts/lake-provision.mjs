@@ -60,18 +60,31 @@
  * the secrets filename would inspect and reuse the production lake, which is worse than
  * refusing. `--file` is for a different ACCOUNT, where the same names are the right names.
  *
- * Credentials come from the secrets file, never from argv: `CF_LAKE_ADMIN_TOKEN` for the
- * account API (Workers Pipelines write, Workers R2 Storage write, R2 Data Catalog write —
- * a check needs only the read halves) and `R2_LAKE_CATALOG_TOKEN` for the sink and the
- * Iceberg catalog.
+ * Credentials. The account API is called AS YOU — the Cloudflare login `wrangler login`
+ * already holds, fetched with `wrangler auth token` — and `R2_LAKE_CATALOG_TOKEN` from the
+ * secrets file serves the sink and the Iceberg catalog.
  *
- * Its OWN token, deliberately not `CF_API_TOKEN`. That one is pushed to the running control
- * plane as a worker secret, so every permission on it is a permission anything that
- * compromises the plane inherits — and this script's permissions include deleting the
- * audit lake. `CF_LAKE_ADMIN_TOKEN` is store-only: it lives in the env file, is read here,
- * and is never pushed to a worker or to CI. See secrets/README.md.
+ * Your login, not a stored token, because of what this script is: a rare, deliberate, human
+ * act that can delete the audit lake. A stored token with those rights (the
+ * `CF_LAKE_ADMIN_TOKEN` this replaced) is a standing capability somebody must create, keep,
+ * rotate and not leak, for something run a handful of times ever. `CF_API_TOKEN` is worse
+ * still: it lives inside the running control plane, which never needs these rights. A login
+ * already has them, expires and refreshes on its own, and puts a PERSON in Cloudflare's
+ * audit log rather than an account token.
+ *
+ * So it deliberately does not run in CI, where there is no login. Provisioning and
+ * recreating are not a pipeline's job, and a CI token able to drop `kernel.events` is the
+ * credential this design exists not to have.
+ *
+ * Every call is pinned to `CF_ACCOUNT_ID` from the secrets file: a login reaches several
+ * accounts, and the URL, not the login, decides which one is touched.
+ *
+ * `R2_LAKE_CATALOG_TOKEN` stays a stored token for a reason a login cannot meet: Cloudflare
+ * Pipelines keeps it inside the sink and commits to the table with it for as long as the
+ * sink exists, which an hour-long OAuth token would not survive.
  */
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
@@ -158,16 +171,55 @@ function readSecret(key) {
 
 const account = readSecret('CF_ACCOUNT_ID');
 if (!account) fail(`CF_ACCOUNT_ID blank in ${secretsFile}.`);
-const apiToken = readSecret('CF_LAKE_ADMIN_TOKEN');
-if (!apiToken) {
-  fail(
-    `CF_LAKE_ADMIN_TOKEN blank in ${secretsFile}.\n` +
-      '  Create it: Manage account → Account API tokens → Create → Custom token, with\n' +
-      '  Workers Pipelines: Edit, Workers R2 Storage: Edit, Workers R2 Data Catalog: Edit, on this\n' +
-      '  account only. NOT CF_API_TOKEN — that one lives inside the running control plane, and\n' +
-      '  this one can delete the audit lake.',
-  );
+/**
+ * The credential this run acts as — normally your `wrangler login`.
+ *
+ * `wrangler auth token` has one behaviour worth surfacing rather than inheriting: a
+ * `CLOUDFLARE_API_TOKEN` — or a `CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL` pair — in the
+ * environment silently wins over the login. A narrow token
+ * left exported in a terminal is how a command that works for you fails for you with an
+ * authorization error naming your own account — so the run prints which one it got. The
+ * token stays in this process and reaches the API through `fetch`, never a child's argv.
+ */
+function wranglerCredential() {
+  const r = spawnSync('pnpm', ['exec', 'wrangler', 'auth', 'token', '--json'], { cwd: ROOT, encoding: 'utf8' });
+  const out = r.stdout ?? '';
+  const start = out.indexOf('{');
+  let parsed = null;
+  try {
+    parsed = start >= 0 ? JSON.parse(out.slice(start)) : null;
+  } catch {
+    parsed = null;
+  }
+  // Checked BEFORE "is there a token", because the answer to it is different. A global API
+  // key + email in the environment also outranks the login, and `--json` reports it as
+  // `{ type: 'api_key', key, email }` — no `token` field. Falling through to the check below
+  // would tell the operator to `wrangler login`, which cannot help while those variables are
+  // set: the login is already there, and it is being overridden (review, #1522).
+  if (parsed?.type === 'api_key') {
+    fail(
+      'CLOUDFLARE_API_KEY and CLOUDFLARE_EMAIL are set, and they override your wrangler login.\n' +
+        '  `unset CLOUDFLARE_API_KEY CLOUDFLARE_EMAIL` and run again. Not supported as a credential\n' +
+        '  here on purpose: a global API key carries every permission its user holds, which is the\n' +
+        '  opposite of what this script is trying to act as.',
+    );
+  }
+  if (r.status !== 0 || typeof parsed?.token !== 'string' || parsed.token === '') {
+    fail(
+      'no Cloudflare credential — this script acts as your own login.\n' +
+        '  Run `pnpm exec wrangler login` and try again. It does not run in CI, on purpose (see the header).',
+    );
+  }
+  // A closed list. The `As:` line below names the credential by its type, and a type this
+  // script was not written for — a future wrangler adding one — would otherwise be announced
+  // as something it is not.
+  if (parsed.type !== 'oauth' && parsed.type !== 'api_token') {
+    fail(`\`wrangler auth token\` returned a credential of type '${parsed.type}', which this script does not know how to announce.`);
+  }
+  return parsed;
 }
+const credential = wranglerCredential();
+const apiToken = credential.token;
 const catalogToken = readSecret('R2_LAKE_CATALOG_TOKEN');
 // A dry run needs it only to READ the snapshot gate, which a dry-run recreate still does.
 if (!catalogToken && (!dryRun || recreate)) {
@@ -179,7 +231,13 @@ if (!catalogToken && (!dryRun || recreate)) {
   );
 }
 
-console.log(`Lake: ${LAKE.bucket} → ${LAKE.namespace}.${LAKE.table}  (account ${account})${dryRun ? '  [dry-run]' : ''}\n`);
+console.log(`Lake: ${LAKE.bucket} → ${LAKE.namespace}.${LAKE.table}  (account ${account})${dryRun ? '  [dry-run]' : ''}`);
+console.log(
+  credential.type === 'oauth'
+    ? 'As:   your wrangler login\n'
+    : `As:   CLOUDFLARE_API_TOKEN from the environment (${credential.type}) — it OVERRIDES your login.\n` +
+        '      If that is not deliberate, `unset CLOUDFLARE_API_TOKEN` and run again.\n',
+);
 
 /**
  * One call to the account API. Returns the envelope's `result` plus enough to say why a
@@ -210,7 +268,8 @@ async function cf(method, path, body) {
 /** A 401/403 or an auth error code names the token, since that is what it always is. */
 const authHint = (r) =>
   r.status === 401 || r.status === 403 || r.codes.has(10000) || r.codes.has(9109)
-    ? '\n  CF_LAKE_ADMIN_TOKEN lacks a permission this needs — see the header for the list.'
+    ? '\n  The credential this ran as lacks a permission. A login needs Pipelines, R2 Storage and R2 Data\n' +
+      '  Catalog write on this account; an exported CLOUDFLARE_API_TOKEN overrides it — see "As:" above.'
     : '';
 
 /** Values never printed: a dry run has to be safe to paste into a ticket. */
@@ -566,8 +625,10 @@ if (drifted.length > 0) {
   fail(
     `${drifted.join(', ')} differ${drifted.length === 1 ? 's' : ''} from the declaration above — reported, not changed.\n` +
       '  Cloudflare has no update for these, and delete-and-recreate orphans the table the sink\n' +
-      '  commits to. Either the declaration is wrong (fix it here) or the account is (--recreate\n' +
-      '  while the table has no snapshots; an Iceberg schema evolution by hand once it does).',
+      '  commits to. Either the declaration is wrong (fix it here) or the account is — then\n' +
+      '  `--recreate --discard-history=<account>/<bucket>/<namespace>.<table>`, followed by\n' +
+      '  `pnpm lake:redrain` so the history the old table held is shipped into the new one.\n' +
+      '  (This used to say "an Iceberg schema evolution by hand"; #1517 made the rebuild lossless.)',
   );
 }
 
