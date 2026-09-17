@@ -45,6 +45,7 @@ import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp,
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
+import { emailRefusedAsIdentifier, type EmailIdentifierEnv } from './email-identifier.js';
 import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, listInstallationRepos, listRepoBranches, normalizeWorkflowDir, setupRepoCi, upsertPrComment } from './github.js';
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
@@ -90,7 +91,7 @@ const STAFF = platformActorId.parse('01JZ000000000000000000DAS1');
 // connected-mode gating is unit-testable. `CATALOG`/`ensureCatalog`/`availableCatalog`
 // are imported at the top of the file.
 
-interface Env extends OidcEnv {
+interface Env extends OidcEnv, EmailIdentifierEnv {
   SCOPE: DurableObjectNamespace;
   CONTROL_PLANE: DurableObjectNamespace;
   /**
@@ -579,7 +580,9 @@ async function resolveAccount(
   const node = await resolveNode(host, tenants, user.id, selectedTeamId);
   // Pre-roster teams (#191) get their empty roster seeded here — the email is only
   // in hand at this layer (the session), which is why the heal lives on this path.
-  if (node) await ensureRosterSeeded(host, STAFF, node, user.email ?? '');
+  // An address the gate refuses (#1359) seeds nothing, so the heal runs again once the
+  // issuer vouches for it rather than writing an unverified owner row for good.
+  if (node && !emailRefusedAsIdentifier(env, user)) await ensureRosterSeeded(host, STAFF, node, user.email ?? '');
   return node;
 }
 
@@ -836,7 +839,8 @@ app.get('/api/me', async (c) => {
  * The claim is the session's own email and no other. A session whose OIDC identity
  * carries no email cannot be vouched for at all, so it gets `{ desk: null }` — the
  * same answer as an unconfigured deployment, because from the page's side it is the
- * same fact: nothing to embed.
+ * same fact: nothing to embed. So does an address `OIDC_REQUIRE_EMAIL_VERIFIED` refuses
+ * (#1359): the signature would vouch for a person the issuer did not.
  */
 app.get('/api/support/identity', async (c) => {
   const desk = c.env.SUPPORT_DESK_ORIGIN;
@@ -845,7 +849,7 @@ app.get('/api/support/identity', async (c) => {
   if (!desk || !secret) return c.json({ desk: null });
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   if (!user) return c.json({ error: 'unauthorized' }, 401);
-  if (!user.email) return c.json({ desk: null });
+  if (!user.email || emailRefusedAsIdentifier(c.env, user)) return c.json({ desk: null });
   c.header('cache-control', 'no-store');
   return c.json({ desk, user: user.email, signature: await signVisitorIdentity(secret, user.email) });
 });
@@ -1214,6 +1218,13 @@ app.get('/api/invites/preview', async (c) => {
 app.post('/api/invites/accept', async (c) => {
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   if (!user) throw new HTTPException(401, { message: 'unauthorized' });
+  // The invite is addressed to an email, so the address IS the identity being claimed —
+  // with the gate on (#1359) only one the issuer verified may claim it.
+  if (emailRefusedAsIdentifier(c.env, user)) {
+    throw new HTTPException(403, {
+      message: 'this invite needs a verified email address — verify it with your sign-in provider, then open the link again',
+    });
+  }
   const { token } = z.object({ token: z.string().min(1) }).parse(await c.req.json());
   const claim = await verifyInviteToken(c.env, token);
   if (!claim) throw new HTTPException(400, { message: 'this invite link is invalid or has expired' });
