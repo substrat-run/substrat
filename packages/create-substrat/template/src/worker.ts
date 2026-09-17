@@ -222,8 +222,9 @@ async function stub(c: Context<{ Bindings: Env }>): Promise<ScopeStub> {
   return hostFor(c.env).getScope(principal, node.tenantId, node.scopeId, {
     // An operation that called `ctx.requestPlatform` flags its response, and the router
     // drains this scope within seconds instead of at the next sweep. Leave it wired even
-    // if nothing requests anything yet: a spurious flag costs one empty drain, a missing
-    // one makes every platform intent wait up to a quarter of an hour.
+    // if nothing requests anything yet: the host calls this only when a committed invoke
+    // enqueued at least one intent, so it costs nothing until then, and without it every
+    // platform intent waits up to a quarter of an hour.
     onPlatformRequests: () => c.header(PLATFORM_REQUEST_HEADER, '1'),
   });
 }
