@@ -2143,6 +2143,28 @@ app.get('/api/apps/:scopeId/invocation', async (c) => {
   );
 });
 
+/**
+ * #1525: every delivery in one app's scope that gave up — "which deliveries in this app
+ * gave up?", which names no record and so no walk can answer.
+ */
+app.get('/api/apps/:scopeId/dead-letters', async (c) => {
+  const host = hostFor(c.env);
+  const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
+  if (!node) throw new HTTPException(401, { message: 'unauthorized' });
+  const dash = await host.getScope(node.principal, node.tenantId, node.scopeId);
+  const apps = (await dash.invoke('dashboard/list-apps', {})) as DashboardAppRow[];
+  const { scope } = await resolveBrowsableScope(host, c.env, node, apps, c.req.param('scopeId'));
+  const cp = controlPlaneFor(c.env, node.tenantId);
+  return c.json(
+    await cp.deadLetters(scope, {
+      limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+      // `??`, not `||`: an explicit empty `cursor=` must reach the control plane's parse
+      // and be refused there, not be quietly widened into a request for the first page.
+      cursor: c.req.query('cursor') ?? undefined,
+    }),
+  );
+});
+
 app.get('/api/apps/:scopeId/tables/:table', async (c) => {
   const host = hostFor(c.env);
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));

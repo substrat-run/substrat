@@ -26,6 +26,8 @@ import type {
   EffectsTree,
   InvocationEventsInput,
   InvocationEvents,
+  DeadLettersInput,
+  DeadLetter,
   CauseChain,
   EventFacetResult,
   HistoryEntry,
@@ -685,6 +687,14 @@ export class VerticalClient {
     const q = new URLSearchParams({ scopeId, invocationId: input.invocationId });
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.getInternal<InvocationEvents>(`/internal/invocation?${q.toString()}`);
+  }
+
+  /** Every delivery that gave up (#1525) — through the vertical that holds the data. */
+  async deadLetters(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>> {
+    const q = new URLSearchParams({ scopeId });
+    if (input.limit !== undefined) q.set('limit', String(input.limit));
+    if (input.cursor !== undefined) q.set('cursor', input.cursor);
+    return this.getInternal<Page<DeadLetter>>(`/internal/dead-letters?${q.toString()}`);
   }
 
   /** One record's event history (#1235) — `readHistory`'s answer, through the vertical that holds the data. */

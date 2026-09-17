@@ -23,6 +23,7 @@ import type {
   DenialSummary,
   EffectsTree,
   InvocationEvents,
+  DeadLetter,
   PermissionDenial,
   PermissionRegistry,
   PlatformRequest,
@@ -1743,6 +1744,17 @@ export class TenantNarrowedControlPlane {
     const q = new URLSearchParams({ invocationId: input.invocationId });
     if (input.limit !== undefined) q.set('limit', String(input.limit));
     return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/invocation?${q}`);
+  }
+
+  /**
+   * Every delivery in the scope that gave up (#1525), newest event first — the list the
+   * walks can only reach one event at a time.
+   */
+  deadLetters(scopeId: ScopeId, input: { limit?: number; cursor?: string } = {}): Promise<Page<DeadLetter>> {
+    const q = new URLSearchParams();
+    if (input.limit !== undefined) q.set('limit', String(input.limit));
+    if (input.cursor !== undefined) q.set('cursor', input.cursor);
+    return this.call(`/tenants/${this.tenantId}/scopes/${scopeId}/dead-letters?${q}`);
   }
 
   /**

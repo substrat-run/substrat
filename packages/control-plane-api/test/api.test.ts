@@ -647,6 +647,7 @@ describe('control-plane API', () => {
       eventCause: async () => ({ chain: [], terminal: 'missing' }),
       eventEffects: async () => ({ root: null, count: 0 }),
       invocationEvents: async () => ({ events: [], truncated: false }),
+      deadLetters: async () => ({ entries: [], nextCursor: null }),
     } as unknown as VerticalClient;
     const delegated = createControlPlaneApi({
       host,
@@ -671,6 +672,7 @@ describe('control-plane API', () => {
       { method: 'eventCause', path: (s) => `/tenants/${t1}/scopes/${s}/cause?eventId=${ev}&maxDepth=3` },
       { method: 'eventEffects', path: (s) => `/tenants/${t1}/scopes/${s}/effects?eventId=${ev}&maxNodes=3` },
       { method: 'invocationEvents', path: (s) => `/tenants/${t1}/scopes/${s}/invocation?invocationId=${ev}&limit=3` },
+      { method: 'deadLetters', path: (s) => `/tenants/${t1}/scopes/${s}/dead-letters?limit=3&cursor=${ev}` },
     ];
     for (const r of reads) {
       const co = await app.request(r.path(sC), { headers: auth, ...r.init });

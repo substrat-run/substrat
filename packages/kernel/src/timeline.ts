@@ -11,6 +11,7 @@ import {
   type EffectsTree,
   type EffectsTerminal,
   type InvocationEvents,
+  type DeadLetter,
   type EventEffects,
   type EventDelivery,
   type DeliveryState,
@@ -490,6 +491,83 @@ export function readInvocation(
     [invocationId, capped + 1],
   );
   return { events: rows.slice(0, capped).map(mapHistoryRow), truncated: rows.length > capped };
+}
+
+/** What joins the two halves of a dead-letter cursor. The first half is a ULID, so it never holds one. */
+const DEAD_LETTER_CURSOR_SEPARATOR = '|';
+
+interface DeadLetterRow {
+  event_id: string;
+  consumer_module: string;
+  delivered_at: string;
+  error: string;
+  attempts: number;
+  type: string;
+  occurred_at: string;
+  entity_type: string;
+  entity_id: string;
+  invocation_id: string | null;
+}
+
+/**
+ * Every delivery in the scope that gave up (#1525), newest event first.
+ *
+ * The question the two walks cannot answer, because they reach a delivery only through
+ * its event: "which deliveries in this app gave up?" is the first question in most
+ * incidents, and it names no record to start from.
+ *
+ * **Dead is `error IS NOT NULL AND next_attempt_at IS NULL`, and both halves matter.**
+ * A retrying row carries an error too; dropping the second half would list a delivery
+ * that is still going to run as one that will not. It is `deliveryOf`'s predicate,
+ * spelled in SQL, and the two must not drift.
+ *
+ * Keyset-paged on `(event_id, consumer_module)` — the delivery table's own primary key,
+ * walked backwards — because one event can give up on several consumers, and a cursor on
+ * the event alone would skip the rest of them at a page boundary. `event_id` is a ULID,
+ * so newest-first is by when the event happened, not when the delivery gave up: an
+ * executor that exhausts its retries an hour later still files under its event.
+ *
+ * Same permission posture as every read here: the caller checks, this does not.
+ */
+export function readDeadLetters(ctx: TimelineReader, page?: Pick<ListPage, 'limit' | 'cursor'>): Page<DeadLetter> {
+  const limit = listLimitOf(page?.limit);
+  const cursor = page?.cursor;
+  let after = '';
+  const params: SqlValue[] = [];
+  if (cursor !== undefined) {
+    const at = cursor.indexOf(DEAD_LETTER_CURSOR_SEPARATOR);
+    // A cursor with no separator names an event and no consumer: strictly before that
+    // event, which is the nearest honest reading rather than an error.
+    const event = at < 0 ? cursor : cursor.slice(0, at);
+    const consumer = at < 0 ? '' : cursor.slice(at + 1);
+    after = ' AND (d.event_id < ? OR (d.event_id = ? AND d.consumer_module < ?))';
+    params.push(event, event, consumer);
+  }
+  params.push(limit);
+  const rows = ctx.sql.query<DeadLetterRow>(
+    `SELECT d.event_id, d.consumer_module, d.delivered_at, d.error, d.attempts,
+            o.type, o.occurred_at, o.entity_type, o.entity_id, o.invocation_id
+       FROM _substrat_deliveries d
+       JOIN _substrat_outbox o ON o.id = d.event_id
+      WHERE d.error IS NOT NULL AND d.next_attempt_at IS NULL${after}
+      ORDER BY d.event_id DESC, d.consumer_module DESC
+      LIMIT ?`,
+    params,
+  );
+  const entries = rows.map(
+    (r): DeadLetter => ({
+      eventId: r.event_id as EventId,
+      eventType: r.type,
+      occurredAt: r.occurred_at as Instant,
+      entity: { entityType: r.entity_type, entityId: r.entity_id },
+      invocationId: r.invocation_id,
+      consumer: r.consumer_module as ModuleId,
+      at: r.delivered_at as Instant,
+      error: r.error,
+      attempts: r.attempts,
+    }),
+  );
+  return pageOf(entries, limit, (e) => `${e.eventId}${DEAD_LETTER_CURSOR_SEPARATOR}${e.consumer}`);
 }
 
 /**

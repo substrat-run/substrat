@@ -1,5 +1,5 @@
 import { problemDetail } from '@substrat-run/contracts';
-import type { CauseChain, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
+import type { CauseChain, DeadLetter, EffectsTree, InvocationEvents, EmittedModel, EventFacetResult, HistoryEntry, Page, PrincipalId, ScopeId, TenantId } from '@substrat-run/contracts';
 
 /**
  * Client for the Dashboard worker's own API (apps/dashboard/src/worker.ts).
@@ -421,7 +421,7 @@ export interface AppliedMigration {
  * null = nobody was impersonating, the ordinary case. See `lib/history.ts`, which
  * is where each one is turned into words.
  */
-export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects, EventDelivery, EffectsTerminal, InvocationEvents } from '@substrat-run/contracts';
+export type { HistoryEntry, CauseChain, CauseTerminal, EffectsTree, EventEffects, EventDelivery, EffectsTerminal, InvocationEvents, DeadLetter } from '@substrat-run/contracts';
 
 /**
  * One app's health verdict (#1238), rolled up from the signals tiers 1–2 record.
@@ -1729,6 +1729,12 @@ export const api = {
   appEventEffects: (scopeId: string, eventId: string) =>
     call<EffectsTree>(
       `/apps/${encodeURIComponent(scopeId)}/effects?eventId=${encodeURIComponent(eventId)}`,
+    ),
+
+  /** Every delivery in one app that gave up (#1525), newest event first. */
+  appDeadLetters: (scopeId: string, cursor?: string) =>
+    call<Page<DeadLetter>>(
+      `/apps/${encodeURIComponent(scopeId)}/dead-letters${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`,
     ),
 
   /** Everything one call emitted (#1237), oldest first — siblings included. */

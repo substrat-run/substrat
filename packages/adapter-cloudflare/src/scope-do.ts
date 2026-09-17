@@ -117,7 +117,7 @@ import {
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
 import { doScopedSql } from './sql.js';
-import { facetEvents, readHistory, readInvocation, walkEventCause, walkEventEffects } from '@substrat-run/kernel';
+import { facetEvents, readDeadLetters, readHistory, readInvocation, walkEventCause, walkEventEffects } from '@substrat-run/kernel';
 import type {
   DrainedEvent,
   EventFacetInput,
@@ -127,6 +127,7 @@ import type {
   CauseChain,
   EffectsTree,
   InvocationEvents,
+  DeadLetter,
   Page,
 } from '@substrat-run/contracts';
 import { createDoTupleChecker, createLocalControlPlaneReader, type ControlPlaneReader } from './checker.js';
@@ -1172,6 +1173,11 @@ export function defineScopeDO(
     /** #1237: everything one call emitted, inside the DO where the outbox lives. */
     invocationEvents(input: { invocationId: string; limit?: number }): InvocationEvents {
       return readInvocation({ sql: doScopedSql(this.sql) }, input.invocationId, input.limit);
+    }
+
+    /** #1525: every delivery in this scope that gave up, inside the DO where both tables live. */
+    deadLetters(input: { limit?: number; cursor?: string }): Page<DeadLetter> {
+      return readDeadLetters({ sql: doScopedSql(this.sql) }, { limit: input.limit, cursor: input.cursor });
     }
 
     migrationBookmarks(limit = 20): { bookmark: string; takenAt: string; pending: string[] }[] {

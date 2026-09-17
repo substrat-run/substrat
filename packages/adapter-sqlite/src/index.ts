@@ -303,6 +303,7 @@ import {
   walkEventEffects,
   assertRedrainWindow,
   readInvocation,
+  readDeadLetters,
 } from '@substrat-run/kernel';
 import { ScopeActor } from './actor.js';
 import { createTupleChecker } from './checker.js';
@@ -5880,6 +5881,13 @@ export class SqliteScopeHost implements ScopeHost {
         const read = readInvocation({ sql: scopedSql(db) }, input.invocationId, input.limit);
         this.recordAccess(actor, 'invocationEvents', { tenantId, scopeId }, { invocationId: input.invocationId }, read.events.length);
         return read;
+      },
+      deadLetters: async (actor, tenantId, scopeId, input) => {
+        // #1525: every delivery that gave up, scope-wide — what the walks reach only by event.
+        const db = this.scopeDbFor(tenantId, scopeId);
+        const page = readDeadLetters({ sql: scopedSql(db) }, { limit: input.limit, cursor: input.cursor });
+        this.recordAccess(actor, 'deadLetters', { tenantId, scopeId }, null, page.entries.length);
+        return page;
       },
       scopeAppliedMigrations: async (actor, tenantId, scopeId) => {
         const db = this.scopeDbFor(tenantId, scopeId);

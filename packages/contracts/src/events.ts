@@ -8,6 +8,9 @@ import {
   principalId,
   scopeId,
   tenantId,
+  type EventId,
+  type Instant,
+  type ModuleId,
 } from './ids.js';
 import { impersonationStamp } from './impersonation.js';
 
@@ -400,6 +403,38 @@ export interface InvocationEvents {
    * and a reader must be told which one they are looking at.
    */
   truncated: boolean;
+}
+
+/**
+ * One delivery that gave up (#1525), with enough of its event to find it again —
+ * `readDeadLetters`' entry.
+ *
+ * The scope-wide read `walkEventEffects` could not be: that walk reaches a delivery
+ * only THROUGH its event, so a dead letter was visible only to someone who already knew
+ * which record to open. An in-scope consumer does not retry, so one failure is terminal
+ * and these rows wait for a human.
+ *
+ * No payload, deliberately. The envelope is enough to open the event's own reads, and a
+ * list that decoded every payload would be a disclosure decision per row.
+ */
+export interface DeadLetter {
+  eventId: EventId;
+  eventType: string;
+  occurredAt: Instant;
+  /** The entity the event was about — what a reader opens next. */
+  entity: EntityRef;
+  /**
+   * The call the event came from (#1237), which is how a delivery joins its request:
+   * dispatch runs in the same post-commit tail, so the event's id is the delivery's.
+   * Null for a seed or internal call, or an event older than the column.
+   */
+  invocationId: string | null;
+  /** The consumer that gave up — a module id, or `executor:<id>` for an executor. */
+  consumer: ModuleId;
+  /** When it was last attempted, which for a dead row is when it gave up. */
+  at: Instant;
+  error: string;
+  attempts: number;
 }
 
 /**

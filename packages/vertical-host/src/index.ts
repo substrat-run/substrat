@@ -62,6 +62,7 @@ import {
   eventCauseInput,
   eventEffectsInput,
   invocationEventsInput,
+  deadLettersInput,
   type EntityHistoryInput,
   type EventFacetInput,
   type EventCauseInput,
@@ -69,6 +70,8 @@ import {
   type EffectsTree,
   type InvocationEventsInput,
   type InvocationEvents,
+  type DeadLettersInput,
+  type DeadLetter,
   type CauseChain,
   type EventFacetResult,
   type HistoryEntry,
@@ -142,6 +145,7 @@ export interface VerticalScopeHost {
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
   eventEffectsLocal(scopeId: ScopeId, input: EventEffectsInput): Promise<EffectsTree>;
   invocationEventsLocal(scopeId: ScopeId, input: InvocationEventsInput): Promise<InvocationEvents>;
+  deadLettersLocal(scopeId: ScopeId, input: DeadLettersInput): Promise<Page<DeadLetter>>;
   rewindScopeLocal(
     scopeId: ScopeId,
     bookmark: string,
@@ -479,6 +483,20 @@ export function mountPlatformSurface<Env extends object>(
         invocationEventsInput.parse({
           invocationId: c.req.query('invocationId'),
           limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+        }),
+      ),
+    ),
+  );
+
+  // #1525: every delivery in a scope THIS vertical holds that gave up — the list the
+  // walks reach only one event at a time. Paged, so the cap and cursor are parsed here.
+  app.get('/internal/dead-letters', async (c) =>
+    c.json(
+      await deps.hostFor(c.env).deadLettersLocal(
+        scopeIdOf.parse(c.req.query('scopeId')),
+        deadLettersInput.parse({
+          limit: c.req.query('limit') ? Number(c.req.query('limit')) : undefined,
+          cursor: c.req.query('cursor') ?? undefined,
         }),
       ),
     ),
