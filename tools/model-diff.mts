@@ -90,10 +90,15 @@ const MODES = ['composed **by call**', 'composed **by event**'] as const;
  * reader meets on line 2, so a mention buried three hundred lines down beside
  * one operation does not satisfy it. Returns null when the file does not open
  * with a block comment, which is itself the violation.
+ *
+ * Any block comment counts — `/*` as well as the JSDoc `/**` every engine
+ * happens to use today. The rule is about the mode being stated where a reader
+ * meets it, not about which comment syntax states it, and a gate that refused
+ * a plain block comment would be refusing something the rule permits.
  */
 function headerOf(source: string): string | null {
   const body = source.replace(/^#!.*\n/, '').trimStart();
-  if (!body.startsWith('/**')) return null;
+  if (!body.startsWith('/*')) return null;
   const end = body.indexOf('*/');
   return end === -1 ? null : body.slice(0, end + 2);
 }
