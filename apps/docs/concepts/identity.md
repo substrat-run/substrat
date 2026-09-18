@@ -87,6 +87,23 @@ knows that pool's tenant — but because asking is a category error: where the s
 `externalId` names different people per tenant, a tenant list has no meaning. Enumerate,
 then resolve within the one you picked.
 
+When the caller wants the whole picture — a team switcher, or a per-request "who is this
+login, in the team they selected" — asking once per tenant is the wrong shape: on a hosted
+directory every one of those reads is a round trip, and the cost grows with the number of
+tenants the login is in. `listIdentityMemberships` is the same central-only question with
+the follow-ups already attached:
+
+```ts
+await host.admin.listIdentityMemberships(actor, provider, externalId);
+// → [{ tenant, principal, scope: { id, vertical, status } | null }]
+```
+
+One read, one access-log row. Each entry carries the tenant row whole — `status` included,
+and a non-active tenant is returned rather than filtered, because whether a `deleting`
+team still resolves is the caller's policy — the login's principal in it, and the scope
+the link was made in. It throws on a tenant-bound or unregistered pool exactly as
+`listIdentityTenants` does.
+
 ## Auth adapters at the edge
 
 An auth adapter is anything that turns a request into a principal:

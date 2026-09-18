@@ -815,6 +815,75 @@ export function permissionContractSuite(
       );
     });
 
+    it('answers a login’s memberships in one read: tenant, principal and linked scope', async () => {
+      // What a team switcher composes out of listIdentityTenants + getTenant +
+      // resolveIdentity per tenant — asserted AGAINST that composition, so the two
+      // can never drift into disagreeing about who somebody is.
+      const here: PrincipalId = principalId.parse(ulid());
+      const there: PrincipalId = principalId.parse(ulid());
+      const asker = platformActorId.parse(ulid());
+      const tM = tenantId.parse(ulid());
+      await host.admin.createTenant(staff, { id: tM, slug: `m-${tM.toLowerCase()}`, name: 'Members' });
+      await host.admin.registerIdentityPool(staff, {
+        provider: 'oidc:members',
+        topology: 'central',
+        tenantId: null,
+      });
+      await host.admin.linkIdentity(staff, {
+        provider: 'oidc:members',
+        externalId: 'm-1',
+        principal: here,
+        tenantId: t1,
+        scopeId: s1,
+      });
+      // No scope named on this one: `scope` must read null, never a guess.
+      await host.admin.linkIdentity(staff, {
+        provider: 'oidc:members',
+        externalId: 'm-1',
+        principal: there,
+        tenantId: tM,
+      });
+      // A non-active tenant is RETURNED, status and all — dropping it is the caller's
+      // policy, and a read that filtered would make "suspended" look like "not a member".
+      await host.admin.setTenantStatus(staff, tM, 'suspended');
+
+      const got = await host.admin.listIdentityMemberships(asker, 'oidc:members', 'm-1');
+
+      const tenants = await host.admin.listIdentityTenants(staff, 'oidc:members', 'm-1');
+      expect(got.map((m) => m.tenant.id)).toEqual(tenants);
+      for (const m of got) {
+        expect(m.tenant).toEqual(await host.admin.getTenant(staff, m.tenant.id));
+        expect(m.principal).toBe(
+          (await host.admin.resolveIdentity(m.tenant.id, 'oidc:members', 'm-1'))?.principal,
+        );
+      }
+      const byTenant = new Map(got.map((m) => [m.tenant.id, m]));
+      expect(byTenant.get(t1)?.scope).toEqual({ id: s1, vertical: 'perm-vertical', status: 'active' });
+      expect(byTenant.get(tM)?.scope).toBeNull();
+      expect(byTenant.get(tM)?.tenant.status).toBe('suspended');
+
+      // ONE access row for the whole answer, counting what it returned (K-24).
+      const rows = await host.admin.accessLog(staff, { actor: asker });
+      expect(rows.map((r) => [r.method, r.resultCount])).toEqual([['listIdentityMemberships', 2]]);
+
+      // Somebody with no links is an empty list, not an error.
+      expect(await host.admin.listIdentityMemberships(staff, 'oidc:members', 'nobody')).toEqual([]);
+    });
+
+    it('refuses memberships for a tenant-bound or unregistered pool, as listIdentityTenants does', async () => {
+      await host.admin.registerIdentityPool(staff, {
+        provider: 'oidc:members-bound',
+        topology: 'tenant-bound',
+        tenantId: t1,
+      });
+      await expect(
+        host.admin.listIdentityMemberships(staff, 'oidc:members-bound', 'z'),
+      ).rejects.toThrow(/tenant-bound/);
+      await expect(
+        host.admin.listIdentityMemberships(staff, 'oidc:members-unregistered', 'z'),
+      ).rejects.toThrow(/not registered/);
+    });
+
     it('is idempotent on an identical pool registration, and refuses a conflicting one', async () => {
       await host.admin.registerIdentityPool(staff, {
         provider: 'oidc:stable',

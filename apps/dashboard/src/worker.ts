@@ -27,7 +27,7 @@ import { globalFetch, ulid, webCryptoSecretBox, SecretBoxUnconfiguredError, type
 import { CATALOG, ensureCatalog, availableCatalog, oidcIssuerProviderSlugs } from './catalog.js';
 import { mountOidcRoutes, signVisitorIdentity, verifySession, SESSION_COOKIE, type OidcEnv } from '@substrat-run/oidc-rp';
 import { dashboardModule, type DashboardAppRow, type ConnectLinkRow, type ConnectLinkConsume } from './module.js';
-import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, reconcileRoles, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
+import { MODULES, createApp, deprovisionApp, retryApp, resumeApp, updateApp, snapshotApp, listAppSnapshots, deleteAppSnapshot, exportAppData, restoreAppData, listAppHostnames, resolveDefaultHostname, addAppHostname, removeAppHostname, provisionDashboard, ensureRosterSeeded, slugify, installEntitlements, type DashboardNode } from './provision.js';
 import { authConfigFor, type AppAuthChoice } from './auth-wiring.js';
 import { PROVIDERS, parseProviderSecret, liveConnectionFor, liveConnectionsFor, upsertLocalConnection, type ProviderSpec } from './integrations.js';
 import { deriveFreshnessHealth, deriveScheduleHealth } from './schedules.js';
@@ -41,7 +41,7 @@ import { deriveOperationHealth } from './operation-health.js';
 import { deriveConnectionSweep, sweepWindowCutoff, type SweepSighting } from './connection-sweep.js';
 import { deriveFleetHealth, followUpUnsweptApps, resolveSweepable } from './fleet-health.js';
 import { deriveIdentityDivergence, mirrorIdentityLink } from './identity-mirror.js';
-import { listDeploymentsFromCp, ownedDeploymentFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, assertOwned, versionPair, type Deployment } from './deployments.js';
+import { listDeploymentsFromCp, ownedDeploymentFromCp, ownedDeploymentOrThrow, assertOwnedFromCp, verticalDeploymentFromCp, verticalDeploymentPageFromCp, versionPair, type Deployment } from './deployments.js';
 import { DurableObject } from 'cloudflare:workers';
 import { ControlPlaneError, TenantNarrowedControlPlane, type ListRead, type PreviewRecord, type SweepRunRead } from './authority.js';
 import { transportFor, senderFor, teamInviteEmail } from './email.js';
@@ -50,13 +50,12 @@ import { deployWorkflowYaml, githubConfig, installUrl, installationAccount, list
 import { parsePullRequestWebhook, verifyGithubSignature, previewCommentBody, previewReapedBody, previewTag, buildPreviewTagPrefix, PREVIEW_COMMENT_MARKER } from './github-webhook.js';
 import { sealForGithub } from './github-seal.js';
 import { b64urlToBytes } from './b64.js';
+import { cachedTelemetry, telemetryKey, type TelemetryStore } from './telemetry-cache.js';
+import { PROVIDER, ensureIdentityPool, forgetLogin, forgetTenant, loginMemberships, rememberNode, resolveAccountNode, resolveMemoFor, resolveNode, teamsOf, type ResolveMemo } from './account.js';
 import { signClaim, verifyClaim, INVITE_TOKEN_PURPOSE, GITHUB_STATE_PURPOSE, CONNECT_LINK_PURPOSE } from './signed-token.js';
 import { resolveConnectRound, connectionScopeOf, connectReturn, type ConnectLinkClaim } from './connect-round.js';
 import { completeFortnoxConsent, fortnoxConsentUrl, FortnoxApiError } from '@substrat-run/connector-fortnox';
 import type { SendEmailBinding } from '@substrat-run/adapter-email';
-
-/** The identity provider: the platform's AuthHero instance, via the identity pool. */
-const PROVIDER = 'authhero';
 
 /**
  * The selected-team cookie. Identity (who you are) lives on `sb_session`; this
@@ -439,7 +438,24 @@ function hostFor(env: Env): CloudflareScopeHost {
     scopeLocalPermissions: env.SCOPE_LOCAL_PERMISSIONS === '1',
   });
   for (const m of MODULES) host.registerModule(m);
+  hostMemo.set(host, resolveMemoFor(env.CONTROL_PLANE));
   return host;
+}
+
+/** The isolate's memo for the directory a per-request host was built over (`hostFor`). */
+const hostMemo = new WeakMap<ScopeHost, ResolveMemo>();
+
+/**
+ * `ensureCatalog`, once per isolate. It re-registers every builtin — a directory write
+ * apiece — and its input is `CATALOG`, a constant of the deployed code, so re-running
+ * it on every catalog read bought nothing a new isolate does not already buy. Marked
+ * only after it succeeds, so a failed seed is retried rather than skipped.
+ */
+async function ensureCatalogOnce(host: ScopeHost): Promise<void> {
+  const memo = hostMemo.get(host);
+  if (memo?.catalog) return;
+  await ensureCatalog(host, STAFF);
+  if (memo) memo.catalog = true;
 }
 
 /** A globally-unique, URL-safe team slug from its name + the tenant id tail. */
@@ -505,54 +521,6 @@ function verifyGithubState(env: Env, token: string): Promise<GithubStateClaim | 
   return verifyClaim<GithubStateClaim>(env.SESSION_SECRET, GITHUB_STATE_PURPOSE, token, Date.now());
 }
 
-/** One team the signed-in user belongs to — a tenant, named for the switcher. */
-interface Team {
-  id: TenantId;
-  name: string;
-  slug: string;
-}
-
-/** The teams a login belongs to, resolved to display names for the switcher. */
-async function listTeams(host: ScopeHost, tenants: readonly TenantId[]): Promise<Team[]> {
-  const teams: Team[] = [];
-  for (const t of tenants) {
-    const tenant = await host.admin.getTenant(STAFF, t);
-    if (tenant && tenant.status === 'active') teams.push({ id: t, name: tenant.name, slug: tenant.slug });
-  }
-  return teams;
-}
-
-/**
- * Resolve the caller's node for one of their teams — the selected team if they are
- * genuinely a member of it (verified: `selectedTeamId` must be in `tenants`), else
- * their first/default team. `null` when the caller belongs to no team, or the
- * chosen team has no resolvable principal/dashboard scope. `tenants` is passed in
- * (already fetched) so the caller reads the directory once.
- */
-async function resolveNode(
-  host: ScopeHost,
-  tenants: readonly TenantId[],
-  userId: string,
-  selectedTeamId: string | undefined,
-): Promise<DashboardNode | null> {
-  // A non-active tenant (a deleted organization) never resolves — belt to the
-  // unlinkIdentity at delete time, so a lingering identity row can't land anyone
-  // in a dead team.
-  const active: TenantId[] = [];
-  for (const cand of tenants) {
-    if ((await host.admin.getTenant(STAFF, cand))?.status === 'active') active.push(cand);
-  }
-  const t = active.find((x) => x === selectedTeamId) ?? active[0];
-  if (!t) return null;
-  const mapped = await host.admin.resolveIdentity(t, PROVIDER, userId);
-  const dash = (await host.admin.listScopes(STAFF, { tenantId: t, vertical: 'dashboard' }))[0];
-  if (!mapped || !dash) return null;
-  // Self-heal role drift: a tenant provisioned before a permission was added to a role
-  // (e.g. dashboard:manage-integrations) gets its role set brought current here, once.
-  await reconcileRoles(host, STAFF, t);
-  return { tenantId: t, scopeId: dash.id, principal: mapped.principal };
-}
-
 /**
  * The authenticated customer's account node — the tenant, their dashboard scope,
  * and their principal in that tenant. Derived from the OIDC session (the ID token
@@ -574,10 +542,10 @@ async function resolveAccount(
 ): Promise<DashboardNode | null> {
   const user = await verifySession(env, sessionToken);
   if (!user) return null;
-  // The pool must exist before we can ask which tenants a login is in (central topology).
-  await host.admin.registerIdentityPool(STAFF, { provider: PROVIDER, topology: 'central', tenantId: null });
-  const tenants = await host.admin.listIdentityTenants(STAFF, PROVIDER, user.id);
-  const node = await resolveNode(host, tenants, user.id, selectedTeamId);
+  // One directory read: which teams, who this login is in each, and where they land
+  // (src/account.ts — it used to be ~3 reads + 2 per team, on every request).
+  // A node resolved in the last 30 s is reused (`NODE_TTL_MS` says what that window means).
+  const node = await resolveAccountNode(host, STAFF, resolveMemoFor(env.CONTROL_PLANE), user.id, selectedTeamId, Date.now());
   // Pre-roster teams (#191) get their empty roster seeded here — the email is only
   // in hand at this layer (the session), which is why the heal lives on this path.
   // A session with no usable address — none at all, or one the gate refuses (#1359) —
@@ -598,7 +566,7 @@ async function resolveAccount(
  * a controlled platform action, gated by the authenticated session.
  */
 async function createTeam(host: ScopeHost, env: Env, user: { id: string; email?: string | null }, name: string): Promise<DashboardNode> {
-  await host.admin.registerIdentityPool(STAFF, { provider: PROVIDER, topology: 'central', tenantId: null });
+  await ensureIdentityPool(host, STAFF, resolveMemoFor(env.CONTROL_PLANE));
   const t = tenantId.parse(ulid());
   const s = scopeId.parse(ulid());
   const owner = principalId.parse(ulid());
@@ -683,7 +651,7 @@ async function oidcProviderSlugsFor(
   host: ReturnType<typeof hostFor>,
   cp: TenantNarrowedControlPlane,
 ): Promise<Set<string>> {
-  await ensureCatalog(host, STAFF);
+  await ensureCatalogOnce(host);
   const local = await host.admin.listVerticals(STAFF);
   const remote = await cp.listCatalog().catch(() => []);
   return oidcIssuerProviderSlugs(local, remote);
@@ -724,7 +692,7 @@ async function installSpecFor(
   slug: string,
   cp: TenantNarrowedControlPlane,
 ): Promise<{ entitlements: string[]; ownerGrants: PermissionKey[]; envSpec: EnvVarSpec[] }> {
-  await ensureCatalog(host, STAFF);
+  await ensureCatalogOnce(host);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === slug);
   const cat = CATALOG[slug];
   if (registered || cat) {
@@ -753,15 +721,17 @@ app.get('/api/catalog', async (c) => {
   const host = hostFor(c.env);
   // Registry-driven (marketplace-publish.md §3): show published verticals + the caller's own.
   const node = await resolveAccount(host, c.env, getCookie(c, SESSION_COOKIE), getCookie(c, TEAM_COOKIE));
-  await ensureCatalog(host, STAFF);
-  const rows = availableCatalog(await host.admin.listVerticals(STAFF), { tenantId: node?.tenantId ?? null });
+  await ensureCatalogOnce(host);
   // Pushed verticals live in the SHARED plane's registry, not this deployment's own —
   // merge the caller's own + published ones in. Local wins on a shared slug: the builtin
   // seed here is refreshed each boot, the plane's copy may lag. The seam is tenant-narrowed,
   // so a caller with no session has none — they see the published builtins and no more.
   const cp = node ? controlPlaneFor(c.env, node.tenantId) : null;
+  // Two registries, two independent reads — asked together.
+  const [local, remote] = await Promise.all([host.admin.listVerticals(STAFF), cp ? cp.listCatalog() : []]);
+  const rows = availableCatalog(local, { tenantId: node?.tenantId ?? null });
   if (cp) {
-    for (const v of await cp.listCatalog()) {
+    for (const v of remote) {
       if (!rows.some((r) => r.slug === v.slug)) {
         rows.push({
           slug: v.slug,
@@ -802,12 +772,16 @@ app.get('/api/me', async (c) => {
   const host = hostFor(c.env);
   const user = await verifySession(c.env, getCookie(c, SESSION_COOKIE));
   if (!user) return c.json({ error: 'unauthorized' }, 401);
-  await host.admin.registerIdentityPool(STAFF, { provider: PROVIDER, topology: 'central', tenantId: null });
-  const tenants = await host.admin.listIdentityTenants(STAFF, PROVIDER, user.id);
+  const memo = resolveMemoFor(c.env.CONTROL_PLANE);
+  const memberships = await loginMemberships(host, STAFF, memo, user.id);
+  const tenants = memberships.map((m) => m.tenant.id);
   if (tenants.length === 0) {
     return c.json({ needsOnboarding: true, email: user.email ?? null, name: user.name ?? null });
   }
-  const node = await resolveNode(host, tenants, user.id, getCookie(c, TEAM_COOKIE));
+  // Always read fresh here — this is the call that draws the team switcher — and leave
+  // the answer behind for the handlers the page fires next.
+  const node = await resolveNode(host, STAFF, memo, memberships, getCookie(c, TEAM_COOKIE));
+  rememberNode(memo, user.id, getCookie(c, TEAM_COOKIE), node, Date.now());
   if (!node) return c.json({ error: 'unauthorized' }, 401);
   // Re-mirror this login's links into the shared plane's directory off the hot
   // path — the backfill for teams created before the mirror existed, and the
@@ -821,7 +795,7 @@ app.get('/api/me', async (c) => {
     dashboardScope: node.scopeId,
     email: user.email ?? null,
     name: user.name ?? null,
-    teams: await listTeams(host, tenants),
+    teams: teamsOf(memberships),
     currentTeamId: node.tenantId,
   });
 });
@@ -871,6 +845,7 @@ app.post('/api/teams', async (c) => {
   const { name } = createTeamBody.parse(await c.req.json());
   const host = hostFor(c.env);
   const node = await createTeam(host, c.env, user, name);
+  forgetLogin(resolveMemoFor(c.env.CONTROL_PLANE), user.id);
   setCookie(c, TEAM_COOKIE, node.tenantId, teamCookieOpts(new URL(c.req.url).protocol));
   return c.json({ teamId: node.tenantId }, 201);
 });
@@ -888,7 +863,7 @@ app.post('/api/teams/switch', async (c) => {
   if (!user) throw new HTTPException(401, { message: 'unauthorized' });
   const { teamId } = switchTeamBody.parse(await c.req.json());
   const host = hostFor(c.env);
-  await host.admin.registerIdentityPool(STAFF, { provider: PROVIDER, topology: 'central', tenantId: null });
+  await ensureIdentityPool(host, STAFF, resolveMemoFor(c.env.CONTROL_PLANE));
   const tenants = await host.admin.listIdentityTenants(STAFF, PROVIDER, user.id);
   if (!tenants.some((t) => t === teamId)) {
     throw new HTTPException(403, { message: 'not a member of that team' });
@@ -913,6 +888,7 @@ app.post('/api/teams/leave', async (c) => {
   await host.admin.unlinkIdentity(STAFF, node.tenantId, node.principal);
   // Sever the shared plane's mirrored link too (best-effort — see mirrorBuilderIdentity).
   await controlPlaneFor(c.env, node.tenantId)?.unlinkIdentity(node.principal).catch(() => {});
+  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
   deleteCookie(c, TEAM_COOKIE, { path: '/' });
   return c.body(null, 204);
 });
@@ -965,6 +941,7 @@ app.post('/api/teams/delete', async (c) => {
       // an already-unlinked member (e.g. left earlier) is fine
     }
   }
+  forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
   deleteCookie(c, TEAM_COOKIE, { path: '/' });
   return c.body(null, 204);
 });
@@ -1182,6 +1159,7 @@ app.post('/api/members/remove', async (c) => {
     // And the shared plane's mirrored link, so their CLI push loses the
     // workspace too (best-effort — see mirrorBuilderIdentity).
     await controlPlaneFor(c.env, node.tenantId)?.unlinkIdentity(principal).catch(() => {});
+    forgetTenant(resolveMemoFor(c.env.CONTROL_PLANE), node.tenantId);
   }
   return c.body(null, 204);
 });
@@ -1238,7 +1216,7 @@ app.post('/api/invites/accept', async (c) => {
   const s = scopeId.parse(claim.scopeId);
 
   const host = hostFor(c.env);
-  await host.admin.registerIdentityPool(STAFF, { provider: PROVIDER, topology: 'central', tenantId: null });
+  await ensureIdentityPool(host, STAFF, resolveMemoFor(c.env.CONTROL_PLANE));
   // Already in this team? Nothing to accept — just switch to it (idempotent link click).
   if (await host.admin.resolveIdentity(t, PROVIDER, user.id)) {
     setCookie(c, TEAM_COOKIE, t, teamCookieOpts(new URL(c.req.url).protocol));
@@ -1270,6 +1248,7 @@ app.post('/api/invites/accept', async (c) => {
   // Mirror the new member into the shared plane's directory so they can
   // `substrat push` for this workspace too (see mirrorBuilderIdentity).
   await mirrorBuilderIdentity(c.env, host, user.id, t);
+  forgetLogin(resolveMemoFor(c.env.CONTROL_PLANE), user.id);
   setCookie(c, TEAM_COOKIE, t, teamCookieOpts(new URL(c.req.url).protocol));
   return c.json({ teamId: t });
 });
@@ -1287,7 +1266,9 @@ app.get('/api/apps', async (c) => {
   // platform-side) leaves it null forever while the router happily serves the app.
   // The directory is the source of truth for hostnames — join it for the gaps.
   const cp = controlPlaneFor(c.env, node.tenantId);
-  for (const a of apps) {
+  // Each app's heals are ordered among themselves and independent of every other
+  // app's, so the rows go out together: the page costs its slowest app, not their sum.
+  await Promise.all(apps.map(async (a) => {
     const sid = scopeId.parse(a.app_scope_id);
     // One directory read serves both heals below; null = "unknown, change nothing".
     const dir = await cp.scopeStatus(sid);
@@ -1330,11 +1311,11 @@ app.get('/api/apps', async (c) => {
         .catch(() => null)) as DashboardAppRow | null;
       if (healed) a.vertical_slug = healed.vertical_slug;
     }
-    if (a.hostname || a.status !== 'active') continue;
+    if (a.hostname || a.status !== 'active') return;
     const live = (await cp.listHostnames(scopeId.parse(a.app_scope_id)).catch(() => []))
       .find((h) => h.status === 'active');
     if (live) a.hostname = live.hostname;
-  }
+  }));
   return c.json(pageOf(apps, page.limit, (a) => a.id));
 });
 
@@ -2739,7 +2720,7 @@ app.get('/api/apps/:scopeId/env', async (c) => {
   // pushed vertical registers on the SHARED plane, not this deployment's registry —
   // same lookup ladder as installSpecFor: local registry, the hardcoded catalog, then
   // the shared plane's catalog.
-  await ensureCatalog(host, STAFF);
+  await ensureCatalogOnce(host);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === appRow.vertical_slug);
   let spec = registered?.envSpec ?? CATALOG[appRow.vertical_slug]?.envSpec;
   if (!spec) {
@@ -2818,7 +2799,7 @@ async function requiredProvidersBySlug(
   tenantId: TenantId,
   slugs: string[],
 ): Promise<Map<string, string[]>> {
-  await ensureCatalog(host, STAFF);
+  await ensureCatalogOnce(host);
   const registered = await host.admin.listVerticals(STAFF);
   let remote: Array<{ slug: string; requires?: string[] }> | undefined;
   const out = new Map<string, string[]>();
@@ -3601,7 +3582,7 @@ app.get('/api/apps/:scopeId/hostnames', async (c) => {
   });
   // Declared surfaces: local registry first, then the shared plane's catalog for a
   // vertical pushed there — the same lookup ladder the Env tab's spec uses.
-  await ensureCatalog(host, STAFF);
+  await ensureCatalogOnce(host);
   const registered = (await host.admin.listVerticals(STAFF)).find((v) => v.slug === appRow.vertical_slug);
   let surfaces = registered?.surfaces;
   if (!surfaces) {
@@ -3956,6 +3937,29 @@ app.get('/api/deployments', async (c) => {
  * capability, so the plane's own 501 (no observability backend configured) passes
  * through as such.
  */
+/**
+ * A metrics read, or its answer from the last minute (src/telemetry-cache.ts). Always
+ * called AFTER the route has resolved the account and narrowed what it asks for to this
+ * tenant's own apps — the cache remembers an authorized answer, it never decides one.
+ * `x-telemetry-cache` says which it was, so a slow chart can be told apart from a cold one.
+ */
+const telemetryStore = (): TelemetryStore | null => {
+  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
+  return cache ? { match: (key) => cache.match(key), put: (key, res) => cache.put(key, res) } : null;
+};
+function telemetry<T>(
+  c: Context<{ Bindings: Env }>,
+  tenant: TenantId,
+  read: string,
+  params: Parameters<typeof telemetryKey>[2],
+  load: () => Promise<T>,
+): Promise<T> {
+  return cachedTelemetry(telemetryStore(), telemetryKey(tenant, read, params), load, {
+    defer: (work) => c.executionCtx.waitUntil(work),
+    onOutcome: (outcome) => c.header('x-telemetry-cache', outcome),
+  });
+}
+
 const cpObservability = async <T>(read: () => Promise<T>): Promise<T> => {
   try {
     return await read();
@@ -3976,7 +3980,12 @@ app.get('/api/observability/metrics', async (c) => {
   // `vertical` narrows to one owned vertical's versions (the per-app Observability
   // tab); an unowned slug answers [] in the authority without reaching the plane.
   const vertical = c.req.query('vertical') || undefined;
-  return c.json(await cpObservability(() => cp.observabilityMetrics(Number.isFinite(hours) ? hours : 24, vertical)));
+  const h = Number.isFinite(hours) ? hours : 24;
+  return c.json(
+    await telemetry(c, node.tenantId, 'metrics', { hours: h, vertical }, () =>
+      cpObservability(() => cp.observabilityMetrics(h, vertical)),
+    ),
+  );
 });
 
 app.get('/api/observability/logs', async (c) => {
@@ -4030,9 +4039,10 @@ app.get('/api/apps/:scopeId/observability/metrics', async (c) => {
   if (!appRow) throw new HTTPException(404, { message: 'app not found' });
   const cp = controlPlaneFor(c.env, node.tenantId);
   const hours = Number(c.req.query('hours') ?? '24');
+  const h = Number.isFinite(hours) ? hours : 24;
   return c.json(
-    await cpObservability(() =>
-      cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: Number.isFinite(hours) ? hours : 24 }),
+    await telemetry(c, node.tenantId, 'tenant-metrics', { scopeId: appRow.app_scope_id, hours: h }, () =>
+      cpObservability(() => cp.tenantMetrics({ scopeId: appRow.app_scope_id, hours: h })),
     ),
   );
 });
@@ -4069,9 +4079,10 @@ app.get('/api/observability/tenant-metrics-series', async (c) => {
   if (scopeIds.length === 0) return c.json([]);
   const cp = controlPlaneFor(c.env, node.tenantId);
   const hours = Number(c.req.query('hours') ?? '24');
+  const h = Number.isFinite(hours) ? hours : 24;
   return c.json(
-    await cpObservability(() =>
-      cp.tenantMetricsSeries({ scopeIds, hours: Number.isFinite(hours) ? hours : 24 }),
+    await telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours: h }, () =>
+      cpObservability(() => cp.tenantMetricsSeries({ scopeIds, hours: h })),
     ),
   );
 });
@@ -4106,10 +4117,15 @@ app.get('/api/observability/traffic', async (c) => {
   // token, a saturated plane, a 5xx — is an operational failure and propagates, so the
   // page shows an error rather than a confident "not available" over a plane that is
   // merely down, which reads as a fact about the platform rather than an outage.
-  const buckets = await cp.tenantMetricsSeries({ scopeIds, hours }).catch((e: unknown) => {
-    if (e instanceof ControlPlaneError && e.status === 501) return null;
-    throw e;
-  });
+  // Shares its entry with the raw series route above: same read, same key. The 501's
+  // null is never remembered (the cache skips an empty answer), so a backend that comes
+  // up is seen on the next load.
+  const buckets = await telemetry(c, node.tenantId, 'tenant-metrics-series', { scopeIds, hours }, () =>
+    cp.tenantMetricsSeries({ scopeIds, hours }).catch((e: unknown) => {
+      if (e instanceof ControlPlaneError && e.status === 501) return null;
+      throw e;
+    }),
+  );
   return c.json(deriveTeamSeries({ buckets, scopeIds, hours, now }));
 });
 
@@ -4299,10 +4315,8 @@ app.post('/api/deployments/:slug/promote', async (c) => {
   const body = promoteBody.parse(await c.req.json());
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const deployments = await listDeploymentsFromCp(cp);
-  assertOwned(deployments, slug); // your vertical, or 4xx
-  const target = deployments.find((d) => d.slug === slug);
-  if (body.channel === 'prod' && target?.listed) {
+  const target = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
+  if (body.channel === 'prod' && target.listed) {
     throw new HTTPException(403, { message: 'production for a published vertical is promoted by the Substrat team' });
   }
   await cp.promote(slug, body.channel, body.versionId, body.acknowledge);
@@ -4321,7 +4335,7 @@ app.get('/api/deployments/:slug/channels/:channel/history', async (c) => {
   const slug = c.req.param('slug');
   const channel = z.enum(['prod']).parse(c.req.param('channel'));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  assertOwned(await listDeploymentsFromCp(cp), slug);
+  await assertOwnedFromCp(cp, slug);
   return c.json(await cp.channelHistory(slug, channel));
 });
 
@@ -4338,7 +4352,7 @@ app.get('/api/deployments/:slug/failures', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  assertOwned(await listDeploymentsFromCp(cp), slug);
+  await assertOwnedFromCp(cp, slug);
   return c.json(await cp.listOpsFailures({ vertical: slug, limit: 50 }));
 });
 
@@ -4359,9 +4373,7 @@ app.get('/api/deployments/:slug/releases', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const deployments = await listDeploymentsFromCp(cp);
-  assertOwned(deployments, slug);
-  const deployment = deployments.find((d) => d.slug === slug)!;
+  const deployment = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
   const [prodHistory, scopes, failures, metrics] = await Promise.all([
     cp.channelHistory(slug, 'prod'),
     cp.listScopes(slug),
@@ -4387,9 +4399,7 @@ app.get('/api/deployments/:slug/traffic', async (c) => {
   // The window is also the marker grid, so a fractional one is meaningless — see chartHours.
   const hours = chartHours(c.req.query('hours'));
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const deployments = await listDeploymentsFromCp(cp);
-  assertOwned(deployments, slug);
-  const deployment = deployments.find((d) => d.slug === slug)!;
+  const deployment = await ownedDeploymentOrThrow(cp, slug); // your vertical, or 4xx
   const [prodHistory, buckets] = await Promise.all([
     cp.channelHistory(slug, 'prod'),
     cp.observabilityMetricsSeries(hours, slug).catch(() => null),
@@ -4414,7 +4424,7 @@ app.get('/api/deployments/:slug/issues', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  assertOwned(await listDeploymentsFromCp(cp), slug);
+  await assertOwnedFromCp(cp, slug);
   // Two capped pages of evidence — enough for a story, bounded for a request.
   return c.json(deriveFailureGroups(await cp.listOpsFailures({ vertical: slug, limit: 400 })));
 });
@@ -4432,9 +4442,8 @@ app.delete('/api/deployments/:slug', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = controlPlaneFor(c.env, node.tenantId);
-  const deployments = await listDeploymentsFromCp(cp);
-  assertOwned(deployments, slug); // your vertical, or 4xx
-  if (deployments.find((d) => d.slug === slug)?.listed) {
+  // `listed` is on the vertical row, so the ownership read is the only one needed.
+  if ((await assertOwnedFromCp(cp, slug)).listed) {
     throw new HTTPException(403, { message: 'a published vertical is removed by the Substrat team' });
   }
   await cp.deleteVertical(slug);
@@ -4460,7 +4469,7 @@ app.get('/api/deployments/:slug/previews', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = cpOrThrow(c.env, node.tenantId);
-  assertOwned(await listDeploymentsFromCp(cp), slug); // your vertical, or 4xx
+  await assertOwnedFromCp(cp, slug); // your vertical, or 4xx
   return c.json(await cp.listPreviews(slug));
 });
 
@@ -4484,7 +4493,7 @@ app.post('/api/deployments/:slug/previews', async (c) => {
   const slug = c.req.param('slug');
   const body = createPreviewBody.parse(await c.req.json());
   const cp = cpOrThrow(c.env, node.tenantId);
-  assertOwned(await listDeploymentsFromCp(cp), slug);
+  await assertOwnedFromCp(cp, slug);
   try {
     const out = await cp.createPreview(slug, {
       tag: body.tag,
@@ -4508,7 +4517,7 @@ app.delete('/api/deployments/:slug/previews/:tag', async (c) => {
   if (!node) throw new HTTPException(401, { message: 'unauthorized' });
   const slug = c.req.param('slug');
   const cp = cpOrThrow(c.env, node.tenantId);
-  assertOwned(await listDeploymentsFromCp(cp), slug);
+  await assertOwnedFromCp(cp, slug);
   return c.json(await cp.deletePreview(slug, c.req.param('tag')));
 });
 
@@ -4529,7 +4538,7 @@ app.post('/api/deployments/:slug/previews/:tag/domain', async (c) => {
     .object({ domain: z.string().min(1).max(253), surface: z.string().min(1).max(32).optional(), canonical: z.boolean().optional() })
     .parse(await c.req.json());
   const cp = cpOrThrow(c.env, node.tenantId);
-  assertOwned(await listDeploymentsFromCp(cp), slug);
+  await assertOwnedFromCp(cp, slug);
   const preview = (await cp.listPreviews(slug)).find((p) => p.tag === tag);
   if (!preview) throw new HTTPException(404, { message: `no preview '${tag}' for '${slug}'` });
   try {

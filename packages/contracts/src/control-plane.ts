@@ -369,6 +369,31 @@ export const resolvedIdentity = z.object({
 export type ResolvedIdentity = z.infer<typeof resolvedIdentity>;
 
 /**
+ * One tenant a central-pool login belongs to, with everything a team switcher and a
+ * per-request resolve need beside it — so "which teams, who am I in each, and where do
+ * I land" is ONE directory read instead of one per tenant.
+ *
+ * Unlike `resolvedIdentity` this DOES carry the tenant, and that is the point rather
+ * than a contradiction of the note above: the read it rides is the cross-tenant one
+ * (`listIdentityMemberships`), which exists only on a central pool, where the same
+ * `externalId` is by declaration the same person in every tenant.
+ *
+ * The tenant arrives whole, `status` included, and non-active tenants are NOT filtered
+ * out: whether a `deleting` team should still resolve is the caller's policy. `scope`
+ * is the scope the link was made in, joined to its directory row so the caller can tell
+ * which vertical it runs without a second read; null when the link named no scope or
+ * the scope row is gone.
+ */
+export const identityMembership = z.object({
+  tenant,
+  principal: principalId,
+  scope: z
+    .object({ id: scopeId, vertical: z.string().nullable(), status: z.string() })
+    .nullable(),
+});
+export type IdentityMembership = z.infer<typeof identityMembership>;
+
+/**
  * One staff READ of the directory (K-24). Separate from `adminLogEntry` because a
  * mutation is permanent evidence and a read is operational history — one table would
  * force one retention policy on both.

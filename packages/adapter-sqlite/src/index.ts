@@ -60,6 +60,7 @@ import {
   orgMembership,
   principalId,
   resolvedIdentity,
+  identityMembership,
   roleDefinition,
   scope as scopeSchema,
   tenant as tenantSchema,
@@ -102,6 +103,7 @@ import {
   type MeterReading,
   type CreateOrgInput,
   type IdentityLink,
+  type IdentityMembership,
   type IdentityPool,
   type Node,
   type Org,
@@ -6909,6 +6911,53 @@ export class SqliteScopeHost implements ScopeHost {
         // worth being able to ask who asked.
         this.recordAccess(actor, 'listIdentityTenants', {}, { provider }, tenants.length);
         return tenants;
+      },
+      listIdentityMemberships: async (
+        actor,
+        provider: string,
+        externalId: string,
+      ): Promise<IdentityMembership[]> => {
+        const pool = readPool(provider);
+        if (!pool) throw new Error(`identity pool '${provider}' is not registered`);
+        if (pool.topology !== 'central') {
+          throw new Error(
+            `identity pool '${provider}' is tenant-bound — enumerating tenants is only ` +
+              `meaningful on a central pool, where the same externalId is the same person`,
+          );
+        }
+        const rows = this.directory
+          .prepare(
+            `SELECT i.tenant_id, i.principal_id, s.scope_id, s.vertical, s.status AS scope_status
+               FROM _substrat_identities i
+               LEFT JOIN scopes s ON s.scope_id = i.scope_id AND s.tenant_id = i.tenant_id
+              WHERE i.provider = ? AND i.external_id = ?
+              ORDER BY i.tenant_id`,
+          )
+          .all(provider, externalId) as {
+          tenant_id: string;
+          principal_id: string;
+          scope_id: string | null;
+          vertical: string | null;
+          scope_status: string | null;
+        }[];
+        const memberships = rows.flatMap((r) => {
+          // A link whose tenant row is gone names nothing a caller could land in.
+          const tenant = readTenant(r.tenant_id as TenantId);
+          if (!tenant) return [];
+          return [
+            identityMembership.parse({
+              tenant,
+              principal: r.principal_id,
+              scope:
+                r.scope_id === null
+                  ? null
+                  : { id: r.scope_id, vertical: r.vertical, status: r.scope_status ?? 'active' },
+            }),
+          ];
+        });
+        // One row for the whole answer — the read this replaces logged one per tenant.
+        this.recordAccess(actor, 'listIdentityMemberships', {}, { provider }, memberships.length);
+        return memberships;
       },
       listIdentityLinks: async (actor, tid: TenantId) => {
         // The projection read (#406): what the platform gathers to deliver a tenant's

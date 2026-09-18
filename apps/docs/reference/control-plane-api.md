@@ -66,7 +66,11 @@ Route groups map one-to-one onto the `HostAdmin` capability groups:
   vertical's own status is forwarded unchanged.
 - **Verticals** — `/verticals` (+ `versions`, `versions/:id/admit`|`reject`, `channels`,
   `channels/:c/promote`, `deploy`, `instances`, `listing`, `publish-request`,
-  `install-block`): the registry, admission, promotion, and the deploy path. A vertical has one
+  `install-block`): the registry, admission, promotion, and the deploy path. A staff or
+  service caller may narrow `GET /verticals` to one tenant's slice — `?ownerTenant=<id>` for
+  what it owns, `?visibleTo=<id>` to add the published tier, which is what its install
+  catalog shows; both only narrow, and both are ignored for a builder session, whose list is
+  already fixed to what it owns. A vertical has one
   channel — `prod` ([dev/staging retired](/concepts/deploying#the-one-channel-prod)); `channels/:c/promote`
   refuses a non-`prod` channel with a `400`. `GET /verticals/:slug/egress` (staff-only, like
   the other observability reads) lays each deployed version's *observed* outbound hosts

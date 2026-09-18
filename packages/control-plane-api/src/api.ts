@@ -3565,7 +3565,24 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     const p = c.get('principal');
     // A builder sees only what it owns; staff see the whole registry. The narrowing
     // runs above the adapter, so the page is sliced here — over the narrowed list.
-    const visible = p.kind === 'builder' ? all.filter((v) => v.ownerTenant === p.tenantId) : all;
+    //
+    // A staff/service caller may ask for one tenant's slice instead of the registry:
+    // `ownerTenant` is what that tenant owns, `visibleTo` adds the published tier (what
+    // its install catalog shows). Both only ever NARROW, and both are ignored for a
+    // builder, whose view is fixed by its auth — `visibleTo` would otherwise widen it.
+    // The dashboard's tenant-narrowed seam sends them so it stops paging the whole
+    // registry to keep a handful of rows; it still filters what comes back, so a plane
+    // that predates the params (the two ship separately) changes nothing but the size.
+    const ownerTenant = c.req.query('ownerTenant');
+    const visibleTo = c.req.query('visibleTo');
+    const visible =
+      p.kind === 'builder'
+        ? all.filter((v) => v.ownerTenant === p.tenantId)
+        : all.filter(
+            (v) =>
+              (ownerTenant === undefined || v.ownerTenant === ownerTenant) &&
+              (visibleTo === undefined || v.listed || v.ownerTenant === visibleTo),
+          );
     return c.json(pageSlice(visible, page, (v) => v.slug));
   });
 
