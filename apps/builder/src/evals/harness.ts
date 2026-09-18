@@ -615,10 +615,17 @@ export function forkScore(r: EvalResult): ForkScore {
 	};
 }
 
-/** `3/4 forks at 2 interview question(s)` — one line, both numbers, never one alone. */
+/**
+ * `3/4 fork(s) at 2 interview question(s)` — one line, both numbers, never one
+ * alone. The `?` after the ratio is the same marker the sweep summary prints,
+ * and it has to survive the extreme case: a fixture pinning ONLY operations and
+ * roles whose probe crashed scores `0/0`, where the ratio on its own reads as a
+ * clean sheet.
+ */
 export function formatForkScore(score: ForkScore): string {
 	return (
-		`${score.met}/${score.total} fork(s) at ${score.questions} interview question(s)` +
+		`${score.met}/${score.total}${score.unresolved ? '?' : ''} fork(s) at ` +
+		`${score.questions} interview question(s)` +
 		(score.unresolved ? ' · probe unresolved, pinned forks missing from the count' : '')
 	);
 }
@@ -633,8 +640,11 @@ export function formatEvalResult(r: EvalResult): string {
 	const score = forkScore(r);
 	// Printed for every run, pass or fail: a PASS at eight interview questions
 	// and a PASS at one are not the same result, and the verdict line cannot
-	// say so on its own.
-	if (score.total > 0) lines.push(`  ${formatForkScore(score)}`);
+	// say so on its own. `unresolved` keeps the line when `total` is 0 — a
+	// fixture pinning only operations and roles loses ALL of them to a crashed
+	// probe, and staying silent there is exactly the reading the flag exists to
+	// stop.
+	if (score.total > 0 || score.unresolved) lines.push(`  ${formatForkScore(score)}`);
 	if (r.error) lines.push(`  fatal: ${r.error}`);
 	if (r.gates && !r.gates.ok) {
 		const red = r.gates.results.filter((g) => g.status === 'failed' || g.status === 'blocked');

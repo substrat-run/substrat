@@ -22,6 +22,7 @@ import {
 	EVAL_PROJECT_PREFIX,
 	forkScore,
 	formatEvalResult,
+	formatForkScore,
 	INTERVIEW_TURNS,
 	parseExpectations,
 	prepareProject,
@@ -568,6 +569,21 @@ describe('forkScore — forks correct AT a question count (#740)', () => {
 			),
 		);
 		expect(score).toEqual({ met: 1, total: 1, questions: 0, unresolved: true });
+		expect(formatForkScore(score)).toContain('1/1? fork(s)');
+	});
+
+	it('still prints the line when a crashed probe leaves NOTHING judgeable', () => {
+		// A fixture pinning only operations and roles loses every fork to one
+		// probe outcome, so the score is 0/0 — which on its own reads as a clean
+		// sheet. Staying silent there is the reading `unresolved` exists to stop.
+		const result = resultWith(
+			[{ kind: 'probe', target: 'MODULES export', ok: false, detail: 'no MODULES export' }],
+			4,
+		);
+		expect(forkScore(result)).toEqual({ met: 0, total: 0, questions: 4, unresolved: true });
+		expect(formatEvalResult(result)).toContain(
+			'0/0? fork(s) at 4 interview question(s) · probe unresolved',
+		);
 	});
 
 	it('reports nothing to pair when the fixture pins no forks', () => {
