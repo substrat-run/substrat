@@ -637,9 +637,10 @@ if (drifted.length > 0) {
 if (stream.created) {
   const id = stream.live?.id;
   console.log(`
-A NEW STREAM HAS A NEW ID, and the control plane binds it by id. Until these run it ships
-to a stream that no longer exists. Run them ONE AT A TIME — pasted as a block, the shell
-carries on past a failure and can publish the old id:
+A NEW STREAM HAS A NEW ID, and the control plane binds it by id — wrangler's pipelines
+binding has no name form, so nothing about this is self-correcting. Until these run, the
+plane ships to a stream that no longer exists. Run them ONE AT A TIME — pasted as a block,
+the shell carries on past a failure and can publish the old id:
 
   1. In secrets/platform.prod.env set:
        CF_PIPELINE_OUTBOX_STREAM_ID=${id ?? '<the id the create returned — dry run, none yet>'}
@@ -648,10 +649,19 @@ carries on past a failure and can publish the old id:
        — note the time it FINISHES; step 4 needs it
   4. pnpm lake:redrain --drained-before=<that time, ISO 8601>
 
-Step 4 is what makes a recreate lose nothing. Every row the drain already shipped is
-stamped in its outbox, and dropping the table did not clear those stamps, so without it the
-new table starts here with a hole behind it. The instant is the DEPLOY, not this teardown:
-until the new id is live the old plane may keep stamping rows into the stream that is gone.
-When unsure, pick later rather than earlier — later can duplicate a few rows, earlier loses
-them.`);
+Step 2 is the one that is easy to skip and the most expensive. CI reads the repository
+VARIABLE and never the secrets file, so skipping it leaves every release failing on the
+stale id while a deploy from a laptop passes — which is exactly how #1522's recreate broke
+the release of 2026-09-18, three days later. tools/preflight-pipelines.mjs now refuses a
+control-plane deploy whose binding names a stream the account does not have, so the failure
+at least says so.
+
+Step 4 is what stops a recreate losing the history the DROPPED TABLE held: those rows are
+stamped in their outboxes, the stamp is one-way, and the drain will never offer them again.
+It is NOT needed for the window between this teardown and step 3's deploy — the drain fails
+closed there. It ships before it stamps (drainScopeEvents in packages/kernel), and the
+sink throws when the stream is gone, so nothing in that window is ever stamped; those rows
+simply wait and go out after step 3. Skip step 4 entirely when this table held nothing worth
+refilling — a lake with no snapshots has none — and remember that the redrain has no lower
+bound, so on a table that DOES hold data it re-sends everything before the instant.`);
 }

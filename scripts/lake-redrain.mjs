@@ -13,11 +13,25 @@
  *   node scripts/lake-redrain.mjs --drained-before=2026-09-17T10:42:00.000Z
  *
  * `--drained-before` is REQUIRED, and choosing it is the only judgement in the whole run.
- * It is the instant the control plane began shipping to the NEW stream — the moment the
- * deploy carrying the new stream id FINISHED — not the moment the table was dropped: until
- * the new id is live, the old plane may keep stamping rows into a stream that no longer
- * exists. Earlier than that leaves holes. Later re-sends a few rows the new table already
- * has. When unsure, pick later — a duplicate is reconcilable by event id, a hole is not.
+ * The safe answer is the moment the deploy carrying the NEW stream id finished; anything
+ * from the teardown onwards is equally safe, and later still only re-sends rows the new
+ * table already has. When unsure, pick later — a duplicate is reconcilable by event id, a
+ * hole is not.
+ *
+ * This used to say the teardown was the WRONG instant, because "until the new id is live
+ * the old plane may keep stamping rows into a stream that is gone". That is false, and it
+ * mattered: it describes a hole this script would be the only way to repair, so it invites
+ * a redrain that is not needed. **The drain fails closed.** `drainScopeEvents`
+ * (`packages/kernel/src/platform-sweep.ts`) awaits `sink.ship(...)` and only then
+ * `markEventsDrained(...)`, and `createPipelinesEventSink` throws when `send` does — so
+ * while the binding names a stream that no longer exists, NOTHING is stamped. Those rows
+ * stay undrained and ship by themselves once the id is fixed. The window between a
+ * teardown and its deploy therefore contains no stamped rows at all, which is why the
+ * choice of instant inside it cannot lose anything.
+ *
+ * What a recreate really costs, and what this script is for, is the rows stamped BEFORE
+ * the teardown: the table that held them was dropped, and the stamp is one-way, so the
+ * drain will never offer them again.
  *
  * Active scopes only, because those are the scopes the drain drains: reopening an archived
  * scope's rows would mark them eligible for a shipment that is never coming.
@@ -142,15 +156,51 @@ console.log(`Re-send drained history — rows stamped before ${drainedBefore}  (
 const scopes = await activeScopes();
 console.log(`${scopes.length} active scope(s)\n`);
 
+/**
+ * The dry run reports what it CHECKED and stops.
+ *
+ * It used to print `would reopen <scope>` for every active scope, which read as a
+ * per-scope finding and was nothing of the kind: the line was unconditional, and no row
+ * was ever counted. Twenty-five scopes listed that way look like twenty-five scopes with
+ * work to do, which is the one thing somebody runs a dry run to learn — so it was worse
+ * than printing nothing. There is no read-only count to print instead: `redrainEvents`
+ * only ever reopens, and a counting variant would be a new field on a published input
+ * schema, both adapters, the delegation hop and the control-plane route (#TODO).
+ *
+ * What a dry run CAN establish is everything except the number, and all of it is
+ * load-bearing: the control plane answers, the service token is accepted, the instant
+ * parses and sits inside the window the kernel will enforce, and this is the set of
+ * scopes the real run will walk. So it says that, and says plainly what it cannot know.
+ */
+if (dryRun) {
+  console.log('Checked:');
+  console.log(`  · control plane reachable at ${cpUrl}, SERVICE_TOKEN accepted`);
+  console.log(`  · --drained-before parses and is in-window: ${drainedBefore}`);
+  console.log(`  · ${scopes.length} active scope(s) to walk:\n`);
+  for (const scope of scopes) {
+    console.log(`      ${scope.tenantId}/${scope.id}${scope.vertical ? ` (${scope.vertical})` : ''}`);
+  }
+  console.log(`
+NOT checked: how many rows would reopen, in total or per scope. Nothing reads that without
+reopening it, so this cannot tell you whether there is anything to do.
+
+Before running it for real, two things decide whether you should:
+
+  · Does the lake table hold anything? A table with zero Iceberg snapshots has never
+    received a row, so there is nothing a re-send would be duplicating.
+  · Is the history worth re-sending? This has NO lower bound — it reopens every stamped
+    row before the instant, not just the ones since a teardown — and the drain ships 200
+    per scope per 15 minutes, so a long backlog takes as long to re-send as it took to send.
+
+Nothing changed. Drop --dry-run to reopen.`);
+  process.exit(0);
+}
+
 let total = 0;
 let changed = 0;
 const errors = [];
 for (const scope of scopes) {
   const label = `${scope.tenantId}/${scope.id}${scope.vertical ? ` (${scope.vertical})` : ''}`;
-  if (dryRun) {
-    console.log(`  · would reopen  ${label}`);
-    continue;
-  }
   // LOOP until the scope answers 0. One call reopens a bounded batch (`REDRAIN_BATCH`),
   // because the outbox is never pruned and an unbounded update on an old scope would not
   // fit in a single Durable Object request — it would fail, and fail again on every retry.
@@ -180,13 +230,10 @@ for (const scope of scopes) {
   console.log(`  ${n > 0 ? '●' : '='} ${label}  ${n > 0 ? `${n} reopened` : 'nothing to reopen'}`);
 }
 
-if (dryRun) {
-  console.log('\nNothing changed. Drop --dry-run to reopen.');
-} else {
-  console.log(`\n${total} row(s) reopened across ${changed} scope(s). The drain ships them on its next ticks —`);
-  console.log('200 per scope per 15 minutes, so a large backlog takes as long to re-send as it took to send.');
-  console.log('Re-running with the same instant is safe: it reopens nothing twice.');
-}
+// Past the dry-run exit above, so this is always the real run's report.
+console.log(`\n${total} row(s) reopened across ${changed} scope(s). The drain ships them on its next ticks —`);
+console.log('200 per scope per 15 minutes, so a large backlog takes as long to re-send as it took to send.');
+console.log('Re-running with the same instant is safe: it reopens nothing twice.');
 if (errors.length > 0) {
   console.error(`\n✗ ${errors.length} scope(s) not reopened:`);
   for (const e of errors) console.error(`    ${e.label}  ${e.why}`);
