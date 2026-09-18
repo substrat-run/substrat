@@ -332,7 +332,8 @@ jobs:
       - run: pnpm --filter @substrat-run/vertical-egress cf:deploy:test
       - run: pnpm --filter @substrat-run/router cf:deploy:test
       - run: pnpm --filter @substrat-run/dashboard cf:deploy:test
-      # The social sign-in relay (#1544) — bound to nothing and depended on by nothing, so
-      # its position is free.
-      - run: pnpm --filter @substrat-run/social-relay cf:deploy:test
       - run: pnpm --filter @substrat-run/docs cf:deploy:test
+      # LAST, like the builder in release.yml: these steps fail fast, and the relay's
+      # custom domain does not exist until someone creates it — so a failure here must not
+      # take the deploys that were already working down with it (#1544).
+      - run: pnpm --filter @substrat-run/social-relay cf:deploy:test

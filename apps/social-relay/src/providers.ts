@@ -116,7 +116,17 @@ const github: UpstreamProvider = {
   tokenUrl: 'https://github.com/login/oauth/access_token',
   /** GitHub has no `openid`; `user:email` is what makes the private address readable. */
   scope: 'read:user user:email',
-  authorizeParams: {},
+  /**
+   * The same reasoning as Google's `select_account`, in the spelling GitHub accepts:
+   * authorization is remembered per (user, OAuth app), and this app is shared by every
+   * install — so without this a person who signed in at one install is silently through
+   * at an unrelated one, with nothing on screen naming what they just joined.
+   *
+   * Apple is the one that cannot be given parity here: it re-shows its own screen only
+   * when the person has revoked the app, and offers no parameter to ask for it. That is a
+   * limit worth stating rather than leaving as an apparent oversight in this table.
+   */
+  authorizeParams: { prompt: 'consent' },
   callbackMethod: 'GET',
   clientSecretFor: staticSecret,
   async profileFrom(tokens, fetchImpl) {

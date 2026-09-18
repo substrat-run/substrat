@@ -309,18 +309,31 @@ export function createApp(options: AppOptions = {}) {
     const code = form.get('code') ?? '';
     if (!code) return redirectError(flow.redirectUri, flow.state, 'invalid_request', 'The provider returned no code.');
 
-    const body = new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: `${issuerOf(c.env, request, live.provider.id)}/callback`,
-      client_id: live.credentials.clientId,
-      client_secret: await live.provider.clientSecretFor(live.credentials, now()),
-    });
-    const tokenResponse = await fetchImpl(live.provider.tokenUrl, {
-      method: 'POST',
-      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
-      body: body.toString(),
-    });
+    /**
+     * The flow is already spent by the take above, so from here on there is exactly one
+     * acceptable way to fail: back at the install, with an error it can render. A throw
+     * would be a 500 on the relay's own origin — a dead end with no route back to the app
+     * the person came from. Both of the reachable throws are real: `fetch` rejects when an
+     * upstream is unreachable, and Apple's secret signing throws on a `.p8` that was
+     * mangled on its way into the secret store.
+     */
+    let tokenResponse: Response;
+    try {
+      const body = new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: `${issuerOf(c.env, request, live.provider.id)}/callback`,
+        client_id: live.credentials.clientId,
+        client_secret: await live.provider.clientSecretFor(live.credentials, now()),
+      });
+      tokenResponse = await fetchImpl(live.provider.tokenUrl, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+        body: body.toString(),
+      });
+    } catch {
+      return redirectError(flow.redirectUri, flow.state, 'server_error', 'The provider could not be reached.');
+    }
     const tokens = (await tokenResponse.json().catch(() => ({}))) as {
       access_token?: string;
       id_token?: string;
@@ -400,6 +413,15 @@ export function createApp(options: AppOptions = {}) {
     }
     const store = storeOf(c.env);
     if (!clientId || !clientSecret || !(await store.verifyClientSecret(clientId, clientSecret))) {
+      return c.json({ error: 'invalid_client', error_description: 'client authentication failed' }, 401);
+    }
+    /**
+     * The kill switch is checked HERE as well as at `/authorize`, because suspending an
+     * install between the two would otherwise still hand it a ten-minute id_token for
+     * every code minted in the preceding minute. A switch that takes a minute to take
+     * effect is not the switch anyone reaches for it to be.
+     */
+    if ((await store.getClient(clientId))?.disabled !== false) {
       return c.json({ error: 'invalid_client', error_description: 'client authentication failed' }, 401);
     }
     if ((form.get('grant_type') ?? '') !== 'authorization_code') {

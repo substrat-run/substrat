@@ -656,3 +656,69 @@ describe('the rate limit setting', () => {
     expect(rateLimitOf('-1')).toBe(120);
   });
 });
+
+describe('failures that must not become dead ends', () => {
+  it('sends an unreachable upstream back to the install, not a 500 at the relay', async () => {
+    // The flow is already spent by the time the exchange runs, so a throw here would be a
+    // page on the relay's own origin with no route back to the app the person came from.
+    const failing = (async () => {
+      throw new Error('connect ECONNREFUSED');
+    }) as unknown as typeof globalThis.fetch;
+    const app = createApp({ now: () => NOW, fetchImpl: failing });
+    const env = envWith();
+    const redirectUri = 'https://acme.global.substrat.run/api/auth/callback/platform-google';
+    const client = await registerInstall(redirectUri);
+    const { challenge } = await pkce();
+    const started = await app.request(
+      `https://id.substrat.net/google/authorize?response_type=code&client_id=${client.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}&state=s&code_challenge=${challenge}&code_challenge_method=S256`,
+      {},
+      env,
+    );
+    const flowId = new URL(started.headers.get('location') ?? '').searchParams.get('state') ?? '';
+    const back = await app.request(`https://id.substrat.net/google/callback?code=c&state=${flowId}`, {}, env);
+    expect(back.status).toBe(302);
+    const location = new URL(back.headers.get('location') ?? '');
+    expect(location.origin).toBe('https://acme.global.substrat.run');
+    expect(location.searchParams.get('error')).toBe('server_error');
+  });
+
+  it('honours the kill switch at the token endpoint, not only at authorize', async () => {
+    // Otherwise suspending an install still hands it a ten-minute id_token for every code
+    // minted in the preceding minute.
+    const round = await signInThroughGoogle();
+    await store.setClientDisabled(round.client.clientId, true);
+    const res = await round.app.request(
+      'https://id.substrat.net/google/token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: round.returned.searchParams.get('code') ?? '',
+          redirect_uri: round.redirectUri,
+          client_id: round.client.clientId,
+          client_secret: round.client.clientSecret,
+          code_verifier: round.verifier,
+        }).toString(),
+      },
+      round.env,
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'invalid_client' });
+  });
+
+  it('forces GitHub to show its authorization screen too, for the reason Google is', async () => {
+    const app = createApp({ now: () => NOW });
+    const redirectUri = 'https://acme.global.substrat.run/api/auth/callback/platform-github';
+    const client = await store.registerClient({ name: 'An install', redirectUris: [redirectUri] }, NOW);
+    const { challenge } = await pkce();
+    const res = await app.request(
+      `https://id.substrat.net/github/authorize?response_type=code&client_id=${client.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}&state=s&code_challenge=${challenge}&code_challenge_method=S256`,
+      {},
+      envWith(),
+    );
+    expect(new URL(res.headers.get('location') ?? '').searchParams.get('prompt')).toBe('consent');
+  });
+});
