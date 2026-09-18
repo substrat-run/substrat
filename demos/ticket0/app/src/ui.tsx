@@ -125,8 +125,10 @@ export function Unassigned({ size = 24 }: { size?: number }) {
  * The options are the rows the caller passes and nothing else. Those are a SUBSET of
  * the desk's directory — `assignableStaff` drops the assistant, which is in the
  * directory for its byline rather than because anyone can hand it work (#1154) — so
- * the picker offers less than `ticket0/assign` accepts, never more. "Unassigned" is
- * first because dropping a conversation is a real move, not the absence of one.
+ * the picker offers less than `ticket0/assign` accepts, never more; since #1154 the
+ * server refuses that one too, so the two agree rather than the app merely being the
+ * stricter of the pair. "Unassigned" is first because dropping a conversation is a
+ * real move, not the absence of one.
  */
 export function OwnerPicker({
   value,

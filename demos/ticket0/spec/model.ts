@@ -1436,6 +1436,14 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * rather than writing it (#1079): an unchecked string here sticks silently, and
    * the `assigned` notification it mints is addressed to somebody who will never
    * read it. `null` is the other legal value, and means nobody.
+   *
+   * Being in the directory is necessary and not sufficient: the assistant is in it
+   * too, because its messages need a byline, and the handler refuses it as an
+   * assignee for the same reason it refuses a stranger — it reads no notifications,
+   * so the conversation would sit with something that never picks it up (#1154).
+   * The directory is judged by DISPLAY NAME, because module code cannot ask the
+   * kernel which role a principal holds; a row's `kind` would be the honest test and
+   * is still open on that issue.
    */
   'ticket0/assign': {
     summary: 'Assign a conversation to someone (or nobody)',

@@ -1425,7 +1425,7 @@ describe('asking for a person', () => {
       expect(mine.map((n) => n.kind)).toContain('escalated');
     }
     // And it counts PEOPLE: the assistant's own accounts are in the same directory,
-    // because a desk must be able to hand a conversation back to them.
+    // because their messages need a byline — not because anyone can hand them work.
     const staff = (await (await at(world.substrat, 'agent')).invoke('ticket0/list-agents', {})) as Page<{
       display_name: string;
     }>;

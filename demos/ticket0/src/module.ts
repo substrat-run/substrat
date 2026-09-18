@@ -282,13 +282,17 @@ function savedReplyOrThrow(ctx: OperationContext, id: string): SavedReplyRow {
 }
 
 /**
- * Somebody this desk can hand work to.
+ * Somebody who is on this desk at all — membership, and only that.
  *
  * The directory is `ticket0_agent_profiles`, for the reason the operation's
  * docblock gives: it is the only in-scope record of a colleague, because nothing
  * lets module code ask who else holds a permission. So a principal with no
  * profile is refused here — `validation_failed` rather than a write, since a
  * typo that sticks is exactly what this is for.
+ *
+ * Being IN the directory is not the same as being somebody a conversation can be
+ * handed to; `assignableStaffOrThrow` below is that second question, and it is the
+ * one `assign` asks.
  */
 function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = ctx.sql.query<AgentProfileRow>(
@@ -299,6 +303,35 @@ function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow
     throw substratError(
       'validation_failed',
       `not a member of this desk: ${principal} — they appear here once they have set a profile`,
+    );
+  }
+  return row;
+}
+
+/**
+ * Somebody this desk can hand a conversation TO — which is narrower (#1154).
+ *
+ * `ticket0_agent_profiles` is two things at once: the desk's directory of colleagues
+ * AND the source of every human-readable byline. The assistant needs the second, so
+ * it has a row, so it was in the first — and `assign` accepted it, minting an
+ * `assigned` notification for a principal that reads no notifications and parking a
+ * conversation with something that will never pick it up.
+ *
+ * The name is the test, the same way `post-public-reply` decides an author's kind and
+ * `notifyStaff` decides who to tell. One rule about who the assistant is, not three —
+ * because module code cannot ask the kernel which role a principal holds, which is the
+ * wall this whole directory exists to work around.
+ *
+ * Only the incoming assignee is judged. A conversation already parked on the assistant
+ * — reachable from a desk that ran an older version — can still be reassigned to a
+ * person or unassigned, because those name a different principal or none.
+ */
+function assignableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
+  const row = staffOrThrow(ctx, principal);
+  if (row.display_name === ASSISTANT_NAME) {
+    throw substratError(
+      'validation_failed',
+      `the assistant cannot be an assignee: ${principal} — it answers on its own and reads no queue`,
     );
   }
   return row;
@@ -690,11 +723,11 @@ function notifyStaff(
 ): number {
   if (conversation.assignee) return notify(ctx, conversation.assignee, kind, conversation.id) ? 1 : 0;
   // Not the assistant's own accounts, which are in this directory because they need a
-  // byline and a desk must be able to hand a conversation BACK to them. Telling the
-  // assistant that the assistant gave up is a notification nobody will ever read, and
-  // it would make `notified` claim more people than the desk actually has. The name
-  // is the test the same way `post-public-reply` decides an author's kind by it — one
-  // rule about who the assistant is, not two.
+  // byline — and only for that, since #1154: `assignableStaffOrThrow` refuses them as
+  // an assignee too. Telling the assistant that the assistant gave up is a notification
+  // nobody will ever read, and it would make `notified` claim more people than the desk
+  // actually has. The name is the test the same way `post-public-reply` decides an
+  // author's kind by it — one rule about who the assistant is, not three.
   const staff = ctx.sql.query<{ principal: string }>(
     'SELECT principal FROM ticket0_agent_profiles WHERE display_name != ? ORDER BY principal',
     [ASSISTANT_NAME],
@@ -2053,7 +2086,11 @@ const operations = {
     // and truthiness would wave it through — and an empty assignee is the exact
     // failure this check exists for: not null, so the row reads as assigned, and not
     // a person, so nobody is told and nobody works it.
-    if (input.assignee !== null) staffOrThrow(ctx, input.assignee);
+    //
+    // The assistant fails the same test for the same reason (#1154): it has a profile
+    // row so its messages carry a name, not so it can hold a queue. The app stopped
+    // offering it in #1323; this is the half that makes the API agree.
+    if (input.assignee !== null) assignableStaffOrThrow(ctx, input.assignee);
     const next = step(conversation, 'ticket0/assign');
     ctx.sql.exec('UPDATE ticket0_conversations SET assignee = ? WHERE id = ?', [
       input.assignee,
