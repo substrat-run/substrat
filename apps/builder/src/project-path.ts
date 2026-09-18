@@ -1,8 +1,9 @@
 /**
  * Is a repo-relative path inside a project directory? (#1225)
  *
- * The studio's file-write route takes a path from the browser and must keep it
- * inside the current project. A text prefix check cannot answer that:
+ * The studio's file routes — read and write alike — take a path from the browser
+ * and must keep it inside the current project. A text prefix check cannot answer
+ * that:
  * `.builder/projects/x/../../../CLAUDE.md` starts with `.builder/projects/x/`
  * and still names a file at the repo root, which the root workspace happily
  * writes because it only refuses paths that leave the REPO. So the path is
@@ -39,13 +40,34 @@ function normalise(path: string): string {
 	return out.join('/');
 }
 
-export function withinProject(path: string, dir: string): string | null {
-	if (path === '' || path.startsWith('/')) return null;
+/**
+ * The same question for a READ, where the project directory itself is a legitimate
+ * answer: `GET /api/files` with no `path` lists the project root, so a rule that
+ * refused it would refuse the file pane's own first request (#1225).
+ *
+ * Returns the project-relative path — `''` for the directory itself — or `null`
+ * when the path is absolute or resolves anywhere outside the project. Callers must
+ * test `=== null`, never falsiness: `''` is a permitted answer here.
+ */
+export function underProject(path: string, dir: string): string | null {
+	if (path.startsWith('/')) return null;
 	const base = normalise(dir).replace(/\/+$/, '');
 	const normalised = normalise(path);
+	if (normalised === base) return '';
 	// A sibling that merely shares the prefix (`x-2/` beside `x/`) is outside:
 	// the trailing slash is what makes this a directory test, not a string one.
 	if (!normalised.startsWith(`${base}/`)) return null;
-	const rel = normalised.slice(base.length + 1).replace(/\/+$/, '');
-	return rel === '' ? null : rel;
+	return normalised.slice(base.length + 1).replace(/\/+$/, '');
+}
+
+/**
+ * The write rule: `underProject`, minus the directory itself.
+ *
+ * Returns the project-relative path a write may target, or `null` when the path
+ * is absolute, resolves outside the project, or names the project directory —
+ * which is a directory, and so not something a write can mean.
+ */
+export function withinProject(path: string, dir: string): string | null {
+	const rel = underProject(path, dir);
+	return rel === null || rel === '' ? null : rel;
 }

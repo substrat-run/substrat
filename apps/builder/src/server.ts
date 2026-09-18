@@ -64,7 +64,7 @@ import {
 	buildContext,
 	writeGuardFor,
 } from './phase.js';
-import { withinProject } from './project-path.js';
+import { underProject, withinProject } from './project-path.js';
 import { loadSkills, type LoadedSkills } from './skills.js';
 
 // ── config ───────────────────────────────────────────────────────────────────
@@ -397,20 +397,38 @@ async function handleSnapshot(res: ServerResponse): Promise<void> {
 	}
 }
 
+/**
+ * `GET /api/files` — one directory level of the current project. No `path` means
+ * the project root, which is what the file pane asks for first. 403 for anything
+ * outside the project, 404 for a directory that is not there.
+ */
 async function handleFiles(url: URL, res: ServerResponse): Promise<void> {
 	const path = url.searchParams.get('path') ?? cur.entry.dir;
+	// Reads are confined to the current project for the same reason writes are, and
+	// were not: the root workspace only refuses a path that leaves the REPO, so this
+	// route served any file in the checkout to whoever asked for it (#1225).
+	const rel = underProject(path, cur.entry.dir);
+	if (rel === null) return json(res, 403, { error: `reads are limited to ${cur.entry.dir}/` });
 	try {
-		json(res, 200, { path, entries: await ws.listFiles(path) });
+		// Through the PROJECT-rooted workspace, so the read is confined twice — the
+		// second jail is what judges a symlink pointing out of the project.
+		json(res, 200, { path, entries: await cur.projectWs.listFiles(rel) });
 	} catch {
 		json(res, 404, { error: `no such directory: ${path}` });
 	}
 }
 
+/**
+ * `GET /api/file` — one file's contents, confined to the current project the same
+ * way `PUT /api/file` confines a write. 403 outside the project, 404 within it.
+ */
 async function handleFileRead(url: URL, res: ServerResponse): Promise<void> {
 	const path = url.searchParams.get('path');
 	if (!path) return json(res, 400, { error: 'path required' });
+	const rel = underProject(path, cur.entry.dir);
+	if (rel === null) return json(res, 403, { error: `reads are limited to ${cur.entry.dir}/` });
 	try {
-		json(res, 200, { path, content: await ws.readFile(path) });
+		json(res, 200, { path, content: await cur.projectWs.readFile(rel) });
 	} catch {
 		json(res, 404, { error: `no such file: ${path}` });
 	}

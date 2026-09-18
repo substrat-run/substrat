@@ -63,7 +63,7 @@ import {
 	type ProviderSecrets,
 } from './providers-worker.js';
 import { reportTurnUsage } from './metering.js';
-import { withinProject } from './project-path.js';
+import { underProject, withinProject } from './project-path.js';
 
 const REPO = '/workspace/substrat';
 const PROJECTS = '.builder/projects';
@@ -640,11 +640,22 @@ export class BuilderAgent extends DurableObject<Env> {
 			case 'GET /api/files': {
 				const { entry } = await this.#current();
 				const path = url.searchParams.get('path') ?? entry.dir;
+				// The same containment the write route applies, and this is the half that
+				// is deployed: a read was jailed only to the REPO, so the file pane served
+				// any file in the checkout — the sandbox's own secrets included (#1225).
+				const rel = underProject(path, entry.dir);
+				if (rel === null) return json(403, { error: `reads are limited to ${entry.dir}/` });
 				const pair = this.#sandboxPair(entry.id);
 				await this.#restoreProject(pair, entry).catch(() => undefined);
-				const rootWs = this.#rootWs(pair.sb);
+				// Through the PROJECT-rooted workspace, so the read is confined twice. NOTE
+				// the asymmetry with the local server: `ContainerWorkspace.resolveWithin` is
+				// purely lexical — the files live in the container, so it cannot realpath the
+				// way `LocalWorkspace` does. A symlink the turn created inside the project is
+				// therefore followed here, and the normalised check above is the load-bearing
+				// half. Closing that needs a resolve hop through `sb.exec`.
+				const projectWs = this.#projectWs(pair.sb, entry.dir);
 				try {
-					return json(200, { path, entries: await rootWs.listFiles(path) });
+					return json(200, { path, entries: await projectWs.listFiles(rel) });
 				} catch {
 					return json(404, { error: `no such directory: ${path}` });
 				}
@@ -653,9 +664,13 @@ export class BuilderAgent extends DurableObject<Env> {
 				const { entry } = await this.#current();
 				const path = url.searchParams.get('path');
 				if (!path) return json(400, { error: 'path required' });
-				const rootWs = this.#rootWs(this.#sandbox(entry.id));
+				const rel = underProject(path, entry.dir);
+				if (rel === null) return json(403, { error: `reads are limited to ${entry.dir}/` });
 				try {
-					return json(200, { path, content: await rootWs.readFile(path) });
+					return json(200, {
+						path,
+						content: await this.#projectWs(this.#sandbox(entry.id), entry.dir).readFile(rel),
+					});
 				} catch {
 					return json(404, { error: `no such file: ${path}` });
 				}
