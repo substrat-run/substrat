@@ -24,6 +24,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { parseJsonc } from './jsonc.mjs';
 
 const argv = process.argv.slice(2);
 const envIdx = argv.indexOf('--env');
@@ -57,43 +58,6 @@ const positional = argv.filter((_, i) => !consumed.has(i));
 const cfgIdx = argv.indexOf('--config');
 const configOverride = cfgIdx !== -1 ? argv[cfgIdx + 1] : undefined;
 const pkgDir = resolve(positional[0] ?? process.cwd());
-
-/**
- * Strip JSONC comments without destroying strings.
- *
- * A naive `//` strip corrupts every URL in the config — `"https://example.com"`
- * becomes `"https:` — so this tracks whether it is inside a string literal.
- */
-function parseJsonc(text) {
-  let out = '';
-  let inString = false;
-  let inLine = false;
-  let inBlock = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (inLine) {
-      if (c === '\n') { inLine = false; out += c; }
-      continue;
-    }
-    if (inBlock) {
-      if (c === '*' && next === '/') { inBlock = false; i++; }
-      continue;
-    }
-    if (inString) {
-      out += c;
-      if (c === '\\') { out += next ?? ''; i++; }
-      else if (c === '"') inString = false;
-      continue;
-    }
-    if (c === '"') { inString = true; out += c; continue; }
-    if (c === '/' && next === '/') { inLine = true; i++; continue; }
-    if (c === '/' && next === '*') { inBlock = true; i++; continue; }
-    out += c;
-  }
-  // Trailing commas are legal in wrangler.jsonc and not in JSON.
-  return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'));
-}
 
 const configPath = configOverride
   ? join(pkgDir, configOverride)
