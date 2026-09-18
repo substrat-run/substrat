@@ -397,6 +397,11 @@ async function handleSnapshot(res: ServerResponse): Promise<void> {
 	}
 }
 
+/**
+ * `GET /api/files` — one directory level of the current project. No `path` means
+ * the project root, which is what the file pane asks for first. 403 for anything
+ * outside the project, 404 for a directory that is not there.
+ */
 async function handleFiles(url: URL, res: ServerResponse): Promise<void> {
 	const path = url.searchParams.get('path') ?? cur.entry.dir;
 	// Reads are confined to the current project for the same reason writes are, and
@@ -413,6 +418,10 @@ async function handleFiles(url: URL, res: ServerResponse): Promise<void> {
 	}
 }
 
+/**
+ * `GET /api/file` — one file's contents, confined to the current project the same
+ * way `PUT /api/file` confines a write. 403 outside the project, 404 within it.
+ */
 async function handleFileRead(url: URL, res: ServerResponse): Promise<void> {
 	const path = url.searchParams.get('path');
 	if (!path) return json(res, 400, { error: 'path required' });

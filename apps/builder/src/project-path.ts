@@ -60,8 +60,14 @@ export function underProject(path: string, dir: string): string | null {
 	return normalised.slice(base.length + 1).replace(/\/+$/, '');
 }
 
+/**
+ * The write rule: `underProject`, minus the directory itself.
+ *
+ * Returns the project-relative path a write may target, or `null` when the path
+ * is absolute, resolves outside the project, or names the project directory —
+ * which is a directory, and so not something a write can mean.
+ */
 export function withinProject(path: string, dir: string): string | null {
 	const rel = underProject(path, dir);
-	// A write names a file; the project directory itself is not one.
 	return rel === null || rel === '' ? null : rel;
 }
