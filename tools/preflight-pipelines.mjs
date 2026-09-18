@@ -114,14 +114,19 @@ if (envName && !config.env?.[envName]) {
 // `stream` is the current spelling and `pipeline` the deprecated one for the same value.
 // Both are read, so a config still on the old key is checked rather than silently skipped.
 // Deduplicated by id: two bindings may legitimately point at one stream, and asking twice
-// would only double the lookups and report the same miss twice.
+// would only double the lookups and report the same miss twice. Every binding on an id is
+// kept, though — two bindings can name one stream through different placeholders, and the
+// refusal has to name them all or fixing the one it reported leaves the next deploy red.
 const byId = new Map();
 for (const p of scope?.pipelines ?? []) {
   const id = p.stream ?? p.pipeline;
   if (typeof id !== 'string' || id === '') continue;
-  if (!byId.has(id)) byId.set(id, p.binding ?? '(unnamed binding)');
+  const binding = p.binding ?? '(unnamed binding)';
+  const seen = byId.get(id);
+  if (!seen) byId.set(id, [binding]);
+  else if (!seen.includes(binding)) seen.push(binding);
 }
-const ids = [...byId].map(([id, binding]) => ({ id, binding }));
+const ids = [...byId].map(([id, bindings]) => ({ id, bindings }));
 
 if (ids.length === 0) {
   say('no pipelines bindings — nothing to check.');
@@ -242,14 +247,14 @@ function summarise(text) {
 }
 
 const missing = [];
-for (const { binding, id } of ids) {
+for (const { bindings, id } of ids) {
   const verdict = lookup(id);
   if (verdict === 'ok') continue;
   if (verdict === 'missing') {
-    missing.push({ binding, id });
+    missing.push({ bindings, id });
     continue;
   }
-  cannotAnswer(`could not ask the account about ${binding}`, verdict);
+  cannotAnswer(`could not ask the account about ${bindings.join(', ')}`, verdict);
 }
 
 if (missing.length === 0) {
@@ -260,12 +265,14 @@ if (missing.length === 0) {
 // ── The refusal ──────────────────────────────────────────────────────────────────────
 
 /**
- * Which `${…}` placeholder produced this id, resolved by matching values rather than by
- * parsing the template's shape. The generated config holds the id and not the name it
+ * Every `${…}` placeholder that produced this id, resolved by matching values rather than
+ * by parsing the template's shape. The generated config holds the id and not the name it
  * came from, and "set CF_PIPELINE_OUTBOX_STREAM_ID" is a far more useful sentence than
- * "the id is wrong" — so it is worth reading the two source files back to recover it.
+ * "the id is wrong" — so it is worth reading the two source files back to recover it. All
+ * of them, not the first: an id two bindings share may come from two variables, and each is
+ * a stale value that fails the next deploy once the other is fixed.
  */
-function placeholderFor(id) {
+function placeholdersFor(id) {
   let text = '';
   for (const f of ['wrangler.jsonc', 'wrangler.deploy.json']) {
     try {
@@ -274,19 +281,22 @@ function placeholderFor(id) {
       // A missing overlay is normal — only the apps that need one carry it.
     }
   }
+  const names = new Set();
   for (const [, name] of text.matchAll(/\$\{([A-Z0-9_]+)\}/g)) {
-    if ((fromEnv(name) ?? envFileValue(SECRETS, name)) === id) return name;
+    if ((fromEnv(name) ?? envFileValue(SECRETS, name)) === id) names.add(name);
   }
-  return undefined;
+  return [...names];
 }
 
 console.error('\npreflight-pipelines: refusing to deploy — a pipelines binding names a stream\n');
 console.error(`  account ${account} does not have:\n`);
-for (const { binding, id } of missing) {
-  const name = placeholderFor(id);
-  console.error(`  ${binding}`);
+for (const { bindings, id } of missing) {
+  const names = placeholdersFor(id);
+  console.error(`  ${bindings.join(', ')}`);
   console.error(`    stream ${id}`);
-  console.error(`    from   ${name ? `\${${name}}` : 'an id this tool could not trace to a placeholder'}`);
+  console.error(
+    `    from   ${names.length ? names.map((n) => `\${${n}}`).join(', ') : 'an id this tool could not trace to a placeholder'}`,
+  );
 }
 console.error(`
   A stream id CHANGES whenever the lake is recreated, and the binding can only name an

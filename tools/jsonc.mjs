@@ -8,12 +8,21 @@
  *
  * Not a general JSONC parser, and deliberately not marked as one: it handles the two
  * things wrangler configs actually carry beyond JSON — comments and trailing commas.
+ *
+ * Trailing commas are dropped by the same scan, so a `,` before `}` or `]` inside a string
+ * value (`"x,}"`) is never touched. A regex over the finished text cannot tell the two apart.
+ * Anything else malformed is left for `JSON.parse` to refuse.
  */
 export function parseJsonc(text) {
   let out = '';
   let inString = false;
   let inLine = false;
   let inBlock = false;
+  // Where in `out` the last comma sits while only whitespace has followed it, else -1. A
+  // comma right after `[`, `{` or another comma is not a trailing one: it is malformed, and
+  // stays so.
+  let pendingComma = -1;
+  let prev = '';
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     const next = text[i + 1];
@@ -31,11 +40,16 @@ export function parseJsonc(text) {
       else if (c === '"') inString = false;
       continue;
     }
-    if (c === '"') { inString = true; out += c; continue; }
     if (c === '/' && next === '/') { inLine = true; i++; continue; }
     if (c === '/' && next === '*') { inBlock = true; i++; continue; }
+    if (/\s/.test(c)) { out += c; continue; }
+    if ((c === '}' || c === ']') && pendingComma !== -1) {
+      out = out.slice(0, pendingComma) + out.slice(pendingComma + 1);
+    }
+    pendingComma = c === ',' && prev !== '' && !'[{,'.includes(prev) ? out.length : -1;
+    prev = c;
+    if (c === '"') inString = true;
     out += c;
   }
-  // Trailing commas are legal in wrangler.jsonc and not in JSON.
-  return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'));
+  return JSON.parse(out);
 }
