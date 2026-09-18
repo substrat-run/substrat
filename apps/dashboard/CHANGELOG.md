@@ -1,5 +1,26 @@
 # @substrat-run/dashboard
 
+## 0.35.6
+
+### Patch Changes
+
+- 1a6fe4d: `HostAdmin.listIdentityMemberships(actor, provider, externalId)`: which tenants a central-pool login is in, with each tenant row, the login's principal in it and the scope the link was made in — one directory read and one access-log row, where composing it from `listIdentityTenants` + `getTenant`/`resolveIdentity` per tenant cost 2N+ reads. Central pools only, as `listIdentityTenants` is.
+
+  `GET /verticals` takes `ownerTenant` and `visibleTo` for a staff/service caller that wants one tenant's slice rather than the registry. Both only narrow, and both are ignored for a builder session, whose view is fixed by its auth.
+
+  Dashboard: every `/api/*` request used to resolve its caller through a chain of directory round trips that grew with the number of teams the login is in — about three seconds for a login in ten. It is now one read, reused for 30 seconds; the idempotent self-heals (pool registration, role reconcile, catalog seed) run once per isolate instead of once per request; the deployment and app routes ask their independent reads together and no longer hydrate every version of every vertical to check that one slug is yours; and metrics reads are remembered for a minute per data centre (logs never are).
+
+- Updated dependencies [1a6fe4d]
+  - @substrat-run/contracts@0.115.0
+  - @substrat-run/kernel@0.115.0
+  - @substrat-run/adapter-cloudflare@0.115.0
+  - @substrat-run/connector-fortnox@0.4.17
+  - @substrat-run/demo-callout@0.3.33
+  - @substrat-run/engine-invites@0.7.14
+  - @substrat-run/engine-invoicing@0.10.5
+  - @substrat-run/engine-protocol@0.12.20
+  - @substrat-run/engine-workorder@0.11.14
+
 ## 0.35.5
 
 ### Patch Changes
