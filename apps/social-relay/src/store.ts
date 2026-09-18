@@ -148,7 +148,6 @@ export function removeClient(sql: SqlExec, clientId: string): boolean {
 /* ---- in-flight state ---- */
 
 export function putEphemeral(sql: SqlExec, kind: string, id: string, payload: string, expiresAt: number): void {
-  sql.exec('DELETE FROM relay_ephemeral WHERE expires_at <= ?', expiresAt - 1);
   sql.exec(
     `INSERT INTO relay_ephemeral (kind, id, payload, expires_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(kind, id) DO UPDATE SET payload = excluded.payload, expires_at = excluded.expires_at`,
@@ -157,6 +156,20 @@ export function putEphemeral(sql: SqlExec, kind: string, id: string, payload: st
     payload,
     expiresAt,
   );
+}
+
+/**
+ * Housekeeping, and ONLY housekeeping: expiry is enforced by `takeEphemeral` reading the
+ * row's own `expires_at`, so a sweep that stops running can never become a longer TTL.
+ *
+ * It is deliberately not folded into `putEphemeral`, which is where it started and where
+ * it was wrong: a put knows the expiry of the row it is WRITING, not the current time, and
+ * sweeping against the former deletes every other round in flight. Two people signing in a
+ * second apart lost each other's flows, and the suite could not see it because every test
+ * pinned the clock to one constant.
+ */
+export function sweepExpired(sql: SqlExec, now: number): void {
+  sql.exec('DELETE FROM relay_ephemeral WHERE expires_at <= ?', now);
 }
 
 /**

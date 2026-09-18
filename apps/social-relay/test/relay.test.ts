@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createApp, type Env } from '../src/routes.js';
+import { createApp, rateLimitOf, type Env } from '../src/routes.js';
 import { b64url, b64urlDecode, sha256b64url } from '../src/jwt.js';
 import { namespaceOf, pkcs8Pem, testStore, type TestStore } from './support.js';
 
@@ -565,5 +565,94 @@ describe('the platform surface', () => {
     );
     expect(res.status).toBe(501);
     expect(res.headers.get('content-type')).toContain('application/json');
+  });
+});
+
+describe('rounds that must not interfere', () => {
+  it('lets two people sign in at once, seconds apart', async () => {
+    // The bug this pins cost the FIRST of two overlapping sign-ins its round: a second
+    // `/authorize` swept the first one's flow, and the person came back to "this sign-in
+    // round has expired". Nothing about it was visible with a frozen clock.
+    let clock = NOW;
+    const google = upstream(() => ({ json: { id_token: fakeIdToken({ sub: 'subject', email: 'a@example.com' }) } }));
+    const app = createApp({ now: () => clock, fetchImpl: google.fetch });
+    const env = envWith();
+    const redirectUri = 'https://acme.global.substrat.run/api/auth/callback/platform-google';
+    const client = await registerInstall(redirectUri);
+    const { challenge } = await pkce();
+    const start = async () => {
+      const res = await app.request(
+        `https://id.substrat.net/google/authorize?response_type=code&client_id=${client.clientId}` +
+          `&redirect_uri=${encodeURIComponent(redirectUri)}&state=s&code_challenge=${challenge}&code_challenge_method=S256`,
+        {},
+        env,
+      );
+      return new URL(res.headers.get('location') ?? '').searchParams.get('state') ?? '';
+    };
+
+    const first = await start();
+    clock += 1_500;
+    const second = await start();
+    clock += 1_500;
+
+    for (const flowId of [first, second]) {
+      const back = await app.request(`https://id.substrat.net/google/callback?code=c&state=${flowId}`, {}, env);
+      expect(new URL(back.headers.get('location') ?? '').searchParams.get('code')).toBeTruthy();
+    }
+  });
+
+  it('cannot spend one provider\u2019s round at another\u2019s callback', async () => {
+    // A leaked flow id replayed at a different provider must MISS, not be consumed and
+    // then rejected: consuming it would destroy the round it belongs to, and would make
+    // the relay spend the platform's credentials at an upstream nobody chose.
+    const google = upstream(() => ({ json: { id_token: fakeIdToken({ sub: 'subject' }) } }));
+    const app = createApp({ now: () => NOW, fetchImpl: google.fetch });
+    const env = envWith();
+    const redirectUri = 'https://acme.global.substrat.run/api/auth/callback/platform-google';
+    const client = await registerInstall(redirectUri);
+    const { challenge } = await pkce();
+    const started = await app.request(
+      `https://id.substrat.net/google/authorize?response_type=code&client_id=${client.clientId}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}&state=s&code_challenge=${challenge}&code_challenge_method=S256`,
+      {},
+      env,
+    );
+    const flowId = new URL(started.headers.get('location') ?? '').searchParams.get('state') ?? '';
+
+    const crossed = await app.request(`https://id.substrat.net/github/callback?code=c&state=${flowId}`, {}, env);
+    expect(crossed.status).toBe(400);
+    // No upstream exchange was attempted with anyone's credentials...
+    expect(google.calls).toHaveLength(0);
+    // ...and the round it belongs to still completes.
+    const back = await app.request(`https://id.substrat.net/google/callback?code=c&state=${flowId}`, {}, env);
+    expect(new URL(back.headers.get('location') ?? '').searchParams.get('code')).toBeTruthy();
+  });
+});
+
+describe('bad input at the token endpoint', () => {
+  it('answers a malformed Basic credential with 401, not 500', async () => {
+    const app = createApp({ now: () => NOW });
+    const res = await app.request(
+      'https://id.substrat.net/google/token',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: 'Basic ###not-base64###' },
+        body: 'grant_type=authorization_code&code=x',
+      },
+      envWith(),
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'invalid_client' });
+  });
+});
+
+describe('the rate limit setting', () => {
+  it('treats anything that is not a positive number as the default, never as no limit', () => {
+    expect(rateLimitOf('5')).toBe(5);
+    // A typo used to read as NaN, which removed the limit the setting exists to impose.
+    expect(rateLimitOf('twelve')).toBe(120);
+    expect(rateLimitOf('')).toBe(120);
+    expect(rateLimitOf(undefined)).toBe(120);
+    expect(rateLimitOf('-1')).toBe(120);
   });
 });

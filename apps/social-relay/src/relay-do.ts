@@ -27,6 +27,7 @@ import {
   selectClients,
   selectClientSecretHash,
   selectKey,
+  sweepExpired,
   takeEphemeral,
   updateClientDisabled,
   type SqlExec,
@@ -110,24 +111,30 @@ export class RelayDO extends DurableObject implements RelayStore {
   }
 
   async putFlow(id: string, flow: FlowRecord, expiresAt: number): Promise<void> {
-    putEphemeral(this.sql, 'flow', id, JSON.stringify(flow), expiresAt);
+    putEphemeral(this.sql, `flow:${flow.provider}`, id, JSON.stringify(flow), expiresAt);
   }
 
-  async takeFlow(id: string, now: number): Promise<FlowRecord | null> {
-    const payload = takeEphemeral(this.sql, 'flow', id, now);
+  async takeFlow(id: string, provider: string, now: number): Promise<FlowRecord | null> {
+    const payload = takeEphemeral(this.sql, `flow:${provider}`, id, now);
     return payload ? (JSON.parse(payload) as FlowRecord) : null;
   }
 
   async putCode(id: string, code: CodeRecord, expiresAt: number): Promise<void> {
-    putEphemeral(this.sql, 'code', id, JSON.stringify(code), expiresAt);
+    putEphemeral(this.sql, `code:${code.provider}`, id, JSON.stringify(code), expiresAt);
   }
 
-  async takeCode(id: string, now: number): Promise<CodeRecord | null> {
-    const payload = takeEphemeral(this.sql, 'code', id, now);
+  async takeCode(id: string, provider: string, now: number): Promise<CodeRecord | null> {
+    const payload = takeEphemeral(this.sql, `code:${provider}`, id, now);
     return payload ? (JSON.parse(payload) as CodeRecord) : null;
   }
 
+  /**
+   * Every round starts here, which makes it the one place guaranteed to run often enough
+   * to be worth sweeping from — and it is the only method that is handed the current time
+   * without also being asked to enforce something with it.
+   */
   async countAuthorize(clientId: string, now: number): Promise<number> {
+    sweepExpired(this.sql, now);
     return countInWindow(this.sql, clientId, Math.floor(now / RATE_WINDOW_MS) * RATE_WINDOW_MS);
   }
 }

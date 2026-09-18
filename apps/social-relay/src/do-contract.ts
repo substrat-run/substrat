@@ -68,9 +68,16 @@ export interface RelayStore {
   deleteClient(clientId: string): Promise<boolean>;
   listClients(): Promise<ClientRecord[]>;
   putFlow(id: string, flow: FlowRecord, expiresAt: number): Promise<void>;
-  takeFlow(id: string, now: number): Promise<FlowRecord | null>;
+  /**
+   * The PROVIDER is part of the key, not a field to check afterwards. A flow id replayed
+   * at a different provider's callback must MISS rather than be consumed and then
+   * rejected — otherwise anyone holding a leaked id can destroy the round it belongs to,
+   * and can make the relay spend the platform's credentials at an upstream the person
+   * never chose.
+   */
+  takeFlow(id: string, provider: string, now: number): Promise<FlowRecord | null>;
   putCode(id: string, code: CodeRecord, expiresAt: number): Promise<void>;
-  takeCode(id: string, now: number): Promise<CodeRecord | null>;
+  takeCode(id: string, provider: string, now: number): Promise<CodeRecord | null>;
   /** Count this authorization against the client's window; returns the new count. */
   countAuthorize(clientId: string, now: number): Promise<number>;
 }

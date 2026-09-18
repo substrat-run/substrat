@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { applySchema, countInWindow, insertClient, putEphemeral, selectClient, takeEphemeral } from '../src/store.js';
+import {
+  applySchema,
+  countInWindow,
+  insertClient,
+  putEphemeral,
+  selectClient,
+  sweepExpired,
+  takeEphemeral,
+} from '../src/store.js';
 import { sqlExecOf } from './support.js';
 import Database from 'better-sqlite3';
 
@@ -27,6 +35,26 @@ describe('in-flight state', () => {
     putEphemeral(sql, 'flow', 'abc', '{}', 1_000);
     expect(takeEphemeral(sql, 'flow', 'abc', 1_001)).toBeNull();
     expect(sql.exec('SELECT count(*) AS c FROM relay_ephemeral').toArray()[0]).toEqual({ c: 0 });
+  });
+
+  it('leaves every other round in flight alone when a new one starts', () => {
+    // The regression: the sweep used to run on every write, against the expiry of the row
+    // being WRITTEN rather than the current time — so the second of two sign-ins a second
+    // apart deleted the first one's flow, and its callback answered "already completed".
+    const sql = freshSql();
+    putEphemeral(sql, 'flow:google', 'first', 'first-payload', 10_000);
+    putEphemeral(sql, 'flow:google', 'second', 'second-payload', 11_500);
+    expect(takeEphemeral(sql, 'flow:google', 'first', 9_000)).toBe('first-payload');
+    expect(takeEphemeral(sql, 'flow:google', 'second', 9_000)).toBe('second-payload');
+  });
+
+  it('sweeps what has expired and nothing else', () => {
+    const sql = freshSql();
+    putEphemeral(sql, 'flow:google', 'gone', 'x', 1_000);
+    putEphemeral(sql, 'flow:google', 'alive', 'y', 5_000);
+    sweepExpired(sql, 2_000);
+    expect(takeEphemeral(sql, 'flow:google', 'gone', 2_000)).toBeNull();
+    expect(takeEphemeral(sql, 'flow:google', 'alive', 2_000)).toBe('y');
   });
 
   it('keeps the two kinds apart', () => {

@@ -163,6 +163,17 @@ function acceptableRedirectUri(value: string): boolean {
   return url.protocol === 'https:' || (url.protocol === 'http:' && loopback);
 }
 
+/**
+ * The per-client limit, from config, refusing to be broken by a bad value in EITHER
+ * direction: a typo used to read as `NaN` and quietly remove the limit — which is the one
+ * outcome this setting exists to prevent — and an empty string as `0`, which refuses every
+ * sign-in. Anything that is not a positive number means "the default", never "no limit".
+ */
+export function rateLimitOf(configured: string | undefined): number {
+  const parsed = Number(configured);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RATE_LIMIT;
+}
+
 export function createApp(options: AppOptions = {}) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const now = options.now ?? (() => Date.now());
@@ -236,7 +247,7 @@ export function createApp(options: AppOptions = {}) {
       return redirectError(redirectUri, state, 'invalid_request', 'PKCE with S256 is required.');
     }
 
-    const limit = Number(c.env.AUTHORIZE_RATE_LIMIT ?? DEFAULT_RATE_LIMIT);
+    const limit = rateLimitOf(c.env.AUTHORIZE_RATE_LIMIT);
     const hits = await store.countAuthorize(clientId, now());
     if (hits > limit) {
       return redirectError(redirectUri, state, 'temporarily_unavailable', 'Too many sign-in attempts; try again shortly.');
@@ -281,7 +292,7 @@ export function createApp(options: AppOptions = {}) {
 
     const flowId = form.get('state') ?? '';
     const store = storeOf(c.env);
-    const flow = flowId ? await store.takeFlow(flowId, now()) : null;
+    const flow = flowId ? await store.takeFlow(flowId, live.provider.id, now()) : null;
     if (!flow) {
       return renderError(400, 'invalid_request', 'This sign-in round has expired or was already completed.');
     }
@@ -372,11 +383,19 @@ export function createApp(options: AppOptions = {}) {
     let clientSecret = form.get('client_secret') ?? '';
     const authorization = c.req.raw.headers.get('authorization') ?? '';
     if (authorization.toLowerCase().startsWith('basic ')) {
-      const decoded = atob(authorization.slice(6));
-      const separator = decoded.indexOf(':');
-      if (separator > 0) {
-        clientId = decodeURIComponent(decoded.slice(0, separator));
-        clientSecret = decodeURIComponent(decoded.slice(separator + 1));
+      // Both `atob` and `decodeURIComponent` throw on input that is merely malformed, and
+      // a malformed credential is a failed authentication — a 401 the caller can read —
+      // never a 500 that reads as the relay being broken.
+      try {
+        const decoded = atob(authorization.slice(6).trim());
+        const separator = decoded.indexOf(':');
+        if (separator > 0) {
+          clientId = decodeURIComponent(decoded.slice(0, separator));
+          clientSecret = decodeURIComponent(decoded.slice(separator + 1));
+        }
+      } catch {
+        clientId = '';
+        clientSecret = '';
       }
     }
     const store = storeOf(c.env);
@@ -387,7 +406,7 @@ export function createApp(options: AppOptions = {}) {
       return c.json({ error: 'unsupported_grant_type', error_description: 'only authorization_code is served' }, 400);
     }
 
-    const record = await store.takeCode(form.get('code') ?? '', now());
+    const record = await store.takeCode(form.get('code') ?? '', live.provider.id, now());
     /**
      * Every mismatch below answers `invalid_grant` with the same wording. The code has
      * already been consumed by the take, so a caller learns only that it did not work —

@@ -10,6 +10,7 @@ import {
   selectClient,
   selectClientSecretHash,
   selectClients,
+  sweepExpired,
   takeEphemeral,
   updateClientDisabled,
   type SqlExec,
@@ -83,20 +84,21 @@ export function testStore(): TestStore {
       return selectClients(sql);
     },
     async putFlow(id: string, flow: FlowRecord, expiresAt: number) {
-      putEphemeral(sql, 'flow', id, JSON.stringify(flow), expiresAt);
+      putEphemeral(sql, `flow:${flow.provider}`, id, JSON.stringify(flow), expiresAt);
     },
-    async takeFlow(id: string, now: number) {
-      const payload = takeEphemeral(sql, 'flow', id, now);
+    async takeFlow(id: string, provider: string, now: number) {
+      const payload = takeEphemeral(sql, `flow:${provider}`, id, now);
       return payload ? (JSON.parse(payload) as FlowRecord) : null;
     },
     async putCode(id: string, code: CodeRecord, expiresAt: number) {
-      putEphemeral(sql, 'code', id, JSON.stringify(code), expiresAt);
+      putEphemeral(sql, `code:${code.provider}`, id, JSON.stringify(code), expiresAt);
     },
-    async takeCode(id: string, now: number) {
-      const payload = takeEphemeral(sql, 'code', id, now);
+    async takeCode(id: string, provider: string, now: number) {
+      const payload = takeEphemeral(sql, `code:${provider}`, id, now);
       return payload ? (JSON.parse(payload) as CodeRecord) : null;
     },
     async countAuthorize(clientId: string, now: number) {
+      sweepExpired(sql, now);
       return countInWindow(sql, clientId, Math.floor(now / 60_000) * 60_000);
     },
   };
