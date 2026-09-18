@@ -1,5 +1,20 @@
 # @substrat-run/kernel
 
+## 0.114.0
+
+### Minor Changes
+
+- f58aa74: An app's **Flow** view now lists **deliveries that gave up**: every event a handler failed on and will not retry, newest first, with the record it was about, the handler that failed, how many times it ran and the error it threw.
+
+  Before, you could only see a failed delivery by opening the event that caused it, so you had to already know which record to look at. A handler inside your app doesn't retry, so a single failure is final, and these are the rows that need someone. Deliveries that are still being retried aren't listed. If the list can't be read, the view says so; it doesn't show an empty list that looks like nothing went wrong.
+
+  For platform code, `readDeadLetters` in the kernel is the read behind it: paged, with no payloads. Both hosts expose it as `deadLetters`. The vertical host serves it on `/internal/dead-letters`, and the control plane serves it on `/tenants/:t/scopes/:s/dead-letters`, where each read leaves an access-log row like the other event reads.
+
+### Patch Changes
+
+- Updated dependencies [f58aa74]
+  - @substrat-run/contracts@0.114.0
+
 ## 0.113.0
 
 ### Minor Changes
@@ -4349,7 +4364,7 @@ surface)` a router asserted in `x-substrat-*` headers and decides whether to tru
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                      z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                        z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

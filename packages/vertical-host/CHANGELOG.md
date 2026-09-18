@@ -1,5 +1,22 @@
 # @substrat-run/vertical-host
 
+## 0.114.0
+
+### Minor Changes
+
+- f58aa74: An app's **Flow** view now lists **deliveries that gave up**: every event a handler failed on and will not retry, newest first, with the record it was about, the handler that failed, how many times it ran and the error it threw.
+
+  Before, you could only see a failed delivery by opening the event that caused it, so you had to already know which record to look at. A handler inside your app doesn't retry, so a single failure is final, and these are the rows that need someone. Deliveries that are still being retried aren't listed. If the list can't be read, the view says so; it doesn't show an empty list that looks like nothing went wrong.
+
+  For platform code, `readDeadLetters` in the kernel is the read behind it: paged, with no payloads. Both hosts expose it as `deadLetters`. The vertical host serves it on `/internal/dead-letters`, and the control plane serves it on `/tenants/:t/scopes/:s/dead-letters`, where each read leaves an access-log row like the other event reads.
+
+### Patch Changes
+
+- Updated dependencies [f58aa74]
+  - @substrat-run/contracts@0.114.0
+  - @substrat-run/kernel@0.114.0
+  - @substrat-run/model-providers@0.5.4
+
 ## 0.113.0
 
 ### Minor Changes
