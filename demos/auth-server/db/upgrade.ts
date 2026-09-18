@@ -112,5 +112,30 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
     upgrade.added.push('session.sign_in_provider');
   }
 
+  // The signing keys: `jwks` grew `alg` and `crv` with the 1.7 `jwt` plugin, and a store the
+  // 1.6 issuer created has neither. This one does NOT fail the way the others do, which is
+  // why it outlived them: drizzle quotes every identifier (`select "alg" … from "jwks"`), and
+  // where SQLite still honours double-quoted strings — a Durable Object's does — a quoted
+  // name that resolves to no column is read as the STRING `'alg'`, not refused. So the read
+  // succeeds, the key comes back claiming the algorithm "alg", and `importJWK` rejects it
+  // with `JOSENotSupported` — but only on the one path that signs, the `set-auth-jwt`
+  // after-hook on `getSession`, which runs only when there IS a session. The visible symptom
+  // was therefore "signed out, the login screen; signed in, a 400". better-sqlite3 is
+  // compiled with that misfeature off and says `no such column` instead, so no node suite
+  // could reproduce the symptom; the test pins the column.
+  //
+  // Nullable with NO backfill, because NULL is already what the plugin means by "a key from
+  // before the column existed": it reads a null `alg` as `keyPairConfig.alg ?? 'EdDSA'`, and
+  // the curve off the key's own JWK. The existing key keeps its `kid`, so nothing a relying
+  // party has cached is invalidated. Guarded per column, like `identity_provider` above.
+  const jwks = columnsOf(sql, 'jwks');
+  if (jwks.length > 0) {
+    for (const column of ['alg', 'crv']) {
+      if (jwks.includes(column)) continue;
+      sql.exec(`ALTER TABLE jwks ADD COLUMN ${column} TEXT`);
+      upgrade.added.push(`jwks.${column}`);
+    }
+  }
+
   return upgrade;
 }

@@ -47,6 +47,20 @@ const LEGACY_DDL = [
     id TEXT PRIMARY KEY NOT NULL, client_id TEXT, user_id TEXT, scopes TEXT, consent_given INTEGER,
     created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)`,
   `CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+  // The three 1.6 tables whose NAMES 1.7 keeps. They were missing from this fixture for as
+  // long as it existed, which is exactly how `jwks` went un-upgraded: a table the fixture does
+  // not build is a table no assertion here can be wrong about.
+  `CREATE TABLE session (
+    id TEXT PRIMARY KEY NOT NULL, expires_at INTEGER NOT NULL, token TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, ip_address TEXT, user_agent TEXT,
+    user_id TEXT NOT NULL REFERENCES user(id) ON DELETE CASCADE, impersonated_by TEXT)`,
+  `CREATE TABLE verification (
+    id TEXT PRIMARY KEY NOT NULL, identifier TEXT NOT NULL, value TEXT NOT NULL, expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0)`,
+  // No `alg`, no `crv` — those are the 1.7 `jwt` plugin's.
+  `CREATE TABLE jwks (
+    id TEXT PRIMARY KEY NOT NULL, public_key TEXT NOT NULL, private_key TEXT NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT 0, expires_at INTEGER)`,
 ];
 
 let db: Database.Database;
@@ -94,6 +108,7 @@ beforeEach(() => {
   db.prepare(
     "INSERT INTO oauth_consent (id, client_id, user_id, scopes, consent_given) VALUES ('c1', 'old-client', 'u1', 'openid', 1)",
   ).run();
+  db.prepare("INSERT INTO jwks (id, public_key, private_key) VALUES ('kid-1', '{\"kty\":\"OKP\"}', 'encrypted')").run();
   sql = sqlExecOf(db);
 });
 
@@ -231,6 +246,54 @@ describe('upgrading a 1.6 store', () => {
       (r) => r.name,
     );
     expect(columns).toEqual(expect.arrayContaining(['issuer', 'label', 'endpoints']));
+  });
+
+  it('adds jwks.alg and jwks.crv, and leaves the existing signing key alone', () => {
+    const upgrade = upgradeLegacySchema(sql);
+    for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+
+    expect(upgrade.added).toEqual(expect.arrayContaining(['jwks.alg', 'jwks.crv']));
+    // NULL, not a guess: the `jwt` plugin reads a null `alg` as its configured default, which
+    // is what a key minted before the column existed actually is. And the same `kid` — a
+    // relying party that cached this key must still be able to verify with it.
+    expect(db.prepare("SELECT id, private_key, alg, crv FROM jwks WHERE id = 'kid-1'").get()).toEqual({
+      id: 'kid-1',
+      private_key: 'encrypted',
+      alg: null,
+      crv: null,
+    });
+  });
+
+  it('finishes an interrupted jwks upgrade — each column is guarded on its own', () => {
+    db.exec('ALTER TABLE jwks ADD COLUMN alg TEXT');
+    expect(upgradeLegacySchema(sql).added).toEqual(expect.arrayContaining(['jwks.crv']));
+    expect(columnsOf('jwks')).toEqual(expect.arrayContaining(['alg', 'crv']));
+  });
+
+  it('leaves no surviving table short of a column the current schema declares', () => {
+    // The general form of every case above, and the one that does not need anybody to
+    // remember. A column added to the DDL with no entry in `db/upgrade.ts` is invisible on a
+    // fresh store and wrong on every existing one — and on a Durable Object not even loudly:
+    // a quoted name that matches no column is read there as a string literal, so `jwks.alg`
+    // came back as the text "alg" and surfaced as a JOSE error three layers up.
+    upgradeLegacySchema(sql);
+    for (const stmt of SCHEMA_STATEMENTS) db.exec(stmt);
+
+    const fresh = new Database(':memory:');
+    for (const stmt of SCHEMA_STATEMENTS) fresh.exec(stmt);
+    const tables = (
+      fresh.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as {
+        name: string;
+      }[]
+    ).map((r) => r.name);
+
+    const missing = tables.flatMap((table) => {
+      const have = new Set(columnsOf(table));
+      return (fresh.prepare(`PRAGMA table_info("${table}")`).all() as { name: string }[])
+        .filter((c) => !have.has(c.name))
+        .map((c) => `${table}.${c.name}`);
+    });
+    expect(missing).toEqual([]);
   });
 
   it('finishes an interrupted account upgrade — the issuer backfill reruns until no row is null', () => {
