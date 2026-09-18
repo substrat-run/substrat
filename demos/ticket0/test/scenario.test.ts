@@ -892,6 +892,22 @@ describe('the lifecycle, what it will not do, and the way out', () => {
       anna.invoke('ticket0/assign', { conversationId: story.conversation, assignee: '' }),
     ).rejects.toThrow(/not a member of this desk/);
 
+    // The assistant HAS a profile — it needs one so its messages carry a name — and is
+    // refused anyway (#1154). It reads no notifications, so handing it a conversation
+    // parks the conversation with something that will never pick it up: the same
+    // failure as the empty string, wearing a name. Both of its principals, because the
+    // rule is the display name and not which of the two a desk answers as.
+    for (const who of ['assistant', 'assistantAutonomous'] as const) {
+      // It is genuinely in the directory — this is a narrowing, not a missing row.
+      expect(staff.entries.map((a) => a.principal)).toContain(world.substrat[who].principal);
+      await expect(
+        anna.invoke('ticket0/assign', {
+          conversationId: story.conversation,
+          assignee: world.substrat[who].principal,
+        }),
+      ).rejects.toThrow(/assistant cannot be an assignee/);
+    }
+
     // And the refusal left the previous owner alone — it threw before the write.
     const unchanged = (await anna.invoke('ticket0/get-conversation', {
       conversationId: story.conversation,

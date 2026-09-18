@@ -35,8 +35,9 @@ describe('the assignee directory', () => {
   });
 
   it('keeps a conversation already assigned to the assistant, so it is still named', () => {
-    // `ticket0/assign` still accepts the assistant, so this state is reachable from the
-    // API today. Drop the row and `OwnerPicker` falls through to its `!known` branch and
+    // `ticket0/assign` refuses the assistant since #1154, but a desk that ran an earlier
+    // version still has the row, so this state is reachable and must still render.
+    // Drop the row and `OwnerPicker` falls through to its `!known` branch and
     // shows the tail of a ULID beside an avatar that says "Assistant" — narrowing what
     // may be chosen must not change how what is already chosen is named.
     const staff = [profile('01AGENT', 'Rae Okonjo'), profile('01ASSISTANT', ASSISTANT_NAME)];

@@ -33,16 +33,16 @@ export const ASSISTANT_DISPLAY_NAME = 'Assistant';
  * directory — `agentName` must still turn the assistant's principal into "Assistant"
  * wherever it authored something.
  *
- * `ticket0/assign` is unchanged and still accepts the assistant: this narrows what the
- * app OFFERS, not what the server takes, so nothing that worked yesterday now fails and
- * the whole change is one filter to delete. The picker's contents are still wider than
- * "people who can own a conversation" — until a principal's kind is a fact its row
- * carries, or module code can ask who holds `conversation:assign`, a display name is
- * the only thing a browser has to go on.
+ * `ticket0/assign` now refuses the assistant too (#1154), so the two halves agree — but
+ * this filter is still the app's own and not a mirror of the server's: the picker's
+ * contents are wider than "people who can own a conversation" for every OTHER service
+ * principal, since `/internal/provision` mints three and a display name is the only
+ * thing a browser has to go on. Until a principal's kind is a fact its row carries, or
+ * module code can ask who holds `conversation:assign`, this is where that line is drawn.
  *
  * `keep` is the principal a conversation is assigned to RIGHT NOW, and it survives the
- * filter. Without it a conversation already handed to the assistant — which `assign`
- * still accepts, so this is reachable from the API today — falls out of the option list
+ * filter. Without it a conversation already handed to the assistant — a desk that ran a
+ * version before the server refused it still has the row — falls out of the option list
  * and `OwnerPicker` renders its `!known` branch: the tail of a ULID, next to an avatar
  * that says "Assistant" because it read the unfiltered directory. Narrowing what may be
  * CHOSEN must not change how what is already chosen is NAMED.
