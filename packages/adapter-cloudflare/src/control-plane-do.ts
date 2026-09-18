@@ -2641,6 +2641,75 @@ export class ControlPlaneDO extends DurableObject {
     ).map((r) => r.tenant_id);
   }
 
+  /**
+   * `identityTenants`, with each tenant row, the login's principal in it and the link's
+   * scope attached — AND the K-24 access row for the read, all in this one call. The
+   * point is the round trip: every piece here is a read the host could already make,
+   * but from a Worker each is its own RPC, and a caller resolving a login across N
+   * tenants was paying 2N+ of them per request. The pool's topology rides back so the
+   * host refuses a non-central pool without a `readPool` hop of its own; nothing is
+   * read or logged for one (`memberships` is empty), matching `listIdentityTenants`,
+   * which throws before it records.
+   */
+  identityMemberships(
+    provider: string,
+    externalId: string,
+    access: { id: string; actor: string; at: string },
+  ): {
+    topology: string | null;
+    memberships: {
+      tenant: Tenant;
+      principal: string;
+      scope: { id: string; vertical: string | null; status: string } | null;
+    }[];
+  } {
+    const topology = this.readPool(provider)?.topology ?? null;
+    if (topology !== 'central') return { topology, memberships: [] };
+    const rows = this.sql
+      .exec(
+        `SELECT i.tenant_id, i.principal_id, s.scope_id, s.vertical, s.status AS scope_status
+           FROM _substrat_identities i
+           LEFT JOIN scopes s ON s.scope_id = i.scope_id AND s.tenant_id = i.tenant_id
+          WHERE i.provider = ? AND i.external_id = ?
+          ORDER BY i.tenant_id`,
+        provider,
+        externalId,
+      )
+      .toArray() as unknown as {
+      tenant_id: string;
+      principal_id: string;
+      scope_id: string | null;
+      vertical: string | null;
+      scope_status: string | null;
+    }[];
+    const memberships = rows.flatMap((r) => {
+      // A link whose tenant row is gone names nothing a caller could land in.
+      const tenant = this.readTenant(r.tenant_id);
+      if (!tenant) return [];
+      return [
+        {
+          tenant,
+          principal: r.principal_id,
+          scope:
+            r.scope_id === null
+              ? null
+              : { id: r.scope_id, vertical: r.vertical, status: r.scope_status ?? 'active' },
+        },
+      ];
+    });
+    this.recordAccess({
+      id: access.id,
+      actor: access.actor,
+      method: 'listIdentityMemberships',
+      tenantId: null,
+      scopeId: null,
+      params: JSON.stringify({ provider }),
+      resultCount: memberships.length,
+      at: access.at,
+    });
+    return { topology, memberships };
+  }
+
   // -- identities (D-16; control-plane.md §6) ---------------------------------
 
   /**

@@ -4576,6 +4576,23 @@ describe('control-plane API — builder authz', () => {
     expect(all.map((v: { slug: string }) => v.slug).sort()).toEqual([`${acmeSlug}/helpdesk`, 'callout']);
   });
 
+  it('narrows GET /verticals for staff by ownerTenant / visibleTo, and never widens a builder', async () => {
+    const slugs = async (res: Response) =>
+      ((await res.json()).entries as { slug: string }[]).map((v) => v.slug).sort();
+    // What one tenant owns — the platform-owned `callout` drops out.
+    expect(await slugs(await staffReq(`/verticals?ownerTenant=${acme}`))).toEqual([`${acmeSlug}/helpdesk`]);
+    expect(await slugs(await staffReq(`/verticals?ownerTenant=${other}`))).toEqual([]);
+    // Its install catalog: what it owns plus the published tier.
+    await staffReq('/verticals/callout/listing', 'POST', { listed: true });
+    expect(await slugs(await staffReq(`/verticals?visibleTo=${other}`))).toEqual(['callout']);
+    expect(await slugs(await staffReq(`/verticals?visibleTo=${acme}`))).toEqual([`${acmeSlug}/helpdesk`, 'callout']);
+    // A builder's view is fixed by its auth: naming somebody else, or asking for the
+    // published tier, changes nothing.
+    expect(await slugs(await otherReq(`/verticals?ownerTenant=${acme}`))).toEqual([]);
+    expect(await slugs(await otherReq(`/verticals?visibleTo=${acme}`))).toEqual([]);
+    await staffReq('/verticals/callout/listing', 'POST', { listed: false });
+  });
+
   it('gives each tenant its own namespace — two builders can hold the same bare name', async () => {
     // The prefix is the whole point (§2): `helpdesk` is really `<tenant>/helpdesk`, so
     // `other` claiming a bare `helpdesk` gets ITS OWN `other-co/helpdesk` — no claim race,

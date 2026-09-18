@@ -139,10 +139,13 @@ export async function listDeploymentsFromHost(
 /** From the shared control plane (connected mode). `cp.listVerticals()` is tenant-filtered. */
 export async function listDeploymentsFromCp(cp: TenantNarrowedControlPlane): Promise<Deployment[]> {
   const owned = await cp.listVerticals();
+  // Versions and channels are independent reads, so every vertical's pair goes out at
+  // once — one stage of round trips after the vertical list, not two per vertical.
   return Promise.all(
-    owned.map(async (v) =>
-      shape(v, await cp.listVersions(v.slug), await cp.listChannels(v.slug)),
-    ),
+    owned.map(async (v) => {
+      const [versions, channels] = await Promise.all([cp.listVersions(v.slug), cp.listChannels(v.slug)]);
+      return shape(v, versions, channels);
+    }),
   );
 }
 
@@ -158,7 +161,33 @@ export async function ownedDeploymentFromCp(
 ): Promise<Deployment | null> {
   const v = (await cp.listVerticals()).find((v) => v.slug === slug);
   if (!v) return null;
-  return shape(v, await cp.listVersions(slug), await cp.listChannels(slug));
+  const [versions, channels] = await Promise.all([cp.listVersions(slug), cp.listChannels(slug)]);
+  return shape(v, versions, channels);
+}
+
+const notOwned = (slug: string): Error => new Error(`vertical '${slug}' is not one of your deployments`);
+
+/**
+ * The ownership gate alone — for a route that acts on a slug and reads nothing off the
+ * deployment record. The tenant-filtered vertical list answers it; hydrating every
+ * version of every vertical the team owns to reach the same boolean is what these
+ * routes used to do (#1459 fixed one of them). Throws exactly as `assertOwned` does, and
+ * hands back the vertical row for the caller that wants a fact off it (`listed`).
+ */
+export async function assertOwnedFromCp(
+  cp: TenantNarrowedControlPlane,
+  slug: string,
+): Promise<Awaited<ReturnType<TenantNarrowedControlPlane['listVerticals']>>[number]> {
+  const mine = (await cp.listVerticals()).find((v) => v.slug === slug);
+  if (!mine) throw notOwned(slug);
+  return mine;
+}
+
+/** `ownedDeploymentFromCp`, for a route that must refuse an unowned slug rather than read null. */
+export async function ownedDeploymentOrThrow(cp: TenantNarrowedControlPlane, slug: string): Promise<Deployment> {
+  const deployment = await ownedDeploymentFromCp(cp, slug);
+  if (!deployment) throw notOwned(slug);
+  return deployment;
 }
 
 /**
@@ -346,7 +375,5 @@ export function versionPair(
 }
 
 export function assertOwned(deployments: Deployment[], slug: string): void {
-  if (!deployments.some((d) => d.slug === slug)) {
-    throw new Error(`vertical '${slug}' is not one of your deployments`);
-  }
+  if (!deployments.some((d) => d.slug === slug)) throw notOwned(slug);
 }

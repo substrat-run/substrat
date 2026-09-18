@@ -614,8 +614,11 @@ export class TenantNarrowedControlPlane {
   async listVerticals(): Promise<
     Array<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean }>
   > {
+    // `ownerTenant` asks the plane for this tenant's slice instead of the registry. The
+    // filter below STAYS: it is the narrowing this seam answers for, and a plane that
+    // predates the param (the two ship separately) ignores it and returns everything.
     const all = await this.listAll<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean }>(
-      '/verticals',
+      `/verticals?ownerTenant=${encodeURIComponent(this.tenantId)}`,
     );
     return all.filter((v) => v.ownerTenant === this.tenantId);
   }
@@ -630,7 +633,8 @@ export class TenantNarrowedControlPlane {
     Array<{ slug: string; name: string; source: string; owned: boolean; listed: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>
   > {
     const all = await this.listAll<{ slug: string; name: string; source: string; ownerTenant: TenantId | null; listed?: boolean; entitlements?: string[]; ownerGrants?: string[]; envSpec?: unknown[]; surfaces?: Array<{ name: string; label: string }>; provides?: string[]; requires?: string[] }>(
-      '/verticals',
+      // Same posture as `listVerticals`: ask for the slice, keep the filter.
+      `/verticals?visibleTo=${encodeURIComponent(this.tenantId)}`,
     );
     return all
       .filter((v) => v.listed || v.ownerTenant === this.tenantId)

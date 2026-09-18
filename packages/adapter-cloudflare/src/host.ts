@@ -46,6 +46,7 @@ import {
   org as orgSchema,
   orgMembership,
   resolvedIdentity,
+  identityMembership,
   roleDefinition,
   scope as scopeSchema,
   tenant as tenantSchema,
@@ -96,6 +97,7 @@ import {
   type EntitlementGrant,
   type EntityRef,
   type IdentityLink,
+  type IdentityMembership,
   type IdentityPool,
   type ListPage,
   type MeterReading,
@@ -605,6 +607,11 @@ interface ControlPlaneStub {
     createdAt: string,
   ): Promise<boolean>;
   identityTenants(provider: string, externalId: string): Promise<string[]>;
+  identityMemberships(
+    provider: string,
+    externalId: string,
+    access: { id: string; actor: string; at: string },
+  ): Promise<{ topology: string | null; memberships: unknown[] }>;
   resolveIdentity(
     tenantId: string,
     provider: string,
@@ -4574,6 +4581,28 @@ export class CloudflareScopeHost implements ScopeHost {
         const tenants = (await this.cp.identityTenants(provider, externalId)) as TenantId[];
         await this.recordAccess(actor, 'listIdentityTenants', {}, { provider }, tenants.length);
         return tenants;
+      },
+      listIdentityMemberships: async (
+        actor,
+        provider: string,
+        externalId: string,
+      ): Promise<IdentityMembership[]> => {
+        // ONE round trip: the pool check, the join and the K-24 row all happen inside
+        // the directory's own call. The id and timestamp are minted here, as
+        // `recordAccess` mints them, so the log row is shaped exactly like its siblings.
+        const { topology, memberships } = await this.cp.identityMemberships(provider, externalId, {
+          id: ulid(),
+          actor,
+          at: new Date().toISOString(),
+        });
+        if (topology === null) throw new Error(`identity pool '${provider}' is not registered`);
+        if (topology !== 'central') {
+          throw new Error(
+            `identity pool '${provider}' is tenant-bound — enumerating tenants is only ` +
+              `meaningful on a central pool, where the same externalId is the same person`,
+          );
+        }
+        return memberships.map((m) => identityMembership.parse(m));
       },
       listIdentityLinks: async (actor, tenantId): Promise<IdentityLink[]> => {
         const rows = await this.cp.dumpTenantIdentities(tenantId);

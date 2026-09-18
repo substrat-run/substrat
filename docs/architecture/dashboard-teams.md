@@ -35,6 +35,23 @@ migration (`packages/adapter-sqlite/src/index.ts`, `ensureIdentityKey`) rekeyed
 the pool with `topology: 'central'` (same external id = same person across tenants), so this
 is live, not theoretical.
 
+The dashboard reads it through `listIdentityMemberships`, which is that same enumeration
+with each tenant row, principal and linked scope attached — one directory read per request
+(`apps/dashboard/src/account.ts`). The resolve used to compose the answer from
+`listIdentityTenants` plus a `getTenant` per team, which made every `/api/*` call cost two
+directory round trips per team the login was in.
+
+A resolved node is then **reused for 30 seconds** per isolate (`NODE_TTL_MS`), keyed on
+the login and the selected team. That number is a revocation window and is short on
+purpose. In-scope operations re-check permission on every invoke, so a removed member's
+writes are refused at once; what rides on the resolve alone are the control-plane reads,
+which go out over the service token narrowed to the resolved tenant, and those a removed
+member can keep reading until the entry ages out. The routes that end a membership
+(leave, remove member, delete team) drop the entries in the isolate that served them;
+any other isolate learns by expiry. `/api/me` never reads the cache — it is the call that
+draws the team switcher — and "no team" is never cached, so a login resolves the moment
+it has one.
+
 > This supersedes [membership.md §9](membership.md)'s "a person in two tenants is not
 > representable." That gap was closed by K-22; §9 predates it.
 
@@ -62,7 +79,7 @@ The selected team travels in an `sb_team` cookie, kept **separate from the `sb_s
 OIDC cookie** so a switch never touches the login.
 
 - `sb_team` is **not a security boundary.** Every read re-verifies the named team is in
-  `listIdentityTenants(sub)`; a forged value can only ever name a team you already belong
+  the login's memberships (`listIdentityMemberships(sub)`); a forged value can only ever name a team you already belong
   to, and otherwise falls back to your default team. So the cookie needs no signing — the
   membership check is the gate. (Contrast the provisioning rule in [dashboard.md §4](dashboard.md):
   the tenant is never a *client-supplied argument* to a mutation; here the client only

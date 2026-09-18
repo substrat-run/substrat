@@ -63,6 +63,7 @@ import type {
   VerticalServingState,
   RouteTarget,
   DirectoryDump,
+  IdentityMembership,
   PrincipalId,
   ResolvedIdentity,
   RoleAssignment,
@@ -2777,6 +2778,24 @@ export interface HostAdmin {
     provider: string,
     externalId: string,
   ): Promise<TenantId[]>;
+
+  /**
+   * `listIdentityTenants`, with what a caller does next already attached: each tenant
+   * row (status included), the login's principal in it, and the scope the link was
+   * made in. One read and ONE access-log row, where composing the same answer out of
+   * `listIdentityTenants` + a `getTenant`/`resolveIdentity` per tenant is 2N+ reads and
+   * as many log rows — on a hosted directory each of those is a round trip, and a
+   * request that resolves its caller this way pays them before it does any work.
+   *
+   * Same safety condition as `listIdentityTenants`, for the same reason: **central
+   * pools only**, and it throws on a tenant-bound or unregistered pool. Ordered by
+   * tenant id. Non-active tenants are returned, not filtered — see `IdentityMembership`.
+   */
+  listIdentityMemberships(
+    actor: PlatformActorId,
+    provider: string,
+    externalId: string,
+  ): Promise<IdentityMembership[]>;
 
   /**
    * Every identity link in one tenant — the projection read (#406). This is what the
