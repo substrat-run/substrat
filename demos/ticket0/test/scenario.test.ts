@@ -21,7 +21,7 @@ import { join } from 'node:path';
 import { principalId, type CountedPage, type Page } from '@substrat-run/contracts';
 import { ulid, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
 import { T0_PERM } from '../src/manifest.js';
-import { ATTACHMENTS_NOT_STORED } from '../src/module.js';
+import { ASSISTANT_NAME, ATTACHMENTS_NOT_STORED } from '../src/module.js';
 import { buildHost, seed, signIdentity, type Desk, type World } from '../src/seed.js';
 
 let dir: string;
@@ -920,6 +920,74 @@ describe('the lifecycle, what it will not do, and the way out', () => {
       assignee: null,
     })) as Conversation;
     expect(dropped.assignee).toBeNull();
+  });
+
+  /**
+   * The way OUT of a conversation the assistant is holding (#1154).
+   *
+   * A desk that ran a version before the refusal has such rows, so the refusal must
+   * not be a trap: `assign` judges the INCOMING assignee and nothing else, which is
+   * what leaves reassigning to a person and dropping to nobody both open.
+   *
+   * The state is reached the only way the API still allows — somebody already holding
+   * a conversation takes the assistant's display name, which `set-agent-profile`
+   * permits because it writes the caller's own row and the desk has no other way to
+   * say who is a service. That is the same hazard as an old row, and it is worth
+   * being reachable in a test rather than only in prose.
+   */
+  it('a conversation the assistant is holding can still be handed on', async () => {
+    const anna = await at(world.substrat, 'agent');
+    const admin = await at(world.substrat, 'admin');
+
+    const before = (await anna.invoke('ticket0/list-agents', {})) as Page<{
+      principal: string;
+      display_name: string;
+      avatar_url: string | null;
+      signature: string | null;
+    }>;
+    const mine = before.entries.find((a) => a.principal === world.substrat.admin.principal)!;
+
+    /** Name them, hand them the conversation, then rename them — order matters,
+     *  because once they are "Assistant" nobody can hand them anything. */
+    const named = async (displayName: string) =>
+      admin.invoke('ticket0/set-agent-profile', {
+        displayName,
+        avatarUrl: mine.avatar_url,
+        signature: mine.signature,
+      });
+    const parkOnTheAssistant = async () => {
+      await named(mine.display_name);
+      await anna.invoke('ticket0/assign', {
+        conversationId: story.conversation,
+        assignee: world.substrat.admin.principal,
+      });
+      await named(ASSISTANT_NAME);
+    };
+
+    try {
+      // Out to a person…
+      await parkOnTheAssistant();
+      const handed = (await anna.invoke('ticket0/assign', {
+        conversationId: story.conversation,
+        assignee: world.substrat.agent.principal,
+      })) as Conversation;
+      expect(handed.assignee).toBe(world.substrat.agent.principal);
+
+      // …and out to nobody, which is the escape that needs no directory entry at all.
+      await parkOnTheAssistant();
+      const nobody = (await anna.invoke('ticket0/assign', {
+        conversationId: story.conversation,
+        assignee: null,
+      })) as Conversation;
+      expect(nobody.assignee).toBeNull();
+    } finally {
+      // The story carries on with the desk it had — the rename is this case's alone.
+      await admin.invoke('ticket0/set-agent-profile', {
+        displayName: mine.display_name,
+        avatarUrl: mine.avatar_url,
+        signature: mine.signature,
+      });
+    }
   });
 
   it('a closed conversation is closed — the machine has no edge out', async () => {
