@@ -287,7 +287,14 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
     in-scope exports** — the engine is the only writer of its rows, which is what keeps
     invariants like immutable-after-export safe from a half-finished caller.
   Which mode an engine is, is a fact about its exports; state it in the engine's header
-  so an absence reads as intent rather than an omission.
+  so an absence reads as intent rather than an omission. That is **mechanical** now
+  (#976): `pnpm lint:model` reads every engine's `src/index.ts` header and refuses one
+  that states neither `composed **by call**` nor `composed **by event**`, or both. It
+  was prose until then, and all seven engines agreeing was a fact about those seven
+  rather than a gate — the eighth could have said nothing and stayed green. What the
+  gate does NOT judge is which mode is the *right* one: that would mean importing every
+  engine into the tool, so the header is held to being present and unambiguous, and a
+  reviewer still reads it against the exports.
 - **Catching an engine error requires `ctx.atomic`** (#770, `docs/architecture/sub-transactions.md`).
   An engine call composed inside your transaction has no boundary of its own, so a bare
   `catch` leaves you holding its partial writes — the rows its invariants were protecting —
