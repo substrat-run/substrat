@@ -21,12 +21,12 @@
  *      other a Durable Object needing a sandbox — the same reason
  *      `file-write-containment.test.ts` reads its routes off the source.)
  */
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LocalWorkspace } from '@substrat-run/builder-workspace';
+import { ContainerWorkspace, LocalWorkspace } from '@substrat-run/builder-workspace';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { underProject, withinProject } from '../src/project-path.js';
 
@@ -104,6 +104,63 @@ describe('the read a route performs: containment, then the project-rooted worksp
 		// served: the project-rooted workspace resolves it and refuses.
 		expect(underProject(`${DIR}/leak.txt`, DIR)).toBe('leak.txt');
 		await expect(read(`${DIR}/leak.txt`)).rejects.toThrow(/escapes the workspace root/);
+	});
+});
+
+describe('the hosted read: containment, then the container workspace', () => {
+	// The hosted half composes the same check with `ContainerWorkspace`, whose own
+	// guard is PURELY LEXICAL — the files are in a container, so it cannot realpath
+	// the way `LocalWorkspace` does. The containment check is therefore the whole
+	// of the symlink story there, which is worth pinning rather than assuming: the
+	// sandbox here is the real filesystem behind the same structural interface the
+	// agent bridges the SDK stub onto.
+	let repo: string;
+	let projectWs: ContainerWorkspace;
+
+	const read = async (path: string): Promise<string | null> => {
+		const rel = underProject(path, DIR);
+		if (rel === null) return null;
+		return await projectWs.readFile(rel);
+	};
+
+	beforeAll(async () => {
+		repo = await mkdtemp(join(tmpdir(), 'builder-hosted-'));
+		await mkdir(join(repo, DIR, 'spec'), { recursive: true });
+		await writeFile(join(repo, '.dev.vars'), 'ANTHROPIC_API_KEY=sk-secret\n');
+		await writeFile(join(repo, DIR, 'spec', 'model.ts'), 'export const model = {}\n');
+		projectWs = new ContainerWorkspace({
+			root: `${repo}/${DIR}`,
+			sandbox: {
+				exec: async () => ({ stdout: '', stderr: '', exitCode: 0 }),
+				readFile: async (p: string) => await readFile(p, 'utf8'),
+				writeFile: async (p: string, c: string) => await writeFile(p, c),
+				mkdir: async (p: string) => await mkdir(p, { recursive: true }),
+				listFiles: async (p: string) => (await readdir(p)).sort(),
+				exposePort: async () => ({ url: '' }),
+			},
+		});
+	});
+
+	it('serves a file inside the project', async () => {
+		await expect(read(`${DIR}/spec/model.ts`)).resolves.toBe('export const model = {}\n');
+	});
+
+	it('refuses the repo secret the old hosted route served', async () => {
+		expect(await read('.dev.vars')).toBeNull();
+		expect(await read(`${DIR}/../../../.dev.vars`)).toBeNull();
+		expect(await read(`${repo}/.dev.vars`)).toBeNull();
+	});
+
+	it('lists the project directory itself', async () => {
+		expect(await projectWs.listFiles('')).toContain('spec');
+	});
+
+	it('refuses a climb the check let through, at the workspace too', async () => {
+		// Belt and braces: even handed a relative `..` directly, the container guard
+		// refuses rather than resolving out of the project root.
+		await expect(projectWs.readFile('../../../.dev.vars')).rejects.toThrow(
+			/escapes the workspace root/,
+		);
 	});
 });
 

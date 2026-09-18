@@ -647,8 +647,12 @@ export class BuilderAgent extends DurableObject<Env> {
 				if (rel === null) return json(403, { error: `reads are limited to ${entry.dir}/` });
 				const pair = this.#sandboxPair(entry.id);
 				await this.#restoreProject(pair, entry).catch(() => undefined);
-				// Through the PROJECT-rooted workspace, so the read is confined twice, the
-				// second jail being what judges a symlink pointing out of the project.
+				// Through the PROJECT-rooted workspace, so the read is confined twice. NOTE
+				// the asymmetry with the local server: `ContainerWorkspace.resolveWithin` is
+				// purely lexical — the files live in the container, so it cannot realpath the
+				// way `LocalWorkspace` does. A symlink the turn created inside the project is
+				// therefore followed here, and the normalised check above is the load-bearing
+				// half. Closing that needs a resolve hop through `sb.exec`.
 				const projectWs = this.#projectWs(pair.sb, entry.dir);
 				try {
 					return json(200, { path, entries: await projectWs.listFiles(rel) });
