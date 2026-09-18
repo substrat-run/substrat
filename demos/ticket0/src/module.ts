@@ -282,13 +282,17 @@ function savedReplyOrThrow(ctx: OperationContext, id: string): SavedReplyRow {
 }
 
 /**
- * Somebody this desk can hand work to.
+ * Somebody who is on this desk at all — membership, and only that.
  *
  * The directory is `ticket0_agent_profiles`, for the reason the operation's
  * docblock gives: it is the only in-scope record of a colleague, because nothing
  * lets module code ask who else holds a permission. So a principal with no
  * profile is refused here — `validation_failed` rather than a write, since a
  * typo that sticks is exactly what this is for.
+ *
+ * Being IN the directory is not the same as being somebody a conversation can be
+ * handed to; `assignableStaffOrThrow` below is that second question, and it is the
+ * one `assign` asks.
  */
 function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = ctx.sql.query<AgentProfileRow>(
