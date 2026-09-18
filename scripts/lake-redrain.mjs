@@ -165,7 +165,7 @@ console.log(`${scopes.length} active scope(s)\n`);
  * work to do, which is the one thing somebody runs a dry run to learn — so it was worse
  * than printing nothing. There is no read-only count to print instead: `redrainEvents`
  * only ever reopens, and a counting variant would be a new field on a published input
- * schema, both adapters, the delegation hop and the control-plane route (#TODO).
+ * schema, both adapters, the delegation hop and the control-plane route (#1545).
  *
  * What a dry run CAN establish is everything except the number, and all of it is
  * load-bearing: the control plane answers, the service token is accepted, the instant
