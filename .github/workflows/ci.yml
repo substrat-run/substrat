@@ -69,6 +69,12 @@ jobs:
       # traffic. Same shape as the two checks above: no suite drives the mounted app, so
       # the source is the only place this can be caught.
       - run: pnpm lint:invocation-log
+      # A skill that cites a repo path cites one that exists. The two repo skills are
+      # what an agent reads before it builds a vertical, and they teach by pointing at
+      # files; `new-vertical` spent months pointing at two that were gone (#982) with
+      # nothing to notice, since the only tool that read a skill hashed it. Refuses, and
+      # never edits: a missing path means the skill is teaching something removed.
+      - run: pnpm lint:skills
       # The permission-diff human checkpoint (CLAUDE.md). Re-emit every vertical's
       # snapshot and fail if it drifts from what is checked in — an agent that
       # widened a role must show it in the PR diff, not in a console nobody opens.

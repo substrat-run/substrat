@@ -475,6 +475,12 @@ writes nothing, which from the outside is the same empty view. Same shape as
 `lint:vite-proxy`, for the same reason: no scenario suite drives the mounted app, #1418.
 Local-only demos with a `server.ts` harness and no worker entry are out of scope, since
 no router fronts them and no request carries an asserted tenant),
+`lint:skills` (`tools/skill-paths.mjs`: a repo-rooted path a skill cites in code — a bare
+`demos/todo/src/module.ts`, or the `tools/…` inside a command — exists, spelled the way the
+tree spells it. `.claude/skills/*` and `plugin/substrat/skills/*` are both read; a
+placeholder such as `demos/<name>/…` is held to the part written before it. No allowlist
+and no opt-out: a skill pointing at a removed file is teaching something removed, which is
+how `new-vertical` sent agents to two files that did not exist, #982),
 `lint:tests`, `lint:connector-grants` (`tools/connector-grants.mts`: a dashboard door and
 the `CONNECTORS` registration behind it are the two ends of one connector — this checks
 both directions and the standing grants the door must carry, see the connector rule
