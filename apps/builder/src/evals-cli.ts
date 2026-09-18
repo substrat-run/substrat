@@ -41,6 +41,7 @@ import {
 import { loadSkills } from './skills.js';
 import {
 	EVAL_PROJECT_PREFIX,
+	forkScore,
 	formatEvalResult,
 	parseExpectations,
 	assertFixtureStart,
@@ -263,7 +264,12 @@ async function main(): Promise<number> {
 		modelSpec: chosen.spec,
 		pricedAs: pricingSpec,
 		maxSteps: args.maxSteps,
-		results: results.map((r) => ({ ...r, listCostUsd: cost(r) })),
+		// `forkScore` is derivable from `expectations`, and is written out anyway:
+		// the artifact is what two runs get compared through, and a comparison
+		// that has to re-derive the pairing is a comparison that will be done on
+		// forks alone (#740's trap — more questions, fewer assumptions, same
+		// forks, and it reads as the better model).
+		results: results.map((r) => ({ ...r, forkScore: forkScore(r), listCostUsd: cost(r) })),
 	};
 	const outDir = join(ws.root, '.builder', 'evals');
 	await mkdir(outDir, { recursive: true });
@@ -275,8 +281,14 @@ async function main(): Promise<number> {
 	process.stdout.write(`${'─'.repeat(60)}\n`);
 	for (const r of results) {
 		const c = cost(r);
+		const s = forkScore(r);
+		// `Nq` is every question; `Ni` is the interview half of it. The forks ride
+		// on the same line so nobody ranks two runs on `met/total` without seeing
+		// what each spent asking.
 		process.stdout.write(
-			`${r.passed ? '✓' : '✗'} ${r.fixture.padEnd(24)} ${r.turns}t/${r.repairs}r/${r.questions}q  ` +
+			`${r.passed ? '✓' : '✗'} ${r.fixture.padEnd(24)} ` +
+				`${r.turns}t/${r.repairs}r/${r.questions}q/${r.interviewQuestions}i  ` +
+				`${s.met}/${s.total} forks${s.unresolved ? '?' : ''}  ` +
 				`${r.usage.inputTokens + r.usage.outputTokens} tok${c ? `  $${c}` : ''}\n`,
 		);
 	}

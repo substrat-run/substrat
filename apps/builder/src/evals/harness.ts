@@ -326,6 +326,15 @@ export interface EvalResult {
 	readonly repairs: number;
 	/** ask_user calls across the run — the stop-discipline metric (§9.6). */
 	readonly questions: number;
+	/**
+	 * The subset of `questions` asked while the run was still in the INTERVIEW
+	 * phase — the ones spent buying assumptions rather than unblocking a build.
+	 * Always 0 for a fixture that starts at the frozen concept, which never
+	 * enters that phase. This is the denominator #740 asks for: a model that
+	 * interrogates its way to the pinned forks has not scored better than one
+	 * that assumed them, and reporting forks alone cannot tell the two apart.
+	 */
+	readonly interviewQuestions: number;
 	readonly usage: EvalUsage;
 	readonly gates: GateRun | null;
 	readonly expectations: readonly ExpectationOutcome[];
@@ -388,6 +397,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 	let turns = 0;
 	let repairs = 0;
 	let questions = 0;
+	let interviewQuestions = 0;
 	let questionsThisTurn = 0;
 	let answersSent = false;
 	let buildSent = false;
@@ -421,6 +431,11 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 			if (event.type === 'question') {
 				questions += 1;
 				questionsThisTurn += 1;
+				// Keyed on the pass's PHASE, not on whether the build message has
+				// been sent: a repair pass inside an interview turn is still the
+				// model buying an assumption, and a question after the ladder has
+				// moved is a build question however early it lands.
+				if (phase === 'interview') interviewQuestions += 1;
 			}
 			if (event.type === 'error' && event.fatal) fatal = event.message;
 			if (event.type === 'usage') {
@@ -514,6 +529,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalResult> {
 		turns,
 		repairs,
 		questions,
+		interviewQuestions,
 		usage: { ...totals, stepUsage },
 		gates: lastGates,
 		expectations,
@@ -562,6 +578,58 @@ export async function prepareProject(
 
 // ── reporting ────────────────────────────────────────────────────────────────
 
+/**
+ * The paired metric #740 asks for: **forks correct at a given question count**.
+ *
+ * Every `expect.json` entry is a fork the fixture pins — does `share-list`
+ * exist, does `app/` get built, does the role hold `list:share` — so the
+ * expectation outcomes ARE the fork outcomes, and the pairing is the point.
+ * A model that asks its way to the answer lands the same `met/total` as one
+ * that assumed them; only the question count separates the two, so the two
+ * numbers are computed and printed together rather than left to a reader to
+ * join up.
+ */
+export interface ForkScore {
+	/** Pinned forks the build landed on. */
+	readonly met: number;
+	/** Pinned forks that could be judged at all — see `unresolved`. */
+	readonly total: number;
+	/** Interview questions spent getting there (`EvalResult.interviewQuestions`). */
+	readonly questions: number;
+	/**
+	 * The probe could not answer, so the operations and roles `expect.json` pins
+	 * are missing from `total` entirely rather than counted as misses. Without
+	 * this flag a run whose probe crashed would report a *better* ratio than one
+	 * that merely got the forks wrong.
+	 */
+	readonly unresolved: boolean;
+}
+
+export function forkScore(r: EvalResult): ForkScore {
+	const forks = r.expectations.filter((o) => o.kind !== 'probe');
+	return {
+		met: forks.filter((o) => o.ok).length,
+		total: forks.length,
+		questions: r.interviewQuestions,
+		unresolved: r.expectations.some((o) => o.kind === 'probe' && !o.ok),
+	};
+}
+
+/**
+ * `3/4 fork(s) at 2 interview question(s)` — one line, both numbers, never one
+ * alone. The `?` after the ratio is the same marker the sweep summary prints,
+ * and it has to survive the extreme case: a fixture pinning ONLY operations and
+ * roles whose probe crashed scores `0/0`, where the ratio on its own reads as a
+ * clean sheet.
+ */
+export function formatForkScore(score: ForkScore): string {
+	return (
+		`${score.met}/${score.total}${score.unresolved ? '?' : ''} fork(s) at ` +
+		`${score.questions} interview question(s)` +
+		(score.unresolved ? ' · probe unresolved, pinned forks missing from the count' : '')
+	);
+}
+
 export function formatEvalResult(r: EvalResult): string {
 	const lines: string[] = [];
 	const verdict = r.passed ? 'PASS' : 'FAIL';
@@ -569,6 +637,14 @@ export function formatEvalResult(r: EvalResult): string {
 		`${verdict} ${r.fixture} — ${r.turns} turn(s), ${r.repairs} repair(s), ${r.questions} question(s), ` +
 			`${r.usage.inputTokens}+${r.usage.outputTokens} tokens in ${(r.durationMs / 1000).toFixed(0)}s`,
 	);
+	const score = forkScore(r);
+	// Printed for every run, pass or fail: a PASS at eight interview questions
+	// and a PASS at one are not the same result, and the verdict line cannot
+	// say so on its own. `unresolved` keeps the line when `total` is 0 — a
+	// fixture pinning only operations and roles loses ALL of them to a crashed
+	// probe, and staying silent there is exactly the reading the flag exists to
+	// stop.
+	if (score.total > 0 || score.unresolved) lines.push(`  ${formatForkScore(score)}`);
 	if (r.error) lines.push(`  fatal: ${r.error}`);
 	if (r.gates && !r.gates.ok) {
 		const red = r.gates.results.filter((g) => g.status === 'failed' || g.status === 'blocked');
