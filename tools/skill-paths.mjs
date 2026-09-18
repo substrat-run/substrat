@@ -113,7 +113,11 @@ const citationsOn = (line, fenced, prefixes) => {
         .replace(/:\d+(?:[-–]\d+)?$/, '');
       const segments = bare.split('/').filter((s) => s !== '');
       const stop = segments.findIndex((s) => PLACEHOLDER.test(s));
-      out.push({ raw, path: (stop === -1 ? segments : segments.slice(0, stop)).join('/') });
+      out.push({
+        raw,
+        path: (stop === -1 ? segments : segments.slice(0, stop)).join('/'),
+        truncated: stop !== -1,
+      });
     }
   }
   return out;
@@ -195,11 +199,11 @@ for (const { file, prefixes } of skills) {
       fenced = !fenced;
       return;
     }
-    for (const { raw, path } of citationsOn(line, fenced, prefixes)) {
+    for (const { raw, path, truncated } of citationsOn(line, fenced, prefixes)) {
       cited++;
       if (existsExactly(ROOT, path)) continue;
       // A placeholder citation was judged on its written part; say which part that was.
-      misses.push(`${file}:${i + 1} → ${raw}${raw === path ? '' : ` (looked for ${path}/)`}`);
+      misses.push(`${file}:${i + 1} → ${raw}${truncated ? ` (looked for ${path}/)` : ''}`);
     }
   });
 }
