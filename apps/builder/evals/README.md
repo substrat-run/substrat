@@ -47,9 +47,18 @@ Gates-green is always required and never declared.
 **What a prompt fixture does not pin yet.** `todo/` pins only files, because the
 vocabulary is the model's freedom: a run that names the vertical `tasks` rather than
 `todo` would fail an `operations` pin for its naming rather than for its judgment.
-Scoring the assumptions themselves — every assumption mapped to a fork, measured as
-*forks correct at a given question count* so that asking more questions is not itself
-rewarded — is the other half of #740.
+Widening what `expect.json` pins for a prompt fixture is still an open corpus decision
+(#740).
+
+**Forks are read at a question count, never alone.** Every `expect.json` entry is a fork,
+so the expectation outcomes are the fork outcomes — and a model that *asks* its way to
+them lands the same ratio as one that assumed them correctly. Asking more would therefore
+score better, which is the trap #740 names. So the sweep reports the pair: `met/total`
+forks beside the **interview** questions spent reaching them (`Nq` is every question,
+`Ni` the interview half), on the verdict line, on the summary line, and as `forkScore` in
+`run-*.json` so a comparison between two runs cannot accidentally be made on forks alone.
+A `?` after the ratio means the structural probe could not answer, so the pinned
+operations and roles are missing from `total` rather than counted as misses.
 
 ## Frozen, and superseded
 
