@@ -332,4 +332,7 @@ jobs:
       - run: pnpm --filter @substrat-run/vertical-egress cf:deploy:test
       - run: pnpm --filter @substrat-run/router cf:deploy:test
       - run: pnpm --filter @substrat-run/dashboard cf:deploy:test
+      # The social sign-in relay (#1544) — bound to nothing and depended on by nothing, so
+      # its position is free.
+      - run: pnpm --filter @substrat-run/social-relay cf:deploy:test
       - run: pnpm --filter @substrat-run/docs cf:deploy:test

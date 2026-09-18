@@ -1,0 +1,28 @@
+{
+  "name": "@substrat-run/social-relay",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The platform's social sign-in relay — one OAuth client per upstream, held here so no tenant ever holds one (#1544)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "cf:deploy": "wrangler deploy",
+    "cf:deploy:test": "wrangler deploy --env test",
+    "dry-run": "wrangler deploy --dry-run --outdir dist-worker"
+  },
+  "dependencies": {
+    "@substrat-run/kernel": "workspace:^",
+    "hono": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/better-sqlite3": "^9.6.0",
+    "better-sqlite3": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

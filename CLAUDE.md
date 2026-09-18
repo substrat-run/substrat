@@ -74,6 +74,7 @@ no row: every one of them is `private`, and ships inside its parent's deploy.
 | `apps/dashboard` | The customer-facing dashboard — teams, verticals, deploys, data | private |
 | `apps/builder` | The builder studio | private |
 | `apps/vertical-egress` | The egress hop a vertical's outbound call takes (D-46) | private |
+| `apps/social-relay` | The platform's social sign-in relay — one OAuth client per upstream (Google, GitHub, Apple), held where no tenant can reach it, behind one OIDC issuer per provider (#1544) | private |
 | `apps/docs` | Docs site | private |
 | `examples/external-vertical` | A vertical built from PUBLISHED packages — deliberately **not** a workspace member, so it proves an npm install works | not a member |
 | `spikes/*` | Evidence for an RFC, kept because the argument cites it | not published |
