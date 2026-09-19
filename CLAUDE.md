@@ -434,7 +434,21 @@ emit on demand, and let CI be the one that says no.
 
 CI runs more than those. The checks that emit nothing and simply refuse — the ones that
 turn a rule in this file into a red build — are `lint:boundaries` (`node
-tools/boundary-lint.mjs`), `lint:cycles` (`tools/workspace-cycles.mjs`), `lint:deps`
+tools/boundary-lint.mjs`), `lint:cycles` (`tools/workspace-cycles.mjs`),
+`lint:lockfile` (`tools/lockfile-scratch.mjs`: the committed `pnpm-lock.yaml` names no
+`.builder/projects/*` scratch project. Those are gitignored studio projects and
+deliberate workspace members, so every `pnpm install` run while one exists writes it in
+as an importer — under whatever name the person building it typed — and the lockfile is
+committed and public. Four reached main unnoticed (#769): nothing downstream complains,
+because `--frozen-lockfile` does NOT fail on an importer whose directory is absent, so
+CI installed cleanly and stayed green. `.githooks/pre-commit` refuses the same thing
+locally and stays — it catches it while the fix is still `git restore` — but it cannot be
+the only answer: it is bypassable with `--no-verify`, absent on a checkout that never ran
+the `prepare` script (which no-ops under CI), and it reads the staged DIFF, so a commit
+removing ONE scratch importer and leaving a second adds no offending line and passes. The
+gate reads the FILE. In a local checkout that means the working tree, so a studio project
+you have open goes red here before you have committed anything — expected, and the message
+says so), `lint:deps`
 (`tools/declared-deps.mjs`: an import whose package the graph does not declare),
 `lint:generated-marks` (`tools/generated-marks.mjs`: marks 1 and 2 of the three above,
 in both directions — a file that SAYS it is generated carries the `.generated` suffix

@@ -10,6 +10,7 @@
     "build": "pnpm -r --filter='!./.builder/projects/**' build",
     "lint:boundaries": "node tools/boundary-lint.mjs",
     "lint:cycles": "node tools/workspace-cycles.mjs",
+    "lint:lockfile": "node tools/lockfile-scratch.mjs",
     "lint:deps": "node tools/declared-deps.mjs",
     "lint:generated-marks": "node tools/generated-marks.mjs",
     "lint:spine-ddl": "node tools/spine-ddl-drift.mjs",

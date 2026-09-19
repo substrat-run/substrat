@@ -1,0 +1,36 @@
+# The same offence with the key quoted.
+#
+# pnpm writes these paths bare today, and a YAML emitter is free to quote a key
+# whenever it likes. The file is refused either way — the whole-file sweep does
+# not care how the key is spelled — so what this fixture holds is the other half:
+# that the section parse still RECOGNISES it as an importer. A check that has
+# quietly stopped being able to read a key reports the same red for the wrong
+# reason, and would go green the moment the sweep is narrowed. The self-check
+# asserts this one's message, not just its count.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: 1 offence, reported as an importer.
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+
+  '.builder/projects/spike':
+    dependencies:
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../../packages/kernel
+
+  packages/kernel:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../contracts

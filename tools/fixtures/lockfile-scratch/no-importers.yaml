@@ -1,0 +1,19 @@
+# A lockfile this check cannot read: no `importers:` section at all.
+#
+# The failure mode a scanning gate has to be held against is not a wrong answer,
+# it is a confident "ok" over nothing. If pnpm renames the section, or the file
+# handed in is not a workspace lockfile, there is nothing to judge — and the
+# right answer is to refuse rather than to pass.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: unreadable (exit 2).
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+packages:
+
+  react@18.3.1:
+    resolution: {integrity: sha512-deadbeef}
+    engines: {node: '>=0.10.0'}

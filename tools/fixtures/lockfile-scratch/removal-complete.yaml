@@ -1,0 +1,33 @@
+# The other side of the same clean-up: scratch-importer.yaml with BOTH scratch
+# importers gone.
+#
+# The whole lockfile diff of such a commit is deletions, and this gate has to
+# pass it — a state rule that went red on the commit that fixes the problem
+# would be a rule nobody could satisfy.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: 0 offences.
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+
+  demos/callout:
+    dependencies:
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+
+  packages/kernel:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../contracts

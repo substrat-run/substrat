@@ -1,0 +1,20 @@
+# The section is there and holds nothing.
+#
+# Same call as no-importers.yaml, one step subtler: the header this check keys
+# on is present, so a rule that only asserted "I found `importers:`" would go on
+# to scan zero entries and report ok. A workspace lockfile always has at least
+# the root importer.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: unreadable (exit 2).
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+packages:
+
+  react@18.3.1:
+    resolution: {integrity: sha512-deadbeef}
