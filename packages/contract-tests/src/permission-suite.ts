@@ -352,6 +352,86 @@ export function permissionContractSuite(
       expect(mine!.scope_id).toBe(s1);
     });
 
+    // -- the invocation a refusal belongs to (#1525) --------------------------
+    //
+    // #1237 put `invocation_id` on the outbox, which groups everything a call
+    // EMITTED. A denial emits nothing — that is the point of it — so it stayed
+    // reachable only by actor and time: `operation` says what was attempted, never
+    // which attempt, and two refusals a second apart are indistinguishable. On its
+    // own scope, because these assert on the whole denial log of the scope they read.
+
+    describe('the invocation a denial belongs to (#1525)', () => {
+      const s4 = scopeId.parse(ulid());
+      // No role, no grant: every enforced check this principal makes is refused.
+      const oscar: PrincipalId = principalId.parse(ulid());
+      type DenialRow = { permission: string; operation: string; invocation_id: string | null };
+
+      const readDenials = async (): Promise<DenialRow[]> => {
+        const stub = await host.getScope(alice, t1, s4);
+        return stub.invoke<DenialRow[]>('perm/read-denials');
+      };
+
+      beforeAll(async () => {
+        await host.provisionScope(staff, { tenantId: t1, scopeId: s4, vertical: 'perm-vertical' });
+        await host.admin.activateScope(staff, t1, s4);
+      });
+
+      it('stamps a refusal with the invocation the call carried', async () => {
+        const call = ulid();
+        const stub = await host.getScope(oscar, t1, s4);
+        await expect(
+          stub.invoke('perm/authorized-emit', { permission: PERM_USE }, { invocationId: call }),
+        ).rejects.toThrow(/permission denied/);
+
+        // The VALUE, not merely the column: a denial that recorded null here would
+        // satisfy every "the column exists" assertion and join to nothing.
+        const rows = await readDenials();
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.invocation_id).toBe(call);
+
+        // A SECOND call is a second id. The field is cleared after each invocation
+        // (#1237), so a leak would file this refusal under the previous call — which a
+        // single-denial assertion cannot see.
+        const next = ulid();
+        await expect(
+          stub.invoke('perm/authorized-read', { permission: PERM_READ }, { invocationId: next }),
+        ).rejects.toThrow(/permission denied/);
+        const after = await readDenials();
+        expect(after).toHaveLength(2);
+        expect(after.map((r) => r.invocation_id)).toEqual([call, next]);
+      });
+
+      it('records null when the caller carried no invocation, and still records', async () => {
+        // A seed, a test, an internal call. Null is the honest answer — and the denial
+        // itself must survive, since a refusal that fails to record because no id was
+        // carried is a worse outcome than one that records without the join.
+        const stub = await host.getScope(oscar, t1, s4);
+        await expect(
+          stub.invoke('perm/authorized-read', { permission: PERM_ADMIN }),
+        ).rejects.toThrow(/permission denied/);
+
+        const rows = await readDenials();
+        const mine = rows.filter((r) => r.permission === PERM_ADMIN);
+        expect(mine).toHaveLength(1);
+        expect(mine[0]!.invocation_id).toBeNull();
+      });
+
+      it('carries the invocation out through the denial read surface', async () => {
+        // The column is written; this is what makes it reachable. `listDenials` maps
+        // through the kernel's shared query builder, so a column added to the store and
+        // missed there would leave the join invisible to every one of the four surfaces
+        // that read this log.
+        const call = ulid();
+        const stub = await host.getScope(oscar, t1, s4);
+        await expect(
+          stub.invoke('perm/authorized-emit', { permission: PERM_ADMIN }, { invocationId: call }),
+        ).rejects.toThrow(/permission denied/);
+
+        const read = await host.admin.listDenials(staff, t1, s4, { operation: 'perm/authorized-emit' });
+        expect(read.map((r) => r.invocationId)).toContain(call);
+      });
+    });
+
     // -- the denial log's READ path (K-35's stated tail, #867) ----------------
     //
     // The write side above proves a refusal survives the rollback it is evidence of.

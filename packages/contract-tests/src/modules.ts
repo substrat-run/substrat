@@ -681,7 +681,7 @@ const readOutboxOp: OperationHandler<undefined, unknown> = (ctx) =>
 
 const readDenialsOp: OperationHandler<undefined, unknown> = (ctx) =>
   ctx.sql.query(
-    `SELECT actor, permission, tenant_id, scope_id, operation, impersonation
+    `SELECT actor, permission, tenant_id, scope_id, operation, impersonation, invocation_id
        FROM _substrat_denials ORDER BY id`,
   );
 

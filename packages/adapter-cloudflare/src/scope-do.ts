@@ -337,6 +337,13 @@ const KERNEL_DDL = `
     operation TEXT,
     -- K-42: WHICH of the two actors was refused is exactly what this log is for.
     impersonation TEXT,
+    -- #1525: the INVOCATION this refusal happened during, the same id #1237 stamps on
+    -- every event of a call. A denial joins to nothing but actor and time otherwise --
+    -- the operation column names what was attempted, never WHICH attempt -- so "what
+    -- else did this request do" cannot reach a refusal, which is the one thing an
+    -- incident asks about first. NULL = the transport carried no id (a seed, a test,
+    -- an internal call, an attachment RPC), or the row predates the column.
+    invocation_id TEXT,
     at TEXT NOT NULL,
     drained_at TEXT
   );
@@ -2682,6 +2689,10 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
         'ALTER TABLE _substrat_platform_requests ADD COLUMN impersonation TEXT',
         'ALTER TABLE _substrat_denials ADD COLUMN impersonation TEXT',
+        // #1525: the invocation a refusal happened during, on a scope DO created before
+        // the column. Nullable, and the null is honestly "no id was carried" — a past
+        // denial's call cannot be decided afterwards, as #1237's outbox column argued.
+        'ALTER TABLE _substrat_denials ADD COLUMN invocation_id TEXT',
         // #1231: the emitting operation, on a scope DO created before the column.
         // Nullable so every legacy row reads as unrecorded rather than named.
         'ALTER TABLE _substrat_outbox ADD COLUMN operation TEXT',
@@ -3016,8 +3027,9 @@ export function defineScopeDO(
             : (subject.id as PrincipalId);
       this.sql.exec(
         `INSERT INTO _substrat_denials
-           (id, actor, permission, tenant_id, scope_id, operation, impersonation, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, actor, permission, tenant_id, scope_id, operation, impersonation,
+            invocation_id, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ulid(),
         JSON.stringify(actor),
         err.permission,
@@ -3025,6 +3037,11 @@ export function defineScopeDO(
         err.node.scopeId ?? null,
         operation,
         impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
+        // #1525: the call this refusal belongs to, read off the DO field rather than
+        // passed in — the invoke path sets it inside the queued body (#1237) and every
+        // caller of this method runs there or in an attachment RPC, which carries no
+        // invocation and so honestly records null.
+        this.invocationId,
         new Date().toISOString(),
       );
     }

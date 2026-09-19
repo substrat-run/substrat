@@ -541,6 +541,13 @@ const KERNEL_DDL = `
     operation TEXT,
     -- K-42: WHICH of the two actors was refused is exactly what this log is for.
     impersonation TEXT,
+    -- #1525: the INVOCATION this refusal happened during, the same id #1237 stamps on
+    -- every event of a call. A denial joins to nothing but actor and time otherwise —
+    -- the operation column names what was attempted, never WHICH attempt — so "what
+    -- else did this request do" cannot reach a refusal, which is the one thing an
+    -- incident asks about first. NULL = the transport carried no id (a seed, a test,
+    -- an internal call, an attachment RPC), or the row predates the column.
+    invocation_id TEXT,
     at TEXT NOT NULL,
     drained_at TEXT
   );
@@ -4042,8 +4049,9 @@ export class SqliteScopeHost implements ScopeHost {
     rt.db
       .prepare(
         `INSERT INTO _substrat_denials
-           (id, actor, permission, tenant_id, scope_id, operation, impersonation, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, actor, permission, tenant_id, scope_id, operation, impersonation,
+            invocation_id, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         ulid(),
@@ -4053,6 +4061,11 @@ export class SqliteScopeHost implements ScopeHost {
         err.node.scopeId ?? null,
         operation,
         impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
+        // #1525: the call this refusal belongs to, read off the runtime rather than
+        // passed in — every caller of this method already runs inside the actor task
+        // that set it (#1237), including the attachment surface, whose own RPCs carry
+        // no invocation and so honestly record null.
+        rt.invocationId,
         new Date().toISOString(),
       );
   }
@@ -8766,6 +8779,10 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_outbox', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_platform_requests', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_denials', 'impersonation', 'impersonation TEXT');
+    // #1525: the invocation a refusal happened during, on a scope DB created before the
+    // column. Nullable, and the null is honestly "no id was carried" — a past denial's
+    // call cannot be decided afterwards, exactly as #1237's outbox column argued.
+    this.ensureColumn(db, '_substrat_denials', 'invocation_id', 'invocation_id TEXT');
     // #1231: the emitting operation, on a scope DB created before the column. Nullable
     // so every legacy row reads as unrecorded rather than claiming a name nobody stamped.
     this.ensureColumn(db, '_substrat_outbox', 'operation', 'operation TEXT');

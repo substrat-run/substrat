@@ -56,6 +56,18 @@ export const permissionDenial = z.object({
    * this log exists to answer — and `actor` alone would answer it wrongly.
    */
   impersonation: impersonationStamp.nullable(),
+  /**
+   * The invocation this refusal happened during (#1525), or null.
+   *
+   * The same id #1237 stamps on every event of a call, and the only thing that joins a
+   * denial to the rest of its request. `operation` names *what* was attempted, never
+   * *which attempt* — so without this a refusal is reachable only by actor and time,
+   * and "what else did this call do" stops at the events that succeeded.
+   *
+   * Null is two facts, as ever: the transport carried no id (a seed, a test, an
+   * internal call, an attachment RPC), or the row predates the column.
+   */
+  invocationId: z.string().nullable(),
   /** ISO 8601. */
   at: z.string().min(1),
   drainedAt: z.string().nullable(),
