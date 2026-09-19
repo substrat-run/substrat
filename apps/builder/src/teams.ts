@@ -10,37 +10,19 @@
  * team yet" page and nothing anywhere said the directory had changed shape.
  * A refused parse throws instead, where a 500 and a log line are visible.
  *
+ * The request, the problem-document read of a refusal and the parse itself are
+ * `ControlPlaneClient.identityTenants` (control-plane-api). What stays here is the
+ * per-isolate cache around it.
+ *
  * It lives beside the worker rather than inside it because the worker's own
  * module graph reaches `cloudflare:workers` (agent.ts) and so cannot be
- * imported by a node test — and the parse plus the cache are exactly the parts
- * worth a test.
+ * imported by a node test — and the cache is exactly the part worth a test.
  */
-import { slug, tenantId, z } from '@substrat-run/contracts';
+import { ControlPlaneClient, type IdentityTenant } from '@substrat-run/control-plane-api';
 
-/**
- * A tenant this login builds for, as the control plane states it.
- *
- * The three directory fields are parsed with the SAME schemas the `tenant`
- * record publishes (`contracts/src/tenancy.ts`), not with generic strings: the
- * id is a ULID, the slug is the constrained slug, the name is non-empty. That
- * costs nothing in lockout risk — `createTenantInput` picks those same three,
- * so a tenant that exists satisfied them at creation — and it buys the half a
- * loose parse would miss. A non-empty but malformed id passes `z.string()` and
- * then becomes a `BUILDER_AGENT.idFromName` key and a team route, which is the
- * downstream use this parse exists to protect.
- */
-export const teamSchema = z.object({
-	id: tenantId,
-	slug,
-	name: z.string().min(1),
-	/** Whether the tenant holds the `builder` entitlement (CP applies expiry at read). */
-	entitled: z.boolean(),
-});
-
-/** The `/internal/builder/identity-tenants` response body. */
-export const identityTenantsResponse = z.object({ tenants: z.array(teamSchema) });
-
-export type Team = z.infer<typeof teamSchema>;
+/** A tenant this login builds for, as the control plane states it — the schema is
+ * the control-plane client's, which is what parses the directory answer. */
+export type Team = IdentityTenant;
 
 /** The bindings this read needs — the subset of the worker's `Env`. */
 export interface TeamsEnv {
@@ -72,27 +54,19 @@ export async function teamsFor(env: TeamsEnv, sub: string): Promise<Team[]> {
 }
 
 async function teamsForUncached(env: TeamsEnv, sub: string): Promise<Team[]> {
-	const res = await env.CONTROL_PLANE_SVC.fetch(
-		'https://control-plane/internal/builder/identity-tenants',
-		{
-			method: 'POST',
-			headers: {
-				'content-type': 'application/json',
-				'x-service-token': env.CP_SERVICE_TOKEN ?? '',
-			},
-			body: JSON.stringify({ externalId: sub }),
-		},
-	);
-	if (!res.ok) {
-		throw new Error(`membership lookup failed: ${res.status} ${await res.text().catch(() => '')}`);
-	}
-	const parsed = identityTenantsResponse.safeParse(await res.json().catch(() => null));
-	if (!parsed.success) {
-		// Names the shape that was wrong, never the body — the body is directory
-		// facts about a person's tenants.
-		throw new Error(`membership lookup returned an unexpected shape: ${parsed.error.message}`);
-	}
-	return parsed.data.tenants;
+	// The client reads a refusal's problem document into a `ControlPlaneError` and
+	// parses the answer's shape; what this file adds is the cache around it. The
+	// binding's `fetch` is BOUND: a service binding checks its receiver, as workerd
+	// does the global's (lint:bound-fetch).
+	const cp = new ControlPlaneClient({
+		baseUrl: 'https://control-plane',
+		// Never sent: with a service token the plane resolves the subject from the
+		// token, and without one it refuses this route whatever the header says.
+		actor: 'builder-studio',
+		serviceToken: env.CP_SERVICE_TOKEN,
+		fetch: env.CONTROL_PLANE_SVC.fetch.bind(env.CONTROL_PLANE_SVC),
+	});
+	return await cp.identityTenants(sub);
 }
 
 /** Test seam: drop the isolate's cache. Never called by the worker. */

@@ -22,6 +22,7 @@
     "@substrat-run/builder-generator": "workspace:*",
     "@substrat-run/builder-workspace": "workspace:*",
     "@substrat-run/contracts": "workspace:*",
+    "@substrat-run/control-plane-api": "workspace:*",
     "@substrat-run/engine-metering": "workspace:*",
     "@substrat-run/kernel": "workspace:*",
     "@substrat-run/model-providers": "workspace:*",

@@ -18,6 +18,7 @@ import type {
 } from '@substrat-run/contracts';
 
 import { DEV_ACTOR_HEADER, SERVICE_TOKEN_HEADER } from './auth.js';
+import { identityTenantsResponse, type IdentityTenant } from './identity-tenants.js';
 
 /**
  * A typed HTTP client for the control-plane API — the vertical side of the
@@ -104,7 +105,12 @@ export class ControlPlaneClient {
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
 
-  private async call<T>(path: string, init?: RequestInit, allow404 = false): Promise<T> {
+  /**
+   * One request, and the one place a failure is read: a transport error or a non-2xx answer
+   * throws `ControlPlaneError`, so what comes back is always a successful `Response`. A 404
+   * is handed back as-is when the caller allows it.
+   */
+  private async send(path: string, init?: RequestInit, allow404 = false): Promise<Response> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {
@@ -127,7 +133,7 @@ export class ControlPlaneClient {
       // pass — a vertical that cannot reach the authority does not get to run.
       throw new ControlPlaneError(0, `control plane unreachable: ${(e as Error).message}`);
     }
-    if (res.status === 404 && allow404) return undefined as T;
+    if (res.status === 404 && allow404) return res;
     if (!res.ok) {
       // `problemDetail` is the one reading of a failed body (#971): the RFC 9457
       // `detail` first, the deprecated `error` duplicate second, both against the
@@ -140,6 +146,12 @@ export class ControlPlaneClient {
         problemDetail(body) ?? `${res.status} ${res.statusText}`,
       );
     }
+    return res;
+  }
+
+  private async call<T>(path: string, init?: RequestInit, allow404 = false): Promise<T> {
+    const res = await this.send(path, init, allow404);
+    if (res.status === 404 && allow404) return undefined as T;
     return res.status === 204 ? (undefined as T) : ((await res.json()) as T);
   }
 
@@ -188,6 +200,34 @@ export class ControlPlaneClient {
 
   listEntitlements(tenantId: TenantId): Promise<EntitlementGrant[]> {
     return this.call(`/tenants/${tenantId}/entitlements`);
+  }
+
+  /**
+   * The tenants a login builds for, each flagged with whether it holds the `builder`
+   * entitlement — the builder studio's membership read (builder-plane.md §4). `externalId`
+   * is the login's OIDC subject. Service-token gated: an unset token is refused by the
+   * plane, never bypassed.
+   *
+   * The answer is PARSED, not asserted: a plane that renamed `entitled`, or answered an
+   * `{ error }` body with a 200, would hand a cast `entitled: undefined` — falsy, so the
+   * studio would lock the tenant out with the ordinary "not enabled" page and nothing
+   * anywhere would say the directory had changed shape. A refused parse throws instead.
+   * The message names the shape that was wrong, never the body — the body is directory
+   * facts about a person's tenants.
+   */
+  async identityTenants(externalId: string): Promise<IdentityTenant[]> {
+    const res = await this.send('/internal/builder/identity-tenants', {
+      method: 'POST',
+      body: JSON.stringify({ externalId }),
+    });
+    const parsed = identityTenantsResponse.safeParse(await res.json().catch(() => null));
+    if (!parsed.success) {
+      throw new ControlPlaneError(
+        res.status,
+        `identity-tenants returned an unexpected shape: ${parsed.error.message}`,
+      );
+    }
+    return parsed.data.tenants;
   }
 
   // -- read-only scope-DB introspection (§5.4 admin-query RPC) ----------------
