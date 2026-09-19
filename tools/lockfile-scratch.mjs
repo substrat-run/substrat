@@ -58,6 +58,33 @@ const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'lock
 const unquote = (key) => (/^(['"]).*\1$/.test(key) ? key.slice(1, -1) : key);
 
 /**
+ * One line with its comment removed — the only definition of "comment" this check has, used
+ * by both passes below so they cannot disagree about what a line says.
+ *
+ * In YAML a `#` opens a comment when it starts the line or follows whitespace, and is an
+ * ordinary character inside a quoted scalar. Both halves matter here and in opposite
+ * directions. Stripping only FULL-line comments — which is what the first cut did — left
+ * `packages/foo: {} # see .builder/projects/local` reported as an offence, naming
+ * `packages/foo`, an importer that has done nothing wrong, as the offender. Stripping at
+ * every `#` instead would lose the rest of a quoted value, and a git specifier carries its
+ * fragment there (`'git+ssh://host/repo#…'`) — a path hidden behind one is a declaration,
+ * not a note about it.
+ */
+const withoutComment = (line) => {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quote !== null) {
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"') quote = c;
+    else if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return line.slice(0, i);
+  }
+  return line;
+};
+
+/**
  * A lockfile read as `{ importers, offences }`, or as a reason it could not be read.
  *
  * `importers` are the top-level keys of the `importers:` section — one per workspace member
@@ -65,9 +92,10 @@ const unquote = (key) => (/^(['"]).*\1$/.test(key) ? key.slice(1, -1) : key);
  * those keys or anywhere else in the file: a committed member depending on a studio project
  * writes the path in as a `link:` version instead, and the name is just as public there.
  *
- * `#` comment lines are not read. A lockfile is machine-written and carries none, a comment
- * is not a declaration either way — and the fixtures beside this file describe the offence
- * in their own headers, so a sweep that read comments would be judging its documentation.
+ * Comments are not read, by either pass — see `withoutComment`. A lockfile is machine-written
+ * and carries none, a comment is not a declaration either way, and the fixtures beside this
+ * file describe the offence in their own headers, so a sweep that read comments would be
+ * judging its own documentation.
  */
 const judge = (src) => {
   const lines = src.split('\n');
@@ -80,8 +108,8 @@ const judge = (src) => {
   const keyLines = new Map(); // line index → the importer key declared on it
   let indent = null;
   for (let i = start + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+    const line = withoutComment(lines[i]);
+    if (line.trim() === '') continue; // blank, or a line that was nothing but a comment
     const lead = line.length - line.trimStart().length;
     if (lead === 0) break; // back to a top-level key: the section is over
     if (indent === null) indent = lead; // the section's own entry indentation, whatever it is
@@ -105,8 +133,9 @@ const judge = (src) => {
   }
 
   const offences = [];
-  for (const [i, line] of lines.entries()) {
-    if (line.trimStart().startsWith('#') || !line.includes(SCRATCH)) continue;
+  for (const [i, raw] of lines.entries()) {
+    const line = withoutComment(raw);
+    if (!line.includes(SCRATCH)) continue;
     const key = keyLines.get(i);
     offences.push(key !== undefined ? `line ${i + 1}: importer \`${key}\`` : `line ${i + 1}: ${line.trim()}`);
   }
@@ -143,6 +172,11 @@ const SELF_CHECK = [
   ['scratch-quoted.yaml', 1],
   ['scratch-referenced.yaml', 1],
   ['scratch-inline-empty.yaml', 1],
+  // A comment naming a scratch project is a note about one, inline or on its own line…
+  ['inline-comment.yaml', 0],
+  // …and a `#` that opens no comment — quoted, or tight against a git ref — does not hide
+  // the path behind it. Three entries, one per way `withoutComment` could be simplified.
+  ['hash-not-a-comment.yaml', 3],
   // A commit that removes one scratch importer and leaves the other is still an offence…
   ['removal-partial.yaml', 1],
   // …and the commit that finishes the job passes, deletions and all.

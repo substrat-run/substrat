@@ -1,0 +1,58 @@
+# Three `#` characters, none of which opens a comment.
+#
+# The other side of inline-comment.yaml. That file needs `#` to be understood as
+# a comment; this one needs the same `#` understood as part of a value — and a
+# path behind one is a declaration, not a note about one. Each entry fails for a
+# different reason if `withoutComment` is simplified, so each is here:
+#
+#   demos/callout   quoted, `#` tight against the text before it. Kept by YAML's
+#                   "a comment opens after whitespace" clause alone — quoting is
+#                   not what saves this one.
+#   demos/todo      quoted, `#` after a space. Quoting is the ONLY thing keeping
+#                   it out of a comment. Synthetic, deliberately: without it the
+#                   quote tracking is unreachable code that every other fixture
+#                   passes without, and the next tidy-up deletes it with nothing
+#                   going red.
+#   demos/shop      UNQUOTED, `#` tight — a git specifier's ref, which is how
+#                   pnpm writes one. Kept by the whitespace clause with no quote
+#                   in sight, so dropping that clause loses this entry and keeps
+#                   the other two.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: 3 offences.
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+
+  demos/callout:
+    dependencies:
+      '@substrat-run/scratch-fixline':
+        specifier: 'git+ssh://git@host/repo.git#.builder/projects/eval-fixline'
+        version: 1.0.0
+
+  demos/todo:
+    dependencies:
+      '@substrat-run/scratch-spike':
+        specifier: 'file:../../vendor # .builder/projects/spike'
+        version: 1.0.0
+
+  demos/shop:
+    dependencies:
+      '@substrat-run/scratch-tock':
+        specifier: git+https://github.com/example/repo.git#.builder/projects/tock
+        version: 1.0.0
+
+  packages/kernel:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../contracts
