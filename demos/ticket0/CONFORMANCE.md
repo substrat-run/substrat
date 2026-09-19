@@ -5,7 +5,7 @@
 
 # Conformance receipt — @substrat-run/demo-ticket0
 
-73 operations · 28 narrowed checks · 28 conformance pairs driven
+75 operations · 30 narrowed checks · 30 conformance pairs driven
 
 ## 1. Kernel-enforced properties
 
@@ -37,12 +37,13 @@ scope-wide. Case 1 grants on A and invokes against A, and requires no denial —
 check fails this, because a narrowed grant does not widen. Case 2 grants on A and invokes
 against B, and requires a permission denial specifically.
 
-**28 pairs driven** across 28 of this package's 28 narrowed checks.
+**30 pairs driven** across 30 of this package's 30 narrowed checks.
 
 | Operation | Permission | Narrows to | Driven |
 | --- | --- | --- | --- |
 | `ticket0/assign` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/close` | `conversation:resolve` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/follow-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-conversation` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/get-csat` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/ingest-kb-source` | `kb:refresh` | `kbSource`, id from `sourceId` | `kbSource` |
@@ -66,6 +67,7 @@ against B, and requires a permission denial specifically.
 | `ticket0/snooze` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/submit-csat` | `conversation:read-own` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/tag-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
+| `ticket0/unfollow-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/untag-conversation` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/wake` | `conversation:assign` | `conversation`, id from `conversationId` | `conversation` |
 | `ticket0/widget-session` | `conversation:read` | `conversation`, id from `conversationId` | `conversation` |
@@ -78,6 +80,17 @@ suite asserts this list **exactly** — an operation that becomes undrivable, or
 stops being, fails CI until this file is regenerated and the change is read.
 
 Every narrowed check this package declares is driven.
+
+### Authority beyond the declared key
+
+An operation's declared permission is the gate it opens with, not necessarily the whole
+authority it exercises. Where the kit had to grant more for a case to run at all, the
+extra keys are here with the reason — the one place that gap is written down.
+
+| Operation | Also granted | Because |
+| --- | --- | --- |
+| `ticket0/follow-conversation` | `conversation:read` | the handler delegates conversation:read to the follower via ctx.grant, and delegation only narrows a permission the caller already holds on that entity |
+| `ticket0/unfollow-conversation` | `conversation:read` | ctx.revoke takes the same guardrail as ctx.grant — a caller may only withdraw a grant it could have made, so it must hold the key on that entity too |
 
 ### A second entity the kit supplies
 

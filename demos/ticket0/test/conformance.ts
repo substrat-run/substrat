@@ -12,6 +12,22 @@
 import { declareEntityChecks } from '@substrat-run/contract-tests/conformance';
 import { ticket0Operations } from '../spec/model.js';
 
+/**
+ * The follower both follow cases name — empty here, filled by the suite.
+ *
+ * `ticket0/follow-conversation` needs a principal that is IN the desk's directory
+ * (#1086 follows #1079's rule), and a directory row is minted by a seed run, so this
+ * file cannot name one the way `todo/share-list` names Ada's address. A mutable object
+ * handed to the kit is the documented way round that: `test/entity-checks.test.ts`
+ * writes the seeded agent into it in `beforeAll`, and the kit reads the entry per CASE
+ * rather than once at collect time.
+ *
+ * Forgetting to fill it does not pass quietly. The host parses a declared input before
+ * any check runs, so `''` fails `min(1)` and case 2 — which requires a permission
+ * denial and tolerates nothing else — goes red.
+ */
+export const CONFORMANCE_FOLLOWER: { follower: string } = { follower: '' };
+
 export const conformance = declareEntityChecks({
   subject: 'ticket0',
   operations: ticket0Operations,
@@ -36,6 +52,11 @@ export const conformance = declareEntityChecks({
     // may be assigned. `test/scenario.test.ts` drives the real person and the
     // refusal.
     'ticket0/assign': { assignee: null },
+    // Both halves of #1086's follower pair, sharing one object because they name the
+    // same person: putting somebody on a thread and taking them off again is only a
+    // pair if it is the same somebody.
+    'ticket0/follow-conversation': CONFORMANCE_FOLLOWER,
+    'ticket0/unfollow-conversation': CONFORMANCE_FOLLOWER,
     'ticket0/set-priority': { priority: 'urgent' },
     'ticket0/snooze': { until: '2030-01-01T00:00:00.000Z' },
     'ticket0/tag-conversation': { tag: 'conformance' },
@@ -54,6 +75,30 @@ export const conformance = declareEntityChecks({
       outputTokens: 1,
       citedArticleIds: [],
       outcome: 'drafted',
+    },
+  },
+  /**
+   * The follower pair opens on `conversation:assign` and honours it, then hands
+   * `conversation:read` to the follower with `ctx.grant` — which only narrows a
+   * permission the CALLER already holds on that entity. Every staff role here holds
+   * `conversation:read` scope-wide, so no agent ever meets that second gate; the
+   * probe, holding no role at all, meets it on the first call. Granting it narrowed to
+   * the same conversation is what lets the pair measure the declared check rather than
+   * a `ctx.grant` refusal underneath it — and keeps case 1 able to catch a node check,
+   * since nothing here is scope-wide.
+   */
+  alsoGrant: {
+    'ticket0/follow-conversation': {
+      permissions: ['conversation:read'],
+      because:
+        'the handler delegates conversation:read to the follower via ctx.grant, and ' +
+        'delegation only narrows a permission the caller already holds on that entity',
+    },
+    'ticket0/unfollow-conversation': {
+      permissions: ['conversation:read'],
+      because:
+        'ctx.revoke takes the same guardrail as ctx.grant — a caller may only withdraw ' +
+        'a grant it could have made, so it must hold the key on that entity too',
     },
   },
   /**
