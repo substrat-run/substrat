@@ -2846,8 +2846,6 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         400,
       );
     }
-    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
-    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     // The input schema also carries `countOnly` (#1545), and this route does not honour it:
     // its answer (`redrained`, `more`) is a statement that rows moved. Ignoring the field
     // silently would be the exact failure the separate count route exists to prevent — a
@@ -2860,6 +2858,8 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
         400,
       );
     }
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
     // The instant alone, never `parsed.data`, so the field cannot reach the adapter from
     // this door even if the refusal above is ever relaxed.
     const redrained = await admin.redrainEvents(actor, tenantId, scopeId, {
