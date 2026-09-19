@@ -113,6 +113,22 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(mapError(new Error(`unknown version 01ABC`)).status).toBe(500);
   });
 
+  it('reads `deploy refused:` from the code now that the pattern row is gone (#113 phase 5)', () => {
+    // The third family off `CODE_PATTERNS`, and the first whose throw is not in an adapter:
+    // `assertSandboxContract` (deploy.ts) raises it in this package, so the real error
+    // object reaches `mapError` with no Durable Object hop to fold its `name` away.
+    const sentence = `deploy refused: binding 'X' (type 'service') — nope (self-serve-deploy.md §4)`;
+    const typed = mapError(substratError('forbidden', sentence));
+    expect(typed.status).toBe(403);
+    expect(typed.body.code).toBe('forbidden');
+    expect(typed.body.detail).toBe(sentence);
+
+    // The other half: untyped, the same sentence is an unreviewed throw and gets the generic
+    // 500. This is what makes the deletion real — and `deploy.test.ts` is what proves the
+    // throw itself is typed, since THIS case would pass whatever `assertSandboxContract` did.
+    expect(mapError(new Error(sentence)).status).toBe(500);
+  });
+
   it('relays a downstream status as about:blank — our taxonomy is not theirs to wear', () => {
     // auth-server's honest 501 for an unimplemented verb (the 2026-07-25 shape). The
     // status is the vertical's; putting a code of ours on it would be a claim we cannot
