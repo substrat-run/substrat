@@ -18,6 +18,7 @@ import {
   operationInputsOf,
   pageOf,
   pageVisible,
+  principalId,
   substratError,
   type CountedPage,
   type EntityRow,
@@ -337,6 +338,16 @@ function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow
 }
 
 /**
+ * Whether a directory row IS the assistant — the one rule, in one place.
+ *
+ * Two callers judge it now, `assign` and `follow-conversation`, and they refuse for
+ * different-sounding reasons — so what they share is the test and not the message. The
+ * test is the display NAME for the reason the next comment gives: module code cannot
+ * ask the kernel which role a principal holds.
+ */
+const isAssistant = (row: AgentProfileRow): boolean => row.display_name === ASSISTANT_NAME;
+
+/**
  * Somebody this desk can hand a conversation TO — which is narrower (#1154).
  *
  * `ticket0_agent_profiles` is two things at once: the desk's directory of colleagues
@@ -356,10 +367,30 @@ function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow
  */
 function assignableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = staffOrThrow(ctx, principal);
-  if (row.display_name === ASSISTANT_NAME) {
+  if (isAssistant(row)) {
     throw substratError(
       'validation_failed',
       `the assistant cannot be an assignee: ${principal} — it answers on its own and reads no queue`,
+    );
+  }
+  return row;
+}
+
+/**
+ * Somebody this desk can put ON a conversation — the follower directory (#1086).
+ *
+ * The same directory `assign` reads and the same assistant rule, because a watcher
+ * and an assignee are drawn from the same people. The refusal differs because the act
+ * does: the assistant is not refused here for holding a queue it never works, but for
+ * already reading every conversation in the scope, which makes following it a grant
+ * that confers nothing and a record that says something untrue.
+ */
+function followableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
+  const row = staffOrThrow(ctx, principal);
+  if (isAssistant(row)) {
+    throw substratError(
+      'validation_failed',
+      `the assistant cannot follow a conversation: ${principal} — it already reads every one of them`,
     );
   }
   return row;
@@ -2573,6 +2604,79 @@ const operations = {
       [input.conversationId],
     );
     return { tags };
+  },
+
+  /**
+   * Put a colleague on a thread — one `ctx.grant`, and that is the entire feature.
+   *
+   * `ctx.grant` DELEGATES: the kernel re-checks that the caller holds
+   * `conversation:read` on this conversation before writing the tuple, so this
+   * operation can never hand out more than the person calling it was given. That
+   * check is separate from the `conversation:assign` above, and both have to pass —
+   * deciding who works a thread is not the same statement as being able to read it,
+   * even though every staff role here happens to hold both.
+   *
+   * Idempotent, because the tuple write is: following somebody already following is
+   * the same end state. It still emits, unlike tagging twice — a grant has no row to
+   * read first, so this cannot tell a repeat from a first time, and announcing every
+   * call is the honest half of that. A consumer counting these counts CALLS.
+   *
+   * No `step`: see the operation's declaration. Following is an access decision about
+   * the conversation, not work on it, so a closed thread can still be shown to
+   * somebody.
+   */
+  'ticket0/follow-conversation': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    // Before the grant, not after: a durable read handed to a principal this desk
+    // cannot name is the failure the directory exists to stop, and it is one nobody
+    // would see — the grant confers access and leaves no row anyone lists.
+    const follower = followableStaffOrThrow(ctx, input.follower);
+    // The directory's own value rather than the input's, so the principal the grant
+    // names is provably the row that was just checked.
+    const principal = principalId.parse(follower.principal);
+    await ctx.grant(principal, T0_PERM.conversationRead, conversationRef(conversation.id));
+    ctx.emit({
+      type: 'ticket0.conversation-followed',
+      schemaVersion: 1,
+      entity: conversationRef(conversation.id),
+      piiClass: 'none',
+      payload: { conversation_id: conversation.id, follower: principal },
+    });
+    return { conversation_id: conversation.id, follower: principal, following: true };
+  },
+
+  /**
+   * Take them off again.
+   *
+   * `followableStaffOrThrow` rather than a bare `staffOrThrow`, so the two verbs
+   * accept exactly the same set: a principal this desk refuses to add is one it
+   * should not be answering "not following" about either, and a typo in an unfollow
+   * would otherwise report success for a stranger's ULID.
+   *
+   * `ctx.revoke` delegates the same way `ctx.grant` does, and is a delete that
+   * reports nothing — which is why the answer is `following: false`, the resulting
+   * state, and not `removed`, and why this emits on every call for the reason the
+   * one above does.
+   */
+  'ticket0/unfollow-conversation': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const follower = followableStaffOrThrow(ctx, input.follower);
+    const principal = principalId.parse(follower.principal);
+    await ctx.revoke(principal, T0_PERM.conversationRead, conversationRef(conversation.id));
+    ctx.emit({
+      type: 'ticket0.conversation-unfollowed',
+      schemaVersion: 1,
+      entity: conversationRef(conversation.id),
+      piiClass: 'none',
+      payload: { conversation_id: conversation.id, follower: principal },
+    });
+    return { conversation_id: conversation.id, follower: principal, following: false };
   },
 
   /**

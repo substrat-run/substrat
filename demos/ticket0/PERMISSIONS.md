@@ -85,6 +85,7 @@ no role in §3 but listed here is deliberate, not a gap.
 | Entity type | Permissions granted per entity |
 | --- | --- |
 | `contact` | `conversation:read-own` |
+| `conversation` | `conversation:read` |
 
 ## 5. Scheduled work — the system principal's grants
 

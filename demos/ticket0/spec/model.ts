@@ -1743,6 +1743,103 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
   },
 
   /**
+   * Put a colleague on one thread — the followers half of #1086, at its smallest.
+   *
+   * The mechanism is the platform's rather than this app's: `ctx.grant` narrows
+   * `conversation:read` onto THIS conversation for THIS person, and every read that
+   * was already entity-narrowed — `get-conversation`, `list-messages`, the tags, the
+   * CSAT — honours it without being told the feature exists. That is the whole reason
+   * this adds no table, no column and no permission key: the reads a follower needs
+   * narrowed on the conversation before anybody asked for followers.
+   *
+   * **Who may add one** is `conversation:assign` on that conversation — the key that
+   * already decides who WORKS a thread, and the one `assign`, `snooze` and the tags
+   * take. Putting a watcher on a conversation is routing; a second key would be one
+   * no desk ever grants apart from this one.
+   *
+   * **Who may BE one** is somebody in the desk's directory — a row
+   * `ticket0/list-agents` returns, judged by exactly the test `assign` applies
+   * (#1079). A stranger's ULID would otherwise mint a durable grant for a principal
+   * nobody at the desk can name, which is the one thing an access decision must not
+   * do quietly. The assistant fails it here for the reason it fails as an assignee
+   * (#1154): it reads every conversation in the scope already and watches none.
+   *
+   * **No lifecycle entry, deliberately.** Following is an access decision about a
+   * conversation, not work on it, so it takes no `step` and appears in no state's
+   * `allow` — the same standing the reads have. A `closed` thread is precisely one
+   * you may still need to show a colleague, and a machine that refused there would be
+   * answering a question nobody asked it.
+   *
+   * **What this does NOT do**, both halves needing the side table this slice does not
+   * add: nothing can LIST who follows a conversation, and the inbox
+   * (`ticket0/list-conversations`) is gated on scope-wide `conversation:read`, which
+   * an entity-narrowed grant deliberately does not satisfy — so a follower is not
+   * shown the thread in any list and opens it by link. See #1086.
+   *
+   * Nothing to do with `conversation.follows`, which names the conversation a
+   * follow-UP continues.
+   */
+  'ticket0/follow-conversation': {
+    summary: 'Put a colleague on a conversation',
+    permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string(), follower: z.string().min(1) }),
+    /**
+     * The resulting state, not a row — there is no followers table to return one from,
+     * and saying so in the shape is more honest than inventing an id.
+     */
+    output: z.object({
+      conversation_id: z.string(),
+      follower: z.string(),
+      following: z.boolean(),
+    }),
+    http: { method: 'POST', path: '/conversations/{conversationId}/followers' },
+    emits: {
+      // About the CONVERSATION. There is no follower entity to point at, and "somebody
+      // was given a read of this thread" is the fact an audit wants anyway.
+      entity: 'conversation',
+      entityIdFrom: 'conversation_id',
+      type: 'ticket0.conversation-followed',
+      schemaVersion: 1,
+      // A staff principal and nothing else, which is how `ticket0/set-agent-profile`
+      // already classifies the same value. The name behind it is in the directory and
+      // is erasable there; it may not ride an immutable event.
+      piiClass: 'none',
+      payload: ['conversation_id', 'follower'],
+    },
+  },
+
+  /**
+   * Take them off again — the revoke half, and the reason a grant is the right
+   * mechanism rather than a `ctx.link` edge, which is permanent.
+   *
+   * `following: false` is the resulting STATE, not a `removed` flag like
+   * `untag-conversation`'s. The difference is what the kernel can honestly report:
+   * untagging reads its row first and knows whether there was one, while `ctx.revoke`
+   * is a tombstoning delete that returns nothing, so an app claiming "there was a
+   * grant and I took it away" would be claiming something it never learned. Calling
+   * this on somebody who never followed is a no-op that says where they now stand.
+   */
+  'ticket0/unfollow-conversation': {
+    summary: 'Take a colleague off a conversation',
+    permission: { key: 'conversation:assign', entity: 'conversation', idFrom: 'conversationId' },
+    input: z.object({ conversationId: z.string(), follower: z.string().min(1) }),
+    output: z.object({
+      conversation_id: z.string(),
+      follower: z.string(),
+      following: z.boolean(),
+    }),
+    http: { method: 'DELETE', path: '/conversations/{conversationId}/followers/{follower}' },
+    emits: {
+      entity: 'conversation',
+      entityIdFrom: 'conversation_id',
+      type: 'ticket0.conversation-unfollowed',
+      schemaVersion: 1,
+      piiClass: 'none',
+      payload: ['conversation_id', 'follower'],
+    },
+  },
+
+  /**
    * The desk's tag vocabulary — every tag in use, and how often.
    *
    * Tags are free text, so the vocabulary is not a table anyone maintains: it is
