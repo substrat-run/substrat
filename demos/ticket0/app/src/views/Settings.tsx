@@ -584,6 +584,7 @@ function Desk() {
     greeting: string;
     allowed_origins: string;
     business_hours: string | null;
+    abandoned_after_days: number | null;
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -646,6 +647,10 @@ function Desk() {
         greeting: desk.greeting,
         allowedOrigins: origins,
         businessHours: desk.business_hours,
+        // Null, not absent: an empty box means "use the platform's window", and
+        // omitting the field would mean "leave whatever is there" — which is the one
+        // way this form could refuse to clear a number somebody typed by mistake.
+        abandonedAfterDays: desk.abandoned_after_days,
       });
       setSaved(true);
     } catch (e) {
@@ -692,6 +697,36 @@ function Desk() {
           value={desk.business_hours ?? ''}
           onChange={(e) => setDesk({ ...desk, business_hours: e.target.value || null })}
         />
+      </Field>
+      <Field
+        label="Close untouched conversations after"
+        hint="Days of silence before a conversation nobody ever picked up leaves the inbox. Nothing is deleted - the thread, its messages and the contact all stay - but closed is final, so this errs long. Leave it empty for the default of 30 days."
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            className="input mono"
+            type="number"
+            min={1}
+            max={3650}
+            style={{ width: 110 }}
+            placeholder="30"
+            value={desk.abandoned_after_days ?? ''}
+            onChange={(e) => {
+              // An empty box is the default, not zero. `Number('')` is 0, which is a
+              // window that would close this morning's mail - so the empty string is
+              // read as null before any arithmetic touches it.
+              const raw = e.target.value.trim();
+              const parsed = Number(raw);
+              setDesk({
+                ...desk,
+                abandoned_after_days: raw === '' || !Number.isFinite(parsed) ? null : parsed,
+              });
+            }}
+          />
+          <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+            days
+          </span>
+        </div>
       </Field>
       <Field
         label="Widget origins"

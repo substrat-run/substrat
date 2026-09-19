@@ -286,4 +286,11 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_kb_sources ADD COLUMN token_last_used_at TEXT;
     `,
   },
+  {
+    // add-ticket0_desk_settings-abandoned_after_days
+    version: '0009',
+    sql: `
+      ALTER TABLE ticket0_desk_settings ADD COLUMN abandoned_after_days INTEGER;
+    `,
+  },
 ];

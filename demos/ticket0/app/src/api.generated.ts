@@ -194,6 +194,7 @@ export interface DeskSettings {
   verification_secret: string;
   business_hours: string | null;
   assistant_autonomous: number | null;
+  abandoned_after_days: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -325,7 +326,7 @@ export interface Ticket0Client {
    *
    * `PATCH /desk` — `ticket0/configure-desk`
    */
-  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; created_at: string; updated_at: string }>;
+  configureDesk(input: { fromAddress?: string; greeting?: string; allowedOrigins?: string[]; businessHours?: string | null; assistantAutonomous?: boolean; abandonedAfterDays?: number | null }): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; created_at: string; updated_at: string }>;
 
   /**
    * Confirm an address from the link in its email
@@ -385,7 +386,7 @@ export interface Ticket0Client {
    *
    * `GET /desk` — `ticket0/get-desk`
    */
-  getDesk(): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; created_at: string; updated_at: string }>;
+  getDesk(): Promise<{ id: string; from_address: string; greeting: string; allowed_origins: string; business_hours: string | null; assistant_autonomous: number | null; abandoned_after_days: number | null; created_at: string; updated_at: string }>;
 
   /**
    * One canned answer

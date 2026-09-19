@@ -1152,6 +1152,18 @@
                   },
                   "assistantAutonomous": {
                     "type": "boolean"
+                  },
+                  "abandonedAfterDays": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3650
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 }
               }
@@ -1198,6 +1210,16 @@
                         }
                       ]
                     },
+                    "abandoned_after_days": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -1212,6 +1234,7 @@
                     "allowed_origins",
                     "business_hours",
                     "assistant_autonomous",
+                    "abandoned_after_days",
                     "created_at",
                     "updated_at"
                   ],
@@ -1289,6 +1312,16 @@
                         }
                       ]
                     },
+                    "abandoned_after_days": {
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "created_at": {
                       "type": "string"
                     },
@@ -1303,6 +1336,7 @@
                     "allowed_origins",
                     "business_hours",
                     "assistant_autonomous",
+                    "abandoned_after_days",
                     "created_at",
                     "updated_at"
                   ],

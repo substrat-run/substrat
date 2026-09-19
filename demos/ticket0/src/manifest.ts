@@ -226,7 +226,9 @@ export const ticket0Manifest = moduleManifest.parse({
      * denies. At an hour it is 4800 a day.
      *
      * Not five-minutely, though, which is what the snooze timer needs: the thing this
-     * measures is a month long, so a conversation reaped an hour after the window
+     * measures is a month long by default and a day at its shortest — the floor
+     * `ticket0/configure-desk` puts under `abandoned_after_days` is what keeps that
+     * true — so a conversation reaped an hour after the window
      * elapses is indistinguishable from one reaped on the stroke of it, and there is no
      * reason to pay for the scan 288 times a day. A desk abandoning conversations
      * faster than 4800 a day is under a flood, and a flood is what the rate limiter

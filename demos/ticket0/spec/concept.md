@@ -76,7 +76,8 @@ The lifecycle:
   about the lifecycle and the reason a conversation is *not* a work order (section 3).
 - **closed** is the end, reachable from anywhere. A human puts it there by hand; the
   reaper (#1088, §9.1) is the only other thing that may, and only for a
-  conversation still in `new` that nobody has added to for thirty days — never one
+  conversation still in `new` that nobody has added to for as long as the desk's
+  window — thirty days unless the desk says otherwise — never one
   somebody picked up, answered, parked or left a draft on. A customer who writes in
   afterwards gets a follow-up conversation, not a refusal (below).
 
@@ -448,9 +449,13 @@ Each with a recommendation, so this is a choice and not a specification exercise
    rate limit, and the reaper for abandoned *conversations* — which is a retention policy,
    not an access-control problem. **The reaper is now built** (#1088):
    `ticket0/reap-abandoned`, an hourly schedule that CLOSES — never deletes — a conversation
-   still in `new` that nobody has added to for thirty days. The retention window is a
-   constant in `src/module.ts` rather than the per-desk setting the issue also asked for,
-   because a setting is a column and a column is a migration.
+   still in `new` that nobody has added to for the length of the desk's own window. That
+   window is `abandoned_after_days` on `ticket0_desk_settings`, set through
+   `ticket0/configure-desk` and bounded at one day and ten years; a desk that has never
+   said keeps the thirty days the reaper shipped with, which is what makes the column
+   additive rather than a change of behaviour. It took a migration to land, and a
+   migration is a human checkpoint — which is the only reason it arrived after the sweep
+   rather than with it.
 2. **The widget's surface and CORS.** *Recommended: a second `widget` surface of the same
    vertical on its own hostname, with the embedding-origin allowlist in desk settings and
    CORS support added to the vertical host.* Routing already supports this; the anonymous
