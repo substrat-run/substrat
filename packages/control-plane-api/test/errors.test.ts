@@ -75,6 +75,22 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(body.reason).toBe('already_admitted');
   });
 
+  it('reads `unknown vertical` from the code now that the pattern row is gone (#113 phase 5)', () => {
+    // The first family migrated off `CODE_PATTERNS`. Both adapters throw this typed, so
+    // the 404 comes from the DECLARATION — and, unlike a pattern match, it survives any
+    // rewording of the sentence.
+    const typed = mapError(substratError('not_found', `unknown vertical 'ghost'`));
+    expect(typed.status).toBe(404);
+    expect(typed.body.code).toBe('not_found');
+    expect(typed.body.detail).toBe(`unknown vertical 'ghost'`);
+
+    // The other half, and the reason the row could only go AFTER the throws were typed:
+    // the same sentence untyped is now an unreviewed throw, and gets the generic 500.
+    // That is the deletion being real rather than cosmetic — and it is what makes a
+    // future untyped `unknown vertical` visible instead of quietly correct.
+    expect(mapError(new Error(`unknown vertical 'ghost'`)).status).toBe(500);
+  });
+
   it('relays a downstream status as about:blank — our taxonomy is not theirs to wear', () => {
     // auth-server's honest 501 for an unimplemented verb (the 2026-07-25 shape). The
     // status is the vertical's; putting a code of ours on it would be a claim we cannot

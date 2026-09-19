@@ -3,6 +3,7 @@ import { connectorCalls, connectorTestFetch, resetConnectorCalls } from './conne
 import {
   connectionId,
   dataSubjectId,
+  errorCodeOf,
   eventId,
   instant,
   moduleManifest,
@@ -14,6 +15,7 @@ import {
   scopeId,
   tenantId,
   SCOPE_QUERY_ROW_MAX,
+  type ErrorCode,
   type OrgId,
   type PlatformRequest,
   type PlatformRequestId,
@@ -75,6 +77,29 @@ interface PlatformRequestRow {
   requested_at: string;
   settled_at: string | null;
 }
+
+/**
+ * Assert a refusal by the CODE it declared, not by the sentence it happens to carry
+ * (#113 phase 5).
+ *
+ * `errorCodeOf` is the same reading the control plane's `mapError` does, so what this
+ * pins and the problem document a transport renders agree by construction. A `/message/`
+ * match agreed with it only by coincidence — and that coincidence was load-bearing:
+ * `CODE_PATTERNS` in `packages/control-plane-api/src/errors.ts` guessed the code by
+ * regex, so rewording a throw silently changed a 404 into a 500, and the suite's own
+ * message assertion was the only thing standing in the way. Moving the assertion here
+ * makes the message free to change and the TYPE the thing that cannot.
+ *
+ * A promise that RESOLVES fails this too: `errorCodeOf(undefined)` is `undefined`, which
+ * is never a code — so it cannot pass by not throwing at all.
+ */
+const expectRefusal = async (p: Promise<unknown>, code: ErrorCode): Promise<void> => {
+  const err = await p.then(
+    () => undefined,
+    (e: unknown) => e,
+  );
+  expect(errorCodeOf(err)).toBe(code);
+};
 
 /** Adapter capability flags — everything an adapter cannot honor identically. */
 export interface ScopeHostSuiteOptions {
@@ -3599,8 +3624,8 @@ export function scopeHostContractSuite(
       await host.admin.setVerticalListed(staff, 'listtest', true);
       expect((await at('listtest'))?.publishRequestedAt).toBeUndefined(); // cleared on review
 
-      await expect(host.admin.setVerticalListed(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
-      await expect(host.admin.requestPublish(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
+      await expectRefusal(host.admin.setVerticalListed(staff, 'no-such-vertical', true), 'not_found');
+      await expectRefusal(host.admin.requestPublish(staff, 'no-such-vertical'), 'not_found');
     });
 
     it('blocks new installs (setVerticalInstallsBlocked) — a provisioning gate, not a delete', async () => {
@@ -3618,7 +3643,7 @@ export function scopeHostContractSuite(
       await host.admin.setVerticalInstallsBlocked(staff, 'blocktest', false);
       expect((await at('blocktest'))?.installsBlocked).toBe(false);
 
-      await expect(host.admin.setVerticalInstallsBlocked(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+      await expectRefusal(host.admin.setVerticalInstallsBlocked(staff, 'no-such-vertical', true), 'not_found');
     });
 
     it('grants the tenant-provisioner capability (setVerticalTenantProvisioner) — a staff grant a re-push cannot touch', async () => {
@@ -3638,7 +3663,7 @@ export function scopeHostContractSuite(
       await host.admin.setVerticalTenantProvisioner(staff, 'managertest', false);
       expect((await at('managertest'))?.tenantProvisioner).toBe(false);
 
-      await expect(host.admin.setVerticalTenantProvisioner(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+      await expectRefusal(host.admin.setVerticalTenantProvisioner(staff, 'no-such-vertical', true), 'not_found');
     });
 
     it('carries the declared provisioner intent (#455) — a refreshable request, orthogonal to the grant', async () => {
@@ -3696,7 +3721,7 @@ export function scopeHostContractSuite(
       await host.admin.setVerticalEmailSender(staff, 'mailer', false);
       expect((await at('mailer'))?.emailSender).toBe(false);
 
-      await expect(host.admin.setVerticalEmailSender(staff, 'no-such-vertical', true)).rejects.toThrow(/unknown vertical/);
+      await expectRefusal(host.admin.setVerticalEmailSender(staff, 'no-such-vertical', true), 'not_found');
     });
 
     it('deletes a vertical — refused while a scope is bound, total once nothing is', async () => {
@@ -3730,7 +3755,17 @@ export function scopeHostContractSuite(
       expect(await host.admin.listVersions(staff, 'deletable')).toEqual([]); // no resurrected versions
       await host.admin.deleteVertical(staff, 'deletable');
 
-      await expect(host.admin.deleteVertical(staff, 'no-such-vertical')).rejects.toThrow(/unknown vertical/);
+      await expectRefusal(host.admin.deleteVertical(staff, 'no-such-vertical'), 'not_found');
+    });
+
+    it('refuses the serving-state read and write for a vertical that does not exist', async () => {
+      await expectRefusal(host.admin.verticalServing(staff, 'no-such-vertical'), 'not_found');
+      await expectRefusal(
+        host.admin.setVerticalServing(staff, 'no-such-vertical', {
+          ref: 'serving-script', versionId: ulid(), doClasses: [], migrationTag: 'g1',
+        }),
+        'not_found',
+      );
     });
 
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {
@@ -3808,7 +3843,7 @@ export function scopeHostContractSuite(
     });
 
     it('refuses a version for a vertical nobody registered', async () => {
-      await expect(
+      await expectRefusal(
         host.admin.publishVersion(staff, {
           id: ulid(),
           verticalSlug: 'ghost',
@@ -3818,7 +3853,8 @@ export function scopeHostContractSuite(
           migrationDigest: 'g',
           deploymentRef: null,
         }),
-      ).rejects.toThrow(/unknown vertical/);
+        'not_found',
+      );
     });
 
     // -- channels and promotion-time checkpoints (#31 step 2) ----------------
