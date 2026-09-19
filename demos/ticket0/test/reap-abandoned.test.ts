@@ -311,6 +311,35 @@ describe('everything a person has touched is off limits, however old', () => {
 
     expect((await readConversation(desk, folded)).state).toBe('new');
   });
+
+  /**
+   * The other half of a merge, and the one that bites.
+   *
+   * Merging wrote `updated_at` on the LOSER only, so an old conversation chosen as the
+   * SURVIVOR absorbed a whole thread this morning and still read as untouched since
+   * whenever it last spoke — reapable on the very next sweep, the day after a person
+   * deliberately kept it. `ticket0/merge` now touches the survivor too.
+   */
+  it('a survivor a person merged into today is not reaped tomorrow', async () => {
+    const desk = world.kestrel;
+    const admin = await host.getScope(desk.admin.principal, desk.tenant, desk.scope);
+    const both = 'merged-late@customer.example';
+
+    const survivor = await arrives(desk, 'The old thread', both);
+    // Long enough that the survivor is well past the window on its own clock.
+    clock.advance(2 * ABANDONED_AFTER_DAYS * DAY);
+    const loser = await arrives(desk, 'The same person, again', both);
+    await admin.invoke('ticket0/merge', { conversationId: loser, intoConversationId: survivor });
+
+    clock.advance(DAY);
+    await reap(desk);
+    expect((await readConversation(desk, survivor)).state).toBe('new');
+
+    // And it is not exempt forever — silence from here still counts.
+    clock.advance((ABANDONED_AFTER_DAYS + 1) * DAY);
+    await reap(desk);
+    expect((await readConversation(desk, survivor)).state).toBe('closed');
+  });
 });
 
 describe('the platform sweep is the caller, and one desk never reaches another', () => {

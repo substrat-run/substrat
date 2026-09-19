@@ -2460,6 +2460,21 @@ const operations = {
         ctx.link({ entityType, entityId: row.id }, survivorRef);
       }
     }
+    /**
+     * The survivor changed too, and until #1088 nothing said so.
+     *
+     * It just absorbed another thread's messages, turns and sessions — that is
+     * activity on it by any reading, and `updated_at` is the column that means "last
+     * activity". Only the loser's was written, so a survivor could take on a week of
+     * new messages and go on reading as untouched since whenever it last spoke.
+     *
+     * The reaper is what turned that from a cosmetic ordering wrinkle into a real one:
+     * an old, still-`new` conversation chosen as the SURVIVOR of a merge a person made
+     * this morning was reapable on the very next sweep, because its own clock had not
+     * moved. Touching it here is the honest fix — the alternative, exempting every
+     * merge target from the sweep, would make a genuinely abandoned survivor immortal.
+     */
+    touch(ctx, survivor.id);
     const row = conversationOrThrow(ctx, conversation.id);
     ctx.emit({
       type: 'ticket0.conversation-merged',
