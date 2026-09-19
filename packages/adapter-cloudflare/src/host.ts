@@ -4104,16 +4104,31 @@ export class CloudflareScopeHost implements ScopeHost {
         // because something moved. A count moves nothing and egresses nothing, and an
         // admin row saying a redrain was intended on a scope where none was is a false
         // statement about a tenant's data — the opposite of what the log is for.
+        //
+        // It IS a read, though, and K-24 admits no curated subset: every `HostAdmin` read
+        // records actor, method, target and result count in the access log, so "who counted
+        // every tenant's outbox" has an answer. The count itself is the result count — the
+        // read returns one row, and the number in it is the fact worth having. The row lands
+        // on THIS host whichever branch answered, like the drain's read.
         if (countOnly) {
-          return this.eventDrainDelegation && record.vertical
-            ? await this.eventDrainDelegation.redrain({
-                tenantId,
-                scopeId,
-                vertical: record.vertical,
-                drainedBefore,
-                countOnly: true,
-              })
-            : await this.scopeStub(scopeId).redrainCount(drainedBefore);
+          const redrainable =
+            this.eventDrainDelegation && record.vertical
+              ? await this.eventDrainDelegation.redrain({
+                  tenantId,
+                  scopeId,
+                  vertical: record.vertical,
+                  drainedBefore,
+                  countOnly: true,
+                })
+              : await this.scopeStub(scopeId).redrainCount(drainedBefore);
+          await this.recordAccess(
+            actor,
+            'redrainEvents',
+            { tenantId, scopeId },
+            { drainedBefore, countOnly: true },
+            redrainable,
+          );
+          return redrainable;
         }
         // Audit FIRST, on `rewindScope`'s rule (K-33), because this has the same shape: the
         // mutation commits in a DO and the row is a separate write afterwards, so a failure

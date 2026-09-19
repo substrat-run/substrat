@@ -504,6 +504,15 @@ describe('control-plane API', () => {
     const reopened = await json(`/tenants/${t1}/scopes/${s1}/redrain-events`, 'POST', { drainedBefore });
     expect(await reopened.json()).toEqual({ redrained: 0, more: false, drainedBefore });
 
+    // …and the reopen route REFUSES the flag rather than ignoring it: a caller that asked
+    // for a count and was quietly given a reopen is the one failure this pair exists to
+    // prevent. Refused whatever its value — on this route the field has no meaning.
+    for (const countOnly of [true, false]) {
+      const wrong = await json(`/tenants/${t1}/scopes/${s1}/redrain-events`, 'POST', { drainedBefore, countOnly });
+      expect(wrong.status).toBe(400);
+      expect((await wrong.json()).error).toMatch(/redrain-count/);
+    }
+
     // The instant is required and must be an instant — the count rehearses a window, and a
     // window it cannot name is not one.
     expect((await json(`/tenants/${t1}/scopes/${s1}/redrain-count`, 'POST', {})).status).toBe(400);

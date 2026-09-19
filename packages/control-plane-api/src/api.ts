@@ -2848,9 +2848,20 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    // The instant alone, never `parsed.data` — the input schema also carries `countOnly`
-    // (#1545), and this route's answer (`redrained`, `more`) is a statement that rows
-    // moved. Counting belongs at `redrain-count` below, where it is what the reply says.
+    // The input schema also carries `countOnly` (#1545), and this route does not honour it:
+    // its answer (`redrained`, `more`) is a statement that rows moved. Ignoring the field
+    // silently would be the exact failure the separate count route exists to prevent — a
+    // caller asking for a rehearsal and getting a reopen — so it is REFUSED here and the
+    // caller is told where counting lives. Refused whatever its value: on this route the
+    // field has no meaning at all, and "accepted when false" is a rule nobody can rely on.
+    if (parsed.data.countOnly !== undefined) {
+      return c.json(
+        { error: 'countOnly is not honoured here — POST the same body to …/redrain-count for a read-only count' },
+        400,
+      );
+    }
+    // The instant alone, never `parsed.data`, so the field cannot reach the adapter from
+    // this door even if the refusal above is ever relaxed.
     const redrained = await admin.redrainEvents(actor, tenantId, scopeId, {
       drainedBefore: parsed.data.drainedBefore,
     });

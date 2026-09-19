@@ -684,6 +684,16 @@ export function scopeHostContractSuite(
       // and a row claiming a redrain on a scope that was only counted is a false statement
       // in the one log that is evidence.
       expect(await redrainRows()).toBe(receiptsBefore);
+      // It is still a READ, and K-24 takes all reads rather than a chosen subset — so the
+      // access log carries a row per count, naming the window and the number it found.
+      // "Nobody can tell who counted every tenant's outbox" is the hole that would be.
+      const counts = (await host.admin.accessLog(staff, { tenantId: t1, method: 'redrainEvents' })).filter(
+        (r) => r.scopeId === sDrain,
+      );
+      expect(counts).toHaveLength(3);
+      expect(counts.map((r) => r.resultCount)).toEqual(
+        expect.arrayContaining([0, first.length]),
+      );
       // The future refusal is the verb's, not the reopen's alone — the window rule is
       // checked before the two branches part.
       await expect(

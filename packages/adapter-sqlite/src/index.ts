@@ -5802,8 +5802,12 @@ export class SqliteScopeHost implements ScopeHost {
         // the whole window must fit one Durable-Object request on the other adapter, and an
         // aggregate materialises no rows. A capped count would answer "5000, or more",
         // which is not an answer.
+        //
+        // It IS a read, and K-24 takes all reads rather than a chosen subset, so it leaves
+        // an access row — the count itself as the result count, which is the fact an
+        // auditor asking "who counted this tenant's outbox, and how much was there" wants.
         if (countOnly) {
-          return (
+          const redrainable = (
             db
               .prepare(
                 `SELECT COUNT(*) AS c FROM _substrat_outbox
@@ -5811,6 +5815,8 @@ export class SqliteScopeHost implements ScopeHost {
               )
               .get(drainedBefore) as { c: number }
           ).c;
+          this.recordAccess(actor, 'redrainEvents', { tenantId, scopeId }, { drainedBefore, countOnly: true }, redrainable);
+          return redrainable;
         }
         // Audit FIRST, matching the Cloudflare adapter and `rewindScope` (K-33): the row is
         // a separate statement outside the update's transaction, so a failure between them
