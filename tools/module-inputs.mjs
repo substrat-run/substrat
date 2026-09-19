@@ -44,57 +44,135 @@ import { join } from 'node:path';
 const ROOTS = ['demos', 'engines'];
 const TEMPLATE = 'packages/create-substrat/template';
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.wrangler']);
-/** A whole-file opt-out, and it has to give a reason. */
-const ALLOW = /module-inputs-allow:\s*\S/;
+/**
+ * A whole-file opt-out, and it has to give a reason.
+ *
+ * Read from the file's COMMENTS alone, never from its source: a marker inside a string
+ * literal is a mention, not a decision, and letting one skip the file would hand anybody a
+ * way past the gate by writing about it. The comment delimiters are stripped before this is
+ * tested, so a marker followed by nothing but the end of its block comment is refused as the
+ * empty reason it is, rather than reading the closing star as one.
+ */
+const ALLOW = /module-inputs-allow:[^\S\n]*\S/;
 
 /**
- * Comments gone and string CONTENTS blanked, so a `:` means a property and nothing else.
+ * The file, split into code, string, comment and regular-expression tokens.
  *
- * String-aware on purpose: a naive `//`-to-end-of-line strip eats a `'http://…'` and takes the
- * rest of the file with it, which is the false NEGATIVE this check exists to avoid. Contents
- * are blanked rather than kept because nothing here needs them and a `'operations: none'` in
- * a message string must not read as a declaration.
+ * A text rule needs exactly this much of a lexer and no more. All three of the things that
+ * hide structure from it live here:
+ *
+ * - a `'http://…'` whose `//` a naive comment strip would read as the start of one, taking the
+ *   rest of the file with it — the false NEGATIVE this check exists to avoid;
+ * - a regular-expression literal, whose `{`, `}` and quotes are ordinary characters to it and
+ *   structure to a brace counter. Whether a `/` opens one is decided the way every JavaScript
+ *   lexer decides it: by what came before. After a value — an identifier, a `)`, a `]` — it is
+ *   division; after an operator, a delimiter or a keyword it is a literal;
+ * - a comment, which is where the opt-out has to live and nowhere else.
  */
-const flatten = (src) => {
-  let out = '';
-  let quote = null;
-  for (let i = 0; i < src.length; ) {
+const VALUE_BEFORE = /[\w$)\]]$/;
+const KEYWORD_BEFORE = /\b(?:return|typeof|instanceof|in|of|case|new|delete|void|do|else|yield|await)$/;
+const tokens = (src) => {
+  const out = [];
+  let code = '';
+  let tail = ''; // the last few code characters, for the "is this `/` a regex?" decision
+  let i = 0;
+  const flushCode = () => {
+    if (code !== '') out.push({ kind: 'code', text: code });
+    code = '';
+  };
+  while (i < src.length) {
     const c = src[i];
     const next = src[i + 1];
-    if (quote !== null) {
-      if (c === '\\') {
-        out += 'XX';
-        i += 2;
-        continue;
-      }
-      if (c === quote) {
-        quote = null;
-        out += c;
-        i++;
-        continue;
-      }
-      out += c === '\n' ? '\n' : 'X';
-      i++;
-      continue;
-    }
     if (c === '/' && next === '/') {
+      flushCode();
+      const from = i + 2;
       while (i < src.length && src[i] !== '\n') i++;
-      out += ' ';
+      out.push({ kind: 'comment', text: src.slice(from, i) });
       continue;
     }
     if (c === '/' && next === '*') {
+      flushCode();
+      const from = i + 2;
       i += 2;
       while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      out.push({ kind: 'comment', text: src.slice(from, i) });
       i += 2;
-      out += ' ';
       continue;
     }
-    if (c === "'" || c === '"' || c === '`') quote = c;
-    out += c;
+    if (c === "'" || c === '"' || c === '`') {
+      flushCode();
+      const from = i;
+      i++;
+      while (i < src.length) {
+        if (src[i] === '\\') i += 2;
+        else if (src[i] === c) break;
+        else i++;
+      }
+      i++;
+      out.push({ kind: 'string', text: src.slice(from, Math.min(i, src.length)) });
+      tail = (tail + 'X').slice(-24);
+      continue;
+    }
+    if (c === '/') {
+      // Division or a regular-expression literal, decided by what came before: after a value —
+      // an identifier, a `)`, a `]` — it divides; after an operator, a delimiter, the start of
+      // the file, or a keyword that takes an expression, it opens a literal.
+      const before = tail.trimEnd();
+      if (!VALUE_BEFORE.test(before) || KEYWORD_BEFORE.test(before)) {
+        flushCode();
+        const from = i;
+        i++;
+        let inClass = false;
+        while (i < src.length && src[i] !== '\n') {
+          if (src[i] === '\\') i += 2;
+          else if (src[i] === '[') (inClass = true), i++;
+          else if (src[i] === ']') (inClass = false), i++;
+          else if (src[i] === '/' && !inClass) break;
+          else i++;
+        }
+        i++;
+        out.push({ kind: 'regex', text: src.slice(from, Math.min(i, src.length)) });
+        tail = (tail + 'X').slice(-24);
+        continue;
+      }
+    }
+    code += c;
+    tail = (tail + c).slice(-24);
     i++;
   }
+  flushCode();
   return out;
 };
+
+/**
+ * The source with comments and regular-expression literals blanked, and every STRUCTURAL
+ * character inside a string neutralised — so a `{`, a `,` or a `:` means what it looks like.
+ *
+ * String contents are kept otherwise, which is the part that matters: a quoted property name —
+ * `"operations": ops` — is valid TypeScript and has to be read as the key it is, while a
+ * message that happens to spell `'operations: none'` must not read as a declaration. Blanking
+ * the delimiters and keeping the letters gets both, because the colon that makes a key is
+ * outside the quotes and the one inside is not.
+ */
+const STRUCTURAL = new Set(['{', '}', '(', ')', '[', ']', ',', ':', ';', '/', '*', '\\']);
+const blank = (text) => text.replace(/[^\n]/g, ' ');
+const flatten = (source) =>
+  tokens(source)
+    .map((t) => {
+      if (t.kind === 'code') return t.text;
+      if (t.kind === 'comment' || t.kind === 'regex') return blank(t.text);
+      const quote = t.text[0];
+      const inner = t.text.slice(1, t.text.length - 1).replace(/[^\n]/g, (c) => (STRUCTURAL.has(c) ? 'X' : c));
+      return quote + inner + (t.text.length > 1 ? quote : '');
+    })
+    .join('');
+
+/** What the comments said — where an opt-out has to live, and the only place it is read from. */
+const comments = (source) =>
+  tokens(source)
+    .filter((t) => t.kind === 'comment')
+    .map((t) => t.text)
+    .join('\n');
 
 /** The text between the braces of the `{` at `start`, or null when it never closes. */
 const braced = (src, start) => {
@@ -138,27 +216,87 @@ const ownProperties = (body) => {
 };
 
 /**
+ * Is this `operationInputs` value derived from the declared surface?
+ *
+ * A direct `operationInputsOf(ops)` call, or an object whose entries are ALL spreads of such
+ * calls — which is how a vertical composing two declarations merges them. Nothing else: a
+ * hand-written entry, mixed in or alone, covers whatever someone remembered to type while the
+ * map as a whole reads as coverage, and `ModuleRegistration` lets a bound operation have no
+ * entry at all, so the operation it forgets reaches the guards and the handler unparsed. That
+ * is the failure this gate is named after, one level further in.
+ */
+const derived = (value) => {
+  const trimmed = value.trim();
+  if (/^operationInputsOf\s*\(/.test(trimmed)) return true;
+  if (!trimmed.startsWith('{')) return false;
+  const inner = braced(trimmed, 0);
+  if (inner === null) return false;
+  const entries = ownProperties(inner.body);
+  return entries.length > 0 && entries.every((e) => e.key === '...' && /operationInputsOf\s*\(/.test(e.value));
+};
+
+/**
  * Every offence in one file's source, as a list of sentences.
  *
  * A registration is judged on three things, in the order they go wrong:
  *
- * 1. Can this check read it at all? Only `const x: ModuleRegistration = { … }` is legible to a
- *    text rule. A registration returned from a function, held in an array, or spread from
+ * 1. Can this check read it at all? Only an object literal carrying the annotation is legible
+ *    to a text rule. A registration returned from a function, held in an array, or spread from
  *    somewhere else is REFUSED rather than skipped — passing something it did not read is the
  *    failure mode the gate exists to avoid, and the same call `lint:vite-proxy` makes about a
  *    `proxy:` it cannot see.
  * 2. Does it declare `operations:` at all? A registration that is only a manifest, migrations
  *    and consumers has no invocation surface and nothing to parse.
- * 3. Does it hand over `operationInputs:`, DERIVED from the declared surface? A hand-written
- *    map is refused for the reason the kernel's own doc-comment gives about a name binding
- *    nothing: it reads as coverage while covering whatever someone remembered to type. Any
- *    value mentioning `operationInputsOf(` is accepted, so a vertical composing two
- *    declarations can still merge them.
+ * 3. Does it hand over `operationInputs:`, DERIVED from the declared surface? See `derived`.
+ *
+ * Both spellings of the annotation are read — `const x: ModuleRegistration = { … }` and
+ * `const x = { … } satisfies ModuleRegistration` — because a registration the check walks past
+ * is a registration it passes, and `satisfies` is the idiom a new module is most likely to
+ * reach for.
  */
 const judge = (source) => {
   const src = flatten(source);
   const found = [];
   let judged = 0;
+
+  /** One registration body, once this check has managed to find it. */
+  const judgeBody = (name, body) => {
+    const props = ownProperties(body);
+    if (props.some((p) => p.key === '...')) {
+      found.push(
+        `${name}: spreads another object into the registration — this check cannot tell what ` +
+          'that contributes, so it refuses rather than guesses',
+      );
+      return;
+    }
+    if (!props.some((p) => p.key === 'operations')) return; // no invocation surface to parse
+    const inputs = props.find((p) => p.key === 'operationInputs');
+    if (inputs === undefined) {
+      found.push(
+        `${name}: declares \`operations:\` and no \`operationInputs:\` — the Zod inputs in its ` +
+          'declared surface are compile-time only, and every invocation reaches the guards and ' +
+          'the handler unparsed. Add `operationInputs: operationInputsOf(ops)`',
+      );
+      return;
+    }
+    if (!derived(inputs.value)) {
+      found.push(
+        `${name}: \`operationInputs\` is not derived from the declared surface — a hand-written ` +
+          'entry covers only what someone remembered to type while the map reads as coverage. ' +
+          'Write `operationInputsOf(ops)`, or an object of nothing but spreads of such calls',
+      );
+    }
+  };
+
+  const unreadable = (where) =>
+    found.push(
+      `a ModuleRegistration this check cannot read — ${where}. Only ` +
+        '`const x: ModuleRegistration = { … }` and `const x = { … } satisfies ModuleRegistration` ' +
+        'are legible to a text rule; write it as one of those, or opt the file out with a ' +
+        '`module-inputs-allow: <reason>` comment',
+    );
+
+  // `const x: ModuleRegistration = { … }`, type arguments and all.
   const annotation = /:\s*ModuleRegistration\b/g;
   let m;
   while ((m = annotation.exec(src)) !== null) {
@@ -169,14 +307,10 @@ const judge = (source) => {
     // Optional type arguments — `ModuleRegistration<[ProtocolEvents]>` — then `= {`.
     const opens = /^\s*(?:<(?:[^<>]|<[^<>]*>)*>)?\s*=\s*\{/.exec(rest);
     if (declared === null || opens === null) {
-      const where =
+      unreadable(
         declared === null
           ? `\`${(head.trim().split('\n').pop() ?? '').trim()} : ModuleRegistration…\``
-          : `\`${declared[1]}\``;
-      found.push(
-        `a ModuleRegistration this check cannot read — ${where}. Only ` +
-          '`const x: ModuleRegistration = { … }` is legible to a text rule; write it as a plain ' +
-          'object literal, or opt the file out with a `module-inputs-allow: <reason>` comment',
+          : `\`${declared[1]}\``,
       );
       continue;
     }
@@ -188,31 +322,34 @@ const judge = (source) => {
       continue;
     }
     annotation.lastIndex = m.index + m[0].length + body.end + 1;
-    const props = ownProperties(body.body);
-    if (props.some((p) => p.key === '...')) {
-      found.push(
-        `${name}: spreads another object into the registration — this check cannot tell what ` +
-          'that contributes, so it refuses rather than guesses',
-      );
+    judgeBody(name, body.body);
+  }
+
+  // `const x = { … } satisfies ModuleRegistration` — the object is BEHIND the keyword, so it is
+  // found by balancing braces backwards from the `}` the keyword follows.
+  const satisfies = /\bsatisfies\s+ModuleRegistration\b/g;
+  while ((m = satisfies.exec(src)) !== null) {
+    judged++;
+    let end = m.index - 1;
+    while (end >= 0 && /\s/.test(src[end])) end--;
+    let open = -1;
+    if (end >= 0 && src[end] === '}') {
+      let depth = 0;
+      for (let i = end; i >= 0; i--) {
+        if (src[i] === '}') depth++;
+        else if (src[i] === '{' && --depth === 0) {
+          open = i;
+          break;
+        }
+      }
+    }
+    if (open === -1) {
+      unreadable('`… satisfies ModuleRegistration`, with no object literal in front of it');
       continue;
     }
-    if (!props.some((p) => p.key === 'operations')) continue; // no invocation surface to parse
-    const inputs = props.find((p) => p.key === 'operationInputs');
-    if (inputs === undefined) {
-      found.push(
-        `${name}: declares \`operations:\` and no \`operationInputs:\` — the Zod inputs in its ` +
-          'declared surface are compile-time only, and every invocation reaches the guards and ' +
-          'the handler unparsed. Add `operationInputs: operationInputsOf(ops)`',
-      );
-      continue;
-    }
-    if (!/operationInputsOf\s*\(/.test(inputs.value)) {
-      found.push(
-        `${name}: \`operationInputs\` is written by hand rather than derived — it reads as ` +
-          'coverage while covering only what someone remembered to type. Use ' +
-          '`operationInputsOf(ops)`, the same declaration the manifest and the routes come from',
-      );
-    }
+    const before = src.slice(Math.max(0, open - 160), open);
+    const declared = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*$/.exec(before);
+    judgeBody(declared === null ? 'a `satisfies ModuleRegistration` object' : declared[1], src.slice(open + 1, end));
   }
   return { judged, offences: found };
 };
@@ -264,6 +401,26 @@ const SELF_CHECK = [
   // The `as ModuleRegistration['operations']` cast four demos write is not a second
   // registration — and it does not hide the missing hand-over either.
   [`const m: ModuleRegistration = { manifest: x, operations: ops as ModuleRegistration['operations'] };`, 1],
+  // A QUOTED property name is the same property. Blanking string contents wholesale hid this
+  // one: the registration read as having no operations at all, and passed.
+  ['const m: ModuleRegistration = { manifest: x, "operations": ops };', 1],
+  [`const m: ModuleRegistration = { manifest: x, 'operations': ops, 'operationInputs': operationInputsOf(o) };`, 0],
+  // `satisfies` is the other spelling of the annotation, and the object is behind it.
+  [`const m = { manifest: x, ${OPS} } satisfies ModuleRegistration;`, 1],
+  [`const m = { manifest: x, ${OPS}, operationInputs: operationInputsOf(ops) } satisfies ModuleRegistration;`, 0],
+  ['const m = makeModule() satisfies ModuleRegistration;', 1],
+  // A map that is PART derived and part hand-written is not derived: the entries nobody wrote
+  // are the operations that reach the handler unparsed.
+  [`const m: ModuleRegistration = { manifest: x, ${OPS}, operationInputs: { hand: s, ...operationInputsOf(o) } };`, 1],
+  [`const m: ModuleRegistration = { manifest: x, ${OPS}, operationInputs: {} };`, 1],
+  [`const m: ModuleRegistration = { manifest: x, ${OPS}, operationInputs: someMap };`, 1],
+  // A regular-expression literal is a literal: its braces and quotes are not structure, and it
+  // must not swallow the registration that follows it.
+  [`const re = /[{'"]/;\nconst m: ModuleRegistration = { manifest: x, ${OPS} };`, 1],
+  [`const m: ModuleRegistration = { manifest: x, slug: s.replace(/[^a-z{]/g, ''), ${OPS} };`, 1],
+  // …and a `/` after a value is division, not the start of one that would eat the rest.
+  [`const half = total / 2;\nconst m: ModuleRegistration = { manifest: x, ${OPS} };`, 1],
+  [`const ratio = (a + b) / c;\nconst m: ModuleRegistration = { manifest: x, ${OPS}, operationInputs: operationInputsOf(o) };`, 0],
 ];
 const drift = SELF_CHECK.filter(([src, want]) => offences(src).length !== want);
 if (drift.length > 0) {
@@ -282,6 +439,23 @@ const pair = judge(
 );
 if (pair.judged !== 2) {
   console.error(`module-inputs: read ${pair.judged} of 2 registrations in one file — the scan stops early.`);
+  process.exit(2);
+}
+
+// The opt-out skips a whole file, so it is held to being a DECISION — written in a comment,
+// carrying a reason. A marker inside a string is somebody writing about the gate, and a marker
+// with nothing after it is not a reason however the comment ends.
+const OPT_OUT = [
+  ['// module-inputs-allow: this module declares no operation surface', true],
+  ['/* module-inputs-allow: the same, in a block comment */', true],
+  ['/* module-inputs-allow: */', false],
+  ['// module-inputs-allow:\nconst x = 1;', false],
+  ["const note = 'module-inputs-allow: written about, not decided';", false],
+];
+const optDrift = OPT_OUT.filter(([src, want]) => ALLOW.test(comments(src)) !== want);
+if (optDrift.length > 0) {
+  console.error('module-inputs: the opt-out no longer tells a reasoned comment from the rest:');
+  for (const [src, want] of optDrift) console.error(`  expected ${want}: ${src.replace(/\n/g, ' ')}`);
   process.exit(2);
 }
 
@@ -308,14 +482,31 @@ const offenders = [];
 let registrations = 0;
 let files = 0;
 let skipped = 0;
+/** Does this file name the type at all? Judged on the raw text, before anything is stripped. */
+const NAMES_TYPE = /\bModuleRegistration\b/;
 for (const file of sources) {
   const source = readFileSync(file, 'utf8');
-  if (!/:\s*ModuleRegistration\b/.test(source)) continue;
-  if (ALLOW.test(source)) {
+  if (!NAMES_TYPE.test(source)) continue;
+  if (ALLOW.test(comments(source))) {
     skipped++;
     continue;
   }
   const verdict = judge(source);
+  if (verdict.judged === 0) {
+    // The raw file names the type and the scan then found nothing to judge. Either the mention
+    // is only a `type` import or an indexed access — harmless, and the common case — or the
+    // tokenizer lost its place, which is the one way a text rule fails silently. Telling the
+    // two apart needs a real type checker, so the cheap half is done here: a file that also
+    // spells a registration-shaped `operations:` is reported rather than passed.
+    if (/\boperations\s*:/.test(source)) {
+      offenders.push(
+        `${file}: names ModuleRegistration and declares \`operations:\`, and this check read no ` +
+          'registration in it — so it did not read the file the way TypeScript does. It refuses ' +
+          'rather than passing something it could not see',
+      );
+    }
+    continue;
+  }
   registrations += verdict.judged;
   files++;
   for (const why of verdict.offences) offenders.push(`${file}: ${why}`);
