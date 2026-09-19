@@ -21,6 +21,8 @@ const checked = (gates: GateRun, changed = 1): TurnResult => ({
 	gates,
 	commit: changed ? 'abc123' : null,
 	changedFiles: Array.from({ length: changed }, (_, i) => `src/f${i}.ts`),
+	// The loop reads the gate verdict and nothing else; these turns are pre-model-phase.
+	model: { status: 'absent', output: '' },
 });
 
 describe('runTurnLoop', () => {

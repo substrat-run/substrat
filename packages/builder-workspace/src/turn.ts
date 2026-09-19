@@ -18,6 +18,7 @@
  *   Kept for running the gates over monorepo demos; new projects never use it.
  */
 import { runGates, runInstall, type GateResult, type GateRun, type GateSpec } from './gates.js';
+import { emitProjectModel, type ModelEmitResult } from './model.js';
 import type { Workspace } from './workspace.js';
 
 const BOT_NAME = 'Substrat Builder Studio';
@@ -146,6 +147,8 @@ export interface TurnResult {
 	readonly gates: GateRun;
 	readonly commit: string | null;
 	readonly changedFiles: readonly string[];
+	/** What became of `model.json` this turn (#684) — `absent` before the model phase. */
+	readonly model: ModelEmitResult;
 }
 
 export interface RunTurnOptions {
@@ -163,14 +166,14 @@ export interface RunTurnOptions {
 
 /** Run the gates, then commit. Call after every generator turn. */
 export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<TurnResult> {
-	const files = await changedFiles(ws, opts.verticalDir);
+	const written = await changedFiles(ws, opts.verticalDir);
 
 	// Host-owned install (gates.ts runInstall): run it when this turn touched a
 	// package manifest, or when the vertical has one but its deps were never
 	// installed (a fresh workspace member — the warm image predates it). Runs at
 	// the WORKSPACE root so workspace:* deps link. Skipped entirely otherwise, so
 	// interview and chat-only turns never pay for it.
-	const touchedManifest = files.some((f) => f === 'package.json' || f.endsWith('/package.json'));
+	const touchedManifest = written.some((f) => f === 'package.json' || f.endsWith('/package.json'));
 	const missingDeps =
 		(await ws.exists(`${opts.verticalDir}/package.json`)) &&
 		!(await ws.exists(`${opts.verticalDir}/node_modules`));
@@ -179,6 +182,17 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 		install = await runInstall(ws);
 		opts.onGateResult?.(install);
 	}
+
+	// Re-emit `model.json` (#684) — AFTER the install, because emitting it means
+	// importing the project's `spec/model.ts`, which needs its `workspace:*` deps
+	// linked; the scaffold turn that first writes both would otherwise never get an
+	// artifact. No-op until the model phase has written that file, and deterministic
+	// after it, so a turn that changed no entity leaves the artifact untouched.
+	const model = await emitProjectModel(ws, opts.verticalDir);
+	// Re-read the tree: the emit may have written the artifact, and a turn whose
+	// ONLY change is the artifact still has to commit it — an uncommitted one never
+	// reaches the snapshot the Model tab reads, and dies with the container.
+	const files = model.status === 'emitted' ? await changedFiles(ws, opts.verticalDir) : written;
 
 	const gateRun = await runGates(ws, opts.verticalDir, opts.gates, opts.onGateResult);
 	const gates: GateRun = install
@@ -198,7 +212,7 @@ export async function runTurn(ws: Workspace, opts: RunTurnOptions): Promise<Turn
 			})
 		: null;
 
-	return { gates, commit, changedFiles: files };
+	return { gates, commit, changedFiles: files, model };
 }
 
 /** True when the workspace root itself is a git repo (scoped-mode precondition). */
