@@ -13,7 +13,8 @@
  * inherit.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { identityTenantsResponse, resetTeamsCache, teamsFor, type TeamsEnv } from '../src/teams.js';
+import { ControlPlaneError } from '@substrat-run/control-plane-api';
+import { resetTeamsCache, teamsFor, type TeamsEnv } from '../src/teams.js';
 
 /** A stub service binding: answers a scripted body, counts the calls. */
 function cpStub(answer: () => { status?: number; body: unknown }): TeamsEnv & { calls: number } {
@@ -102,21 +103,66 @@ describe('teamsFor', () => {
 		expect(env.calls).toBe(2);
 	});
 
-	it('keeps the non-2xx message it always threw', async () => {
-		const env = cpStub(() => ({ status: 403, body: { error: 'service token required' } }));
-		await expect(teamsFor(env, 'sub-1')).rejects.toThrow(/membership lookup failed: 403/);
+	it("raises the plane's problem document as a ControlPlaneError", async () => {
+		// The hand-rolled read threw `membership lookup failed: 403 <raw body>` and never
+		// looked at the document; the client reads its `detail`.
+		const env = cpStub(() => ({
+			status: 403,
+			body: {
+				type: 'https://substrat.net/problems/forbidden',
+				title: 'Forbidden',
+				status: 403,
+				detail: 'a service token is required for this route',
+			},
+		}));
+		const err = await teamsFor(env, 'sub-1').catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(ControlPlaneError);
+		expect((err as ControlPlaneError).status).toBe(403);
+		expect((err as ControlPlaneError).message).toBe('a service token is required for this route');
 	});
-});
 
-describe('identityTenantsResponse', () => {
-	it('accepts an empty membership — a login that has not signed up yet', () => {
-		expect(identityTenantsResponse.parse({ tenants: [] }).tenants).toEqual([]);
+	it('caches nothing when the plane refused', async () => {
+		let refuse = true;
+		const env = cpStub(() =>
+			refuse ? { status: 403, body: { error: 'service token required' } } : { body: GOOD },
+		);
+
+		await expect(teamsFor(env, 'sub-1')).rejects.toBeInstanceOf(ControlPlaneError);
+		refuse = false;
+		expect(await teamsFor(env, 'sub-1')).toEqual(GOOD.tenants);
+		expect(env.calls).toBe(2);
 	});
 
-	it('drops fields the studio does not declare', () => {
-		const parsed = identityTenantsResponse.parse({
-			tenants: [{ ...GOOD.tenants[0], plan: 'enterprise' }],
-		});
-		expect(parsed.tenants[0]).toEqual(GOOD.tenants[0]);
+	it('asks the service binding for the subject, with the token', async () => {
+		const seen: { url: string; method: string; token: string | null; body: unknown }[] = [];
+		const binding = {
+			// A real service binding checks its receiver, as workerd does the global's: called
+			// as a method of anything else it throws. The client stores the fetch it is
+			// handed and calls it as `this.fetchImpl(…)`, so only a BOUND fetch survives.
+			async fetch(input: RequestInfo | URL, init?: RequestInit) {
+				if (this !== binding) throw new TypeError('Illegal invocation');
+				const req = new Request(input, init);
+				seen.push({
+					url: req.url,
+					method: req.method,
+					token: req.headers.get('x-service-token'),
+					body: await req.json(),
+				});
+				return new Response(JSON.stringify(GOOD), {
+					headers: { 'content-type': 'application/json' },
+				});
+			},
+		};
+		const env = { CP_SERVICE_TOKEN: 'tok', CONTROL_PLANE_SVC: binding } as unknown as TeamsEnv;
+
+		expect(await teamsFor(env, 'sub-9')).toEqual(GOOD.tenants);
+		expect(seen).toEqual([
+			{
+				url: 'https://control-plane/internal/builder/identity-tenants',
+				method: 'POST',
+				token: 'tok',
+				body: { externalId: 'sub-9' },
+			},
+		]);
 	});
 });
