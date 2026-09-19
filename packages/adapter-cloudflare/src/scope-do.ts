@@ -1126,6 +1126,30 @@ export function defineScopeDO(
     }
 
     /**
+     * How many rows `redrainEvents` WOULD reopen for the same instant (#1545), reopening
+     * none of them. A separate verb rather than a flag on the one above, deliberately: the
+     * two answers are indistinguishable once they are numbers, so the caller that asks for
+     * a count must not be able to reach the reopen by losing an argument on the way.
+     *
+     * UNBOUNDED where the reopen is batched. The batch exists because an UPDATE over the
+     * whole window rewrites every row and its index entries inside ONE Durable Object
+     * request, against a fixed budget. An aggregate materialises no rows, so that budget is
+     * not the binding constraint — and a partial count would be worse than useless: the
+     * number is the whole point, and "5000, or possibly more" answers nothing.
+     */
+    async redrainCount(drainedBefore: string): Promise<number> {
+      return (
+        this.sql
+          .exec(
+            `SELECT COUNT(*) AS c FROM _substrat_outbox
+              WHERE drained_at IS NOT NULL AND drained_at < ?`,
+            drainedBefore,
+          )
+          .toArray()[0] as { c: number }
+      ).c;
+    }
+
+    /**
      * Facet this scope's own outbox (#1239) — `facetEvents`, which is the
      * sanctioned read: an erased payload yields the same NULL a missing field
      * does, and only the helper keeps them apart.

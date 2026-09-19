@@ -663,5 +663,7 @@ closed there. It ships before it stamps (drainScopeEvents in packages/kernel), a
 sink throws when the stream is gone, so nothing in that window is ever stamped; those rows
 simply wait and go out after step 3. Skip step 4 entirely when this table held nothing worth
 refilling — a lake with no snapshots has none — and remember that the redrain has no lower
-bound, so on a table that DOES hold data it re-sends everything before the instant.`);
+bound, so on a table that DOES hold data it re-sends everything before the instant. Adding
+--dry-run to step 4 counts those rows per scope and reopens none of them (#1545), which is
+how to see the size of the re-send before committing to it.`);
 }

@@ -737,8 +737,28 @@ export class VerticalClient {
   /**
    * Reopen rows stamped before `drainedBefore` so the drain ships them again (#1334).
    * Answers how many changed, which is what the platform's receipt is written from.
+   *
+   * `countOnly` (#1545) asks the same window for a number and changes nothing — and it
+   * takes a DIFFERENT path rather than riding as a field on this one. The deployment on
+   * the far end is the tenant's, deployed on its own clock, so it is routinely older than
+   * this client: an unknown field is stripped by the Zod boundary there, and the reopen
+   * would run and answer with a number that looks exactly like the count. A path that
+   * deployment does not serve answers 404, which throws here, before anything moves.
    */
-  async redrainEvents(scopeId: ScopeId, drainedBefore: string): Promise<number> {
+  async redrainEvents(scopeId: ScopeId, drainedBefore: string, countOnly?: boolean): Promise<number> {
+    if (countOnly) {
+      const counted = await this.postInternal<{ redrainable?: unknown }>(
+        '/internal/redrain-count',
+        { scopeId, drainedBefore },
+        'redrain-count',
+      );
+      // A 200 that does not carry the number is a wire-format disagreement, not a zero.
+      // Reading it as one would report "nothing to reopen" for a scope nobody counted.
+      if (typeof counted.redrainable !== 'number') {
+        throw new ControlPlaneError(502, `vertical answered redrain-count without a count for scope ${scopeId}`);
+      }
+      return counted.redrainable;
+    }
     const answer = await this.postInternal<{ redrained: number }>(
       '/internal/redrain-events',
       { scopeId, drainedBefore },

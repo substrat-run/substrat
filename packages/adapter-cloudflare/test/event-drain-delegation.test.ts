@@ -33,10 +33,14 @@ describe('event-drain delegation (#1334)', () => {
       return a.eventIds.length;
     },
     // The far end answers how many it reopened; 3 then 0, so the test can tell a receipt
-    // written for real work from one written for a no-op re-run.
+    // written for real work from one written for a no-op re-run. A COUNTING call (#1545)
+    // answers the window's size and changes nothing, so it is deliberately outside that
+    // ledger — 42 is recognisable, and no reopen can produce it.
     redrain: async (a) => {
       seen.redrain.push(a);
-      return seen.redrain.length === 1 ? 3 : 0;
+      if (a.countOnly) return 42;
+      const reopens = seen.redrain.filter((c) => !(c as { countOnly?: boolean }).countOnly);
+      return reopens.length === 1 ? 3 : 0;
     },
   };
   const hostFor = () =>
@@ -89,6 +93,22 @@ describe('event-drain delegation (#1334)', () => {
     // exhausted window still claims nothing.
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]!.after).toEqual({ redrained: 3, drainedBefore });
+  });
+
+  it('counts through the delegation too, carrying the flag and writing no receipt (#1545)', async () => {
+    // The flag has to cross this seam like the instant does. A far end that never hears it
+    // reopens the window and answers with a number shaped exactly like the count that was
+    // asked for — a dry run that moved a tenant's rows and said it had not.
+    const drainedBefore = '2026-09-16T00:00:00.000Z';
+    const before = await hostFor().admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'redrainEvents' });
+    await expect(
+      hostFor().admin.redrainEvents(staff, t, s, { drainedBefore, countOnly: true }),
+    ).resolves.toBe(42);
+    expect(seen.redrain.at(-1)).toEqual({ tenantId: t, scopeId: s, vertical: 'docs', drainedBefore, countOnly: true });
+    // No intent row and no outcome row: a count egresses nothing, so there is nothing for
+    // K-24 to record, and a row saying a redrain was intended here would not be true.
+    const after = await hostFor().admin.auditLog(staff, { tenantId: t, scopeId: s, action: 'redrainEvents' });
+    expect(after).toHaveLength(before.length);
   });
 
   it('refuses a redrain with no instant, rather than reopening everything', async () => {

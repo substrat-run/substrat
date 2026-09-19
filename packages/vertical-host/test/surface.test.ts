@@ -40,6 +40,10 @@ function fakeHost(overrides: Partial<VerticalScopeHost> = {}): VerticalScopeHost
     // Answers 7 only when the instant arrives verbatim, so the route cannot quietly drop it.
     redrainEventsLocal: async (_s: unknown, before?: unknown) =>
       note('redrainEventsLocal', before === '2026-09-16T00:00:00.000Z' ? 7 : -1),
+    // #1545: the read-only half, on the same "only with the exact instant" rule. 11, so a
+    // reply that came from the reopen above is recognisable as the wrong verb.
+    redrainCountLocal: async (_s: unknown, before?: unknown) =>
+      note('redrainCountLocal', before === '2026-09-16T00:00:00.000Z' ? 11 : -1),
     entityHistoryLocal: async (_s: unknown, input?: unknown) =>
       note('entityHistoryLocal', { entries: [input], nextCursor: null }) as never,
     facetEventsLocal: async (_s: unknown, input?: unknown) =>
@@ -284,7 +288,45 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(await ok.json()).toEqual({ redrained: 7 });
     expect((await post({ scopeId: SCOPE })).status).toBe(400);
     expect((await post({ scopeId: SCOPE, drainedBefore: 'yesterday' })).status).toBe(400);
+    // #1545: `countOnly` is REFUSED here rather than stripped by the Zod boundary. Stripping
+    // it would reopen the window for a caller that asked to count it — silently, which is
+    // the whole failure the separate count route exists to prevent.
+    const flagged = await post({ scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', countOnly: true });
+    expect(flagged.status).toBe(400);
+    expect((await flagged.json()).error).toMatch(/redrain-count/);
     expect(host.calls.filter((c) => c === 'redrainEventsLocal')).toHaveLength(1);
+  });
+
+  // #1545: the count is its OWN route, and that is the point of it. A `countOnly` field on
+  // the route above would be stripped by a deployment built before this — which would reopen
+  // the window and answer with a number the caller would print as a dry run's count. A path
+  // that deployment does not serve refuses instead, and a host without the method answers
+  // 501 rather than reaching for something that is not there.
+  it('serves the redrain count as a route of its own, and 501s on a host that cannot count', async () => {
+    const host = fakeHost();
+    const post = (h: ReturnType<typeof fakeHost>, body: unknown) =>
+      appWith(h).request('/internal/redrain-count', {
+        method: 'POST',
+        headers: { ...authed(), 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }, ENV);
+    const ok = await post(host, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z' });
+    expect(ok.status).toBe(200);
+    // `redrainable`, not `redrained`: the field name says nothing moved.
+    expect(await ok.json()).toEqual({ redrainable: 11 });
+    // The instant is the guard for the count as for the reopen — a count over a different
+    // window is a rehearsal of a run that will not happen.
+    expect((await post(host, { scopeId: SCOPE })).status).toBe(400);
+    expect((await post(host, { scopeId: SCOPE, drainedBefore: 'yesterday' })).status).toBe(400);
+    // And the reopen was never reached: a count that fell through to it would be the exact
+    // failure this route exists to make impossible.
+    expect(host.calls.filter((c) => c === 'redrainEventsLocal')).toHaveLength(0);
+    expect(host.calls.filter((c) => c === 'redrainCountLocal')).toHaveLength(1);
+
+    const older = fakeHost({ redrainCountLocal: undefined });
+    const refused = await post(older, { scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z' });
+    expect(refused.status).toBe(501);
+    expect(older.calls).toHaveLength(0);
   });
 
   // #618: the journal read is the platform's door to a settled intent's full `last_error`,

@@ -487,6 +487,52 @@ describe('control-plane API', () => {
     expect((await req(`/tenants/${t2}/scopes/${s1}/facets?groupBy=type`)).status).toBe(404);
   });
 
+  it('counts a redrain window read-only, on its own route (#1545)', async () => {
+    // TRANSPORT, like the two reads above: the semantics — count equals the number the
+    // reopen goes on to change, and nothing is written — are pinned against both adapters
+    // in the contract suite. What this pins is that the count has a door of its own, and
+    // that its reply cannot be mistaken for a reopen's.
+    const drainedBefore = new Date(Date.now() - 60_000).toISOString();
+    const res = await json(`/tenants/${t1}/scopes/${s1}/redrain-count`, 'POST', { drainedBefore });
+    expect(res.status).toBe(200);
+    // No modules registered here, so the outbox is empty — a zero, not a 404. And
+    // `redrainable` with no `more`: the count is unbounded, so there is no second page,
+    // and the field name says nothing moved.
+    expect(await res.json()).toEqual({ redrainable: 0, drainedBefore });
+
+    // The reopen's own reply keeps its shape, so the two are never confused by a caller.
+    const reopened = await json(`/tenants/${t1}/scopes/${s1}/redrain-events`, 'POST', { drainedBefore });
+    expect(await reopened.json()).toEqual({ redrained: 0, more: false, drainedBefore });
+
+    // …and the reopen route REFUSES the flag rather than ignoring it: a caller that asked
+    // for a count and was quietly given a reopen is the one failure this pair exists to
+    // prevent. Refused whatever its value — on this route the field has no meaning.
+    for (const countOnly of [true, false]) {
+      const wrong = await json(`/tenants/${t1}/scopes/${s1}/redrain-events`, 'POST', { drainedBefore, countOnly });
+      expect(wrong.status).toBe(400);
+      expect((await wrong.json()).error).toMatch(/redrain-count/);
+    }
+
+    // The instant is required and must be an instant — the count rehearses a window, and a
+    // window it cannot name is not one.
+    expect((await json(`/tenants/${t1}/scopes/${s1}/redrain-count`, 'POST', {})).status).toBe(400);
+    expect(
+      (await json(`/tenants/${t1}/scopes/${s1}/redrain-count`, 'POST', { drainedBefore: 'yesterday' })).status,
+    ).toBe(400);
+    // …and a future instant is refused HERE as it is on the reopen, so a dry run cannot
+    // accept an instant the real run will reject.
+    expect(
+      (
+        await json(`/tenants/${t1}/scopes/${s1}/redrain-count`, 'POST', {
+          drainedBefore: new Date(Date.now() + 60_000).toISOString(),
+        })
+      ).status,
+    ).toBe(400);
+
+    // Cross-tenant fails closed (K-3): a foreign pair reads as absent, never as zero rows.
+    expect((await json(`/tenants/${t2}/scopes/${s1}/redrain-count`, 'POST', { drainedBefore })).status).toBe(404);
+  });
+
   it('delegates a facet to the vertical that holds the scope, whole query intact (#1239)', async () => {
     const sF = scopeId.parse(ulid());
     await host.provisionScope(staff, { tenantId: t1, scopeId: sF, vertical: 'demo-vert' });
