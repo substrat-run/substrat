@@ -3768,6 +3768,25 @@ export function scopeHostContractSuite(
       );
     });
 
+    it('refuses every registry verb that addresses a version which does not exist (#113 phase 5)', async () => {
+      // The five `unknown version …` throw sites, one per verb, on both adapters. Nothing
+      // asserted them before this case: each was a bare `Error` whose 404 came from a
+      // `/unknown version /` regex in the control plane, so a reword — or a regression to
+      // `new Error` — changed the status with no test to notice. The code is the contract
+      // now, and it is pinned here rather than in the transport.
+      //
+      // The id is well-formed and simply names nothing, which is what separates this from
+      // a parse failure: `not_found`, never `validation_failed`.
+      const ghost = ulid();
+      await expectRefusal(host.admin.admitVersion(staff, ghost), 'not_found');
+      await expectRefusal(host.admin.rejectVersion(staff, ghost, 'no such version'), 'not_found');
+      await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', ghost), 'not_found');
+      await expectRefusal(host.admin.bindScopeVersion(staff, t1, s1, ghost), 'not_found');
+      // versionManifest refuses on the PAIR — an id that exists under another vertical is
+      // as absent as one that exists nowhere, so a real version is not a way in.
+      await expectRefusal(host.admin.versionManifest(staff, 'callout', ghost), 'not_found');
+    });
+
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {
       // A deleted app leaves an `archived` row (restorable via unarchive), then a
       // `reaped` tombstone (terminal). The first still pins the registry — a restore

@@ -5373,7 +5373,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       admitVersion: async (actor, versionId: string) => {
         const v = readVersion(versionId);
-        if (!v) throw new Error(`unknown version ${versionId}`);
+        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
           // Idempotent — except an AUTO-admitted version, which this upgrades to a
           // manual vouch by clearing the note (what the publish seam requires).
@@ -5399,7 +5399,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       rejectVersion: async (actor, versionId: string, note: string) => {
         const v = readVersion(versionId);
-        if (!v) throw new Error(`unknown version ${versionId}`);
+        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
           throw new Error(`version ${versionId} is already admitted — it may be bound`);
         }
@@ -5420,7 +5420,7 @@ export class SqliteScopeHost implements ScopeHost {
         acknowledge?: PromotionAcknowledgement,
       ) => {
         const incoming = readVersion(versionId);
-        if (!incoming) throw new Error(`unknown version ${versionId}`);
+        if (!incoming) throw substratError('not_found', `unknown version ${versionId}`);
         if (incoming.verticalSlug !== verticalSlug) {
           throw new Error(`version ${versionId} belongs to '${incoming.verticalSlug}'`);
         }
@@ -5587,7 +5587,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const v = readVersion(versionId);
-        if (!v) throw new Error(`unknown version ${versionId}`);
+        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         const scope = this.directory
           .prepare('SELECT tenant_id, kind, vertical_version_id FROM scopes WHERE scope_id = ?')
           .get(scopeId) as { tenant_id: string; kind: string; vertical_version_id: string | null } | undefined;
@@ -5679,7 +5679,7 @@ export class SqliteScopeHost implements ScopeHost {
           .prepare('SELECT * FROM vertical_versions WHERE id = ?')
           .get(versionId) as VersionRow | undefined;
         if (!v || v.vertical_slug !== verticalSlug) {
-          throw new Error(`unknown version ${versionId} for vertical '${verticalSlug}'`);
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
         }
         this.recordAccess(actor, 'versionManifest', {}, { verticalSlug, versionId }, v.manifest_json ? 1 : 0);
         return v.manifest_json;

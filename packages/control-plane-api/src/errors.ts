@@ -32,13 +32,27 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   SUITE asserts on (`/unknown tenant/`, `/illegal scope transition/`, `/already
  *   taken/`, `/not active/`), against both adapters. Changing one turns a contract test
  *   red, not just this mapping. Phase 5 migrates those assertions onto codes and this
- *   table goes with them — **one family at a time, and the first one is gone.** `unknown
- *   vertical` used to be a row here; its eighteen throw sites across the two adapters now
- *   say `substratError('not_found', …)` and the contract suite asserts that code rather
- *   than the sentence, so the row had nothing left to do. That is the shape every
- *   remaining row is waiting for: type the throws, move the suite's assertion, delete
- *   the row. A row is not removed before its throws are typed — deleting one early turns
- *   its refusal into the generic 500 below.
+ *   table goes with them — **one family at a time, and two are gone.** `unknown vertical`
+ *   went first; `unknown version` followed, its ten throw sites across the two adapters
+ *   now saying `substratError('not_found', …)` with the contract suite asserting that
+ *   code rather than the sentence, so the row had nothing left to do. That is the shape
+ *   every remaining row is waiting for: type the throws, move the suite's assertion,
+ *   delete the row. A row is not removed before its throws are typed — deleting one early
+ *   turns its refusal into the generic 500 below.
+ *
+ *   **What decides whether a row CAN go, and it is not the row:** where its throws live.
+ *   Both families removed so far are thrown on the COORDINATOR — `adapter-cloudflare`'s
+ *   `host.ts` and `adapter-sqlite` — where the real error object reaches this function and
+ *   `errorCodeOf` reads it. A throw raised inside a Durable Object does not arrive that
+ *   way. workerd folds `name` into the message and resets it, so a `substratError` thrown
+ *   in `scope-do.ts` or `control-plane-do.ts` arrives here as a plain `Error` whose
+ *   message has grown a `Substrat.<code>: ` prefix — the code lost, and the sentence no
+ *   longer the one that was written (it lands in the SQL console UI). That is measured,
+ *   not assumed: see the note on `toRpcError` in `adapter-cloudflare/src/scope-do.ts`,
+ *   which also names the fix — structure must travel as a VALUE, the `{ ok, error }`
+ *   envelope, not as `name`. So typing a DO-side throw today makes things WORSE, and
+ *   roughly half the rows still below are waiting on that envelope rather than on
+ *   somebody getting around to them. Check where a family throws before planning its row.
  * - Anything unmatched is a 500 with a GENERIC body: an unrecognised throw is, by
  *   definition, one whose message we have not reviewed for what it discloses, and this
  *   surface has cross-tenant reach.
@@ -95,7 +109,6 @@ const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
   // The SQL console's gate (#219) refused the statement — a malformed request, not a
   // server fault. The prefix is pinned by the contract suite against both adapters.
   [/read-only console/, 'validation_failed'],
-  [/unknown version /, 'not_found'],
   [/scope has no tenant record/, 'not_found'],
 ];
 
