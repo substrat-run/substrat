@@ -637,7 +637,28 @@ function Desk() {
     if (!origins.includes(origin)) setOrigins([...origins, origin]);
   };
 
+  /**
+   * The reaping window, judged here as well as at the door.
+   *
+   * `min` and `max` on a number input are advice to the browser, not a gate — a typed
+   * 0, 3651 or 1.5 reaches this component's state and would be sent. The desk refuses
+   * it, correctly, but what comes back is a general save failure with nothing pointing
+   * at the field that caused it. This says which field and why, before the call. An
+   * empty box stays valid: empty means the platform's window, which is what null is.
+   */
+  const windowError = ((days: number | null) => {
+    if (days === null) return null;
+    if (!Number.isInteger(days)) return 'Whole days only.';
+    if (days < 1) return 'At least 1 day — mail that arrived this morning is not abandoned.';
+    if (days > 3650) return 'At most 3650 days. Leave it empty for the default of 30.';
+    return null;
+  })(desk.abandoned_after_days);
+
   const save = async () => {
+    // Refused here rather than sent and refused there: the message is already on
+    // screen against the field, and Save is disabled, so this is the last guard
+    // rather than the first.
+    if (windowError) return;
     setSaving(true);
     setSaved(false);
     setFailed(null);
@@ -726,6 +747,11 @@ function Desk() {
           <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
             days
           </span>
+          {windowError ? (
+            <span className="t-small" style={{ color: 'var(--danger-2)' }}>
+              {windowError}
+            </span>
+          ) : null}
         </div>
       </Field>
       <Field
@@ -792,7 +818,11 @@ function Desk() {
         </div>
       </Field>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>
+        <button
+          className="btn btn-primary"
+          onClick={() => void save()}
+          disabled={saving || windowError !== null}
+        >
           {saving ? 'Saving…' : 'Save'}
         </button>
         {saved ? <span className="t-small" style={{ color: 'var(--green)' }}>Saved.</span> : null}
