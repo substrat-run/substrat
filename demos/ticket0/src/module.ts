@@ -24,6 +24,7 @@ import {
   type EntityRow,
   type HandlerInput,
   type HandlerOutput,
+  type PrincipalId,
   MODEL_USAGE_KIND,
 } from '@substrat-run/contracts';
 import {
@@ -394,6 +395,22 @@ function followableStaffOrThrow(ctx: OperationContext, principal: string): Agent
     );
   }
   return row;
+}
+
+/**
+ * A principal id, or a refusal a caller can read.
+ *
+ * `principalId.parse` alone throws a Zod error, which is not one of this vertical's
+ * taxonomy codes and would reach a screen as an internal error rather than a 400.
+ * Used where a principal arrives from the input and is NOT read back out of a table
+ * first — which, deliberately, is only `unfollow-conversation`.
+ */
+function principalOrThrow(value: string): PrincipalId {
+  const parsed = principalId.safeParse(value);
+  if (!parsed.success) {
+    throw substratError('validation_failed', `not a principal id: ${value}`);
+  }
+  return parsed.data;
 }
 
 /**
@@ -2649,25 +2666,39 @@ const operations = {
   },
 
   /**
-   * Take them off again.
+   * Take them off again — and this one asks NOTHING about the person it is removing.
    *
-   * `followableStaffOrThrow` rather than a bare `staffOrThrow`, so the two verbs
-   * accept exactly the same set: a principal this desk refuses to add is one it
-   * should not be answering "not following" about either, and a typo in an unfollow
-   * would otherwise report success for a stranger's ULID.
+   * Not the directory, not the assistant rule, nothing. That asymmetry with
+   * `follow-conversation` is the whole point, and it is not symmetry lost by
+   * accident: a refusal to ADD somebody withholds access, and a refusal to REMOVE
+   * them LEAVES ACCESS STANDING. Only one of those is safe to get wrong, so an
+   * eligibility test belongs only on the way in.
    *
-   * `ctx.revoke` delegates the same way `ctx.grant` does, and is a delete that
-   * reports nothing — which is why the answer is `following: false`, the resulting
-   * state, and not `removed`, and why this emits on every call for the reason the
-   * one above does.
+   * It matters because every fact this could have tested is one the follower controls
+   * or that another operation could take away. `display_name` is set by its own
+   * principal through `ticket0/set-agent-profile`, with no reserved names — so a
+   * follower who renamed themselves to the assistant's name would have failed the
+   * follow rule here and made their own grant unrevocable. Checking directory
+   * membership instead only moves the problem: nothing deletes a profile row TODAY,
+   * and an operation that one day removes a colleague from the desk would break
+   * revocation exactly when it is most wanted. So the rule is that revocation depends
+   * on nothing about its subject, which is the only version of it that stays true.
+   *
+   * What still holds: the CALLER is checked, the conversation must exist, and
+   * `ctx.revoke` delegates the same way `ctx.grant` does — a caller may only withdraw
+   * a grant it could have made. Revoking what was never granted is a no-op, so a
+   * principal nobody followed gets the honest answer rather than a refusal.
+   *
+   * `ctx.revoke` is a delete that reports nothing, which is why the answer is
+   * `following: false`, the resulting state, and not `removed` — and why this emits
+   * on every call for the reason the one above does.
    */
   'ticket0/unfollow-conversation': async (ctx, input) => {
     assertAllowed(
       await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
     );
     const conversation = conversationOrThrow(ctx, input.conversationId);
-    const follower = followableStaffOrThrow(ctx, input.follower);
-    const principal = principalId.parse(follower.principal);
+    const principal = principalOrThrow(input.follower);
     await ctx.revoke(principal, T0_PERM.conversationRead, conversationRef(conversation.id));
     ctx.emit({
       type: 'ticket0.conversation-unfollowed',

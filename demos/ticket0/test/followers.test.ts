@@ -24,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { permissionKey, principalId, type PrincipalId } from '@substrat-run/contracts';
 import { manualClock, ulid, type ManualClock, type ScopeHost, type ScopeStub } from '@substrat-run/kernel';
+import { ASSISTANT_NAME } from '../src/module.js';
 import { buildHost, seed, type World } from '../src/seed.js';
 
 let dir: string;
@@ -228,12 +229,6 @@ describe('following a conversation', () => {
     await expect(
       admin.invoke('ticket0/follow-conversation', { conversationId: followed, follower: stranger }),
     ).rejects.toThrow(/not a member of this desk/);
-    await expect(
-      admin.invoke('ticket0/unfollow-conversation', {
-        conversationId: followed,
-        follower: stranger,
-      }),
-    ).rejects.toThrow(/not a member of this desk/);
     const strangerStub = await host.getScope(
       stranger,
       world.substrat.tenant,
@@ -242,6 +237,67 @@ describe('following a conversation', () => {
     await expect(
       strangerStub.invoke('ticket0/get-conversation', { conversationId: followed }),
     ).rejects.toThrow(/permission denied/i);
+    // Unfollowing them is NOT refused, and that is the asymmetry on purpose: taking
+    // away what was never given is a no-op, and the answer is where they stand.
+    await expect(
+      admin.invoke('ticket0/unfollow-conversation', {
+        conversationId: followed,
+        follower: stranger,
+      }),
+    ).resolves.toMatchObject({ following: false });
+    // A string that is not a principal at all is still a refusal a caller can read,
+    // rather than the Zod error a bare `.parse` would have raised.
+    await expect(
+      admin.invoke('ticket0/unfollow-conversation', {
+        conversationId: followed,
+        follower: 'not-a-ulid',
+      }),
+    ).rejects.toThrow(/not a principal id/);
+  });
+
+  /**
+   * Revocation must not depend on anything its SUBJECT controls.
+   *
+   * `display_name` is set by the principal it belongs to, through
+   * `ticket0/set-agent-profile`, and no name is reserved. So a follower can call
+   * themselves whatever the follow rule refuses — and if `unfollow` applied that same
+   * rule, they would have made their own grant permanent by renaming themselves. A
+   * refusal to ADD withholds access; a refusal to REMOVE leaves it standing.
+   *
+   * Reported by CodeRabbit on PR #1563, against a first cut that ran the follow
+   * eligibility test on the way out too.
+   */
+  it('takes away a follower who renamed themselves past the rule that let them in', async () => {
+    await admin.invoke('ticket0/follow-conversation', { conversationId: followed, follower: rae });
+    await expect(
+      raeStub.invoke('ticket0/get-conversation', { conversationId: followed }),
+    ).resolves.toMatchObject({ id: followed });
+
+    // Rae calls herself what `follow-conversation` refuses. Nothing stops her: the
+    // profile is hers, and this is the whole reason the directory is a weak test.
+    await raeStub.invoke('ticket0/set-agent-profile', {
+      displayName: ASSISTANT_NAME,
+      avatarUrl: null,
+      signature: null,
+    });
+    // Following her again is now refused — which is fine, that direction is safe.
+    await expect(
+      admin.invoke('ticket0/follow-conversation', { conversationId: followed, follower: rae }),
+    ).rejects.toThrow(/assistant cannot follow a conversation/);
+    // Removing her is NOT, and the access is actually gone.
+    await expect(
+      admin.invoke('ticket0/unfollow-conversation', { conversationId: followed, follower: rae }),
+    ).resolves.toMatchObject({ following: false });
+    await expect(raeStub.invoke('ticket0/get-conversation', { conversationId: followed })).rejects.toThrow(
+      /permission denied/i,
+    );
+
+    // Put the directory back, so the cases after this read the desk they expect.
+    await raeStub.invoke('ticket0/set-agent-profile', {
+      displayName: 'Rae Okonjo',
+      avatarUrl: null,
+      signature: null,
+    });
   });
 
   /** The assistant has a directory row for its byline, not so it can watch a thread. */

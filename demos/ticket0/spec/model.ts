@@ -1812,6 +1812,13 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * Take them off again — the revoke half, and the reason a grant is the right
    * mechanism rather than a `ctx.link` edge, which is permanent.
    *
+   * **It asks nothing about the person it removes** — not the directory, not the
+   * assistant rule. A refusal to ADD somebody withholds access; a refusal to REMOVE
+   * them leaves access standing, so only the first is safe to get wrong. Every fact
+   * this could test is one the follower controls (`display_name` is set by its own
+   * principal, with no reserved names) or one another operation could take away, and
+   * either would let a follower's grant become unrevocable. See `src/module.ts`.
+   *
    * `following: false` is the resulting STATE, not a `removed` flag like
    * `untag-conversation`'s. The difference is what the kernel can honestly report:
    * untagging reads its row first and knows whether there was one, while `ctx.revoke`
