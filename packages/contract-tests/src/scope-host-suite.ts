@@ -3758,6 +3758,16 @@ export function scopeHostContractSuite(
       await expectRefusal(host.admin.deleteVertical(staff, 'no-such-vertical'), 'not_found');
     });
 
+    it('refuses the serving-state read and write for a vertical that does not exist', async () => {
+      await expectRefusal(host.admin.verticalServing(staff, 'no-such-vertical'), 'not_found');
+      await expectRefusal(
+        host.admin.setVerticalServing(staff, 'no-such-vertical', {
+          ref: 'serving-script', versionId: ulid(), doClasses: [], migrationTag: 'g1',
+        }),
+        'not_found',
+      );
+    });
+
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {
       // A deleted app leaves an `archived` row (restorable via unarchive), then a
       // `reaped` tombstone (terminal). The first still pins the registry — a restore
