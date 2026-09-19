@@ -1,0 +1,62 @@
+// The platform's social sign-in relay (#1544).
+//
+// It holds ONE OAuth client per upstream — Google, GitHub, Apple — and serves one OpenID
+// issuer per provider in front of them, so an installed Auth Server can offer "Sign in
+// with Google" without its team ever creating, holding or rotating a provider credential.
+//
+// It lives on `substrat.net`, beside console./app./docs., and deliberately NOT on
+// `substrat.run`: the router owns a zone-wide `*/*` route there for the Cloudflare-for-SaaS
+// leg, and while a more specific `id.substrat.run/*` would win it, an identity endpoint
+// does not belong in the tenant zone — where it would also shadow a tenant slug. The
+// redirect URI registered with each provider is effectively permanent, so the origin is a
+// one-way decision and is made here.
+//
+// Deploy:
+//   wrangler secret put GOOGLE_CLIENT_SECRET     # + GOOGLE_CLIENT_ID as a var or secret
+//   wrangler secret put GITHUB_CLIENT_SECRET
+//   wrangler secret put APPLE_PRIVATE_KEY        # the .p8 file's contents, newlines intact
+//   wrangler secret put PLATFORM_SECRET          # the same global secret every platform surface holds
+//   pnpm --filter @substrat-run/social-relay cf:deploy
+//
+// A provider with no credentials set answers 404 on its WHOLE surface, discovery included
+// — an issuer that cannot sign anyone in must not advertise that it can, and a tenant
+// configuring it then fails at save time rather than at the first person's first sign-in.
+//
+// The one redirect URI to register with each provider (it never changes again, whatever
+// hostnames or custom domains installs acquire):
+//   https://id.substrat.net/google/callback
+//   https://id.substrat.net/github/callback
+//   https://id.substrat.net/apple/callback
+{
+	"name": "substrat-social-relay",
+	"main": "src/worker.ts",
+	"compatibility_date": "2025-01-01",
+	"routes": [{ "pattern": "id.substrat.net", "custom_domain": true }],
+
+	// One instance, named `relay`: the client registry is global to this worker and an
+	// authorization round must find its own in-flight state on the way back. See the DO
+	// class for the sharding exit, which is a one-line change when a number asks for it.
+	"durable_objects": {
+		"bindings": [{ "name": "RELAY", "class_name": "RelayDO" }]
+	},
+	"migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayDO"] }],
+
+	// No workers.dev hostname: the registered redirect URIs name this origin and nothing
+	// else should be able to answer as it.
+	"workers_dev": false,
+	"observability": { "enabled": true },
+
+	"env": {
+		"test": {
+			"name": "substrat-social-relay-test",
+			"routes": [{ "pattern": "id-test.substrat.net", "custom_domain": true }], // differs
+			// Bindings are not inherited into a named env, so both are repeated.
+			"durable_objects": {
+				"bindings": [{ "name": "RELAY", "class_name": "RelayDO" }]
+			},
+			"migrations": [{ "tag": "v1", "new_sqlite_classes": ["RelayDO"] }],
+			"workers_dev": false,
+			"observability": { "enabled": true }
+		}
+	}
+}

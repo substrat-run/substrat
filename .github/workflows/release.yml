@@ -20,8 +20,8 @@ jobs:
       release: ${{ steps.gate.outputs.release }}
       # Whether the docs deploy below actually shipped: `success`, or `skipped` on a
       # run that was not a release. The support desk's re-read gates on this and not on
-      # the job's own result, because the builder deploy that follows the docs one is
-      # deliberately allowed to fail without taking docs with it.
+      # the job's own result, because the builder and relay deploys that follow the docs
+      # one are deliberately allowed to fail without taking docs with them.
       docs: ${{ steps.docs.outcome }}
     steps:
       - uses: actions/checkout@v7
@@ -135,7 +135,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      # LAST deliberately: the builder is the newest deploy target (containers)
+      # AFTER docs deliberately: the builder is the newest deploy target (containers)
       # and its failures must never block the platform apps or docs — learned
       # when a missing Containers token scope stranded the docs deploy.
       - name: Deploy builder studio
@@ -151,14 +151,29 @@ jobs:
           CF_D1_AUTH_DB_ID: ${{ vars.CF_D1_AUTH_DB_ID }}
           CF_D1_AUTH_DB_ID_TEST: ${{ vars.CF_D1_AUTH_DB_ID_TEST }}
           CF_PIPELINE_OUTBOX_STREAM_ID: ${{ vars.CF_PIPELINE_OUTBOX_STREAM_ID }}
+      # LAST of all, which is the same rule the builder is placed by, applied to the step
+      # that now has the best claim on it: these steps fail fast, so whichever one is most
+      # likely to be red belongs at the bottom where it strands nothing. The relay's custom
+      # domain does not exist until someone creates it, which makes exactly that step the
+      # expected red — in front of `Deploy docs` it would strand docs and the KB refresh
+      # that gates on the docs step's id, and in front of the builder it stranded the
+      # builder, handing the relay the blocking power the builder was moved down to give
+      # up. It holds no binding on any other platform worker and none holds one on it, so
+      # nothing above wants it earlier.
+      - name: Deploy social-relay
+        if: steps.gate.outputs.release == 'true'
+        run: pnpm --filter @substrat-run/social-relay cf:deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
 
   # This deploy publishes `llms-full.txt` too — the reference pages print the version
   # numbers this release just moved — so the support desk has to re-read it here as
   # well as after a docs-only push. One reusable workflow, called from both deploy
   # paths; see .github/workflows/kb-refresh.yml.
   #
-  # `always()` rather than the default: the builder deploy runs AFTER the docs one
-  # precisely so its failures never block docs, and gating on the job's result would
+  # `always()` rather than the default: the builder and relay deploys run AFTER the docs
+  # one precisely so their failures never block docs, and gating on the job's result would
   # hand it that power back. The gate is the docs step's own outcome.
   refresh-kb:
     needs: release

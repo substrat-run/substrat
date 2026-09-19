@@ -333,3 +333,7 @@ jobs:
       - run: pnpm --filter @substrat-run/router cf:deploy:test
       - run: pnpm --filter @substrat-run/dashboard cf:deploy:test
       - run: pnpm --filter @substrat-run/docs cf:deploy:test
+      # LAST, like the builder in release.yml: these steps fail fast, and the relay's
+      # custom domain does not exist until someone creates it — so a failure here must not
+      # take the deploys that were already working down with it (#1544).
+      - run: pnpm --filter @substrat-run/social-relay cf:deploy:test
