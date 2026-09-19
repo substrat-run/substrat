@@ -586,7 +586,18 @@ export function mountPlatformSurface<Env extends object>(
   // The stamp's inverse. No audit here, as with the stamp: the platform's `redrainEvents`
   // is the door and writes the receipt, whichever deployment held the rows.
   app.post('/internal/redrain-events', async (c) => {
-    const body = redrainEventsBody.parse(await c.req.json());
+    const raw: unknown = await c.req.json();
+    // `countOnly` is REFUSED here, not stripped (#1545), mirroring the control-plane door.
+    // Zod drops unknown keys by default, so a caller that asked this route for a count would
+    // silently get the reopen — the one failure the separate count route exists to prevent,
+    // and the fact that only the platform's own client calls this route is a reason to keep
+    // the refusal cheap, not a reason to trust the caller. NOT `.strict()` on the body: that
+    // would also refuse every future additive field, which is how this surface is meant to
+    // grow.
+    if (typeof raw === 'object' && raw !== null && 'countOnly' in raw) {
+      return c.json({ error: 'countOnly is not honoured here — POST to /internal/redrain-count instead' }, 400);
+    }
+    const body = redrainEventsBody.parse(raw);
     const redrained = await deps.hostFor(c.env).redrainEventsLocal(body.scopeId, body.drainedBefore);
     return c.json({ redrained });
   });

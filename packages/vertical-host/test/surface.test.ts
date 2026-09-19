@@ -288,6 +288,12 @@ describe('mountPlatformSurface — the full route set is mounted', () => {
     expect(await ok.json()).toEqual({ redrained: 7 });
     expect((await post({ scopeId: SCOPE })).status).toBe(400);
     expect((await post({ scopeId: SCOPE, drainedBefore: 'yesterday' })).status).toBe(400);
+    // #1545: `countOnly` is REFUSED here rather than stripped by the Zod boundary. Stripping
+    // it would reopen the window for a caller that asked to count it — silently, which is
+    // the whole failure the separate count route exists to prevent.
+    const flagged = await post({ scopeId: SCOPE, drainedBefore: '2026-09-16T00:00:00.000Z', countOnly: true });
+    expect(flagged.status).toBe(400);
+    expect((await flagged.json()).error).toMatch(/redrain-count/);
     expect(host.calls.filter((c) => c === 'redrainEventsLocal')).toHaveLength(1);
   });
 
