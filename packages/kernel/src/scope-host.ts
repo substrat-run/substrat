@@ -2083,12 +2083,19 @@ export interface HostAdmin {
    *
    * A cutoff in the FUTURE is refused here, at the boundary, not only by the control-plane
    * route: this is a public verb and in-process callers never pass that door.
+   *
+   * `countOnly` (#1545) answers the same question read-only: how many rows the window holds,
+   * with nothing reopened and no receipt written — a count egresses nothing, so there is no
+   * second egress for K-24 to record, and an intent row for a mutation that never happens is
+   * a claim about the tenant's data that is not true. It is UNBOUNDED, unlike the reopen:
+   * an aggregate materialises no rows, so it answers for the whole window in one call rather
+   * than a batch of it. Absent, the verb reopens exactly as it always has.
    */
   redrainEvents(
     actor: PlatformActorId,
     tenantId: TenantId,
     scopeId: ScopeId,
-    input: { drainedBefore: string },
+    input: { drainedBefore: string; countOnly?: boolean },
   ): Promise<number>;
 
   /**

@@ -140,6 +140,14 @@ export interface VerticalScopeHost {
   markEventsDrainedLocal(scopeId: ScopeId, eventIds: readonly string[], drainedAt: string): Promise<number>;
   /** Reopen rows stamped before an instant so they ship again (#1334) — the stamp's inverse. */
   redrainEventsLocal(scopeId: ScopeId, drainedBefore: string): Promise<number>;
+  /**
+   * How many rows that reopen would touch, reopening none (#1545) — the read-only half a
+   * dry run asks for. OPTIONAL, because a host older than #1545 does not have it and this
+   * interface is what such a host already satisfies; the route answers 501 rather than
+   * calling something that is not there. That refusal is the point: the alternative is a
+   * count that quietly performs the reopen it was meant to preview.
+   */
+  redrainCountLocal?(scopeId: ScopeId, drainedBefore: string): Promise<number>;
   entityHistoryLocal(scopeId: ScopeId, input: EntityHistoryInput): Promise<Page<HistoryEntry>>;
   facetEventsLocal(scopeId: ScopeId, input: EventFacetInput): Promise<EventFacetResult>;
   eventCauseLocal(scopeId: ScopeId, input: EventCauseInput): Promise<CauseChain>;
@@ -311,6 +319,10 @@ const markDrainedBody = z.object({
  * `/internal/redrain-events` body (#1334) — reopen stamped rows so the drain ships them
  * again. `drainedBefore` required, as on the platform verb: it is what keeps rows that
  * already reached a rebuilt table from being reopened and landing there twice.
+ *
+ * `/internal/redrain-count` (#1545) takes the same body: the count rehearses exactly the
+ * window the reopen would touch, so anything it asked differently would be a rehearsal of
+ * a different run. The two are separate PATHS for the reason written at the route.
  */
 const redrainEventsBody = z.object({ scopeId: scopeIdOf, drainedBefore: instant });
 
@@ -577,6 +589,23 @@ export function mountPlatformSurface<Env extends object>(
     const body = redrainEventsBody.parse(await c.req.json());
     const redrained = await deps.hostFor(c.env).redrainEventsLocal(body.scopeId, body.drainedBefore);
     return c.json({ redrained });
+  });
+  // The read-only half (#1545): how many rows the reopen above would touch. Its OWN path,
+  // not a flag on that one, because the two answer with the same shape and the caller is a
+  // control plane that may be newer than this deployment. A `countOnly` field would be
+  // stripped by a deployment built before #1545 — which would then reopen the window and
+  // answer with a number indistinguishable from the count that was asked for, during a dry
+  // run. A path that deployment does not serve is refused instead, which is the honest
+  // answer and leaves the rows alone.
+  app.post('/internal/redrain-count', async (c) => {
+    const body = redrainEventsBody.parse(await c.req.json());
+    const host = deps.hostFor(c.env);
+    // Same reasoning one layer in: a vertical whose adapter predates #1545 satisfies this
+    // interface without the method, and 501 is the answer that cannot be mistaken for 0.
+    if (!host.redrainCountLocal) {
+      return c.json({ error: 'this deployment cannot count a redrain window (#1545) — redeploy it' }, 501);
+    }
+    return c.json({ redrainable: await host.redrainCountLocal(body.scopeId, body.drainedBefore) });
   });
 
   // #1236: when one scope's migrations actually ran — the schema-change annotation

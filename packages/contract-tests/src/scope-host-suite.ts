@@ -652,6 +652,53 @@ export function scopeHostContractSuite(
         host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: stampedAt }),
       ).resolves.toBe(0);
       const justAfter = new Date(Date.parse(stampedAt) + 1).toISOString();
+      // COUNT ONLY (#1545) — the same window asked read-only, which is what a dry run needs
+      // and what nothing could answer before: the verb only ever reopened, so a caller could
+      // learn the number by changing the rows or not at all.
+      const redrainRows = async () =>
+        (await host.admin.auditLog(staff, { tenantId: t1 })).filter(
+          (r) => r.action === 'redrainEvents' && r.scopeId === sDrain,
+        ).length;
+      const receiptsBefore = await redrainRows();
+      const undrainedBefore = await host.admin.readUndrainedEvents(staff, t1, sDrain, 200);
+      // Strictly before, on the same boundary the reopen holds: a count that included the
+      // instant would rehearse a different window from the one the real run touches.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: stampedAt, countOnly: true }),
+      ).resolves.toBe(0);
+      // Asked TWICE on purpose: a "count" that reopened its own window would answer
+      // differently the second time, which is the one failure a rehearsal must not have.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: justAfter, countOnly: true }),
+      ).resolves.toBe(first.length);
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: justAfter, countOnly: true }),
+      ).resolves.toBe(first.length);
+      // …and it moved nothing: the stamped rows are still stamped, so the drain has exactly
+      // the same work in front of it as before the count.
+      expect((await host.admin.readUndrainedEvents(staff, t1, sDrain, 200)).map((e) => e.id)).toEqual(
+        undrainedBefore.map((e) => e.id),
+      );
+      // …and wrote no receipt. The intent row exists because a reopen that crashed before
+      // its outcome row would leave a second egress with no trace; a count egresses nothing,
+      // and a row claiming a redrain on a scope that was only counted is a false statement
+      // in the one log that is evidence.
+      expect(await redrainRows()).toBe(receiptsBefore);
+      // The future refusal is the verb's, not the reopen's alone — the window rule is
+      // checked before the two branches part.
+      await expect(
+        host.admin.redrainEvents(staff, t1, sDrain, {
+          drainedBefore: new Date(Date.now() + 60_000).toISOString(),
+          countOnly: true,
+        }),
+      ).rejects.toThrow(/future/);
+      // K-3 holds for the count as for the reopen: a foreign pair is refused, never answered
+      // 0 — "nothing to reopen" would read as a finished rehearsal of a scope never touched.
+      await expect(
+        host.admin.redrainEvents(staff, t2, sDrain, { drainedBefore: justAfter, countOnly: true }),
+      ).rejects.toThrow(/unknown scope/);
+      // The number the count gave IS the number the reopen changes — the property that makes
+      // a dry run a rehearsal rather than a second, differently-shaped question.
       await expect(
         host.admin.redrainEvents(staff, t1, sDrain, { drainedBefore: justAfter }),
       ).resolves.toBe(first.length);

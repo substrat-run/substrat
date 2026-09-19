@@ -140,7 +140,9 @@ Tier 1's job.
 A lake table can need recreating, for example after a schema change. Because the outbox is never
 pruned, nothing is lost. **Redrain** clears the drained stamp on events stamped before a given
 instant, so the next sweeps ship them again. It is a staff-only, audited admin verb, and the
-script that drives it works one scope at a time in bounded batches.
+script that drives it works one scope at a time in bounded batches. The same verb will also
+just count a window — how many rows a redrain would reopen, reopening none of them — which is
+what the script's dry run reports before anyone commits to the re-send.
 
 Provisioning the lake is deliberately **not** automated in CI. The script that declares the
 bucket, table, stream, sink and pipeline runs as the operator's own `wrangler login`, checks the

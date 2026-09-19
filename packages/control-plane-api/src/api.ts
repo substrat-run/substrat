@@ -2848,11 +2848,60 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     }
     const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
     if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
-    const redrained = await admin.redrainEvents(actor, tenantId, scopeId, parsed.data);
+    // The instant alone, never `parsed.data` — the input schema also carries `countOnly`
+    // (#1545), and this route's answer (`redrained`, `more`) is a statement that rows
+    // moved. Counting belongs at `redrain-count` below, where it is what the reply says.
+    const redrained = await admin.redrainEvents(actor, tenantId, scopeId, {
+      drainedBefore: parsed.data.drainedBefore,
+    });
     // `more` rather than silence: the verb reopens a bounded batch, so a caller that posts
     // once can be holding a partial reopen. Saying so is what stops it reading as a finished
     // window — the operator (or `pnpm lake:redrain`) posts again until `redrained` is 0.
     return c.json({ redrained, more: redrained >= REDRAIN_BATCH, drainedBefore: parsed.data.drainedBefore });
+  });
+
+  // #1545 — how many rows the route above WOULD reopen, reopening none of them: what a dry
+  // run is run to learn, and what nothing could answer before. Staff/service only for the
+  // same reason as the reopen (absent from BUILDER_ROUTES, which is default-deny), even
+  // though it changes nothing: the number is a fact about one tenant's history.
+  //
+  // Its own path rather than a `countOnly` field on the POST above, which is how the flag
+  // travels everywhere BELOW this door. `scripts/lake-redrain.mjs` runs from a checkout
+  // against a control plane deployed on its own clock, so the script is routinely newer
+  // than the route. A field an older route does not know is stripped by its Zod parse —
+  // and that route would reopen the window and answer `{ redrained: N }`, which a dry run
+  // would print as its count. A path it does not serve 404s, and nothing moves.
+  //
+  // No `more`: the count is unbounded (an aggregate materialises no rows), so it answers
+  // for the whole window in one call and there is no second page to hint at.
+  app.post('/tenants/:tenantId/scopes/:scopeId/redrain-count', async (c) => {
+    const tenantId = tenantIdSchema.parse(c.req.param('tenantId'));
+    const scopeId = scopeIdSchema.parse(c.req.param('scopeId'));
+    const actor = c.get('actor');
+    const parsed = redrainEventsInput.safeParse(await c.req.json().catch(() => ({})));
+    if (!parsed.success) {
+      return c.json({ error: 'body must be { drainedBefore: <ISO 8601 instant> } — the window to count' }, 400);
+    }
+    // The same future refusal as the reopen. A count of a window that has not closed yet
+    // is not dangerous, it is meaningless — and a dry run whose instant this door accepts
+    // and the real run rejects would be the worst kind of rehearsal.
+    if (Date.parse(parsed.data.drainedBefore) > Date.now()) {
+      return c.json(
+        {
+          error:
+            `drainedBefore ${parsed.data.drainedBefore} is in the future — it would count rows ` +
+            'already shipped to the rebuilt table. Pass the instant the old table stopped receiving.',
+        },
+        400,
+      );
+    }
+    const scope = await admin.getScopeRecord(actor, tenantId, scopeId);
+    if (!scope) return c.json({ error: `unknown scope for tenant: (${tenantId}, ${scopeId})` }, 404);
+    const redrainable = await admin.redrainEvents(actor, tenantId, scopeId, {
+      drainedBefore: parsed.data.drainedBefore,
+      countOnly: true,
+    });
+    return c.json({ redrainable, drainedBefore: parsed.data.drainedBefore });
   });
 
   app.post('/tenants/:tenantId/scopes/:scopeId/reap', async (c) => {

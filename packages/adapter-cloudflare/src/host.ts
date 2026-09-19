@@ -957,6 +957,8 @@ interface ScopeStubRpc {
   undrainedEvents(limit: number): Promise<DrainedEvent[]>;
   markEventsDrained(eventIds: readonly string[], at: string): Promise<number>;
   redrainEvents(drainedBefore: string): Promise<number>;
+  /** How many rows that reopen WOULD touch, touching none of them (#1545). */
+  redrainCount(drainedBefore: string): Promise<number>;
   facetEvents(input: EventFacetInput): Promise<EventFacetResult>;
   eventCause(input: EventCauseInput): Promise<CauseChain>;
   eventEffects(input: EventEffectsInput): Promise<EffectsTree>;
@@ -1071,7 +1073,18 @@ export interface EventDrainDelegation {
    * for the same reason as the stamp it undoes: the rows live there, and clearing stamps
    * in the placeholder namespace would report success while reopening nothing.
    */
-  redrain(args: { tenantId: TenantId; scopeId: ScopeId; vertical: string; drainedBefore: string }): Promise<number>;
+  redrain(args: {
+    tenantId: TenantId;
+    scopeId: ScopeId;
+    vertical: string;
+    drainedBefore: string;
+    /**
+     * Count and reopen nothing (#1545). It has to cross this seam like the instant does:
+     * a delegated scope whose far end never hears the flag would reopen its window and
+     * answer with a number that reads exactly like the count that was asked for.
+     */
+    countOnly?: boolean;
+  }): Promise<number>;
 }
 
 export interface CloudflareScopeHostOptions {
@@ -1817,6 +1830,17 @@ export class CloudflareScopeHost implements ScopeHost {
    */
   async redrainEventsLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
     return this.scopeStub(scopeId).redrainEvents(drainedBefore);
+  }
+
+  /**
+   * How many rows that reopen would touch, in this host's own scope (#1545) — the
+   * read-only half a dry run asks for. A separate method rather than a flag on the one
+   * above: the two return the same shape, so a lost argument would turn a count into a
+   * reopen silently, and a name cannot be lost that way. No audit, like the reopen: the
+   * platform's `redrainEvents` is the door, and a count egresses nothing to record.
+   */
+  async redrainCountLocal(scopeId: ScopeId, drainedBefore: string): Promise<number> {
+    return this.scopeStub(scopeId).redrainCount(drainedBefore);
   }
 
   /**
@@ -4066,11 +4090,31 @@ export class CloudflareScopeHost implements ScopeHost {
         // The same refusal the stamp carries: a reaped scope's storage is gone, and
         // addressing its DO would construct an empty one and report nothing reopened.
         const record = await this.scopeRecordForRead(tenantId, scopeId);
-        const { drainedBefore } = redrainEventsInput.parse(input);
+        const { drainedBefore, countOnly } = redrainEventsInput.parse(input);
         // The window rule at the HostAdmin boundary, not only at the control-plane door:
         // this verb is public, so an in-process caller reaches it without that route. Host
         // code, so the real clock is the right one to read (the DO host injects none).
+        // Applied to a count too: a future instant is as meaningless to count as it is
+        // dangerous to reopen, and one answer from this verb should not be reachable
+        // through a door the other is refused at.
         assertRedrainWindow(drainedBefore, new Date().toISOString());
+        // A COUNT reopens nothing, so it writes no receipt (#1545). Both rows below exist
+        // for a second egress of a tenant's payloads: the intent because a reopen that
+        // crashed before its outcome row would otherwise leave no trace, the outcome
+        // because something moved. A count moves nothing and egresses nothing, and an
+        // admin row saying a redrain was intended on a scope where none was is a false
+        // statement about a tenant's data — the opposite of what the log is for.
+        if (countOnly) {
+          return this.eventDrainDelegation && record.vertical
+            ? await this.eventDrainDelegation.redrain({
+                tenantId,
+                scopeId,
+                vertical: record.vertical,
+                drainedBefore,
+                countOnly: true,
+              })
+            : await this.scopeStub(scopeId).redrainCount(drainedBefore);
+        }
         // Audit FIRST, on `rewindScope`'s rule (K-33), because this has the same shape: the
         // mutation commits in a DO and the row is a separate write afterwards, so a failure
         // between them left a reopen that had happened with no receipt — and the retry could

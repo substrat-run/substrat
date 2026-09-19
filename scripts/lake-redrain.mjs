@@ -12,6 +12,10 @@
  *   node scripts/lake-redrain.mjs --drained-before=2026-09-17T10:42:00.000Z --dry-run
  *   node scripts/lake-redrain.mjs --drained-before=2026-09-17T10:42:00.000Z
  *
+ * `--dry-run` counts (#1545): one read-only aggregate per scope, so it answers how many rows
+ * the real run would reopen without reopening any of them. The count is unbounded where the
+ * reopen is batched, so it is the whole window per scope, not the first batch of it.
+ *
  * `--drained-before` is REQUIRED, and choosing it is the only judgement in the whole run.
  * The safe answer is the moment the deploy carrying the NEW stream id finished; anything
  * from the teardown onwards is equally safe, and later still only re-sends rows the new
@@ -157,34 +161,53 @@ const scopes = await activeScopes();
 console.log(`${scopes.length} active scope(s)\n`);
 
 /**
- * The dry run reports what it CHECKED and stops.
+ * The dry run COUNTS (#1545), and the count is the answer it exists to give.
  *
- * It used to print `would reopen <scope>` for every active scope, which read as a
- * per-scope finding and was nothing of the kind: the line was unconditional, and no row
- * was ever counted. Twenty-five scopes listed that way look like twenty-five scopes with
- * work to do, which is the one thing somebody runs a dry run to learn — so it was worse
- * than printing nothing. There is no read-only count to print instead: `redrainEvents`
- * only ever reopens, and a counting variant would be a new field on a published input
- * schema, both adapters, the delegation hop and the control-plane route (#1545).
+ * It used to print `would reopen <scope>` for every active scope, which read as a per-scope
+ * finding and was nothing of the kind: the line was unconditional, and no row was ever
+ * counted. #1546 replaced it with an honest report of what a dry run could then establish —
+ * everything except the number — because `redrainEvents` only ever reopened. `redrain-count`
+ * is the read-only half that was missing: one unbounded aggregate per scope, no rows
+ * touched, no receipt written.
  *
- * What a dry run CAN establish is everything except the number, and all of it is
- * load-bearing: the control plane answers, the service token is accepted, the instant
- * parses and sits inside the window the kernel will enforce, and this is the set of
- * scopes the real run will walk. So it says that, and says plainly what it cannot know.
+ * A scope whose control plane or deployment predates #1545 answers 404/501 rather than
+ * reopening the window it was asked to count, and lands in the error list below. That is
+ * the deliberate shape of the seam: a dry run must never be the thing that moves rows.
  */
 if (dryRun) {
   console.log('Checked:');
   console.log(`  · control plane reachable at ${cpUrl}, SERVICE_TOKEN accepted`);
   console.log(`  · --drained-before parses and is in-window: ${drainedBefore}`);
-  console.log(`  · ${scopes.length} active scope(s) to walk:\n`);
-  for (const scope of scopes) {
-    console.log(`      ${scope.tenantId}/${scope.id}${scope.vertical ? ` (${scope.vertical})` : ''}`);
-  }
-  console.log(`
-NOT checked: how many rows would reopen, in total or per scope. Nothing reads that without
-reopening it, so this cannot tell you whether there is anything to do.
+  console.log(`  · ${scopes.length} active scope(s) to walk\n`);
 
-Before running it for real, two things decide whether you should:
+  let wouldTotal = 0;
+  let wouldScopes = 0;
+  const countErrors = [];
+  for (const scope of scopes) {
+    const label = `${scope.tenantId}/${scope.id}${scope.vertical ? ` (${scope.vertical})` : ''}`;
+    const r = await cp('POST', `/tenants/${scope.tenantId}/scopes/${scope.id}/redrain-count`, { drainedBefore });
+    if (!r.ok) {
+      countErrors.push({ label, why: `${r.status} ${r.json?.error ?? r.text.slice(0, 200)}` });
+      console.log(`  ✗ ${label}  ${r.status}`);
+      continue;
+    }
+    // Unbounded, so this is the WHOLE window for the scope — not one batch of it. A 200
+    // without the number is a disagreement about the answer's shape, never a zero: reading
+    // it as one would print "nothing to reopen" for a scope nothing counted.
+    const n = r.json?.redrainable;
+    if (typeof n !== 'number') {
+      countErrors.push({ label, why: `200 without a count: ${r.text.slice(0, 200)}` });
+      console.log(`  ✗ ${label}  no count in the reply`);
+      continue;
+    }
+    wouldTotal += n;
+    if (n > 0) wouldScopes += 1;
+    console.log(`  ${n > 0 ? '●' : '='} ${label}  ${n > 0 ? `${n} row(s) would reopen` : 'nothing to reopen'}`);
+  }
+
+  console.log(`\n${wouldTotal} row(s) would reopen across ${wouldScopes} scope(s).`);
+  console.log(`
+Two things still decide whether you should:
 
   · Does the lake table hold anything? A table with zero Iceberg snapshots has never
     received a row, so there is nothing a re-send would be duplicating.
@@ -193,6 +216,12 @@ Before running it for real, two things decide whether you should:
     per scope per 15 minutes, so a long backlog takes as long to re-send as it took to send.
 
 Nothing changed. Drop --dry-run to reopen.`);
+  if (countErrors.length > 0) {
+    console.error(`\n✗ ${countErrors.length} scope(s) not counted (the total above excludes them):`);
+    for (const e of countErrors) console.error(`    ${e.label}  ${e.why}`);
+    console.error('  A 404 or 501 here is a control plane or a deployment older than the count verb (#1545).');
+    process.exit(1);
+  }
   process.exit(0);
 }
 

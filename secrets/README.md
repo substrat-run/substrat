@@ -279,10 +279,13 @@ pnpm --filter @substrat-run/control-plane cf:deploy        # note when it FINISH
 pnpm lake:redrain --drained-before=<that instant>
 ```
 
-The instant is the **deploy**, not the teardown: until the new stream id is live, the old
-plane may keep stamping rows into a stream that no longer exists. Earlier than the deploy
-leaves holes; later re-sends a few rows the new table already has. Pick later when unsure.
-It only works while the outboxes still hold the rows — true while no outbox pruning exists.
+The instant is the **deploy**: earlier leaves holes, later re-sends a few rows the new table
+already has, so pick later when unsure. Anything from the teardown onwards is equally safe —
+the drain ships before it stamps and the sink throws while the stream is gone, so nothing in
+the window between teardown and deploy is ever stamped (#1546 corrected the scripts, which
+used to say the old plane kept stamping into a stream that no longer existed). Add
+`--dry-run` to count what the run would reopen, per scope, reopening nothing (#1545). It only
+works while the outboxes still hold the rows — true while no outbox pruning exists.
 
 ## Rotation caveats
 

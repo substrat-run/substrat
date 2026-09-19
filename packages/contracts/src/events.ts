@@ -537,6 +537,20 @@ export type DrainedEvent = z.infer<typeof drainedEvent>;
  */
 export const REDRAIN_BATCH = 5_000;
 
-export const redrainEventsInput = z.object({ drainedBefore: instant });
+/**
+ * `countOnly` (#1545): answer how many rows the window holds and reopen NOTHING.
+ *
+ * Optional, and absent means the reopen this verb has always performed — so every caller
+ * written before it keeps its behaviour. It exists because a dry run had no way to ask the
+ * one question it is run to answer: `redrainEvents` only ever reopened, so a caller could
+ * either learn the number by changing the rows or learn nothing. `pnpm lake:redrain
+ * --dry-run` was the honest version of the second.
+ *
+ * A count is UNBOUNDED where the reopen is batched at `REDRAIN_BATCH`: an aggregate
+ * materialises no rows, so the Durable-Object request budget that forces the batch does not
+ * apply. It therefore answers for the WHOLE window in one call — which is also why it is not
+ * comparable to a single reopen call's return value, only to the sum of the loop.
+ */
+export const redrainEventsInput = z.object({ drainedBefore: instant, countOnly: z.boolean().optional() });
 export type RedrainEventsInput = z.infer<typeof redrainEventsInput>;
 

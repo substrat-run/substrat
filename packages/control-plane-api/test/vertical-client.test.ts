@@ -254,3 +254,49 @@ describe('VerticalClient — the provision SUCCESS body becomes `result` (#426)'
     expect(out.owner).toBe('o');
   });
 });
+
+/**
+ * #1545: the count and the reopen are different PATHS, not one path with a flag.
+ *
+ * The far end is the tenant's own deployment, shipped on its own clock, so it is routinely
+ * older than this client. A `countOnly` field would be stripped by its Zod boundary and the
+ * reopen would run — answering with a number shaped exactly like the count that was asked
+ * for, during the one run whose whole promise is that it changes nothing. A path an older
+ * deployment does not serve answers 404, which throws here, with the rows untouched.
+ */
+describe('VerticalClient — a redrain count never reaches the reopen (#1545)', () => {
+  const drainedBefore = '2026-09-16T00:00:00.000Z';
+  const spy = (answer: (path: string) => Response) => {
+    const paths: string[] = [];
+    const client = new VerticalClient({
+      fetch: (async (u: string) => {
+        paths.push(new URL(u).pathname);
+        return answer(new URL(u).pathname);
+      }) as unknown as typeof fetch,
+      platformSecret: 'secret',
+    });
+    return { client, paths };
+  };
+
+  it('asks the count route and reads `redrainable`', async () => {
+    const { client, paths } = spy(() => new Response(JSON.stringify({ redrainable: 11 }), { status: 200 }));
+    await expect(client.redrainEvents(s, drainedBefore, true)).resolves.toBe(11);
+    expect(paths).toEqual(['/internal/redrain-count']);
+  });
+
+  it('without the flag it is the reopen, unchanged', async () => {
+    const { client, paths } = spy(() => new Response(JSON.stringify({ redrained: 3 }), { status: 200 }));
+    await expect(client.redrainEvents(s, drainedBefore)).resolves.toBe(3);
+    expect(paths).toEqual(['/internal/redrain-events']);
+  });
+
+  it('a deployment that does not serve the count refuses, and nothing falls back to the reopen', async () => {
+    const { client, paths } = spy((p) =>
+      p === '/internal/redrain-count'
+        ? new Response('404 Not Found', { status: 404 })
+        : new Response(JSON.stringify({ redrained: 5000 }), { status: 200 }),
+    );
+    await expect(client.redrainEvents(s, drainedBefore, true)).rejects.toThrow(/404/);
+    expect(paths).toEqual(['/internal/redrain-count']);
+  });
+});

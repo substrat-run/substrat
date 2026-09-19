@@ -5786,12 +5786,32 @@ export class SqliteScopeHost implements ScopeHost {
         // Directory check first, on mark's reasoning: "nothing to reopen" and "you may not
         // address this scope" are different answers.
         this.assertScopeReachable(tenantId, scopeId);
-        const { drainedBefore } = redrainEventsInput.parse(input);
+        const { drainedBefore, countOnly } = redrainEventsInput.parse(input);
         // The window rule, enforced HERE and not only at the control-plane door: this verb
         // is public `HostAdmin`, so the fleet script reaches it without passing that route.
-        // The injected clock, so a test pins the boundary rather than racing it.
+        // The injected clock, so a test pins the boundary rather than racing it. A count is
+        // held to it too — the two answers come from one verb and one door.
         assertRedrainWindow(drainedBefore, this.clock());
         const db = this.scopeDbFor(tenantId, scopeId);
+        // A COUNT reopens nothing, writes nothing, and records nothing (#1545). The two
+        // receipts below are there because a reopen is a second egress of a tenant's
+        // payloads; a count egresses none, and an admin row claiming a redrain on a scope
+        // that was only counted is a false statement in the one log that is evidence.
+        //
+        // UNBOUNDED, unlike the reopen under it: the batch exists because an UPDATE over
+        // the whole window must fit one Durable-Object request on the other adapter, and an
+        // aggregate materialises no rows. A capped count would answer "5000, or more",
+        // which is not an answer.
+        if (countOnly) {
+          return (
+            db
+              .prepare(
+                `SELECT COUNT(*) AS c FROM _substrat_outbox
+                  WHERE drained_at IS NOT NULL AND drained_at < ?`,
+              )
+              .get(drainedBefore) as { c: number }
+          ).c;
+        }
         // Audit FIRST, matching the Cloudflare adapter and `rewindScope` (K-33): the row is
         // a separate statement outside the update's transaction, so a failure between them
         // would leave a reopen with no receipt — and the retry cannot repair it, because the
