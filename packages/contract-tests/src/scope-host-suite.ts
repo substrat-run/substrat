@@ -3782,9 +3782,34 @@ export function scopeHostContractSuite(
       await expectRefusal(host.admin.rejectVersion(staff, ghost, 'no such version'), 'not_found');
       await expectRefusal(host.admin.promoteVersion(staff, 'callout', 'prod', ghost), 'not_found');
       await expectRefusal(host.admin.bindScopeVersion(staff, t1, s1, ghost), 'not_found');
-      // versionManifest refuses on the PAIR — an id that exists under another vertical is
-      // as absent as one that exists nowhere, so a real version is not a way in.
       await expectRefusal(host.admin.versionManifest(staff, 'callout', ghost), 'not_found');
+
+      // versionManifest refuses on the PAIR — `!v || v.vertical_slug !== verticalSlug` —
+      // so the absent id above only exercises HALF its guard. A version that really
+      // exists, under a DIFFERENT vertical, must read as absent too: asking for it under
+      // someone else's slug is not a way in. Without this second call an implementation
+      // that dropped the ownership check would still pass the case, which is the same
+      // shape of hole this whole change exists to close.
+      await host.admin.registerVertical(staff, {
+        slug: 'otherowner',
+        name: 'OtherOwner',
+        source: 'cli',
+        ownerTenant: t1,
+      });
+      const elsewhere = ulid();
+      await host.admin.publishVersion(staff, {
+        id: elsewhere,
+        verticalSlug: 'otherowner',
+        version: '1.0.0',
+        manifestDigest: 'm-other',
+        permissionDigest: 'p-other',
+        migrationDigest: 'g-other',
+        deploymentRef: null,
+      });
+      // It resolves under its OWN vertical — so the refusal below is the pair check
+      // firing, not the version failing to exist.
+      await host.admin.versionManifest(staff, 'otherowner', elsewhere);
+      await expectRefusal(host.admin.versionManifest(staff, 'callout', elsewhere), 'not_found');
     });
 
     it('an archived scope blocks the delete naming the reap step; a reaped tombstone never blocks', async () => {
