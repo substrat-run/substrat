@@ -158,15 +158,26 @@ export const ROLES: RoleDefinition[] = [
  * The keys reachable OUTSIDE the role table — the shapes, not the grants themselves,
  * which are per-principal ULIDs minted at runtime.
  *
- * One entry, and it is the customer side of the whole app. Nobody holds either key
- * scope-wide; each is granted to one person on their OWN contact, and their
+ * The first entry is the customer side of the whole app. Nobody holds that key
+ * scope-wide; it is granted to one person on their OWN contact, and their
  * conversations are reached from it through the declared parent edge. That is what
  * makes one customer's history unreachable to another.
+ *
+ * The second is a FOLLOWER (#1086), and it is the one shape here whose key a role
+ * also holds. That is deliberate rather than a duplicate: `conversation:read` is held
+ * scope-wide by the staff roles, and narrowed onto one conversation by
+ * `ticket0/follow-conversation` for somebody who is to see that thread and no other.
+ * The two grants are different units of the same key, and the narrowed one is what an
+ * `unfollow` can take back — a role cannot be revoked per conversation.
  */
 export const ENTITY_GRANTS: { entityType: string; permissions: PermissionKey[] }[] = [
   {
     entityType: 'contact',
     permissions: [T0_PERM.conversationReadOwn],
+  },
+  {
+    entityType: 'conversation',
+    permissions: [T0_PERM.conversationRead],
   },
 ];
 

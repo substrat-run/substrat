@@ -18,11 +18,13 @@ import {
   operationInputsOf,
   pageOf,
   pageVisible,
+  principalId,
   substratError,
   type CountedPage,
   type EntityRow,
   type HandlerInput,
   type HandlerOutput,
+  type PrincipalId,
   MODEL_USAGE_KIND,
 } from '@substrat-run/contracts';
 import {
@@ -337,6 +339,16 @@ function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow
 }
 
 /**
+ * Whether a directory row IS the assistant — the one rule, in one place.
+ *
+ * Two callers judge it now, `assign` and `follow-conversation`, and they refuse for
+ * different-sounding reasons — so what they share is the test and not the message. The
+ * test is the display NAME for the reason the next comment gives: module code cannot
+ * ask the kernel which role a principal holds.
+ */
+const isAssistant = (row: AgentProfileRow): boolean => row.display_name === ASSISTANT_NAME;
+
+/**
  * Somebody this desk can hand a conversation TO — which is narrower (#1154).
  *
  * `ticket0_agent_profiles` is two things at once: the desk's directory of colleagues
@@ -356,13 +368,49 @@ function staffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow
  */
 function assignableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
   const row = staffOrThrow(ctx, principal);
-  if (row.display_name === ASSISTANT_NAME) {
+  if (isAssistant(row)) {
     throw substratError(
       'validation_failed',
       `the assistant cannot be an assignee: ${principal} — it answers on its own and reads no queue`,
     );
   }
   return row;
+}
+
+/**
+ * Somebody this desk can put ON a conversation — the follower directory (#1086).
+ *
+ * The same directory `assign` reads and the same assistant rule, because a watcher
+ * and an assignee are drawn from the same people. The refusal differs because the act
+ * does: the assistant is not refused here for holding a queue it never works, but for
+ * already reading every conversation in the scope, which makes following it a grant
+ * that confers nothing and a record that says something untrue.
+ */
+function followableStaffOrThrow(ctx: OperationContext, principal: string): AgentProfileRow {
+  const row = staffOrThrow(ctx, principal);
+  if (isAssistant(row)) {
+    throw substratError(
+      'validation_failed',
+      `the assistant cannot follow a conversation: ${principal} — it already reads every one of them`,
+    );
+  }
+  return row;
+}
+
+/**
+ * A principal id, or a refusal a caller can read.
+ *
+ * `principalId.parse` alone throws a Zod error, which is not one of this vertical's
+ * taxonomy codes and would reach a screen as an internal error rather than a 400.
+ * Used where a principal arrives from the input and is NOT read back out of a table
+ * first — which, deliberately, is only `unfollow-conversation`.
+ */
+function principalOrThrow(value: string): PrincipalId {
+  const parsed = principalId.safeParse(value);
+  if (!parsed.success) {
+    throw substratError('validation_failed', `not a principal id: ${value}`);
+  }
+  return parsed.data;
 }
 
 /**
@@ -2573,6 +2621,93 @@ const operations = {
       [input.conversationId],
     );
     return { tags };
+  },
+
+  /**
+   * Put a colleague on a thread — one `ctx.grant`, and that is the entire feature.
+   *
+   * `ctx.grant` DELEGATES: the kernel re-checks that the caller holds
+   * `conversation:read` on this conversation before writing the tuple, so this
+   * operation can never hand out more than the person calling it was given. That
+   * check is separate from the `conversation:assign` above, and both have to pass —
+   * deciding who works a thread is not the same statement as being able to read it,
+   * even though every staff role here happens to hold both.
+   *
+   * Idempotent, because the tuple write is: following somebody already following is
+   * the same end state. It still emits, unlike tagging twice — a grant has no row to
+   * read first, so this cannot tell a repeat from a first time, and announcing every
+   * call is the honest half of that. A consumer counting these counts CALLS.
+   *
+   * No `step`: see the operation's declaration. Following is an access decision about
+   * the conversation, not work on it, so a closed thread can still be shown to
+   * somebody.
+   */
+  'ticket0/follow-conversation': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    // Before the grant, not after: a durable read handed to a principal this desk
+    // cannot name is the failure the directory exists to stop, and it is one nobody
+    // would see — the grant confers access and leaves no row anyone lists.
+    const follower = followableStaffOrThrow(ctx, input.follower);
+    // The directory's own value rather than the input's, so the principal the grant
+    // names is provably the row that was just checked.
+    const principal = principalId.parse(follower.principal);
+    await ctx.grant(principal, T0_PERM.conversationRead, conversationRef(conversation.id));
+    ctx.emit({
+      type: 'ticket0.conversation-followed',
+      schemaVersion: 1,
+      entity: conversationRef(conversation.id),
+      piiClass: 'none',
+      payload: { conversation_id: conversation.id, follower: principal },
+    });
+    return { conversation_id: conversation.id, follower: principal, following: true };
+  },
+
+  /**
+   * Take them off again — and this one asks NOTHING about the person it is removing.
+   *
+   * Not the directory, not the assistant rule, nothing. That asymmetry with
+   * `follow-conversation` is the whole point, and it is not symmetry lost by
+   * accident: a refusal to ADD somebody withholds access, and a refusal to REMOVE
+   * them LEAVES ACCESS STANDING. Only one of those is safe to get wrong, so an
+   * eligibility test belongs only on the way in.
+   *
+   * It matters because every fact this could have tested is one the follower controls
+   * or that another operation could take away. `display_name` is set by its own
+   * principal through `ticket0/set-agent-profile`, with no reserved names — so a
+   * follower who renamed themselves to the assistant's name would have failed the
+   * follow rule here and made their own grant unrevocable. Checking directory
+   * membership instead only moves the problem: nothing deletes a profile row TODAY,
+   * and an operation that one day removes a colleague from the desk would break
+   * revocation exactly when it is most wanted. So the rule is that revocation depends
+   * on nothing about its subject, which is the only version of it that stays true.
+   *
+   * What still holds: the CALLER is checked, the conversation must exist, and
+   * `ctx.revoke` delegates the same way `ctx.grant` does — a caller may only withdraw
+   * a grant it could have made. Revoking what was never granted is a no-op, so a
+   * principal nobody followed gets the honest answer rather than a refusal.
+   *
+   * `ctx.revoke` is a delete that reports nothing, which is why the answer is
+   * `following: false`, the resulting state, and not `removed` — and why this emits
+   * on every call for the reason the one above does.
+   */
+  'ticket0/unfollow-conversation': async (ctx, input) => {
+    assertAllowed(
+      await ctx.check(T0_PERM.conversationAssign, conversationRef(input.conversationId)),
+    );
+    const conversation = conversationOrThrow(ctx, input.conversationId);
+    const principal = principalOrThrow(input.follower);
+    await ctx.revoke(principal, T0_PERM.conversationRead, conversationRef(conversation.id));
+    ctx.emit({
+      type: 'ticket0.conversation-unfollowed',
+      schemaVersion: 1,
+      entity: conversationRef(conversation.id),
+      piiClass: 'none',
+      payload: { conversation_id: conversation.id, follower: principal },
+    });
+    return { conversation_id: conversation.id, follower: principal, following: false };
   },
 
   /**

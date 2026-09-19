@@ -360,6 +360,13 @@ export interface Ticket0Client {
   deskMetrics(input: { from?: string; to?: string }): Promise<{ from: string; to: string; volume: { opened: number; resolved: number; byChannel: ({ channel: "widget" | "email"; opened: number; resolved: number })[] }; firstResponse: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; resolution: { measured: number; medianSeconds: number | null; p90Seconds: number | null }; backlog: { open: number; snoozed: number; unassigned: number; oldestUntouchedId: string | null; oldestUntouchedAgeSeconds: number | null }; agents: ({ principal: string; displayName: string | null; resolved: number; replies: number })[]; csat: { responses: number; average: number | null }; assistant: { turns: number; answered: number; drafted: number; escalated: number; failed: number; deflectionRate: number | null; escalationRate: number | null; failureRate: number | null; currency: string; cost: string; costPerResolved: string | null } }>;
 
   /**
+   * Put a colleague on a conversation
+   *
+   * `POST /conversations/{conversationId}/followers` — `ticket0/follow-conversation`
+   */
+  followConversation(input: { conversationId: string; follower: string }): Promise<{ conversation_id: string; follower: string; following: boolean }>;
+
+  /**
    * One conversation
    *
    * `GET /conversations/{conversationId}` — `ticket0/get-conversation`
@@ -744,6 +751,13 @@ export interface Ticket0Client {
   tagConversation(input: { conversationId: string; tag: string }): Promise<ConversationTag>;
 
   /**
+   * Take a colleague off a conversation
+   *
+   * `DELETE /conversations/{conversationId}/followers/{follower}` — `ticket0/unfollow-conversation`
+   */
+  unfollowConversation(input: { conversationId: string; follower: string }): Promise<{ conversation_id: string; follower: string; following: boolean }>;
+
+  /**
    * Take an address off the list
    *
    * `POST /signup/unsubscribe` — `ticket0/unsubscribe-signup`
@@ -1000,6 +1014,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       guarded("savedReply", input.savedReplyId, `/saved-replies/${encodeURIComponent(String(input.savedReplyId))}`, "DELETE", undefined, omit(input, ["savedReplyId"])),
     deskMetrics: (input: Args) =>
       send("/desk-metrics", "GET", undefined, input),
+    followConversation: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/followers`, "POST", omit(input, ["conversationId"]), undefined),
     getConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}`, "GET", undefined, omit(input, ["conversationId"])),
     getCsat: (input: Args) =>
@@ -1100,6 +1116,8 @@ export function createClient(options: ClientOptions = {}): Ticket0Client {
       send("/signup", "POST", input, undefined),
     tagConversation: (input: Args) =>
       send(`/conversations/${encodeURIComponent(String(input.conversationId))}/tags`, "POST", omit(input, ["conversationId"]), undefined),
+    unfollowConversation: (input: Args) =>
+      send(`/conversations/${encodeURIComponent(String(input.conversationId))}/followers/${encodeURIComponent(String(input.follower))}`, "DELETE", undefined, omit(input, ["conversationId","follower"])),
     unsubscribeSignup: (input: Args) =>
       send("/signup/unsubscribe", "POST", input, undefined),
     untagConversation: (input: Args) =>

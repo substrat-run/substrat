@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { permissionKey, principalId, type EntityRef } from '@substrat-run/contracts';
 import { entityCheckConformanceSuite } from '@substrat-run/contract-tests';
 import { ulid, type ScopeHost } from '@substrat-run/kernel';
-import { conformance } from './conformance.js';
+import { CONFORMANCE_FOLLOWER, conformance } from './conformance.js';
 import { buildHost, seed, type World } from '../src/seed.js';
 
 let dir: string;
@@ -32,6 +32,11 @@ beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'ticket0-entity-checks-'));
   host = buildHost(dir);
   world = await seed(host);
+  // The follower the two `#1086` cases name. It has to be somebody with a profile —
+  // the directory rule `assign` applies — and a profile is minted by the seed above,
+  // so the value cannot exist when `conformance.ts` is constructed. The kit reads the
+  // entry per case, which is what makes filling it here in time.
+  CONFORMANCE_FOLLOWER.follower = world.substrat.agent.principal;
 }, 60_000);
 
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
