@@ -86,6 +86,13 @@ export async function signJwt(key: SigningKey, claims: Record<string, unknown>):
  * store to look the caller up in, so the token IS the record. Expiry is checked here
  * against `now`, which the caller passes so a test can be explicit about it rather than
  * sleeping.
+ *
+ * Every way a token can be wrong answers the same `null`, INCLUDING the ways that throw:
+ * `atob` rejects a segment that is not base64 and `JSON.parse` rejects a payload that is
+ * not an object, and the argument for the whole token being the record is that an
+ * attacker-supplied string reaches this function. A throw would escape the handler as a
+ * 500 on the relay's origin, where a failed authentication belongs — and would also tell
+ * the caller, by status alone, that their guess was malformed rather than merely wrong.
  */
 export async function verifyJwt(
   key: SigningKey,
@@ -95,24 +102,29 @@ export async function verifyJwt(
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   const [header, payload, signature] = parts as [string, string, string];
-  const publicKey = await crypto.subtle.importKey(
-    'jwk',
-    publicJwkOf(key) as JsonWebKey,
-    { name: 'ECDSA', namedCurve: 'P-256' },
-    false,
-    ['verify'],
-  );
-  const ok = await crypto.subtle.verify(
-    { name: 'ECDSA', hash: 'SHA-256' },
-    publicKey,
-    b64urlDecode(signature),
-    encoder.encode(`${header}.${payload}`),
-  );
-  if (!ok) return null;
-  const claims = JSON.parse(new TextDecoder().decode(b64urlDecode(payload))) as Record<string, unknown>;
-  const exp = typeof claims.exp === 'number' ? claims.exp : 0;
-  if (exp * 1000 <= now) return null;
-  return claims;
+  try {
+    const publicKey = await crypto.subtle.importKey(
+      'jwk',
+      publicJwkOf(key) as JsonWebKey,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['verify'],
+    );
+    const ok = await crypto.subtle.verify(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      publicKey,
+      b64urlDecode(signature),
+      encoder.encode(`${header}.${payload}`),
+    );
+    if (!ok) return null;
+    const claims = JSON.parse(new TextDecoder().decode(b64urlDecode(payload))) as Record<string, unknown>;
+    if (typeof claims !== 'object' || claims === null) return null;
+    const exp = typeof claims.exp === 'number' ? claims.exp : 0;
+    if (exp * 1000 <= now) return null;
+    return claims;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -122,8 +134,11 @@ export async function verifyJwt(
  * is sound: reading the `id_token` an upstream just handed us over a TLS connection, in
  * direct response to a code we minted the request for. The signature adds nothing there —
  * we are the audience, the channel is authenticated, and the alternative is fetching and
- * caching Google's and Apple's JWKS to re-verify a token we asked for ourselves. It must
- * never be used on a token that arrived from a caller.
+ * caching Google's and Apple's JWKS to re-verify a token we asked for ourselves. That is
+ * the case OIDC Core §3.1.3.7 rule 6 names outright: a token received over a TLS-validated
+ * channel direct from the Token Endpoint may be validated by that channel in place of its
+ * signature. It must never be used on a token that arrived from a caller — `verifyJwt` is
+ * the function for those.
  */
 export function unverifiedClaims(token: string): Record<string, unknown> {
   const payload = token.split('.')[1];

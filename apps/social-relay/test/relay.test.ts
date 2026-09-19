@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createApp, rateLimitOf, type Env } from '../src/routes.js';
-import { b64url, b64urlDecode, sha256b64url } from '../src/jwt.js';
+import { b64url, b64urlDecode, sha256b64url, signJwt } from '../src/jwt.js';
 import { namespaceOf, pkcs8Pem, testStore, type TestStore } from './support.js';
 
 /**
@@ -643,6 +643,48 @@ describe('bad input at the token endpoint', () => {
     );
     expect(res.status).toBe(401);
     expect(await res.json()).toMatchObject({ error: 'invalid_client' });
+  });
+});
+
+describe('bad input at /userinfo', () => {
+  /**
+   * `/userinfo` is the one surface an attacker-supplied string reaches the verifier
+   * through, so every way of being wrong has to answer the same 401. Two of them used to
+   * answer something else.
+   */
+  it('answers a bearer token that is not base64 with 401, not 500', async () => {
+    const app = createApp({ now: () => NOW });
+    const res = await app.request(
+      'https://id.substrat.net/google/userinfo',
+      // `atob` throws `InvalidCharacterError` on these, which used to escape the handler.
+      { headers: { authorization: 'Bearer ###.###.###' } },
+      envWith(),
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'invalid_token' });
+  });
+
+  it('refuses a relay-signed token whose issuer is another provider', async () => {
+    const app = createApp({ now: () => NOW });
+    const key = await store.signingKey();
+    /**
+     * One key signs every provider's tokens, so a token minted for `/github` is a valid
+     * signature at `/google`. Only the `(iss, aud)` pair says which surface it belongs to.
+     */
+    const token = await signJwt(key, {
+      iss: 'https://id.substrat.net/github',
+      aud: 'https://id.substrat.net/google/userinfo',
+      sub: 'github-subject-1',
+      iat: Math.floor(NOW / 1000),
+      exp: Math.floor(NOW / 1000) + 300,
+    });
+    const res = await app.request(
+      'https://id.substrat.net/google/userinfo',
+      { headers: { authorization: `Bearer ${token}` } },
+      envWith(),
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ error: 'invalid_token' });
   });
 });
 

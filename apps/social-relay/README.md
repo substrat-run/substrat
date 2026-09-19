@@ -17,8 +17,15 @@ any kind.
 ## What it is not
 
 - **Not a user store.** No accounts, no sessions, no cookie. A person who signs in through
-  it leaves nothing behind but a row that expires within the minute. Had it been a full
-  issuer it would have grown a session at its own origin and become a cross-tenant SSO hub.
+  it leaves behind two short-lived rows and nothing else. The in-flight row that carries a
+  round from `/authorize` to the callback holds no identity at all — a redirect URI, a
+  state, a nonce, a PKCE challenge — and lives **ten minutes**, which is how long a person
+  has to finish at the provider; abandon the round and that is how long it sits before the
+  sweep. The row minted at the callback DOES hold the profile the `id_token` is about to
+  carry — subject, email, name, picture — and lives **one minute**, the window the install
+  has to redeem its code. Both are deleted by the read that consumes them, so the only rows
+  that reach their expiry are the ones nobody came back for. Had it been a full issuer it
+  would have grown a session at its own origin and become a cross-tenant SSO hub.
 - **Not a UI.** `/authorize` redirects to the upstream and the callback redirects back. The
   only page it renders is an error it cannot safely redirect.
 - **Not open for registration.** RFC 7591 in the open would let anyone mint a client on the

@@ -491,7 +491,14 @@ export function createApp(options: AppOptions = {}) {
     const key = await storeOf(c.env).signingKey();
     const claims = await verifyJwt(key, authorization.slice(7).trim(), now());
     const issuer = issuerOf(c.env, c.req.raw, live.provider.id);
-    if (!claims || claims.aud !== `${issuer}/userinfo`) {
+    /**
+     * Both halves, not just the audience: one key signs every provider's tokens, so the
+     * pair `(iss, aud)` is the only thing in the token that names which provider surface
+     * minted it. The audience alone happens to carry the issuer today — checking the
+     * claim the relay actually sets as the issuer keeps that from being a coincidence a
+     * later change to the audience string can quietly break.
+     */
+    if (!claims || claims.iss !== issuer || claims.aud !== `${issuer}/userinfo`) {
       return c.json({ error: 'invalid_token' }, 401, { 'www-authenticate': 'Bearer' });
     }
     const { iss, aud, iat, exp, ...identity } = claims;
