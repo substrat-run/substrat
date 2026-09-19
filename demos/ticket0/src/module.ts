@@ -2307,7 +2307,7 @@ const operations = {
    * conversation may do. A sweep that wrote `state` itself would be a second state
    * machine, and the second one is always the one that drifts.
    *
-   * The predicate is three clauses and each is load-bearing:
+   * The predicate is four clauses and each is load-bearing:
    *   - `state = 'new'` is the whole definition of abandoned. The two edges out of
    *     `new` toward `open` are a public reply and an assignment, so a row still here
    *     has neither — there is no `first_public_reply_at IS NULL` to add, because the

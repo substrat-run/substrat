@@ -1628,8 +1628,10 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
    * So the sweep takes exactly the conversations nobody at the desk ever touched.
    * `new` is that set by construction rather than by a guard: the only two edges out
    * of `new` toward `open` are `ticket0/post-public-reply` and `ticket0/assign`, so a
-   * row still in `new` has no public reply and no assignee, and there is no second
-   * fact to check. Silence is measured on `updated_at`, which every arriving message
+   * row still in `new` has no public reply and no assignee. The one way a `new`
+   * conversation HAS been worked on is an assistant draft, which is an `allow` rather
+   * than an edge and so moves nothing; the handler excludes those, and `src/module.ts`
+   * says why. Silence is measured on `updated_at`, which every arriving message
    * refreshes through `settle()` — so a customer who writes in again on day 29 resets
    * the window, and the window is about silence rather than about age.
    *

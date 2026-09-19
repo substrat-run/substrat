@@ -75,7 +75,7 @@ The lifecycle:
   it, in the same thread, with the same history. This is the single most important thing
   about the lifecycle and the reason a conversation is *not* a work order (section 3).
 - **closed** is the end, reachable from anywhere. A human puts it there by hand; the
-  daily reaper (#1088, §9.1) is the only other thing that may, and only for a
+  reaper (#1088, §9.1) is the only other thing that may, and only for a
   conversation still in `new` that nobody has added to for thirty days — never one
   somebody picked up, answered, parked or left a draft on. A customer who writes in
   afterwards gets a follow-up conversation, not a refusal (below).
@@ -447,7 +447,7 @@ Each with a recommendation, so this is a choice and not a specification exercise
    one because they take no conversation id (section 4). What remains is the surface, the
    rate limit, and the reaper for abandoned *conversations* — which is a retention policy,
    not an access-control problem. **The reaper is now built** (#1088):
-   `ticket0/reap-abandoned`, a daily schedule that CLOSES — never deletes — a conversation
+   `ticket0/reap-abandoned`, an hourly schedule that CLOSES — never deletes — a conversation
    still in `new` that nobody has added to for thirty days. The retention window is a
    constant in `src/module.ts` rather than the per-desk setting the issue also asked for,
    because a setting is a column and a column is a migration.
