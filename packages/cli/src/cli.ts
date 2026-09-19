@@ -31,7 +31,9 @@ import {
   pinTenant,
   assertLayerRules,
   checkPermissionSurface,
+  formatDeclaredModel,
   formatPermissionSurface,
+  readDeclaredModel,
 } from './push.js';
 import { printVersions } from './versions.js';
 import { promote, type PromoteResult } from './promote.js';
@@ -120,9 +122,11 @@ Usage:
                                                refuses the push; --skip-lint deploys
                                                ungated code deliberately
   substrat push     [dir] --check [--json]     run the push's LOCAL gate and stop: the layer
-                                               rules, then the declared permission surface —
-                                               resolve "substrat": { "permissions" }, import
-                                               it, derive the registry, print it with the
+                                               rules, the entity model this tree would ship
+                                               (or a note that it would ship none), then the
+                                               declared permission surface — resolve
+                                               "substrat": { "permissions" }, import it,
+                                               derive the registry, print it with the
                                                digest promotion compares. No login, no
                                                network; non-zero exit on any failure, so a
                                                vertical's CI gates its surface with the CLI
@@ -359,6 +363,13 @@ async function cmdPush(): Promise<void> {
   // Every failure throws (main() prints it and exits non-zero) — that is the gate.
   if (argv.includes('--check')) {
     const surface = await checkPermissionSurface(dir);
+    // The entity model, reported exactly as the push reports it — a count when there is a
+    // `model.json`, a note when there is not. It rides `--check` because that is where a
+    // person already reads a summary of what this tree would ship, and because a malformed
+    // artifact refuses here for free: `readDeclaredModel` throws, and this whole branch is
+    // the gate. It goes to stderr under `--json` alongside the lint notes, so the registry
+    // stays the only thing on stdout.
+    (jsonCheck ? console.error : console.log)(formatDeclaredModel(readDeclaredModel(dir)));
     // `--json` is the SAME surface as data — for the CI that wants to diff the registry
     // against a checked-in copy rather than read it. Printed alone (never after the prose),
     // so `substrat push --check --json > permissions.json` is a usable artifact.
