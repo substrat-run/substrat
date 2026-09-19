@@ -42,6 +42,10 @@ import type {
 } from '@substrat-run/contracts';
 import type { DeclaredSchedule } from './flow-graph.js';
 import { LIST_PAGE_MAX, denialQuery, problemDetail } from '@substrat-run/contracts';
+import { ControlPlaneError } from '@substrat-run/control-plane-api';
+
+// One class, owned by the package that throws it from its own client (#971).
+export { ControlPlaneError };
 
 /**
  * Bytes of `&service=…` params one bucketed-metrics request may carry (#1236). A Workers
@@ -136,22 +140,6 @@ export interface TenantNarrowedControlPlaneOptions {
   tenantId: TenantId;
   /** A Worker service-binding's `fetch` (bound to `substrat-control-plane`). Defaults to global fetch. */
   fetch?: typeof globalThis.fetch;
-}
-
-export class ControlPlaneError extends Error {
-  constructor(
-    readonly status: number,
-    message: string,
-    /**
-     * The provider's own answer, when the plane refused a connect because the credential
-     * was rejected upstream (#605, 422). Carried so a console can show WHY — "Scrive:
-     * No valid access credentials were provided" — instead of a generic save failure.
-     */
-    readonly probe?: ConnectionProbe,
-  ) {
-    super(message);
-    this.name = 'ControlPlaneError';
-  }
 }
 
 /** One hostname binding as the CP returns it (a subset of contracts' HostnameBinding). */

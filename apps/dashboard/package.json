@@ -21,6 +21,7 @@
     "@substrat-run/adapter-email": "workspace:^",
     "@substrat-run/connector-fortnox": "workspace:^",
     "@substrat-run/contracts": "workspace:^",
+    "@substrat-run/control-plane-api": "workspace:^",
     "@substrat-run/demo-callout": "workspace:^",
     "@substrat-run/engine-invites": "workspace:^",
     "@substrat-run/engine-invoicing": "workspace:^",

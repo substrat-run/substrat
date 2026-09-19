@@ -262,6 +262,9 @@ importers:
       '@substrat-run/contracts':
         specifier: workspace:^
         version: link:../../packages/contracts
+      '@substrat-run/control-plane-api':
+        specifier: workspace:^
+        version: link:../../packages/control-plane-api
       '@substrat-run/demo-callout':
         specifier: workspace:^
         version: link:../../demos/callout
@@ -333,6 +336,9 @@ importers:
         specifier: ^18.3.0
         version: 18.3.1(react@18.3.1)
     devDependencies:
+      '@substrat-run/control-plane-api':
+        specifier: workspace:^
+        version: link:../../../packages/control-plane-api
       '@types/react':
         specifier: ^18.3.0
         version: 18.3.31
