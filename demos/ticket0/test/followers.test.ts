@@ -173,7 +173,15 @@ describe('following a conversation', () => {
     );
   });
 
-  /** A grant carries no expiry, so it is still there a year later. */
+  /**
+   * A grant carries no expiry, so the one the case above made is still there a year
+   * later — and it has to be the one above, which is why this does not re-follow
+   * first. Access that quietly lapsed would read as the colleague being removed by
+   * somebody, and nothing would say otherwise.
+   *
+   * The clock stays advanced for the cases after this. Nothing below is a function of
+   * elapsed time, so that costs nothing.
+   */
   it('does not lapse with time', async () => {
     clock.advance(365 * 86_400_000);
     await expect(
@@ -182,9 +190,9 @@ describe('following a conversation', () => {
   });
 
   /**
-   * Both verbs write through the kernel, which tombstones rather than counting, so
-   * saying it twice has to mean the same as saying it once. The second call is not an
-   * error and does not undo the first.
+   * A grant either exists on that conversation or it does not — it is not a count —
+   * so saying either verb twice has to mean the same as saying it once. The second
+   * call is not an error and does not undo the first.
    */
   it('says the same thing twice', async () => {
     await admin.invoke('ticket0/follow-conversation', { conversationId: followed, follower: rae });
