@@ -91,6 +91,28 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(mapError(new Error(`unknown vertical 'ghost'`)).status).toBe(500);
   });
 
+  it('reads `unknown version` from the code now that the pattern row is gone (#113 phase 5)', () => {
+    // The second family off `CODE_PATTERNS`, and the sibling of the one above: same code,
+    // same two adapter files, same null-check-after-a-read shape. Ten throw sites, five
+    // per adapter, across admitVersion / rejectVersion / promoteVersion / bindScopeVersion
+    // / versionManifest.
+    const typed = mapError(substratError('not_found', `unknown version ${'01ABC'}`));
+    expect(typed.status).toBe(404);
+    expect(typed.body.code).toBe('not_found');
+    expect(typed.body.detail).toBe(`unknown version 01ABC`);
+
+    // versionManifest's variant refuses on the (vertical, version) PAIR and carries the
+    // slug in its sentence. It is the same code — the row matched both, and so does this.
+    const paired = mapError(substratError('not_found', `unknown version 01ABC for vertical 'callout'`));
+    expect(paired.status).toBe(404);
+    expect(paired.body.detail).toBe(`unknown version 01ABC for vertical 'callout'`);
+
+    // The other half: untyped, the same sentence is now an unreviewed throw and gets the
+    // generic 500. This is what makes the deletion real rather than cosmetic, and what
+    // makes a future untyped `unknown version` visible instead of quietly correct.
+    expect(mapError(new Error(`unknown version 01ABC`)).status).toBe(500);
+  });
+
   it('relays a downstream status as about:blank — our taxonomy is not theirs to wear', () => {
     // auth-server's honest 501 for an unimplemented verb (the 2026-07-25 shape). The
     // status is the vertical's; putting a code of ours on it would be a claim we cannot

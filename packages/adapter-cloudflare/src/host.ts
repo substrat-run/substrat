@@ -3548,7 +3548,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       admitVersion: async (actor, versionId: string) => {
         const v = await this.cp.readVersion(versionId);
-        if (!v) throw new Error(`unknown version ${versionId}`);
+        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
           // Idempotent — except an AUTO-admitted version, which this upgrades to a
           // manual vouch by clearing the note (what the publish seam requires).
@@ -3565,7 +3565,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       rejectVersion: async (actor, versionId: string, note: string) => {
         const v = await this.cp.readVersion(versionId);
-        if (!v) throw new Error(`unknown version ${versionId}`);
+        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         if (v.admission === 'admitted') {
           throw new Error(`version ${versionId} is already admitted — it may be bound`);
         }
@@ -3581,7 +3581,7 @@ export class CloudflareScopeHost implements ScopeHost {
         acknowledge?: PromotionAcknowledgement,
       ) => {
         const incoming = await this.cp.readVersion(versionId);
-        if (!incoming) throw new Error(`unknown version ${versionId}`);
+        if (!incoming) throw substratError('not_found', `unknown version ${versionId}`);
         if (incoming.vertical_slug !== verticalSlug) {
           throw new Error(`version ${versionId} belongs to '${incoming.vertical_slug}'`);
         }
@@ -3710,7 +3710,7 @@ export class CloudflareScopeHost implements ScopeHost {
       },
       bindScopeVersion: async (actor, tenantId, scopeId, versionId: string, opts) => {
         const v = await this.cp.readVersion(versionId);
-        if (!v) throw new Error(`unknown version ${versionId}`);
+        if (!v) throw substratError('not_found', `unknown version ${versionId}`);
         const scope = await this.cp.getScopeRecord(tenantId, scopeId);
         if (!scope) throw new Error(`unknown scope ${scopeId} in tenant ${tenantId}`);
         // The refusal the registry exists for — but scoped to a SERVING bind. Admission
@@ -3788,7 +3788,7 @@ export class CloudflareScopeHost implements ScopeHost {
       versionManifest: async (actor, verticalSlug: string, versionId: string) => {
         const v = await this.cp.readVersion(versionId);
         if (!v || v.vertical_slug !== verticalSlug) {
-          throw new Error(`unknown version ${versionId} for vertical '${verticalSlug}'`);
+          throw substratError('not_found', `unknown version ${versionId} for vertical '${verticalSlug}'`);
         }
         await this.recordAccess(actor, 'versionManifest', {}, { verticalSlug, versionId }, v.manifest_json ? 1 : 0);
         return v.manifest_json;
