@@ -375,7 +375,11 @@ Module code = everything reachable from a `ModuleRegistration` (operations, cons
   **host** is what applies them. A module passes `operationInputs: operationInputsOf(ops)`
   beside its `operations`, and every invocation is parsed before the guards and the handler,
   on every path in (HTTP, test, seed, schedule). Handlers do not hand-parse; a declared
-  input that nobody parses is no longer possible rather than merely discouraged.
+  input that nobody parses is no longer possible rather than merely discouraged — and the
+  word "possible" is carried by `pnpm lint:module-inputs`, not by this sentence. The kernel
+  field is optional, so the rule was true of the modules that remembered the line and
+  silently false of the nine that did not — both reference demos and the scaffold among
+  them (#953). The gate is what refuses the omission; the prose only describes it.
 
 ## Two human checkpoints (agents never self-approve)
 
@@ -482,6 +486,17 @@ writes nothing, which from the outside is the same empty view. Same shape as
 `lint:vite-proxy`, for the same reason: no scenario suite drives the mounted app, #1418.
 Local-only demos with a `server.ts` harness and no worker entry are out of scope, since
 no router fronts them and no request carries an asserted tenant),
+`lint:module-inputs` (`tools/module-inputs.mjs`: a `ModuleRegistration` that declares
+`operations:` hands the host `operationInputs: operationInputsOf(ops)` — the mechanism behind
+the "parse, don't trust" rule above. The kernel field is **optional**, so that rule held only
+for the modules that remembered the line: nine were short of it at once, both reference demos
+and the scaffold among them, and nothing went red, because a scenario calls `invoke()` with an
+object TypeScript already agreed with and wire input never appears in a test (#953). A
+hand-written map is refused as well as a missing one — it reads as coverage while covering
+what someone remembered to type — and so is a registration this text rule cannot read, rather
+than being skipped. `demos`, `engines` and the scaffold template, which are the modules built
+from a declared surface; `apps/dashboard` binds its operations by hand and declares none, so
+there is nothing to derive. A file opts out with `module-inputs-allow: <reason>`),
 `lint:skills` (`tools/skill-paths.mjs`: a repo-rooted path a skill cites in code — a bare
 `demos/todo/src/module.ts`, or the `tools/…` inside a command — exists, spelled the way the
 tree spells it. `.claude/skills/*` and `plugin/substrat/skills/*` are both read; a
