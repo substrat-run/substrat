@@ -103,8 +103,15 @@ const WAKE_BATCH = 200;
  */
 const ABANDONED_AFTER_DAYS = 30;
 
-/** How many abandoned conversations one run of `ticket0/reap-abandoned` closes. Same
- *  bargain as `WAKE_BATCH`: a bound on one transaction, not a cap on the sweep. */
+/**
+ * How many abandoned conversations one run of `ticket0/reap-abandoned` closes.
+ *
+ * Same bargain as `WAKE_BATCH` — a bound on one transaction, not a cap on the feature —
+ * and the bargain only holds because the schedule comes back. The scheduler fires a due
+ * schedule once per sweep and records the run; a full batch does not invoke it again.
+ * So this number and the cadence in `src/manifest.ts` multiply into the desk's real
+ * drain rate, and neither may be changed without reading the other.
+ */
 const REAP_BATCH = 200;
 
 /**

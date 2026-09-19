@@ -342,6 +342,31 @@ describe('everything a person has touched is off limits, however old', () => {
   });
 });
 
+describe('the batch bounds a transaction, it does not cap the feature', () => {
+  /**
+   * The claim `REAP_BATCH`'s comment makes, checked rather than asserted in prose.
+   *
+   * The scheduler fires a due schedule ONCE per sweep and records the run — a full
+   * batch does not invoke it again — so the only thing that makes a capped batch a
+   * bound rather than a ceiling is that the next sweep picks up where this one
+   * stopped. A handler that filtered on something it then failed to change, or a query
+   * whose ordering let the same 200 rows win every pass, would leave the remainder
+   * `new` forever and look exactly like this test's first line.
+   */
+  it('stops at the batch and the next sweep takes the rest', async () => {
+    const desk = world.kestrel;
+    await drain(desk);
+    const REAP_BATCH = 200;
+    const extra = 5;
+    for (let i = 0; i < REAP_BATCH + extra; i += 1) await arrives(desk, `Flood ${i}`);
+
+    clock.advance((ABANDONED_AFTER_DAYS + 1) * DAY);
+    expect(await reap(desk)).toBe(REAP_BATCH);
+    expect(await reap(desk)).toBe(extra);
+    expect(await reap(desk)).toBe(0);
+  }, 60_000);
+});
+
 describe('the platform sweep is the caller, and one desk never reaches another', () => {
   it('fires the declared schedule, and it does the same thing', async () => {
     const desk = world.substrat;

@@ -218,14 +218,23 @@ export const ticket0Manifest = moduleManifest.parse({
      * The reaper (#1088): conversations nobody ever picked up leave the inbox after
      * `ABANDONED_AFTER_DAYS` of silence.
      *
-     * Daily, not five-minutely, because the thing it measures is a month long. A
-     * conversation reaped a few hours after the window elapses is indistinguishable
-     * from one reaped on the stroke of it, and the sweep is a table scan the desk has
-     * no reason to pay for 288 times a day.
+     * Hourly, and the cadence is load-bearing rather than taste. The scheduler fires a
+     * due schedule ONCE per sweep and records the run — a full batch does not invoke it
+     * again — so cadence multiplied by `REAP_BATCH` is the desk's actual drain rate. At
+     * a day it was 200 conversations a day, which would have made the batch a cap on
+     * the feature rather than a bound on one transaction, exactly what its comment
+     * denies. At an hour it is 4800 a day.
+     *
+     * Not five-minutely, though, which is what the snooze timer needs: the thing this
+     * measures is a month long, so a conversation reaped an hour after the window
+     * elapses is indistinguishable from one reaped on the stroke of it, and there is no
+     * reason to pay for the scan 288 times a day. A desk abandoning conversations
+     * faster than 4800 a day is under a flood, and a flood is what the rate limiter
+     * (#937) is for — a reaper is not, and running it oftener would not make it one.
      */
     {
       operation: 'ticket0/reap-abandoned',
-      cadence: { everyMinutes: 24 * 60 },
+      cadence: { everyMinutes: 60 },
       permissions: ['conversation:resolve'],
     },
   ],
