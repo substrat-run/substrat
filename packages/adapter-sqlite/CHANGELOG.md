@@ -1,5 +1,24 @@
 # @substrat-run/adapter-sqlite
 
+## 0.116.0
+
+### Minor Changes
+
+- e99332e: `redrainEvents` can now answer how many rows a window holds without reopening any of them: `countOnly: true` on its input, absent everywhere else, so the verb behaves exactly as before for every caller that does not ask. The count is UNBOUNDED where the reopen is batched at `REDRAIN_BATCH` — an aggregate materialises no rows, so it answers for the whole window in one call rather than the first batch of it.
+
+  A count leaves an **access-log** row, because it is a `HostAdmin` read and K-24 takes all reads rather than a chosen subset — the window it named and the number it found, so "who counted this tenant's outbox" has an answer. What it writes no row in is the **admin** log: those two receipts exist because a reopen is a second egress of a tenant's payloads, and a row claiming a redrain on a scope that was only counted would be a false statement in the log that is the evidence.
+
+  The transport keeps the two apart by PATH rather than by a flag, at both hops where the peer is deployed on its own clock: `POST /tenants/:tenantId/scopes/:scopeId/redrain-count` on the control plane and `POST /internal/redrain-count` on a vertical. A `countOnly` field on the existing routes would be stripped by an older deployment's Zod boundary, which would then reopen the window and answer with a number shaped exactly like the count that was asked for. A path it does not serve refuses instead, with the rows untouched.
+
+  `pnpm lake:redrain --drained-before=… --dry-run` therefore prints real per-scope totals and a fleet total, in place of the paragraph saying it could not know (#1545).
+
+### Patch Changes
+
+- ebe283f: The nine `unknown vertical '…'` refusals in the admin surface are thrown as `substratError('not_found', …)` rather than a bare `Error` (#113 phase 5) — the same nine sites the Cloudflare adapter carries, kept in step by the shared contract suite. The sentences are byte-identical; the refusal now carries its own code. No interface, migration or permission change.
+- Updated dependencies [e99332e]
+  - @substrat-run/contracts@0.116.0
+  - @substrat-run/kernel@0.116.0
+
 ## 0.115.0
 
 ### Minor Changes
@@ -4510,7 +4529,7 @@ label }]` rides the deploy manifest to the registry like `envSpec` (metadata, no
   CLAUDE.md mandates ("operation inputs go through Zod schemas at the boundary")
   composing a contracts schema into their own —
 
-                                                                                                                                                                                                                                                          z.object({ facility: entityRef, unitPrice: money })
+                                                                                                                                                                                                                                                            z.object({ facility: entityRef, unitPrice: money })
 
   — it failed at RUNTIME with `Invalid element at key "facility": expected a Zod
 schema`, an error pointing nowhere near the cause. Not an exotic pattern: it is

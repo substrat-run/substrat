@@ -1,5 +1,29 @@
 # @substrat-run/control-plane-api
 
+## 0.116.0
+
+### Minor Changes
+
+- b935471: `ControlPlaneClient.identityTenants(externalId)` — the builder studio's membership read (`POST /internal/builder/identity-tenants`): the tenants a login builds for, each flagged with whether it holds the `builder` entitlement. Additive: a new method and two new exports (`identityTenantsResponse`, the schema the answer is parsed with, and its `IdentityTenant` type); nothing existing changes.
+
+  The answer is parsed rather than cast, and a failure is raised as `ControlPlaneError` like every other client call — a refusal carries the plane's problem-document `detail`, and a body of the wrong shape (a renamed `entitled`, an `{ error }` answered with a 200) throws `identity-tenants returned an unexpected shape: …` naming the field that was wrong, never the body. The studio read this as `${status} ${text}` by hand and never saw the document; it now uses the client.
+
+- e99332e: `redrainEvents` can now answer how many rows a window holds without reopening any of them: `countOnly: true` on its input, absent everywhere else, so the verb behaves exactly as before for every caller that does not ask. The count is UNBOUNDED where the reopen is batched at `REDRAIN_BATCH` — an aggregate materialises no rows, so it answers for the whole window in one call rather than the first batch of it.
+
+  A count leaves an **access-log** row, because it is a `HostAdmin` read and K-24 takes all reads rather than a chosen subset — the window it named and the number it found, so "who counted this tenant's outbox" has an answer. What it writes no row in is the **admin** log: those two receipts exist because a reopen is a second egress of a tenant's payloads, and a row claiming a redrain on a scope that was only counted would be a false statement in the log that is the evidence.
+
+  The transport keeps the two apart by PATH rather than by a flag, at both hops where the peer is deployed on its own clock: `POST /tenants/:tenantId/scopes/:scopeId/redrain-count` on the control plane and `POST /internal/redrain-count` on a vertical. A `countOnly` field on the existing routes would be stripped by an older deployment's Zod boundary, which would then reopen the window and answer with a number shaped exactly like the count that was asked for. A path it does not serve refuses instead, with the rows untouched.
+
+  `pnpm lake:redrain --drained-before=… --dry-run` therefore prints real per-scope totals and a fleet total, in place of the paragraph saying it could not know (#1545).
+
+### Patch Changes
+
+- 77f0c1d: `ControlPlaneError` takes an optional third constructor argument, `probe` — the provider's own answer when the plane refused a connect because the credential was rejected upstream (#605, 422). Additive: every existing `new ControlPlaneError(status, message)` is unchanged, and `probe` is `undefined` unless a caller passes one. The dashboard declared its own class of the same name to carry exactly this field; it now imports this one instead of keeping a second copy.
+- ebe283f: `mapError`'s `CODE_PATTERNS` table loses its `unknown vertical` row (#113 phase 5). Both adapters now throw that refusal typed, so the code is read from the declaration one branch earlier and the row had nothing left to match. The response is unchanged — same 404, same detail — and every other row in the table is untouched. The row could only go after the throws were typed: an untyped `unknown vertical` now falls through to the generic 500, which is the point, and a new case pins both halves.
+- Updated dependencies [e99332e]
+  - @substrat-run/contracts@0.116.0
+  - @substrat-run/kernel@0.116.0
+
 ## 0.115.0
 
 ### Minor Changes

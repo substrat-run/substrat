@@ -1,5 +1,30 @@
 # @substrat-run/control-plane
 
+## 0.13.34
+
+### Patch Changes
+
+- e99332e: `redrainEvents` can now answer how many rows a window holds without reopening any of them: `countOnly: true` on its input, absent everywhere else, so the verb behaves exactly as before for every caller that does not ask. The count is UNBOUNDED where the reopen is batched at `REDRAIN_BATCH` — an aggregate materialises no rows, so it answers for the whole window in one call rather than the first batch of it.
+
+  A count leaves an **access-log** row, because it is a `HostAdmin` read and K-24 takes all reads rather than a chosen subset — the window it named and the number it found, so "who counted this tenant's outbox" has an answer. What it writes no row in is the **admin** log: those two receipts exist because a reopen is a second egress of a tenant's payloads, and a row claiming a redrain on a scope that was only counted would be a false statement in the log that is the evidence.
+
+  The transport keeps the two apart by PATH rather than by a flag, at both hops where the peer is deployed on its own clock: `POST /tenants/:tenantId/scopes/:scopeId/redrain-count` on the control plane and `POST /internal/redrain-count` on a vertical. A `countOnly` field on the existing routes would be stripped by an older deployment's Zod boundary, which would then reopen the window and answer with a number shaped exactly like the count that was asked for. A path it does not serve refuses instead, with the rows untouched.
+
+  `pnpm lake:redrain --drained-before=… --dry-run` therefore prints real per-scope totals and a fleet total, in place of the paragraph saying it could not know (#1545).
+
+- Updated dependencies [ebe283f]
+- Updated dependencies [b935471]
+- Updated dependencies [77f0c1d]
+- Updated dependencies [ebe283f]
+- Updated dependencies [e99332e]
+  - @substrat-run/adapter-cloudflare@0.116.0
+  - @substrat-run/control-plane-api@0.116.0
+  - @substrat-run/contracts@0.116.0
+  - @substrat-run/kernel@0.116.0
+  - @substrat-run/connector-fortnox@0.4.18
+  - @substrat-run/connector-planima@0.2.13
+  - @substrat-run/connector-scrive@0.14.21
+
 ## 0.13.33
 
 ### Patch Changes
