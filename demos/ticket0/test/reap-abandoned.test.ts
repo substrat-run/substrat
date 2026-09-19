@@ -9,8 +9,9 @@
  *
  * Time moves ON PURPOSE here, as it does in `snooze-timer.test.ts`: the host runs a
  * `manualClock`, so "five weeks later" is an assignment. Nothing sleeps, and nothing
- * shrinks the window to zero to get a pass — `ABANDONED_AFTER_DAYS` is the shipped
- * thirty in every case below.
+ * shrinks the window to zero to get a pass — the default is the shipped thirty in
+ * every case up to the last block, which is where a desk says a number of its own and
+ * the file advances the clock against THAT.
  *
  * What each half proves:
  *   - the operation, invoked as the module's own system principal, is what says the
@@ -36,7 +37,8 @@ let clock: ManualClock;
 
 const TICKET0 = moduleId.parse(ticket0Manifest.id);
 
-/** The shipped window, restated so a change to it fails here and is read, not guessed. */
+/** The shipped DEFAULT window — what a desk that has said nothing reaps at. Restated
+ *  rather than imported, so a change to it fails here and is read, not guessed. */
 const ABANDONED_AFTER_DAYS = 30;
 const DAY = 86_400_000;
 
@@ -49,6 +51,11 @@ interface Conversation {
   assignee: string | null;
   resolved_at: string | null;
   updated_at: string;
+}
+
+/** Only the column this file is about — the rest of the row is other suites' business. */
+interface DeskSettings {
+  abandoned_after_days: number | null;
 }
 
 /** The desk's own sweeps, as the platform invokes them: the module's system actor. */
@@ -393,5 +400,142 @@ describe('the platform sweep is the caller, and one desk never reaches another',
     expect(await reap(world.kestrel)).toBe(1);
     expect((await readConversation(world.kestrel, kestrelId)).state).toBe('closed');
     expect((await readConversation(world.substrat, substratId)).state).toBe('new');
+  });
+});
+
+/**
+ * The window is the desk's (#1088, the deferred half).
+ *
+ * Every case above runs on a desk that has never said anything about retention, and
+ * they are the proof that the migration is behaviour-preserving: `abandoned_after_days`
+ * is null on both of these desks throughout, and thirty is what they reap at.
+ *
+ * What this block adds is the other direction, and it is written to fail LOUDLY if the
+ * column is not actually read. A handler that ignored it would still pass "a desk with
+ * no setting reaps at thirty" — so the setting is moved BOTH ways here, shortened and
+ * lengthened, and each is asserted at a moment that contradicts the default: a
+ * seven-day desk closing mail eight days old, and a ninety-day desk still holding mail
+ * that is forty days old and would be long gone at thirty.
+ *
+ * Kestrel throughout, so Substrat's desk stays the one with no setting on it, and the
+ * setting is put back at the end of each case — the clock is shared with every test
+ * above and a desk left at seven days would reap a later fixture out from under itself.
+ */
+describe('how long a desk waits is the desk’s own decision', () => {
+  const desk = () => world.kestrel;
+
+  /** `desk:configure` is a desk-admin key; an agent does not hold it. */
+  async function configure(input: { abandonedAfterDays?: number | null }): Promise<DeskSettings> {
+    const admin = await host.getScope(desk().admin.principal, desk().tenant, desk().scope);
+    return (await admin.invoke('ticket0/configure-desk', input)) as DeskSettings;
+  }
+
+  async function readDesk(which: Desk): Promise<DeskSettings> {
+    const admin = await host.getScope(which.admin.principal, which.tenant, which.scope);
+    return (await admin.invoke('ticket0/get-desk')) as DeskSettings;
+  }
+
+  /**
+   * Clear this desk's inbox whatever each row's age, then hand the window back.
+   *
+   * `drain()` alone reaps only what the CURRENT window admits, so a case that then
+   * shortens the window would sweep up whatever sat between the two numbers and count
+   * it as its own. The shared clock is years past the fixture by now, so one day
+   * catches everything reapable — and the rows the sweep is supposed to spare (a
+   * drafted answer, the losing half of a merge) are spared at any window, which is
+   * exactly why this is safe to do here.
+   */
+  async function emptyInbox(): Promise<void> {
+    await configure({ abandonedAfterDays: 1 });
+    await drain(desk());
+    await configure({ abandonedAfterDays: null });
+  }
+
+  it('a desk that has never said carries no setting, and reaps at the platform’s thirty', async () => {
+    // The migration's whole claim, stated where it can fail: neither desk was
+    // back-filled, and these are the desks every case above measured at thirty.
+    expect((await readDesk(world.substrat)).abandoned_after_days).toBeNull();
+    expect((await readDesk(world.kestrel)).abandoned_after_days).toBeNull();
+
+    await emptyInbox();
+    const id = await arrives(desk(), 'Nobody said otherwise');
+    clock.advance(ABANDONED_AFTER_DAYS * DAY - DAY);
+    expect(await reap(desk())).toBe(0);
+    clock.advance(2 * DAY);
+    expect(await reap(desk())).toBe(1);
+    expect((await readConversation(desk(), id)).state).toBe('closed');
+  });
+
+  it('a desk that says seven reaps on the eighth day, three weeks before the default would', async () => {
+    await emptyInbox();
+    expect((await configure({ abandonedAfterDays: 7 })).abandoned_after_days).toBe(7);
+
+    const id = await arrives(desk(), 'A desk in a hurry');
+    clock.advance(6 * DAY);
+    // Six days of silence is not seven, so the shorter window is a window and not a
+    // switch — the same assertion the default case makes the day before thirty.
+    expect(await reap(desk())).toBe(0);
+
+    clock.advance(2 * DAY);
+    expect(await reap(desk())).toBe(1);
+    // Eight days. A handler still reading the constant would have left this `new` for
+    // another three weeks, which is the failure this case exists to catch.
+    expect((await readConversation(desk(), id)).state).toBe('closed');
+
+    await configure({ abandonedAfterDays: null });
+  });
+
+  it('a desk that says ninety still has its mail at forty days, when thirty would have taken it', async () => {
+    await emptyInbox();
+    expect((await configure({ abandonedAfterDays: 90 })).abandoned_after_days).toBe(90);
+
+    const id = await arrives(desk(), 'A desk that waits');
+    clock.advance(40 * DAY);
+    expect(await reap(desk())).toBe(0);
+    expect((await readConversation(desk(), id)).state).toBe('new');
+
+    clock.advance(51 * DAY);
+    expect(await reap(desk())).toBe(1);
+    expect((await readConversation(desk(), id)).state).toBe('closed');
+
+    await configure({ abandonedAfterDays: null });
+  });
+
+  it('clearing the setting hands the window back to the platform', async () => {
+    await emptyInbox();
+    await configure({ abandonedAfterDays: 7 });
+    // An explicit null is not the same as saying nothing: without it there is no way
+    // back to the default once a desk has typed a number over it.
+    expect((await configure({ abandonedAfterDays: null })).abandoned_after_days).toBeNull();
+
+    const id = await arrives(desk(), 'Back to the default');
+    clock.advance(8 * DAY);
+    expect(await reap(desk())).toBe(0);
+
+    clock.advance((ABANDONED_AFTER_DAYS - 8 + 1) * DAY);
+    expect(await reap(desk())).toBe(1);
+    expect((await readConversation(desk(), id)).state).toBe('closed');
+  });
+
+  it('leaves the setting alone when the call does not mention it', async () => {
+    await configure({ abandonedAfterDays: 45 });
+    const admin = await host.getScope(desk().admin.principal, desk().tenant, desk().scope);
+    await admin.invoke('ticket0/configure-desk', { greeting: 'Hello again' });
+
+    expect((await readDesk(desk())).abandoned_after_days).toBe(45);
+    await configure({ abandonedAfterDays: null });
+  });
+
+  /**
+   * `closed` is terminal, so the floor is what keeps "reap" from meaning "empty the
+   * inbox on the next tick". Refused at the boundary by the declared input — the host
+   * parses before the handler runs — which is why this asserts a rejected call rather
+   * than a row that was written and then ignored.
+   */
+  it('refuses a window that would close this morning’s mail, or one that means never', async () => {
+    for (const days of [0, -1, 1.5, 3651]) {
+      await expect(configure({ abandonedAfterDays: days })).rejects.toThrow();
+    }
+    expect((await readDesk(desk())).abandoned_after_days).toBeNull();
   });
 });

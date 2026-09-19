@@ -465,6 +465,16 @@
               }
             ]
           },
+          "abandoned_after_days": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "created_at": {
             "type": "string"
           },
@@ -480,6 +490,7 @@
           "verification_secret",
           "business_hours",
           "assistant_autonomous",
+          "abandoned_after_days",
           "created_at",
           "updated_at"
         ],

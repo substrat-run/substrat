@@ -584,6 +584,7 @@ function Desk() {
     greeting: string;
     allowed_origins: string;
     business_hours: string | null;
+    abandoned_after_days: number | null;
   } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -636,7 +637,28 @@ function Desk() {
     if (!origins.includes(origin)) setOrigins([...origins, origin]);
   };
 
+  /**
+   * The reaping window, judged here as well as at the door.
+   *
+   * `min` and `max` on a number input are advice to the browser, not a gate — a typed
+   * 0, 3651 or 1.5 reaches this component's state and would be sent. The desk refuses
+   * it, correctly, but what comes back is a general save failure with nothing pointing
+   * at the field that caused it. This says which field and why, before the call. An
+   * empty box stays valid: empty means the platform's window, which is what null is.
+   */
+  const windowError = ((days: number | null) => {
+    if (days === null) return null;
+    if (!Number.isInteger(days)) return 'Whole days only.';
+    if (days < 1) return 'At least 1 day — mail that arrived this morning is not abandoned.';
+    if (days > 3650) return 'At most 3650 days. Leave it empty for the default of 30.';
+    return null;
+  })(desk.abandoned_after_days);
+
   const save = async () => {
+    // Refused here rather than sent and refused there: the message is already on
+    // screen against the field, and Save is disabled, so this is the last guard
+    // rather than the first.
+    if (windowError) return;
     setSaving(true);
     setSaved(false);
     setFailed(null);
@@ -646,6 +668,10 @@ function Desk() {
         greeting: desk.greeting,
         allowedOrigins: origins,
         businessHours: desk.business_hours,
+        // Null, not absent: an empty box means "use the platform's window", and
+        // omitting the field would mean "leave whatever is there" — which is the one
+        // way this form could refuse to clear a number somebody typed by mistake.
+        abandonedAfterDays: desk.abandoned_after_days,
       });
       setSaved(true);
     } catch (e) {
@@ -692,6 +718,41 @@ function Desk() {
           value={desk.business_hours ?? ''}
           onChange={(e) => setDesk({ ...desk, business_hours: e.target.value || null })}
         />
+      </Field>
+      <Field
+        label="Close untouched conversations after"
+        hint="Days of silence before a conversation nobody ever picked up leaves the inbox. Nothing is deleted - the thread, its messages and the contact all stay - but closed is final, so this errs long. Leave it empty for the default of 30 days."
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <input
+            className="input mono"
+            type="number"
+            min={1}
+            max={3650}
+            style={{ width: 110 }}
+            placeholder="30"
+            value={desk.abandoned_after_days ?? ''}
+            onChange={(e) => {
+              // An empty box is the default, not zero. `Number('')` is 0, which is a
+              // window that would close this morning's mail - so the empty string is
+              // read as null before any arithmetic touches it.
+              const raw = e.target.value.trim();
+              const parsed = Number(raw);
+              setDesk({
+                ...desk,
+                abandoned_after_days: raw === '' || !Number.isFinite(parsed) ? null : parsed,
+              });
+            }}
+          />
+          <span className="t-small" style={{ color: 'var(--text-secondary)' }}>
+            days
+          </span>
+          {windowError ? (
+            <span className="t-small" style={{ color: 'var(--danger-2)' }}>
+              {windowError}
+            </span>
+          ) : null}
+        </div>
       </Field>
       <Field
         label="Widget origins"
@@ -757,7 +818,11 @@ function Desk() {
         </div>
       </Field>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button className="btn btn-primary" onClick={() => void save()} disabled={saving}>
+        <button
+          className="btn btn-primary"
+          onClick={() => void save()}
+          disabled={saving || windowError !== null}
+        >
           {saving ? 'Saving…' : 'Save'}
         </button>
         {saved ? <span className="t-small" style={{ color: 'var(--green)' }}>Saved.</span> : null}

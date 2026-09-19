@@ -448,6 +448,22 @@ export const ticket0Entities = defineEntities({
        * does. A flipped flag with no matching principal grants nothing.
        */
       assistant_autonomous: z.number().nullable(),
+      /**
+       * How many days of SILENCE before `ticket0/reap-abandoned` closes a conversation
+       * nobody ever picked up (#1088).
+       *
+       * Null is the desk that has never said, and it reads as the platform's thirty —
+       * the window the reaper shipped with, so a desk that was reaping at thirty the
+       * day before this column existed is still reaping at thirty the day after.
+       * Nullable for the same two reasons `assistant_autonomous` is: it arrived after
+       * the table shipped, and the absence means something on its own.
+       *
+       * Days rather than an instant, because what the desk is choosing is a LENGTH of
+       * silence it will tolerate, and the sweep measures that against `updated_at`
+       * every time it runs. Not named `retention`: nothing here is deleted. The row,
+       * its messages and the contact all stay — the conversation leaves the inbox.
+       */
+      abandoned_after_days: z.number().nullable(),
       created_at: z.string(),
       updated_at: z.string(),
     }),
@@ -778,6 +794,25 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
        * supervised.
        */
       assistantAutonomous: z.boolean().optional(),
+      /**
+       * How long this desk leaves an untouched conversation before the sweep closes
+       * it, in days — or `null` to hand the decision back to the platform's thirty.
+       *
+       * Three states on purpose, the same three `businessHours` has: absent keeps
+       * whatever the desk had, `null` clears the desk's own answer, and a number is
+       * the desk's answer. Without the middle one there is no way back to the default
+       * once a desk has typed a number over it.
+       *
+       * Bounded at both ends, and each bound is about what `closed` costs: it is
+       * TERMINAL in the declared lifecycle, so a conversation this sweep takes cannot
+       * be re-opened. A zero would close mail that arrived this morning, and the floor
+       * of one day is what keeps "reap" from meaning "empty the inbox on the next
+       * tick". The ceiling of ten years is where a number stops being a retention
+       * window and starts being a way of saying never — which a desk already has, by
+       * leaving this null and having its abandoned mail closed at thirty, or by
+       * answering the mail.
+       */
+      abandonedAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
     }),
     output: ticket0Entities.deskSettings.fields.omit({ verification_secret: true }),
     http: { method: 'PATCH', path: '/desk' },
@@ -789,8 +824,16 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       piiClass: 'none',
       // `assistant_autonomous` is on the payload because "this desk was allowed to
       // answer customers unattended" is exactly the kind of thing a trail should
-      // carry. Additive to a shipped payload, so no schemaVersion bump.
-      payload: ['id', 'from_address', 'allowed_origins', 'assistant_autonomous'],
+      // carry. Additive to a shipped payload, so no schemaVersion bump —
+      // `abandoned_after_days` joins it on the same terms, and for the same reason:
+      // it decides what silently leaves this desk's inbox.
+      payload: [
+        'id',
+        'from_address',
+        'allowed_origins',
+        'assistant_autonomous',
+        'abandoned_after_days',
+      ],
     },
   },
 

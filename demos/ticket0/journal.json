@@ -39,6 +39,11 @@
       "version": "0008",
       "slug": "add-ticket0_kb_sources-refresh_token_hash-and-3-more",
       "sql": "ALTER TABLE ticket0_kb_sources ADD COLUMN refresh_token_hash TEXT;\n\nALTER TABLE ticket0_kb_sources ADD COLUMN refresh_token_hint TEXT;\n\nALTER TABLE ticket0_kb_sources ADD COLUMN token_created_at TEXT;\n\nALTER TABLE ticket0_kb_sources ADD COLUMN token_last_used_at TEXT;"
+    },
+    {
+      "version": "0009",
+      "slug": "add-ticket0_desk_settings-abandoned_after_days",
+      "sql": "ALTER TABLE ticket0_desk_settings ADD COLUMN abandoned_after_days INTEGER;"
     }
   ]
 }

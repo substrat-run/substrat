@@ -99,11 +99,17 @@ const WAKE_BATCH = 200;
  * through `follows` — but the state does not come back, so the window errs long. A
  * fortnight would reap a desk that went quiet over a holiday; a month does not.
  *
- * A constant rather than a column on `ticket0_desk_settings`, which is what the issue
- * asked for: a per-desk retention setting is a migration, and a migration is a human
- * checkpoint. Changing this number is a one-line edit when that lands.
+ * Now the DEFAULT rather than the only answer: a desk may say a different number
+ * through `ticket0/configure-desk`, and `abandonedAfter()` below is the one place that
+ * reads it. This stays the value for a desk that has never said — which is every desk
+ * that existed before the column did, so the migration changes nobody's behaviour.
  */
 const ABANDONED_AFTER_DAYS = 30;
+
+/** The bounds `ticket0/configure-desk` declares, restated here as the guard on a value
+ *  READ BACK from the row — see `abandonedAfter()` for why a re-check is not paranoia. */
+const ABANDONED_AFTER_MIN_DAYS = 1;
+const ABANDONED_AFTER_MAX_DAYS = 3650;
 
 /**
  * How many abandoned conversations one run of `ticket0/reap-abandoned` closes.
@@ -429,11 +435,17 @@ function desk(ctx: OperationContext): DeskRow {
   ctx.sql.exec(
     `INSERT INTO ticket0_desk_settings
        (id, from_address, greeting, allowed_origins, verification_secret, business_hours,
-        assistant_autonomous, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        assistant_autonomous, abandoned_after_days, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     // Supervised, written down rather than left null: a new desk HAS decided, and the
     // decision is the conservative one.
-    [DESK, 'support@example.com', 'Hi - how can we help?', '[]', ulid(), null, 0, now, now],
+    //
+    // `abandoned_after_days` goes the other way — null, deliberately, and this is the
+    // one place the two columns part company. Autonomy is a decision a desk makes; the
+    // reaping window is one the platform makes FOR a desk until it says otherwise, and
+    // writing 30 here would put the number in two places, so a later change to the
+    // default would move it for desks minted after the change and not for the rest.
+    [DESK, 'support@example.com', 'Hi - how can we help?', '[]', ulid(), null, 0, null, now, now],
   );
   return ctx.sql.query<DeskRow>('SELECT * FROM ticket0_desk_settings WHERE id = ?', [DESK])[0]!;
 }
@@ -1057,6 +1069,31 @@ function isAutonomous(ctx: OperationContext): boolean {
 }
 
 /**
+ * How many days of silence this desk leaves a conversation before the sweep closes it.
+ *
+ * Read the same way `isAutonomous` reads its column, and refused the same way: only a
+ * value inside the declared bounds counts, and everything else — the null of a desk
+ * that has never said, a desk minted before the column existed, a number nobody wrote
+ * on purpose — is `ABANDONED_AFTER_DAYS`. Re-checking the bounds on the way OUT is not
+ * paranoia about the operation's own Zod parse: this row outlives the parse that wrote
+ * it, so the guard has to sit where the value is USED. `closed` is terminal, and the
+ * failure this refuses is a desk quietly reaping at zero days.
+ *
+ * The one reader. The sweep calls it per run rather than caching a number, because a
+ * desk that changes the window at noon means it from the next sweep, not the next
+ * deploy.
+ */
+function abandonedAfter(ctx: OperationContext): number {
+  const configured = desk(ctx).abandoned_after_days;
+  return typeof configured === 'number' &&
+    Number.isInteger(configured) &&
+    configured >= ABANDONED_AFTER_MIN_DAYS &&
+    configured <= ABANDONED_AFTER_MAX_DAYS
+    ? configured
+    : ABANDONED_AFTER_DAYS;
+}
+
+/**
  * What a widget call holds: a session bound to its conversation, or an opening that
  * has not said anything yet. Either way the token decides, and a refusal is a
  * sentence rather than a silent empty answer.
@@ -1522,7 +1559,7 @@ const operations = {
     ctx.sql.exec(
       `UPDATE ticket0_desk_settings
           SET from_address = ?, greeting = ?, allowed_origins = ?, business_hours = ?,
-              assistant_autonomous = ?, updated_at = ?
+              assistant_autonomous = ?, abandoned_after_days = ?, updated_at = ?
         WHERE id = ?`,
       [
         input.fromAddress ?? current.from_address,
@@ -1536,6 +1573,13 @@ const operations = {
           : input.assistantAutonomous
             ? 1
             : 0,
+        // Absent keeps what the desk had; an explicit null hands the window back to
+        // the platform default. `?? current` would collapse those two into one and
+        // make the default unreachable once a desk had typed a number over it —
+        // `business_hours` above is written this way for the same reason.
+        input.abandonedAfterDays === undefined
+          ? current.abandoned_after_days
+          : input.abandonedAfterDays,
         ctx.now(),
         DESK,
       ],
@@ -1551,6 +1595,7 @@ const operations = {
         from_address: row.from_address,
         allowed_origins: row.allowed_origins,
         assistant_autonomous: row.assistant_autonomous,
+        abandoned_after_days: row.abandoned_after_days,
       },
     });
     return publicDesk(row);
@@ -2355,6 +2400,12 @@ const operations = {
    * conversation may do. A sweep that wrote `state` itself would be a second state
    * machine, and the second one is always the one that drifts.
    *
+   * The window is the DESK's — `abandonedAfter(ctx)`, read on every run, defaulting to
+   * `ABANDONED_AFTER_DAYS` for a desk that has never said. Read per run and not hoisted
+   * into a constant: a desk that lengthens its window at noon means it on the next
+   * sweep, and one that has never touched the setting cannot tell that the column
+   * exists.
+   *
    * The predicate is four clauses and each is load-bearing:
    *   - `state = 'new'` is the whole definition of abandoned. The two edges out of
    *     `new` toward `open` are a public reply and an assignment, so a row still here
@@ -2391,7 +2442,7 @@ const operations = {
    */
   'ticket0/reap-abandoned': async (ctx) => {
     assertAllowed(await ctx.check(T0_PERM.conversationResolve));
-    const cutoff = shiftDays(ctx.now(), -ABANDONED_AFTER_DAYS);
+    const cutoff = shiftDays(ctx.now(), -abandonedAfter(ctx));
     const abandoned = ctx.sql.query<ConversationRow>(
       `SELECT * FROM ticket0_conversations c
         WHERE c.state = 'new'
