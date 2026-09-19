@@ -129,10 +129,31 @@ async function emitArtifact(
   target: string,
   regenerate: string,
 ): Promise<{ drifted: boolean; lifecycles: number }> {
-  const mod = (await import(pathToFileURL(resolve(src)).href)) as Record<string, unknown>;
+  // A module that throws on import is the tool being unable to do its job, not
+  // drift — and it reached the top level unguarded, so node's own exit 1 claimed
+  // the artifact was merely stale and told a reader to re-run the emitter, which
+  // cannot fix a module that will not load. It matters more now that `--root`
+  // runs over a GENERATED `spec/model.ts`, where a broken one is ordinary.
+  let mod: Record<string, unknown>;
+  try {
+    mod = (await import(pathToFileURL(resolve(src)).href)) as Record<string, unknown>;
+  } catch (e) {
+    cannot(
+      `${src} could not be imported — ${e instanceof Error ? e.message : String(e)}\n` +
+        '  The model is not stale, it is unreadable: re-running this emitter cannot fix that.\n' +
+        '  Remedy: fix the module so it loads (its own typecheck is the faster oracle).',
+    );
+  }
   const models = emittedModelIn(mod);
   if (models.length !== 1) {
-    cannot(`${src} exports ${models.length} emitted models, expected exactly 1`);
+    cannot(
+      `${src} exports ${models.length} emitted models, expected exactly 1` +
+        (models.length === 0
+          ? '\n  Nothing there is shaped like one: an `emitModel(...)` result whose `entities` holds at\n' +
+            '  least one `{ table, fields }`. An entity-less model reads the same way, because the\n' +
+            '  shape is all this tool has — it never imports the packages it inspects (that is a cycle).'
+          : ''),
+    );
   }
   const model = models[0]!;
   const lifecycles = Object.keys(model.lifecycles ?? {}).length;

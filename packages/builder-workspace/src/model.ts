@@ -49,17 +49,27 @@ const MAX_OUTPUT = 4_000;
  * projection of code the gates already judge: a `spec/model.ts` that cannot be
  * imported is a red `model` gate with a compiler's diagnostics, which says far
  * more than this emitter could. Refusing to commit the turn over it would throw
- * away the work that produced the broken file. The failure is reported, not
- * swallowed — the caller carries it in the turn result.
+ * away the work that produced the broken file.
+ *
+ * A failure also leaves the PREVIOUS artifact in place, deliberately — deleting it
+ * would blank the tab over a transient container hiccup, and the last good picture
+ * is worth more than no picture. But a stale picture presented as current is the
+ * kind of quiet lie this repo does not accept, so the failure is neither swallowed
+ * nor left for a caller to discard: `modelEmitWarning` turns it into the sentence
+ * both hosts put in the turn's transcript, beside the red gate it accompanies.
  */
 export async function emitProjectModel(
 	ws: Workspace,
 	verticalDir: string,
 ): Promise<ModelEmitResult> {
-	if (!(await ws.exists(`${verticalDir}/${MODEL_SOURCE_PATH}`))) {
-		return { status: 'absent', output: '' };
-	}
 	try {
+		// The probe is INSIDE the guard: a workspace that cannot answer `exists`
+		// (a container that went away mid-turn) must not abort the turn either —
+		// "never throws" has to hold for the whole function, not for the part after
+		// the first await.
+		if (!(await ws.exists(`${verticalDir}/${MODEL_SOURCE_PATH}`))) {
+			return { status: 'absent', output: '' };
+		}
 		// The tool runs from the workspace root, where `tools/` and the installed
 		// toolchain are — the same calling convention the standalone permission and
 		// api gates use.
@@ -72,4 +82,25 @@ export async function emitProjectModel(
 	} catch (e) {
 		return { status: 'failed', output: e instanceof Error ? e.message : String(e) };
 	}
+}
+
+/**
+ * The one sentence a host puts in the transcript when the emit failed, or null
+ * when there is nothing to say.
+ *
+ * It lives here rather than in each host so the two cannot word it differently,
+ * and it is a plain string rather than an event so `builder-workspace` keeps
+ * knowing nothing about the generator's event union.
+ *
+ * What it has to convey is the STALENESS, not the failure: the red `model` gate
+ * beside it already says the declaration is broken, and what a builder cannot
+ * otherwise discover is that the Model tab is still showing the picture from
+ * before this turn.
+ */
+export function modelEmitWarning(result: ModelEmitResult): string | null {
+	if (result.status !== 'failed') return null;
+	return (
+		`${MODEL_ARTIFACT_PATH} could not be re-emitted from ${MODEL_SOURCE_PATH}, so the Model tab ` +
+		`still shows the entity model from before this turn.\n${result.output}`
+	);
 }

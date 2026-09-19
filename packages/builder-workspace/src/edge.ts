@@ -69,3 +69,15 @@ export {
 	snapshotWorkspace,
 	type WorkspaceSnapshot,
 } from './snapshot.js';
+
+// Worker-safe: `model.ts` shells out through the Workspace seam and imports one
+// TYPE from it, so it pulls in no node:* module — and `runTurn` already drags it
+// into this bundle either way.
+export {
+	emitProjectModel,
+	MODEL_ARTIFACT_PATH,
+	MODEL_SOURCE_PATH,
+	modelEmitWarning,
+	type ModelEmitResult,
+	type ModelEmitStatus,
+} from './model.js';

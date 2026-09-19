@@ -26,6 +26,7 @@ import {
 	ensureVerticalRepo,
 	foreignChanges,
 	LocalWorkspace,
+	modelEmitWarning,
 	runGates,
 	runTurn,
 	runTurnLoop,
@@ -336,6 +337,10 @@ async function handleTurn(req: IncomingMessage, res: ServerResponse): Promise<vo
 				gates: cur.gateSet,
 				onGateResult: (result) => emit({ type: 'check', result }),
 			});
+			// A failed model emit leaves the PREVIOUS model.json in the tree, so the
+			// Model tab would go on showing it as current with nothing saying so.
+			const stale = modelEmitWarning(turn.model);
+			if (stale) emit({ type: 'error', message: stale, fatal: false });
 			emit({ type: 'gates', run: turn.gates });
 			if (turn.commit) {
 				emit({ type: 'commit', sha: turn.commit, summary: `${turn.changedFiles.length} files` });

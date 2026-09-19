@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
-import { emitProjectModel } from '../src/model.js';
+import { emitProjectModel, modelEmitWarning } from '../src/model.js';
 import { LocalWorkspace } from '../src/local.js';
 import { ensureVerticalRepo, runTurn } from '../src/turn.js';
 import type { ExecOptions, ExecResult } from '../src/workspace.js';
@@ -85,6 +85,32 @@ describe('emitProjectModel', () => {
 		expect(r.status).toBe('failed');
 		expect(r.output).toContain('model-diff: boom');
 		await ws.dispose();
+	});
+
+	it('never throws, including out of the probe that decides whether to run at all', async () => {
+		const ws = await project();
+		// A workspace that went away mid-turn. "Never throws" has to hold for the
+		// whole function, not for the part after the first await.
+		ws.exists = async () => {
+			throw new Error('container gone');
+		};
+		const r = await emitProjectModel(ws, PROJECT);
+		expect(r).toEqual({ status: 'failed', output: 'container gone' });
+		await ws.dispose();
+	});
+});
+
+describe('modelEmitWarning', () => {
+	it('says the tab is showing the PREVIOUS model, which is what a builder cannot otherwise see', () => {
+		const warning = modelEmitWarning({ status: 'failed', output: 'TS2345 somewhere' });
+		expect(warning).toContain('model.json');
+		expect(warning).toContain('before this turn');
+		expect(warning).toContain('TS2345 somewhere');
+	});
+
+	it('is silent when there is nothing to warn about', () => {
+		expect(modelEmitWarning({ status: 'emitted', output: '' })).toBeNull();
+		expect(modelEmitWarning({ status: 'absent', output: '' })).toBeNull();
 	});
 });
 
@@ -213,6 +239,22 @@ describe('model-diff --root — the emitter the studio calls', () => {
 		const r = await tool(['tools/model-diff.mts', '--root', dir, '--check']);
 		expect(r.code).toBe(2);
 		expect(r.out).toContain('declares no entity model');
+	}, 60_000);
+
+	it('a spec/model.ts that will not load is exit 2, not the exit 1 that means "regenerate"', async () => {
+		// The distinction is the whole 0/1/2 contract: exit 1 tells a reader the
+		// artifact is stale and to re-run the emitter, which cannot fix a module that
+		// does not load. Unguarded, the rejected dynamic import reached the top level
+		// and node exited 1 with a raw stack — and `--root` runs over a GENERATED
+		// spec/model.ts, where a broken one is ordinary rather than exotic.
+		const dir = join(await mkdtemp(join(tmpdir(), 'model-diff-broken-')), 'acme');
+		await mkdir(join(dir, 'spec'), { recursive: true });
+		await writeFile(join(dir, 'spec/model.ts'), 'throw new Error("boom");\n');
+
+		const r = await tool(['tools/model-diff.mts', '--root', dir, '--check']);
+		expect(r.code).toBe(2);
+		expect(r.out).toContain('could not be imported');
+		expect(r.out).toContain('boom');
 	}, 60_000);
 
 	it('--root without a directory is exit 2', async () => {

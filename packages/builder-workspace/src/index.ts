@@ -69,6 +69,7 @@ export {
 	emitProjectModel,
 	MODEL_ARTIFACT_PATH,
 	MODEL_SOURCE_PATH,
+	modelEmitWarning,
 	type ModelEmitResult,
 	type ModelEmitStatus,
 } from './model.js';
