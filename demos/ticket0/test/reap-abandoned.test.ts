@@ -243,6 +243,47 @@ describe('everything a person has touched is off limits, however old', () => {
   });
 
   /**
+   * A drafted answer nobody has sent yet.
+   *
+   * `ticket0/record-answer` is an `allow` on `new` rather than an edge out of it, so a
+   * supervised assistant writing an answer leaves the conversation exactly where it
+   * was — the one way a `new` conversation has been worked on. Reaping it strands the
+   * draft twice: `closed` is terminal, so it can never be sent, and
+   * `ticket0/assistant-health` goes on listing it as waiting, because its predicate
+   * asks whether a public reply followed the turn and a closed conversation never gets
+   * one. That is the "sits on this list forever with nothing able to clear it" the
+   * health read was written to avoid, arriving through the back door.
+   */
+  it('leaves one the assistant has drafted an answer on — and the queue stays clearable', async () => {
+    const desk = world.kestrel;
+    const drafted = await arrives(desk, 'The assistant wrote something');
+    const assistant = await host.getScope(desk.assistant.principal, desk.tenant, desk.scope);
+    await assistant.invoke('ticket0/record-answer', {
+      conversationId: drafted,
+      turnId: `turn-${(arrivals += 1)}`,
+      model: 'test/fake',
+      body: 'Here is what I would say.',
+      inputTokens: 5,
+      outputTokens: 5,
+      citedArticleIds: [],
+      outcome: 'drafted',
+    });
+    expect((await readConversation(desk, drafted)).state).toBe('new');
+
+    clock.advance(2 * ABANDONED_AFTER_DAYS * DAY);
+    await reap(desk);
+    expect((await readConversation(desk, drafted)).state).toBe('new');
+
+    // And the draft is still sendable, which is the property the state was protecting.
+    const agent = await host.getScope(desk.agent.principal, desk.tenant, desk.scope);
+    await agent.invoke('ticket0/post-public-reply', {
+      conversationId: drafted,
+      body: 'Here is what I would say.',
+    });
+    expect((await readConversation(desk, drafted)).state).toBe('open');
+  });
+
+  /**
    * The losing half of a merge. It is already folded into a survivor and out of every
    * list the desk reads, and its state stayed `new` because merging moves nothing —
    * so it is the one row that matches "untouched and silent" while not being in the

@@ -2311,6 +2311,17 @@ const operations = {
    *   - `updated_at <= cutoff` measures SILENCE, not age. Every arriving message runs
    *     `settle()`, which touches `updated_at`, so a thread the customer added to
    *     yesterday is a day old here no matter when it opened.
+   *   - no `drafted` turn. `ticket0/record-answer` is an `allow` on `new`, not an edge
+   *     out of it, so the assistant writing an answer for a human to send leaves the
+   *     conversation exactly where it was — and a draft IS the desk having touched it.
+   *     Reaping one would strand it twice over: `closed` is terminal, so the draft can
+   *     never be sent, while `ticket0/assistant-health` goes on listing it as waiting
+   *     (its predicate asks whether a public reply followed the turn, and a reaped
+   *     conversation never gets one). That is precisely the "sits on this list forever
+   *     with nothing able to clear it" the health read was written to avoid.
+   *     `outcome = 'drafted'` alone is enough here, without health's "still the last
+   *     word" clause: a public reply from the desk moves a conversation to `open`, so
+   *     one still in `new` cannot have had one.
    *
    * No `CANONICAL_INSTANT` guard, unlike the snooze sweep, and the asymmetry is
    * deliberate rather than an omission: `snoozed_until` was a caller-supplied string
@@ -2327,11 +2338,15 @@ const operations = {
     assertAllowed(await ctx.check(T0_PERM.conversationResolve));
     const cutoff = shiftDays(ctx.now(), -ABANDONED_AFTER_DAYS);
     const abandoned = ctx.sql.query<ConversationRow>(
-      `SELECT * FROM ticket0_conversations
-        WHERE state = 'new'
-          AND merged_into IS NULL
-          AND updated_at <= ?
-        ORDER BY updated_at LIMIT ?`,
+      `SELECT * FROM ticket0_conversations c
+        WHERE c.state = 'new'
+          AND c.merged_into IS NULL
+          AND c.updated_at <= ?
+          AND NOT EXISTS (
+                SELECT 1 FROM ticket0_ai_turns t
+                 WHERE t.conversation_id = c.id AND t.outcome = 'drafted'
+              )
+        ORDER BY c.updated_at LIMIT ?`,
       [cutoff, REAP_BATCH],
     );
     for (const conversation of abandoned) {
