@@ -6,9 +6,17 @@ title: "The model-provider seam is a table; platform-billed inference is a crede
 status: accepted
 aliases: []
 amends: [D-30]
-tracking: ["#1054"]
+tracking: ["#1054", "#1073"]
 ---
 # D-59 — The model-provider seam is a table; platform-billed inference is a credential-resolution rule, not a provider
+
+> **Amended in place 2026-09-19 against the code (#1073); the decision stands.** The original
+> text is kept as decided, and the paragraph beginning *"What is built is the vertical's host"*
+> is the correction. What it corrects is an omission rather than an error: this record says the
+> model host lives "around operations" and never says *whose*, and the implementation put it in
+> the vertical's. The connector-shaped end state is recorded as **designed, not built** — the
+> same move #977 made on [dashboard.md](../architecture/dashboard.md) §4. The architecture call
+> #1073 is waiting on is **open, and nothing here settles it**.
 
 **The platform provides the model, and it does so without a provider of its own.** The seam
 D-18 named — "model providers are an adapter; the governance (metering, PII rules, audit) is
@@ -40,6 +48,41 @@ is `list × (1 + margin)`, one global whole-percent margin applied at **read** t
 (`MODEL_MARGIN_PERCENT`, default 20), so a margin change re-prices a window consistently and no
 row ever carries two rates. "Meter, don't bill" still holds: the ledger is what an invoice
 reconciles against, not the invoice.
+
+**What is built is the vertical's host, and that is the part this record left unsaid**
+(amended 2026-09-19, [#1073](https://github.com/substrat-run/substrat/issues/1073)). "Around
+operations" is true and silent about *whose*: `createModelHost` ships in
+`@substrat-run/vertical-host` (`packages/vertical-host/src/model.ts`) and is constructed by the
+vertical's own worker, so **the vertical makes the inference call, in its own process**. Four
+things follow, and each is a property of the deployed system rather than a gap in the design
+above. **The credential is gone; the capability is not** — `env.AI` is a binding the platform
+attaches at push, gated on both a fleet switch and the version's own declared
+`substrat.usesModels` (`packages/control-plane-api/src/wfp.ts`), so nothing on the script can be
+read, leaked or rotated, and a vertical holding it can still call `env.AI.run()` on our account
+for anything it likes. **No gateway is named on that path** — the binding transport is
+`createWorkersAI({ binding })`, whose `gateway` option the host does not pass, and the `cf-aig-*`
+headers above are the HTTP row's, keyed on a `CLOUDFLARE_AI_GATEWAY_ID` read from the env the
+*vertical* hands the host and set nowhere in the push path; so the gateway spend limit named
+above as the second guard beneath the host's own budget is not in force under the binding.
+**`guard` and `record` are optional constructor hooks** — the budget therefore runs *inside*
+the vertical or nowhere, and ticket0, the first consumer, passes neither, so with the second
+guard absent too nothing on this path enforces one; what bounds a desk today is its widget's
+own request rate limit, which bounds calls rather than cost. **The `model-usage` line is
+self-reported** — the vertical carries it into one
+of its own operations and raises it as a platform intent, and the drain
+(`packages/control-plane-api/src/platform-drain.ts`) refuses a line attributed to another tenant,
+scope or vertical but never checks the token counts, the model or the price against anything it
+observed, so a vertical that raises no intent is metered as nothing. **The connector-shaped end
+state — the vertical emits, the platform resolves the credential and calls, the answer returns
+through an ordinary operation — is designed, not built**, and is
+[#1073](https://github.com/substrat-run/substrat/issues/1073). It is what would make the guard
+unbypassable, the ledger observed rather than told, BYOK possible at all (hub credentials are
+sealed platform-side, which is the reason BYOK is unbuilt above), and a non-Cloudflare row
+runnable hosted without injecting a credential into a script that can read its own secrets
+(#862). Until it lands, read this record's governance as what the host does when a vertical
+calls it, not as something the platform can compel. The architecture call that issue is waiting
+on — a synchronous platform hop the vertical awaits or an emit/consume seam, and whether
+`env.AI` is withdrawn — is open, and is not made here.
 
 ## Why
 
