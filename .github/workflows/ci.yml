@@ -69,6 +69,13 @@ jobs:
       # traffic. Same shape as the two checks above: no suite drives the mounted app, so
       # the source is the only place this can be caught.
       - run: pnpm lint:invocation-log
+      # A module that declares operations hands the host the schemas to parse them with.
+      # `ModuleRegistration.operationInputs` is optional, so "the host applies declared
+      # inputs" was true only of the modules that remembered the line — nine were short of
+      # it at once, both reference demos and the scaffold among them (#953), and nothing
+      # went red: a scenario calls `invoke()` with an object TypeScript already agreed
+      # with, so wire input never appears in a test. Same shape as the two checks above.
+      - run: pnpm lint:module-inputs
       # A skill that cites a repo path cites one that exists. The two repo skills are
       # what an agent reads before it builds a vertical, and they teach by pointing at
       # files; `new-vertical` spent months pointing at two that were gone (#982) with

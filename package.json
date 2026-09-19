@@ -17,6 +17,7 @@
     "lint:bound-fetch": "node tools/bound-fetch.mjs",
     "lint:vite-proxy": "node tools/vite-proxy-host.mjs",
     "lint:invocation-log": "node tools/invocation-log.mjs",
+    "lint:module-inputs": "node tools/module-inputs.mjs",
     "lint:skills": "node tools/skill-paths.mjs",
     "lint:permissions": "tsx tools/permission-diff.mts",
     "lint:model": "tsx tools/model-diff.mts",
