@@ -4160,6 +4160,8 @@ describe('control-plane API — deploy', () => {
       form(manifest({ bindings: [{ type: 'durable_object_namespace', name: 'CONTROL_PLANE', class_name: 'ControlPlaneDO' }] })),
     );
     expect(res.status).toBe(403);
+    // The problem document's code comes from the throw's own declaration, not a pattern row.
+    expect((await res.json()).code).toBe('forbidden');
   });
 
   it('refuses a cross-script DO binding (403)', async () => {

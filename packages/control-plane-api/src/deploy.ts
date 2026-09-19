@@ -1,4 +1,4 @@
-import { ADMISSIBLE_BINDING_TYPES } from '@substrat-run/contracts';
+import { ADMISSIBLE_BINDING_TYPES, substratError } from '@substrat-run/contracts';
 import type { AssetRouting, DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 
 /**
@@ -168,8 +168,9 @@ const NAMED_REFUSALS: Record<string, string> = {
 };
 
 /**
- * The §4 sandbox contract. Throws (mapped to a 4xx by errors.ts via "deploy refused") if a
- * declared binding is not one of the vertical's OWN admissible resources — a positive
+ * The §4 sandbox contract. Throws a `forbidden` `substratError` (403 — the upload is well-formed
+ * and still refused) if a declared binding is not one of the vertical's OWN admissible
+ * resources — a positive
  * ALLOWLIST (`ADMISSIBLE_BINDING_TYPES` in contracts), so a type the check never anticipated
  * is refused by omission, not allowed by it. Every refusal names the offending binding and
  * its type and points at the doc section, so a builder can predict admission from the same
@@ -200,7 +201,7 @@ export function assertSandboxContract(m: DeployManifest): void {
   const doc = 'self-serve-deploy.md §4';
   for (const b of m.bindings) {
     const refuse = (why: string): never => {
-      throw new Error(`deploy refused: binding '${b.name}' (type '${b.type}') — ${why} (${doc})`);
+      throw substratError('forbidden', `deploy refused: binding '${b.name}' (type '${b.type}') — ${why} (${doc})`);
     };
     // The directory binding is refused by NAME, whatever type it claims, because the whole
     // point of masquerading would be to slip the type check.

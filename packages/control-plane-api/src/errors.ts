@@ -32,10 +32,13 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   SUITE asserts on (`/unknown tenant/`, `/illegal scope transition/`, `/already
  *   taken/`, `/not active/`), against both adapters. Changing one turns a contract test
  *   red, not just this mapping. Phase 5 migrates those assertions onto codes and this
- *   table goes with them — **one family at a time, and two are gone.** `unknown vertical`
+ *   table goes with them — **one family at a time, and three are gone.** `unknown vertical`
  *   went first; `unknown version` followed, its ten throw sites across the two adapters
  *   now saying `substratError('not_found', …)` with the contract suite asserting that
- *   code rather than the sentence, so the row had nothing left to do. That is the shape
+ *   code rather than the sentence, so the row had nothing left to do. `deploy refused:`
+ *   is the third, and the first whose throw is not in an adapter at all: its one site
+ *   is `assertSandboxContract` in this package's own `deploy.ts`, now `substratError(
+ *   'forbidden', …)`, pinned by `test/deploy.test.ts` on the code. That is the shape
  *   every remaining row is waiting for: type the throws, move the suite's assertion,
  *   delete the row. A row is not removed before its throws are typed — deleting one early
  *   turns its refusal into the generic 500 below.
@@ -96,9 +99,6 @@ const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
   // out (delete or rebind the scopes), so it must reach the caller, not collapse
   // into the generic 500 below.
   [/still backs \d+ scope\(s\)/, 'conflict'],
-  // The §4 sandbox contract: a declared binding reaches platform infrastructure.
-  // Forbidden, not a conflict — the upload is well-formed and still refused.
-  [/deploy refused:/, 'forbidden'],
   // The ADDRESSED resource does not exist — including the K-3 fail-closed case
   // where it exists under a DIFFERENT tenant and must read as absent.
   [/unknown tenant:/, 'not_found'],

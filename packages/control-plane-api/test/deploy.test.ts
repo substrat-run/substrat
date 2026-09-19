@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { errorCodeOf } from '@substrat-run/contracts';
 import type { DeclaredBinding, DeployManifest } from '@substrat-run/contracts';
 import {
   assertSandboxContract,
@@ -62,8 +63,24 @@ describe('assertSandboxContract', () => {
   });
   const ok = (bindings: DeclaredBinding[], doClasses?: string[]) =>
     expect(() => assertSandboxContract(manifest(bindings, doClasses))).not.toThrow();
-  const refused = (bindings: DeclaredBinding[], doClasses?: string[]) =>
-    () => assertSandboxContract(manifest(bindings, doClasses));
+  // A refusal is judged on TWO things, and neither stands in for the other. The CODE is what
+  // the control plane reads to answer 403 now that `errors.ts` no longer holds a
+  // `/deploy refused:/` row (#113 phase 5) — a bare `Error` with the right sentence falls to
+  // the generic 500. The MESSAGE pattern says WHICH refusal fired: every branch shares the one
+  // throw site, so the code alone cannot tell one guard from another, and a case that matched
+  // only the code would pass whichever guard happened to catch its input.
+  const expectRefusal = (bindings: DeclaredBinding[], message: RegExp, doClasses?: string[]) => {
+    let thrown: unknown;
+    try {
+      assertSandboxContract(manifest(bindings, doClasses));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown, 'the contract admitted a binding it should have refused').toBeInstanceOf(Error);
+    expect(errorCodeOf(thrown)).toBe('forbidden');
+    expect((thrown as Error).message).toMatch(message);
+    expect((thrown as Error).message).toMatch(/^deploy refused: /);
+  };
 
   it('admits a vertical binding its OWN DO class', () => {
     ok([{ type: 'durable_object_namespace', name: 'SCOPE', class_name: 'ScopeDO' }]);
@@ -82,51 +99,50 @@ describe('assertSandboxContract', () => {
   });
 
   it("refuses the CONTROL_PLANE binding by name, whatever type it claims", () => {
-    expect(refused([{ type: 'durable_object_namespace', name: 'CONTROL_PLANE', class_name: 'ScopeDO' }])).toThrow(
-      /CONTROL_PLANE/,
+    expectRefusal(
+      [{ type: 'durable_object_namespace', name: 'CONTROL_PLANE', class_name: 'ScopeDO' }],
+      /'CONTROL_PLANE' is the platform's directory/,
     );
     // even masquerading as an admissible inert type
-    expect(refused([{ type: 'plain_text', name: 'CONTROL_PLANE' }])).toThrow(/CONTROL_PLANE/);
+    expectRefusal([{ type: 'plain_text', name: 'CONTROL_PLANE' }], /'CONTROL_PLANE' is the platform's directory/);
   });
 
   it("refuses the SUBSTRAT_ binding namespace by name — an injected stamp cannot be forged (#1242)", () => {
     // Matched on the guard's own reason, not the name: every refusal echoes the
     // binding's name, so /SUBSTRAT_/ would pass even if this rule did not exist.
-    expect(refused([{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID' }])).toThrow(
-      /binding namespace is the platform's/,
-    );
+    expectRefusal([{ type: 'plain_text', name: 'SUBSTRAT_VERSION_ID' }], /binding namespace is the platform's/);
     // The whole prefix, not one name: the namespace stays the platform's as it grows.
-    expect(refused([{ type: 'secret_text', name: 'SUBSTRAT_FUTURE_THING' }])).toThrow(
-      /binding namespace is the platform's/,
-    );
+    expectRefusal([{ type: 'secret_text', name: 'SUBSTRAT_FUTURE_THING' }], /binding namespace is the platform's/);
   });
 
   it('refuses a service binding — a vertical reaches the platform via the router (K-27)', () => {
-    expect(refused([{ type: 'service', name: 'CP' }])).toThrow(/router \(K-27\)/);
+    expectRefusal([{ type: 'service', name: 'CP' }], /router \(K-27\)/);
   });
 
   it("refuses the platform's dispatch namespace", () => {
-    expect(refused([{ type: 'dispatch_namespace', name: 'VERTICALS' }])).toThrow(/Workers-for-Platforms/);
+    expectRefusal([{ type: 'dispatch_namespace', name: 'VERTICALS' }], /Workers-for-Platforms/);
   });
 
   it('refuses an unrecognized binding type by omission (allowlist, not denylist)', () => {
-    expect(refused([{ type: 'hyperdrive', name: 'PG' }])).toThrow(/not an admissible own-resource binding type/);
+    expectRefusal([{ type: 'hyperdrive', name: 'PG' }], /not an admissible own-resource binding type/);
   });
 
   it('refuses a cross-script DO binding', () => {
-    expect(
-      refused([{ type: 'durable_object_namespace', name: 'X', class_name: 'ScopeDO', script_name: 'substrat-control-plane' }]),
-    ).toThrow(/cross-script/);
+    expectRefusal(
+      [{ type: 'durable_object_namespace', name: 'X', class_name: 'ScopeDO', script_name: 'substrat-control-plane' }],
+      /cross-script/,
+    );
   });
 
   it("refuses a DO binding to a class the bundle didn't declare", () => {
-    expect(refused([{ type: 'durable_object_namespace', name: 'X', class_name: 'OtherDO' }])).toThrow(
+    expectRefusal(
+      [{ type: 'durable_object_namespace', name: 'X', class_name: 'OtherDO' }],
       /not one of the vertical's own classes/,
     );
   });
 
   it('names the offending binding and its type in the refusal', () => {
-    expect(refused([{ type: 'ai', name: 'LLM' }])).toThrow(/binding 'LLM' \(type 'ai'\)/);
+    expectRefusal([{ type: 'ai', name: 'LLM' }], /binding 'LLM' \(type 'ai'\)/);
   });
 });
 
