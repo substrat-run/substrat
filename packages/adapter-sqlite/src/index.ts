@@ -5222,7 +5222,7 @@ export class SqliteScopeHost implements ScopeHost {
         const parsed = publishVersionInput.parse(input);
         const owning = readVertical(parsed.verticalSlug);
         if (!owning) {
-          throw new Error(`unknown vertical '${parsed.verticalSlug}'`);
+          throw substratError('not_found', `unknown vertical '${parsed.verticalSlug}'`);
         }
         // Lands PENDING — a push is not a deploy — except for a PRIVATE vertical
         // (tenant-owned, not listed), whose blast radius is its own tenant: there the
@@ -5279,7 +5279,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       setVerticalListed: async (actor, slug: string, listed: boolean) => {
         const existing = readVertical(slug);
-        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
         // Listing is the moment other tenants start trusting this code, so the
         // version they would install must carry a real staff vouch — an auto-admitted
         // prod version has never been read by anyone but its author.
@@ -5303,13 +5303,13 @@ export class SqliteScopeHost implements ScopeHost {
       },
       requestPublish: async (actor, slug: string) => {
         const existing = readVertical(slug);
-        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
         this.directory.prepare('UPDATE verticals SET publish_requested_at = ? WHERE slug = ?').run(new Date().toISOString(), slug);
         this.recordAdmin(actor, 'requestPublish', { tenantId: null }, null, { slug });
       },
       setVerticalInstallsBlocked: async (actor, slug: string, blocked: boolean) => {
         const existing = readVertical(slug);
-        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
         this.directory
           .prepare('UPDATE verticals SET installs_blocked = ? WHERE slug = ?')
           .run(blocked ? 1 : 0, slug);
@@ -5317,7 +5317,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       setVerticalTenantProvisioner: async (actor, slug: string, granted: boolean) => {
         const existing = readVertical(slug);
-        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
         this.directory
           .prepare('UPDATE verticals SET tenant_provisioner = ? WHERE slug = ?')
           .run(granted ? 1 : 0, slug);
@@ -5325,7 +5325,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       setVerticalEmailSender: async (actor, slug: string, granted: boolean) => {
         const existing = readVertical(slug);
-        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
         this.directory
           .prepare('UPDATE verticals SET email_sender = ? WHERE slug = ?')
           .run(granted ? 1 : 0, slug);
@@ -5333,7 +5333,7 @@ export class SqliteScopeHost implements ScopeHost {
       },
       deleteVertical: async (actor, slug: string) => {
         const existing = readVertical(slug);
-        if (!existing) throw new Error(`unknown vertical '${slug}'`);
+        if (!existing) throw substratError('not_found', `unknown vertical '${slug}'`);
         // Refuse while any restorable scope is bound: a deleted registry row would strand
         // those scopes' version pins and routing. An `archived` scope (a deleted app) still
         // blocks — unarchive can bring it back — but the refusal names reap/restore, not
@@ -5644,7 +5644,7 @@ export class SqliteScopeHost implements ScopeHost {
         const r = this.directory
           .prepare('SELECT * FROM verticals WHERE slug = ?')
           .get(verticalSlug) as VerticalRow | undefined;
-        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
         this.recordAccess(actor, 'verticalServing', {}, { verticalSlug }, r.serving_ref ? 1 : 0);
         if (!r.serving_ref || !r.serving_version_id || !r.serving_migration_tag) return null;
         return verticalServingState.parse({
@@ -5659,7 +5659,7 @@ export class SqliteScopeHost implements ScopeHost {
         const r = this.directory
           .prepare('SELECT * FROM verticals WHERE slug = ?')
           .get(verticalSlug) as VerticalRow | undefined;
-        if (!r) throw new Error(`unknown vertical '${verticalSlug}'`);
+        if (!r) throw substratError('not_found', `unknown vertical '${verticalSlug}'`);
         this.directory
           .prepare(
             `UPDATE verticals SET serving_ref = ?, serving_version_id = ?,
