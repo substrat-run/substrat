@@ -24,15 +24,37 @@
  * COMPOSITION MODE in its own header (#976). See `checkEngineComposition` below
  * for why that lives here.
  *
+ * `--root <dir>` emits ONE project's `model.json` instead of the sweep (#684). A
+ * vertical the builder studio generates lives under `.builder/projects/*` — its
+ * own repo, not a member of `demos/`, so the sweep never sees it and its entity
+ * model existed only as TypeScript nobody could render. Same sources, same
+ * deterministic render, same 0/1/2: the only difference is where the tool looks.
+ * Deliberately mirrors `permission-diff --root` and `boundary-lint --root`, which
+ * solved the same monorepo-sweep-versus-one-project problem first. The engine
+ * sweep and the composition check are the sweep's business and do not run in this
+ * mode — a standalone project has no `engines/` to read.
+ *
  * Exit codes follow boundary-lint's: 0 = fine, 1 = drift (the checkpoint
  * firing), 2 = the tool could not do its job. A checkpoint that checked nothing
  * must never print a green light.
  */
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DEMOS = 'demos';
+
+/**
+ * Where a vertical declares its entities, in the order the tool prefers.
+ *
+ * `spec/model.ts` is where a vertical built through the model phase declares
+ * them; `src/entities.ts` is where the verticals that predate it do. `src/model.ts`
+ * sits between the two: a vertical whose emitted model carries a LIFECYCLE cannot
+ * emit from `src/entities.ts`, because the lifecycle is declared beside the
+ * operation map that imports the entities (#844).
+ */
+const MODEL_SOURCES = ['spec/model.ts', 'src/model.ts', 'src/entities.ts'] as const;
+
 /**
  * Engines declare entities too, and since #844 they declare LIFECYCLES — the
  * state machines that used to live as hand-written guards in operation bodies.
@@ -47,7 +69,20 @@ const DEMOS = 'demos';
  * `checkEngineComposition` refuses the ones that do not.
  */
 const ENGINES = 'engines';
-const check = process.argv.includes('--check');
+const argv = process.argv.slice(2);
+const check = argv.includes('--check');
+
+/** Exit 2: the tool cannot do its job. Always names the remedy. */
+function cannot(message: string): never {
+  console.error(`model-diff: ${message}\n`);
+  process.exit(2);
+}
+
+const rootFlag = argv.indexOf('--root');
+const rootArg = rootFlag >= 0 ? argv[rootFlag + 1] : undefined;
+if (rootFlag >= 0 && (!rootArg || rootArg.startsWith('--'))) {
+  cannot('--root needs a directory.\n  Usage: model-diff [--root <dir>] [--check]');
+}
 
 interface EmittedModel {
   /**
@@ -78,6 +113,44 @@ function emittedModelIn(mod: Record<string, unknown>): EmittedModel[] {
     }
   }
   return out;
+}
+
+/**
+ * Emit — or, under `--check`, compare — ONE artifact: import `src`, take its
+ * single emitted model, and render it to `target`.
+ *
+ * `regenerate` is the command the drift diagnostic tells a reader to run, and it
+ * is a fact about where the artifact sits rather than about how this run was
+ * invoked: a repo vertical always says `pnpm lint:model`, a project outside the
+ * sweep says the `--root` form.
+ */
+async function emitArtifact(
+  src: string,
+  target: string,
+  regenerate: string,
+): Promise<{ drifted: boolean; lifecycles: number }> {
+  const mod = (await import(pathToFileURL(resolve(src)).href)) as Record<string, unknown>;
+  const models = emittedModelIn(mod);
+  if (models.length !== 1) {
+    cannot(`${src} exports ${models.length} emitted models, expected exactly 1`);
+  }
+  const model = models[0]!;
+  const lifecycles = Object.keys(model.lifecycles ?? {}).length;
+  const rendered = `${JSON.stringify(model, null, 2)}\n`;
+  const current = existsSync(target) ? readFileSync(target, 'utf8') : null;
+
+  if (check) {
+    if (current !== rendered) {
+      console.error(`model-diff: ${target} is stale — re-run \`${regenerate}\` and commit the diff`);
+      return { drifted: true, lifecycles };
+    }
+    return { drifted: false, lifecycles };
+  }
+  if (current !== rendered) {
+    writeFileSync(target, rendered);
+    console.log(`model-diff: wrote ${target}`);
+  }
+  return { drifted: false, lifecycles };
 }
 
 /** The two spellings CLAUDE.md gives, and the only two an engine may state. */
@@ -159,7 +232,43 @@ function checkEngineComposition(): { checked: number; problems: string[] } {
   return { checked, problems };
 }
 
+/**
+ * `--root <dir>`: exactly one project, named by the path the caller gave. No
+ * sweep, so there is no "skipped silently" hazard to guard — the caller asked for
+ * THIS one, and every way it cannot be rendered is an exit 2.
+ */
+async function one(rel: string): Promise<number> {
+  const dir = resolve(rel);
+  if (!existsSync(dir) || !statSync(dir).isDirectory()) {
+    cannot(`--root ${rel} is not a directory.`);
+  }
+  const src = MODEL_SOURCES.map((c) => join(dir, c)).find((c) => existsSync(c));
+  if (!src) {
+    cannot(
+      `${rel} declares no entity model — none of ${MODEL_SOURCES.join(', ')} exists there.\n` +
+        '  Emitting nothing and exiting 0 would be a green light over an entity model nobody reviewed.\n' +
+        '  Remedy: declare the entities with `defineEntities` and export `emitModel(...)` from spec/model.ts.',
+    );
+  }
+  const { drifted, lifecycles } = await emitArtifact(
+    src,
+    join(dir, 'model.json'),
+    `pnpm exec tsx tools/model-diff.mts --root ${rel}`,
+  );
+  if (drifted) return 1;
+  console.log(
+    `model-diff: ${rel} model ${check ? 'up to date' : 'emitted'}` +
+      `, ${lifecycles} lifecycle${lifecycles === 1 ? '' : 's'}`,
+  );
+  return 0;
+}
+
 async function main(): Promise<number> {
+  // One project, before any of the sweep's repo-root assumptions: a standalone
+  // vertical has no demos/ and no engines/, and holding it to their existence
+  // would refuse exactly the project this mode exists to serve.
+  if (rootArg !== undefined) return await one(rootArg);
+
   if (!existsSync(DEMOS)) {
     console.error(`model-diff: no ${DEMOS}/ directory — run from the repo root`);
     return 2;
@@ -195,20 +304,10 @@ async function main(): Promise<number> {
   let lifecycles = 0;
 
   for (const demo of demos) {
-    // `spec/model.ts` is where a vertical built through the model phase declares
-    // its entities; `src/entities.ts` is where the verticals that predate it do.
-    // Looking only at the second silently skipped every vertical built the new
-    // way — CI green over an entity model nobody reviewed, which is the failure
-    // this tool exists to prevent.
-    // `src/model.ts` sits between the two: a vertical whose emitted model carries
-    // a LIFECYCLE cannot emit from `src/entities.ts`, because the lifecycle is
-    // declared beside the operation map that imports the entities (#844).
-    const candidates = [
-      join(DEMOS, demo, 'spec', 'model.ts'),
-      join(DEMOS, demo, 'src', 'model.ts'),
-      join(DEMOS, demo, 'src', 'entities.ts'),
-    ];
-    const src = candidates.find((c) => existsSync(c));
+    // Looking only at `src/entities.ts` silently skipped every vertical built the
+    // new way — CI green over an entity model nobody reviewed, which is the
+    // failure this tool exists to prevent. See MODEL_SOURCES for the order.
+    const src = MODEL_SOURCES.map((c) => join(DEMOS, demo, c)).find((c) => existsSync(c));
     if (!src) {
       // Same guard permission-diff carries: a directory that is clearly a
       // vertical but exposes no model must fail loudly, never be skipped.
@@ -224,30 +323,10 @@ async function main(): Promise<number> {
       continue; // not a vertical
     }
 
-    const mod = (await import(pathToFileURL(join(process.cwd(), src)).href)) as Record<string, unknown>;
-    const models = emittedModelIn(mod);
-    if (models.length !== 1) {
-      console.error(`model-diff: ${src} exports ${models.length} emitted models, expected exactly 1`);
-      return 2;
-    }
-
-    lifecycles += Object.keys(models[0]?.lifecycles ?? {}).length;
-    const rendered = `${JSON.stringify(models[0], null, 2)}\n`;
-    const target = join(DEMOS, demo, 'model.json');
-    const current = existsSync(target) ? readFileSync(target, 'utf8') : null;
+    const out = await emitArtifact(src, join(DEMOS, demo, 'model.json'), 'pnpm lint:model');
+    lifecycles += out.lifecycles;
     emitted += 1;
-
-    if (check) {
-      if (current !== rendered) {
-        console.error(`model-diff: ${target} is stale — re-run \`pnpm lint:model\` and commit the diff`);
-        drift += 1;
-      }
-      continue;
-    }
-    if (current !== rendered) {
-      writeFileSync(target, rendered);
-      console.log(`model-diff: wrote ${target}`);
-    }
+    if (out.drifted) drift += 1;
   }
 
   // Engines, same emit-and-diff, opting in through `src/model.ts`.
@@ -258,28 +337,10 @@ async function main(): Promise<number> {
       skipped.push(engine);
       continue;
     }
-    const mod = (await import(pathToFileURL(join(process.cwd(), src)).href)) as Record<string, unknown>;
-    const models = emittedModelIn(mod);
-    if (models.length !== 1) {
-      console.error(`model-diff: ${src} exports ${models.length} emitted models, expected exactly 1`);
-      return 2;
-    }
-    lifecycles += Object.keys(models[0]?.lifecycles ?? {}).length;
-    const rendered = `${JSON.stringify(models[0], null, 2)}\n`;
-    const target = join(ENGINES, engine, 'model.json');
-    const current = existsSync(target) ? readFileSync(target, 'utf8') : null;
+    const out = await emitArtifact(src, join(ENGINES, engine, 'model.json'), 'pnpm lint:model');
+    lifecycles += out.lifecycles;
     emitted += 1;
-    if (check) {
-      if (current !== rendered) {
-        console.error(`model-diff: ${target} is stale — re-run \`pnpm lint:model\` and commit the diff`);
-        drift += 1;
-      }
-      continue;
-    }
-    if (current !== rendered) {
-      writeFileSync(target, rendered);
-      console.log(`model-diff: wrote ${target}`);
-    }
+    if (out.drifted) drift += 1;
   }
   if (skipped.length > 0) {
     // Named, not silent. These are the engines whose entities and state machines

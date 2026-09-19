@@ -591,6 +591,23 @@ authoring one.
 container awake — which is correct, since a preview of nothing running is meaningless. Opening
 that tab is one of the two things that wakes it.
 
+**The model tab** is the entity model as a picture — the ER diagram, the entity cards, the
+declared lifecycles — rendered by `@substrat-run/model-view`, the same core `substrat model view`
+and the dashboard's Model tab use. Three things about it are decisions rather than details:
+
+- It reads the emitted **`model.json`**, never the `spec/model.ts` beside it. The browser cannot
+  execute the project's code, and reading the artifact of record (#697) is what keeps the
+  authoring notation swappable — a later change of authoring layer is a new emitter writing the
+  same file, and this tab does not notice. So the turn loop emits the artifact into the tree
+  (`tools/model-diff.mts --root <project>`, the repo's own emitter pointed at one project) and
+  commits it with the turn, which is what puts it in the snapshot.
+- It therefore reads from the **snapshot**, like the code pane, and never wakes the container.
+- What it IS, since the issue thread had to correct itself on this: **navigation and shared
+  vocabulary, not the checkpoint that makes the model safe.** The picture is a lossy projection —
+  the filter is the whole point — so the reviewable artifact stays the declaration, and the
+  audience for the page is the human approver. It is not an input to the model either: an LLM
+  reads the declaration better than a rendering of it.
+
 **Session plumbing: the Cloudflare Agents SDK.** `AIChatAgent` gives message persistence and
 resumable streaming across reconnects; `useAgent()` / `useAgentChat()` give the React side; state
 syncs over WebSockets. Durable-Object-backed, so it sits beside the sandbox container on the same

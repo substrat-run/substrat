@@ -15,13 +15,14 @@ import { appendEvent, Chat, type ChatItem } from './Chat.js';
 import { CodePane } from './CodePane.js';
 import { ConceptPane } from './ConceptPane.js';
 import { GatesPane } from './GatesPane.js';
+import { ModelPane } from './ModelPane.js';
 import { ModelPicker } from './ModelPicker.js';
 import { PreviewPane } from './PreviewPane.js';
 import { ProjectMenu } from './ProjectMenu.js';
 import { rememberedTeam, rememberTeam, TeamMenu } from './TeamMenu.js';
 import { UsagePane } from './UsagePane.js';
 
-type Tab = 'preview' | 'concept' | 'code' | 'database' | 'gates' | 'usage';
+type Tab = 'preview' | 'concept' | 'model' | 'code' | 'database' | 'gates' | 'usage';
 
 const PHASE_STEPS: readonly { key: BuildPhase; label: string; hint: string }[] = [
 	{ key: 'interview', label: 'Interview', hint: 'No approved concept yet — the model asks, one question at a time' },
@@ -380,6 +381,9 @@ export function App() {
 						<button className={tab === 'concept' ? 'active' : ''} onClick={() => setTab('concept')}>
 							Concept
 						</button>
+						<button className={tab === 'model' ? 'active' : ''} onClick={() => setTab('model')}>
+							Model
+						</button>
 						<button className={tab === 'code' ? 'active' : ''} onClick={() => setTab('code')}>
 							Code
 						</button>
@@ -404,6 +408,13 @@ export function App() {
 						{tab === 'preview' && <PreviewPane />}
 						{tab === 'concept' && session && (
 							<ConceptPane vertical={session.vertical} refreshKey={refreshKey} />
+						)}
+						{tab === 'model' && session && (
+							<ModelPane
+								vertical={session.vertical}
+								title={session.project.name}
+								refreshKey={refreshKey}
+							/>
 						)}
 						{tab === 'code' && session && (
 							<CodePane vertical={session.vertical} refreshKey={refreshKey} />

@@ -64,3 +64,11 @@ export {
 	snapshotWorkspace,
 	type WorkspaceSnapshot,
 } from './snapshot.js';
+
+export {
+	emitProjectModel,
+	MODEL_ARTIFACT_PATH,
+	MODEL_SOURCE_PATH,
+	type ModelEmitResult,
+	type ModelEmitStatus,
+} from './model.js';

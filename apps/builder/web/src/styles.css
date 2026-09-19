@@ -406,6 +406,17 @@ code, pre, .mono { font-family: var(--font-mono, 'Geist Mono', ui-monospace, Men
 .preview iframe { flex: 1; border: 0; background: var(--gray-0); }
 .preview .empty { background: var(--surface-page); }
 
+/* ── model ─────────────────────────────────────────────────────────────────── */
+/* The rendered model page carries its own light/dark palette, so the frame only
+   supplies the surround — same shape as the preview tab's. */
+.model-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.model-bar {
+	display: flex; gap: 8px; padding: 6px 12px; align-items: center; height: 40px;
+	background: var(--surface-card); border-bottom: 1px solid var(--border-default);
+}
+.model-bar .mono { font-size: 12px; color: var(--text-tertiary); }
+.model-pane iframe { flex: 1; border: 0; background: var(--gray-0); }
+
 .gates { flex: 1; overflow-y: auto; padding: 20px; }
 .gates table {
 	border-collapse: collapse; width: 100%; max-width: 640px;
