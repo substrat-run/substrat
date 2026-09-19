@@ -1,5 +1,6 @@
 import { denialQuery, problemDetail } from '@substrat-run/contracts';
 import type {
+  ConnectionProbe,
   EntitlementGrant,
   EntitlementGrantInput,
   QueryScopeInput,
@@ -75,6 +76,12 @@ export class ControlPlaneError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * The provider's own answer, when the plane refused a connect because the credential
+     * was rejected upstream (#605, 422). Carried so a console can show WHY — "Scrive:
+     * No valid access credentials were provided" — instead of a generic save failure.
+     */
+    readonly probe?: ConnectionProbe,
   ) {
     super(message);
     this.name = 'ControlPlaneError';
