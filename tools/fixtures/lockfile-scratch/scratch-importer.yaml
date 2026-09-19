@@ -1,0 +1,52 @@
+# The failure this gate is named after: two gitignored builder-studio scratch
+# projects, written into the committed lockfile as importers.
+#
+# Taken from the real thing. Four such importers reached main before anyone
+# noticed (#769); `.builder/projects/eval-fixline` is one of the names, and the
+# names are whatever the person building a studio project typed.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: 2 offences.
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+
+  .builder/projects/eval-fixline:
+    dependencies:
+      '@substrat-run/adapter-sqlite':
+        specifier: workspace:*
+        version: link:../../../packages/adapter-sqlite
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../../packages/kernel
+
+  .builder/projects/eval-fixline/app:
+    dependencies:
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
+  demos/callout:
+    dependencies:
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+
+  packages/kernel:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../contracts

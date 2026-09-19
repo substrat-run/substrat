@@ -25,7 +25,10 @@ packages:
   #      file is committed and public. Four of them reached main this way before
   #      anyone noticed, because `--frozen-lockfile` does NOT fail on an importer
   #      whose directory is absent — CI stayed green and said nothing.
-  #      .githooks/pre-commit refuses the staged lockfile instead.
+  #      .githooks/pre-commit refuses the staged lockfile, and `pnpm run
+  #      lint:lockfile` (tools/lockfile-scratch.mjs) asks the same of the committed
+  #      FILE from CI — the hook is bypassable, absent on a checkout that never ran
+  #      `prepare`, and reads a diff, so it cannot be the only answer.
   #
   # Both are guards around the membership rather than a fix for it. The isolation
   # answer — a fixture per throwaway worktree, which would also close #768's

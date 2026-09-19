@@ -23,6 +23,20 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The lockfile the install above just read names no `.builder/projects/*` scratch
+      # project. Those are gitignored studio projects and deliberate workspace members, so
+      # every `pnpm install` run while one exists writes it into pnpm-lock.yaml — which is
+      # committed and PUBLIC, under whatever name the person building it typed. Four reached
+      # main unnoticed (#769), because nothing downstream complains: `--frozen-lockfile` does
+      # NOT fail on an importer whose directory is absent from the checkout, so the install
+      # on the line above would have stayed green.
+      #
+      # .githooks/pre-commit refuses the same thing locally and stays. This is its twin at
+      # the boundary nobody can be absent from: the hook is bypassable with --no-verify,
+      # is wired by a `prepare` script that no-ops under CI, and reads the staged DIFF — so
+      # a commit that removes one scratch importer and leaves another adds nothing and
+      # passes. This reads the FILE.
+      - run: pnpm run lint:lockfile
       # Before the build, because a cycle makes the build's result a coin flip:
       # pnpm cannot order one, so it builds the members in parallel and whether
       # that passes depends on which tsc wins. Reading the declared graph gives

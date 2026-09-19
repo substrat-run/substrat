@@ -1,0 +1,45 @@
+# The case the pre-commit hook cannot see, and the reason this gate reads the
+# FILE rather than a diff.
+#
+# This is scratch-importer.yaml after a commit that removed one of the two
+# scratch importers and left the other behind. That commit's lockfile diff adds
+# no `.builder/projects/*` line, so a rule grepping the added side — which is
+# what .githooks/pre-commit does, correctly, for the job it has — passes it. The
+# importer that is still there is still in a public file.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: 1 offence.
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+
+  .builder/projects/eval-fixline/app:
+    dependencies:
+      react:
+        specifier: ^18.3.1
+        version: 18.3.1
+    devDependencies:
+      typescript:
+        specifier: 'catalog:'
+        version: 7.0.2
+
+  demos/callout:
+    dependencies:
+      '@substrat-run/kernel':
+        specifier: workspace:*
+        version: link:../../packages/kernel
+
+  packages/kernel:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../contracts

@@ -16,10 +16,20 @@
 # green. The names were harmless that time. They are taken from whatever a studio
 # project was called, which is whatever the person building it typed.
 #
-# So this is the boundary where it has to be caught. Issue #769.
+# So this is the boundary where it is cheapest to catch — while the fix is still
+# `git restore` rather than a second commit. Issue #769.
 #
 # Wired via `git config core.hooksPath .githooks`, done by the root package.json
 # `prepare` script on `pnpm install`. Bypass with `git commit --no-verify`.
+#
+# This hook is no longer the only thing holding the rule: `pnpm run lint:lockfile`
+# (tools/lockfile-scratch.mjs) asks the same question of the committed FILE and runs
+# in CI, right after `pnpm install --frozen-lockfile`. That twin exists because this
+# hook is skippable in three ways it is not — `--no-verify`, a checkout that never ran
+# the `prepare` script (which deliberately no-ops under CI), and the diff it reads:
+# a commit that removes ONE scratch importer and leaves a second adds no offending
+# line, so it passes here, correctly, while the leftover is still in a public file.
+# Keep both. This one catches it early; the gate makes it unmergeable.
 
 set -euo pipefail
 

@@ -1,0 +1,31 @@
+# A scratch importer with nothing installed in it.
+#
+# pnpm writes an importer that resolved no dependencies as `key: {}`, on one line —
+# `packages/create-substrat` is written that way in the real lockfile right now. A
+# studio project that has been scaffolded but not yet given any deps is exactly
+# that shape, and the first cut of this check skipped every key whose colon was
+# not the end of the line. It found the path by the whole-file sweep and called it
+# an ordinary mention rather than the importer it is.
+#
+# Fixture for tools/lockfile-scratch.mjs — expected: 1 offence, reported as an importer.
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      tsx:
+        specifier: ^4.19.0
+        version: 4.23.1
+
+  .builder/projects/eval-fixline: {}
+
+  packages/kernel:
+    dependencies:
+      '@substrat-run/contracts':
+        specifier: workspace:*
+        version: link:../contracts
