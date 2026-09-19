@@ -117,16 +117,23 @@ const github: UpstreamProvider = {
   /** GitHub has no `openid`; `user:email` is what makes the private address readable. */
   scope: 'read:user user:email',
   /**
-   * The same reasoning as Google's `select_account`, in the spelling GitHub accepts:
-   * authorization is remembered per (user, OAuth app), and this app is shared by every
-   * install — so without this a person who signed in at one install is silently through
-   * at an unrelated one, with nothing on screen naming what they just joined.
+   * The same reasoning as Google's, and — this is the part worth writing down — the same
+   * spelling: authorization is remembered per (user, OAuth app), this app is shared by
+   * every install, so without a forced screen a person who signed in at one install is
+   * silently through at an unrelated one, with nothing on screen naming what they joined.
+   *
+   * `select_account` is the ONLY value GitHub documents for `prompt`, and it forces the
+   * account picker. `consent` is OIDC's spelling, not GitHub's — GitHub does not document
+   * it and drops it, which fails in the worst direction available: the authorize call
+   * still succeeds, so the relay looks like it is asking for a screen while the person is
+   * waved straight through. An undocumented value is not a stricter prompt, it is no
+   * prompt.
    *
    * Apple is the one that cannot be given parity here: it re-shows its own screen only
    * when the person has revoked the app, and offers no parameter to ask for it. That is a
    * limit worth stating rather than leaving as an apparent oversight in this table.
    */
-  authorizeParams: { prompt: 'consent' },
+  authorizeParams: { prompt: 'select_account' },
   callbackMethod: 'GET',
   clientSecretFor: staticSecret,
   async profileFrom(tokens, fetchImpl) {

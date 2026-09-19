@@ -750,7 +750,7 @@ describe('failures that must not become dead ends', () => {
     expect(await res.json()).toMatchObject({ error: 'invalid_client' });
   });
 
-  it('forces GitHub to show its authorization screen too, for the reason Google is', async () => {
+  it('forces GitHub to show its account picker too, in the one spelling GitHub documents', async () => {
     const app = createApp({ now: () => NOW });
     const redirectUri = 'https://acme.global.substrat.run/api/auth/callback/platform-github';
     const client = await store.registerClient({ name: 'An install', redirectUris: [redirectUri] }, NOW);
@@ -761,6 +761,11 @@ describe('failures that must not become dead ends', () => {
       {},
       envWith(),
     );
-    expect(new URL(res.headers.get('location') ?? '').searchParams.get('prompt')).toBe('consent');
+    // `select_account` is the only value GitHub documents. OIDC's `consent` is silently
+    // dropped there, which reads as a forced screen in our source and is none in practice —
+    // so this pins the spelling, not merely the presence of a prompt.
+    expect(new URL(res.headers.get('location') ?? '').searchParams.get('prompt')).toBe(
+      'select_account',
+    );
   });
 });
