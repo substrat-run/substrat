@@ -257,12 +257,16 @@ describe('the platform sweep is the caller, and one desk never reaches another',
 
     clock.advance(45 * 60_000);
 
-    // No operation name here on purpose. The sweep reads what the manifest declares;
-    // if the schedule were removed, this goes to `fired: 0` and the conversation
-    // stays snoozed — which is exactly the regression this file exists to catch.
+    // Nothing here invokes an operation. The sweep reads what the manifest declares;
+    // if the schedule were removed, `runs` stops naming it and the conversation stays
+    // snoozed — which is exactly the regression this file exists to catch.
+    //
+    // Asserted on `runs` rather than on `fired`, which counts EVERY schedule the desk
+    // declares: a second one (the reaper, #1088) made a bare `fired: 1` a fact about
+    // how many timers ticket0 happens to have rather than about this one.
     const report = await host.runDueSchedules(TICKET0, desk.tenant, desk.scope);
     expect(report.errors).toEqual([]);
-    expect(report.fired).toBe(1);
+    expect(report.runs).toContainEqual({ operation: 'ticket0/wake-snoozed', outcome: 'ok' });
 
     expect((await readConversation(desk, id)).state).toBe('open');
   });

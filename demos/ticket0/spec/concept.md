@@ -74,8 +74,11 @@ The lifecycle:
 - **resolved is not the end.** A customer who replies to a resolved conversation reopens
   it, in the same thread, with the same history. This is the single most important thing
   about the lifecycle and the reason a conversation is *not* a work order (section 3).
-- **closed** is the end, and only a human puts it there — from anywhere. A customer who
-  writes in afterwards gets a follow-up conversation, not a refusal (below).
+- **closed** is the end, reachable from anywhere. A human puts it there by hand; the
+  reaper (#1088, §9.1) is the only other thing that may, and only for a
+  conversation still in `new` that nobody has added to for thirty days — never one
+  somebody picked up, answered, parked or left a draft on. A customer who writes in
+  afterwards gets a follow-up conversation, not a refusal (below).
 
 One transition must not be skippable, and it is the one a naive implementation gets
 wrong: nothing reaches `resolved` without at least one public reply having been sent.
@@ -443,7 +446,11 @@ Each with a recommendation, so this is a choice and not a specification exercise
    visitor to one conversation, and the widget's operations cannot be pointed at another
    one because they take no conversation id (section 4). What remains is the surface, the
    rate limit, and the reaper for abandoned *conversations* — which is a retention policy,
-   not an access-control problem.
+   not an access-control problem. **The reaper is now built** (#1088):
+   `ticket0/reap-abandoned`, an hourly schedule that CLOSES — never deletes — a conversation
+   still in `new` that nobody has added to for thirty days. The retention window is a
+   constant in `src/module.ts` rather than the per-desk setting the issue also asked for,
+   because a setting is a column and a column is a migration.
 2. **The widget's surface and CORS.** *Recommended: a second `widget` surface of the same
    vertical on its own hostname, with the embedding-origin allowlist in desk settings and
    CORS support added to the vertical host.* Routing already supports this; the anonymous

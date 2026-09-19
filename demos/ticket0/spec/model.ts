@@ -1616,6 +1616,50 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
     },
   },
 
+  /**
+   * The reaper concept §9.1 named and nothing ever built (#1088).
+   *
+   * Two of this desk's doors are open to the whole internet — the widget and the
+   * inbox — and each of them mints a conversation from one sentence by someone with
+   * no account. A desk that never closes those accumulates them for the rest of its
+   * life, and the inbox is where they accumulate: `new` is the state a conversation
+   * arrives in and, absent a person, never leaves.
+   *
+   * So the sweep takes exactly the conversations nobody at the desk ever touched.
+   * `new` is that set by construction rather than by a guard: the only two edges out
+   * of `new` toward `open` are `ticket0/post-public-reply` and `ticket0/assign`, so a
+   * row still in `new` has no public reply and no assignee. The one way a `new`
+   * conversation HAS been worked on is an assistant draft, which is an `allow` rather
+   * than an edge and so moves nothing; the handler excludes those, and `src/module.ts`
+   * says why. Silence is measured on `updated_at`, which every arriving message
+   * refreshes through `settle()` — so a customer who writes in again on day 29 resets
+   * the window, and the window is about silence rather than about age.
+   *
+   * It CLOSES. It does not delete, and the difference is the whole of why this is the
+   * slice that could be built unattended: closing moves a declared edge and leaves the
+   * conversation, its messages and the contact exactly where they are. The retention
+   * setting the issue also asked for is not here — a setting is a column, a column is a
+   * migration, and a migration is a human checkpoint. The window is a constant in
+   * `src/module.ts` beside `WAKE_BATCH`.
+   *
+   * Not an HTTP operation, for `ticket0/wake-snoozed`'s reason: the declared schedule
+   * is its only caller and a person closing one conversation has `ticket0/close`,
+   * which is per-conversation and entity-checked. The permission is therefore a NODE
+   * check of `conversation:resolve` — the same key `ticket0/close` holds, because this
+   * does the same thing to a conversation, and a sweep cannot name its rows in advance.
+   *
+   * `output` is a count, so no `emits` here: it publishes `ticket0.conversation-closed`
+   * per conversation instead, the same event `ticket0/close` publishes. Nothing
+   * downstream should have to know whether a person or a timer said "not ours".
+   */
+  'ticket0/reap-abandoned': {
+    // Not a tool: a schedule's entry point; nothing calls it by hand.
+    mcp: false,
+    summary: 'Close conversations nobody ever picked up and nobody has added to',
+    permission: 'conversation:resolve',
+    output: z.object({ reaped: z.number().int() }),
+  },
+
   /** Fold one conversation into another. The loser keeps its history and forwards. */
   'ticket0/merge': {
     summary: 'Merge this conversation into another',
@@ -3035,6 +3079,13 @@ export const ticket0Lifecycles = defineLifecycles(
           'ticket0/assign': 'open',
           'ticket0/resolve': 'resolved',
           'ticket0/close': 'closed',
+          // The reaper (#1088), and it is declared HERE rather than on every state
+          // deliberately: `new` is the only state that means "nobody at this desk has
+          // touched it", and the sweep may not reach a conversation somebody parked,
+          // picked up or answered. Because the edge exists nowhere else, a reaper that
+          // one day widened its query would be refused by the machine rather than
+          // quietly closing worked conversations.
+          'ticket0/reap-abandoned': 'closed',
         },
         allow: [
           'ticket0/post-note',
