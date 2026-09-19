@@ -1353,6 +1353,7 @@
             "ticket0/assign": "open",
             "ticket0/close": "closed",
             "ticket0/post-public-reply": "open",
+            "ticket0/reap-abandoned": "closed",
             "ticket0/resolve": "resolved"
           },
           "allow": [

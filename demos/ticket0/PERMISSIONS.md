@@ -94,6 +94,7 @@ schedule can do exactly this and no more.
 
 | Operation | Cadence | System principal | Permissions |
 | --- | --- | --- | --- |
+| `ticket0/reap-abandoned` | every 1440 min | `system:@substrat-run/demo-ticket0` | `conversation:resolve` |
 | `ticket0/wake-snoozed` | every 5 min | `system:@substrat-run/demo-ticket0` | `conversation:assign` |
 
 ## 6. Not covered by this artifact

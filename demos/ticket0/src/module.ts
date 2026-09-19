@@ -87,6 +87,27 @@ const DESK = 'desk';
 const WAKE_BATCH = 200;
 
 /**
+ * How long a conversation nobody has touched is left in the inbox before
+ * `ticket0/reap-abandoned` closes it (#1088).
+ *
+ * Thirty days, and the number is chosen against the ONE-WAY-ness of what it triggers:
+ * `closed` is terminal in the declared lifecycle, so a reaped conversation cannot be
+ * re-opened. Nothing is destroyed — the row, its messages and the contact all stay,
+ * and a later message from the same person opens a follow-up that names the closed one
+ * through `follows` — but the state does not come back, so the window errs long. A
+ * fortnight would reap a desk that went quiet over a holiday; a month does not.
+ *
+ * A constant rather than a column on `ticket0_desk_settings`, which is what the issue
+ * asked for: a per-desk retention setting is a migration, and a migration is a human
+ * checkpoint. Changing this number is a one-line edit when that lands.
+ */
+const ABANDONED_AFTER_DAYS = 30;
+
+/** How many abandoned conversations one run of `ticket0/reap-abandoned` closes. Same
+ *  bargain as `WAKE_BATCH`: a bound on one transaction, not a cap on the sweep. */
+const REAP_BATCH = 200;
+
+/**
  * The hour `SIGNUP_HOURLY_MAX` counts over.
  *
  * Here rather than in the model beside the ceiling itself, because the model declares
@@ -2267,6 +2288,67 @@ const operations = {
       payload: { id: row.id },
     });
     return row;
+  },
+
+  /**
+   * The reaper (#1088) — `ticket0/close`, for the conversations no person is ever
+   * going to reach.
+   *
+   * Written against `ticket0/wake-snoozed` line for line, and for the same reasons:
+   * bounded batch, `ctx.now()` as the only clock, and the move taken through the
+   * declared `step()` edge so the lifecycle stays the one place that says what a
+   * conversation may do. A sweep that wrote `state` itself would be a second state
+   * machine, and the second one is always the one that drifts.
+   *
+   * The predicate is three clauses and each is load-bearing:
+   *   - `state = 'new'` is the whole definition of abandoned. The two edges out of
+   *     `new` toward `open` are a public reply and an assignment, so a row still here
+   *     has neither — there is no `first_public_reply_at IS NULL` to add, because the
+   *     machine already said it.
+   *   - `merged_into IS NULL` leaves the losing half of a merge alone. It is already
+   *     folded into a survivor and out of every list the desk reads; closing it would
+   *     emit a second event about a conversation that stopped being one.
+   *   - `updated_at <= cutoff` measures SILENCE, not age. Every arriving message runs
+   *     `settle()`, which touches `updated_at`, so a thread the customer added to
+   *     yesterday is a day old here no matter when it opened.
+   *
+   * No `CANONICAL_INSTANT` guard, unlike the snooze sweep, and the asymmetry is
+   * deliberate rather than an omission: `snoozed_until` was a caller-supplied string
+   * before it was an `instant`, so a desk may hold values that sort wrongly as text.
+   * `updated_at` has only ever been written by `moveTo`/`touch` from `ctx.now()`, so
+   * every value in the column is already canonical UTC and a text comparison is a
+   * comparison of instants.
+   *
+   * Nobody is notified. A `new` conversation has no assignee by construction, so there
+   * is no one holding it to tell, and a notification to the whole desk about mail
+   * nobody read for a month is the sort of thing people turn off.
+   */
+  'ticket0/reap-abandoned': async (ctx) => {
+    assertAllowed(await ctx.check(T0_PERM.conversationResolve));
+    const cutoff = shiftDays(ctx.now(), -ABANDONED_AFTER_DAYS);
+    const abandoned = ctx.sql.query<ConversationRow>(
+      `SELECT * FROM ticket0_conversations
+        WHERE state = 'new'
+          AND merged_into IS NULL
+          AND updated_at <= ?
+        ORDER BY updated_at LIMIT ?`,
+      [cutoff, REAP_BATCH],
+    );
+    for (const conversation of abandoned) {
+      const next = step(conversation, 'ticket0/reap-abandoned');
+      const row = settle(ctx, conversation, next);
+      // The same event `ticket0/close` publishes. A consumer must not have to know
+      // which of the two doors a conversation was closed through — and `resolved_at`
+      // stays null either way, so the reports go on counting only what was answered.
+      ctx.emit({
+        type: 'ticket0.conversation-closed',
+        schemaVersion: 1,
+        entity: conversationRef(row.id),
+        piiClass: 'none',
+        payload: { id: row.id },
+      });
+    }
+    return { reaped: abandoned.length };
   },
 
   'ticket0/merge': async (ctx, input) => {

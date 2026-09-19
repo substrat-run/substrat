@@ -192,24 +192,41 @@ export const ticket0Manifest = moduleManifest.parse({
   }),
   lists: listsDeclaredBy(ticket0Operations, ticket0Entities),
   /**
-   * The desk's one time-driven rule (#1082): a snooze that has elapsed brings the
-   * conversation back on its own. Everything else here happens because a person
+   * The desk's time-driven rules. Everything else here happens because a person
    * clicked, and should.
    *
-   * Five minutes is the cadence a person perceives as "it came back when I said",
-   * and it is a floor rather than a promise — a schedule can never fire more often
-   * than the platform's own sweep runs.
-   *
-   * The declared permission is what the scope's system principal is granted at
-   * provisioning, so it is also the whole of what this schedule may do: wake
-   * conversations, nothing else. Revoking that grant on one scope turns the timer
-   * off for that desk with no "off" code path.
+   * The declared permissions are what the scope's system principal is granted at
+   * provisioning, so they are also the whole of what these schedules may do.
+   * Revoking a tuple on one scope turns that timer off for that desk with no "off"
+   * code path — which is also why adding a schedule that names a key no existing
+   * schedule named means an existing scope must be re-provisioned before it fires.
    */
   schedules: [
+    /**
+     * A snooze that has elapsed brings the conversation back on its own (#1082).
+     *
+     * Five minutes is the cadence a person perceives as "it came back when I said",
+     * and it is a floor rather than a promise — a schedule can never fire more often
+     * than the platform's own sweep runs.
+     */
     {
       operation: 'ticket0/wake-snoozed',
       cadence: { everyMinutes: 5 },
       permissions: ['conversation:assign'],
+    },
+    /**
+     * The reaper (#1088): conversations nobody ever picked up leave the inbox after
+     * `ABANDONED_AFTER_DAYS` of silence.
+     *
+     * Daily, not five-minutely, because the thing it measures is a month long. A
+     * conversation reaped a few hours after the window elapses is indistinguishable
+     * from one reaped on the stroke of it, and the sweep is a table scan the desk has
+     * no reason to pay for 288 times a day.
+     */
+    {
+      operation: 'ticket0/reap-abandoned',
+      cadence: { everyMinutes: 24 * 60 },
+      permissions: ['conversation:resolve'],
     },
   ],
   entitlementKey: 'ticket0',

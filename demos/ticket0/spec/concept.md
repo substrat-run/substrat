@@ -443,7 +443,11 @@ Each with a recommendation, so this is a choice and not a specification exercise
    visitor to one conversation, and the widget's operations cannot be pointed at another
    one because they take no conversation id (section 4). What remains is the surface, the
    rate limit, and the reaper for abandoned *conversations* — which is a retention policy,
-   not an access-control problem.
+   not an access-control problem. **The reaper is now built** (#1088):
+   `ticket0/reap-abandoned`, a daily schedule that CLOSES — never deletes — a conversation
+   still in `new` that nobody has added to for thirty days. The retention window is a
+   constant in `src/module.ts` rather than the per-desk setting the issue also asked for,
+   because a setting is a column and a column is a migration.
 2. **The widget's surface and CORS.** *Recommended: a second `widget` surface of the same
    vertical on its own hostname, with the embedding-origin allowlist in desk settings and
    CORS support added to the vertical host.* Routing already supports this; the anonymous
