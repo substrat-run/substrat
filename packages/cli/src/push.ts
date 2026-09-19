@@ -1162,6 +1162,7 @@ export async function push(
   // entity registry pushes without one); a model.json that fails the shape is refused,
   // because shipping a manifest the control plane would bounce helps nobody.
   const model = readDeclaredModel(opts.dir);
+  console.log(formatDeclaredModel(model));
   // #1321: what each operation declares it returns, from the emitted openapi.json.
   // Never refuses the push — an observability surface must not cost a release.
   const outputSurface = readDeclaredOutputSurface(opts.dir);
@@ -1399,6 +1400,37 @@ export function readVerticalMeta(dir: string): VerticalMeta {
  * means the file was hand-edited or emitted by an incompatible toolchain, and the control
  * plane would bounce the manifest anyway; failing here costs no network round-trip.
  */
+/**
+ * One line about the entity model, for the person reading a push or a `--check`.
+ *
+ * The absence of a `model.json` is a legitimate state and stays one — it is not an error
+ * and this does not make it one. What it stopped being is SILENT. Every gate we ship passed
+ * without mentioning the artifact, so the first and only place a builder learned their
+ * version carried no model was a dashboard panel, after a successful deploy, saying so.
+ * That is the wrong end of the loop for a fact the CLI has in its hand before the upload.
+ *
+ * Stated in both directions deliberately. A notice nobody ever sees the other half of reads
+ * as noise; the count on the push that DOES carry one is what makes its absence conspicuous
+ * the next time, and it is the cheapest possible confirmation that the file being emitted is
+ * the file being shipped.
+ */
+export function formatDeclaredModel(model: EmittedModel | undefined): string {
+  if (!model) {
+    return (
+      'note: no model.json — this version will record no entity model.\n' +
+      "  Emit one from the vertical's entity registry and check it in; the dashboard's\n" +
+      '  Data → Model tab and `substrat model view .` both read that file.'
+    );
+  }
+  const entities = Object.keys(model.entities).length;
+  const lifecycles = Object.keys(model.lifecycles ?? {}).length;
+  return (
+    `entity model: ${entities} ${entities === 1 ? 'entity' : 'entities'}` +
+    (lifecycles ? `, ${lifecycles} ${lifecycles === 1 ? 'lifecycle' : 'lifecycles'}` : '') +
+    ' (model.json)'
+  );
+}
+
 export function readDeclaredModel(dir: string): EmittedModel | undefined {
   const file = join(dir, 'model.json');
   if (!existsSync(file)) return undefined;
