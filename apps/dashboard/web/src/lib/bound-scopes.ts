@@ -65,3 +65,16 @@ export function looksStrandedByRename(current: DeploymentLike, all: readonly Dep
   const mine = newestPush(current);
   return all.some((d) => d.slug !== current.slug && newestPush(d) > mine);
 }
+
+/**
+ * What a refused Remove tells the person, given the registry's own sentence and how many of
+ * this team's installs the vertical's page lists. The plane counts EVERY team's installs and
+ * the page lists only this team's, so the three cases say different things: none of ours (the
+ * blockers are another team's), some of ours (clearing them may not be enough — the count can
+ * include others), and unknown (the read failed, so promise nothing about the list).
+ */
+export function removalRefusalDetail(message: string, ours: number | null): string {
+  if (ours === 0) return `${message}. None of them are your team’s — another team has this vertical installed.`;
+  if (ours === null) return `${message}. Your team’s installs are listed under Bound scopes on this page.`;
+  return `${message}. Your team’s are listed under Bound scopes on this page — move or retire them; the count can also include other teams’ installs, which only they can clear.`;
+}

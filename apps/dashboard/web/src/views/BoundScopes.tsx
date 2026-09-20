@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Checkbox, Dialog, Input, Select } from '@substrat-run/ui';
 import { api, type BoundScopeRow, type BoundScopesView, type Deployment } from '../lib/api';
 import { hasBoundScopes, isRetireArmed, looksStrandedByRename, moveTargets } from '../lib/bound-scopes';
@@ -36,7 +36,7 @@ const COLUMNS = '2.2fr 0.9fr 1.1fr 2fr';
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-export function BoundScopes({ d, all }: { d: Deployment; all: readonly Deployment[] }) {
+export function BoundScopes({ d, all, onChanged }: { d: Deployment; all: readonly Deployment[]; onChanged: () => void }) {
   const [view, setView] = useState<BoundScopesView | null>(DEV_MOCK ? mockView(d.slug) : null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -50,33 +50,22 @@ export function BoundScopes({ d, all }: { d: Deployment; all: readonly Deploymen
   const [ack, setAck] = useState(false);
   const [typed, setTyped] = useState('');
 
-  // The vertical this page is on NOW — a read that lands after the person has moved to
-  // another vertical's page must not paint that page with the previous one's installs.
-  const current = useRef(d.slug);
-  current.current = d.slug;
-
+  // The caller keys this component by vertical, so a request still in flight when the person
+  // moves to another vertical resolves into a component that is gone — it cannot paint the
+  // next page with the last one's installs, selection or dialog.
   const load = useCallback(async () => {
     if (DEV_MOCK) return;
-    const slug = d.slug;
     try {
-      const next = await api.listBoundScopes(slug);
-      if (current.current !== slug) return;
-      setView(next);
+      setView(await api.listBoundScopes(d.slug));
       setError(null);
     } catch (e) {
-      if (current.current !== slug) return;
       setError(e instanceof Error ? e.message : String(e));
     }
   }, [d.slug]);
 
   useEffect(() => {
-    setView(DEV_MOCK ? mockView(d.slug) : null);
-    setError(null);
-    setSelected(new Set());
-    setNotice(null);
-    setDialog(null);
     void load();
-  }, [d.slug, load]);
+  }, [load]);
 
   const scopes = view?.scopes ?? [];
   const chosen = scopes.filter((s) => selected.has(s.id));
@@ -116,6 +105,9 @@ export function BoundScopes({ d, all }: { d: Deployment; all: readonly Deploymen
         : await api.moveBoundScopes(d.slug, { scopeIds: ids, target, ...(ack ? { ackMigrations: true } : {}) });
       if (DEV_MOCK) setView((v) => dropScopes(v, result.moved));
       else await load();
+      // Partial or whole: something may have left this vertical, so what reads its installs
+      // elsewhere on the page (release adoption) has to look again.
+      if (result.moved.length > 0) onChanged();
       // Whatever moved is off the list now; whatever did not stays selected for the re-run.
       setSelected((sel) => new Set([...sel].filter((id) => !result.moved.includes(id))));
       if (result.refusal) {
@@ -142,6 +134,7 @@ export function BoundScopes({ d, all }: { d: Deployment; all: readonly Deploymen
         : await api.retireBoundScopes(d.slug, { scopeIds: ids, confirm: typed });
       if (DEV_MOCK) setView((v) => dropScopes(v, result.retired));
       else await load();
+      if (result.retired.length > 0) onChanged();
       setSelected((sel) => new Set([...sel].filter((id) => !result.retired.includes(id))));
       if (result.failure) {
         const who = scopes.find((s) => s.id === result.failure!.scopeId)?.slug ?? result.failure.scopeId;

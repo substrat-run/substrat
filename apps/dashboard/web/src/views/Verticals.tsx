@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Input, Select } from '@substrat-run/ui';
 import {
   api,
@@ -557,14 +557,21 @@ function TrafficPanel({ slug }: { slug: string }) {
  * quiet" is exactly the misreading that would invite. Newest eight versions —
  * the ledger is a health view, not the archive (the Versions table above is).
  */
-function ReleasesPanel({ d }: { d: Deployment }) {
+function ReleasesPanel({ d, revision }: { d: Deployment; revision: number }) {
   const [view, setView] = useState<ReleasesView | null>(DEV_MOCK ? MOCK_RELEASES : null);
+  // The vertical the panel last showed: a refetch for the SAME vertical (installs were moved or
+  // retired, so adoption changed) keeps the current view until the fresh one lands, where a
+  // different vertical's would be wrong to leave up.
+  const shown = useRef(d.slug);
 
   useEffect(() => {
     if (DEV_MOCK) return;
     let live = true;
     // Same reason as the chart above: unkeyed, so clear before refetching.
-    setView(null);
+    if (shown.current !== d.slug) {
+      shown.current = d.slug;
+      setView(null);
+    }
     api
       .listReleases(d.slug)
       .then((r) => live && setView(r))
@@ -573,7 +580,7 @@ function ReleasesPanel({ d }: { d: Deployment }) {
     return () => {
       live = false;
     };
-  }, [d.slug]);
+  }, [d.slug, revision]);
 
   if (!view || view.releases.length === 0) return null;
   const rows = view.releases.slice(0, 8);
@@ -785,6 +792,9 @@ export function VerticalDetail({
   onBack: () => void;
 }) {
   const prod = d.channels.find((c) => c.channel === 'prod');
+  // Bumped when installs are moved or retired: the Releases panel's adoption counts
+  // (pinned / following prod) are read from the same scopes and would otherwise go stale.
+  const [installsRevision, setInstallsRevision] = useState(0);
   return (
     <Page>
       <div style={{ display: 'grid', gap: 20 }}>
@@ -833,7 +843,9 @@ export function VerticalDetail({
         </div>
         {/* Above the versions on purpose: it is what a refused Remove is counting, and a
             vertical with no versions can still back installs (the rename case). */}
-        <BoundScopes d={d} all={deployments} />
+        {/* Keyed by vertical: the section holds a selection, an open dialog and typed text, and
+            a request still in flight must not land on the NEXT vertical's page. */}
+        <BoundScopes key={d.slug} d={d} all={deployments} onChanged={() => setInstallsRevision((n) => n + 1)} />
         {d.versions.length === 0 ? (
           <div style={{ padding: 16, color: 'var(--text-tertiary)', fontSize: 13 }}>
             No versions yet — <code>substrat push</code> one.
@@ -856,7 +868,7 @@ export function VerticalDetail({
               </GridTable>
             </div>
             <ProdHistory d={d} busy={busy} onPromote={onPromote} />
-            <ReleasesPanel d={d} />
+            <ReleasesPanel d={d} revision={installsRevision} />
             <PreviewsPanel d={d} busy={busy} />
             <IssuesPanel d={d} />
             <FailuresPanel d={d} />

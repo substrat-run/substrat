@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toast, Dialog, Input, SupportWidget, useAutoRefresh } from '@substrat-run/ui';
 import { api, signIn, signOut, ApiError, needsOnboarding, type AppAuthChoice, type AppRow, type CatalogEntry, type Deployment, type GitReposResult, type Me, type MeResult, type Member, type InviteRole } from './lib/api';
 import { DEV_MOCK, MOCK_APPS, MOCK_CATALOG, MOCK_DEPLOYMENTS, MOCK_GIT_REPOS, MOCK_ME, MOCK_MEMBERS } from './lib/mock';
+import { removalRefusalDetail } from './lib/bound-scopes';
 import { navigate as go, obsPath, setTeamSlug, teamPath } from './lib/router';
 import { verticalMeta } from './lib/demo';
 import { DashShell, type Crumb, type NavKey } from './components/DashShell';
@@ -528,14 +529,7 @@ export function App() {
           // The plane counts every team's installs; the page lists only this team's. When
           // none of the counted ones are ours, say so instead of pointing at an empty list.
           const ours = await api.listBoundScopes(slug).then((v) => v.scopes.length).catch(() => null);
-          setToast({
-            status: 'danger',
-            title: 'Removal refused',
-            detail:
-              ours === 0
-                ? `${e.message}. None of them are your team’s — another team has this vertical installed.`
-                : `${e.message}. Your team’s are listed under Bound scopes on this page — move or retire them, then remove the vertical.`,
-          });
+          setToast({ status: 'danger', title: 'Removal refused', detail: removalRefusalDetail(e.message, ours) });
         } else {
           setToast({ status: 'danger', title: 'Removal failed', detail: e instanceof Error ? e.message : String(e) });
         }

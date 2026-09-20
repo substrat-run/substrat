@@ -520,6 +520,22 @@ describe('the browser helpers agree with the worker’s guard', () => {
     expect(web.isRetireArmed('0', 0)).toBe(false);
   });
 
+  it('says different things about a refused Remove depending on whose installs are counted', () => {
+    const refusal = "vertical 'acme/courses' still backs 3 scope(s) — delete or rebind them first";
+    // None are ours: do not point at an empty list.
+    expect(web.removalRefusalDetail(refusal, 0)).toMatch(/None of them are your team’s/);
+    // Some are ours: point at the list, but never promise that clearing it is enough.
+    const some = web.removalRefusalDetail(refusal, 2);
+    expect(some).toMatch(/listed under Bound scopes/);
+    expect(some).toMatch(/can also include other teams’ installs/);
+    // Read failed: promise nothing about what the list holds.
+    const unknown = web.removalRefusalDetail(refusal, null);
+    expect(unknown).not.toMatch(/None of them/);
+    expect(unknown).not.toMatch(/move or retire them/);
+    // The registry's own sentence always leads, verbatim.
+    for (const n of [0, 2, null]) expect(web.removalRefusalDetail(refusal, n).startsWith(refusal)).toBe(true);
+  });
+
   it('renders a section only when something is bound — a vertical backing nothing gets none', () => {
     const row = { id: 'x', slug: 'hr', name: 'HR', status: 'active', fork: false, movable: true, verticalVersionId: null, createdAt: '2026-09-01T00:00:00Z', hostnames: [] };
     expect(web.hasBoundScopes(null)).toBe(false); // still loading: nothing to flash
