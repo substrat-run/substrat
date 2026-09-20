@@ -98,6 +98,20 @@ export const SIGNUP_RESEND_SECONDS = 120;
  */
 export const SIGNUP_HOURLY_MAX = 200;
 
+/**
+ * The longest a block rule's value may be (#1088).
+ *
+ * An address, a domain or a ULID — none of them approaches this. It is a ceiling on
+ * what a public door's abuser can make an admin paste into a table, not a rule about
+ * what a real address looks like: the shape of an address is `z.string().email()`'s
+ * business at the point of use, and this table also holds domains and ids, which are
+ * neither.
+ */
+export const BLOCK_VALUE_MAX = 320;
+
+/** How much of a reason the row keeps. A sentence about why, never a case file. */
+export const BLOCK_REASON_MAX = 500;
+
 export const DESK_METRICS_AGENTS = 25;
 
 /** The window `ticket0/desk-metrics` reports when the caller names neither end. */
@@ -467,6 +481,69 @@ export const ticket0Entities = defineEntities({
       created_at: z.string(),
       updated_at: z.string(),
     }),
+  },
+
+  /**
+   * One sender this desk refuses, checked before it spends anything on them (#1088).
+   *
+   * ## Its own table rather than a column on `deskSettings`
+   *
+   * A JSON array on the desk row was the cheaper shape and it gets two things wrong,
+   * both of which are the whole reason a desk keeps a list like this:
+   *
+   *  1. **Removing one rule would be a read-modify-write of every rule.** Two admins
+   *     unblocking two different people in the same minute, and one of them is silently
+   *     back. Here a removal is a `DELETE` of one row and touches nothing else.
+   *  2. **"Who added this, and when" would have nowhere to live.** A blocklist is a
+   *     record of decisions somebody made about named people, and the first question
+   *     asked of a wrong one is who made it. `created_by` and `created_at` are columns
+   *     because that question has to be answerable months later.
+   *
+   * ## What it is keyed on, and what it deliberately is not
+   *
+   * Three kinds, and each is something the desk actually holds at the moment it has to
+   * decide:
+   *
+   *  - `email` — one address, lower-cased the way `addressKey` keys every other address
+   *    in this desk. What inbound mail carries.
+   *  - `domain` — everything after the `@`, and its sub-domains. One rule for a whole
+   *    throwaway-mailbox provider, which is the shape abuse from email actually takes.
+   *  - `contact` — a contact id. The only handle the WIDGET has: an anonymous visitor
+   *    types no address, and per the client-context seam there is deliberately no IP to
+   *    key on. It bites from the visitor's second message onwards, and on every later
+   *    session of a visitor the host site vouched for.
+   *
+   * **No `origin` kind**, and that is a decision rather than an omission: refusing an
+   * origin is what `desk_settings.allowed_origins` already does, and an origin rule
+   * beside it would be a second place to say the same thing — which is how the two come
+   * to disagree. The issue asks for one because the allowlist is blunt; it is blunt for
+   * origins in exactly the way this table is precise for senders, and nothing here
+   * makes a per-site widget less all-or-nothing.
+   *
+   * ## `value` is NOT `erasable`, and that is the uncomfortable half
+   *
+   * `contact.email` is erasable; this is the same address written down again, and it
+   * stays. A suppression list that erasure empties silently starts accepting the person
+   * it was built to refuse, which is the one failure mode worse than holding the row.
+   * The cost is real and is stated rather than hidden: erasing a contact leaves their
+   * address legible here, reachable by whoever holds `desk:configure`. A human should
+   * agree with that before it ships.
+   */
+  blockRule: {
+    table: 'ticket0_block_rules',
+    fields: z.object({
+      id: z.string(),
+      kind: z.enum(['email', 'domain', 'contact']),
+      /** Normalised by the handler that writes it — never whatever was typed. */
+      value: z.string(),
+      /** Why, in the words of whoever decided. Null when they said nothing. */
+      reason: z.string().nullable(),
+      created_by: z.string(),
+      created_at: z.string(),
+    }),
+    // One rule per (kind, value): blocking an address twice is the same decision made
+    // twice, and two rows would mean removing it once leaves it in force.
+    key: ['kind', 'value'],
   },
 
   /**
@@ -859,6 +936,95 @@ export const ticket0Operations = defineOperations(ticket0Entities, TICKET0_PERMI
       // The secret itself is not in the payload, for the obvious reason: events are
       // immutable, and an immutable copy of a secret cannot be rotated away.
       payload: ['id'],
+    },
+  },
+
+  // ─── The blocklist ───────────────────────────────────────────────────────────
+  //
+  // Three operations under `desk:configure`, and no fourth key. Deciding who may
+  // reach this desk is the same authority as deciding which sites may embed it and
+  // which address it answers from — `allowed_origins` is the blunt version of this
+  // very list and already lives there. A `conversation:moderate` key would have been
+  // a second answer to "who governs the door", held by the same role, and the second
+  // answer is the one that later disagrees.
+
+  'ticket0/list-block-rules': {
+    summary: 'Who this desk refuses',
+    permission: 'desk:configure',
+    input: z.object({ kind: z.enum(['email', 'domain', 'contact']).optional() }),
+    output: ticket0Entities.blockRule.fields,
+    paged: {
+      over: {
+        entity: 'blockRule',
+        sortable: ['created_at'],
+        filterable: ['kind'],
+      },
+      order: 'desc',
+      total: true,
+    },
+    http: { method: 'GET', path: '/desk/block-rules' },
+  },
+
+  /**
+   * Stop hearing from someone.
+   *
+   * `value` is whatever a person typed and is normalised before it is stored — an
+   * address is lower-cased, a domain loses a leading `@` and any casing. That happens
+   * in the handler rather than here because the schema's job is to say what may be
+   * SENT, and refusing `Mailer@Example.com` for its capital M would be a rule about
+   * typing rather than about senders.
+   *
+   * Adding a rule that already exists answers with the rule that already exists, and
+   * writes nothing. A second click on Block is the same decision, not a conflict, and
+   * a 409 there would be the desk arguing with an admin who agrees with it.
+   */
+  'ticket0/add-block-rule': {
+    summary: 'Refuse a sender',
+    permission: 'desk:configure',
+    input: z.object({
+      kind: z.enum(['email', 'domain', 'contact']),
+      value: z.string().min(1).max(BLOCK_VALUE_MAX),
+      reason: z.string().max(BLOCK_REASON_MAX).nullable().optional(),
+    }),
+    output: ticket0Entities.blockRule.fields,
+    http: { method: 'POST', path: '/desk/block-rules' },
+    emits: {
+      entity: 'blockRule',
+      entityIdFrom: 'id',
+      type: 'ticket0.block-rule-added',
+      schemaVersion: 1,
+      /**
+       * `none`, because `value` is NOT on the payload — and that is the decision, not
+       * an oversight about fatness.
+       *
+       * An event is immutable. Putting the address on it would write a person's
+       * direct identifier into the outbox permanently in order to announce that the
+       * desk has decided to stop hearing from them, where no erasure can reach it.
+       * The same reasoning that keeps a message body off `ticket0.reply-requested`,
+       * which is why `ticket0/read-outbound` exists: what the event carries is that a
+       * rule changed, which one, and who decided. WHICH SENDER is read back from the
+       * table by a caller that holds `desk:configure`, which is exactly the set of
+       * people entitled to know.
+       */
+      piiClass: 'none',
+      payload: ['id', 'kind', 'created_by', 'created_at'],
+    },
+  },
+
+  'ticket0/remove-block-rule': {
+    summary: 'Hear from them again',
+    permission: 'desk:configure',
+    input: z.object({ ruleId: z.string() }),
+    output: z.object({ id: z.string(), kind: z.enum(['email', 'domain', 'contact']) }),
+    http: { method: 'DELETE', path: '/desk/block-rules/{ruleId}' },
+    emits: {
+      entity: 'blockRule',
+      entityIdFrom: 'id',
+      type: 'ticket0.block-rule-removed',
+      schemaVersion: 1,
+      // Same reason as the add: the id says which rule, and the table says who.
+      piiClass: 'none',
+      payload: ['id', 'kind'],
     },
   },
 

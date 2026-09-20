@@ -44,6 +44,11 @@
       "version": "0009",
       "slug": "add-ticket0_desk_settings-abandoned_after_days",
       "sql": "ALTER TABLE ticket0_desk_settings ADD COLUMN abandoned_after_days INTEGER;"
+    },
+    {
+      "version": "0010",
+      "slug": "add-ticket0_block_rules",
+      "sql": "CREATE TABLE ticket0_block_rules (\n  id TEXT PRIMARY KEY NOT NULL,\n  kind TEXT NOT NULL CHECK (kind IN ('email','domain','contact')),\n  value TEXT NOT NULL,\n  reason TEXT,\n  created_by TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (kind, value)\n);"
     }
   ]
 }

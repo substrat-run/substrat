@@ -293,4 +293,19 @@ export const ticket0Migrations: SqlMigration[] = [
       ALTER TABLE ticket0_desk_settings ADD COLUMN abandoned_after_days INTEGER;
     `,
   },
+  {
+    // add-ticket0_block_rules
+    version: '0010',
+    sql: `
+      CREATE TABLE ticket0_block_rules (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('email','domain','contact')),
+        value TEXT NOT NULL,
+        reason TEXT,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (kind, value)
+      );
+    `,
+  },
 ];
