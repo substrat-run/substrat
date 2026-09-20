@@ -1626,6 +1626,35 @@ export function scopeHostContractSuite(
           expect(after.status).toBe('failed');
         });
 
+        it('refuses a stale drain settling a row the erasure already redacted', async () => {
+          // The drain reads pending rows, runs the handler, then settles — so a settle can
+          // arrive after the erasure landed, carrying a provider's reply that quotes the
+          // person. Settling by id alone wrote that name back into `last_error` on a row
+          // whose payload had just been emptied. The settle is a compare-and-set on
+          // `pending`, so the stale pass is ignored rather than undoing the erasure.
+          //
+          // What this does NOT claim to stop is the DELIVERY: a handler that already read
+          // the payload has it. Only the writeback onto the redacted row is refused.
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          await host.settlePlatformRequest(t1, s1, id, {
+            status: 'done',
+            result: { eventId: 'delivered-before-the-shred' },
+            lastError: 'HTTP 409: Anna Ek requires a valid personal number field',
+          });
+
+          const after = (await journal(kind)).find((r) => r.id === id)!;
+          expect(JSON.stringify(after)).not.toContain('Anna Ek');
+          // The erasure's own settlement stands; the stale pass changed nothing at all.
+          expect(after.status).toBe('failed');
+          expect(after.result).toBeNull();
+          expect(after.attempts).toBe(0);
+        });
+
         it('spares an intent whose embedded event is classified `none`', async () => {
           // The outbox spares such an event even when it names the subject, so a COPY of
           // it judged more harshly than its original would be incoherent, not stricter.

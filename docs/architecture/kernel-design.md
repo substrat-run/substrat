@@ -1329,11 +1329,14 @@ at}}`) that no drain handler's schema will parse; `last_error` goes with it, bei
 provider wrote about this person; and a still-`pending` intent is settled `failed` in the same
 statement, so nothing is ever handed a tombstone to execute. Which intents are selected is the
 outbox's own predicate — `subject_id = ? AND pii_class != 'none'` — applied to whatever spine
-envelope the payload embeds, so a copy is never judged more harshly than its original. One
-window stays open and is worth naming: a drain that had already read a payload when the erasure
-landed delivers what it read, and its settle can write a provider's reply back onto the row.
-That is the same window a consumer mid-dispatch has against the outbox redaction; closing it
-wants a lock across the drain hop, not a different shape here.
+envelope the payload embeds, so a copy is never judged more harshly than its original. The
+drain race splits in two, and only one half is open. A drain that had already **read** a
+payload when the erasure landed still **delivers** what it read — that is the same window a
+consumer mid-dispatch has against the outbox redaction, and closing it wants a lock across the
+drain hop. Its **writeback** is a different matter and is closed: settling an intent is a
+compare-and-set on `status = 'pending'`, so a stale pass cannot overwrite the redaction or
+write a provider's reply — which can quote the person — back into `last_error`. Nothing
+legitimate is refused by that, because the drain only ever reads pending rows.
 
 **A platform-retained copy is not mutable, so erasure there is cryptographic.** Reap
 backups and stored dumps are full-fidelity on purpose — a backup that cannot restore is a

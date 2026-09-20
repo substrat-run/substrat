@@ -22,3 +22,11 @@ intents are selected is the outbox's own predicate — the subject, and a `piiCl
 than `none` — read off whatever event the payload embeds, so a copy is never judged more
 harshly than the original. `SubjectShredReceipt` gains `intentsRedacted` beside
 `eventsRedacted`, defaulted so an older receipt still parses.
+
+Settling a platform intent is now a compare-and-set on `status = 'pending'`. The drain
+reads pending rows, runs a handler, then settles, so a settle can land after an erasure
+has redacted the row — and settling by `id` alone wrote a provider's reply, which can
+quote the person, back into `last_error` on a row whose payload had just been emptied.
+Nothing legitimate is refused: the drain only ever reads pending rows, so every settle
+targets one that was pending when it was read. A settle that finds the row already
+terminal now does nothing.

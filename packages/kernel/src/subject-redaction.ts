@@ -56,10 +56,14 @@ export const REDACTED_INTENT_MARKER = '_substratRedacted';
  *   only key is this marker. So a drain that reaches the row after the redaction settles
  *   loudly instead of executing a tombstone as if it were an instruction. What this does
  *   NOT close, and should not be read as closing, is the drain that had already READ the
- *   payload when the erasure landed: it delivers what it read, and its `settle` can write
- *   a provider's reply back onto the row. That window is the one the outbox redaction has
- *   too — a consumer mid-dispatch holds the payload it was handed — and closing it wants a
- *   lock across the drain hop rather than a shape here.
+ *   payload when the erasure landed: it DELIVERS what it read. That window is the one the
+ *   outbox redaction has too — a consumer mid-dispatch holds the payload it was handed —
+ *   and closing it wants a lock across the drain hop rather than a shape here. Its
+ *   WRITEBACK is closed separately and is not part of that residue: `settlePlatformRequest`
+ *   is a compare-and-set on `status = 'pending'` on both adapters, so a stale pass cannot
+ *   undo the redaction or put a provider's reply — which can quote the person — back into
+ *   `last_error`. The two halves were one sentence in the first cut of this file, which
+ *   made an avoidable write look as unavoidable as the delivery.
  * - **It keeps the pseudonymous key, exactly as the outbox row does.** The redacted
  *   outbox row still carries `subject_id`; §5.3's "pseudonymous keys and transaction
  *   facts remain" is the same sentence here. A row that is blank for no stated reason
@@ -181,10 +185,10 @@ export function platformRequestRedactionParams(
  * envelope — those two field names occur together nowhere else — so wherever the spine
  * has copied one into an intent, the copy inherits the original's redaction.
  *
- * Returns false for an already-redacted payload (the marker short-circuits, so a re-run
- * after a crash converges rather than re-stamping) and false for a payload that is not
- * JSON at all, which nothing in the kernel can write but which a stricter answer would
- * have to invent a meaning for.
+ * Returns false for a payload that IS already a tombstone (so a re-run after a crash
+ * converges rather than re-stamping) and false for a payload that is not JSON at all,
+ * which nothing in the kernel can write but which a stricter answer would have to invent
+ * a meaning for.
  */
 export function intentPayloadCarriesSubject(payloadText: string, subjectId: string): boolean {
   let parsed: unknown;
@@ -193,17 +197,47 @@ export function intentPayloadCarriesSubject(payloadText: string, subjectId: stri
   } catch {
     return false;
   }
+  if (isRedactedPayload(parsed)) return false;
   return carriesSubject(parsed, subjectId);
+}
+
+/**
+ * Is this payload one we already redacted?
+ *
+ * **Asked of the WHOLE payload, once, and never inside the walk (#1600 review).** The
+ * first cut short-circuited the walk at any object carrying the marker key, which made
+ * `{ _substratRedacted: false, event: <a real envelope> }` a payload the erasure stepped
+ * straight past, PII and all — and the comment beside it claimed the check was redundant
+ * belt-and-braces because a tombstone has no `piiClass`. That was true of the tombstone
+ * and false of everything else wearing its key. An intent payload is `unknown` and module
+ * code chooses it, so a marker that means "stop looking" must not be something a payload
+ * can merely CONTAIN.
+ *
+ * The invariant asked instead is un-forgeable in the only way that matters: *a payload
+ * that is nothing but a redaction tombstone is already redacted*. One top-level key, and
+ * that key's value says why. Anything beside the marker is not this, gets walked, and is
+ * judged on its own contents — which is exactly right, because something beside the
+ * marker is something the erasure might need to reach. Inner fields beyond `reason` are
+ * deliberately not pinned: a later tombstone that carries more would still be nothing but
+ * a tombstone, and hard-coding its shape here is how idempotency would quietly regress.
+ */
+function isRedactedPayload(parsed: unknown): boolean {
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+  const keys = Object.keys(parsed);
+  if (keys.length !== 1 || keys[0] !== REDACTED_INTENT_MARKER) return false;
+  const marker = (parsed as Record<string, unknown>)[REDACTED_INTENT_MARKER];
+  return (
+    typeof marker === 'object' &&
+    marker !== null &&
+    !Array.isArray(marker) &&
+    (marker as Record<string, unknown>)['reason'] === 'subject-erasure'
+  );
 }
 
 function carriesSubject(node: unknown, subjectId: string): boolean {
   if (Array.isArray(node)) return node.some((child) => carriesSubject(child, subjectId));
   if (node === null || typeof node !== 'object') return false;
   const obj = node as Record<string, unknown>;
-  // Already a tombstone. Belt and braces — the marker object carries no `piiClass`, so
-  // the test below would decline it anyway — but idempotency here should be a stated
-  // property rather than a lucky consequence of the shape chosen above.
-  if (obj[REDACTED_INTENT_MARKER] !== undefined) return false;
   if (
     obj['subjectId'] === subjectId &&
     typeof obj['piiClass'] === 'string' &&

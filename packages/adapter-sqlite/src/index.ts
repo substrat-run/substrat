@@ -4243,12 +4243,20 @@ export class SqliteScopeHost implements ScopeHost {
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
     await rt.actor.enqueue(() => {
+      // Compare-and-set on `pending` (#1600 review). The drain reads pending rows, runs a
+      // handler, then settles — and between the read and the settle a subject erasure can
+      // redact the row. Settling by `id` alone let that stale pass overwrite the redaction
+      // and write a provider's reply, which can quote the person, back into `last_error`.
+      // Nothing legitimate is refused by this: `listPlatformRequests` returns only pending
+      // rows, so every settle in the tree targets one that was pending when it was read.
+      // A settle that finds the row already terminal does nothing, deliberately silently —
+      // throwing would make the drain's blanket catch retry a row that is correctly over.
       rt.db
         .prepare(
           `UPDATE _substrat_platform_requests
              SET status = ?, result = COALESCE(?, result), last_error = ?, last_failure = ?,
                  attempts = attempts + 1, settled_at = ?
-           WHERE id = ?`,
+           WHERE id = ? AND status = 'pending'`,
         )
         .run(
           outcome.status,

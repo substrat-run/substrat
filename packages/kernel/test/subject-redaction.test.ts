@@ -89,6 +89,34 @@ describe('subject redaction — which intents an erasure selects', () => {
     expect(intentPayloadCarriesSubject(tombstone, subject)).toBe(false);
   });
 
+  it('is not talked out of the walk by a payload merely WEARING the marker key', () => {
+    // #1600 review. An intent payload is `unknown` and module code chooses it, so a
+    // short-circuit on the key's presence made this a payload the erasure stepped past
+    // with the envelope still in it. The tombstone is recognised by being the WHOLE
+    // payload; anything beside the marker is walked and judged on its own contents.
+    const subject = ulid();
+    const dispatch = JSON.parse(dispatchFor(subject, 'Anna Ek')) as Record<string, unknown>;
+    for (const decoy of [false, null, 0, 'yes', { reason: 'subject-erasure' }]) {
+      const wearing = JSON.stringify({ [REDACTED_INTENT_MARKER]: decoy, ...dispatch });
+      expect(intentPayloadCarriesSubject(wearing, subject)).toBe(true);
+    }
+    // And nested one level down, where the walk — not the top-level check — is what looks.
+    const buried = JSON.stringify({
+      batch: [{ [REDACTED_INTENT_MARKER]: { reason: 'subject-erasure' }, ...dispatch }],
+    });
+    expect(intentPayloadCarriesSubject(buried, subject)).toBe(true);
+  });
+
+  it('still declines a tombstone that later grows a field', () => {
+    // Idempotency must not depend on the tombstone's exact inner shape: a payload that is
+    // nothing BUT a tombstone has nothing beside it for the erasure to reach.
+    const subject = ulid();
+    const grown = JSON.stringify({
+      [REDACTED_INTENT_MARKER]: { reason: 'subject-erasure', subjectId: subject, at: 'x', by: 'staff' },
+    });
+    expect(intentPayloadCarriesSubject(grown, subject)).toBe(false);
+  });
+
   it('the tombstone is refused by the handler that would have drained the intent', () => {
     // The backstop under "never silently drain a redacted intent": even a drain that read
     // the row before the redaction and parses it after must fail loudly, not deliver a

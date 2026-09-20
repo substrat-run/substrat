@@ -121,6 +121,13 @@ are selected is the outbox's own predicate applied to whatever `DomainEvent` the
 embeds — which today means the `connector:<provider>` family, the one kind that carries a whole
 event by design.
 
+That is also why **settling an intent is a compare-and-set on `status = 'pending'`**. The drain
+reads pending rows, runs a handler, then settles, so a settle can arrive after an erasure has
+redacted the row — and settling by `id` alone put a provider's reply, which can quote the
+person, back into `last_error` on a row whose payload had just been emptied. Nothing legitimate
+is refused: the drain only ever reads pending rows, so every settle targets one that was
+pending when it was read.
+
 ### 2. The kernel verb — `ctx.requestPlatform`
 
 A new `OperationContext` method, sibling to `ctx.emit`/`ctx.check`/`ctx.link`:
