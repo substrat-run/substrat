@@ -6,9 +6,14 @@ import { TenantNarrowedControlPlane, ControlPlaneError } from '../src/authority.
 /**
  * The §4 seam (docs/architecture/dashboard.md): the Dashboard effects provisioning on the
  * shared control plane, but ONLY inside the caller's own tenant. The tenant is pinned
- * at construction, so operation code cannot name another — cross-tenant is impossible
- * by construction. These tests exercise that the pinned tenant is injected on every
- * write, the routes/headers are right, and idempotent creates tolerate a conflict.
+ * at construction, so operation code cannot name another. These tests exercise that the
+ * pinned tenant is injected on every write, the routes/headers are right, and idempotent
+ * creates tolerate a conflict.
+ *
+ * What they do NOT prove, and what #977 is about: that the plane would refuse this seam
+ * if it asked for a different tenant. That property belongs to the credential and is
+ * asserted where it is enforced — `packages/control-plane-api/test/tenant-token.test.ts`.
+ * A test here can only ever show the dashboard sending the id it meant to send.
  */
 describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', () => {
   const T = tenantId.parse(ulid());
@@ -32,7 +37,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
       actor: '01JZ000000000000000000TEST',
-      serviceToken: 'secret-token',
+      credential: 'secret-token',
       tenantId: T,
       fetch,
     });
@@ -168,7 +173,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
       actor: '01JZ000000000000000000TEST',
-      serviceToken: 'secret-token',
+      credential: 'secret-token',
       tenantId: T,
       fetch,
     });
@@ -264,7 +269,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
       actor: '01JZ000000000000000000TEST',
-      serviceToken: 'secret-token',
+      credential: 'secret-token',
       tenantId: T,
       fetch,
     });
@@ -387,7 +392,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
     const cp = new TenantNarrowedControlPlane({
       baseUrl: 'https://cp/api',
       actor: '01JZ000000000000000000TEST',
-      serviceToken: 'secret-token',
+      credential: 'secret-token',
       tenantId: T,
       fetch,
     });
@@ -645,7 +650,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       const cp = new TenantNarrowedControlPlane({
         baseUrl: 'https://cp/api',
         actor: '01JZ000000000000000000TEST',
-        serviceToken: 'secret-token',
+        credential: 'secret-token',
         tenantId: T,
         fetch,
       });
@@ -740,7 +745,7 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
       const cp = new TenantNarrowedControlPlane({
         baseUrl: 'https://cp/api',
         actor: '01JZ000000000000000000TEST',
-        serviceToken: 'secret-token',
+        credential: 'secret-token',
         tenantId: T,
         fetch,
       });
@@ -798,5 +803,77 @@ describe('TenantNarrowedControlPlane — the tenant-narrowed authority seam', ()
   it('versionRegistry returns null on a non-200 (unknown/unreadable) rather than throwing', async () => {
     const { cp } = harness(404, { error: 'not found' });
     expect(await cp.versionRegistry('acme/helpdesk', 'ghost')).toBeNull();
+  });
+
+  // -- the credential provider (#977) ---------------------------------------
+
+  describe('the credential is resolved per call, not baked in', () => {
+    const drive = (
+      credential: string | ((opts?: { fresh?: boolean }) => Promise<string>),
+      status: (n: number) => number = () => 200,
+    ) => {
+      const tokens: (string | null)[] = [];
+      const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        tokens.push(new Headers(init?.headers).get('x-service-token'));
+        return new Response(JSON.stringify({ entries: [], nextCursor: null }), {
+          status: status(tokens.length), headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof globalThis.fetch;
+      const cp = new TenantNarrowedControlPlane({
+        baseUrl: 'https://cp/api', actor: '01JZ000000000000000000TEST', credential, tenantId: T, fetch,
+      });
+      return { cp, tokens };
+    };
+
+    it('presents what the provider resolves, on every call', async () => {
+      let n = 0;
+      const { cp, tokens } = drive(async () => `stt1.minted-${++n}`);
+      await cp.listScopes('acme/app');
+      await cp.listScopes('acme/app');
+      // Two calls, two resolutions: the seam holds no copy of its own. Caching is the
+      // provider's business, which is what lets the worker mint once per isolate
+      // without any of the ~90 call sites knowing a mint exists.
+      expect(tokens).toEqual(['stt1.minted-1', 'stt1.minted-2']);
+    });
+
+    it('a provider that cannot mint fails the call — it never falls back', async () => {
+      class NotConfigured extends Error {}
+      const { cp, tokens } = drive(() => Promise.reject(new NotConfigured('no tenant credential')));
+      // The provider's own error, NOT rewrapped as a transport failure: the worker
+      // answers 503 naming what is unconfigured, and burying that under "control plane
+      // unreachable" would send an operator looking at the wrong thing.
+      await expect(cp.listScopes('acme/app')).rejects.toBeInstanceOf(NotConfigured);
+      // Nothing reached the plane: there is no second, fleet-wide credential to try.
+      // A fallback here would make #977's fix optional in practice, which is the whole
+      // reason the dashboard 503s on a plane that cannot mint.
+      expect(tokens).toEqual([]);
+    });
+
+    it('re-mints once on a 401 — the rotation blip, not 401s until the isolate recycles', async () => {
+      // The plane refuses the first credential (its signing secret was rotated under
+      // this isolate) and accepts the re-minted one.
+      let minted = 0;
+      const { cp, tokens } = drive(
+        async (opts) => {
+          if (opts?.fresh) minted += 1;
+          return `stt1.mint-${minted}`;
+        },
+        (n) => (n === 1 ? 401 : 200),
+      );
+      await cp.listScopes('acme/app');
+      expect(tokens).toEqual(['stt1.mint-0', 'stt1.mint-1']);
+    });
+
+    it('does not retry forever — a second 401 is the answer', async () => {
+      const { cp, tokens } = drive(async () => 'stt1.dead', () => 401);
+      await expect(cp.listScopes('acme/app')).rejects.toThrow();
+      expect(tokens).toHaveLength(2);
+    });
+
+    it('still accepts a plain string — the shape the tests and self-host use', async () => {
+      const { cp, tokens } = drive('a-literal-token');
+      await cp.listScopes('acme/app');
+      expect(tokens).toEqual(['a-literal-token']);
+    });
   });
 });

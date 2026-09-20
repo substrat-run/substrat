@@ -164,7 +164,7 @@ API. It is: the kernel's permission model deciding *can they*, and a **tenant-na
 actor** deciding *where* — the two halves the kernel already enforces for every scope operation and
 every connection.
 
-### Move 1 is built; move 2 is enforced in the caller (#977)
+### Move 1 is built; move 2's narrowing is built, its audit half is not (#977)
 
 The seam exists and has the right shape. `TenantNarrowedControlPlane`
 (`apps/dashboard/src/authority.ts`) takes `tenantId` as a **constructor** argument, fixed from the
@@ -172,31 +172,44 @@ caller's session, and no method on it accepts one — so Dashboard operation cod
 name another tenant. Move 1 is likewise real: an operation checks its permission in the customer's
 own scope before any of this runs.
 
-What move 2 claims beyond that is **not** what the code does today, in two ways:
+**That used to be the whole of it, and it was not enough.** The Dashboard authenticated to the
+shared control plane with `SERVICE_TOKEN`, which `packages/control-plane-api/src/api.ts` turned
+into a `kind: 'staff'` principal — the same class, and the same reach over every tenant, that a
+Substrat operator's SSO session gets. The plane was never told which tenant a call was on behalf
+of, so it could not refuse one that named another. "Cross-tenant is impossible by construction"
+held only as far as `apps/dashboard/src/worker.ts`, the same process that held the token: a bug at
+any of its ~90 call sites was a cross-tenant bug rather than a 403.
 
-- **The credential is fleet-wide, so the server does not enforce the narrowing.** The Dashboard
-  authenticates to the shared control plane with `SERVICE_TOKEN`, which
-  `packages/control-plane-api/src/api.ts` turns into a `kind: 'staff'` principal — the same class,
-  and the same reach over every tenant, that a Substrat operator's SSO session gets. (Only the
-  *actor* differs: a staff session names the human it authenticated, one per row of the D1
-  roster, whereas every service-token call is the single fixed `SERVICE_ACTOR`.) The control plane
-  is never told which tenant a call is on behalf of, so it cannot refuse one that names another.
-  "Cross-tenant is impossible by construction" therefore holds only as far as
-  `apps/dashboard/src/worker.ts` — the same process that holds the token. It is a client-side
-  narrowing, and a bug in the Dashboard is a cross-tenant bug rather than a 403.
-- **The audit row names the machine, not the customer.** Writes are stamped with the fixed
-  `SERVICE_ACTOR` (`apps/control-plane/src/worker.ts`), so the admin log records *the Dashboard
-  did this*, not *this customer's admin did this*. The `x-platform-actor` header the client sends
-  alongside the token is read only under `ALLOW_DEV_ACTOR` — local dev and tests — and is ignored
-  on a real deploy.
+**The credential half is now built.** `packages/control-plane-api/src/tenant-token.ts` mints an
+`stt1.…` **tenant token** — the same stateless HMAC shape the CI push token established next door,
+with a claim that carries the tenant and nothing else. It resolves to a third principal kind,
+`kind: 'tenant'`: the Dashboard's *capability*, one tenant's *reach*.
 
-**What closes it: a tenant-scoped credential class on the control-plane side** (#977). The shape
-already exists next door: `packages/control-plane-api/src/push-token.ts` mints a **tenant-scoped**
-CI credential that resolves to a `kind: 'builder'` principal carrying its own `tenantId`, and the
-API's route allowlist plus its per-route ownership checks then enforce the narrowing server-side.
-The Dashboard's on-behalf-of calls want the same treatment, with the customer's principal carried
-far enough that the audit row can name it. Until that lands, read move 2 above as the target, not
-as a property of the deployed system.
+Confinement is the plane's, in one place (`createControlPlaneApi`):
+
+- a **default-deny route allowlist**, the same reflex `BUILDER_ROUTES` uses — a route not listed
+  403s, so forgetting one costs a Dashboard feature and never reach;
+- every listed route declares **how its tenant is named** — the `/tenants/:tenantId/…` path, a
+  forced `?tenantId=`, a body field, or ownership of the vertical/hostname it addresses — and the
+  pin must be **present**, because a missing filter is exactly what made these routes answer
+  fleet-wide;
+- any tenant named anywhere the middleware can see it — including the `x-substrat-tenant` header —
+  must be this credential's own, so the pre-#977 shape (a fleet credential plus a caller-asserted
+  tenant) cannot survive as a way to ask for someone else's.
+
+The Dashboard holds `CP_SERVICE_TOKEN` for exactly one remaining act: asking the plane to mint a
+tenant token (`POST /tenant-tokens`, staff-only and on neither allowlist, so a tenant token can
+never mint another). That is the one fleet-wide capability a multi-tenant dashboard cannot avoid,
+and it is now a single audited route rather than ambient staff reach across sixty.
+
+**The audit half is still open.** Writes are stamped with the fixed `SERVICE_ACTOR`
+(`apps/control-plane/src/worker.ts`), so the admin log records *the Dashboard did this*, not *this
+customer's admin did this*. The tenant token deliberately carries no actor — the host supplies it,
+exactly as `serviceTokenAuth` does — so nothing about a minted credential can change what a row
+names. Carrying the customer's own `PrincipalId` that far is the second half of #977 and its own
+change: it makes `PlatformActorId` stop being the type of an audit actor, which is kernel-facing.
+Until it lands, read the *attribution* clause of move 2 as the target rather than as a property of
+the deployed system; the *narrowing* clause is now real.
 
 ### The privileged seam, concretely
 
@@ -212,8 +225,9 @@ proposes a third answer — **neither**, because a sandbox-clean Dashboard needs
 a read-only, tenant-scoped seam for the platform-owned facts it displays — and is awaiting
 ratification. Either way the
 safety rests on three things already true elsewhere: the permission check runs first, the tenant is
-ambient not supplied, and the action is audited — subject to the two qualifications above, since
-today the second is enforced by the caller and the third names `SERVICE_ACTOR`.
+ambient not supplied, and the action is audited — subject to the qualification above, since the
+third still names `SERVICE_ACTOR`. The second is no longer a qualification: since #977 the tenant
+is carried by the credential and enforced by the plane.
 
 This also settles the recursion cleanly: the Dashboard vertical is *deployed once* (like Meridian),
 and each customer runs a *scope* of it. The bootstrap (creating the customer's tenant + first
@@ -252,9 +266,12 @@ caller-side qualification §4 records).
   provision a Meridian app-scope → My apps + URL. Proves the bootstrap, the catalog, and the
   provisioning authority end to end — the *narrowing* half of that authority only as far as the
   caller, per §4.
-- **M0.1 — close §4's server half:** a tenant-scoped credential class on the control-plane side,
-  so the narrowing is refused by the server and the audit row names the customer's principal
-  (#977). Until this lands, §4's move 2 is the target, not a property of the deployed system.
+- **M0.1 — close §4's server half, in two pieces (#977).** The first is **built**: a tenant-scoped
+  credential class on the control-plane side (`tenant-token.ts`), so a request naming another
+  tenant is refused by the server rather than by the Dashboard. The second is **not**: the audit
+  row still names `SERVICE_ACTOR` rather than the customer's principal, which needs
+  `PlatformActorId` to stop being the type of an audit actor and is its own checkpoint. Until it
+  lands, read §4's move 2 as target for *attribution* and as built for *narrowing*.
 - **M1 — team:** invite members, roles, roster (grant/revoke).
 - **M2 — ops:** custom domains, connections (connect Scrive from the Dashboard), settings.
 - **M3 — plan:** entitlements surfaced read-only. **Billing stays out** (control-plane.md is

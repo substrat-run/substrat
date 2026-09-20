@@ -1,5 +1,6 @@
 import { platformActorId, tenantId as tenantIdSchema, type TenantId } from '@substrat-run/contracts';
 import { SERVICE_TOKEN_HEADER, type BuilderAuth, type BuilderIdentity } from './auth.js';
+import { hasTokenPrefix, openToken, signToken } from './token-codec.js';
 
 /**
  * Tenant-scoped push tokens — the CI credential the builder plane was missing.
@@ -24,6 +25,9 @@ import { SERVICE_TOKEN_HEADER, type BuilderAuth, type BuilderIdentity } from './
  * (`x-service-token`, via `SUBSTRAT_SERVICE_TOKEN`), discriminated by the `spt1.`
  * prefix — a random-hex service token can never collide with it, and the CLI and the
  * generated CI workflow need no changes at all.
+ *
+ * The `<prefix>.<payload>.<sig>` wire shape itself lives in `token-codec.ts`, shared
+ * with the dashboard's tenant token (#977) so the two cannot drift apart.
  */
 
 const PREFIX = 'spt1';
@@ -37,16 +41,6 @@ interface PushTokenClaim {
 }
 
 const enc = new TextEncoder();
-
-const b64url = (bytes: Uint8Array): string =>
-  btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-const b64urlToBytes = (s: string): Uint8Array<ArrayBuffer> =>
-  Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)) as Uint8Array<ArrayBuffer>;
-
-async function hmacKey(secret: string, usage: KeyUsage): Promise<CryptoKey> {
-  return crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, [usage]);
-}
 
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -77,31 +71,15 @@ export async function mintPushToken(
     actor: identity.actor,
     iat: Date.now(),
   };
-  const payload = b64url(enc.encode(JSON.stringify(claim)));
-  const signingInput = `${PREFIX}.${payload}`;
-  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', await hmacKey(secret, 'sign'), enc.encode(signingInput)));
-  return `${signingInput}.${b64url(sig)}`;
+  return signToken(PREFIX, secret, claim);
 }
 
 /** Verify a push token string → its claim, or null (bad prefix/shape/signature). */
 export async function verifyPushToken(secret: string, token: string): Promise<PushTokenClaim | null> {
-  const parts = token.split('.');
-  if (parts.length !== 3 || parts[0] !== PREFIX) return null;
-  const [, payload, sig] = parts as [string, string, string];
-  let ok = false;
+  const opened = await openToken(PREFIX, secret, token);
+  if (opened === null) return null;
   try {
-    ok = await crypto.subtle.verify(
-      'HMAC',
-      await hmacKey(secret, 'verify'),
-      b64urlToBytes(sig),
-      enc.encode(`${PREFIX}.${payload}`),
-    );
-  } catch {
-    return null;
-  }
-  if (!ok) return null;
-  try {
-    const claim = JSON.parse(new TextDecoder().decode(b64urlToBytes(payload))) as PushTokenClaim;
+    const claim = opened as PushTokenClaim;
     if (claim.v !== 1) return null;
     // Parse, don't trust — the signature proves WE minted it, the parse proves the
     // fields still are what a BuilderIdentity needs (a future format bump fails closed).
@@ -123,7 +101,7 @@ export async function verifyPushToken(secret: string, token: string): Promise<Pu
 export function pushTokenBuilderAuth(secret: string): BuilderAuth {
   return async (request): Promise<BuilderIdentity | null> => {
     const presented = request.headers.get(SERVICE_TOKEN_HEADER);
-    if (!presented || !presented.startsWith(`${PREFIX}.`)) return null;
+    if (!presented || !hasTokenPrefix(PREFIX, presented)) return null;
     const claim = await verifyPushToken(secret, presented);
     if (!claim) return null;
     return {
