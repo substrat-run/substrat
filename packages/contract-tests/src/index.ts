@@ -35,6 +35,8 @@ export {
   contractTestBareOps,
   contractTestInitialModules,
   contractTestModules,
+  liveMod,
+  liveModManifest,
   permMod,
   scheduleMod,
   jobsMod,

@@ -7,7 +7,7 @@
  */
 import { platformActorId } from '@substrat-run/contracts';
 import { runPlatformSweep, webCryptoSecretBox, type FetchLike, type PlatformSweepReport } from '@substrat-run/kernel';
-import { brokenMod, contractTestModules, contractTestBareOps, freshnessMod, scheduleMod } from '@substrat-run/contract-tests';
+import { brokenMod, contractTestModules, contractTestBareOps, freshnessMod, liveMod, scheduleMod } from '@substrat-run/contract-tests';
 import { defineScopeDO } from '../src/scope-do.js';
 import { CloudflareScopeHost } from '../src/host.js';
 import { definePlatformSweeperDO } from '../src/platform-sweeper-do.js';
@@ -22,6 +22,16 @@ export const ScopeDO = defineScopeDO(contractTestModules, contractTestBareOps);
  * BROKEN_SCOPE so migration-failure.test.ts can point a host at it.
  */
 export const BrokenScopeDO = defineScopeDO([brokenMod], {});
+
+/**
+ * The live-read scope class (#938), carrying ONLY `liveMod`.
+ *
+ * Its own class and its own namespace for the reason `BrokenScopeDO` has one: a DO
+ * closes over a code-time module set, and putting `liveMod` in `ScopeDO` would give
+ * every contract suite's scope a post-commit fan-out to run on every invoke — changing
+ * what those suites exercise in order to test this one.
+ */
+export const LiveScopeDO = defineScopeDO([liveMod], {});
 
 export { ControlPlaneDO } from '../src/control-plane-do.js';
 

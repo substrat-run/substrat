@@ -408,6 +408,20 @@ type EntityRefs<T extends Record<string, EntityDef>, M> = {
     readonly writePermission?: string;
   }[];
   /**
+   * A live read announces a change to ONE entity id, so the target must be
+   * pointable for the same reason an attachment target is (#938): the push carries
+   * `(entityType, entityId)` and the client re-reads that entity through the
+   * ordinary operation. A composite key has no single id to send.
+   * Inlined rather than aliased, per `PointableName`.
+   */
+  readonly liveTargets?: readonly {
+    readonly entityType: {
+      readonly [K in keyof T]: T[K] extends { primaryKey: readonly [unknown, unknown, ...unknown[]] } ? never : K;
+    }[keyof T] &
+      string;
+    readonly readPermission: string;
+  }[];
+  /**
    * `fields` is checked against the NAMED entity's own fields — the only place
    * in the manifest today where a field name appears at all, and nothing
    * checked it.
@@ -581,12 +595,17 @@ export function manifestEntities<
   refs: M,
 ): {
   attachmentTargets: NonNullable<M['attachmentTargets']> | [];
+  liveTargets: NonNullable<M['liveTargets']> | [];
   searchables: EnrichedSearchable[];
   entityRelations: { entityType: string; parentType: string }[];
   ui: { entityViews: M['entityViews'] };
 } {
   return {
     attachmentTargets: (refs.attachmentTargets ?? []) as NonNullable<M['attachmentTargets']> | [],
+    // `[]` when undeclared, like `attachmentTargets` — and it means the same
+    // fail-closed thing the manifest field says: nothing about this module's
+    // entities is announced on a live read (#938).
+    liveTargets: (refs.liveTargets ?? []) as NonNullable<M['liveTargets']> | [],
     searchables: enrichSearchables(entities, refs.searchables),
     // Derived edges first, then the ones this module cannot check.
     // Local edges are derived from the entities' own `parents`; edges involving

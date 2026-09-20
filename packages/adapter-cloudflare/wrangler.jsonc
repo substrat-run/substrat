@@ -28,7 +28,11 @@
       // The CP-less scope-local sweep trigger (#461) + its own scope namespace
       // — see scope-sweeper.test.ts (same isolation reasoning as SWEEP_SCOPE).
       { "name": "SCOPE_SWEEPER", "class_name": "ScopeSweeperDO" },
-      { "name": "LOCAL_SWEEP_SCOPE", "class_name": "ScopeDO" }
+      { "name": "LOCAL_SWEEP_SCOPE", "class_name": "ScopeDO" },
+      // #938: live reads. Its OWN class (only `liveMod` is registered, so only this
+      // class declares a `liveTargets` entity) and its own namespace, for the same
+      // isolation reason SWEEP_SCOPE has one.
+      { "name": "LIVE_SCOPE", "class_name": "LiveScopeDO" }
     ]
   },
   "migrations": [
@@ -47,6 +51,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["ScopeSweeperDO"]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["LiveScopeDO"]
     }
   ]
 }

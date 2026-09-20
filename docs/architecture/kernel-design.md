@@ -83,7 +83,11 @@ interface Tenant {
   id: TenantId;               // branded string, ULID
   slug: string;               // stable, URL-safe, unique
   name: string;
-  status: 'active' | 'suspended' | 'deleting';
+  status: 'active' | 'suspended' | 'deleting' | 'reaped';  // `reaped` is terminal and
+                              // NOT reversible (control-plane.md §4.8): every scope's
+                              // storage is gone and the row survives as a tombstone —
+                              // audit history and a burned slug. `deleting` is the
+                              // reversible grace state before it
   createdAt: Instant;
 }
 
@@ -95,7 +99,9 @@ interface Scope {
   slug: string;               // unique within tenant
   kind: string;               // vertical-defined vocabulary: 'brf', 'filial', 'brand'…
   name: string;
-  status: 'provisioning' | 'active' | 'suspended' | 'archiving' | 'archived';
+  status: 'provisioning' | 'active' | 'suspended' | 'archiving' | 'archived' | 'reaped';
+                              // `reaped` is terminal past `archived` and not reversible —
+                              // the DO storage has been deleted, so there is no restore
   storageShape: 'A' | 'B';    // §5.2; fixed at provisioning, migration is explicit
   jurisdiction: 'eu' | 'us' | 'global';  // fixed at creation — a DO can never
                               // relocate. Non-null, defaulting to 'global' (K-32): the
@@ -152,7 +158,7 @@ adapter has a `tenants` table, and a tenant is a foreign-key string on scope row
 
 ### 3.3 Provisioning lifecycle
 
-`provisioning → active → suspended ⇄ active → archiving → archived`
+`provisioning → active → suspended ⇄ active → archiving → archived → reaped`
 
 - Provisioning is idempotent and journaled in the tenant-root DO: create registry row →
   initialize scope DO (schema to current version, seed ACL) → mark active. A crash
@@ -166,6 +172,12 @@ adapter has a `tenants` table, and a tenant is a foreign-key string on scope row
 - `archived` keeps the registry row and Tier 2 history forever (bokföringslagen, §5.3);
   the scope DO's storage is exported to R2 then released. Un-archive is a restore, not a
   flag flip — this keeps the "active scope" billing meter honest (§9).
+- `reaped` is the one step past it and the only irreversible one: the DO storage is
+  deleted, the directory row survives as a tombstone so the audit history and the burned
+  slug do, and read gates fail closed on it exactly as on a missing scope. Reached only
+  from `archived`, and only through the audited `reapScope` action (control-plane.md §4.4).
+  A tenant has the mirror pair — `deleting` is its reversible grace state, `reaped` its
+  terminal one (§4.8).
 
 ## 4. Permission model
 

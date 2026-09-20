@@ -183,6 +183,35 @@ export const moduleManifest = z.object({
       writePermission: permissionKey.optional(),
     }),
   ),
+  // Entity types whose CHANGES this module is willing to announce on a live read
+  // (#938). CONSUMED by the hosted host's live-read surface: after an operation
+  // commits, every event about a declared entityType is offered to each subscriber
+  // and delivered only if that subscriber passes `readPermission` ON THAT ENTITY —
+  // the same per-entity walk `ctx.check(key, entityRef)` makes, through the same
+  // evaluator, so an entity-narrowed grant decides a push exactly as it decides a read.
+  //
+  // Declared rather than derived, and FAIL-CLOSED: an event about an entity type with
+  // no entry here reaches nobody. A live channel is a read surface, and the failure
+  // mode of getting it wrong is a row announced to somebody who may not see it — so
+  // the absence of a declaration must mean silence, never "announce it to everyone".
+  // That also keeps the surface opt-in per entity type: a module says which of its
+  // entities are watchable, the way `attachmentTargets` says which are attachable.
+  //
+  // Optional + additive (D-28): every manifest written before #938 keeps parsing and
+  // announces nothing, which is exactly the behaviour it had.
+  liveTargets: z
+    .array(
+      z.object({
+        entityType: z.string().min(1),
+        // Deliberately the same shape and the same word as `attachmentTargets` above:
+        // both are "the owning entity's read key", resolved per entity. A separate
+        // field rather than a reuse of that one, because the two answer different
+        // questions — "may bytes hang off this" and "may a change to this be watched" —
+        // and a module must be able to say yes to one without the other.
+        readPermission: permissionKey,
+      }),
+    )
+    .optional(),
   // Declared entity parent edges, e.g. workorder → facility. Permission flows
   // along these in the tuple evaluator's fixed algebra (design doc §4.2 rule 3,
   // depth-capped) — how entity-narrowed grants resolve.

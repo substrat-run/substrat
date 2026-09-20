@@ -236,9 +236,20 @@ import {
   type JobRunStore,
   type JobStepRow,
   type StartJobRunInput,
+  type LiveReadSurface,
   globalFetch,
   assertRedrainWindow,
 } from '@substrat-run/kernel';
+import {
+  isOrangeToOrange,
+  isUpgradeRequest,
+  LIVE_MODE_HEADER,
+  LIVE_PRINCIPAL_HEADER,
+  LIVE_SCOPE_HEADER,
+  LIVE_SUBSCRIBE_PATH,
+  LIVE_TENANT_HEADER,
+  type LiveRefusal,
+} from './live-reads.js';
 import { tenantStoreDatabaseName, type D1TenantStores } from './d1.js';
 import { blobStoreBucketName, r2TenantBlobStore, type R2BlobStores } from './r2.js';
 import type {
@@ -5556,6 +5567,113 @@ export class CloudflareScopeHost implements ScopeHost {
     // via newUniqueId (K-7) and stores the mapping in the directory — deferred.
     return this.scopeNs.get(this.scopeNs.idFromName(scopeId)) as unknown as ScopeStubRpc;
   }
+
+  // -- live reads (#938): the door ------------------------------------------
+  // The coordinator's half of the live-read path. It decides two things and no more:
+  // whether this CONNECTION can carry a push at all, and who is asking. What a
+  // subscriber may then be told is decided in the scope DO, per event, per frame.
+
+  /**
+   * Subscribe a principal to this scope's changes — `ScopeHost.liveReads`.
+   *
+   * Present on this host and declared `never` on `SqliteScopeHost`: a live read needs
+   * something that outlives a request and can be woken when an event lands, and on
+   * Cloudflare that is the scope's own Durable Object. The seam's full reasoning is on
+   * the contract (`ScopeHost.liveReads`), beside the `clock?: never` precedent it
+   * mirrors.
+   *
+   * **Two kinds of refusal, and they are deliberately different shapes.** A request
+   * that cannot carry a socket is answered with a `Response` (426, 501) — that is a
+   * fact about the connection, addressed to the client. A scope that must not be
+   * reached at all THROWS, exactly as `getScope` and the attachment door do, because
+   * it is the same refusal an ordinary read of that scope would get and it should not
+   * arrive as a different class of answer just because the caller asked for a socket.
+   */
+  readonly liveReads: LiveReadSurface<Request, Response> = {
+    subscribe: async ({ tenantId, scopeId, principal, request }) => {
+      if (!isUpgradeRequest(request)) {
+        return new Response('live reads are a WebSocket surface', {
+          status: 426,
+          headers: { [LIVE_MODE_HEADER]: 'not-an-upgrade' satisfies LiveRefusal },
+        });
+      }
+      /**
+       * The orange-to-orange refusal (#938).
+       *
+       * Cloudflare does not carry WebSockets across an O2O hop — the customer's own
+       * proxied zone in front of ours — so an upgrade offered here would fail
+       * somewhere the vertical cannot see, and the client would be left holding a
+       * socket that never delivers. Refused at the door instead, with a reason the
+       * client can read, so the fallback to polling is a thing it KNOWS it is doing
+       * rather than a silence it has to infer.
+       *
+       * Per request, never per hostname: whether a tenant is O2O is decided by the
+       * tenant's own DNS, which is theirs to change without telling us. Anything
+       * cached would be a fact with an invisible expiry date; this header is correct
+       * on the request after they change it.
+       *
+       * 501, not 426: 426 means "upgrade and try again", and trying again is exactly
+       * what will not work. This connection cannot carry the thing that was asked for.
+       */
+      if (isOrangeToOrange(request)) {
+        return new Response(
+          'live reads are not available over this connection — the request arrived ' +
+            'through a proxied customer zone, which does not carry WebSockets. Poll instead.',
+          { status: 501, headers: { [LIVE_MODE_HEADER]: 'poll' satisfies LiveRefusal } },
+        );
+      }
+      /**
+       * The same fail-closed lifecycle gate + lazy migration every other door takes
+       * (`getScope`, `attachments`; control-plane.md §4.1/§4.2, K-3).
+       *
+       * A subscription is a new way INTO a scope, and the permission filter downstream
+       * answers a different question: it decides what a subscriber may see, not whether
+       * this scope should be reachable at all. Without this, an unknown, cross-tenant,
+       * suspended or archiving scope could still be addressed and handed a 101 — a
+       * scope that refuses every ordinary read while quietly holding an open socket.
+       *
+       * Costs a CP-less vertical nothing: `validateScopeAccess` is a **no-op** on the
+       * null control plane (the router already gated lifecycle and tenancy from the
+       * shared directory), so this is the hosted-vertical shape unchanged.
+       *
+       * `migrateAndRecord`, not the DO's own `ensureMigrations`: the DO migrates
+       * itself when the socket opens either way, but only this reports the applied
+       * count to the directory — so a scope whose first contact after a deploy is a
+       * subscription does not go dark in the migration fleet view.
+       */
+      await this.cp.validateScopeAccess(tenantId, scopeId);
+      await this.migrateAndRecord(scopeId);
+      // Asserted, not carried through from the client: the principal is the
+      // vertical's own resolution of its session, and the tenant and scope are the
+      // node the router resolved. Every inbound copy is replaced, for the reason the
+      // router strips `x-substrat-*` before setting its own.
+      const headers = new Headers(request.headers);
+      headers.set(LIVE_PRINCIPAL_HEADER, principal);
+      headers.set(LIVE_TENANT_HEADER, tenantId);
+      headers.set(LIVE_SCOPE_HEADER, scopeId);
+      const forwarded = new Request(
+        new URL(LIVE_SUBSCRIBE_PATH, 'https://scope.substrat.internal'),
+        // `new Request(url, { …, headers })` rather than `new Request(request, …)`:
+        // the DO is addressed by its own path, not the client's, and the upgrade
+        // headers that matter travel in `headers` above. Verified in workerd — a
+        // reconstructed request keeps `Upgrade`, `Connection` and the
+        // `Sec-WebSocket-*` pair, which is what makes the router's own
+        // strip-and-assert safe on this path too.
+        { method: 'GET', headers },
+      );
+      // Through `scopeStub`, deliberately, rather than a second `idFromName` here:
+      // that method's own comment says the id derivation is milestone-one and that
+      // production will mint per-jurisdiction ids from the directory. A copy of the
+      // derivation would keep compiling on the day it changes and address a DIFFERENT
+      // object — a subscriber watching an empty scope while its writes land elsewhere.
+      // `ScopeStubRpc` describes the RPC methods and not `fetch`, which every stub has;
+      // the cast widens the view of one object, it does not mint a second one.
+      const stub = this.scopeStub(scopeId) as unknown as {
+        fetch(request: Request): Promise<Response>;
+      };
+      return stub.fetch(forwarded);
+    },
+  };
 
   // -- scope-local projection (docs/architecture/scope-local-permissions.md, Phase 2) --
   // The write side of the local reader (Phase 1): after any tenant-level change,

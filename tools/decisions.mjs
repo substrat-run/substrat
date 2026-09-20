@@ -183,9 +183,19 @@ for (const t of targets) {
 }
 
 /* ---- docs/DECISIONS.md — the whole log, one place ---- */
-/** The index shows a relation from both ends: `amends D-2` on D-57, `amended by D-57` on D-2. */
+/**
+ * The index shows a relation from both ends: `amends D-2` on D-57, `amended by D-57` on D-2.
+ *
+ * It carries STATUS too, and `proposed` is first because it is the one note that changes how
+ * every other word in the row should be read. The index rendered `superseded by` and said
+ * nothing about `proposed`, so on the one surface that shows the whole log in one place an
+ * unratified entry was indistinguishable from an accepted one — while `README.md` asserts
+ * that proposed renders as awaiting ratification, and the master-plan table does render it.
+ * Two entries were displayed that way (D-60, D-61); found by review on D-61's own PR.
+ */
 function indexNotes(e) {
   const notes = [];
+  if (e.status === 'proposed') notes.push('awaiting ratification');
   if (e.twin) notes.push(`restated as ${byId(e.twin).id}`);
   if (e.status === 'superseded') notes.push(`superseded by ${byId(e['superseded-by']).id}`);
   for (const s of supersedes.get(e.id) ?? []) notes.push(`supersedes ${s.id}`);
