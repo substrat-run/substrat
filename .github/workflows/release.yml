@@ -57,7 +57,7 @@ jobs:
       # reddened its own CI on pins it was supposed to have rewritten (#795).
       # Naming the script here is what makes the emit part of versioning rather
       # than a thing someone remembers.
-      - uses: changesets/action@v1
+      - uses: changesets/action@v2
         id: changesets
         with:
           version: pnpm version-packages
