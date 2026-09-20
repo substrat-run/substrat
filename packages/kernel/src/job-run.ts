@@ -192,6 +192,23 @@ export interface JobRun extends JobRunKey {
   updatedAt: string;
   nextAttemptAt: string | null;
   endedAt: string | null;
+  /**
+   * Why this row could not be read whole, or null — which is the ordinary case and
+   * what every run written by this driver carries.
+   *
+   * Present because the read and the DRIVER want opposite things from a malformed
+   * row, and both are right. A pass cannot run on a payload it cannot decode, so the
+   * driver fails the run and records why. The READ exists so an operator can see
+   * exactly that — and a read that threw on the one row being investigated would
+   * take every other run on the scope with it, since this returns a list. So the
+   * decode here is tolerant and SAYS SO: the undecodable columns come back empty
+   * (`null` / `{}`) with the parse error named here, rather than a silent `null`
+   * that reads as "no cursor".
+   *
+   * Reachable without any forge: `importDump` replays a dump's rows verbatim, so a
+   * dump from another world or edited by hand is enough.
+   */
+  decodeError: string | null;
 }
 
 /** What `startJobRun` is handed. */
@@ -436,23 +453,52 @@ export function assertQueueSafe(value: unknown, root: string): void {
   walk(value, root);
 }
 
-/** A row, decoded into the record an operator reads. */
+/**
+ * A row, decoded into the record an operator reads — TOLERANTLY, and saying so.
+ *
+ * The status, the attempts, the timestamps and the `last_error` are columns and
+ * always readable; only `payload`, `cursor` and `counters` are JSON, and a row whose
+ * JSON will not parse still has to be visible. It comes back with those three empty
+ * and `decodeError` naming the parse failure — never a bare `null` cursor, which a
+ * reader would take for "no pass has committed yet".
+ *
+ * This is deliberately NOT what the driver does with the same row: a pass cannot run
+ * on a payload it cannot decode, so `runJobPass` treats the parse failure as a failed
+ * pass and lets the run retry and then fail with the reason on its record. Strict
+ * where work happens, tolerant where evidence is read.
+ */
 export function jobRunOf(row: JobRunRow): JobRun {
+  let decodeError: string | null = null;
+  const parse = <T>(text: string | null, fallback: T): T => {
+    if (text === null) return fallback;
+    try {
+      return JSON.parse(text) as T;
+    } catch (err) {
+      decodeError ??= message(err);
+      return fallback;
+    }
+  };
+  // Every field is decoded before the error is read, so `decodeError` reports the
+  // FIRST failure of the row rather than whichever one happened to short-circuit.
+  const payload = parse<unknown>(row.payload, null);
+  const cursor = parse<unknown>(row.cursor, null);
+  const counters = parse<Record<string, number>>(row.counters, {});
   return {
     id: row.id,
     moduleId: row.module_id as ModuleId,
     job: row.job,
     instance: row.instance,
     status: row.status as JobRunStatus,
-    payload: JSON.parse(row.payload) as unknown,
-    cursor: row.cursor === null ? null : (JSON.parse(row.cursor) as unknown),
-    counters: JSON.parse(row.counters) as Record<string, number>,
+    payload,
+    cursor,
+    counters,
     attempts: row.attempts,
     lastError: row.last_error,
     startedAt: row.started_at,
     updatedAt: row.updated_at,
     nextAttemptAt: row.next_attempt_at,
     endedAt: row.ended_at,
+    decodeError,
   };
 }
 
@@ -552,61 +598,77 @@ export async function runJobPass(options: {
 }): Promise<JobPassOutcome> {
   const { store, run, handler, now, openScope } = options;
   const jobPolicy = resolveRetryPolicy(options.retry);
-  const counters = { ...(JSON.parse(run.counters) as Record<string, number>) };
   const usedThisPass = new Set<string>();
   let scope: Promise<ScopeStub> | null = null;
 
-  const pass: JobPassContext = {
-    run: {
-      id: run.id,
-      moduleId: run.module_id as ModuleId,
-      job: run.job,
-      instance: run.instance,
-    },
-    payload: JSON.parse(run.payload) as unknown,
-    cursor: run.cursor === null ? null : (JSON.parse(run.cursor) as unknown),
-    counters,
-    count: (name, by = 1) => {
-      counters[name] = (counters[name] ?? 0) + by;
-    },
-    scope: () => (scope ??= openScope()),
-    step: async <T>(name: string, fn: () => T | Promise<T>, retry?: ExecutorRetryPolicy): Promise<T> => {
-      if (usedThisPass.has(name)) {
-        // The determinism rule's mechanical half. The second call would read the
-        // first's memo and skip its own work — silently, and only in production,
-        // because the first pass of a fresh run runs both bodies before either is
-        // committed. Refused where it is unambiguous rather than left to a comment.
-        throw substratError(
-          'conflict',
-          `step '${name}' was already run in this pass — a step name identifies one unit of ` +
-            'work, so a second call under it would return the first one\'s result instead of ' +
-            'doing anything',
-          { reason: JOB_STEP_REUSED },
-        );
-      }
-      usedThisPass.add(name);
-      const policy = resolveRetryPolicy(retry ?? options.retry);
-      const prior = await store.step(run.id, name);
-      // A NON-NULL result is what means completed: a step that threw left its row
-      // with a null result and a raised count, and must run again.
-      if (prior && prior.result !== null) return JSON.parse(prior.result) as T;
-      const attempts = (prior?.attempts ?? 0) + 1;
-      let value: T;
-      try {
-        value = await fn();
-      } catch (err) {
-        const cause = message(err);
-        await store.recordStep(run.id, name, null, attempts, cause, now());
-        throw new JobStepFailure(name, attempts, policy, cause);
-      }
-      // `undefined` becomes the JSON text 'null', not SQL NULL: a step done purely
-      // for its effect must still read as completed on the next pass.
-      await store.recordStep(run.id, name, JSON.stringify(value) ?? 'null', attempts, null, now());
-      return value;
-    },
-  };
-
   try {
+    // DECODING THE ROW IS PART OF THE PASS, not a precondition of it.
+    //
+    // These three `JSON.parse`es sat above the `try` in the first cut of this file,
+    // which made a single malformed row the one failure this driver could not
+    // contain: the throw left `runJobPass`, left `runDueJobRuns` — which does not
+    // wrap the call either — and came out of `runDueJobs` at whoever was holding the
+    // tick, taking every due run BEHIND it with it. That is the exact outcome the
+    // per-run isolation exists to refuse, arrived at through the driver itself.
+    //
+    // It is reachable without any forge: `importDump` replays a dump's rows verbatim
+    // (preview-and-snapshots.md §3), so a restore from a foreign or hand-edited dump
+    // is enough. Inside the try it is an ordinary failed pass — recorded on the run,
+    // retried, then terminal with the parse error as its `last_error`, and the runs
+    // beside it untouched.
+    // The pass's own copy: the catch below writes `run.counters` back — the string
+    // the last COMMIT wrote — so a failed pass's counts go with the rest of it.
+    const counters = { ...(JSON.parse(run.counters) as Record<string, number>) };
+    const pass: JobPassContext = {
+      run: {
+        id: run.id,
+        moduleId: run.module_id as ModuleId,
+        job: run.job,
+        instance: run.instance,
+      },
+      payload: JSON.parse(run.payload) as unknown,
+      cursor: run.cursor === null ? null : (JSON.parse(run.cursor) as unknown),
+      counters,
+      count: (name, by = 1) => {
+        counters[name] = (counters[name] ?? 0) + by;
+      },
+      scope: () => (scope ??= openScope()),
+      step: async <T>(name: string, fn: () => T | Promise<T>, retry?: ExecutorRetryPolicy): Promise<T> => {
+        if (usedThisPass.has(name)) {
+          // The determinism rule's mechanical half. The second call would read the
+          // first's memo and skip its own work — silently, and only in production,
+          // because the first pass of a fresh run runs both bodies before either is
+          // committed. Refused where it is unambiguous rather than left to a comment.
+          throw substratError(
+            'conflict',
+            `step '${name}' was already run in this pass — a step name identifies one unit of ` +
+              'work, so a second call under it would return the first one\'s result instead of ' +
+              'doing anything',
+            { reason: JOB_STEP_REUSED },
+          );
+        }
+        usedThisPass.add(name);
+        const policy = resolveRetryPolicy(retry ?? options.retry);
+        const prior = await store.step(run.id, name);
+        // A NON-NULL result is what means completed: a step that threw left its row
+        // with a null result and a raised count, and must run again.
+        if (prior && prior.result !== null) return JSON.parse(prior.result) as T;
+        const attempts = (prior?.attempts ?? 0) + 1;
+        let value: T;
+        try {
+          value = await fn();
+        } catch (err) {
+          const cause = message(err);
+          await store.recordStep(run.id, name, null, attempts, cause, now());
+          throw new JobStepFailure(name, attempts, policy, cause);
+        }
+        // `undefined` becomes the JSON text 'null', not SQL NULL: a step done purely
+        // for its effect must still read as completed on the next pass.
+        await store.recordStep(run.id, name, JSON.stringify(value) ?? 'null', attempts, null, now());
+        return value;
+      },
+    };
+
     const result = (await handler(pass)) ?? {};
     const keepsCursor = !('cursor' in result);
     if (!keepsCursor) assertQueueSafe(result.cursor ?? null, 'cursor');

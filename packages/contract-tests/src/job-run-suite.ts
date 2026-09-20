@@ -134,6 +134,11 @@ export function jobRunContractSuite(
         { maxAttempts: 3, baseDelayMs: 0 },
       );
 
+      // A job that does nothing but finish: no steps, no scope, no module table. The
+      // healthy half of the malformed-row test, where the subject is that a run behind
+      // a broken one still advances and nothing else.
+      host.registerJob(JOBS_MODULE, 'inert', () => ({ done: true }));
+
       // A job that asks for one step name twice in one pass — the determinism rule's
       // mechanical half. Both bodies would run on a fresh pass and only the first
       // would ever be recorded, so the second is refused rather than memo-aliased.
@@ -343,6 +348,103 @@ export function jobRunContractSuite(
       // Reported like any other pass failure — the refusal is loud, not fatal.
       expect(report.retrying).toBe(1);
       expect((await runOf(s, run.id))?.lastError).toContain('already run in this pass');
+    });
+
+    /**
+     * The per-run isolation, against the one input that is not a handler's fault.
+     *
+     * Every other failure in this suite arrives from inside a pass, where a `try` was
+     * always going to catch it. A MALFORMED ROW arrives before the pass starts, and
+     * decoding it used to sit above that `try` — so one bad row threw out of
+     * `runJobPass`, out of `runDueJobRuns` (which does not wrap the call either) and
+     * out of `runDueJobs` at whoever was holding the tick, taking every due run BEHIND
+     * it down with it. Found by re-reading the diff; no test in the suite could reach
+     * it, because nothing the public surface accepts produces such a row.
+     *
+     * A restore does. `importDump` replays a dump's rows verbatim
+     * (preview-and-snapshots.md §3), so a dump written by another world — or edited by
+     * hand — is the whole reproduction, and it is the same lever #1288's backfill test
+     * uses. The broken row's id sorts before every ULID, so the due read reaches it
+     * FIRST: if it is not contained, the healthy run behind it never runs.
+     */
+    it('contains a malformed run row instead of taking the drive down with it', async () => {
+      const s = await newScope();
+      await host.restoreScope(staff, t, s, {
+        tenantId: t,
+        scopeId: s,
+        capturedAt: '2026-09-01T00:00:00.000Z',
+        tables: [
+          {
+            name: '_substrat_job_runs',
+            // Spelled out rather than referenced: the point is that code meeting a
+            // FOREIGN table survives it, so this must not move when the DDL does.
+            ddl:
+              'CREATE TABLE _substrat_job_runs (id TEXT PRIMARY KEY, module_id TEXT NOT NULL, ' +
+              'job TEXT NOT NULL, instance TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, ' +
+              'cursor TEXT, counters TEXT NOT NULL DEFAULT \'{}\', attempts INTEGER NOT NULL DEFAULT 0, ' +
+              'last_error TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, ' +
+              'next_attempt_at TEXT, ended_at TEXT)',
+            columns: [
+              'id', 'module_id', 'job', 'instance', 'payload', 'status', 'cursor', 'counters',
+              'attempts', 'last_error', 'started_at', 'updated_at', 'next_attempt_at', 'ended_at',
+            ],
+            rows: [
+              [
+                // Sorts before every ULID, so this row is read first.
+                '00000000000000000000000000',
+                JOBS_MODULE,
+                'walk',
+                'corrupt',
+                '{"total":1,"chunk":1}',
+                'running',
+                null,
+                'not json at all',
+                0,
+                null,
+                '2026-09-01T00:00:00.000Z',
+                '2026-09-01T00:00:00.000Z',
+                null,
+                null,
+              ],
+            ],
+          },
+        ],
+      });
+      // The healthy run is the INERT job, which touches no module table and needs no
+      // grant. That is deliberate: a restore replays only the dump, so the scope's
+      // module tables and its tuples came back empty, and the two adapters do not
+      // agree about when those are rebuilt — the pure host clears its applied-migration
+      // set on restore, while a warm ScopeDO keeps a memoised migration promise that
+      // only `retryMigrations` or a cold start clears. That asymmetry is real and
+      // predates this driver; making it this test's business would be asserting the
+      // restore path under the name of the run driver. What IS this test's business is
+      // that a run behind a malformed row still advances.
+      const healthy = await host.startJobRun(t, s, {
+        moduleId: JOBS_MODULE,
+        job: 'inert',
+        instance: 'healthy',
+      });
+
+      // Does not throw — and the run BEHIND the broken one still did its work.
+      const report = await host.runDueJobs(t, s);
+      expect(report.attempted).toBe(2);
+      expect(report.completed).toBe(1);
+      expect((await runOf(s, healthy.id))?.status).toBe('done');
+
+      // The broken row was recorded as a failed pass, not skipped and not fatal.
+      const broken = await runOf(s, '00000000000000000000000000');
+      expect(broken?.status).toBe('running');
+      expect(broken?.attempts).toBe(1);
+      expect(broken?.lastError).toContain('JSON');
+      expect(report.errors.map((e) => e.runId)).toEqual(['00000000000000000000000000']);
+      // And the READ says the row could not be decoded rather than pretending it
+      // could: empty counters WITH a reason, never a silent `{}` that reads as
+      // "nothing counted". Reading it at all is the point — the driver recorded
+      // evidence onto this row, and a strict decode would have made the whole list
+      // (including the healthy run above) unreadable because of it.
+      expect(broken?.decodeError).toContain('JSON');
+      expect(broken?.counters).toEqual({});
+      expect((await runOf(s, healthy.id))?.decodeError).toBeNull();
     });
 
     it('leaves a run whose job this host does not register untouched', async () => {
