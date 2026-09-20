@@ -374,6 +374,60 @@ describe('upgrading a store that ran Better Auth 1.7.0–1.7.2', () => {
     ]);
   });
 
+  it('refuses to drop the column while two rows differ only by issuer, and changes nothing', () => {
+    // A provider id pointed at a second upstream: under the old `(issuer, account_id)` key these
+    // are two accounts, under 1.7.3's `(provider_id, account_id)` they are one key with two
+    // rows, and `issuer` is the only thing that tells them apart. Dropping it would make that
+    // permanent, so the upgrade must stop with the table exactly as it found it.
+    db.prepare(
+      "INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('a3', 'https://old-upstream.test', 'shared-sub', 'acme', 'u1')",
+    ).run();
+    db.prepare(
+      "INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('a4', 'https://new-upstream.test', 'shared-sub', 'acme', 'u1')",
+    ).run();
+    const before = db.prepare('SELECT * FROM account ORDER BY id').all();
+
+    expect(() => upgradeLegacySchema(sql)).toThrow(/cannot drop account\.issuer.*acme × 1/s);
+
+    expect(columnsOf('account')).toContain('issuer');
+    expect(db.prepare('SELECT * FROM account ORDER BY id').all()).toEqual(before);
+    expect(
+      (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'account_issuer_account_id_idx'").all() as unknown[])
+        .length,
+    ).toBe(1);
+    // Still refuses on the next boot, until an operator resolves it — never a silent drop.
+    expect(() => upgradeLegacySchema(sql)).toThrow(/cannot drop account\.issuer/);
+  });
+
+  it('names providers and counts in that refusal, never an account id', () => {
+    // A BankID `account_id` is a personal number, and this message goes to a log.
+    for (const [id, issuer] of [['b1', 'x'], ['b2', 'y']] as const) {
+      db.prepare('INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES (?, ?, ?, ?, ?)').run(
+        id,
+        issuer,
+        '199001011234',
+        'bankid',
+        'u1',
+      );
+    }
+    let message = '';
+    try {
+      upgradeLegacySchema(sql);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain('bankid × 1');
+    expect(message).not.toContain('199001011234');
+  });
+
+  it('does not mistake the same account id at two providers for a collision', () => {
+    // The pair is `(provider_id, account_id)`: one person holding the same id at two providers
+    // is the ordinary case, and the one the guide warns a compound key must still allow.
+    db.prepare("INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('c1', 'https://a.test', 'same-id', 'acme', 'u1')").run();
+    db.prepare("INSERT INTO account (id, issuer, account_id, provider_id, user_id) VALUES ('c2', 'https://b.test', 'same-id', 'other', 'u1')").run();
+    expect(upgradeLegacySchema(sql).dropped).toEqual(['account.issuer']);
+  });
+
   it('takes a write that names no issuer — the sign-up that failed before the drop', () => {
     // What Better Auth 1.7.3+ does for a new sign-up: a row with no `issuer`. On the store as
     // 1.7.0–1.7.2 left it this is a NOT NULL failure, for password sign-ups included.

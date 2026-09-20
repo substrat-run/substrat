@@ -15,9 +15,11 @@ import type { SqlExec } from '../src/introspect.js';
  *     leaves it alone, so an install that ran 1.7.0–1.7.2 keeps a `NOT NULL` column nothing
  *     fills — and every sign-up and every account link fails on it, including the password
  *     ones. So it is DROPPED, index first: SQLite refuses to drop an indexed column. That is
- *     the cleanup Better Auth's own upgrade guide prescribes for SQLite, and it loses nothing
- *     that is not derivable — `local:<provider_id>` for a local method, the provider row's own
- *     `identity_provider.issuer` for a generic upstream. A store from 1.6 never had the
+ *     the cleanup Better Auth's own upgrade guide prescribes for SQLite. It loses nothing that
+ *     is not derivable — `local:<provider_id>` for a local method, the provider row's own
+ *     `identity_provider.issuer` for a generic upstream — EXCEPT where two rows share
+ *     `(provider_id, account_id)` and differ only by issuer; there it refuses to run and leaves
+ *     the table untouched (`assertNoAccountKeyCollisions`). A store from 1.6 never had the
  *     column and is left alone; adding it back would be the bug. This is user credentials'
  *     table, not OAuth state, but it is a column being removed, not a table.
  *
@@ -38,6 +40,30 @@ function columnsOf(sql: SqlExec, table: string): string[] {
   const rows = sql.exec(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`, table).toArray();
   if (rows.length === 0) return [];
   return (sql.exec(`PRAGMA table_info("${table}")`).toArray() as { name: string }[]).map((r) => r.name);
+}
+
+/**
+ * Refuse to drop `account.issuer` while two rows would share `(provider_id, account_id)`.
+ * The message names providers and counts, never an `account_id`: for BankID it is a personal
+ * number, and this lands in a log.
+ */
+function assertNoAccountKeyCollisions(sql: SqlExec): void {
+  const collisions = sql
+    .exec(
+      `SELECT provider_id, count(*) AS pairs FROM (
+         SELECT provider_id, account_id FROM account GROUP BY provider_id, account_id HAVING count(*) > 1
+       ) GROUP BY provider_id ORDER BY provider_id`,
+    )
+    .toArray() as { provider_id: string; pairs: number }[];
+  if (collisions.length === 0) return;
+  const summary = collisions.map((c) => `${c.provider_id} × ${c.pairs}`).join(', ');
+  throw new Error(
+    `auth-server: cannot drop account.issuer — (provider_id, account_id) pairs that differ only by issuer: ${summary}. ` +
+      'Better Auth 1.7.3+ keys an account on that pair and refuses to look up one that matches two rows, and issuer is the only ' +
+      'column that tells them apart. `account` is untouched. Give each issuer its own provider id or remove the stale row, ' +
+      'then boot again. Find them with: SELECT provider_id, account_id, issuer FROM account WHERE (provider_id, account_id) IN ' +
+      '(SELECT provider_id, account_id FROM account GROUP BY 1, 2 HAVING count(*) > 1);',
+  );
 }
 
 export interface SchemaUpgrade {
@@ -84,6 +110,15 @@ export function upgradeLegacySchema(sql: SqlExec): SchemaUpgrade {
   // Nothing wraps these in a transaction on the Node runtime.
   const account = columnsOf(sql, 'account');
   if (account.includes('issuer')) {
+    // The one case where the drop is NOT lossless. The old unique key was `(issuer, account_id)`,
+    // so two rows can share `(provider_id, account_id)` when they differ by issuer — a provider
+    // id that was pointed at a second upstream. Better Auth 1.7.3+ keys on the pair alone and
+    // refuses a lookup that matches more than one row, and `issuer` is the only thing that
+    // tells those rows apart, so dropping it turns a recoverable state into a lost one. Refuse
+    // BEFORE anything irreversible: the store is exactly as it was, and rolling the deploy back
+    // restores service. Never continue — a skipped drop would leave the `NOT NULL` column
+    // failing every new sign-up, each one leaving a user with no account behind.
+    assertNoAccountKeyCollisions(sql);
     sql.exec('DROP INDEX IF EXISTS account_issuer_account_id_idx');
     sql.exec('ALTER TABLE account DROP COLUMN issuer');
     upgrade.dropped.push('account.issuer');
