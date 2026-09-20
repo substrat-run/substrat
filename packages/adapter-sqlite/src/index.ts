@@ -285,6 +285,9 @@ import {
   entityVersionOf,
   assertIfMatch,
   OUTBOX_ENTITY_INDEX,
+  SCHEDULE_STATE_DDL,
+  SCHEDULE_STATE_REBUILD,
+  scheduleStateHasKind,
   type EntityVersion,
   type EntityVersionRow,
   type InvokeOptions,
@@ -552,6 +555,18 @@ const KERNEL_DDL = `
     drained_at TEXT
   );
   ${IDEMPOTENCY_DDL}
+  -- #383 / #1232 / #1288: the platform sweep's per-scope gating state, holding two
+  -- families of row that the kind COLUMN — not the spelling of a key — tells apart.
+  -- Spine (kernel-written), never a module migration. Shared with the DO adapter from
+  -- @substrat-run/kernel, so the shape a rebuild produces and the shape a fresh store
+  -- gets cannot part company; the column comments are in there.
+  --
+  -- HERE since #1288, rather than lazily in runDueSchedules/checkFreshness as it was:
+  -- a table only one adapter's KERNEL_DDL declares is a one-sided NOTE to
+  -- lint:spine-ddl, never a failure, so the copies this issue had to keep in step were
+  -- the copies the gate could not see. Every scope db passes through runtime(), which
+  -- runs this, so the lazy creates were load-bearing for nothing.
+  ${SCHEDULE_STATE_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -3142,24 +3157,11 @@ export class SqliteScopeHost implements ScopeHost {
 
     const rt = this.runtime(tenantId, scopeId);
     await this.applyPendingMigrations(rt);
-    // Same lazy create as runDueSchedules — a freshness-only module must not hit
-    // `no such table` on a scope no schedule ever swept. Despite the table's name it
-    // holds two kinds of row (#1232): schedule operations keyed `module/verb`, and
-    // the rows written just below, keyed `freshness:<eventType>`. For those,
-    // `last_run_at`/`last_status` are the last RECORDED at and verdict — nothing ran.
-    // Only half the no-collision claim is enforced: an event type has passed
-    // contracts' `eventType` regex (lowercase `ns.verb`, no colon), so a freshness
-    // key can never look like an operation — but `scheduleSpec.operation` is
-    // `z.string().min(1)`, so a schedule literally named `freshness:orders.placed`
-    // would share this row and nothing would refuse it. #1288 tracks the `kind`
-    // column that would make the distinction real instead of conventional.
-    rt.db.exec(
-      `CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
-         schedule_op TEXT PRIMARY KEY,
-         last_run_at TEXT,
-         last_status TEXT
-       )`,
-    );
+    // The gating-state table is KERNEL_DDL's since #1288 — `runtime()` above ran it,
+    // so a freshness-only module on a scope no schedule ever swept finds the table
+    // there rather than creating it here. The rows written below are the evaluator's,
+    // `kind = 'freshness'`, keyed `freshness:<eventType>`: for those `last_run_at` /
+    // `last_status` are the last RECORDED at and verdict — nothing ran.
 
     // Collapse duplicate event types to the tightest window, ACROSS modules.
     const windows = new Map<string, number>();
@@ -3192,8 +3194,14 @@ export class SqliteScopeHost implements ScopeHost {
             ? 'ok'
             : 'failed';
       const stateKey = `freshness:${eventType}`;
+      // #1288: the evaluator's own row, named by kind. Before the column, a module
+      // declaring a schedule called `freshness:<this type>` shared it — and the
+      // verdict read back here was whichever of the two wrote last.
       const state = rt.db
-        .prepare('SELECT last_run_at, last_status FROM _substrat_schedule_state WHERE schedule_op = ?')
+        .prepare(
+          `SELECT last_run_at, last_status FROM _substrat_schedule_state
+            WHERE kind = 'freshness' AND schedule_op = ?`,
+        )
         .get(stateKey) as { last_run_at: string | null; last_status: string | null } | undefined;
       const changed = state?.last_status !== outcome;
       const heartbeatDue =
@@ -3202,10 +3210,10 @@ export class SqliteScopeHost implements ScopeHost {
       if (!changed && !heartbeatDue) continue;
       rt.db
         .prepare(
-          `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
-             VALUES (?, ?, ?)
-           ON CONFLICT(schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
-                                                  last_status = excluded.last_status`,
+          `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
+             VALUES ('freshness', ?, ?, ?)
+           ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                        last_status = excluded.last_status`,
         )
         .run(stateKey, nowIso, outcome);
       report.checks.push({ eventType, outcome, observedAt, withinHours });
@@ -3247,24 +3255,23 @@ export class SqliteScopeHost implements ScopeHost {
       )
       .get(`system:${moduleId}`, nowIso);
     if (!hasGrant) return report;
-    // The spine state table is created lazily on first sweep of a scope — it is
-    // kernel-owned (`_substrat_*`), never in a module migration. It holds this
-    // loop's rows, keyed by the schedule operation (`module/verb`, where
-    // `last_run_at`/`last_status` are when it RAN and how it ended), and — since
-    // #1232 — the freshness evaluator's, keyed `freshness:<eventType>`. See
-    // checkFreshness for what the columns mean there; #1288 tracks the widening.
-    rt.db.exec(
-      `CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
-         schedule_op TEXT PRIMARY KEY,
-         last_run_at TEXT,
-         last_status TEXT
-       )`,
-    );
+    // The spine state table is KERNEL_DDL's (#1288) — kernel-owned (`_substrat_*`),
+    // never a module migration, and created by `runtime()` above rather than lazily
+    // here. This loop's rows are `kind = 'schedule'`, keyed by the operation
+    // (`module/verb`, where `last_run_at`/`last_status` are when it RAN and how it
+    // ended); the freshness evaluator's are `kind = 'freshness'` — see checkFreshness
+    // for what the same two columns mean there.
 
     const now = Date.parse(nowIso);
     for (const schedule of mod.schedules) {
+      // #1288: this schedule's own row. `kind` is what makes that true even when the
+      // operation is spelled `freshness:<eventType>` — without it, the cadence gate
+      // below read the evaluator's last recorded verdict as a run of this operation.
       const row = rt.db
-        .prepare('SELECT last_run_at FROM _substrat_schedule_state WHERE schedule_op = ?')
+        .prepare(
+          `SELECT last_run_at FROM _substrat_schedule_state
+            WHERE kind = 'schedule' AND schedule_op = ?`,
+        )
         .get(schedule.operation) as { last_run_at: string | null } | undefined;
       const lastRun = row?.last_run_at ? Date.parse(row.last_run_at) : null;
       const dueAt = lastRun === null ? -Infinity : lastRun + schedule.cadence.everyMinutes * 60_000;
@@ -3290,10 +3297,10 @@ export class SqliteScopeHost implements ScopeHost {
       }
       rt.db
         .prepare(
-          `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
-             VALUES (?, ?, ?)
-           ON CONFLICT(schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
-                                                  last_status = excluded.last_status`,
+          `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
+             VALUES ('schedule', ?, ?, ?)
+           ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                        last_status = excluded.last_status`,
         )
         .run(schedule.operation, new Date(now).toISOString(), status);
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
@@ -7967,6 +7974,20 @@ export class SqliteScopeHost implements ScopeHost {
   }
 
   /**
+   * #1288: `_substrat_schedule_state`, rebuilt with `kind` in its key on a scope db
+   * whose table predates the column. The statements are the kernel's, so the DO
+   * adapter rebuilds byte-identically, and the detection is the `sqlite_master.sql`
+   * read `ensureIdentityKey` already uses — PRAGMA would do here, but not there.
+   */
+  private ensureScheduleStateKind(db: Database.Database): void {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get('_substrat_schedule_state') as { sql: string } | undefined;
+    if (!row || scheduleStateHasKind(row.sql)) return;
+    db.exec(SCHEDULE_STATE_REBUILD);
+  }
+
+  /**
    * Rebuild `_substrat_identities` when it still carries the pre-K-22 global key.
    * A PRIMARY KEY cannot be ALTERed, so this is create-copy-drop-rename.
    *
@@ -8816,6 +8837,9 @@ export class SqliteScopeHost implements ScopeHost {
     // #1237: existing scopes get it on next wake. Rows already written keep NULL, which
     // honestly means "no invocation id was carried" — nothing can decide one afterwards.
     this.ensureColumn(db, '_substrat_outbox', 'invocation_id', 'invocation_id TEXT');
+    // #1288: not an ensureColumn, because `kind` joins the schedule-state PRIMARY KEY
+    // and no ALTER can widen a key. Rebuilt instead, from the kernel's statements.
+    this.ensureScheduleStateKind(db);
     // #1237: `readInvocation`'s lookup — WHERE invocation_id = ? ORDER BY id — over an outbox
     // that is never pruned. No index leads with invocation_id, so without this one SQLite
     // walks the PRIMARY KEY from the oldest event until it reaches the call, and reading a

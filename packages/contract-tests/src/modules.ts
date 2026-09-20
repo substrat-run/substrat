@@ -62,7 +62,20 @@ export const scheduleModManifest = moduleManifest.parse({
   migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
   attachmentTargets: [],
   entitlementKey: 'sched',
-  schedules: [{ operation: 'sched/tick', cadence: { everyMinutes: 60 }, permissions: ['sched:tick'] }],
+  schedules: [
+    { operation: 'sched/tick', cadence: { everyMinutes: 60 }, permissions: ['sched:tick'] },
+    // #1288's regression fixture, and it is not a silly name: `scheduleSpec.operation`
+    // is `z.string().min(1)`, so this IS a legal schedule, and its key is byte-for-byte
+    // the key the freshness expectation below writes under. Until `kind` joined the
+    // primary key of `_substrat_schedule_state` the two shared one row — each pass
+    // overwrote the other's verdict, and each read back the other's time. Declared here
+    // rather than in a module of its own so BOTH adapters' schedule suites carry it.
+    {
+      operation: 'freshness:sched.ticked',
+      cadence: { everyMinutes: 60 },
+      permissions: ['sched:tick'],
+    },
+  ],
   // #1232: a freshness expectation on the module's own emitted type — declared TWICE
   // with different windows, deliberately: the evaluator must collapse duplicates to
   // the tightest window (one row per (scope, eventType), or the drain dedupe eats one).
@@ -965,6 +978,12 @@ export const scheduleMod: ModuleRegistration = {
         payload: {},
       });
     }) as OperationHandler<never, unknown>,
+    // #1288: the colliding schedule's handler. Deliberately writes nothing and emits
+    // nothing — its `_substrat_schedule_state` row IS the evidence it ran, which is
+    // the fact under test. It holds `sched:tick` because its schedule declares it.
+    'freshness:sched.ticked': (async (ctx) => {
+      assertAllowed(await ctx.check('sched:tick' as PermissionKey));
+    }) as OperationHandler<never, unknown>,
     // Checks a permission the schedule never granted the system principal — invoked
     // directly through the system door, it must be DENIED, proving ctx.check is the gate.
     'sched/needs-admin': (async (ctx) => {
@@ -979,9 +998,13 @@ export const scheduleMod: ModuleRegistration = {
       ctx.sql.query<{ type: string; actor: string; operation: string | null }>(
         'SELECT type, actor, operation FROM _substrat_outbox ORDER BY id',
       )) as OperationHandler<never, unknown>,
+    // #1288: `kind` is selected, and the order leads with it — two rows may now share
+    // a `schedule_op`, so ordering by that alone leaves the pair's order to the query
+    // planner and an assertion on the array would be flaky rather than wrong.
     'sched/schedule-state': ((ctx) =>
-      ctx.sql.query<{ schedule_op: string; last_status: string }>(
-        'SELECT schedule_op, last_status FROM _substrat_schedule_state ORDER BY schedule_op',
+      ctx.sql.query<{ kind: string; schedule_op: string; last_status: string }>(
+        `SELECT kind, schedule_op, last_status FROM _substrat_schedule_state
+          ORDER BY kind, schedule_op`,
       )) as OperationHandler<never, unknown>,
   },
 };

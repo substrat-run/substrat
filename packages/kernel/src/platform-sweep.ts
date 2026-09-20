@@ -275,6 +275,90 @@ export interface MigrationSweepReport extends MigrationProgress {
 }
 
 /**
+ * Which family a `_substrat_schedule_state` row belongs to (#1288) — the two of
+ * `sweepRunKind`'s three names that a SCOPE can hold gating state for. (`connector`
+ * is the third and is deliberately absent: a connection is swept host-wide and its
+ * state lives nowhere in a scope.)
+ */
+export type ScheduleStateKind = 'schedule' | 'freshness';
+
+/**
+ * The platform sweep's per-scope gating state (#383), as both adapters build it.
+ *
+ * Shared rather than spelled twice because `lint:spine-ddl` can compare the copies
+ * only where they are DDL a `KERNEL_DDL` executes — and this table is also rebuilt
+ * by `SCHEDULE_STATE_REBUILD` below, on a store that predates the key. One
+ * definition is what keeps the rebuilt shape and the created shape the same shape;
+ * the gate then holds each adapter to including it.
+ */
+export const SCHEDULE_STATE_DDL = `
+  CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
+    -- #1288: WHICH of the two families this row belongs to, named with the same two
+    -- words _substrat_sweep_runs already records its entries under:
+    --   * 'schedule'  -- keyed by the operation (module/verb). last_run_at and
+    --     last_status are when that operation RAN here and how it ended.
+    --   * 'freshness' -- keyed freshness:<eventType> (#1232). last_run_at and
+    --     last_status are when the evaluator last RECORDED a verdict for that event
+    --     type and what it was. Nothing ran; the row gates what the sweep records.
+    kind TEXT NOT NULL,
+    schedule_op TEXT NOT NULL,
+    last_run_at TEXT,
+    last_status TEXT,
+    -- The key LEADS with kind, and that is the point of #1288 rather than a tidy-up.
+    -- Until it did, the two families were told apart by the spelling of one column:
+    -- a freshness key could never LOOK like an operation (an event type has passed
+    -- contracts' eventType regex -- lowercase ns.verb, no colon, no slash), but the
+    -- other direction was convention only, because scheduleSpec.operation is
+    -- z.string().min(1). A module declaring a schedule literally named
+    -- "freshness:orders.placed" shared the evaluator's row and nothing refused it:
+    -- each write clobbered the other's verdict, and the sweep read back whichever
+    -- ran last. With kind in the key those are two rows that cannot meet.
+    PRIMARY KEY (kind, schedule_op)
+  );
+`;
+
+/**
+ * `_substrat_schedule_state`, rebuilt with its #1288 key on a store created before
+ * it. Create-copy-drop-rename, because `kind` joins the PRIMARY KEY and SQLite
+ * cannot widen a key in place — the same shape the directory's `ensureIdentityKey`
+ * uses, and detected the same way (from `sqlite_master.sql`, which DO SQLite serves
+ * and `PRAGMA` does not, so both adapters migrate by one strategy).
+ *
+ * The new table is `SCHEDULE_STATE_DDL` under a temporary name, so the rebuilt shape
+ * cannot drift from the created one.
+ *
+ * The backfill derives `kind` from the `freshness:` prefix because that prefix IS how
+ * the two families were told apart until now: every row the evaluator ever wrote
+ * carries it, and no operation name in existence does. `substr(...) = 'freshness:'`
+ * rather than `LIKE`, which is case-insensitive over ASCII in SQLite and would file a
+ * schedule named `FRESHNESS:x` under the evaluator.
+ *
+ * Keys are copied VERBATIM, prefix included. What changes is which rows can coexist,
+ * not what any row says — so a deployment rolled back to code that looks a freshness
+ * key up under its old name still finds it.
+ */
+export const SCHEDULE_STATE_REBUILD = `
+  ${SCHEDULE_STATE_DDL.replace(
+    'CREATE TABLE IF NOT EXISTS _substrat_schedule_state',
+    'CREATE TABLE _substrat_schedule_state_new',
+  )}
+  INSERT INTO _substrat_schedule_state_new (kind, schedule_op, last_run_at, last_status)
+    SELECT CASE WHEN substr(schedule_op, 1, 10) = 'freshness:' THEN 'freshness' ELSE 'schedule' END,
+           schedule_op, last_run_at, last_status
+      FROM _substrat_schedule_state;
+  DROP TABLE _substrat_schedule_state;
+  ALTER TABLE _substrat_schedule_state_new RENAME TO _substrat_schedule_state;
+`;
+
+/**
+ * Whether a store's `_substrat_schedule_state` already carries the #1288 key, read
+ * off the `sql` column of `sqlite_master`. `false` means the rebuild is due.
+ */
+export function scheduleStateHasKind(tableSql: string): boolean {
+  return tableSql.includes('PRIMARY KEY (kind, schedule_op)');
+}
+
+/**
  * What the recurring-schedule phase did in one pass (#383), summed across every
  * module's live scopes. `null` on `PlatformSweepReport` means the phase was
  * disabled or the host predates it — distinct from a report of all zeros, which is

@@ -111,8 +111,12 @@ import {
   assertIfMatch,
   type InvokeOptions,
   OUTBOX_ENTITY_INDEX,
+  SCHEDULE_STATE_DDL,
+  SCHEDULE_STATE_REBUILD,
+  scheduleStateHasKind,
   type EntityVersion,
   type EntityVersionRow,
+  type ScheduleStateKind,
 } from '@substrat-run/kernel';
 import type { CheckSubject, ImpersonationSession, ModuleId } from '@substrat-run/contracts';
 import { OperationQueue } from './serialization.js';
@@ -347,28 +351,12 @@ const KERNEL_DDL = `
     at TEXT NOT NULL,
     drained_at TEXT
   );
-  -- #383: the platform sweep's per-scope gating state. Despite the name, this table
-  -- holds TWO kinds of row since #1232, told apart by the shape of schedule_op:
-  --   * a schedule operation, spelled module/verb -- last_run_at / last_status are
-  --     when that operation last RAN here and how it ended;
-  --   * a freshness key, spelled freshness:<eventType> -- last_run_at / last_status
-  --     are when the evaluator last RECORDED a verdict for that event type and what
-  --     the verdict was. Nothing ran; the row gates what the sweep records.
-  -- Only HALF the no-collision claim is enforced, which is worth knowing before
-  -- trusting it: a freshness key is always "freshness:" followed by a value the
-  -- contracts eventType schema accepted (lowercase ns.verb, no colon and no slash),
-  -- so no freshness key can ever look like an operation. The other direction is
-  -- CONVENTION only -- scheduleSpec.operation is z.string().min(1), so a module
-  -- that declared a schedule operation literally named "freshness:orders.placed"
-  -- would share a row with the evaluator and nothing today would reject it.
-  -- #1288 tracks giving the table a column (or a name) that says this outright,
-  -- which is also what would let the collision be refused rather than avoided.
-  -- Spine (kernel-written), never a module migration.
-  CREATE TABLE IF NOT EXISTS _substrat_schedule_state (
-    schedule_op TEXT PRIMARY KEY,
-    last_run_at TEXT,
-    last_status TEXT
-  );
+  -- #383 / #1232 / #1288: the platform sweep's per-scope gating state, holding two
+  -- families of row that the kind COLUMN -- not the spelling of a key -- tells
+  -- apart. Spine (kernel-written), never a module migration. Shared with the pure
+  -- adapter from @substrat-run/kernel, so the shape a rebuild produces and the shape
+  -- a fresh store gets cannot part company; the column comments are in there.
+  ${SCHEDULE_STATE_DDL}
   CREATE TABLE IF NOT EXISTS _substrat_migrations (
     module_id TEXT NOT NULL,
     version TEXT NOT NULL,
@@ -2053,11 +2041,18 @@ export function defineScopeDO(
       return row !== undefined;
     }
 
-    /** The last time a schedule's operation ran on this scope (#383), or null. */
+    /**
+     * The last time a schedule's operation ran on this scope (#383), or null.
+     *
+     * `kind = 'schedule'` is not decoration (#1288): an operation may legally be
+     * named `freshness:<something>`, and before the column this read answered with
+     * the EVALUATOR's last recorded time for that event type — a cadence gate
+     * driven by a verdict nothing ran.
+     */
     async scheduleLastRun(operation: string): Promise<string | null> {
       const row = this.sql
         .exec(
-          `SELECT last_run_at FROM _substrat_schedule_state WHERE schedule_op = ?`,
+          `SELECT last_run_at FROM _substrat_schedule_state WHERE kind = 'schedule' AND schedule_op = ?`,
           operation,
         )
         .toArray()[0] as { last_run_at: string | null } | undefined;
@@ -2068,8 +2063,9 @@ export function defineScopeDO(
      * #1232: everything the freshness evaluator needs about this scope, one round
      * trip regardless of how many types are declared — the newest matching event
      * per type, plus each type's recorded evaluator state (last recorded at +
-     * outcome, kept in `_substrat_schedule_state` under a `freshness:` prefix that
-     * cannot collide with operation names).
+     * outcome, kept in `_substrat_schedule_state` under `kind = 'freshness'`, which
+     * since #1288 is what separates these rows from the schedule rows beside them —
+     * the `freshness:` prefix on the key is retained but no longer load-bearing).
      */
     async freshnessProbe(types: string[]): Promise<
       Record<string, { observedAt: string | null; stateAt: string | null; stateOutcome: string | null }>
@@ -2090,7 +2086,8 @@ export function defineScopeDO(
       const keys = types.map((t) => `freshness:${t}`);
       for (const row of this.sql
         .exec(
-          `SELECT schedule_op, last_run_at, last_status FROM _substrat_schedule_state WHERE schedule_op IN (${marks})`,
+          `SELECT schedule_op, last_run_at, last_status FROM _substrat_schedule_state
+            WHERE kind = 'freshness' AND schedule_op IN (${marks})`,
           ...keys,
         )
         .toArray() as unknown as { schedule_op: string; last_run_at: string | null; last_status: string | null }[]) {
@@ -2105,17 +2102,27 @@ export function defineScopeDO(
 
     /**
      * Write one `_substrat_schedule_state` row (#383). Spine, kernel-written.
-     * `unit` is the row's key in either of the two shapes the table holds: a schedule
+     *
+     * `kind` is PASSED, never derived from the shape of `unit` (#1288) — deriving it
+     * is precisely the convention this column replaced, and it is wrong for the one
+     * input that matters: a schedule operation named `freshness:orders.placed` is a
+     * schedule row, whatever its key looks like. `unit` is that row's key: a schedule
      * operation (`module/verb`, and then `at`/`status` are when it ran and how it
      * ended) or a freshness key (`freshness:<eventType>`, and then they are when the
      * verdict was recorded and what it was — nothing ran). See the bootstrap DDL.
      */
-    async recordScheduleRun(unit: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void> {
+    async recordScheduleRun(
+      kind: ScheduleStateKind,
+      unit: string,
+      at: string,
+      status: 'ok' | 'failed' | 'skipped',
+    ): Promise<void> {
       this.sql.exec(
-        `INSERT INTO _substrat_schedule_state (schedule_op, last_run_at, last_status)
-           VALUES (?, ?, ?)
-         ON CONFLICT(schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
-                                                last_status = excluded.last_status`,
+        `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
+           VALUES (?, ?, ?, ?)
+         ON CONFLICT(kind, schedule_op) DO UPDATE SET last_run_at = excluded.last_run_at,
+                                                      last_status = excluded.last_status`,
+        kind,
         unit,
         at,
         status,
@@ -2730,6 +2737,24 @@ export function defineScopeDO(
       // boot. `lint:spine-ddl` compares KERNEL_DDL's indexes only, so this one is held to
       // both adapters by the query-plan test rather than by that gate.
       this.sql.exec('CREATE INDEX IF NOT EXISTS _substrat_outbox_invocation ON _substrat_outbox (invocation_id, id)');
+      this.ensureScheduleStateKind();
+    }
+
+    /**
+     * #1288: `_substrat_schedule_state`, rebuilt with `kind` in its key on a scope DO
+     * whose table predates the column. Not in the ALTER list above, because `kind`
+     * joins the PRIMARY KEY and no ALTER can widen a key — the statements are the
+     * kernel's, so the pure adapter rebuilds byte-identically.
+     *
+     * Detected from `sqlite_master.sql`: DO SQLite restricts `PRAGMA`, and reading
+     * the stored DDL is the one probe both adapters can make.
+     */
+    private ensureScheduleStateKind(): void {
+      const row = this.sql
+        .exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, '_substrat_schedule_state')
+        .toArray()[0] as { sql: string } | undefined;
+      if (!row || scheduleStateHasKind(row.sql)) return;
+      for (const stmt of splitSqlStatements(SCHEDULE_STATE_REBUILD)) this.sql.exec(stmt);
     }
 
     async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {

@@ -237,7 +237,13 @@ export {
   providerErrorStatus,
   RETRYABLE_CLIENT_STATUSES,
 } from './provider-error.js';
-export { runPlatformSweep, startPlatformSweeper } from './platform-sweep.js';
+export {
+  runPlatformSweep,
+  startPlatformSweeper,
+  SCHEDULE_STATE_DDL,
+  SCHEDULE_STATE_REBUILD,
+  scheduleStateHasKind,
+} from './platform-sweep.js';
 export type {
   AccessLogSink,
   EventSink,
@@ -249,6 +255,7 @@ export type {
   PlatformSweepReport,
   PlatformSweeperHandle,
   ScheduleSweepReport,
+  ScheduleStateKind,
   StartPlatformSweeperOptions,
 } from './platform-sweep.js';
 export {

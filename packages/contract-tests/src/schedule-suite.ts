@@ -57,7 +57,8 @@ export function scheduleContractSuite(
     it('fires a due schedule and attributes it to the system actor', async () => {
       const report = await sweep();
       expect(report.schedules).not.toBeNull();
-      expect(report.schedules!.fired).toBe(1);
+      // Two: `sched/tick`, and #1288's collision fixture `freshness:sched.ticked`.
+      expect(report.schedules!.fired).toBe(2);
       expect(report.errors).toEqual([]);
 
       // The operation ran exactly once, and its emitted event reads as the module,
@@ -76,19 +77,25 @@ export function scheduleContractSuite(
     it('skips a schedule still inside its cadence window', async () => {
       const report = await sweep();
       expect(report.schedules!.fired).toBe(0);
-      expect(report.schedules!.skipped).toBe(1);
+      expect(report.schedules!.skipped).toBe(2);
       // Still one tick — the second pass did not re-run it.
       const stub = await host.getScope(reader, t, s);
       expect(await stub.invoke('sched/count')).toBe(1);
       const state = (await stub.invoke('sched/schedule-state')) as {
+        kind: string;
         schedule_op: string;
         last_status: string;
       }[];
-      // Two rows now (#1232): the schedule's own state, and the freshness evaluator's
-      // — which rides the same table under a prefix that cannot collide.
+      // THREE rows, and the middle two are the whole of #1288: a freshness row and a
+      // schedule row whose keys are byte-identical, coexisting because `kind` leads
+      // the primary key. Before it there were two rows here, not three — the module's
+      // `freshness:sched.ticked` schedule and the evaluator's expectation on
+      // `sched.ticked` wrote over each other under one key, and the survivor was
+      // whichever phase of the pass ran last.
       expect(state).toEqual([
-        { schedule_op: 'freshness:sched.ticked', last_status: 'ok' },
-        { schedule_op: 'sched/tick', last_status: 'ok' },
+        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'ok' },
+        { kind: 'schedule', schedule_op: 'freshness:sched.ticked', last_status: 'ok' },
+        { kind: 'schedule', schedule_op: 'sched/tick', last_status: 'ok' },
       ]);
     });
 
@@ -105,6 +112,56 @@ export function scheduleContractSuite(
       await expect(
         host.getSystemScope(moduleId.parse('@test/not-registered'), t, s),
       ).rejects.toThrow(/not registered/);
+    });
+
+    /**
+     * #1288's migration, on the one legacy shape a test can actually produce: a
+     * restore replays the dump's own DDL verbatim, so a dump captured before the
+     * column puts the pre-#1288 table back into a live store — exactly what a scope
+     * created before this release wakes up holding. Both adapters then run their
+     * spine pass over it (`ensureSpineColumns` / `applySpineColumnAdditions`).
+     *
+     * LAST in this file deliberately: a restore replaces the scope's storage, so
+     * anything after it would be reading a different scope than it provisioned.
+     */
+    it('backfills kind from the freshness: prefix when a pre-#1288 table is restored', async () => {
+      await host.restoreScope(staff, t, s, {
+        tenantId: t,
+        scopeId: s,
+        capturedAt: '2026-09-01T00:00:00.000Z',
+        tables: [
+          {
+            name: '_substrat_schedule_state',
+            // The pre-#1288 shape, spelled out rather than referenced: the point of
+            // the test is that code meeting THIS table migrates it, so it must not
+            // move when the current DDL does.
+            ddl:
+              'CREATE TABLE _substrat_schedule_state (schedule_op TEXT PRIMARY KEY, ' +
+              'last_run_at TEXT, last_status TEXT)',
+            columns: ['schedule_op', 'last_run_at', 'last_status'],
+            rows: [
+              ['freshness:sched.ticked', '2026-09-01T00:00:00.000Z', 'failed'],
+              ['sched/tick', '2026-09-01T00:00:00.000Z', 'ok'],
+            ],
+          },
+        ],
+      });
+
+      const stub = await host.getScope(reader, t, s);
+      const state = (await stub.invoke('sched/schedule-state')) as {
+        kind: string;
+        schedule_op: string;
+        last_status: string;
+      }[];
+      // Every row survived, every key verbatim, and each landed under the kind its key
+      // implied — which is how the two families were told apart before the column,
+      // so deriving from it is the one backfill that preserves what was recorded.
+      // The statuses differ on purpose: a backfill that dropped rows and let the
+      // sweep re-create them would read as 'ok' on both.
+      expect(state).toEqual([
+        { kind: 'freshness', schedule_op: 'freshness:sched.ticked', last_status: 'failed' },
+        { kind: 'schedule', schedule_op: 'sched/tick', last_status: 'ok' },
+      ]);
     });
   });
 }
