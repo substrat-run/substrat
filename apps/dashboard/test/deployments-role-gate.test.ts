@@ -77,6 +77,8 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
   const dashScope = scopeId.parse(ulid());
   /** What the plane was asked to DO (not to read) — a refused route leaves this empty. */
   let effects: string[];
+  /** EVERY request that reached the plane's service binding: reads, ownership lookups, token mints. */
+  let planeCalls: string[];
   let env: Record<string, unknown>;
 
   /** One login per role: the cookie value is its `sub`. */
@@ -88,6 +90,7 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     shared.host = host;
     for (const m of MODULES) host.registerModule(m);
     effects = [];
+    planeCalls = [];
 
     const owner = principalId.parse(ulid());
     await provisionDashboard(host, { tenantId: tenant, scopeId: dashScope, owner, slug: 'roles', name: 'Roles' });
@@ -115,6 +118,7 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
           const u = new URL(String(url));
           const method = init?.method ?? 'GET';
           const path = u.pathname.replace(/^\/api/, '') + u.search;
+          planeCalls.push(`${method} ${path}`);
           if (path === '/tenant-tokens') return Response.json({ token: 'tenant-token' });
           const acts =
             (method === 'POST' && /^\/verticals\/[^/]+\/channels\/[^/]+\/promote$/.test(u.pathname.replace(/^\/api/, ''))) ||
@@ -170,7 +174,9 @@ describe('the /api/deployments write routes ask the caller’s role (#1595)', ()
     const res = await asRole('viewer', call[0], call[1], call[2]);
     expect(res.status).toBe(403);
     expect(await res.text()).toMatch(/permission denied/i);
-    // Refused BEFORE anything was asked of the plane, not after.
+    // Refused BEFORE the plane was contacted at all — not after an ownership read, not after
+    // a token mint. `effects` alone would stay green with the gate moved below a read.
+    expect(planeCalls).toEqual([]);
     expect(effects).toEqual([]);
   }
 
