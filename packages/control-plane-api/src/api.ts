@@ -1020,12 +1020,7 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
     if (authenticateTenantService) {
       const tenant = await authenticateTenantService(c.req.raw);
       if (tenant) {
-        principal = {
-          kind: 'tenant',
-          actor: tenant.actor,
-          tenantId: tenant.tenantId,
-          tenantSlug: tenant.tenantSlug,
-        };
+        principal = { kind: 'tenant', actor: tenant.actor, tenantId: tenant.tenantId };
       }
     }
     const staff = principal ? null : await authenticate(c.req.raw);
@@ -5233,10 +5228,12 @@ export function createControlPlaneApi(options: ControlPlaneApiOptions): Hono<{ V
       return c.json({ error: 'tenant tokens are not configured on this control plane' }, 501);
     }
     const { tenantId } = z.object({ tenantId: tenantIdSchema }).parse(await c.req.json());
-    const tenant = await admin.getTenant(c.get('actor'), tenantId);
-    if (!tenant) return c.json({ error: `unknown tenant: ${tenantId}` }, 404);
-    const token = await mintTenantToken(options.tenantTokenSecret, { tenantId, tenantSlug: tenant.slug });
-    return c.json({ token, tenantSlug: tenant.slug }, 201);
+    // Unlike the push-token mint, this does NOT require the tenant to exist: a token
+    // for a tenant with no directory row reaches nothing except creating that row
+    // (`POST /tenants`, body-pinned to the same id), which is the sign-up bootstrap.
+    // See the mint's docblock in tenant-token.ts.
+    const token = await mintTenantToken(options.tenantTokenSecret, { tenantId });
+    return c.json({ token }, 201);
   });
 
   // -- the hostname map (§4.7, K-26) -----------------------------------------

@@ -41,31 +41,30 @@ describe('tenant tokens', () => {
   const serviceActor = platformActorId.parse('01JZ00000000000000000000SV');
 
   it('mints, verifies, and round-trips the claim', async () => {
-    const token = await mintTenantToken(SECRET, { tenantId: tA, tenantSlug: 'acme' });
+    const token = await mintTenantToken(SECRET, { tenantId: tA });
     expect(token.startsWith('stt1.')).toBe(true);
     const claim = await verifyTenantToken(SECRET, token);
     expect(claim).not.toBeNull();
     expect(claim!.tenantId).toBe(tA);
-    expect(claim!.tenantSlug).toBe('acme');
   });
 
   it('carries no actor — a minted token cannot name its own audit subject', async () => {
-    const token = await mintTenantToken(SECRET, { tenantId: tA, tenantSlug: 'acme' });
+    const token = await mintTenantToken(SECRET, { tenantId: tA });
     const claim = (await verifyTenantToken(SECRET, token)) as Record<string, unknown>;
-    expect(Object.keys(claim).sort()).toEqual(['iat', 'tenantId', 'tenantSlug', 'v']);
+    expect(Object.keys(claim).sort()).toEqual(['iat', 'tenantId', 'v']);
     // The audited subject is the host's, handed to the reader — never the token's.
     const identity = await tenantTokenAuth(SECRET, serviceActor)(
       new Request('http://cp/tenants', { headers: { [SERVICE_TOKEN_HEADER]: token } }),
     );
-    expect(identity).toEqual({ actor: serviceActor, tenantId: tA, tenantSlug: 'acme' });
+    expect(identity).toEqual({ actor: serviceActor, tenantId: tA });
   });
 
   it('refuses a tampered payload, a wrong secret, and a foreign prefix', async () => {
-    const token = await mintTenantToken(SECRET, { tenantId: tA, tenantSlug: 'acme' });
+    const token = await mintTenantToken(SECRET, { tenantId: tA });
     const [prefix, payload, sig] = token.split('.') as [string, string, string];
 
     // Another tenant's payload under this one's signature: must not verify.
-    const other = await mintTenantToken(SECRET, { tenantId: tB, tenantSlug: 'other' });
+    const other = await mintTenantToken(SECRET, { tenantId: tB });
     expect(await verifyTenantToken(SECRET, `${prefix}.${other.split('.')[1]!}.${sig}`)).toBeNull();
 
     expect(await verifyTenantToken('some-other-secret', token)).toBeNull();
@@ -78,7 +77,7 @@ describe('tenant tokens', () => {
     // that the prefix is INSIDE the signed input. Under one shared secret (which is
     // exactly what the dedicated-secret rule forbids, and therefore what this proves
     // would not save you) the payloads still do not cross.
-    const tenant = await mintTenantToken(SECRET, { tenantId: tA, tenantSlug: 'acme' });
+    const tenant = await mintTenantToken(SECRET, { tenantId: tA });
     const push = await mintPushToken(SECRET, {
       actor: await pushActorFor(tA),
       tenantId: tA,
@@ -368,12 +367,41 @@ describe('tenant tokens', () => {
 
     // -- the mint route ------------------------------------------------------
 
-    it('staff mint for a known tenant; unknown tenants 404; no secret 501s', async () => {
-      const unknown = await app.request('/tenant-tokens', {
-        method: 'POST', headers: staffHeaders, body: JSON.stringify({ tenantId: tenantId.parse(ulid()) }),
+    it('mints for a tenant that does not exist yet — that IS the sign-up bootstrap', async () => {
+      // The dashboard's FIRST call for a new team is `ensureTenant`, over this same
+      // seam. A mint that required the directory row would make that unreachable: no
+      // row, no credential, no way to create the row. So it mints, and what the
+      // credential can do until the row exists is create exactly that row.
+      const fresh = tenantId.parse(ulid());
+      const minted = await app.request('/tenant-tokens', {
+        method: 'POST', headers: staffHeaders, body: JSON.stringify({ tenantId: fresh }),
       });
-      expect(unknown.status).toBe(404);
+      expect(minted.status).toBe(201);
+      const asFresh = {
+        [SERVICE_TOKEN_HEADER]: ((await minted.json()) as { token: string }).token,
+        'content-type': 'application/json',
+      };
 
+      // It reaches nothing — including the tenant it is FOR, which has no rows yet.
+      expect((await app.request(`/tenants/${fresh}`, { headers: asFresh })).status).toBe(404);
+      // …and it still cannot name anybody else's.
+      expect((await app.request(`/tenants/${tA}`, { headers: asFresh })).status).toBe(403);
+      const stealing = await app.request('/tenants', {
+        method: 'POST', headers: asFresh,
+        body: JSON.stringify({ id: tenantId.parse(ulid()), slug: 'not-mine', name: 'Not Mine' }),
+      });
+      expect(stealing.status).toBe(403);
+
+      // What it CAN do: bootstrap its own row, and then act inside it.
+      const bootstrap = await app.request('/tenants', {
+        method: 'POST', headers: asFresh,
+        body: JSON.stringify({ id: fresh, slug: 'fresh-co', name: 'Fresh Co' }),
+      });
+      expect(bootstrap.status).toBe(201);
+      expect((await app.request(`/tenants/${fresh}`, { headers: asFresh })).status).toBe(200);
+    });
+
+    it('501s the mint when no secret is configured', async () => {
       const bare = createControlPlaneApi({ host, authenticate: UNSAFE_devPlatformActorAuth() });
       const res = await bare.request('/tenant-tokens', {
         method: 'POST', headers: staffHeaders, body: JSON.stringify({ tenantId: tA }),

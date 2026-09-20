@@ -220,8 +220,6 @@ export function firstBuilderAuth(...auths: BuilderAuth[]): BuilderAuth {
 export interface TenantServiceIdentity {
   actor: PlatformActorId;
   tenantId: TenantId;
-  /** The tenant's slug — the prefix a bare vertical slug resolves under (#417). */
-  tenantSlug: string;
 }
 
 /**
@@ -245,7 +243,11 @@ export type TenantServiceAuth = (
 export type Principal =
   | { kind: 'staff'; actor: PlatformActorId }
   | { kind: 'builder'; actor: PlatformActorId; tenantId: TenantId; tenantSlug: string }
-  | { kind: 'tenant'; actor: PlatformActorId; tenantId: TenantId; tenantSlug: string };
+  // No `tenantSlug`: the only thing that reads one is the builder's bare-slug
+  // prefixing (#417), and a tenant principal resolves a slug through the
+  // `x-substrat-tenant` header instead — which the plane pins to this same tenant.
+  // Carrying one would be a copy that can go stale for no reader's benefit.
+  | { kind: 'tenant'; actor: PlatformActorId; tenantId: TenantId };
 
 /**
  * The tenant a principal is CONFINED to, or null when it is fleet-wide staff.

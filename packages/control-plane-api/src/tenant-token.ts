@@ -53,26 +53,28 @@ const PREFIX = 'stt1';
 interface TenantTokenClaim {
   v: 1;
   tenantId: string;
-  /**
-   * The tenant's slug, carried for the same reason a builder identity carries it: the
-   * plane prefixes a bare vertical slug with it (#417) without a second directory read.
-   */
-  tenantSlug: string;
   /** Informational — no expiry in v1, exactly as push tokens have none. */
   iat: number;
 }
 
-/** Mint a tenant token. The caller has already established the tenant exists. */
-export async function mintTenantToken(
-  secret: string,
-  identity: { tenantId: TenantId; tenantSlug: string },
-): Promise<string> {
-  const claim: TenantTokenClaim = {
-    v: 1,
-    tenantId: identity.tenantId,
-    tenantSlug: identity.tenantSlug,
-    iat: Date.now(),
-  };
+/**
+ * Mint a tenant token.
+ *
+ * The tenant NEED NOT EXIST in the directory yet, and the claim deliberately carries
+ * no slug. Both follow from the same fact: a tenant token narrows WHOSE rows a caller
+ * may touch, and a tenant with no rows is narrowed to nothing. What such a credential
+ * can do is create the directory row for its own id — `POST /tenants` is body-pinned
+ * to the same tenant — which is precisely the sign-up bootstrap dashboard.md §4 names
+ * as the one act that cannot be tenant-narrowed, because there is no tenant yet.
+ * Requiring the row here would break it: the dashboard's first call for a new team IS
+ * `ensureTenant`, and a mint that 404s first makes that unreachable.
+ *
+ * A slug would also be a staleness hazard rather than a saving: the only thing that
+ * reads one is the builder's bare-slug prefixing (#417), and a tenant principal
+ * resolves a slug through the `x-substrat-tenant` header the plane already pins.
+ */
+export async function mintTenantToken(secret: string, identity: { tenantId: TenantId }): Promise<string> {
+  const claim: TenantTokenClaim = { v: 1, tenantId: identity.tenantId, iat: Date.now() };
   return signToken(PREFIX, secret, claim);
 }
 
@@ -86,7 +88,6 @@ export async function verifyTenantToken(secret: string, token: string): Promise<
     // Parse, don't trust: the signature proves WE minted it, the parse proves the
     // fields are still the ones a pin is made of (a format bump fails closed).
     tenantIdSchema.parse(claim.tenantId);
-    if (typeof claim.tenantSlug !== 'string' || !claim.tenantSlug) return null;
     return claim;
   } catch {
     return null;
@@ -108,10 +109,6 @@ export function tenantTokenAuth(secret: string, actor: PlatformActorId): TenantS
     if (!presented || !hasTokenPrefix(PREFIX, presented)) return null;
     const claim = await verifyTenantToken(secret, presented);
     if (!claim) return null;
-    return {
-      actor,
-      tenantId: tenantIdSchema.parse(claim.tenantId),
-      tenantSlug: claim.tenantSlug,
-    };
+    return { actor, tenantId: tenantIdSchema.parse(claim.tenantId) };
   };
 }
