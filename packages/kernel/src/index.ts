@@ -182,6 +182,20 @@ export {
   platformRequestHistoryQuery,
 } from './platform-request-query.js';
 export {
+  CANCELLED_INTENT_NOTE,
+  intentPayloadCarriesSubject,
+  PLATFORM_REQUEST_REDACTION_SQL,
+  platformRequestRedactionParams,
+  platformRequestRedactionQuery,
+  REDACTED_INTENT_MARKER,
+  REDACTED_INTENT_NOTE,
+  redactedIntentPayload,
+} from './subject-redaction.js';
+export type {
+  PlatformRequestRedactionCandidate,
+  SubjectRedactionCounts,
+} from './subject-redaction.js';
+export {
   DENIAL_COLUMNS,
   DENIAL_WINDOW_QUERY,
   denialListQuery,

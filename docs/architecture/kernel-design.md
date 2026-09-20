@@ -1316,6 +1316,25 @@ id, type, entity, `occurredAt`, and the pseudonymous `subjectId` — stays. That
 master-plan §5.3 held exactly: *"pseudonymous keys and transaction facts remain"*. A
 timeline still shows that something happened, to what, and when. It no longer shows who.
 
+**Tier 1 is two tables, not one (#1600).** `_substrat_outbox` is where an event is written;
+`_substrat_platform_requests` is where a copy of one can end up. A CP-less host cannot run a
+connector, so each connector delivery becomes a `connector:<provider>` intent whose payload is
+the *whole* `DomainEvent` — fat by design — and nothing ever deletes those rows, because
+`listPlatformRequestHistory` exists so a settled one stays readable. For a year the redaction
+reached the first table only, and a shredded subject's name went on sitting in the second, and
+in every export, backup and PITR window taken from the scope afterwards. Both are redacted now,
+in one pass. The intent's `payload TEXT NOT NULL` cannot take the outbox's `NULL`, so it is
+**replaced** by an obviously-redacted tombstone (`{"_substratRedacted": {reason, subjectId,
+at}}`) that no drain handler's schema will parse; `last_error` goes with it, being free text a
+provider wrote about this person; and a still-`pending` intent is settled `failed` in the same
+statement, so nothing is ever handed a tombstone to execute. Which intents are selected is the
+outbox's own predicate — `subject_id = ? AND pii_class != 'none'` — applied to whatever spine
+envelope the payload embeds, so a copy is never judged more harshly than its original. One
+window stays open and is worth naming: a drain that had already read a payload when the erasure
+landed delivers what it read, and its settle can write a provider's reply back onto the row.
+That is the same window a consumer mid-dispatch has against the outbox redaction; closing it
+wants a lock across the drain hop, not a different shape here.
+
 **A platform-retained copy is not mutable, so erasure there is cryptographic.** Reap
 backups and stored dumps are full-fidelity on purpose — a backup that cannot restore is a
 false promise — which is exactly why `UPDATE … SET payload = NULL` can never reach one.
@@ -1329,7 +1348,8 @@ store's independence"*).
 The mechanism is staff-triggered and audited in **both** logs — the admin log because it is
 a mutation, the access log because it destroys evidence.
 
-**Six limits, stated so nobody has to discover them** (the sixth added once the lake existed):
+**Seven limits, stated so nobody has to discover them** (the sixth added once the lake existed,
+the seventh once the spine's second copy was reached — #1600):
 
 1. **One subject per event.** The spine keys erasure on a single `subjectId`; a transcript
    naming a dozen people is keyed to one of them. *"I cannot do 'erase Jens Palmgren from
@@ -1353,6 +1373,17 @@ a mutation, the access log because it destroys evidence.
    unsealed, as it stands in the outbox. An event redacted before it drains reaches the lake
    with a null payload. An event drained before its subject was erased keeps its payload
    in the lake, and nothing here removes it.
+7. **An intent that carries PII outside a classified event is not reached.** The intent
+   redaction above keys on the embedded `DomainEvent`'s own `piiClass`/`subjectId`, because
+   an intent payload has none of its own — `ctx.requestPlatform` takes `payload: unknown`,
+   and the kernel has nothing to read. Today no kind puts a person into a payload any other
+   way: the shipped kinds are `provision-sibling` (slug, name, owner principal),
+   `archive-scope` (a scope id), `provision-tenant` (tenant/instance ids, names and
+   entitlement keys), `set-entitlements` (ids and a plan), `model-usage` (token counts and
+   attribution), `sweep-runs` (schedule outcomes), and the `connector:<provider>` family,
+   which is the one that embeds an event. A kind that started carrying a name directly would
+   be inventing an unclassified PII store inside the spine, and the right answer there is the
+   classification, not a wider erasure heuristic.
 
 ## 14. Design log
 

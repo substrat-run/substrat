@@ -237,6 +237,7 @@ import {
   type JobStepRow,
   type StartJobRunInput,
   type LiveReadSurface,
+  type SubjectRedactionCounts,
   globalFetch,
   assertRedrainWindow,
 } from '@substrat-run/kernel';
@@ -1032,8 +1033,12 @@ interface ScopeStubRpc {
   importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void>;
   /** Wipe this scope's storage — the reap half of deleteSnapshot (§9). */
   destroyStorage(): Promise<void>;
-  /** Null the spine payloads keyed to one data subject (#37); returns how many moved. */
-  redactSubject(subjectId: string): Promise<number>;
+  /**
+   * Redact the spine payloads keyed to one data subject (#37); returns how many moved,
+   * per table. Both spine copies of an event go in this one RPC (#1600) — the outbox row
+   * and any platform intent this CP-less host routed the event into.
+   */
+  redactSubject(subjectId: string): Promise<SubjectRedactionCounts>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
@@ -4625,12 +4630,16 @@ export class CloudflareScopeHost implements ScopeHost {
         // half-done state harms the person: dying after the redaction leaves ciphertext in
         // a backup that no key opens; destroying the key first would leave their PII in the
         // live database while the audit log already claims they were erased.
-        const eventsRedacted = await this.scopeStub(scopeId).redactSubject(subjectId);
+        // Both spine copies (#1600): the outbox row AND any platform intent this event was
+        // routed into. One RPC, so a crash cannot land half of it.
+        const { events: eventsRedacted, intents: intentsRedacted } =
+          await this.scopeStub(scopeId).redactSubject(subjectId);
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
           subjectId,
           eventsRedacted,
+          intentsRedacted,
           keyDestroyed: existed,
           tombstoned: true,
         });
@@ -4638,7 +4647,15 @@ export class CloudflareScopeHost implements ScopeHost {
         // because it destroys evidence. An erasure is the one action where "who asked for
         // this to disappear" is itself part of the record.
         await this.recordAdmin(actor, 'shredSubject', { tenantId, scopeId }, null, receipt);
-        await this.recordAccess(actor, 'shredSubject', { tenantId, scopeId }, { subjectId }, eventsRedacted);
+        // BOTH counts: the access log's number is "how much evidence this destroyed", and
+        // an intent payload is a whole event's worth of it.
+        await this.recordAccess(
+          actor,
+          'shredSubject',
+          { tenantId, scopeId },
+          { subjectId },
+          eventsRedacted + intentsRedacted,
+        );
         return receipt;
       },
 

@@ -7,7 +7,7 @@ import {
   scopeId,
   tenantId,
 } from '@substrat-run/contracts';
-import { ulid } from '@substrat-run/kernel';
+import { intentPayloadCarriesSubject, ulid } from '@substrat-run/kernel';
 import { CloudflareScopeHost } from '../src/host.js';
 
 /**
@@ -122,6 +122,53 @@ describe('CP-less connector routing (#574 phase 3)', () => {
     });
     expect(await host.listPlatformRequests(t, s)).toHaveLength(0);
     expect((await host.drainDue(t, s)).attempted).toBe(0);
+  });
+
+  /**
+   * #1600, the join: the payload this path REALLY writes is one the erasure selects.
+   *
+   * The redaction that `shredSubject` applies to the intent journal is decided by a
+   * kernel predicate over the stored payload, and both adapters are held to it by the
+   * shared contract suite — which builds the payload by hand, because the routing itself
+   * exists only here. This is the other end of that: what `routeExecutorEventToPlatform`
+   * actually stores when a CP-less host meets a PII-classed event. If the two ever part
+   * company — a shape change on this side, a narrower predicate on that one — the suite
+   * would stay green while a real name survived a real erasure.
+   *
+   * It cannot run the erasure itself: `shredSubject` is `HostAdmin`, and this host has no
+   * control plane by construction — which is the very reason it routes at all.
+   */
+  it('writes a payload the subject erasure selects (#1600)', async () => {
+    const s3 = scopeId.parse(ulid());
+    const subject = ulid();
+    const host = new CloudflareScopeHost({ scope: env.SCOPE });
+    host.registerConnector('signer', 'test.happened', async () => undefined, {
+      provider: 'signer',
+    });
+    await host.provisionScopeLocal({
+      tenantId: t,
+      scopeId: s3,
+      owner,
+      roles: [{ key: 'office-admin', permissions: [USE], source: 'vertical' }],
+      ownerRoleKey: 'office-admin',
+    });
+    const scope = await host.getScope(owner, t, s3);
+    await scope.invoke('test/emit-event', { subject, secret: 'anna-ek-was-here' });
+
+    // The RAW stored TEXT, not the parsed contract shape: the redaction reads the column.
+    const rows = await scope.invoke<{ id: string; kind: string; payload: string }[]>(
+      'platform/read-requests',
+    );
+    const routed = rows.find((r) => r.kind === 'connector:signer')!;
+    expect(routed).toBeDefined();
+    // The defect, stated as a fact about this path rather than as a worry: the whole
+    // event rides along, secret included.
+    expect(routed.payload).toContain('anna-ek-was-here');
+    expect(routed.payload).toContain(subject);
+    // And the erasure can find it.
+    expect(intentPayloadCarriesSubject(routed.payload, subject)).toBe(true);
+    // A different subject's erasure must not select this row.
+    expect(intentPayloadCarriesSubject(routed.payload, ulid())).toBe(false);
   });
 
   it('dispatchConnector fails closed on a CP-less host — routing exists because running cannot', async () => {
