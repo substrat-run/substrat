@@ -48,9 +48,10 @@ import type { Signatory } from './inputs.js';
 /**
  * The entity an instance binds to, as it rides every payload here.
  *
- * Structurally an `EntityRef` — spelled out because the engine is
- * entity-agnostic: this is whatever the vertical bound the protocol TO, never
- * the protocol itself (that is the envelope's `entity`).
+ * An `EntityRef`, given its own name because the engine is entity-agnostic and
+ * the two refs on one event are easy to confuse: this is whatever the vertical
+ * bound the protocol TO, never the protocol itself (that is the envelope's
+ * `entity`).
  */
 export type ProtocolSubjectRef = EntityRef;
 
