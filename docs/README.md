@@ -135,7 +135,6 @@ How the platform works **today** — present tense. A document here may not open
 | document | status | |
 |---|---|---|
 | [api-surface.md](architecture/api-surface.md) | `built` | Every vertical serves its own OpenAPI; Scalar renders it. |
-| [canopy-scope-mapping.md](architecture/canopy-scope-mapping.md) | `canonical` | How canopy's user/space/drive model maps onto tenant, scope and vertical — and the five places it does not. |
 | [cms-content.md](architecture/cms-content.md) | `built` | Content types that compile to reviewed migrations. |
 | [connections.md](architecture/connections.md) | `built` | The integrations hub: connections, connectors, executor runtime. |
 | [control-plane.md](architecture/control-plane.md) | `built` | The shared platform layer N per-vertical deployments sit on. |

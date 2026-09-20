@@ -105,7 +105,7 @@ interface Scope {
                               // boundary ACCEPTS is the narrower
                               // `provisionableJurisdiction` — 'global' alone today, since
                               // 'eu'/'us' would record a residency guarantee with no
-                              // mechanism behind it (§7.3)
+                              // mechanism behind it (§3.3)
   schemaVersion: string;      // last applied migration journal entry (§6 below)
   createdAt: Instant;
 }
@@ -1180,16 +1180,16 @@ externalization convention is day one; translations are not).
     proofs already issued against a since-revoked edge. That half does not block
     membership revocation, which has no re-parenting analogue.
 
-    **It now has a consumer with a date on it.** Canopy, D-17's consumer #2, models
-    containment as a virtual path and therefore moves a file by rewriting a string — its
-    folder grants follow because they were never edges
-    ([canopy-scope-mapping.md §5](canopy-scope-mapping.md)). Re-platforming it onto
-    manifest-declared parent edges would take a working capability away, so the option
-    this question calls cheapest — *"requiring verticals to model movable containment as
-    vertical data rather than as a parent edge"* — is the one canopy already exercises, and
-    adopting it here means a drive whose reorganisations are invisible to the permission
-    model. That is the trade to argue when this closes, with a real product on the other
-    side of it rather than a thought experiment.
+    **The excluded option is not a pure loss, and that is the trade to argue when this
+    closes.** This question prices *"model movable containment as vertical data"* as the
+    silent loss of entity-narrowed grants, and for a compliance domain, where K-21 took it
+    off the table, that price is right. A vertical whose containment is a path it owns and
+    rewrites on a move sees the opposite: its folder grants follow the move for free,
+    because they were never edges. Adopting the option there means its reorganisations are
+    invisible to the permission model and to the audit property K-4 rests on — a
+    re-parenting no `explain` will ever show. Whichever answer lands, it should be argued
+    against a vertical whose containment really is movable data, not only against the
+    ones the tombstone is designed for.
 
 16. **Consumer dispatch routes on event *type* alone, so D-28's dual-emit deprecation
     window is unimplementable — and actively dangerous.** D-28 says a real change to a
@@ -1257,10 +1257,10 @@ externalization convention is day one; translations are not).
     ScopeDO could hold hibernatable WebSockets and a vertical cannot reach the namespace
     to use them (K-8), so the honest options are polling or a second DO class beside the
     scope — a vertical building its own coordination plane, which is the shape the kernel
-    exists to prevent. Raised by [canopy-scope-mapping.md §3](canopy-scope-mapping.md),
-    where a drive's sidebar, its search and its offline delta feed are all this question;
-    `demos/todo`'s shared lists avoid it only because every list lives in one scope. Decide
-    before the second vertical invents its own answer.
+    exists to prevent. Any vertical whose unit of sharing is the scope has it: a
+    document-spaces vertical's sidebar, its search and an offline delta feed are all this
+    question. `demos/todo`'s shared lists avoid it only because every list lives in one
+    scope. Decide before the second vertical invents its own answer.
 19. **A tuple whose subject is another scope has no store.** §4.2 places tuples
     scope-locally, *"with the tenant-level slice cached from the tenant-root DO"*, and that
     locality is exactly what buys check-after-write consistency and a tractable `explain`:
@@ -1273,10 +1273,10 @@ externalization convention is day one; translations are not).
     gets that same answer, is remodelled as an org (K-22's `OrgId`), or is refused outright
     is decided nowhere. The proof-path guarantee is what makes it non-trivial: a chain that
     crosses a scope boundary must be assembled from two stores, and a revocation on one
-    side must be visible to the other's next operation. Raised by
-    [canopy-scope-mapping.md §6](canopy-scope-mapping.md), whose access control nests
-    spaces recursively today. Couples with question 15 — canopy also deletes tuples, and
-    the kernel has no edge revocation of any kind.
+    side must be visible to the other's next operation. It arises for any vertical whose
+    access control nests its units of sharing recursively — a space of spaces. Couples
+    with question 15: such a vertical also lets a group leave a group, and the kernel has
+    no edge revocation of any kind.
 20. **Content-addressed dedup does not survive scope isolation, and the trade has never
     been written down.** `attachmentBlobKey` is `scope/<scopeId>/<attachmentId>` with a
     fresh ULID per upload (`packages/kernel/src/scope-host.ts`), so keys are scope-prefixed
@@ -1288,11 +1288,10 @@ externalization convention is day one; translations are not).
     is twenty objects — and it is the kind of number discovered in production rather than
     in review. The three-way trade (dedup versus write-once keys versus what a delete in
     one scope means for bytes another scope references) has never been stated, because
-    nothing has needed it. Raised by [canopy-scope-mapping.md §6](canopy-scope-mapping.md),
-    which refcounts blobs globally by `sha256` today. Decide with D-17's documents service
-    (question: does the dedup boundary become the per-tenant blob store, and does that make
-    cross-tenant dedup a thing we deliberately refuse?), not before — but decide it there
-    rather than discovering it.
+    nothing has needed it. A product that refcounts blobs by `sha256` is the natural
+    counter-design. Decide with the documents service (does the dedup boundary become the
+    per-tenant blob store, and does that make cross-tenant dedup a thing we deliberately
+    refuse?), not before — but decide it there rather than discovering it.
 
 ### 13.1 The answer to question 17, in full: what subject erasure reaches (#37)
 
