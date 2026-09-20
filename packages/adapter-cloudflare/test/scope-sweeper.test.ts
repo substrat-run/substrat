@@ -109,7 +109,9 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     const report = asReport(await sweeperStub().sweepNow());
     expect(report.errors).toEqual([]);
     expect(report.scopes).toBe(2);
-    expect(report.schedules).toEqual({ scopes: 2, fired: 2, skipped: 0, failed: 0 });
+    // Two schedules per scope, two scopes: `sched/tick` plus #1288's collision
+    // fixture `freshness:sched.ticked`.
+    expect(report.schedules).toEqual({ scopes: 2, fired: 4, skipped: 0, failed: 0 });
     // No consumers on scheduleMod — the drain half ran and found nothing.
     expect(report.drainTotals).toEqual({ attempted: 0, delivered: 0, retrying: 0, deadLettered: 0 });
     // The ticks really landed in each scope, through the system door.
@@ -119,7 +121,7 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
 
   it('cadence gates the second pass — skipped on both scopes, not re-fired', async () => {
     const report = asReport(await sweeperStub().sweepNow());
-    expect(report.schedules).toEqual({ scopes: 0, fired: 0, skipped: 2, failed: 0 });
+    expect(report.schedules).toEqual({ scopes: 0, fired: 0, skipped: 4, failed: 0 });
     expect(await ticksOn(sA)).toBe(1);
   });
 
@@ -139,6 +141,7 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     expect(first.entries.map((e) => `${e.kind}:${e.outcome}`).sort()).toEqual([
       'freshness:ok',
       'schedule:ok',
+      'schedule:ok',
     ]);
     const fresh = first.entries.find((e) => e.kind === 'freshness')!;
     expect(fresh.eventType).toBe('sched.ticked');
@@ -146,8 +149,16 @@ describe('defineScopeSweeperDO (workerd alarm → roster → due schedules, CP-l
     // Second pass: the schedule's skip is REPORTED (absence of even skips is the
     // missed-run signal); the freshness verdict is UNCHANGED inside its heartbeat,
     // so it deliberately reports nothing — that is the change-gating, observed.
-    expect(second.entries.map((e) => `${e.kind}:${e.outcome}`)).toEqual(['schedule:skipped']);
-    expect(first.entries.find((e) => e.kind === 'schedule')!.operation).toBe('sched/tick');
+    expect(second.entries.map((e) => `${e.kind}:${e.outcome}`)).toEqual([
+      'schedule:skipped',
+      'schedule:skipped',
+    ]);
+    // #1288: one of the two schedule entries is named exactly like the freshness
+    // entry's gating key, and they are still two separate units here.
+    expect(first.entries.filter((e) => e.kind === 'schedule').map((e) => e.operation).sort()).toEqual([
+      'freshness:sched.ticked',
+      'sched/tick',
+    ]);
     // The version the worker's accessor read from env — the code that actually ran.
     expect(first.version).toBe(env.SUBSTRAT_VERSION_ID);
     expect(sweeps.every((r) => JSON.stringify(r.requestedBy) === JSON.stringify({ system: 'scope-sweeper' }))).toBe(

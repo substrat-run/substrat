@@ -50,8 +50,10 @@ describe('checkFreshness — the stale verdict, the heartbeat, and the collapse'
     ]);
 
     // The event arrives — fired through the sweep door itself.
+    // Two schedules fire: `sched/tick`, and #1288's collision fixture
+    // `freshness:sched.ticked` — whose state row is the evaluator's key exactly.
     const run = await host.runDueSchedules(SCHED, t, s);
-    expect(run.fired).toBe(1);
+    expect(run.fired).toBe(2);
     const second = await host.checkFreshness(SCHED, t, s);
     expect(second.checks).toHaveLength(1);
     expect(second.checks[0]).toMatchObject({ eventType: 'sched.ticked', outcome: 'ok' });
@@ -90,7 +92,7 @@ describe('checkFreshness — the stale verdict, the heartbeat, and the collapse'
 
   it('a fresh event flips the verdict back — the strip shows the recovery, not just the outage', async () => {
     nowIso = '2026-09-07T12:10:00.000Z'; // past the 1h cadence, so the tick fires again
-    expect((await host.runDueSchedules(SCHED, t, s)).fired).toBe(1);
+    expect((await host.runDueSchedules(SCHED, t, s)).fired).toBe(2);
     const back = await host.checkFreshness(SCHED, t, s);
     expect(back.checks).toHaveLength(1);
     expect(back.checks[0]).toMatchObject({ outcome: 'ok', observedAt: '2026-09-07T12:10:00.000Z' });

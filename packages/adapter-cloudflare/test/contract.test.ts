@@ -740,7 +740,8 @@ describe('CP-less schedules — declared schedules run without a control plane (
   it('fires the due schedule from the projected grant alone — no directory, no error', async () => {
     const report = await host.runDueSchedules(SCHED, t, s);
     expect(report.errors).toEqual([]);
-    expect(report.fired).toBe(1);
+    // Two: `sched/tick`, and #1288's collision fixture `freshness:sched.ticked`.
+    expect(report.fired).toBe(2);
     // The tick really landed in the scope, attributed to the module, not a person.
     const stub = await host.getScope(owner, t, s);
     expect(await stub.invoke('sched/count')).toBe(1);
@@ -753,7 +754,7 @@ describe('CP-less schedules — declared schedules run without a control plane (
   it('cadence still gates the second pass — skipped, not re-fired', async () => {
     const report = await host.runDueSchedules(SCHED, t, s);
     expect(report.fired).toBe(0);
-    expect(report.skipped).toBe(1);
+    expect(report.skipped).toBe(2);
   });
 
   it('ctx.check stays the gate — the system door is refused an unscheduled permission', async () => {

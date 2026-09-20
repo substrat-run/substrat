@@ -69,7 +69,7 @@ indistinguishable from a real one.
 | `_substrat_deliveries` | executor delivery attempts, retries, and dead letters |
 | `_substrat_attachments` | attachment records against your entities |
 | `_substrat_platform_requests` | durable [platform intents](/concepts/platform) a vertical enqueued for the platform to execute |
-| `_substrat_schedule_state` | the platform sweep's gating state, one row per *unit* it sweeps: a schedule operation keyed `module/verb` (when it last ran, how it ended) or a freshness expectation keyed `freshness:<eventType>` (when its verdict was last recorded, and what it was — nothing ran). An event type is always lowercase `ns.verb`, so a freshness key can never look like an operation; the reverse is convention, not a check |
+| `_substrat_schedule_state` | the platform sweep's gating state, one row per *unit* it sweeps, keyed `(kind, schedule_op)`: `kind = 'schedule'` for an operation keyed `module/verb` (when it last ran, how it ended), `kind = 'freshness'` for an expectation keyed `freshness:<eventType>` (when its verdict was last recorded, and what it was — nothing ran). The `kind` column is what tells the two apart, so a schedule operation that happens to be *named* `freshness:…` gets its own row rather than sharing the evaluator's |
 | `_substrat_idempotency` | recorded responses per `(subject, Idempotency-Key)`, with the request fingerprint that tells a replay from a reuse; pruned after 24 hours |
 
 The directory database holds the other half — tenants, scopes, hostnames, verticals and

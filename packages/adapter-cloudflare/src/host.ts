@@ -212,6 +212,7 @@ import {
   type RoleFilter,
   type ScheduleRegistration,
   type ScheduleRunReport,
+  type ScheduleStateKind,
   type ScopeFilter,
   type ScopeHost,
   type ScopeStub,
@@ -856,8 +857,27 @@ interface ScopeStubRpc {
   ): Promise<Record<string, { observedAt: string | null; stateAt: string | null; stateOutcome: string | null }>>;
   /** Write one `_substrat_schedule_state` row (#383) — `unit` is either a schedule
    *  operation (`module/verb`: when it ran, how it ended) or a freshness key
-   *  (`freshness:<eventType>`: when the verdict was recorded, and what it was). */
-  recordScheduleRun(unit: string, at: string, status: 'ok' | 'failed' | 'skipped'): Promise<void>;
+   *  (`freshness:<eventType>`: when the verdict was recorded, and what it was).
+   *  `kind` says which, and is passed rather than read off the key's shape (#1288):
+   *  an operation may legally be spelled `freshness:…`, and only the caller knows.
+   *
+   *  **LAST, like every argument added to an RPC on this interface**, and for the
+   *  reason `invoke`'s `concurrency` acknowledgement spells out above: an old DO
+   *  drops a trailing argument it does not know, but binds a LEADING one positionally
+   *  — `kind` would land in `unit`, `unit` in `at`, `at` in `status`, and the row
+   *  written would be three values in the wrong columns with no error anywhere. The
+   *  schedule's real key is then never written, so its cadence gate finds nothing and
+   *  the operation runs again on every pass. Appended, an old DO simply records what
+   *  it always recorded. The reverse skew — a new DO, an old coordinator sending no
+   *  kind — hits `kind TEXT NOT NULL` and throws, which is the loud half and is left
+   *  loud deliberately: a default here would be the derived-from-the-key guess #1288
+   *  exists to remove. */
+  recordScheduleRun(
+    unit: string,
+    at: string,
+    status: 'ok' | 'failed' | 'skipped',
+    kind: ScheduleStateKind,
+  ): Promise<void>;
   /** This scope's live `connection:<id>` grant tuples (#726 gap 1) — the read-back.
    *  Unions the scope's own tuples with the projected tenant-level ones, because a
    *  scope check consults both (rule 2 inheritance). */
@@ -2660,7 +2680,8 @@ export class CloudflareScopeHost implements ScopeHost {
       const heartbeatDue =
         p.stateAt === null || now - Date.parse(p.stateAt) > FRESHNESS_HEARTBEAT_MINUTES * 60_000;
       if (!changed && !heartbeatDue) continue;
-      await stub.recordScheduleRun(`freshness:${eventType}`, nowIso, outcome);
+      // #1288: 'freshness', said rather than inferred from the key's prefix.
+      await stub.recordScheduleRun(`freshness:${eventType}`, nowIso, outcome, 'freshness');
       report.checks.push({ eventType, outcome, observedAt: p.observedAt, withinHours });
     }
     return report;
@@ -2712,7 +2733,9 @@ export class CloudflareScopeHost implements ScopeHost {
           error: err instanceof Error ? err.message : String(err),
         });
       }
-      await stub.recordScheduleRun(schedule.operation, new Date(now).toISOString(), status);
+      // #1288: 'schedule', whatever this operation happens to be called — including
+      // `freshness:<something>`, which is exactly the row the evaluator no longer eats.
+      await stub.recordScheduleRun(schedule.operation, new Date(now).toISOString(), status, 'schedule');
       report.runs!.push({ operation: schedule.operation, outcome: status === 'ok' ? 'ok' : 'failed' });
     }
     return report;
