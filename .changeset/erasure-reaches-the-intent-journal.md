@@ -30,3 +30,9 @@ quote the person, back into `last_error` on a row whose payload had just been em
 Nothing legitimate is refused: the drain only ever reads pending rows, so every settle
 targets one that was pending when it was read. A settle that finds the row already
 terminal now does nothing.
+
+On the hosted adapter, an erasure against a scope still running a scope host from before
+this change is **refused** rather than half-performed. That host's redaction never reaches
+the intent journal, so going ahead would destroy the subject's key — the irreversible half
+— while leaving their payloads in place. The refusal is a `503` naming the scope, and the
+erasure can simply be re-run once the vertical is redeployed.

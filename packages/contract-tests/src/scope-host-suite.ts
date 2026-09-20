@@ -1626,6 +1626,35 @@ export function scopeHostContractSuite(
           expect(after.status).toBe('failed');
         });
 
+        it('keeps `result`, which is envelope — what the intent DID, not what it said', async () => {
+          // The redaction spares `result` on purpose, and until now nothing held it to
+          // that: for a routed dispatch it is `{ eventId }`, which names the event the
+          // outbox already keeps a redacted row for, so it is the same class of fact as
+          // `kind` and `requestedAt`. Asserted beside the two columns that DO go, so the
+          // line between them is a test rather than a sentence in the PR.
+          const kind = `connector:erasure-${ulid()}`;
+          const erased = dataSubjectId.parse(ulid());
+          const id = await routeIntent(kind, erased, 'Anna Ek');
+          await host.settlePlatformRequest(t1, s1, id, {
+            status: 'failed',
+            result: { eventId: 'evt-01', deliveredAt: '2026-09-20T00:00:00.000Z' },
+            lastError: 'HTTP 409: Anna Ek requires a valid personal number field',
+          });
+
+          await host.admin.shredSubject(staff, t1, s1, erased);
+
+          const after = (await journal(kind)).find((r) => r.id === id)!;
+          // What was said goes — both columns that could carry it.
+          expect(JSON.stringify(after.payload)).not.toContain('Anna Ek');
+          expect(after.lastError).not.toContain('Anna Ek');
+          expect(after.lastError).toContain('subject erasure');
+          // What happened stays, unchanged and whole.
+          expect(after.result).toEqual({
+            eventId: 'evt-01',
+            deliveredAt: '2026-09-20T00:00:00.000Z',
+          });
+        });
+
         it('refuses a stale drain settling a row the erasure already redacted', async () => {
           // The drain reads pending rows, runs the handler, then settles — so a settle can
           // arrive after the erasure landed, carrying a provider's reply that quotes the

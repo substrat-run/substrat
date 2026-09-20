@@ -1037,8 +1037,18 @@ interface ScopeStubRpc {
    * Redact the spine payloads keyed to one data subject (#37); returns how many moved,
    * per table. Both spine copies of an event go in this one RPC (#1600) — the outbox row
    * and any platform intent this CP-less host routed the event into.
+   *
+   * **The `number` arm is version skew, not an alternative contract.** This RPC answered
+   * with a bare outbox count until #1600, and an old DO on the other end of a new
+   * coordinator still does — the skew this interface's own `recordScheduleRun` note
+   * spells out, in the direction a RETURN type can carry it. The caller MUST fail on it
+   * rather than read it as a count: an old DO redacts the outbox and leaves the intent
+   * journal, which is precisely the defect #1600 exists to close, so treating its reply
+   * as `{ events, intents: 0 }` would mint a receipt claiming an erasure that did not
+   * happen. Typed as a union rather than cast at the call site so the skew has to be
+   * handled to compile.
    */
-  redactSubject(subjectId: string): Promise<SubjectRedactionCounts>;
+  redactSubject(subjectId: string): Promise<SubjectRedactionCounts | number>;
   /** PITR bookmarks recorded before migration passes (#286), newest first. */
   migrationBookmarks(limit?: number): Promise<{ bookmark: string; takenAt: string; pending: string[] }[]>;
   appliedMigrations(limit?: number): Promise<{ moduleId: string; version: string; appliedAt: string | null }[]>;
@@ -4632,8 +4642,24 @@ export class CloudflareScopeHost implements ScopeHost {
         // live database while the audit log already claims they were erased.
         // Both spine copies (#1600): the outbox row AND any platform intent this event was
         // routed into. One RPC, so a crash cannot land half of it.
-        const { events: eventsRedacted, intents: intentsRedacted } =
-          await this.scopeStub(scopeId).redactSubject(subjectId);
+        const redacted = await this.scopeStub(scopeId).redactSubject(subjectId);
+        // An OLD ScopeDO answers with a bare number — it redacted the outbox and never
+        // looked at the intent journal. Refused here, BEFORE the key is destroyed, and
+        // that order is the whole point: the key is the irreversible half, so proceeding
+        // would leave the subject's platform-retained copies permanently unreadable, their
+        // name still sitting in `_substrat_platform_requests`, and no admin-log row at all
+        // (the log is written after this). Refusing leaves an erasure that can simply be
+        // re-run once the scope is redeployed. Loud rather than partial, the way this
+        // interface's reverse skew is left loud on `recordScheduleRun`.
+        if (typeof redacted === 'number') {
+          throw substratError(
+            'unavailable',
+            `scope ${scopeId} runs a ScopeDO from before #1600, whose redaction does not reach ` +
+              `_substrat_platform_requests — erasing now would destroy the subject key while ` +
+              `leaving their payloads in the intent journal. Redeploy the vertical and re-run.`,
+          );
+        }
+        const { events: eventsRedacted, intents: intentsRedacted } = redacted;
         const at = new Date().toISOString();
         const { existed } = await this.subjectKeysFor(tenantId, scopeId).destroy(subjectId, at);
         const receipt = subjectShredReceipt.parse({
