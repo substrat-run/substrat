@@ -1837,6 +1837,107 @@ export const contractTestModules: ModuleRegistration[] = [
   idempotencyMod,
 ];
 
+// -- live reads (#938) -------------------------------------------------------
+
+/**
+ * A module for the live-read fan-out, with two entity types that differ in exactly
+ * one respect: `note` is declared watchable and `ledger` is not.
+ *
+ * Deliberately NOT in `contractTestModules`. Every scope in the kit shares one module
+ * set, and a module declaring `liveTargets` there would give every other suite's scope
+ * a fan-out to run on every invoke — changing what those suites exercise in order to
+ * test this one. Adapters that can host live reads mount it on a scope host of its own.
+ *
+ * The undeclared `ledger` is the fixture for the fail-closed half of the rule, and it
+ * is the half worth having a fixture for: "an entity type nobody declared reaches
+ * nobody" is a sentence that is trivially true of an implementation that also announces
+ * nothing at all, so the suite proves it against a `note` that DOES arrive.
+ */
+export const liveModManifest = moduleManifest.parse({
+  id: '@test/live',
+  version: '1.0.0',
+  kernelContract: '^0.0.1',
+  permissions: [
+    { key: 'live:read', description: 'read a note — and therefore watch it change' },
+    { key: 'live:write', description: 'touch a note' },
+  ],
+  events: {
+    emits: [
+      { type: 'live.note-touched', schemaVersion: 1 },
+      { type: 'live.ledger-touched', schemaVersion: 1 },
+    ],
+    consumes: [],
+  },
+  migrations: { journalDir: './migrations', compatibleFrom: '1.0.0' },
+  attachmentTargets: [],
+  // The declaration under test. `note` is watchable, gated by the key that reads it;
+  // `ledger` is absent, and its absence is the assertion.
+  liveTargets: [{ entityType: 'note', readPermission: 'live:read' }],
+  entitlementKey: 'live',
+});
+
+/** Touch a note — one write, one event about ONE entity, which is what a subscriber hears. */
+const liveTouchOp: OperationHandler<{ noteId: string }, { noteId: string }> = async (ctx, input) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.emit({
+    type: 'live.note-touched',
+    schemaVersion: 1,
+    entity: { entityType: 'note', entityId: input.noteId },
+    piiClass: 'none',
+    payload: {},
+  });
+  return { noteId: input.noteId };
+};
+
+/** The same write against the entity type nobody declared watchable. */
+const liveTouchLedgerOp: OperationHandler<{ ledgerId: string }, { ledgerId: string }> = async (
+  ctx,
+  input,
+) => {
+  assertAllowed(await ctx.check(permissionKey.parse('live:write')));
+  ctx.emit({
+    type: 'live.ledger-touched',
+    schemaVersion: 1,
+    entity: { entityType: 'ledger', entityId: input.ledgerId },
+    piiClass: 'none',
+    payload: {},
+  });
+  return { ledgerId: input.ledgerId };
+};
+
+/**
+ * Withdraw a read grant on one note, the way an app un-shares a record.
+ *
+ * Deliberately UNGUARDED by an operation-level check, exactly as `perm/share` is and
+ * for the same reason: the guardrail under test lives inside the verb — `ctx.revoke`
+ * re-checks the caller's own decision on that entity — so wrapping it in a second
+ * check here would only prove the wrapper.
+ *
+ * It exists so the suite can take authority away MID-SOCKET. There is no `HostAdmin`
+ * verb that withdraws an entity-narrowed grant, and that is the right shape: narrowing
+ * and un-narrowing are things an app does on a person's behalf, not things a platform
+ * actor reaches in.
+ */
+const liveUnshareOp: OperationHandler<{ principal: string; noteId: string }, void> = async (
+  ctx,
+  input,
+) => {
+  await ctx.revoke(principalId.parse(input.principal), permissionKey.parse('live:read'), {
+    entityType: 'note',
+    entityId: input.noteId,
+  });
+};
+
+export const liveMod: ModuleRegistration = {
+  manifest: liveModManifest,
+  migrations: [],
+  operations: {
+    'live/touch': liveTouchOp as OperationHandler<never, unknown>,
+    'live/touch-ledger': liveTouchLedgerOp as OperationHandler<never, unknown>,
+    'live/unshare': liveUnshareOp as OperationHandler<never, unknown>,
+  },
+};
+
 export const brokenModManifest = moduleManifest.parse({
   id: '@test/broken',
   version: '1.0.0',

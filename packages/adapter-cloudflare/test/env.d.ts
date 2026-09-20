@@ -18,5 +18,7 @@ declare module 'cloudflare:test' {
     SCOPE_SWEEPER: DurableObjectNamespace;
     /** …and its own scope namespace (same ScopeDO class, no directory). */
     LOCAL_SWEEP_SCOPE: DurableObjectNamespace;
+    /** #938: the live-read scope class, carrying only `liveMod` — live-reads.test.ts. */
+    LIVE_SCOPE: DurableObjectNamespace;
   }
 }
