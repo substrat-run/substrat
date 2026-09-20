@@ -3560,7 +3560,7 @@ export class CloudflareScopeHost implements ScopeHost {
           return;
         }
         if (v.admission === 'rejected') {
-          throw new Error(`version ${versionId} was rejected — publish a new one`);
+          throw substratError('conflict', `version ${versionId} was rejected — publish a new one`);
         }
         await this.cp.setAdmission(versionId, 'admitted', null);
         await this.recordAdmin(actor, 'admitVersion', { tenantId: null }, { admission: v.admission }, { admission: 'admitted' });

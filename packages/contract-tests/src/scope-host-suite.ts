@@ -3888,7 +3888,7 @@ export function scopeHostContractSuite(
         /rejected, not admitted/,
       );
       // Terminal: a rejected version is not resurrected, a new one is published.
-      await expect(host.admin.admitVersion(staff, versionId)).rejects.toThrow(/was rejected/);
+      await expectRefusal(host.admin.admitVersion(staff, versionId), 'conflict');
       const rejected = (await host.admin.listVersions(staff, 'callout')).find(
         (v) => v.id === versionId,
       );

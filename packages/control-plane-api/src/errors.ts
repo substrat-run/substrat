@@ -32,7 +32,7 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   SUITE asserts on (`/unknown tenant/`, `/illegal scope transition/`, `/already
  *   taken/`, `/not active/`), against both adapters. Changing one turns a contract test
  *   red, not just this mapping. Phase 5 migrates those assertions onto codes and this
- *   table goes with them — **one family at a time, and four are gone.** `unknown vertical`
+ *   table goes with them — **one family at a time, and five are gone.** `unknown vertical`
  *   went first; `unknown version` followed, its ten throw sites across the two adapters
  *   now saying `substratError('not_found', …)` with the contract suite asserting that
  *   code rather than the sentence, so the row had nothing left to do. `deploy refused:`
@@ -45,7 +45,9 @@ import { ConnectionRelayError } from './connection-relay.js';
  *   them first") does not match, because the word sits between the digits and `scope(s)`.
  *   Nothing else caught it, so archiving an app and then deleting its vertical answered
  *   `internal error`. Both branches are typed now and a code cannot miss a reword.
- *   That is the shape every remaining row is waiting for: type the throws, move the
+ *   `was rejected — publish a new one` is the fifth: `admitVersion`'s refusal of a rejected
+ *   version, one site per adapter, now `substratError('conflict', …)` and pinned on the
+ *   code by the contract suite. That is the shape every remaining row is waiting for: type the throws, move the
  *   suite's assertion, delete the row. A row is not removed before its throws are typed —
  *   deleting one early turns its refusal into the generic 500 below.
  *
@@ -88,7 +90,6 @@ const CODE_PATTERNS: readonly [RegExp, ErrorCode][] = [
   // A staff re-registration under a different owner is a conflict; a builder is
   // refused with 403 in the transport before it reaches this throw.
   [/is owned by /, 'conflict'],
-  [/was rejected — publish a new one/, 'conflict'],
   [/is already admitted/, 'conflict'],
   // The publish seam's refusal (marketplace-publish.md §5): prod points at a version
   // carrying only the AUTO admission note, so no human has vouched for code that listing
