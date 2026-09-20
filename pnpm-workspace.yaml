@@ -89,7 +89,16 @@ onlyBuiltDependencies:
   - workerd
 
 overrides:
-  hono: 4.12.30
+  # hono is pinned EXACTLY, and on purpose: 54d3d0e6 (#510/#517) introduced it
+  # "so the mounted Hono app type matches its consumers" — vertical-host's
+  # `mountPlatformSurface` hands a Hono app across packages, and 21 workspace
+  # members declare `hono`, so two resolved versions would be two distinct types.
+  # Do not delete it; RAISE it. (#761 only relocated the line here.)
+  #
+  # Dependabot does not bump `overrides`, so this line is invisible to the
+  # scanner added in #1599: a human has to move it. `pnpm audit` is the check —
+  # raise to the latest 4.x that clears it (#1601).
+  hono: 4.13.8
   better-sqlite3: 13.0.3
 
 # On why `strictPeerDependencies` is NOT set here, which is a measured decision
