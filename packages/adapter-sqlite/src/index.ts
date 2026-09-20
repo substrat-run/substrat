@@ -541,6 +541,13 @@ const KERNEL_DDL = `
     operation TEXT,
     -- K-42: WHICH of the two actors was refused is exactly what this log is for.
     impersonation TEXT,
+    -- #1525: the INVOCATION this refusal happened during, the same id #1237 stamps on
+    -- every event of a call. A denial joins to nothing but actor and time otherwise —
+    -- the operation column names what was attempted, never WHICH attempt — so "what
+    -- else did this request do" cannot reach a refusal, which is the one thing an
+    -- incident asks about first. NULL = the transport carried no id (a seed, a test,
+    -- an internal call, an attachment RPC), or the row predates the column.
+    invocation_id TEXT,
     at TEXT NOT NULL,
     drained_at TEXT
   );
@@ -2513,7 +2520,9 @@ export class SqliteScopeHost implements ScopeHost {
           rt.db.exec('COMMIT');
         } catch (err) {
           rt.db.exec('ROLLBACK');
-          if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err);
+          // #1525: null. This task is the attachment RPC's own — no invoke set an id on
+          // the runtime, and the actor guarantees no other task is mid-flight holding one.
+          if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err, null);
           throw err;
         }
         await this.dispatch(rt);
@@ -2541,7 +2550,12 @@ export class SqliteScopeHost implements ScopeHost {
       try {
         return await fn(this.operationContext(rt, subject, undefined, undefined, undefined, operation));
       } catch (err) {
-        if (err instanceof PermissionDenied) this.recordDenial(rt, subject, operation, err);
+        // #1525: the ENCLOSING call's id, deliberately. This runner takes no turn of its
+        // own — it is the connector's dispatch-time read, already inside that call's
+        // actor task — so its refusal belongs to that call, for the reason a consumer's
+        // emit does (#1237): dispatch runs in the same post-commit tail and IS the call.
+        if (err instanceof PermissionDenied)
+          this.recordDenial(rt, subject, operation, err, rt.invocationId);
         throw err;
       }
     };
@@ -3505,7 +3519,8 @@ export class SqliteScopeHost implements ScopeHost {
             // K-35: a refused check rolled the operation back. Record it now — a fresh
             // statement in autocommit, AFTER the rollback, so the denial survives it.
             if (err instanceof PermissionDenied)
-              this.recordDenial(rt, subject, operation, err, session);
+              // Inside the actor task that set it, so the field is this call's own (#1237).
+              this.recordDenial(rt, subject, operation, err, rt.invocationId, session);
             throw err;
           }
           // Post-commit, still inside the actor task: drain outbox → consumers,
@@ -4026,6 +4041,19 @@ export class SqliteScopeHost implements ScopeHost {
     subject: CheckSubject,
     operation: string,
     err: PermissionDenied,
+    /**
+     * #1525: the invocation this refusal belongs to, or null — PASSED, not read off
+     * `rt.invocationId` here.
+     *
+     * Every denial path on THIS adapter runs inside the scope's actor task, so reading
+     * `rt.invocationId` would in fact be right at each one. It is passed anyway, to keep
+     * one discipline across both adapters: the Cloudflare side has two denial paths that
+     * run outside its queue, where the ambient read rests on an argument about workerd's
+     * input gate rather than on anything local. A recorded fact whose correctness
+     * argument differs per adapter is the kind that drifts, so on both sides the caller
+     * says what it knows.
+     */
+    invocationId: string | null,
     /** K-42: the session the refused call ran under, when it ran under one. */
     impersonation?: ImpersonationSession,
   ): void {
@@ -4042,8 +4070,9 @@ export class SqliteScopeHost implements ScopeHost {
     rt.db
       .prepare(
         `INSERT INTO _substrat_denials
-           (id, actor, permission, tenant_id, scope_id, operation, impersonation, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, actor, permission, tenant_id, scope_id, operation, impersonation,
+            invocation_id, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         ulid(),
@@ -4053,6 +4082,8 @@ export class SqliteScopeHost implements ScopeHost {
         err.node.scopeId ?? null,
         operation,
         impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
+        // #1525: the call this refusal belongs to, as the caller named it.
+        invocationId,
         new Date().toISOString(),
       );
   }
@@ -8768,6 +8799,10 @@ export class SqliteScopeHost implements ScopeHost {
     this.ensureColumn(db, '_substrat_outbox', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_platform_requests', 'impersonation', 'impersonation TEXT');
     this.ensureColumn(db, '_substrat_denials', 'impersonation', 'impersonation TEXT');
+    // #1525: the invocation a refusal happened during, on a scope DB created before the
+    // column. Nullable, and the null is honestly "no id was carried" — a past denial's
+    // call cannot be decided afterwards, exactly as #1237's outbox column argued.
+    this.ensureColumn(db, '_substrat_denials', 'invocation_id', 'invocation_id TEXT');
     // #1231: the emitting operation, on a scope DB created before the column. Nullable
     // so every legacy row reads as unrecorded rather than claiming a name nobody stamped.
     this.ensureColumn(db, '_substrat_outbox', 'operation', 'operation TEXT');

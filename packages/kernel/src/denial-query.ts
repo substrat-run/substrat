@@ -30,7 +30,7 @@ import {
 
 /** Every column of `_substrat_denials`, in the order `mapDenialRow` expects. */
 export const DENIAL_COLUMNS =
-  'id, actor, permission, tenant_id, scope_id, operation, impersonation, at, drained_at';
+  'id, actor, permission, tenant_id, scope_id, operation, impersonation, invocation_id, at, drained_at';
 
 /** The raw row shape, as either adapter hands it back. */
 export interface DenialRow {
@@ -42,6 +42,8 @@ export interface DenialRow {
   operation: string | null;
   /** K-42: the staff actor + session, as JSON, when the refusal was under one. */
   impersonation: string | null;
+  /** #1525: the invocation the refusal happened during. NULL = none was carried. */
+  invocation_id: string | null;
   at: string;
   drained_at: string | null;
 }
@@ -74,6 +76,10 @@ export function mapDenialRow(row: DenialRow): PermissionDenial {
     operation: row.operation ?? null,
     impersonation:
       row.impersonation == null ? null : (JSON.parse(row.impersonation) as ImpersonationStamp),
+    // #1525: which CALL was refused, not merely which operation — the join that lets
+    // "same call" reach a request's refusals. `?? null` rather than a bare read, for
+    // the row a legacy store hands back with the column absent.
+    invocationId: row.invocation_id ?? null,
     at: row.at,
     drainedAt: row.drained_at ?? null,
   };

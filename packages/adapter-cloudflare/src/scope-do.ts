@@ -337,6 +337,13 @@ const KERNEL_DDL = `
     operation TEXT,
     -- K-42: WHICH of the two actors was refused is exactly what this log is for.
     impersonation TEXT,
+    -- #1525: the INVOCATION this refusal happened during, the same id #1237 stamps on
+    -- every event of a call. A denial joins to nothing but actor and time otherwise --
+    -- the operation column names what was attempted, never WHICH attempt -- so "what
+    -- else did this request do" cannot reach a refusal, which is the one thing an
+    -- incident asks about first. NULL = the transport carried no id (a seed, a test,
+    -- an internal call, an attachment RPC), or the row predates the column.
+    invocation_id TEXT,
     at TEXT NOT NULL,
     drained_at TEXT
   );
@@ -1747,6 +1754,9 @@ export function defineScopeDO(
               tenantId,
               operation,
               err,
+              // Inside the queued body, which is the one region where this call holds
+              // the DO to itself — so the field is this call's own (#1237).
+              this.invocationId,
               impersonation,
             );
           }
@@ -1887,7 +1897,7 @@ export function defineScopeDO(
           });
         } catch (err) {
           if (err instanceof PermissionDenied) {
-            this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.upload', err);
+            this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.upload', err, null);
           }
           throw toRpcError(err);
         }
@@ -1914,7 +1924,7 @@ export function defineScopeDO(
         assertAllowed(await ctx.check(gate.read, entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
-          this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.list', err);
+          this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.list', err, null);
         }
         throw toRpcError(err);
       }
@@ -1961,6 +1971,7 @@ export function defineScopeDO(
               tenantId,
               'attachments.open',
               err,
+              null,
             );
           }
           throw toRpcError(err);
@@ -1976,7 +1987,7 @@ export function defineScopeDO(
         assertAllowed(await ctx.check(mode === 'read' ? gate.read : gate.write, record.entity));
       } catch (err) {
         if (err instanceof PermissionDenied) {
-          this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.open', err);
+          this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.open', err, null);
         }
         throw toRpcError(err);
       }
@@ -2014,7 +2025,7 @@ export function defineScopeDO(
           });
         } catch (err) {
           if (err instanceof PermissionDenied) {
-            this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.remove', err);
+            this.recordDenial(attachSubject(principal, connectionId), tenantId, 'attachments.remove', err, null);
           }
           throw toRpcError(err);
         }
@@ -2682,6 +2693,10 @@ export function defineScopeDO(
         'ALTER TABLE _substrat_outbox ADD COLUMN impersonation TEXT',
         'ALTER TABLE _substrat_platform_requests ADD COLUMN impersonation TEXT',
         'ALTER TABLE _substrat_denials ADD COLUMN impersonation TEXT',
+        // #1525: the invocation a refusal happened during, on a scope DO created before
+        // the column. Nullable, and the null is honestly "no id was carried" — a past
+        // denial's call cannot be decided afterwards, as #1237's outbox column argued.
+        'ALTER TABLE _substrat_denials ADD COLUMN invocation_id TEXT',
         // #1231: the emitting operation, on a scope DO created before the column.
         // Nullable so every legacy row reads as unrecorded rather than named.
         'ALTER TABLE _substrat_outbox ADD COLUMN operation TEXT',
@@ -3002,6 +3017,27 @@ export function defineScopeDO(
       tenantId: TenantId,
       operation: string,
       err: PermissionDenied,
+      /**
+       * #1525: the invocation this refusal belongs to, or null — PASSED, never read off
+       * `this.invocationId` here.
+       *
+       * Reading the ambient field is only self-evidently right where one call holds the
+       * DO to itself, and two denial paths do not: `attachmentList` and
+       * `attachmentAuthorize` run OUTSIDE `this.queue`, and both await before they
+       * record (`ensureMigrations`, `ctx.check`). Whether the input gate can actually
+       * reopen far enough for one of them to observe an in-flight call's id is NOT
+       * settled here — a probe that raced twelve attachment refusals against invokes
+       * holding an id (including one awaiting the control plane) recorded null every
+       * time, so the gate evidently holds more than the shape of the code promises.
+       *
+       * Passed anyway, because the argument for the ambient read is an argument about
+       * workerd's gate semantics, and the argument for a parameter is local: the invoke
+       * path passes its own id, every attachment path passes null, and each says what it
+       * actually knows. That is the property worth having on a recorded fact, and it
+       * costs one argument. No test accompanies it — the condition could not be
+       * reproduced, and a test that passes either way would be worse than none.
+       */
+      invocationId: string | null,
       impersonation?: ImpersonationSession,
     ): void {
       // Only an ENFORCED denial (assertAllowed, which attaches the checked permission +
@@ -3016,8 +3052,9 @@ export function defineScopeDO(
             : (subject.id as PrincipalId);
       this.sql.exec(
         `INSERT INTO _substrat_denials
-           (id, actor, permission, tenant_id, scope_id, operation, impersonation, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, actor, permission, tenant_id, scope_id, operation, impersonation,
+            invocation_id, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ulid(),
         JSON.stringify(actor),
         err.permission,
@@ -3025,6 +3062,8 @@ export function defineScopeDO(
         err.node.scopeId ?? null,
         operation,
         impersonation ? JSON.stringify(impersonationStampOf(impersonation)) : null,
+        // #1525: the call this refusal belongs to, as the caller named it.
+        invocationId,
         new Date().toISOString(),
       );
     }
