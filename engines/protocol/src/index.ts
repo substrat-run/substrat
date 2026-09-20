@@ -165,6 +165,33 @@ export {
   type CancelSignatureRequestsInput,
 } from './inputs.js';
 /**
+ * The event contract (#696) — what a VERTICAL imports so that consuming this
+ * engine by event is checked rather than guessed. `events.ts` says what these
+ * are and, just as importantly, what they are not: types only, vertical-facing
+ * only, and a sibling engine still writes its own Zod view.
+ */
+export {
+  type ProtocolEvents,
+  type ProtocolEventType,
+  type ProtocolSubjectRef,
+  type ProtocolInstantiatedPayload,
+  type ProtocolResponseRecordedPayload,
+  type ProtocolContentBoundPayload,
+  type ProtocolRequestedParty,
+  type ProtocolSignaturesRequestedPayload,
+  type ProtocolSignatureDeclinedPayload,
+  type ProtocolSignaturesCancelledPayload,
+  type ProtocolSignatureBase,
+  type ProtocolSignedPayload,
+  type ProtocolCountersignedPayload,
+  type ProtocolVoidedPayload,
+} from './events.js';
+import {
+  emitProtocolEvent,
+  type ProtocolCountersignedPayload,
+  type ProtocolSignedPayload,
+} from './events.js';
+/**
  * The declared operation surface (#738) — what a vertical binds to its own URLs
  * with `defineEngineRoutes`, carrying this engine's real input and output
  * schemas rather than a restatement the vertical had to write.
@@ -1077,7 +1104,7 @@ export function instantiateProtocol(
   // The permission walk (portal counter-sign, per-entity reads) flows along
   // this edge; the vertical declares `protocol → <parent>` in its manifest.
   ctx.link(protocolRef(id), input.entity);
-  ctx.emit({
+  emitProtocolEvent(ctx, {
     type: 'protocol.instantiated',
     schemaVersion: 1,
     entity: protocolRef(id),
@@ -1163,7 +1190,7 @@ export function fillProtocol(
       ctx.now(),
     ],
   );
-  ctx.emit({
+  emitProtocolEvent(ctx, {
     type: 'protocol.response-recorded',
     schemaVersion: 1,
     entity: protocolRef(instance.id),
@@ -1263,7 +1290,7 @@ export function bindDocument(
       instance.id,
     ],
   );
-  ctx.emit({
+  emitProtocolEvent(ctx, {
     type: 'protocol.content-bound',
     schemaVersion: 1,
     entity: protocolRef(instance.id),
@@ -1427,7 +1454,7 @@ export async function requestSignatures(
   }
 
   const requests = getRequestRows(ctx, instance.id).filter((r) => created.includes(r.id));
-  ctx.emit({
+  emitProtocolEvent(ctx, {
     type: 'protocol.signatures-requested',
     schemaVersion: 1,
     entity: protocolRef(instance.id),
@@ -1641,7 +1668,7 @@ export function declineSignature(
      SET status = ?, resolved_at = ?, resolved_note = ? WHERE id = ?`,
     [input.outcome ?? 'declined', ctx.now(), input.reason, request.id],
   );
-  ctx.emit({
+  emitProtocolEvent(ctx, {
     type: 'protocol.signature-declined',
     schemaVersion: 1,
     entity: protocolRef(instance.id),
@@ -1693,7 +1720,7 @@ export function cancelSignatureRequests(
      SET status = 'open', frozen_hash = NULL, frozen_at = NULL WHERE id = ?`,
     [instance.id],
   );
-  ctx.emit({
+  emitProtocolEvent(ctx, {
     type: 'protocol.signatures-cancelled',
     schemaVersion: 1,
     entity: protocolRef(instance.id),
@@ -1726,7 +1753,12 @@ function emitSignatureEvent(
 ): void {
   const { instance, signature, contentHash, complete } = args;
   const signatories = getSignatureRows(ctx, instance.id).map(signatoryOf);
-  const base = {
+  // Annotated, not inferred (#696). `protocol.signed` IS this object, so naming
+  // the published type here is what makes the map load-bearing in both
+  // directions: a field the payload type does not declare is an excess-property
+  // error on this literal, and a field it declares that this literal drops is a
+  // missing-property one. An inferred `base` would have satisfied neither.
+  const base: ProtocolSignedPayload = {
     instanceId: instance.id,
     templateKey: instance.template_key,
     templateVersion: instance.template_version,
@@ -1757,7 +1789,7 @@ function emitSignatureEvent(
   };
 
   if (signature.kind === 'primary') {
-    ctx.emit({
+    emitProtocolEvent(ctx, {
       type: 'protocol.signed',
       schemaVersion: 1,
       entity: protocolRef(instance.id),
@@ -1768,18 +1800,22 @@ function emitSignatureEvent(
     return;
   }
   const primary = getSignatureRows(ctx, instance.id).find((s) => s.kind === 'primary');
-  ctx.emit({
+  // Same annotation, same reason — and here it also pins the one difference
+  // between the two payloads: `signedBy` is re-pointed at the PRIMARY signatory
+  // and is nullable, while the party who just signed is `countersignedBy`.
+  const countersigned: ProtocolCountersignedPayload = {
+    ...base,
+    signedBy: primary?.signed_by ?? null,
+    countersignedBy: signature.signed_by,
+    countersignatory: signatoryOf(signature),
+  };
+  emitProtocolEvent(ctx, {
     type: 'protocol.countersigned',
     schemaVersion: 1,
     entity: protocolRef(instance.id),
     piiClass: 'pseudonymous',
     subjectId: dataSubjectId.parse(signature.signed_by),
-    payload: {
-      ...base,
-      signedBy: primary?.signed_by ?? null,
-      countersignedBy: signature.signed_by,
-      countersignatory: signatoryOf(signature),
-    },
+    payload: countersigned,
   });
 }
 
@@ -1909,7 +1945,7 @@ export function voidProtocol(
      SET status = 'voided', voided_by = ?, voided_reason = ?, voided_at = ? WHERE id = ?`,
     [ctx.principal, reason, now, instance.id],
   );
-  ctx.emit({
+  emitProtocolEvent(ctx, {
     type: 'protocol.voided',
     schemaVersion: 1,
     entity: protocolRef(instance.id),

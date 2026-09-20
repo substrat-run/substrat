@@ -112,6 +112,31 @@ export { bookingOperations, BOOKING_PERMISSIONS } from './operations.js';
 import { bookingOperations } from './operations.js';
 export { bookingLifecycles } from './lifecycle.js';
 import { bookingLifecycles } from './lifecycle.js';
+/**
+ * The event contract (#696) — what a VERTICAL imports so that consuming this
+ * engine by event is checked rather than guessed. `events.ts` says what these
+ * are and what they are not: types only, vertical-facing only, and why there is
+ * no completion group here.
+ */
+export {
+  type BookingEvents,
+  type BookingEventType,
+  type BookingResourceRef,
+  type BookingSlot,
+  type BookingResourceCreatedPayload,
+  type BookingHeldPayload,
+  type BookingConfirmedPayload,
+  type BookingExpiredPayload,
+  type BookingParticipantJoinedPayload,
+  type BookingOpenedPayload,
+  type BookingParticipantLeftPayload,
+  type BookingCancelledPayload,
+  type BookingMovedPayload,
+  type BookingStartedPayload,
+  type BookingCompletedPayload,
+  type BookingNoShowPayload,
+} from './events.js';
+import { emitBookingEvent } from './events.js';
 
 import {
   createResourceInput,
@@ -534,7 +559,7 @@ export function createResource(ctx: OperationContext, rawInput: CreateResourceIn
      VALUES (?, ?, ?, ?, 1, ?)`,
     [id, input.kind, input.name, input.capacity ?? 1, createdAt],
   );
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.resource-created',
     schemaVersion: 1,
     entity: resourceRef(id),
@@ -632,7 +657,7 @@ export function holdReservation(
     ],
   );
   ctx.link(reservationRef(id), resourceRef(resource.id));
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.held',
     schemaVersion: 1,
     entity: reservationRef(id),
@@ -675,7 +700,7 @@ export function confirmReservation(
     `UPDATE booking_reservations SET state = 'confirmed', expires_at = NULL WHERE id = ?`,
     [row.id],
   );
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.confirmed',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -708,7 +733,7 @@ export function expireReservation(
     throw conflict('not_yet_expired', `reservation ${row.id} has not expired yet`);
   }
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'expired' WHERE id = ?`, [row.id]);
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.expired',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -752,7 +777,7 @@ export function joinReservation(
      VALUES (?, ?, ?, ?, ?, ?)`,
     [id, row.id, input.partyRef, input.share?.amount ?? null, input.share?.currency ?? null, now],
   );
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.participant-joined',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -811,7 +836,7 @@ export function openReservation(
     input.fillTarget,
     row.id,
   ]);
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.opened',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -842,7 +867,7 @@ export function leaveReservation(
   if (participant.left_at) throw conflict('already_left', `participant already left: ${input.participantId}`);
 
   ctx.sql.exec('UPDATE booking_participants SET left_at = ? WHERE id = ?', [now, participant.id]);
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.participant-left',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -866,7 +891,7 @@ export function cancelReservation(
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/cancel');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'cancelled' WHERE id = ?`, [row.id]);
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.cancelled',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -935,7 +960,7 @@ export function moveReservation(
     'UPDATE booking_reservations SET resource_id = ?, starts_at = ?, ends_at = ? WHERE id = ?',
     [target.id, startsAt, endsAt, row.id],
   );
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.moved',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -958,7 +983,7 @@ export function startReservation(
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/start');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'in_service' WHERE id = ?`, [row.id]);
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.started',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -982,7 +1007,7 @@ export function completeReservation(
   requireTransition(row, 'booking/complete');
   const resource = getResourceRow(ctx, row.resource_id);
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'completed' WHERE id = ?`, [row.id]);
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.completed',
     schemaVersion: 1,
     entity: reservationRef(row.id),
@@ -1006,7 +1031,7 @@ export function markNoShow(
   const row = getRow(ctx, input.reservationId);
   requireTransition(row, 'booking/no-show');
   ctx.sql.exec(`UPDATE booking_reservations SET state = 'no_show' WHERE id = ?`, [row.id]);
-  ctx.emit({
+  emitBookingEvent(ctx, {
     type: 'booking.no-show',
     schemaVersion: 1,
     entity: reservationRef(row.id),

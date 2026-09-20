@@ -75,6 +75,20 @@ export { invoicingEntities, underlagLine, underlagRow } from './entities.js';
 export { underlagDetail, underlagListRow } from './schemas.js';
 export { invoicingOperations, INVOICING_PERMISSIONS } from './operations.js';
 import { invoicingOperations } from './operations.js';
+/**
+ * The event contract (#696) — what a VERTICAL imports so that reading this
+ * engine's result back by event is checked rather than guessed. `events.ts` says
+ * what it is and what it is not: types only, vertical-facing only, and the
+ * consumers below go on parsing their siblings' payloads with their own Zod
+ * views, which is the asymmetry rather than an inconsistency.
+ */
+export {
+  type InvoicingEvents,
+  type InvoicingEventType,
+  type InvoicingUnderlagUpdatedPayload,
+  type InvoicingUnderlagExportedPayload,
+} from './events.js';
+import { emitInvoicingEvent } from './events.js';
 import {
   assertAllowed,
   ulid,
@@ -507,7 +521,7 @@ const onWorkOrderCompleted: ConsumerHandler = (ctx, event) => {
     );
   }
 
-  ctx.emit({
+  emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
     schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: underlag.id },
@@ -586,7 +600,7 @@ const onCommerceOrderPlaced: ConsumerHandler = (ctx, event) => {
     );
   }
 
-  ctx.emit({
+  emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
     schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: underlag.id },
@@ -663,7 +677,7 @@ const onTimesheetPeriodClosed: ConsumerHandler = (ctx, event) => {
     );
   }
 
-  ctx.emit({
+  emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-updated',
     schemaVersion: 1,
     entity: { entityType: 'underlag', entityId: underlag.id },
@@ -751,7 +765,7 @@ const exportOp: OperationHandler<{ underlagId: string; currency?: string }, Unde
     `UPDATE invoicing_underlag SET status = 'exported', exported_at = ? WHERE id = ?`,
     [ctx.now(), underlag.id],
   );
-  ctx.emit({
+  emitInvoicingEvent(ctx, {
     type: 'invoicing.underlag-exported',
     schemaVersion: 2,
     entity: { entityType: 'underlag', entityId: underlag.id },
