@@ -768,6 +768,13 @@ interface ScopeStubRpc {
     deliveryId: string,
     error: string | null,
     nextAttemptAt: string | null,
+    /**
+     * #1525: the call THIS attempt ran in, or null. LAST, like every argument added
+     * to an RPC on this interface (see `recordScheduleRun` below for what a leading
+     * one costs). Defaulted in the DO, so an old coordinator that sends none records
+     * null — the honest value, since that coordinator knew of no call.
+     */
+    invocationId?: string | null,
   ): Promise<number>;
   executorAttempts(eventId: string, deliveryId: string): Promise<number>;
   executorDeadLetters(): Promise<ExecutorDeadLetter[]>;
@@ -789,6 +796,8 @@ interface ScopeStubRpc {
     kind: string,
     payload: string,
     requestedBy: string,
+    /** #1525: the call this routing ran in, or null. LAST and defaulted, as above. */
+    invocationId?: string | null,
   ): Promise<PlatformRequestId>;
   /** #1232: a CP-less pass's schedule outcomes as one batched intent. Null = dropped (backpressure). */
   enqueueSweepRuns(payload: string, requestedBy: string): Promise<PlatformRequestId | null>;
@@ -1539,6 +1548,15 @@ export class CloudflareScopeHost implements ScopeHost {
   private async drainExecutors(
     tenantId: TenantId,
     scopeId: ScopeId,
+    /**
+     * #1525: the call this drain pass is running in, or null.
+     *
+     * The coordinator is the ONLY side that knows. Executors run here, not in the DO,
+     * so by the time the journal RPC arrives the DO's queued body has returned and its
+     * own `invocationId` field reads null — an ambient read there would record "no
+     * call" for every attempt an operation's own tail made.
+     */
+    invocationId: string | null,
   ): Promise<ExecutorDrainReport> {
     const report: ExecutorDrainReport = {
       attempted: 0,
@@ -1571,6 +1589,7 @@ export class CloudflareScopeHost implements ScopeHost {
               connectorDispatchKind(executor.provider),
               JSON.stringify({ executorId: id, event } satisfies ConnectorDispatchPayload),
               JSON.stringify({ system: 'connector-dispatch' }),
+              invocationId,
             );
             report.routedToPlatform! += 1;
           } else if (executor.kind === 'connector') {
@@ -1578,11 +1597,11 @@ export class CloudflareScopeHost implements ScopeHost {
               await this.connectorContext(tenantId, scopeId, executor.timeoutMs, event.id),
               event,
             );
-            await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
+            await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
           } else {
             await executor.handler(this.admin, event);
-            await stub.recordExecutorAttempt(event.id, deliveryId, null, null);
+            await stub.recordExecutorAttempt(event.id, deliveryId, null, null, invocationId);
             report.delivered += 1;
           }
         } catch (err) {
@@ -1597,6 +1616,7 @@ export class CloudflareScopeHost implements ScopeHost {
             deliveryId,
             message,
             exhausted ? null : backoffAt(attempts, executor.retry, new Date()),
+            invocationId,
           );
           if (exhausted) report.deadLettered += 1;
           else report.retrying += 1;
@@ -1613,7 +1633,10 @@ export class CloudflareScopeHost implements ScopeHost {
     // does not get its effects driven either.
     await this.cp.validateScopeAccess(tenantId, scopeId);
     await this.migrateAndRecord(scopeId);
-    return this.drainExecutors(tenantId, scopeId);
+    // #1525: null, and honestly so — a sweep is not a call. An attempt this pass makes
+    // records no invocation, which is what distinguishes it from the first attempt the
+    // emitting operation's own tail made.
+    return this.drainExecutors(tenantId, scopeId, null);
   }
 
   registerJob(
@@ -3015,7 +3038,9 @@ export class CloudflareScopeHost implements ScopeHost {
         const drained =
           session?.mode === 'read-only'
             ? { attempted: 0, delivered: 0, retrying: 0, deadLettered: 0, routedToPlatform: 0 }
-            : await this.drainExecutors(tenantId, scopeId);
+            // #1525: this drain is part of the call that emitted the events — the
+            // coordinator's half of the post-commit tail the DO ran the consumers in.
+            : await this.drainExecutors(tenantId, scopeId, invokeOptions?.invocationId ?? null);
         // #458: the operation committed having enqueued platform intents — tell the
         // caller's harness so it can flag the response for the router kick (#381).
         // Routed connector deliveries (#574 phase 3) count too: the inline drain just

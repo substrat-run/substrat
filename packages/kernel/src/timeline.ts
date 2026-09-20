@@ -334,6 +334,8 @@ interface DeliveryRow {
   error: string | null;
   attempts: number;
   next_attempt_at: string | null;
+  /** #1525: the call the LAST attempt ran in. NULL = none was carried. */
+  invocation_id: string | null;
 }
 
 /**
@@ -356,6 +358,11 @@ function deliveryOf(row: DeliveryRow): EventDelivery {
     at: row.delivered_at as Instant,
     error: row.error,
     attempts: row.attempts,
+    // #1525: which CALL made the attempt `at` dates — the join the event's own
+    // invocation cannot make, because a retry runs in a later call or in none.
+    // `?? null` rather than a bare read, for the row a legacy store hands back
+    // with the column absent.
+    invocationId: row.invocation_id ?? null,
   };
 }
 
@@ -412,7 +419,7 @@ export function walkEventEffects(
     count += 1;
     const deliveries = ctx.sql
       .query<DeliveryRow>(
-        `SELECT consumer_module, delivered_at, error, attempts, next_attempt_at
+        `SELECT consumer_module, delivered_at, error, attempts, next_attempt_at, invocation_id
            FROM _substrat_deliveries WHERE event_id = ? ORDER BY consumer_module`,
         [entry.id],
       )
@@ -506,7 +513,10 @@ interface DeadLetterRow {
   occurred_at: string;
   entity_type: string;
   entity_id: string;
+  /** The EVENT's call — `o.invocation_id`, which is what emitted it. */
   invocation_id: string | null;
+  /** #1525: the DELIVERY's call — `d.invocation_id`, the attempt that gave up. */
+  attempt_invocation_id: string | null;
 }
 
 /**
@@ -546,6 +556,7 @@ export function readDeadLetters(ctx: TimelineReader, page?: Pick<ListPage, 'limi
   params.push(limit);
   const rows = ctx.sql.query<DeadLetterRow>(
     `SELECT d.event_id, d.consumer_module, d.delivered_at, d.error, d.attempts,
+            d.invocation_id AS attempt_invocation_id,
             o.type, o.occurred_at, o.entity_type, o.entity_id, o.invocation_id
        FROM _substrat_deliveries d
        JOIN _substrat_outbox o ON o.id = d.event_id
@@ -561,6 +572,11 @@ export function readDeadLetters(ctx: TimelineReader, page?: Pick<ListPage, 'limi
       occurredAt: r.occurred_at as Instant,
       entity: { entityType: r.entity_type, entityId: r.entity_id },
       invocationId: r.invocation_id,
+      // #1525: the call the LAST attempt ran in, which for these rows is the one that
+      // gave up. Usually not the event's: an executor's first attempt runs in the
+      // emitting call's tail and every retry after it in a drain, so a delivery that
+      // exhausted its attempts most often names a later call or none at all.
+      attemptInvocationId: r.attempt_invocation_id ?? null,
       consumer: r.consumer_module as ModuleId,
       at: r.delivered_at as Instant,
       error: r.error,
