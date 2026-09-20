@@ -5421,7 +5421,7 @@ export class SqliteScopeHost implements ScopeHost {
           return;
         }
         if (v.admission === 'rejected') {
-          throw new Error(`version ${versionId} was rejected — publish a new one`);
+          throw substratError('conflict', `version ${versionId} was rejected — publish a new one`);
         }
         this.directory
           .prepare("UPDATE vertical_versions SET admission = 'admitted' WHERE id = ?")

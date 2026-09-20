@@ -157,6 +157,22 @@ describe('mapError — a refusal that names its fix must survive as itself', () 
     expect(mapError(new Error(archived)).status).toBe(500);
   });
 
+  it('reads `was rejected — publish a new one` from the code now that the pattern row is gone (#113 phase 5)', () => {
+    // The fifth family off `CODE_PATTERNS`: `admitVersion` refusing a rejected version,
+    // one site per adapter. Both throw on the coordinator, so the real error object
+    // reaches `mapError` with no Durable Object hop to fold its `name` away.
+    const sentence = `version 01ABC was rejected — publish a new one`;
+    const typed = mapError(substratError('conflict', sentence));
+    expect(typed.status).toBe(409);
+    expect(typed.body.code).toBe('conflict');
+    expect(typed.body.detail).toBe(sentence);
+
+    // The other half: untyped, the same sentence is an unreviewed throw and gets the generic
+    // 500 — what makes the deletion real. The contract suite is what proves the throws are
+    // typed, since THIS case would pass whatever the adapters did.
+    expect(mapError(new Error(sentence)).status).toBe(500);
+  });
+
   it('relays a downstream status as about:blank — our taxonomy is not theirs to wear', () => {
     // auth-server's honest 501 for an unimplemented verb (the 2026-07-25 shape). The
     // status is the vertical's; putting a code of ours on it would be a claim we cannot
