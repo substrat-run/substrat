@@ -42,10 +42,10 @@ at `:1485`) — may not call `fetch` at all: that is boundary-lint R3,
 already broken a rule — the hostile case, which a wrapper does not reach — or harness code inside a
 vertical's own declared DO class, where a per-version host allowlist is sometimes not expressible at
 all. **That clause is not hypothetical, and it is the concrete price of B.** `demos/auth-server`
-reaches production through `substrat push` like any vertical (`.github/workflows/auth-server-deploy.yml:129`),
-and it is the one whose whole Better Auth
-issuer runs inside a Durable Object (`demos/auth-server/src/auth-do.ts:389`–`:422`), including every
-federated token round-trip and its Client ID Metadata Document read
+reaches production through `substrat push` like any other vertical
+(`.github/workflows/auth-server-deploy.yml:129`), and its whole Better Auth issuer runs inside a
+Durable Object (`demos/auth-server/src/auth-do.ts:389`–`:422`) — including every federated token
+round-trip and its Client ID Metadata Document read
 (`demos/auth-server/src/cimd-fetch.ts:190`, wired in at `auth-do.ts:164`) — where the destination is
 a caller-supplied `client_id` URL, so the admissible host set is unbounded by protocol design. It
 declares no `substrat.outbound`, which the CLI sends as `[]` (`packages/cli/src/push.ts:1254`), so a
@@ -86,11 +86,11 @@ a worker-context fetch can carry an entrypoint too (`packages/control-plane-api/
 
 ## Why
 
-Worth a ledger entry rather than a comment on the issue because three pieces of shipped prose
-already defer to #861 for this answer and would be stranded by a close: `packages/cli/src/push.ts:805`
-sends the platform-side-check question here, #862 closed sending the same question here, and #955
-closed naming *"#861's DO-egress question"* as the third of the three runtime constraints that
-actually bound deployed code. Two of those three now say yes — the spine-write refusal and the D-46
+Worth a ledger entry rather than a comment on the issue because three places already defer to #861
+for this answer and would be stranded by a close: `packages/cli/src/push.ts:805` sends the
+platform-side-check question here, #862 shipped its R2 fix with the same question explicitly
+deferred here, and #955's closing comment names *"#861's DO-egress question"* as the third of the
+three runtime constraints that actually bound deployed code. Two of those three now say yes — the spine-write refusal and the D-46
 allowlist — and this one says no, which is a fact a reader of `apps/vertical-egress/src/worker.ts`
 or [self-serve-deploy.md](../architecture/self-serve-deploy.md) §4.2 should be able to land on
 rather than reconstruct. **The fork is decidable now for a reason that is not the one the issue
