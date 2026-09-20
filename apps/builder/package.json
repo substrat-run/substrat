@@ -35,7 +35,7 @@
     "@cloudflare/workers-types": "catalog:",
     "@substrat-run/adapter-sqlite": "workspace:*",
     "@types/node": "catalog:",
-    "concurrently": "^9.0.0",
+    "concurrently": "^10.0.5",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
     "vitest": "catalog:",

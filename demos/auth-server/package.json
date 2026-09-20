@@ -60,7 +60,7 @@
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "@types/better-sqlite3": "^9.6.0",
-    "concurrently": "^9.0.0",
+    "concurrently": "^10.0.5",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
     "vitest": "catalog:",

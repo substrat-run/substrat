@@ -67,7 +67,7 @@
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",
-    "concurrently": "^9.0.0",
+    "concurrently": "^10.0.5",
     "tsx": "^4.19.0",
     "typescript": "catalog:",
     "wrangler": "catalog:"

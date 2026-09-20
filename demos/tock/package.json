@@ -34,7 +34,7 @@
     "tsx": "^4.19.0",
     "typescript": "catalog:",
     "vitest": "catalog:",
-    "concurrently": "^9.0.0"
+    "concurrently": "^10.0.5"
   },
   "substrat": {
     "slug": "tock",

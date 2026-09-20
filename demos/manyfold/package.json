@@ -85,7 +85,7 @@
     "@scalar/api-reference": "^1.64.0",
     "@substrat-run/model-emit": "workspace:*",
     "@types/better-sqlite3": "^9.6.0",
-    "concurrently": "^10.0.4",
+    "concurrently": "^10.0.5",
     "tsx": "^4.23.1",
     "typescript": "catalog:",
     "vitest": "catalog:",
