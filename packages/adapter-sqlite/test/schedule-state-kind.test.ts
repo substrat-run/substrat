@@ -91,4 +91,74 @@ describe('#1288: a pre-existing schedule-state table is rebuilt with kind, once'
 
     rmSync(dir, { recursive: true, force: true });
   });
+
+  /**
+   * Review, #1571: the rebuild runs inside the adapter's transaction, so neither
+   * half-finished state is reachable from here on. This covers the one that could
+   * still arrive from underneath it — a scratch table carried in by something the
+   * transaction does not span (a torn copy of the file, a dump that captured one) —
+   * and pins the leading `DROP TABLE IF EXISTS` that absorbs it.
+   *
+   * Without that DROP this is not a wrong answer, it is a scope that will not open:
+   * the rebuild dies on `table _substrat_schedule_state_new already exists`, every
+   * wake, forever.
+   */
+  it('absorbs a leftover scratch table rather than dying on it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'substrat-schedule-kind-scratch-'));
+    const staff = platformActorId.parse(ulid());
+    const t = tenantId.parse(ulid());
+    const s = scopeId.parse(ulid());
+    const p = principalId.parse(ulid());
+
+    let host = new SqliteScopeHost({ dir });
+    await host.admin.createTenant(staff, { id: t, slug: 'sched-scratch', name: 'Scratch' });
+    await host.provisionScope(staff, { tenantId: t, scopeId: s, vertical: 'v' });
+    await host.admin.activateScope(staff, t, s);
+    await host.close();
+
+    const file = join(dir, `${t}__${s}.sqlite`);
+    const db = new Database(file);
+    db.exec('DROP TABLE _substrat_schedule_state');
+    db.exec(
+      'CREATE TABLE _substrat_schedule_state (schedule_op TEXT PRIMARY KEY, last_run_at TEXT, last_status TEXT)',
+    );
+    db.prepare('INSERT INTO _substrat_schedule_state VALUES (?, ?, ?)').run(
+      'freshness:a.b',
+      '2026-09-01T01:00:00.000Z',
+      'failed',
+    );
+    // The leftover: a scratch table from a rebuild that never finished, holding a row
+    // that must NOT survive — the copy is redone from the real table, not resumed.
+    db.exec(
+      'CREATE TABLE _substrat_schedule_state_new (kind TEXT NOT NULL, schedule_op TEXT NOT NULL, last_run_at TEXT, last_status TEXT, PRIMARY KEY (kind, schedule_op))',
+    );
+    db.prepare('INSERT INTO _substrat_schedule_state_new VALUES (?, ?, ?, ?)').run(
+      'schedule',
+      'stale/row',
+      'T0',
+      'ok',
+    );
+    db.close();
+
+    host = new SqliteScopeHost({ dir });
+    await host.getScope(p, t, s);
+    await host.close();
+
+    const after = new Database(file, { readonly: true });
+    expect(
+      after
+        .prepare('SELECT kind, schedule_op, last_status FROM _substrat_schedule_state ORDER BY kind, schedule_op')
+        .all(),
+    ).toEqual([{ kind: 'freshness', schedule_op: 'freshness:a.b', last_status: 'failed' }]);
+    expect(
+      (
+        after
+          .prepare(`SELECT count(*) AS n FROM sqlite_master WHERE name LIKE '%\\_new' ESCAPE '\\'`)
+          .get() as { n: number }
+      ).n,
+    ).toBe(0);
+    after.close();
+
+    rmSync(dir, { recursive: true, force: true });
+  });
 });

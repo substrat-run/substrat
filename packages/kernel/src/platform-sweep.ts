@@ -336,8 +336,23 @@ export const SCHEDULE_STATE_DDL = `
  * Keys are copied VERBATIM, prefix included. What changes is which rows can coexist,
  * not what any row says — so a deployment rolled back to code that looks a freshness
  * key up under its old name still finds it.
+ *
+ * **Run these inside the adapter's transaction API**, which is what both callers do —
+ * `db.transaction` on the pure side, `ctx.storage.transactionSync` on the DO side.
+ * Un-wrapped, a stop between the CREATE and the DROP leaves the scratch table behind
+ * and the NEXT wake dies on `table _substrat_schedule_state_new already exists`, which
+ * is a scope that cannot open; a stop between the DROP and the RENAME is worse and
+ * quieter, because the next wake's `CREATE TABLE IF NOT EXISTS` puts an EMPTY table
+ * of the new shape in place, the detection below then reads it as already migrated,
+ * and every copied row stays orphaned in the scratch table. Atomically, neither state
+ * is reachable — which is why there is no recovery path here to go with them.
+ *
+ * The leading `DROP TABLE IF EXISTS` is belt to that braces, not the fix: it costs one
+ * statement and makes the rebuild idempotent against a scratch table left by anything
+ * below the transaction (a torn copy of the file, a restore that carried one).
  */
 export const SCHEDULE_STATE_REBUILD = `
+  DROP TABLE IF EXISTS _substrat_schedule_state_new;
   ${SCHEDULE_STATE_DDL.replace(
     'CREATE TABLE IF NOT EXISTS _substrat_schedule_state',
     'CREATE TABLE _substrat_schedule_state_new',

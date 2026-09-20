@@ -2110,12 +2110,16 @@ export function defineScopeDO(
      * operation (`module/verb`, and then `at`/`status` are when it ran and how it
      * ended) or a freshness key (`freshness:<eventType>`, and then they are when the
      * verdict was recorded and what it was — nothing ran). See the bootstrap DDL.
+     *
+     * `kind` is LAST because this is a positional RPC — see the interface's own note
+     * in `host.ts`. An old DO drops a trailing argument; a leading one it binds, and
+     * every value after it lands one column to the left, silently.
      */
     async recordScheduleRun(
-      kind: ScheduleStateKind,
       unit: string,
       at: string,
       status: 'ok' | 'failed' | 'skipped',
+      kind: ScheduleStateKind,
     ): Promise<void> {
       this.sql.exec(
         `INSERT INTO _substrat_schedule_state (kind, schedule_op, last_run_at, last_status)
@@ -2754,7 +2758,15 @@ export function defineScopeDO(
         .exec(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`, '_substrat_schedule_state')
         .toArray()[0] as { sql: string } | undefined;
       if (!row || scheduleStateHasKind(row.sql)) return;
-      for (const stmt of splitSqlStatements(SCHEDULE_STATE_REBUILD)) this.sql.exec(stmt);
+      // In a transaction, for the reason the kernel constant spells out: create-copy-
+      // drop-rename has two intermediate states and both are unrecoverable on the next
+      // wake. `transactionSync`, not the async one every operation uses — the DO
+      // runtime forbids a manual BEGIN through `sql.exec`, and this body is wholly
+      // synchronous, which is the one case the sync API is for (it commits at the
+      // first await, and there is none). It also has to be sync because the caller is.
+      this.ctx.storage.transactionSync(() => {
+        for (const stmt of splitSqlStatements(SCHEDULE_STATE_REBUILD)) this.sql.exec(stmt);
+      });
     }
 
     async importDump(tables: ScopeDumpTable[], destScopeId?: ScopeId): Promise<void> {

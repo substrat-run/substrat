@@ -7984,7 +7984,13 @@ export class SqliteScopeHost implements ScopeHost {
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get('_substrat_schedule_state') as { sql: string } | undefined;
     if (!row || scheduleStateHasKind(row.sql)) return;
-    db.exec(SCHEDULE_STATE_REBUILD);
+    // In a transaction, for the reason the kernel constant spells out: create-copy-
+    // drop-rename has two intermediate states and BOTH are unrecoverable on the next
+    // wake — one dies on the leftover scratch table, one silently orphans the rows
+    // behind an empty table `CREATE TABLE IF NOT EXISTS` put back. `db.transaction`
+    // nests as a SAVEPOINT, which is what makes this safe on the `loadDump` path too,
+    // where the whole replay is already inside one.
+    db.transaction(() => db.exec(SCHEDULE_STATE_REBUILD))();
   }
 
   /**
